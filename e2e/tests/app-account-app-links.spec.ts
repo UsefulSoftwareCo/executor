@@ -478,7 +478,12 @@ layer(HostedLive, { excludeTestServices: true })("App account app links", (it) =
         // The owner links their own team account for everyone to the fixture's app. A second app
         // the admin can edit takes the same provider; nothing fills its requirement yet.
         const shared = yield* connect(actors.owner, "app", "team", "team-shared");
-        const second = yield* fixture.another(teamAppSource);
+        const second = yield* fixture.another(
+          teamAppSource.replace(
+            "accounts: { team }",
+            "accounts: { team, privateTeam: team.many() }",
+          ),
+        );
         yield* refused(
           yield* api.request(actors.member, "POST", `${second}/tools/call`, {
             tool: "who",
@@ -487,6 +492,45 @@ layer(HostedLive, { excludeTestServices: true })("App account app links", (it) =
           }),
           409,
           "AccountRequired",
+        );
+
+        // The same admin's credential narrowed to the target cannot borrow authority from the
+        // source app outside its selection, for either listing or linking.
+        const connection = yield* okBody(
+          Resource,
+          yield* api.request(actors.admin, "POST", `${prefix}/mcp-connections`, {
+            id: randomUUID(),
+            name: "App reuse scope",
+            apps: [
+              {
+                app: second.slice(second.lastIndexOf("/") + 1),
+                runsAs: [{ kind: "app" }],
+                tools: { kind: "all" },
+              },
+            ],
+          }),
+        );
+        yield* Effect.addFinalizer(() =>
+          api
+            .request(actors.admin, "POST", `${prefix}/mcp-connections/${connection.id}/revoke`)
+            .pipe(Effect.asVoid, Effect.orDie),
+        );
+        // A host-attached calling connection narrows the session's policy exactly as it does
+        // for an agent's nested API calls. Connection keys themselves are MCP-only on this fork.
+        const scoped: Session = {
+          cookies: actors.admin.cookies,
+          send: (method, path, data, headers) =>
+            actors.admin.send(method, path, data, {
+              ...headers,
+              "x-executor-caller-connection": connection.id,
+            }),
+        };
+        expect(yield* choices(scoped, second)).toEqual([]);
+        yield* refused(yield* appLink(scoped, second, shared), 403, "OrganizationForbidden");
+        yield* refused(
+          yield* api.request(scoped, "GET", `${fixture.path}/accounts/app/team`),
+          403,
+          "OrganizationForbidden",
         );
 
         // The admin does not own the account, but it already serves an app they can edit, so they
@@ -543,21 +587,58 @@ layer(HostedLive, { excludeTestServices: true })("App account app links", (it) =
         )).id;
         yield* fixture.saved(actors.member, memberTeam);
         yield* ok(yield* appLink(actors.admin, second, memberTeam));
+        yield* ok(
+          yield* linkAccountResponse(actors.admin, second, "privateTeam", memberTeam, "app"),
+        );
         expect(yield* who(actors.owner, second)).toEqual({ team: memberTeam });
-        yield* refused(
-          yield* api.request(actors.member, "DELETE", `${prefix}/accounts/${memberTeam}`),
-          409,
-          "AccountLinkedToApp",
+        // Consent must work even when the account owner cannot read the app or discover its
+        // requirement names. Only their own links' app ids leave the server.
+        const access = yield* okBody(
+          Schema.Struct({ revision: Schema.String }),
+          yield* api.request(actors.owner, "GET", `${second}/access`),
+        );
+        yield* ok(
+          yield* api.request(actors.owner, "PATCH", `${second}/access`, {
+            revision: access.revision,
+            audience: { kind: "private" },
+          }),
+        );
+        for (const route of [second, `${second}/accounts/app`, `${second}/accounts/app/team`]) {
+          const denied = yield* api.request(actors.member, "GET", route);
+          yield* refused(denied, 403, "OrganizationForbidden");
+          expect(JSON.stringify(denied.body)).not.toContain("privateTeam");
+        }
+        const deletion = yield* api.request(
+          actors.member,
+          "DELETE",
+          `${prefix}/accounts/${memberTeam}`,
+        );
+        yield* refused(deletion, 409, "AccountLinkedToApp");
+        expect(JSON.stringify(deletion.body)).not.toContain("privateTeam");
+        expect(yield* body(Schema.Struct({ apps: Schema.Array(Schema.String) }), deletion)).toEqual(
+          {
+            apps: [own, second].map((path) => path.slice(path.lastIndexOf("/") + 1)).sort(),
+          },
         );
         yield* refused(
           yield* appUnlink(actors.member, second, shared),
           403,
           "OrganizationForbidden",
         );
-        expect(yield* ok(yield* appUnlink(actors.member, second, memberTeam))).toEqual({
-          requirement: "team",
+        const unlinkOwned = (path: string, account: string) =>
+          api.request(actors.member, "DELETE", `${path}/accounts/app/${account}`);
+        yield* refused(yield* unlinkOwned(second, shared), 403, "OrganizationForbidden");
+        // An unrelated existing app and a nonexistent one give the same refusal.
+        for (const path of [fixture.path, `${prefix}/apps/app_${randomUUID()}`])
+          yield* refused(yield* unlinkOwned(path, memberTeam), 403, "OrganizationForbidden");
+        expect(yield* ok(yield* unlinkOwned(second, memberTeam))).toEqual({
+          app: second.slice(second.lastIndexOf("/") + 1),
           account: memberTeam,
         });
+        expect(
+          yield* ok(yield* api.request(actors.owner, "GET", `${second}/accounts/app`)),
+        ).toEqual([]);
+        yield* refused(yield* unlinkOwned(second, memberTeam), 403, "OrganizationForbidden");
         yield* refused(
           yield* api.request(actors.owner, "POST", `${second}/tools/call`, {
             tool: "who",

@@ -33,13 +33,21 @@ import { ScheduleWakeup } from "../contracts/schedules.ts";
 import { appManagerOwner, currentOwner, usableApp } from "./access.ts";
 import { connectAccount, connectionUrl } from "./accounts.ts";
 import { accountOAuthRedirectUri } from "./auth.ts";
-import { addLink, callerLinkedAccounts, lockedChange, removeLink } from "./app-accounts.ts";
+import {
+  addLink,
+  callerLinkedAccounts,
+  lockedChange,
+  removeLink,
+  removeAppLinksOf,
+  appLinkApps,
+} from "./app-accounts.ts";
 import {
   appLinkableAccounts,
   currentResourceAuthority,
   ownedAccountIds,
   policyDatabase,
   requireAccountOwner,
+  requireAccountOwnerAs,
   requireAppLinkableAs,
   requireCurrentAppAccess,
   visibleAccounts,
@@ -332,16 +340,30 @@ export const hostedAppAccountHandlers = HttpApiBuilder.group(HostedApi, "appAcco
           )).has(params.account);
           const owner = owns ? yield* currentOwner : yield* appManagerOwner(params.app);
           const executor = yield* Effect.flatten(HostedExecutor);
+          // An owner must already have a link here; do not disclose whether arbitrary apps exist.
+          if (
+            owns &&
+            !(yield* appLinkApps(yield* policyDatabase, params.account)).includes(params.app)
+          )
+            return yield* new OrganizationForbidden();
           yield* executor.apps.get({ owner, app: params.app });
-          const removed = yield* lockedChange(
+          const { removed, authority } = yield* lockedChange(
             executor,
             { app: params.app, access: "unlink", account: params.account },
-            (sql) =>
-              removeLink(sql, executor.webhooks, {
-                app: params.app,
-                requirement: params.requirement,
-                account: params.account,
-                subject: null,
+            (sql, actor) =>
+              Effect.gen(function* () {
+                const authority = (yield* ownedAccountIds([params.account], actor)).has(
+                  params.account,
+                )
+                  ? "owner"
+                  : "app_manager";
+                const removed = yield* removeLink(sql, executor.webhooks, {
+                  app: params.app,
+                  requirement: params.requirement,
+                  account: params.account,
+                  subject: null,
+                });
+                return { removed, authority };
               }),
           );
           if (!removed) return yield* new AccountNotFound({ account: params.account });
@@ -350,9 +372,34 @@ export const hostedAppAccountHandlers = HttpApiBuilder.group(HostedApi, "appAcco
             action: "app_account.unlink",
             outcome: "success",
             target: { kind: "account", id: params.account },
-            detail: { app: params.app, authority: owns ? "owner" : "app_manager" },
+            detail: { app: params.app, authority },
           });
           return { requirement: params.requirement, account: params.account };
+        }),
+      )
+      .handle("appUnlinkOwned", ({ params }) =>
+        Effect.gen(function* () {
+          yield* requireAccountOwner(params.account);
+          const executor = yield* Effect.flatten(HostedExecutor);
+          yield* lockedChange(
+            executor,
+            { app: params.app, access: "unlink", account: params.account },
+            (sql, actor) =>
+              Effect.gen(function* () {
+                yield* requireAccountOwnerAs(actor, params.account);
+                if (!(yield* appLinkApps(sql, params.account)).includes(params.app))
+                  return yield* new OrganizationForbidden();
+                yield* removeAppLinksOf(executor, sql, params.account, params.app);
+              }),
+          );
+          yield* wake;
+          yield* recordSecurityAudit({
+            action: "app_account.unlink",
+            outcome: "success",
+            target: { kind: "account", id: params.account },
+            detail: { app: params.app, authority: "owner" },
+          });
+          return { app: params.app, account: params.account };
         }),
       )
       .handle("appConnect", ({ params, payload }) => connect(services, "app", params, payload))

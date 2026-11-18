@@ -58,9 +58,9 @@ export const AccountLinkedToApp = UserFacingError.define({
   description:
     "An app uses this account for everyone who uses the app, so it can't be deleted while it is linked.",
   recovery: {
-    action: "Ask someone who can edit each app to unlink the account, then delete it.",
+    action: "Unlink your account from each named app, then delete it.",
     instructions:
-      "Read the app accounts of each named app with appAccounts.appList and unlink this account with appAccounts.appUnlink, or ask someone who can edit the app to. Link a replacement first if the app still needs one. Then delete the account.",
+      "Call appAccounts.appUnlinkOwned with this account and each named app id to remove all of your account's app links there. You do not need access to the app or its requirement names. Ask an editor to link a replacement first if the app still needs one. Then delete the account.",
   },
 });
 /** Parsed AccountLinkedToApp failure. */

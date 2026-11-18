@@ -251,6 +251,18 @@ export const HostedAppAccounts = HttpApiGroup.make("appAccounts")
   .add(appGet)
   .add(appLink)
   .add(appUnlink)
+  .add(
+    HttpApiEndpoint.delete("appUnlinkOwned", `${prefix}/app/:account`, {
+      params: { ...app, account: AccountId },
+      success: Schema.Struct({ app: AppId, account: AccountId }),
+      error: [StorageError, OrganizationForbidden],
+    })
+      .annotate(RequiredAction, "manage")
+      .annotate(
+        OpenApi.Description,
+        "As the account's owner, stop one app using it for everyone across all requirements. Needs only the app id, not access to the app or its requirement names. Returns only the app and account ids. An app without one of your account's app links is forbidden, whether it exists or not. The account stays saved.",
+      ),
+  )
   .add(appConnect)
   .add(userList)
   .add(userGet)

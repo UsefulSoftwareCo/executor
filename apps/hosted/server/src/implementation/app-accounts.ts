@@ -535,21 +535,22 @@ export const sourceActorLost = (
 const AppLinkRow = Schema.Struct({ app: AppId, requirement: Schema.String });
 /**
  * Unlink an account from every app it serves for everyone, in one transaction under each app's
- * lock, bringing each webhook source in line as unlinking it by hand does. Only for an account
- * whose owner is deleting their user: leaving the organization already stops their personal
- * account serving its apps, so its owner may remove those links without managing the apps.
+ * lock, bringing each webhook source in line as unlinking it by hand does. The caller must check
+ * ownership. With `app`, remove only that app's links, without disclosing its requirements.
  * Returns whether any link was removed.
  */
 export const removeAppLinksOf = (
   executor: Executor,
   sql: SqlClient.SqlClient,
   account: AccountId,
+  app?: AppId,
 ) =>
   executor[StorageHost].transaction(
     Effect.gen(function* () {
       const rows = yield* Schema.decodeUnknownEffect(Schema.Array(AppLinkRow))(
         yield* sql`select distinct app, requirement from hosted_app_account_links
-          where account = ${account} and subject is null order by app, requirement`,
+          where account = ${account} and subject is null
+            and ${app === undefined ? sql`true` : sql`app = ${app}`} order by app, requirement`,
       );
       let removed = false;
       for (const row of rows)

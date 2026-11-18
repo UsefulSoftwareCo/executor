@@ -193,7 +193,9 @@ from an app that uses the account: open its menu on the app's **Accounts** tab a
 linked to it keeps working.
 
 Removing an account removes your links to it. An account linked to an app for
-everyone cannot be removed until someone who can edit the app unlinks it
-(`AccountLinkedToApp`). An app left with no account
+everyone cannot be removed until it is unlinked (`AccountLinkedToApp`). As its
+owner, call `appAccounts.appUnlinkOwned` with the account and each app id named by
+that error. This removes all its app links there without needing access to the
+app or its requirement names. An app left with no account
 for a requirement exposes no tools until you link or connect another. Executor
 does not substitute a different account.

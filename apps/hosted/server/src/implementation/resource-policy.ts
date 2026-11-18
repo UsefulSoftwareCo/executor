@@ -9,6 +9,8 @@ import {
   type App,
 } from "@executor-js/sdk/core";
 import type { OAuthClientAccess } from "../contracts/oauth-clients.ts";
+import { permittedAppIds, permitsAction } from "@executor-js/authorization";
+import { CurrentPolicy } from "../contracts/authorization.ts";
 import { Effect, Schema } from "effect";
 import type { SqlClient } from "effect/sql";
 import { GroupDatabase, GroupId, GroupMemberId } from "../contracts/groups.ts";
@@ -612,7 +614,9 @@ const ReusableLink = Schema.Struct({ account: AccountId, app: AppId });
  * use it directly, link it for themselves, or read it outside the apps that link it. An account
  * linked only by members for themselves, or whose owner left, is never reused. With `lock`, the
  * app link rows a grant relies on stay share-locked until the transaction ends, so removing one
- * waits for the link that relied on it.
+ * waits for the link that relied on it. Source apps must also be readable and editable through
+ * this request's credential policy. The owner's membership is not locked: leaving independently
+ * stops the account serving apps through usableAppLinks.
  */
 export const appLinkableAccountsAs = (
   actor: ResourceAuthority,
@@ -625,6 +629,9 @@ export const appLinkableAccountsAs = (
     for (const account of yield* ownedAccountIds(accounts, actor)) linkable.set(account, "owner");
     const others = accounts.filter((account) => !linkable.has(account));
     if (others.length === 0) return linkable;
+    const policy = yield* CurrentPolicy;
+    if (!permitsAction(policy, "read") || !permitsAction(policy, "manage")) return linkable;
+    const permitted = permittedAppIds(policy);
     const sql = yield* policyDatabase;
     const rows = yield* sql`select l.account, l.app
       from hosted_app_account_links l
@@ -640,7 +647,10 @@ export const appLinkableAccountsAs = (
     const links = yield* Schema.decodeUnknownEffect(Schema.Array(ReusableLink))(rows);
     const editable = new Set(
       (yield* applicationAccesses([...new Set(links.map((link) => link.app))], actor))
-        .filter((access) => access.canManage)
+        .filter(
+          (access) =>
+            access.canManage && (permitted === undefined || permitted.includes(access.app)),
+        )
         .map((access) => access.app),
     );
     for (const link of links) if (editable.has(link.app)) linkable.set(link.account, "app_link");
