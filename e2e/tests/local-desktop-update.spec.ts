@@ -245,6 +245,12 @@ layer(TestLive, { excludeTestServices: true })("Local desktop update", (it) => {
         yield* browser.use("Wait for apps again", (page) =>
           page.getByRole("heading", { level: 1, name: /^Apps/ }).waitFor(),
         );
+        // The Geist faces use `font-display: optional`, so a page load whose font arrives late
+        // keeps the fallback face, and the reloaded page may set the links' text in another face
+        // than the first. Clearing the update below must leave this page's sidebar as it was.
+        const reloaded = yield* browser.use("Measure the reloaded sidebar", (page) =>
+          page.setViewportSize({ width: 1180, height: 800 }).then(() => layout(page)),
+        );
         yield* browser.use("Show the ready update again", (page) =>
           showUpdate(page, { state: "ready", version: "2.4.0" }),
         );
@@ -281,14 +287,18 @@ layer(TestLive, { excludeTestServices: true })("Local desktop update", (it) => {
         // When the desktop clears it, as after a failed download, the card goes away and the
         // sidebar is as it was.
         yield* browser.use("Widen the window", (page) =>
-          page.setViewportSize({ width: 1180, height: 800 }),
+          page
+            .setViewportSize({ width: 1180, height: 800 })
+            .then(() =>
+              page.getByRole("button", { name: "Expand sidebar" }).waitFor({ state: "detached" }),
+            ),
         );
         yield* browser.use("Clear the update", (page) => showUpdate(page, null));
         yield* browser.use("Wait for the update to go", (page) =>
           page.locator("aside.sidebar .sidebar-update").waitFor({ state: "detached" }),
         );
         expect(yield* browser.use("Measure the sidebar without the update", layout)).toEqual(
-          without,
+          reloaded,
         );
         expect(yield* browser.use("Read the cleared announcement", announcement)).toEqual({
           count: 1,
