@@ -460,6 +460,8 @@ return { sameAccount: target.account === read.id && read.id === updated.id, labe
         // the server instructions, which are the Executor app's entry skill.
         const texts: { readonly source: string; readonly examples: ReadonlyArray<string> }[] = [];
         let advertised: Record<string, unknown> | undefined;
+        const executeDescriptions: { readonly mode: string; readonly text: string }[] = [];
+        const skillsDescriptions: { readonly mode: string; readonly text: string }[] = [];
         for (const mode of ["model", "native", "browser"] as const) {
           const connection = yield* mcp.connect(target.apiKey, `skills-guidance-${mode}`, {
             mode,
@@ -469,6 +471,10 @@ return { sameAccount: target.account === read.id && read.id === updated.id, labe
           );
           for (const tool of listed.tools) {
             if (tool.name === "skills") advertised ??= tool.inputSchema;
+            if (tool.name === "execute")
+              executeDescriptions.push({ mode, text: tool.description ?? "" });
+            if (tool.name === "skills")
+              skillsDescriptions.push({ mode, text: tool.description ?? "" });
             texts.push({
               source: `${mode} ${tool.name} description`,
               examples: skillsExamples(tool.description ?? "", tool.name === "skills"),
@@ -485,6 +491,31 @@ return { sameAccount: target.account === read.id && read.id === updated.id, labe
         }
         if (advertised === undefined)
           return yield* Effect.die("Every MCP mode must list the skills tool");
+        // The server instructions are the entry skill, so neither execute nor skills sends an
+        // agent that already has them to read the same text again; each names the read only for
+        // clients that do not show instructions.
+        expect(executeDescriptions.map((description) => description.mode)).toEqual([
+          "model",
+          "native",
+          "browser",
+        ]);
+        for (const description of executeDescriptions) {
+          expect(description.text, description.mode).toContain(
+            "The server instructions are the Executor app's entry skill; if your client did not show them, read it with skills({app:'executor',name:'executor'}).",
+          );
+          expect(description.text, description.mode).not.toContain("First read");
+        }
+        expect(skillsDescriptions.map((description) => description.mode)).toEqual([
+          "model",
+          "native",
+          "browser",
+        ]);
+        for (const description of skillsDescriptions) {
+          expect(description.text, description.mode).toContain(
+            "The server instructions are the Executor app's entry skill; only if your client did not show them, read it with {app:'executor',name:'executor'}",
+          );
+          expect(description.text, description.mode).not.toContain("Start with");
+        }
         const accepts = validator.getValidator(advertised);
 
         // The advertised schema and the runtime agree on every read shape, and both refuse a

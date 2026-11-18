@@ -390,9 +390,10 @@ Do not configure a client with the `server.json` password, which changes every
 time the server starts. The client reaches the background server only while it
 runs; after a reboot, run `executor` or `executor service start` first.
 
-The server sends the Executor app's `executor` skill as its MCP instructions.
-Discover the Executor app with `skills({})`, then read that skill with
-`{ app: "executor", name: "executor" }` using its current slug. It links to
+The server sends the Executor app's `executor` skill as its MCP instructions,
+so an agent need not read it again. Only a client that did not show the
+instructions reads it, with `{ app: "executor", name: "executor" }` using the
+slug `skills({})` lists for that app. It links to
 `code-mode`, which covers calling tools from `execute`, and `app-authoring`,
 which has runnable source, schema helpers, provider accounts and the deploy
 flow. Read `app-authoring` before writing an app. These are ordinary skill files
