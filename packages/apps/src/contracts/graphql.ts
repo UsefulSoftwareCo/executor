@@ -165,10 +165,13 @@ export const GraphqlIntrospection = Schema.Struct({
   }),
 });
 export type GraphqlIntrospection = typeof GraphqlIntrospection.Type;
-/** GraphQL responses keep data separate from protocol errors. */
+/**
+ * GraphQL responses keep data separate from protocol errors. Some servers, such as Cloudflare's,
+ * send `"errors": null` when there are none, so a null list means no errors.
+ */
 export const GraphqlResponse = Schema.Struct({
   data: Schema.optional(Schema.NullOr(JsonObject)),
-  errors: Schema.optional(Schema.Array(JsonObject)),
+  errors: Schema.optional(Schema.NullOr(Schema.Array(JsonObject))),
 });
 /** A query or mutation bound to one selected account, with native Effect operations. */
 export interface GraphqlTool {

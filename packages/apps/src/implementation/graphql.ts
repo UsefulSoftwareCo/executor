@@ -221,9 +221,9 @@ const statedErrors = (errors: ReadonlyArray<unknown>) => {
 
 type UnreadBody = NonNullable<GraphqlError["unreadBody"]>;
 
-/** The `errors` list of a refused request's body; other content is not decoded. */
+/** The `errors` list of a refused request's body, null when it states none; other content is not decoded. */
 const RefusedBody = Schema.fromJsonString(
-  Schema.Struct({ errors: Schema.optional(Schema.Array(Schema.Unknown)) }),
+  Schema.Struct({ errors: Schema.optional(Schema.NullOr(Schema.Array(Schema.Unknown))) }),
 );
 
 /**

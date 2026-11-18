@@ -117,7 +117,8 @@ const fixture = Effect.gen(function* () {
                 },
               ],
             })
-          : yield* HttpServerResponse.json({ data: schema });
+          : // Like Cloudflare's server, answers without errors state `"errors": null`.
+            yield* HttpServerResponse.json({ data: schema, errors: null });
       const presented = request.headers.authorization?.replace(/^Bearer /u, "") ?? "";
       switch (current) {
         // A request the server refuses before running it, answered with a client error status.
@@ -219,6 +220,7 @@ const fixture = Effect.gen(function* () {
         default:
           return yield* HttpServerResponse.json({
             data: { projectCreate: { id: "project-1", name: "Synthetic" } },
+            errors: null,
           });
       }
     }),
