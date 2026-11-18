@@ -749,7 +749,7 @@ const desktop = Effect.gen(function* () {
               recover(current, url);
               return;
             }
-            // The sidebar card's restart button, a link; only the dashboard can follow it.
+            // The sidebar's "Restart to update" link; only the dashboard can follow it.
             if (url === desktopUpdateRestartUrl) {
               event.preventDefault();
               if (showsDashboard(current)) run(updater.install);

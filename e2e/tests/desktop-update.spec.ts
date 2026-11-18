@@ -128,6 +128,27 @@ const sidebar = (page: Page) => page.locator("aside.sidebar");
 const restartLink = (page: Page, version: string) =>
   sidebar(page).getByRole("link", { name: `Restart Executor to install v${version}` });
 
+/** The sidebar block's lines of text, top to bottom. */
+const blockLines = (page: Page) =>
+  driver("read the sidebar's update block", () =>
+    sidebar(page)
+      .locator(".sidebar-update")
+      .innerText()
+      .then((text) => text.split("\n").filter((line) => line.trim() !== "")),
+  );
+
+/** Resize the desktop's window. */
+const resizeWindow = (electron: ElectronApplication, width: number, height: number) =>
+  driver(`resize the window to ${width}x${height}`, () =>
+    electron.evaluate(
+      ({ BrowserWindow }, [width, height]) => {
+        const window = BrowserWindow.getAllWindows().find((each) => each.isVisible());
+        window?.setContentSize(width!, height!);
+      },
+      [width, height],
+    ),
+  );
+
 const dashboard = (page: Page) =>
   driver("dashboard is visible", () =>
     page.getByRole("heading", { name: /^Apps/ }).waitFor({ state: "visible", timeout: 60_000 }),
@@ -232,17 +253,22 @@ it.live(scenarios.desktopUpdate.title, () =>
           yield* driver("the first update is ready in the sidebar", () =>
             restartLink(page, "2.0.0-beta.122").waitFor({ timeout: 60_000 }),
           );
+          expect(yield* blockLines(page)).toEqual([
+            "Update ready",
+            "Version 2.0.0-beta.122 is ready to install.",
+            "Restart to update",
+          ]);
           expect(yield* updatesMenu(electron, (labels) => labels.length === 2)).toEqual([
             "Restart to update (v2.0.0-beta.122)",
             "Check for updates…",
           ]);
 
           // A newer version whose download fails verification leaves nothing to restart into:
-          // the card and the menu's restart go, and the menu's check says it failed.
+          // the block and the menu's restart go, and the menu's check says it failed.
           yield* feed.offer({ version: "2.0.0-beta.123", corrupt: true });
           yield* clickMenuItem(electron, "Updates", "Check for updates…");
           yield* dialogShown(electron, "The update could not be completed.");
-          yield* driver("the card goes", () =>
+          yield* driver("the block goes", () =>
             sidebar(page).locator(".sidebar-update").waitFor({ state: "detached" }),
           );
           expect(yield* updatesMenu(electron, (labels) => labels.length === 1)).toEqual([
@@ -255,7 +281,7 @@ it.live(scenarios.desktopUpdate.title, () =>
           ).toBe("");
 
           // Checking again downloads it whole. The menu's check offers the restart in a dialog,
-          // which is declined here; the card and the menu keep offering it with the long version.
+          // which is declined here; the block and the menu keep offering it with the long version.
           yield* feed.offer({ version: "2.0.0-beta.123", corrupt: false });
           yield* clickMenuItem(electron, "Updates", "Check for updates…");
           yield* dialogShown(electron, "Executor 2 2.0.0-beta.123 is ready to install.");
@@ -267,26 +293,51 @@ it.live(scenarios.desktopUpdate.title, () =>
               page.locator(".desktop-update-announcement").innerText(),
             ),
           ).toBe("Update ready: Executor v2.0.0-beta.123. Restart Executor to install it.");
+          expect(yield* blockLines(page)).toEqual([
+            "Update ready",
+            "Version 2.0.0-beta.123 is ready to install.",
+            "Restart to update",
+          ]);
           yield* screenshot(page, "desktop-update-ready");
           expect(yield* updatesMenu(electron, (labels) => labels.length === 2)).toEqual([
             "Restart to update (v2.0.0-beta.123)",
             "Check for updates…",
           ]);
 
-          // The menu's restart installs it, as the card's button does.
+          // The shortest window still shows the block and its restart, in place of the resource
+          // links, and the Updates menu keeps offering the same restart.
+          yield* resizeWindow(electron, 1180, 540);
+          yield* driver("the window is 540 px tall", () =>
+            page.waitForFunction(() => window.innerHeight === 540),
+          );
+          expect(
+            yield* driver("read the short window's sidebar", () =>
+              Promise.all([
+                restartLink(page, "2.0.0-beta.123").isVisible(),
+                sidebar(page).getByRole("link", { name: "Docs", exact: true }).count(),
+              ]),
+            ),
+          ).toEqual([true, 0]);
+          expect(yield* updatesMenu(electron, (labels) => labels.length === 2)).toEqual([
+            "Restart to update (v2.0.0-beta.123)",
+            "Check for updates…",
+          ]);
+          yield* screenshot(page, "desktop-update-short-window");
+
+          // The menu's restart installs it, as the block's link does.
           yield* clickMenuItem(electron, "Updates", "Restart to update (v2.0.0-beta.123)");
           expect(yield* installed(first)).toBe("installed");
         }),
       );
 
       // A restart that did not install, as here, leaves the update to the next start's check,
-      // which makes it ready again; the card's button, a link the desktop intercepts, installs it.
-      const second = path.join(home, "installed-from-card");
+      // which makes it ready again; the block's link, which the desktop intercepts, installs it.
+      const second = path.join(home, "installed-from-sidebar");
       const electron = yield* launchDesktop({ cwd: home, env });
       yield* standInForSquirrel(electron, second);
       const page = yield* driver("desktop window", () => electron.firstWindow());
       yield* dashboard(page);
-      yield* driver("press the card's restart button", () =>
+      yield* driver("press the block's restart link", () =>
         restartLink(page, "2.0.0-beta.123")
           .waitFor({ timeout: 60_000 })
           .then(() => restartLink(page, "2.0.0-beta.123").click()),

@@ -3384,7 +3384,7 @@ export const scenarios = plan({
   localDesktopUpdate: {
     file: "local-desktop-update.spec.ts",
     title:
-      "local dashboard shows the desktop's update as a card above the sidebar's links only while there is one, as a download status and then a named restart button the keyboard reaches, without moving the navigation or the links, also in a short window and the collapsed rail, announces once that it is ready, and wraps a long version",
+      "local dashboard shows the desktop's update as a tag and one line in place of the sidebar's resource links only while there is one, with no card around them, as a download status and then a named restart link the keyboard reaches, without moving the navigation or the version, also in the shortest window, leaves it out of the collapsed rail, which keeps the links and marks the download and the ready update with one small icon that expands the rail to it, announces once that it is ready, and wraps a long version in full",
     targets: {
       local: scheduled,
       "self-host": na("Only the desktop app, which runs the local dashboard, updates itself."),

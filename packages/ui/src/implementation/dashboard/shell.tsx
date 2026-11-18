@@ -1,5 +1,5 @@
-import { createContext, useContext, useState, type ReactNode } from "react";
-import { HugeiconsIcon } from "@hugeicons/react";
+import { useState, type ReactNode } from "react";
+import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import {
   BookOpen01Icon,
   Menu01Icon,
@@ -38,11 +38,6 @@ const navigationClass =
 const collapsedClass =
   "[&_.sidebar-header]:justify-center [&_.wordmark]:hidden [&_nav_a]:justify-center [&_nav_a]:gap-0! [&_nav_a]:px-0! [&_nav_a]:h-9 [&_nav_a]:text-[0px]! [&_nav_a_>_span]:hidden [&_.sidebar-resource-links]:items-center [&_.sidebar-resource-links]:px-0 [&_.sidebar-resource-links_a]:w-full [&_.sidebar-resource-links_a]:justify-center [&_.sidebar-resource-links_a]:min-h-8 [&_.sidebar-resource-links_a_>_span]:hidden [&_.sidebar-resource-links_button]:w-full [&_.sidebar-resource-links_button]:justify-center [&_.sidebar-resource-links_button]:min-h-8 [&_.sidebar-resource-links_button_>_span]:hidden [&_.hosted-identity]:px-0 [&_.organization-trigger]:justify-center [&_.organization-trigger]:px-0 [&_.organization-name]:hidden [&_.organization-chevron]:hidden [&_.session-menu]:justify-center [&_.session-menu]:px-0 [&_.session-name]:hidden [&_.sidebar-version]:hidden";
 
-const SidebarCollapsed = createContext(false);
-
-/** Whether the sidebar is the icon rail, for a notice that renders a compact form there. */
-export const useSidebarCollapsed = () => useContext(SidebarCollapsed);
-
 /** Links and the optional support trigger share one compact style. */
 function ResourceLinks({
   docsUrl,
@@ -77,6 +72,7 @@ export function DashboardShell({
   banner,
   support,
   notice,
+  noticeMark,
   footer,
   children,
 }: {
@@ -89,10 +85,25 @@ export function DashboardShell({
   /** A product-owned way to reach the team, shown with the resource links. */
   readonly support?: ReactNode;
   /**
-   * A small product-owned card above the resource links' divider, also in the icon rail, where
-   * it reads `useSidebarCollapsed` to render a compact form. Pass nothing when there is none.
+   * A small product-owned block, such as an update's `SidebarNews`, shown above the footer's
+   * divider in place of the resource links and `support`, which come back when it goes. The icon
+   * rail leaves it out, shows `noticeMark` in its place and keeps the links. Pass nothing when
+   * there is none.
    */
   readonly notice?: ReactNode;
+  /**
+   * The notice's mark in the icon rail, which has no room for the notice itself: one small icon,
+   * named by `label` for a tooltip and assistive technology, that expands the rail to the notice.
+   * `dot` adds a dot to it, for a notice that waits on the user, such as an update ready to
+   * install. Pass it only with a `notice`.
+   */
+  readonly noticeMark?:
+    | {
+        readonly label: string;
+        readonly icon: IconSvgElement;
+        readonly dot: boolean;
+      }
+    | undefined;
   readonly footer?: ReactNode;
   readonly children: ReactNode;
 }) {
@@ -100,6 +111,11 @@ export function DashboardShell({
   const medium = useMediaQuery(mediumViewport);
   const [mediumCollapsed, setMediumCollapsed] = useState(true);
   const collapsed = medium && mediumCollapsed;
+  /** The notice takes the resource links' place wherever it shows: not in the icon rail. */
+  const links = (shown: ReactNode) =>
+    shown ? null : <ResourceLinks docsUrl={docsUrl} support={support} />;
+  const railNotice = collapsed ? null : notice;
+  const railMark = collapsed && notice ? noticeMark : undefined;
   return (
     <div
       className={`shell grid h-dvh max-[740px]:grid-cols-1 ${banner ? "grid-rows-[auto_minmax(0,_1fr)]" : "max-[740px]:grid-rows-[minmax(0,_1fr)]"} ${collapsed ? "grid-cols-[60px_minmax(0,_1fr)]" : "grid-cols-[224px_minmax(0,_1fr)] max-[1000px]:grid-cols-[190px_minmax(0,_1fr)]"}`}
@@ -140,15 +156,30 @@ export function DashboardShell({
           {brand}
         </div>
         <nav aria-label="Main navigation">{navigation}</nav>
-        {notice && (
-          <div className="sidebar-notice mt-auto pt-4 pb-3">
-            <SidebarCollapsed.Provider value={collapsed}>{notice}</SidebarCollapsed.Provider>
+        {railNotice && <div className="sidebar-notice mt-auto pt-4 pb-3">{railNotice}</div>}
+        {railMark && (
+          <div className="sidebar-notice-mark mt-auto flex justify-center pt-4 pb-2">
+            <button
+              type="button"
+              className="relative flex items-center justify-center size-8 rounded-[6px] text-muted-foreground hover:bg-accent hover:text-foreground outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+              aria-label={railMark.label}
+              title={railMark.label}
+              onClick={() => setMediumCollapsed(false)}
+            >
+              <HugeiconsIcon icon={railMark.icon} strokeWidth={2} size={16} aria-hidden />
+              {railMark.dot && (
+                <span
+                  className="sidebar-notice-dot absolute top-1.5 right-1.5 size-1.5 rounded-full bg-foreground"
+                  aria-hidden
+                />
+              )}
+            </button>
           </div>
         )}
         <div
-          className={`sidebar-utilities ${notice ? "" : "mt-auto"} [padding:12px_0_16px] border-t border-t-border text-muted-foreground [&_a:hover]:text-foreground`}
+          className={`sidebar-utilities ${railNotice || railMark ? "" : "mt-auto"} [padding:12px_0_16px] border-t border-t-border text-muted-foreground [&_a:hover]:text-foreground`}
         >
-          <ResourceLinks docsUrl={docsUrl} support={support} />
+          {links(railNotice)}
           {footer}
         </div>
       </aside>
@@ -183,7 +214,7 @@ export function DashboardShell({
           <nav aria-label="Main navigation">{navigation}</nav>
           {notice && <div className="sidebar-notice mt-3">{notice}</div>}
           <div className="sidebar-utilities mt-3 [padding:12px_0_0] border-t border-t-border text-muted-foreground [&_a:hover]:text-foreground">
-            <ResourceLinks docsUrl={docsUrl} support={support} />
+            {links(notice)}
             {footer}
           </div>
         </DialogContent>

@@ -27,7 +27,8 @@ import { NameAccountDialog } from "./pages/name-account-dialog.tsx";
 import { OwnerMigrationBanner } from "./owner-migration.tsx";
 import {
   DesktopUpdateAnnouncement,
-  DesktopUpdateCard,
+  DesktopUpdateBlock,
+  desktopUpdateMark,
   useDesktopUpdate,
 } from "./desktop-update.tsx";
 
@@ -135,7 +136,8 @@ function Dashboard() {
   return (
     <DashboardShell
       docsUrl={publicDocsBaseUrl}
-      notice={Option.isSome(update) && <DesktopUpdateCard update={update.value} />}
+      notice={Option.isSome(update) && <DesktopUpdateBlock update={update.value} />}
+      noticeMark={Option.isSome(update) ? desktopUpdateMark(update.value) : undefined}
       brand={
         <Link
           to="/apps"
