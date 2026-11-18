@@ -171,6 +171,16 @@ private and out of tool output.
 
 Run `bun run format` before committing. `bun run check` runs the format check,
 `oxlint`, and the typecheck; CI-style verification should use it.
+Before every push to a pull request, run `bun run pr:check` (`--description <file>` before the
+pull request is open): it runs some of the cheap gates CI applies, with CI's own code, in about 25
+seconds: `bun run check`, the `select` job's check of this branch's `e2e` block and of each other
+open stack layer's (each on a checkout of its local head, so a spec file it names must exist in its
+own tree, and a `skip` with no open layer above fails), bun.lock, the apps version bump, the host
+protocols and the Release-note lines of the squashed commit. It does not check, and says so at the
+end of every run: a `skip` layer's check that the layer above's CI run was computed on it, `site`
+(the build, links and Worker size budgets), `apps-package`, `tooling`, the native and collector
+jobs, any E2E scenario or release lane, and line coverage. It needs the network (origin, and `gh`
+signed in, with gh-stack for a stack) and fails with a message saying so when it cannot reach them.
 
 `packages/apps/protocols/*.json` are generated records of the app host
 protocols. Never read, grep or edit them; run `bun run apps:protocols` and read
@@ -307,7 +317,9 @@ them; run it before merging. A scenario new to the deployed suite (one main's `e
 does not name) first runs on a deployed stage after merge even when managed local Cloud runs it
 here, so the `select` job fails until the description has a line `Verified on a deployed stage:`
 saying what ran and its result, for example the `bun run e2e:deployed --database planetscale
---test-name '…'` command the failure prints. Write `none` for a change no scenario exercises, such as documentation. Write each name as it appears in
+--test-name '…'` command the failure prints. A scenario is known by its exact title, so renaming one, even
+cosmetically and only in `e2e/test-plan.ts`, makes it new and needs that line; moving a scenario to
+another file under the same title does not. Write `none` for a change no scenario exercises, such as documentation. Write each name as it appears in
 `e2e/tests/`, optionally prefixed with `e2e/tests/`. The `select` job fails when the
 description has no block, a name is not a spec file there, or a named file is one these
 jobs never run: the release, desktop, billing and PGlite suites have their own

@@ -7,6 +7,7 @@
  *   node scripts/releases/release-notes.ts [--version <version>] [--to <commit>] [--output <file>]
  *     [--json <file> [--history <releases>]]
  *   node scripts/releases/release-notes.ts --cloud <file or -> [--to <commit>]
+ *   node scripts/releases/release-notes.ts --check <base> [--title <pull request title>]
  *
  * `--version` defaults to apps/cli/package.json and `--to` to HEAD, so the notes of an earlier
  * release can be written again from main with its version and its `Release` commit. Without
@@ -410,6 +411,59 @@ const port = (message: string) => {
   };
 };
 
+/**
+ * The message GitHub squashes a pull request's commits into, with this repository's settings
+ * (the commit's or the pull request's title, then the commits' messages): one commit keeps its own
+ * message; several get the pull request's title and each commit as `* <subject>` and its body.
+ */
+const squashed = (title: string, commits: ReadonlyArray<{ subject: string; body: string }>) =>
+  commits.length === 1
+    ? `${commits[0]!.subject}\n\n${commits[0]!.body}`
+    : [title, ...commits.map(({ subject, body }) => `* ${subject}\n\n${body}`)].join("\n\n");
+
+/**
+ * `--check <base>`: before pushing, read the branch's commits since `base` as GitHub will squash
+ * them, and fail when a Release-note: line in them would be dropped, with the same reasons the
+ * release's warnings give. It prints the lines that would be listed. `--title` is the pull
+ * request's title, which the squash uses when the branch has several commits.
+ */
+const checkBranch = (base: string, title: string) =>
+  Effect.gen(function* () {
+    const log = yield* gitOk(["log", "--reverse", "--format=%x1e%s%x1f%b", `${base}..HEAD`]);
+    const commits = log
+      .split("\x1e")
+      .slice(1)
+      .map((entry) => {
+        const [subject = "", body = ""] = entry.split("\x1f");
+        return { subject, body: body.trimEnd() };
+      });
+    if (commits.length === 0) return yield* Console.log(`No commits since ${base}.`);
+    const { notes, ignored, refused, hiddenBy } = notesOf(squashed(title, commits));
+    const problems = [
+      ...(hiddenBy === undefined
+        ? []
+        : [
+            `the squashed message holds ${JSON.stringify(hiddenBy)}, which can hide text when GitHub renders it, so none of its Release-note: lines would be counted`,
+          ]),
+      ...ignored.map(
+        ({ line, reason }) => `line ${line} of the squashed message has Release-note: ${reason}`,
+      ),
+      ...refused.map(
+        ({ line, reason }) =>
+          `line ${line} of the squashed message has a Release-note: line that ${reason}`,
+      ),
+    ];
+    for (const note of notes) yield* Console.log(`Release-note accepted: ${note}`);
+    if (problems.length > 0)
+      return yield* new ReleaseNotesFailed({
+        message: [
+          'These Release-note: lines would be left out of the release notes (RELEASING.md, "Release notes"):',
+          ...problems.map((problem) => `- ${problem}`),
+        ].join("\n"),
+      });
+    if (notes.length === 0) yield* Console.log("No Release-note: line in the branch's commits.");
+  });
+
 const parseArguments = (argv: ReadonlyArray<string>) =>
   Effect.gen(function* () {
     const options: Record<string, string> = {};
@@ -417,11 +471,20 @@ const parseArguments = (argv: ReadonlyArray<string>) =>
       const name = argv[index]!;
       const value = argv[index + 1];
       if (
-        !["--version", "--to", "--output", "--json", "--history", "--cloud"].includes(name) ||
+        ![
+          "--version",
+          "--to",
+          "--output",
+          "--json",
+          "--history",
+          "--cloud",
+          "--check",
+          "--title",
+        ].includes(name) ||
         value === undefined
       )
         return yield* new ReleaseNotesFailed({
-          message: `Usage: release-notes.ts [--version <version>] [--to <commit>] [--output <file>] [--json <file> [--history <releases>]], or release-notes.ts --cloud <file or -> [--to <commit>]; got ${argv.join(" ")}`,
+          message: `Usage: release-notes.ts [--version <version>] [--to <commit>] [--output <file>] [--json <file> [--history <releases>]], or release-notes.ts --cloud <file or -> [--to <commit>], or release-notes.ts --check <base> [--title <pull request title>]; got ${argv.join(" ")}`,
         });
       options[name.slice(2)] = value;
     }
@@ -433,6 +496,8 @@ NodeRuntime.runMain(
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const options = yield* parseArguments(process.argv.slice(2));
+    if (options.check !== undefined)
+      return yield* checkBranch(options.check, options.title ?? "Pull request title");
     const version = yield* Schema.decodeUnknownEffect(ReleaseVersion)(
       options.version ?? release.version,
     ).pipe(

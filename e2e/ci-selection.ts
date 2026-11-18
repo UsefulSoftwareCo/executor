@@ -61,6 +61,7 @@ import { collectorChanged, collectorScenarios } from "./collector-inputs.ts";
 import { lanesFor, releaseSources } from "./release-lanes.ts";
 import { packagedEngineDependency } from "./packaged-engine.ts";
 import { savePathFiles } from "./save-path.ts";
+import { blocksIn, parseRequested, type Requested } from "./ci-block.ts";
 import { fileGuards } from "./file-guards.ts";
 import { selectionKey, workerGrowthKey } from "./ci-key.ts";
 import { mcpSearchChanged, mcpSearchTitles } from "./mcp-search-guard.ts";
@@ -993,10 +994,6 @@ const keyed = (lines: string, description: string | undefined) =>
     "",
   ].join("\n");
 
-/** The trimmed text of each `e2e` block in a description. */
-const blocksIn = (body: string) =>
-  [...body.matchAll(/^```e2e[ \t]*\r?\n([\s\S]*?)^```/gm)].map((match) => match[1]!.trim());
-
 /** A wait as written in a sentence, such as "3 minutes". */
 const spoken = (duration: Duration.Duration) => {
   const seconds = Duration.toSeconds(duration);
@@ -1089,32 +1086,6 @@ const readPullRequest = (input: {
       yield* Effect.sleep(input.poll);
     }
   });
-
-/** What the description's e2e block asks for, parsed once for both the wait and the selection. */
-type Requested =
-  | { readonly _tag: "Missing" }
-  | { readonly _tag: "Several" }
-  | { readonly _tag: "AllWithoutReason" }
-  | { readonly _tag: "All"; readonly reason: string }
-  | { readonly _tag: "Skip" }
-  | { readonly _tag: "Named"; readonly tokens: ReadonlyArray<string> };
-
-/** The full suite with its reason, `skip`, or the names written in the single `e2e` block. */
-const parseRequested = (body: string): Requested => {
-  const blocks = blocksIn(body);
-  if (blocks.length === 0) return { _tag: "Missing" };
-  if (blocks.length > 1) return { _tag: "Several" };
-  const text = blocks[0]!;
-  const all = /^all\b:?\s*([\s\S]*)$/.exec(text);
-  if (all !== null) {
-    const reason = all[1]!.replace(/\s+/g, " ").trim();
-    return reason === "" ? { _tag: "AllWithoutReason" } : { _tag: "All", reason };
-  }
-  const tokens = text.split(/[\s,]+/).filter((token) => token.length > 0);
-  if (tokens.length === 1 && tokens[0] === "none") return { _tag: "Named", tokens: [] };
-  if (tokens.length === 1 && tokens[0] === "skip") return { _tag: "Skip" };
-  return { _tag: "Named", tokens };
-};
 
 /**
  * The selection a parsed block makes, or why it makes none. `retry` says how long the job waited
@@ -1233,8 +1204,10 @@ NodeRuntime.runMain(
     // reads them for the combined change.
     if (block === "skip") {
       // Before the pull request and the layer above are open, there is nothing a skip can be
-      // checked against: say so, and check the layer above, which runs for both.
-      if (above.length === 0 && local) {
+      // checked against: say so, and check the layer above, which runs for both. A local check of
+      // a pull request that is open (e2e/check-description.ts --pr or --pull) reads the layers
+      // above as CI does, and fails as CI fails without one.
+      if (above.length === 0 && local && pullRequest === "0") {
         yield* Console.log(
           `The e2e block says skip (${blockLine(blocksIn(read!.body)[0]!, "skip")}): this layer runs nothing, and the layer above, an open pull request whose base is ${headRef}, checks the combined change. A skip cannot be checked before both pull requests exist. Check the layer above's description now; once both are open, check this one with --pr.`,
         );
@@ -1242,7 +1215,9 @@ NodeRuntime.runMain(
       }
       if (above.length === 0)
         return yield* new SelectionFailed({
-          message: `The e2e block says skip (${blockLine(blocksIn(read!.body)[0]!, "skip")}), which only a lower layer of a stack may say: this run waited ${spoken(wait)} for the layer above, an open pull request whose base is this branch, ${headRef}, and there is none. Open the layer above with base ${headRef}, then run this workflow again: gh run rerun ${runId}. If this pull request is not a lower layer of a stack, replace skip with the spec files that exercise the change.`,
+          message: local
+            ? `The e2e block says skip (${blockLine(blocksIn(read!.body)[0]!, "skip")}), which only a lower layer of a stack may say: pull request ${pullRequest} is open, and no open pull request has this branch, ${headRef}, as its base, so CI's select job would fail it. Open the layer above with base ${headRef}, then check again. If this pull request is not a lower layer of a stack, replace skip with the spec files that exercise the change.`
+            : `The e2e block says skip (${blockLine(blocksIn(read!.body)[0]!, "skip")}), which only a lower layer of a stack may say: this run waited ${spoken(wait)} for the layer above, an open pull request whose base is this branch, ${headRef}, and there is none. Open the layer above with base ${headRef}, then run this workflow again: gh run rerun ${runId}. If this pull request is not a lower layer of a stack, replace skip with the spec files that exercise the change.`,
         });
       const report = [
         "## E2E selection",
@@ -1336,8 +1311,15 @@ NodeRuntime.runMain(
     // after merge, where no job here can run it, even when managed local Cloud runs it here: one
     // that needed files only managed local Cloud has reddened Cloud tests on main on three runs.
     // It merges once the description says how it was verified on a deployed stage.
-    const changedDeployed = [...deployedRuns].filter((title) =>
-      stackSpecs.includes(fileOf.get(title)!),
+    // A title lives in e2e/test-plan.ts, so renaming a scenario there alone makes it new to the
+    // deployed suite as surely as renaming it in its spec file: when the plan changed since main
+    // (or the comparison cannot say), every deployed scenario is checked against main's plan.
+    const planChanged =
+      compared === undefined ||
+      compared.length >= compareFileLimit ||
+      compared.includes("e2e/test-plan.ts");
+    const changedDeployed = [...deployedRuns].filter(
+      (title) => planChanged || stackSpecs.includes(fileOf.get(title)!),
     );
     if (read !== undefined && defaultBranch !== "" && changedDeployed.length > 0) {
       const mainPlan = yield* gh([

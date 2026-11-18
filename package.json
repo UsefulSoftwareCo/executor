@@ -117,6 +117,7 @@
     "e2e:ci-supersede": "vitest run --config e2e/ci-supersede.config.ts",
     "e2e:ci-repeat": "vitest run --config e2e/ci-repeat.config.ts",
     "e2e:check-description": "node e2e/check-description.ts",
+    "pr:check": "node scripts/pr-check.ts",
     "e2e:workflow-caches": "vitest run --config e2e/workflow-caches.config.ts",
     "e2e:telemetry-event-lifetime": "vitest run --config e2e/telemetry-event-lifetime.config.ts",
     "e2e:process-identity": "vitest run --config e2e/process-identity.config.ts",

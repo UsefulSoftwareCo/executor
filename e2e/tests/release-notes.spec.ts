@@ -538,6 +538,55 @@ layer(NodeServices.layer, { excludeTestServices: true })("Release notes", (it) =
       }),
   );
 
+  it.effect(
+    "--check reads a branch's commits as GitHub squashes them and fails on a note the release would drop",
+    () =>
+      Effect.gen(function* () {
+        const repos = yield* repositories(merges);
+        const base = yield* git(repos.main, "rev-parse", "HEAD");
+        const commit = (...message: ReadonlyArray<string>) =>
+          git(
+            repos.main,
+            "commit",
+            "--quiet",
+            "--allow-empty",
+            ...message.flatMap((m) => ["-m", m]),
+          );
+        const check = (title?: string) =>
+          notes(repos, ["--check", base, ...(title === undefined ? [] : ["--title", title])]);
+
+        expect((yield* check()).stdout).toContain("No commits since");
+
+        // One commit keeps its own message, so its note is listed.
+        yield* commit("Add the setting", "Release-note: The settings page has a dark theme.");
+        const one = yield* check();
+        expect(one.exitCode, one.stdout).toBe(0);
+        expect(one.stdout).toContain("Release-note accepted: The settings page has a dark theme.");
+
+        // Several are squashed under the pull request's title, which a bracket in it hides.
+        yield* commit("Fix the setting", "Release-note: none");
+        expect((yield* check("Add the setting")).exitCode).toBe(0);
+        const hiddenByTitle = yield* check("Add the [setting]");
+        expect(hiddenByTitle.exitCode).not.toBe(0);
+        expect(hiddenByTitle.stdout).toContain('the squashed message holds "["');
+
+        // An indented line is not counted, and a note that is not plain prose is refused.
+        yield* commit(
+          "Indent it",
+          "  Release-note: Indented.",
+          "Release-note: See https://example.com now.",
+        );
+        const dropped = yield* check("Add the setting");
+        expect(dropped.exitCode).not.toBe(0);
+        expect(dropped.stdout).toMatch(
+          /line \d+ of the squashed message has Release-note: indented/,
+        );
+        expect(dropped.stdout).toMatch(
+          /line \d+ of the squashed message has a Release-note: line that/,
+        );
+      }),
+  );
+
   it.effect("a release with only automated commits says nothing changed", () =>
     Effect.gen(function* () {
       const repos = yield* repositories(merges);

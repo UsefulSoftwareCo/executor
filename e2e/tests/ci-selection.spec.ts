@@ -1250,6 +1250,64 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
       }),
   );
 
+  it.effect(
+    "a deployed scenario renamed only in e2e/test-plan.ts is new to the deployed suite, as one renamed in its spec is",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const names = yield* fs.readDirectory("patches");
+        const hashed = (yield* processes.string(
+          ChildProcess.make("git", [
+            "hash-object",
+            ...guardedFiles,
+            ...names.map((name) => `patches/${name}`),
+          ]),
+        ))
+          .trim()
+          .split("\n");
+        const plan = yield* fs.readFileString("e2e/test-plan.ts");
+        const manifest = yield* fs.readFileString("package.json");
+        const title = "Cloud product links follow the deployment origin";
+        const main = (mainPlan: string) => ({
+          "package.json": manifest,
+          patches: names
+            .map((name, index) => `${hashed[guardedFiles.length + index]} ${name}`)
+            .join("\n"),
+          ...guardedListings(hashed.slice(0, guardedFiles.length)),
+          "e2e/test-plan.ts": mainPlan,
+        });
+        // Main had the scenario under its old title; this pull request renamed it in the plan
+        // alone, so its spec file did not change.
+        const without = plan.replace(
+          JSON.stringify(title),
+          JSON.stringify("Cloud product links followed an earlier origin"),
+        );
+        const changed = ["e2e/test-plan.ts"];
+        const [refused, known, elsewhere] = yield* Effect.all(
+          [
+            select({ body: block("none"), changed, compared: changed, main: main(without) }),
+            select({ body: block("none"), changed, compared: changed, main: main(plan) }),
+            // A pull request that does not touch the plan is not read against it.
+            select({
+              body: block("none"),
+              changed: ["notes/ci.md"],
+              compared: ["notes/ci.md"],
+              main: main(without),
+            }),
+          ],
+          { concurrency: "unbounded" },
+        );
+        expect(refused.exitCode).toBe(1);
+        expect(refused.log).toContain("These scenarios are new to the deployed suite.");
+        expect(refused.log).toContain(`- deployment-links.spec.ts: ${title}`);
+        expect(known.exitCode, known.log).toBe(0);
+        expect(known.log).not.toContain("new to the deployed suite");
+        expect(elsewhere.exitCode, elsewhere.log).toBe(0);
+      }),
+    heavyCaseTimeout,
+  );
+
   it.effect("a stack's top layer refuses a spec file a lower layer added that no job runs", () =>
     Effect.gen(function* () {
       const root = yield* fixture({ "e2e/tests/orphan.spec.ts": "export {};\n" });
@@ -2130,6 +2188,241 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
   );
 
   it.effect(
+    "pr:check fails what CI's select fails, on this layer and the stack's others, and names what it does not check",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const scratch = yield* fs.makeTempDirectoryScoped({ prefix: "executor-pr-check-" });
+        const run = (
+          command: string,
+          args: ReadonlyArray<string>,
+          env: Record<string, string> = {},
+          cwd?: string,
+        ) =>
+          Effect.gen(function* () {
+            const child = yield* processes.spawn(
+              ChildProcess.make(command, args, {
+                env,
+                extendEnv: true,
+                ...(cwd === undefined ? {} : { cwd }),
+              }),
+            );
+            const [log, exitCode] = yield* Effect.all(
+              [child.all.pipe(Stream.decodeText(), Stream.mkString), child.exitCode],
+              { concurrency: "unbounded" },
+            );
+            return { log, exitCode: Number(exitCode) };
+          }).pipe(Effect.scoped);
+        const head = (yield* run("git", ["rev-parse", "HEAD"])).log.trim();
+        const originUrl = (yield* run("git", ["remote", "get-url", "origin"])).log.trim();
+        // origin: a bare repository whose main is this commit, borrowing this checkout's objects.
+        const origin = path.join(scratch, "origin.git");
+        yield* run("git", ["init", "--quiet", "--bare", origin]);
+        const objects = path.resolve(
+          (yield* run("git", ["rev-parse", "--git-common-dir"])).log.trim(),
+          "objects",
+        );
+        yield* fs.writeFileString(path.join(origin, "objects/info/alternates"), `${objects}\n`);
+        yield* run("git", ["--git-dir", origin, "update-ref", "refs/heads/main", head]);
+        // A branch of its own in a worktree under this checkout's .local, which finds its packages.
+        const branch = `pr-check-spec-${path.basename(scratch).replace(/[^\w-]/g, "")}`;
+        const worktree = path.resolve(".local", branch);
+        const added = yield* run("git", [
+          "worktree",
+          "add",
+          "--quiet",
+          "-b",
+          branch,
+          worktree,
+          head,
+        ]);
+        expect(added.exitCode, added.log).toBe(0);
+        // pr:check checks other layers out in worktrees of its own under the worktree's .local;
+        // removing it leaves their records, which prune drops.
+        yield* Effect.addFinalizer(() =>
+          Effect.all(
+            [
+              run("git", ["worktree", "remove", "--force", worktree]),
+              run("git", ["worktree", "prune"]),
+              run("git", ["branch", "-D", branch]),
+            ],
+            { concurrency: 1 },
+          ).pipe(Effect.ignore),
+        );
+        // gh: this branch's pull request #7, the open layers above a branch, the stack, and the
+        // descriptions of other layers, from files.
+        const bin = path.join(scratch, "bin");
+        yield* fs.makeDirectory(bin);
+        yield* fs.writeFileString(
+          path.join(bin, "gh"),
+          [
+            "#!/bin/sh",
+            'dir=$(dirname "$0")',
+            'case "$*" in',
+            '  "pr view --json"*) [ -f "$dir/nopr" ] && { echo "no pull requests found for branch" >&2; exit 1; }; cat "$dir/pr.json" ;;',
+            '  "pr view "*) cat "$dir/body-$3" ;;',
+            '  "pr list"*) for ref in $(cat "$dir/above-refs" 2>/dev/null); do case "$*" in *"--base $ref "*) cat "$dir/above-$ref" ;; esac; done ;;',
+            '  "stack view --json") code=$(cat "$dir/stack-exit" 2>/dev/null || echo 0); [ "$code" = 0 ] && cat "$dir/stack.json" || echo "HTTP 502" >&2; exit $code ;;',
+            '  *) echo "stub gh: unsupported: $*" >&2; exit 3 ;;',
+            "esac",
+            "",
+          ].join("\n"),
+        );
+        yield* fs.chmod(path.join(bin, "gh"), 0o755);
+        const prCheck = (input: {
+          readonly body: string;
+          readonly above?: Readonly<Record<string, string>>;
+          readonly stack?: ReadonlyArray<{
+            readonly name: string;
+            readonly number: number;
+            readonly body?: string;
+          }>;
+          readonly stackExit?: number;
+          readonly origin?: string;
+        }) =>
+          Effect.gen(function* () {
+            yield* fs.writeFileString(
+              path.join(bin, "pr.json"),
+              JSON.stringify({
+                number: 7,
+                title: "A change",
+                body: input.body,
+                baseRefName: "main",
+              }),
+            );
+            const above = input.above ?? {};
+            yield* fs.writeFileString(path.join(bin, "above-refs"), Object.keys(above).join(" "));
+            for (const [ref, numbers] of Object.entries(above))
+              yield* fs.writeFileString(path.join(bin, `above-${ref}`), numbers);
+            for (const layer of input.stack ?? [])
+              if (layer.body !== undefined)
+                yield* fs.writeFileString(path.join(bin, `body-${layer.number}`), layer.body);
+            yield* fs.writeFileString(
+              path.join(bin, "stack-exit"),
+              String(input.stackExit ?? (input.stack === undefined ? 2 : 0)),
+            );
+            yield* fs.writeFileString(
+              path.join(bin, "stack.json"),
+              JSON.stringify({
+                trunk: "main",
+                branches: (input.stack ?? []).map((layer) => ({
+                  name: layer.name,
+                  head,
+                  pr: { number: layer.number, state: "OPEN" },
+                })),
+              }),
+            );
+            return yield* run(
+              "node",
+              ["scripts/pr-check.ts", "--only", "description"],
+              {
+                PATH: `${bin}:${process.env.PATH ?? ""}`,
+                // origin's URL, rewritten to the stand-in (a second remote.origin.url would come after
+                // the checkout's own, which fetch uses first).
+                GIT_CONFIG_COUNT: "1",
+                GIT_CONFIG_KEY_0: `url.${input.origin ?? origin}.insteadOf`,
+                GIT_CONFIG_VALUE_0: originUrl,
+                GITHUB_REPOSITORY: "owner/repository",
+                GITHUB_ACTIONS: "",
+              },
+              worktree,
+            );
+          });
+
+        // A standalone pull request marked skip: CI's select fails it, and so does pr:check.
+        const lone = yield* prCheck({ body: block("skip") });
+        expect(lone.exitCode, lone.log).toBe(1);
+        expect(lone.log).toContain("FAIL  description");
+        expect(lone.log).toContain(
+          "pull request 7 is open, and no open pull request has this branch",
+        );
+        // With a layer above, the skip stands.
+        const lower = yield* prCheck({ body: block("skip"), above: { [branch]: "9" } });
+        expect(lower.exitCode, lower.log).toBe(0);
+        // Every run, passed or not, names what it does not check.
+        for (const result of [lone, lower]) {
+          expect(result.log).toContain("Not checked here; CI runs these after the push:");
+          expect(result.log).toContain("- the skip check of a layer whose block says skip");
+          expect(result.log).toContain("- static (left out by --only)");
+        }
+        expect(lower.log).toContain(
+          "All 1 checks here passed; the gates above are not checked here.",
+        );
+
+        // Another layer naming a spec file that does not exist fails, as its own select would.
+        const stacked = yield* prCheck({
+          body: block("none"),
+          stack: [
+            { name: "lower-layer", number: 5, body: block("no-such-file.spec.ts") },
+            { name: branch, number: 7 },
+          ],
+        });
+        expect(stacked.exitCode, stacked.log).toBe(1);
+        expect(stacked.log).toContain("description: #5 (lower-layer) at");
+        expect(stacked.log).toContain("--- #5 (lower-layer) FAILED");
+        expect(stacked.log).toContain("no-such-file.spec.ts");
+        const sound = yield* prCheck({
+          body: block("none"),
+          stack: [
+            { name: "lower-layer", number: 5, body: block("none") },
+            { name: branch, number: 7 },
+          ],
+        });
+        expect(sound.exitCode, sound.log).toBe(0);
+        expect(sound.log).toContain("description: #5 (lower-layer) at");
+
+        // The review's case, a real three-layer stack's shape: a code layer and a middle layer
+        // that both say skip, under this branch's top layer. Each lower layer's skip stands on the
+        // open pull request based on its own branch, which a detached checkout of it does not name.
+        const threeLayers = yield* prCheck({
+          body: block("none"),
+          above: { "stack-code": "6", "stack-middle": "7" },
+          stack: [
+            { name: "stack-code", number: 5, body: block("skip") },
+            { name: "stack-middle", number: 6, body: block("skip") },
+            { name: branch, number: 7 },
+          ],
+        });
+        yield* fs.writeFileString("/tmp/e-three-run.log", threeLayers.log);
+        expect(threeLayers.exitCode, threeLayers.log).toBe(0);
+        expect(threeLayers.log).toContain("description: #5 (stack-code) at");
+        expect(threeLayers.log).toContain("description: #6 (stack-middle) at");
+        expect(threeLayers.log).not.toContain("FAILED");
+        // With nothing based on the middle layer's branch, its skip fails, as its select would.
+        const brokenMiddle = yield* prCheck({
+          body: block("none"),
+          above: { "stack-code": "6" },
+          stack: [
+            { name: "stack-code", number: 5, body: block("skip") },
+            { name: "stack-middle", number: 6, body: block("skip") },
+            { name: branch, number: 7 },
+          ],
+        });
+        expect(brokenMiddle.exitCode, brokenMiddle.log).toBe(1);
+        expect(brokenMiddle.log).toContain("--- #6 (stack-middle) FAILED");
+        expect(brokenMiddle.log).not.toContain("--- #5 (stack-code) FAILED");
+
+        // A stack that cannot be read fails the step instead of reading as no layers.
+        const unread = yield* prCheck({ body: block("none"), stack: [], stackExit: 1 });
+        expect(unread.exitCode, unread.log).toBe(1);
+        expect(unread.log).toContain(
+          "Could not read this branch's stack with gh stack view (exit 1)",
+        );
+
+        // Without origin, it says it needs the network.
+        const offline = yield* prCheck({
+          body: block("none"),
+          origin: path.join(scratch, "nowhere.git"),
+        });
+        expect(offline.exitCode, offline.log).toBe(2);
+        expect(offline.log).toContain("It needs the network, and cannot check offline");
+      }).pipe(Effect.scoped),
+    heavyCaseTimeout,
+  );
+
+  it.effect(
     "the local check's mode cannot run in a workflow: it fails there, and no workflow sets it",
     () =>
       Effect.gen(function* () {
@@ -2137,7 +2430,10 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         const [inActions, local, ci] = yield* Effect.all(
           [
             select({ body: block("skip"), env: { E2E_LOCAL_CHECK: "1", GITHUB_ACTIONS: "true" } }),
-            select({ body: block("skip"), env: { E2E_LOCAL_CHECK: "1", GITHUB_ACTIONS: "" } }),
+            select({
+              body: block("skip"),
+              env: { E2E_LOCAL_CHECK: "1", GITHUB_ACTIONS: "", E2E_PULL_REQUEST: "0" },
+            }),
             select({ body: block("skip"), env: { GITHUB_ACTIONS: "true" } }),
           ],
           { concurrency: "unbounded" },
@@ -2156,6 +2452,18 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         // A workflow's lone skip still fails after its wait.
         expect(ci.exitCode).toBe(1);
         expect(ci.log).toContain("which only a lower layer of a stack may say");
+        // A local check of a pull request that is open fails a lone skip as CI does, without CI's
+        // advice.
+        const open = yield* select({
+          body: block("skip"),
+          env: { E2E_LOCAL_CHECK: "1", GITHUB_ACTIONS: "", E2E_PULL_REQUEST: "7" },
+        });
+        expect(open.exitCode).toBe(1);
+        expect(open.log).toContain(
+          "which only a lower layer of a stack may say: pull request 7 is open, and no open pull request has this branch, layer, as its base, so CI's select job would fail it.",
+        );
+        expect(open.log).not.toContain("gh run rerun");
+        expect(open.outputs).toEqual({});
         // Nothing under .github/ sets it.
         const mentions: Array<string> = [];
         const walk = (directory: string): Effect.Effect<void, unknown, FileSystem.FileSystem> =>
