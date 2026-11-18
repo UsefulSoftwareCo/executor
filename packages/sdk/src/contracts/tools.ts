@@ -972,6 +972,7 @@ const hostRuntimeFailures: ReadonlySet<RuntimeFailure> = new Set([
   "build",
   "unsupported",
   "managed",
+  "unloading",
 ]);
 const loadingInstructions =
   "This happened while Executor loaded the app's definition, before any tool ran. Do not change the app's accounts to work around it.";
@@ -1064,6 +1065,15 @@ const workerPresentation = (failure: RuntimeFailure | undefined) => {
     case "unsupported":
     case "managed":
       return { description, recovery: rebuild, retryable: false };
+    case "unloading":
+      return {
+        description: `${runtimeFailures.unloading}, so nothing was sent to the app.`,
+        recovery: retryOnce(
+          "report the failure with its reference.",
+          `Executor waited for the app's previous Worker to unload before loading it again, and it did not finish, so nothing was sent to the app. ${reportReference}`,
+        ),
+        retryable: true,
+      };
     default:
       return {
         description,

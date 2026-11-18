@@ -544,6 +544,87 @@ export const scenarios = plan({
       cloud: na("Cloudflare unloads Cloud's app Workers itself."),
     },
   },
+  appDataBurstMemory: {
+    file: "app-data-burst-memory.spec.ts",
+    title:
+      "a burst of apps with a database past the app Worker limit leaves the app runtime memory bounded",
+    serverEnvironment: { EXECUTOR_APP_WORKERS: "4" },
+    targets: {
+      local: scheduled,
+      "self-host": na("Local runs the same apps runtime and data supervisor."),
+      cloud: na("Cloudflare unloads Cloud's app Workers itself."),
+    },
+  },
+  appDataResetResend: {
+    file: "app-data-reset-resend.spec.ts",
+    title:
+      "a call and a change subscription that meet their data supervisor resetting are sent once more, the call runs once, and listing the app's tools meanwhile succeeds",
+    serverEnvironment: {
+      EXECUTOR_APP_WORKERS: "1",
+      EXECUTOR_TEST_SUPERVISOR_RESET_HOLD_MS: "10000",
+    },
+    targets: {
+      local: scheduled,
+      "self-host": na("Local runs the same apps runtime and data supervisor."),
+      cloud: na("Cloudflare unloads Cloud's app Workers itself."),
+    },
+  },
+  appDataResetKeepsPage: {
+    file: "app-data-reset-idle.spec.ts",
+    title:
+      "a data supervisor with a page connected does not reset, and the page keeps receiving changes",
+    serverEnvironment: {
+      EXECUTOR_APP_WORKERS: "1",
+      EXECUTOR_TEST_SUPERVISOR_RESET_DELAY_MS: "10000",
+    },
+    targets: {
+      local: scheduled,
+      "self-host": na("Local runs the same apps runtime and data supervisor."),
+      cloud: na("Cloudflare unloads Cloud's app Workers itself."),
+    },
+  },
+  appDataResetKeepsCall: {
+    file: "app-data-reset-idle.spec.ts",
+    title: "a data supervisor with a call in its facet does not reset, and the call runs once",
+    serverEnvironment: {
+      EXECUTOR_APP_WORKERS: "1",
+      EXECUTOR_TEST_SUPERVISOR_RESET_DELAY_MS: "10000",
+    },
+    targets: {
+      local: scheduled,
+      "self-host": na("Local runs the same apps runtime and data supervisor."),
+      cloud: na("Cloudflare unloads Cloud's app Workers itself."),
+    },
+  },
+  appDataResetKeepsLateCall: {
+    file: "app-data-reset-idle.spec.ts",
+    title:
+      "a data supervisor that received a call after its facet was unloaded does not reset, and the call runs once",
+    serverEnvironment: {
+      EXECUTOR_APP_WORKERS: "1",
+      EXECUTOR_TEST_SUPERVISOR_RESET_DELAY_MS: "10000",
+      EXECUTOR_TEST_SUPERVISOR_REPLY_DELAY_MS: "15000",
+    },
+    targets: {
+      local: scheduled,
+      "self-host": na("Local runs the same apps runtime and data supervisor."),
+      cloud: na("Cloudflare unloads Cloud's app Workers itself."),
+    },
+  },
+  appDataResetSelections: {
+    file: "app-data-reset-selections.spec.ts",
+    title:
+      "a call that arrives after one account selection's unload is not cut off when another selection's unload follows",
+    serverEnvironment: {
+      EXECUTOR_APP_WORKERS: "2",
+      EXECUTOR_TEST_SUPERVISOR_RESET_DELAY_MS: "25000",
+    },
+    targets: {
+      local: scheduled,
+      "self-host": na("Local runs the same apps runtime and data supervisor."),
+      cloud: na("Cloudflare unloads Cloud's app Workers itself."),
+    },
+  },
   keptListingsAfterRestart: {
     fixtures: "actors",
     file: "kept-listings.spec.ts",

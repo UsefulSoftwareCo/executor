@@ -840,6 +840,7 @@ export const makeAppRunner = (host: AppRunnerHost) => {
         ...value,
         executorRevision: result.revision,
         ...(result.cacheChanged === true ? { cacheChanged: true } : {}),
+        ...(result.resent === true ? { resent: true } : {}),
         // The supervisor's own part, on its clock, when it reports one.
         ...(result.timing === undefined ? {} : { supervisor: result.timing }),
       };
@@ -925,6 +926,13 @@ export const makeAppRunner = (host: AppRunnerHost) => {
           return yield* Effect.scoped(
             Effect.gen(function* () {
               // The facet Worker counts against the same limit as app Workers while it is loaded.
+              // The hold is per account selection and lasts until the call's reply is back, past
+              // the supervisor's output gate, so the limit never unloads that selection's facet
+              // while its reply could still fail with the reset's reason after its write
+              // committed. A call of another selection of the same app can arrive during that
+              // unload; the supervisor holds its reset off for any request received after the
+              // unload began. Together they let the host resend a call that met a reset and know
+              // it runs once.
               const unloadFacet = host.unloadFacet;
               if (host.residency !== undefined && unloadFacet !== undefined) {
                 const hold = host.residency.hold(

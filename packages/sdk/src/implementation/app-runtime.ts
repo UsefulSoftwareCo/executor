@@ -233,8 +233,12 @@ export const appRuntime = (host: AppRuntimeHost) =>
               dispatch: Schema.optional(DispatchTiming),
               runner: Schema.optional(IsolateTiming),
               supervisor: Schema.optional(IsolateTiming),
+              resent: Schema.optional(Schema.Literal(true)),
             }),
           )(body).pipe(Effect.result);
+          // The call met its data supervisor resetting before it started and was sent again.
+          if (Result.isSuccess(collected) && collected.success.resent === true)
+            yield* Effect.annotateCurrentSpan("executor.runtime.resent", true);
           // Each isolate reports its own part on its own clock; see tool-call-overhead.ts.
           if (
             Result.isSuccess(collected) &&

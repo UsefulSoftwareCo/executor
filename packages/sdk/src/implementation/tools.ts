@@ -823,7 +823,15 @@ const toolCallFailure =
             "Executor could not connect to the app runtime, so it did not send this tool call.",
           notSent: true,
         })
-      : runtimeFailure(identity, state, renewal)(failure);
+      : // The host itself gave up waiting for the app's previous Worker to unload: nothing ran.
+        failure._tag === "RuntimeProtocolFailed" && failure.reason === "unloading"
+        ? new ToolCallFailed({
+            ...identity,
+            reason:
+              "The app's previous Worker did not finish unloading, so Executor did not send this tool call.",
+            notSent: true,
+          })
+        : runtimeFailure(identity, state, renewal)(failure);
 /**
  * Whether a failure says that nothing of its exchange left the host. It holds for the call only
  * when that exchange was the only one in the call to reach the app's code (`entries`): an earlier

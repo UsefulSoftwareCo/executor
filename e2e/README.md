@@ -1093,6 +1093,27 @@ The release executable runs no preload, so the local CLI owns the runner's two p
 executable loads from disk, such as the OS credential store binding, start it from a shadow
 copy of its install (`support/stand-in-package.ts`).
 
+Test-only hooks in the product. Each is read only when `EXECUTOR_ENVIRONMENT=e2e` (Cloud: only
+with emulated providers, on loopback Cloud and `test-e2e-` stages); any other run ignores it:
+
+- `EXECUTOR_TEST_CLOCK_OFFSET_MS`, `EXECUTOR_TEST_CLOCK_CONTROL` and `EXECUTOR_TEST_STOP_FD`:
+  the local CLI's clock and stop requests (`apps/local/server/src/implementation/e2e-process.ts`).
+- `EXECUTOR_TEST_OAUTH_CLIENT_DEFINITIONS`: synthetic first-party OAuth clients
+  (`apps/hosted/server/src/implementation/first-party-oauth.ts`; self-host allows them only in e2e
+  at `apps/hosted/self-host/src/implementation/executor-services.ts`). Set outside e2e, it stops
+  the server instead of being ignored.
+- `EXECUTOR_TEST_COMPILER_UNAVAILABLE`: calls to the compiler fail as a lost connection does,
+  `all` or only `retained` builds (`packages/sdk/src/implementation/workerd-client.ts`).
+- `EXECUTOR_TEST_CATALOG_COPY_REBUILD_PACE`: paces the catalog copy rebuild at each start, as
+  Cloud paces each tick (`packages/app-management/src/implementation/host-data-steps.ts`).
+- `EXECUTOR_TEST_WORKFLOW_ENGINE_FAULTS`: workflow engine call faults
+  (`packages/sdk/src/contracts/engine-faults.ts`).
+- `EXECUTOR_TEST_SUPERVISOR_RESET_DELAY_MS`, `EXECUTOR_TEST_SUPERVISOR_RESET_HOLD_MS` and
+  `EXECUTOR_TEST_SUPERVISOR_REPLY_DELAY_MS`: delays that make a data supervisor's reset meet other
+  work on purpose. The first waits before the reset's checks with its input open, the second holds
+  its input after them, and the third holds a call's reply after the call has left the facet
+  (`packages/sdk/src/implementation/workerd-apps.ts`; the `app-data-reset-*` scenarios).
+
 The first-launch key scenarios also run against an installed entry:
 
 ```sh
