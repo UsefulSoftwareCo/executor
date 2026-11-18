@@ -5020,6 +5020,17 @@ export const scenarios = plan({
       local: na("The local dialog has its own scenario."),
     },
   },
+  connectFormHostList: {
+    fixtures: "actors",
+    file: "connect-form-layout.spec.ts",
+    title:
+      "The connect form names one or two credential hosts, says how many hosts share each domain for a longer list while naming every host on another domain, every wildcard and every host with a port, lists every declared host in order behind a keyboard-operable Show all button, and stays inside its dialog at desktop and phone widths",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Self-host renders the same hosted connect dialog and shared form."),
+      local: na("The local dialog renders the same shared form; its layout has its own scenario."),
+    },
+  },
   localConnectFormLongLabel: {
     file: "connect-form-layout.spec.ts",
     title:

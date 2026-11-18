@@ -2,7 +2,8 @@
  * The connect form stays inside its dialog whatever an app declares: a sign-in method label as
  * long as a paragraph, an unbroken field title and a long list of hosts wrap or truncate instead of
  * widening the form, and the submit button says "Validate" rather than repeating the label. While
- * the check runs, the button keeps an accessible name and the form announces the check once.
+ * the check runs, the button keeps an accessible name and the form announces the check once. The
+ * line saying where hidden values go stays short and true for any list of hosts.
  */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
@@ -58,6 +59,90 @@ const service = defineProvider({
 export default defineApp({ user: { accounts: { service } } }, async () => ({ tools: router({}) }));
 `;
 
+/** A provider with one secret field that may be sent only to `hosts`. */
+const hostSource = (name: string, hosts: readonly string[]) => `
+import { defineApp, defineProvider, object, router, secrets, string } from "apps";
+const service = defineProvider({
+  name: ${JSON.stringify(name)},
+  hosts: ${JSON.stringify(hosts)},
+  auth: { key: secrets({ label: "API key", fields: object({ token: string({ minLength: 1 }) }) }) },
+});
+export default defineApp({ user: { accounts: { service } } }, async () => ({ tools: router({}) }));
+`;
+
+const placeholder = "The app and your agent get a placeholder.";
+/** Ten exact hosts on one registrable domain. */
+const tenOnExample = products.slice(0, 10).map((product) => `${product}.example.com`);
+
+/**
+ * Host lists as deployed (Executor sorts them), and what the form's line says for each. One or two
+ * hosts are named. A longer list counts the exact hosts that share a registrable domain and names
+ * every other entry: hosts on other domains, each `github.io` site (a public suffix, so each is its
+ * own domain), wildcards with what they match, and hosts with a port.
+ */
+const hostCases = [
+  {
+    label: "one host",
+    hosts: ["api.example.com"],
+    line: `Hidden values are only sent to api.example.com. ${placeholder}`,
+  },
+  {
+    label: "two hosts",
+    hosts: ["api.example.com", "uploads.example.com"],
+    line: `Hidden values are only sent to api.example.com and uploads.example.com. ${placeholder}`,
+  },
+  {
+    label: "twelve hosts on one domain",
+    hosts: products.map((product) => `${product}.example.com`).sort(),
+    line: `Hidden values are only sent to 12 hosts on example.com. ${placeholder} Show all`,
+  },
+  {
+    label: "hosts on several domains",
+    hosts: [
+      ...tenOnExample,
+      "*.example.net",
+      "alpha.github.io",
+      "api.example.org",
+      "beta.github.io",
+      "files.example.com:8443",
+    ].sort(),
+    line: `Hidden values are only sent to 10 hosts on example.com, *.example.net (any host directly under example.net), alpha.github.io, api.example.org, beta.github.io and files.example.com:8443. ${placeholder} Show all`,
+  },
+  {
+    label: "a wildcard",
+    hosts: ["*.example.com"],
+    line: `Hidden values are only sent to *.example.com (any host directly under example.com). ${placeholder}`,
+  },
+] as const;
+
+/** How the expanded list reads a declared host: wildcards say what they match. */
+const listed = (host: string) =>
+  host.startsWith("*.") ? `${host} (any host directly under ${host.slice(2)})` : host;
+
+/**
+ * Whether a line is true to the declared hosts: each "N hosts on D" counts exactly the declared
+ * hosts without a wildcard or port whose registrable domain is D, and every declared host left out
+ * of a count is named in the line.
+ */
+const truthful = (line: string, hosts: readonly string[]) => {
+  const counts = [...line.matchAll(/(\d+) hosts on ([a-z0-9.-]+[a-z0-9])/g)].map(
+    ([, count, domain]) => ({ count: Number(count), domain: domain ?? "" }),
+  );
+  const counted = (host: string, domain: string) =>
+    !host.startsWith("*.") &&
+    !host.includes(":") &&
+    (host === domain || host.endsWith(`.${domain}`));
+  const inCount = new Set(
+    counts.flatMap(({ domain }) => hosts.filter((host) => counted(host, domain))),
+  );
+  return {
+    counts: counts.map(
+      ({ count, domain }) => count === hosts.filter((host) => counted(host, domain)).length,
+    ),
+    unnamed: hosts.filter((host) => !inCount.has(host) && !line.includes(host)),
+  };
+};
+
 /** The local deploy route answers with the app under `app`. */
 const Deployed = Schema.Struct({ app: App });
 
@@ -101,8 +186,11 @@ const liveRegions = (dialog: Locator) =>
     });
   });
 
-/** The open connect dialog fits at the browser's width and at a phone's, with a short submit button. */
-const fitsAtBothWidths = (dialog: Locator) =>
+/**
+ * The open connect dialog fits at the browser's width and at a phone's, with a short submit button:
+ * "Validate" for an app that checks credentials, "Connect account" for one that does not.
+ */
+const fitsAtBothWidths = (dialog: Locator, submit = "Validate") =>
   Effect.gen(function* () {
     const browser = yield* Browser;
     for (const [width, height] of [
@@ -117,10 +205,10 @@ const fitsAtBothWidths = (dialog: Locator) =>
         yield* browser.use(`Nothing sticks out at ${width} pixels`, () => outside(dialog)),
       ).toEqual({ sticking: [], sideways: 0 });
       expect(
-        yield* browser.use("The submit button says Validate", () =>
+        yield* browser.use(`The submit button says ${submit}`, () =>
           dialog.locator("button[type=submit]").innerText(),
         ),
-      ).toBe("Validate");
+      ).toBe(submit);
     }
   });
 
@@ -253,6 +341,126 @@ layer(HostedLive, { excludeTestServices: true })("Connect form layout", (it) => 
           yield* browser.use("Nothing sticks out after the check", () => outside(connect)),
         ).toEqual({ sticking: [], sideways: 0 });
         yield* browser.checkpoint("The check result wraps inside the dialog");
+      }),
+    ),
+  );
+  it.effect(scenarios.connectFormHostList.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const actors = yield* Actors;
+        const api = yield* Api;
+        const browser = yield* Browser;
+        const prefix = `/api/organizations/${actors.organization.id}`;
+        const run = randomUUID().slice(0, 8);
+        const deployed = yield* Effect.forEach(
+          hostCases,
+          (hostCase) =>
+            Effect.gen(function* () {
+              const name = `Hosts ${hostCase.label} ${run}`;
+              const response = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+                name,
+                files: [
+                  { path: "index.ts", content: hostSource(name, hostCase.hosts) },
+                  appsManifest,
+                ],
+              });
+              expect(response.status, JSON.stringify(response.body)).toBe(200);
+              const app = yield* body(App, response);
+              yield* Effect.addFinalizer(() =>
+                api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(
+                  Effect.map((deleted) => expect(deleted.status).toBe(200)),
+                  Effect.orDie,
+                ),
+              );
+              return { ...hostCase, name, app };
+            }),
+          { concurrency: "unbounded" },
+        );
+
+        yield* browser.login(actors.owner);
+        for (const { label, hosts, line, name, app } of deployed) {
+          yield* browser.use(`Resize to 1280 pixels wide for ${label}`, (page) =>
+            page.setViewportSize({ width: 1280, height: 900 }),
+          );
+          yield* browser.use(`Open the accounts of the app with ${label}`, (page) =>
+            page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=accounts`),
+          );
+          yield* browser.use(`Connect a new account for ${label}`, (page) =>
+            page.getByRole("button", { name: "Connect new account", exact: true }).click(),
+          );
+          const connect = yield* browser.use(`The connection dialog opens for ${label}`, (page) => {
+            const dialog = page.getByRole("dialog", { name: `Connect ${name}`, exact: true });
+            return dialog.waitFor({ state: "visible" }).then(() => dialog);
+          });
+          const access = connect.locator('[data-credential-access="hidden"]');
+          const read = () => access.innerText().then((text) => text.replace(/\s+/g, " ").trim());
+          const said = yield* browser.use(`What the line says for ${label}`, read);
+          expect(said, label).toBe(line);
+          expect(truthful(said, hosts), label).toEqual({
+            counts: said.match(/ hosts on /g)?.map(() => true) ?? [],
+            unnamed: [],
+          });
+          yield* browser.checkpoint(`Hosts line for ${label}`);
+          const toggle = connect.getByRole("button", { name: "Show all", exact: true });
+          if (!line.endsWith("Show all")) {
+            // Named hosts need no list, so there is nothing to expand.
+            expect(yield* browser.use(`No list button for ${label}`, () => toggle.count())).toBe(0);
+            yield* fitsAtBothWidths(connect, "Connect account");
+            yield* browser.use(`Close the dialog for ${label}`, (page) =>
+              page.keyboard.press("Escape"),
+            );
+            continue;
+          }
+          yield* fitsAtBothWidths(connect, "Connect account");
+          yield* browser.use(`Resize back to 1280 pixels wide for ${label}`, (page) =>
+            page.setViewportSize({ width: 1280, height: 900 }),
+          );
+          const before = yield* browser.use(`The list button before expanding, ${label}`, () =>
+            Promise.all([
+              toggle.getAttribute("aria-expanded"),
+              toggle.getAttribute("aria-controls"),
+              toggle.evaluate((button) => button.tagName === "BUTTON" && button.tabIndex >= 0),
+              connect.getByRole("list", { name: "Hosts" }).count(),
+            ]),
+          );
+          expect(before).toEqual(["false", expect.any(String), true, 0]);
+          // The keyboard opens the list: Enter on the focused button.
+          yield* browser.use(`Show every host with the keyboard, ${label}`, (page) =>
+            toggle.focus().then(() => page.keyboard.press("Enter")),
+          );
+          const less = connect.getByRole("button", { name: "Show less", exact: true });
+          const list = connect.getByRole("list", { name: "Hosts" });
+          const after = yield* browser.use(`The expanded list for ${label}`, () =>
+            list
+              .waitFor({ state: "visible" })
+              .then(() =>
+                Promise.all([
+                  less.getAttribute("aria-expanded"),
+                  less.getAttribute("aria-controls"),
+                  list.getAttribute("id"),
+                  list.getByRole("listitem").allInnerTexts(),
+                ]),
+              ),
+          );
+          // Every declared host, in the order declared, in the list the button controls.
+          expect(after).toEqual(["true", before[1], before[1], hosts.map(listed)]);
+          yield* browser.checkpoint(`Every host listed for ${label}`);
+          yield* fitsAtBothWidths(connect, "Connect account");
+          yield* browser.use(`Hide the list again, ${label}`, (page) =>
+            less.focus().then(() => page.keyboard.press("Enter")),
+          );
+          expect(
+            yield* browser.use(`The list is hidden again for ${label}`, () =>
+              list
+                .waitFor({ state: "hidden" })
+                .then(() => Promise.all([toggle.getAttribute("aria-expanded"), read()])),
+            ),
+          ).toEqual(["false", line]);
+          yield* browser.use(`Close the dialog for ${label}`, (page) =>
+            page.keyboard.press("Escape"),
+          );
+        }
       }),
     ),
   );

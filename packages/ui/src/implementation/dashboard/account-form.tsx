@@ -35,6 +35,7 @@ import {
   SelectValue,
 } from "../components/select.tsx";
 import { SetupHelp } from "./markdown.tsx";
+import { CredentialHosts } from "./credential-hosts.tsx";
 
 /** One credential form for creation, reconnection and agent handoff; the host owns saving, naming and navigation. */
 export function AccountForm<A, E>({
@@ -133,7 +134,10 @@ export function AccountForm<A, E>({
           !credentialsComplete(fields, values)
         )
           return;
-        const input = { method, fields: Redacted.make(credentialValues(fields, values)) };
+        const input = {
+          method,
+          fields: Redacted.make(credentialValues(fields, values)),
+        };
         if (!validates || check === undefined || verdict.state !== "idle") return save(input);
         setVerdict({ state: "checking" });
         void check.run(input).then((exit) => {
@@ -279,28 +283,24 @@ function CredentialAccess({
       data-credential-hosts
     >
       {hidden && hosts !== undefined && (
-        <p className="flex items-start gap-1.5" data-credential-access="hidden">
+        <div className="flex items-start gap-1.5" data-credential-access="hidden">
           <HugeiconsIcon
             icon={SquareLock02Icon}
             className="mt-0.5 size-3.5 shrink-0 text-emerald-600"
           />
-          <span className="min-w-0">
-            {hosts.length === 0 ? (
-              "Executor never sends hidden values on the app's requests."
-            ) : (
-              <>
-                Hidden values are only sent to{" "}
-                {hosts.map((host, index) => (
-                  <span key={host}>
-                    <HostChip host={host} />
-                    {index < hosts.length - 1 ? " " : "."}
-                  </span>
-                ))}
-              </>
-            )}{" "}
-            The app and your agent get a placeholder.
-          </span>
-        </p>
+          {hosts.length === 0 ? (
+            <span className="min-w-0">
+              Executor never sends hidden values on the app's requests. The app and your agent get a
+              placeholder.
+            </span>
+          ) : (
+            <CredentialHosts
+              hosts={hosts}
+              lead="Hidden values are only sent to"
+              after="The app and your agent get a placeholder."
+            />
+          )}
+        </div>
       )}
       {readable && (
         <p className="flex items-start gap-1.5" data-credential-access="readable">
@@ -314,13 +314,6 @@ function CredentialAccess({
     </div>
   );
 }
-
-/** A host name as the access notices show it. */
-const HostChip = ({ host }: { readonly host: string }) => (
-  <span className="rounded border border-border bg-muted/50 px-1 py-px font-mono text-[11px] text-foreground wrap-anywhere">
-    {host}
-  </span>
-);
 
 /**
  * Where a sign-in's tokens go, in one line. Signing in enters no value, so this names the
@@ -346,7 +339,7 @@ function SignInAccess({
       </span>
     </p>
   ) : (
-    <p
+    <div
       className="flex items-start gap-1.5 text-xs leading-relaxed text-muted-foreground"
       data-credential-access="hidden"
       data-credential-hosts
@@ -355,22 +348,14 @@ function SignInAccess({
         icon={SquareLock02Icon}
         className="mt-0.5 size-3.5 shrink-0 text-emerald-600"
       />
-      <span className="min-w-0">
-        {hosts.length === 0 ? (
-          <>Executor never sends your {provider} sign-in on the app's requests.</>
-        ) : (
-          <>
-            Your {provider} sign-in is only sent to{" "}
-            {hosts.map((host, index) => (
-              <span key={host}>
-                <HostChip host={host} />
-                {index < hosts.length - 1 ? " " : "."}
-              </span>
-            ))}
-          </>
-        )}
-      </span>
-    </p>
+      {hosts.length === 0 ? (
+        <span className="min-w-0">
+          Executor never sends your {provider} sign-in on the app's requests.
+        </span>
+      ) : (
+        <CredentialHosts hosts={hosts} lead={`Your ${provider} sign-in is only sent to`} />
+      )}
+    </div>
   );
 }
 
