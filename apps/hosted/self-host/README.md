@@ -318,12 +318,36 @@ the receiver URL or response. Delivery is not retried automatically; after an
 ambiguous timeout a caller retry may duplicate feedback. `Idempotency-Key` is a
 unique per-delivery ID, not a deduplication key across separate caller submissions.
 
-The webhook takes precedence over feedback analytics and works even with
+An operator receiver takes precedence over feedback analytics and works even with
 `DO_NOT_TRACK=1`, `EXECUTOR_DISABLE_ANALYTICS=1`, or no analytics destination.
-Other usage analytics are unchanged. With the URL unset or empty, existing
+Other usage analytics are unchanged. With the URL and the GitHub repository
+below unset or empty, existing
 analytics feedback behavior is unchanged, including `FeedbackDisabled` when
 analytics are unavailable. Submissions are not stored in the product database:
 there is no feedback table, so durable retention belongs to the receiver for now.
+
+#### GitHub issues
+
+Set `EXECUTOR_FEEDBACK_GITHUB_REPOSITORY` to `owner/repository` and
+`EXECUTOR_FEEDBACK_GITHUB_TOKEN` to a token that may create issues there (a
+fine-grained token with read and write access to Issues on that repository alone)
+to file each submission as an issue. Its title is the message's first line, up to
+120 characters. Its body is the whole message, which GitHub renders as Markdown,
+then the sender's email and client, the source, organization ID, instance origin
+and time. Issues identify the sender, so use a private repository.
+`EXECUTOR_FEEDBACK_GITHUB_LABELS` is an optional comma-separated list of labels.
+`EXECUTOR_FEEDBACK_GITHUB_API_URL` is the API root for GitHub Enterprise Server
+(`https://github.example.com/api/v3`); the default is `https://api.github.com`.
+A repository with a missing token, or a malformed repository or API URL, is
+logged at start and every submission returns `FeedbackUnavailable`.
+
+Issue filing has the same 10-second limit, redirect refusal and precedence over
+analytics as the webhook, and does not need one. With both set, the issue is
+filed first and the webhook payload gains `issue: { url, number }` and a final
+`Issue: <url>` line in `body` (`Issue: not created` when GitHub refused it).
+Feedback is then `accepted` when either receiver took it, so a failed
+notification does not make a caller file the issue twice; the failed receiver is
+logged. `FeedbackUnavailable` means neither did.
 
 ### Trace sampling
 
