@@ -134,6 +134,7 @@ import {
   customDomain,
   productionApiWorkerName,
   productionStage,
+  removalRevocationBudgetBindings,
   stageName,
 } from "./infrastructure/stage.ts";
 import { roleHostRoutes } from "./infrastructure/role-hosts.ts";
@@ -198,6 +199,8 @@ export default Api.make(
         ...(yield* removalStallBindings),
         // Only local e2e Clouds may turn the auth rate limit off; deployed Workers get `false`.
         ...(yield* authRateLimitSwitchBindings),
+        // Only local e2e Clouds may shorten removal's revocation budget; deployed Workers get `false`.
+        ...(yield* removalRevocationBudgetBindings),
         // A deployed stage identifies Executor to authorization servers by its own document.
         ...(origin === undefined ? {} : yield* clientMetadataBinding.pipe(Effect.orDie)),
         // Every deployed stage lists production's official app feed.

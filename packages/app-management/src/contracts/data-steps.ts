@@ -14,12 +14,38 @@ import { Schema } from "effect";
 export const DataStepMode = Schema.Literals(["report", "apply"]);
 export type DataStepMode = typeof DataStepMode.Type;
 
+/**
+ * What the journal holds for an item in this run before it is handled again. An apply that changes
+ * an item in several writes records an in-progress outcome before the first (`record`), so a run
+ * that stopped part way finds it (`previous`) and finishes the item rather than reading its
+ * half-changed state as someone else's. The outcome must be one of the step's retry outcomes, so a
+ * stopped pass revisits the item; the item's final outcome replaces it.
+ */
+export interface DataStepItemProgress {
+  /**
+   * The item's latest recorded outcome in this run. In an apply run that has none for it, its
+   * outcome in the step's latest earlier apply run that recorded it, so an item a stopped stage
+   * left part way is finished by the next stage (see {@link DataStep.applyRun}).
+   */
+  readonly previous: string | undefined;
+  /** Record `outcome` for the item now, before it is handled further. Apply only. */
+  readonly record: (outcome: string) => Effect.Effect<void, DataStepProgressUnrecorded>;
+  /** How many items of this run have one of `outcomes` recorded now. */
+  readonly count: (outcomes: ReadonlyArray<string>) => Effect.Effect<number, DataStepUnavailable>;
+}
+
 /** One unit of a step's work. Reports identify it by its ID and owner ID only. */
 export interface DataStepItem<R> {
   readonly id: string;
   readonly owner: string;
-  /** Handle this item and name the outcome. Failures are outcomes; report mode never writes. */
-  readonly run: (mode: DataStepMode) => Effect.Effect<string, never, R>;
+  /**
+   * Handle this item and name the outcome. Failures are outcomes; report mode never writes. An
+   * item may instead return {@link dataStepPaused} when its step's pace stopped it part way.
+   */
+  readonly run: (
+    mode: DataStepMode,
+    progress: DataStepItemProgress,
+  ) => Effect.Effect<string, never, R>;
 }
 
 export interface DataStep<R> {
@@ -39,7 +65,36 @@ export interface DataStep<R> {
    * of its result under a new report label. Otherwise an applied step has nothing to report.
    */
   readonly reportsAfterApply?: boolean;
+  /**
+   * The journal run that `apply` records under, `apply` unless set. A step applied in stages
+   * names each stage's run, so a finished stage completes its own run and a later stage starts
+   * another, whose first pass walks every item again. Later steps wait for the current one.
+   */
+  readonly applyRun?: string;
+  /**
+   * Bound retries: from pass `passes` on, an item that ends with one of `outcomes`' keys records
+   * the mapped outcome instead, which the step must not retry, so the run completes. Without it a
+   * step retries an item for as long as it keeps failing.
+   */
+  readonly exhausted?: {
+    readonly passes: number;
+    readonly outcomes: Readonly<Record<string, string>>;
+  };
+  /**
+   * Whether the run may start another item now. When it answers false the run stops as it does at
+   * its deadline and the next run resumes from its cursor. An item whose work comes in several
+   * paced parts asks its step's own pace before each, and returns {@link dataStepPaused} when it
+   * may not start the next. Only hosts whose runs have a deadline pace, and e2e runs.
+   */
+  readonly more?: Effect.Effect<boolean, never, R>;
 }
+
+/**
+ * What an item returns when its step's pace stopped it part way, before work the pace counts. The
+ * run records nothing for the item and stops as it does at its deadline; the next run handles the
+ * item again. Progress the item must keep, it records first (`record`).
+ */
+export const dataStepPaused = "data-step:paused";
 
 /** Which product's journal tables a host uses; each is created by that product's migrations. */
 export type DataStepJournal = "private_hosted" | "private_local";
@@ -77,6 +132,12 @@ export interface DataStepRun {
 
 /** The prefix of the single log line each finished pass writes, followed by its JSON summary. */
 export const dataStepLogPrefix = "Data step pass finished: ";
+
+/** An item's in-progress outcome could not be recorded; the item must not go on to write. */
+export class DataStepProgressUnrecorded extends Schema.TaggedError<DataStepProgressUnrecorded>()(
+  "DataStepProgressUnrecorded",
+  {},
+) {}
 
 /** The journal or a step's item list could not be read. Startup stops; Cloud retries next tick. */
 export class DataStepUnavailable extends Schema.TaggedError<DataStepUnavailable>()(

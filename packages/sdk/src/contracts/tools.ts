@@ -972,6 +972,7 @@ const hostRuntimeFailures: ReadonlySet<RuntimeFailure> = new Set([
   "build",
   "unsupported",
   "managed",
+  "unloading",
 ]);
 const loadingInstructions =
   "This happened while Executor loaded the app's definition, before any tool ran. Do not change the app's accounts to work around it.";
@@ -1064,6 +1065,15 @@ const workerPresentation = (failure: RuntimeFailure | undefined) => {
     case "unsupported":
     case "managed":
       return { description, recovery: rebuild, retryable: false };
+    case "unloading":
+      return {
+        description: `${runtimeFailures.unloading}, so nothing was sent to the app.`,
+        recovery: retryOnce(
+          "report the failure with its reference.",
+          `Executor waited for the app's previous Worker to unload before loading it again, and it did not finish, so nothing was sent to the app. ${reportReference}`,
+        ),
+        retryable: true,
+      };
     default:
       return {
         description,
@@ -1420,9 +1430,10 @@ export const AppProviderFailed = UserFacingError.define({
       Schema.Struct({ id: AccountId, label: Schema.String, provider: Schema.String }),
     ),
     /**
-     * The service refused the account's credentials during a mutation, and Executor has since
-     * renewed them. The mutation was not repeated, because it may have made changes before the
-     * refusal; a later call uses the renewed credentials.
+     * The service refused the account's credentials during a call Executor does not repeat, and
+     * Executor has since renewed them. That is a call that may write, which may have made changes
+     * before the refusal, or a query only its tool declares reads, whose claim the app has not
+     * confirmed. A later call uses the renewed credentials.
      */
     credentialsRenewed: Schema.optional(Schema.Literal(true)),
     /**

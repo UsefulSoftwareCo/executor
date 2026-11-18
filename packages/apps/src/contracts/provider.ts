@@ -93,6 +93,22 @@ const declaredAuthorizationQuery = Schema.makeFilter(
   },
 );
 
+/**
+ * Signing in without PKCE leaves the code bound to the client by its secret alone, so only a
+ * method that requires a secret may declare it.
+ */
+const declaredPkce = Schema.makeFilter(
+  (config: { readonly pkce?: false; readonly tokenEndpointAuthMethod?: OAuthClientAuth }) =>
+    config.pkce === false &&
+    (config.tokenEndpointAuthMethod === undefined || config.tokenEndpointAuthMethod === "none")
+      ? {
+          path: ["pkce"],
+          issue:
+            "pkce: false requires tokenEndpointAuthMethod client_secret_post, client_secret_basic or client_secret_basic_raw.",
+        }
+      : undefined,
+);
+
 /** How the token endpoint reads requests. RFC 6749 uses a form; some services want JSON. */
 export const OAuthTokenRequestFormat = Schema.Literals(["form", "json"]);
 export type OAuthTokenRequestFormat = typeof OAuthTokenRequestFormat.Type;
@@ -159,9 +175,14 @@ export const OAuth2Config = Schema.Union([
     scopes: Schema.Array(Schema.String),
     /** RFC 8414 issuer identifier. Declared issuers are checked against the callback's `iss`. */
     issuer: Schema.optionalKey(HttpUrl),
+    /**
+     * `false` signs in without PKCE, for a service whose token endpoint refuses a confidential
+     * client's `code_verifier`: LinkedIn answers `invalid_client`. Requires a secret client method.
+     */
+    pkce: Schema.optionalKey(Schema.Literal(false)),
     discover: Schema.optionalKey(Schema.Never),
     authorizationServerMetadataUrl: Schema.optionalKey(Schema.Never),
-  }).check(declaredAuthorizationQuery),
+  }).check(declaredAuthorizationQuery, declaredPkce),
   Schema.Struct({
     grant: Schema.Literal("client_credentials"),
     discover: HttpUrl,

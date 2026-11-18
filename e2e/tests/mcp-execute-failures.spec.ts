@@ -2469,15 +2469,18 @@ try { return await call(); } catch (error) {
         const api = yield* Api,
           actors = yield* Actors;
         const server = yield* refusingMcpServer;
-        // `peek` says it only reads, yet the server counts every call it receives and never
+        // `peek` says it only reads, and the server counts every call it receives and never
         // answers one. The app has no `kinds` entry for it, so only the server's hint calls it a
         // query.
         yield* server.refuse("silent-calls");
         const app = yield* hostedAppFiles("Hinted MCP read", mcpAppFiles(server.url, 1_000));
-        const peek = `tools[${JSON.stringify(app.slug)}].peek`;
+        const tools = `tools[${JSON.stringify(app.slug)}]`;
+        const peek = `${tools}.peek`;
+        const readAction =
+          "You may retry once. If it times out again, investigate before repeating it.";
 
         // A program that follows the retry policy repeats the call only when its error says an
-        // unchanged repeat is safe. The hint does not make it safe, so the call runs once.
+        // unchanged repeat is safe. The tool declares that it only reads, so it is.
         const followed = yield* executeOnce(
           app.client,
           "Repeat a timed-out hinted read only when its error says it is retryable",
@@ -2491,12 +2494,12 @@ try { return await call(); } catch (error) {
           "hinted-read-followed.json",
         );
         expect(followed.structured).toMatchObject({
-          execution: { ok: true, value: { retries: 0, retryable: false } },
+          execution: { ok: true, value: { retries: 1, retryable: true } },
         });
-        expect(yield* server.silentCalls).toBe(1);
+        // The program's own retry is the only repeat: Executor does not repeat a hinted read.
+        expect(yield* server.silentCalls).toBe(2);
 
-        // The agent is told the call may have changed data, and the read's advice is quoted, not
-        // offered.
+        // The agent gets the read's own advice and is not told the call may have changed data.
         const executed = yield* executeOnce(
           app.client,
           "Call a hinted read whose MCP server never answers",
@@ -2506,14 +2509,15 @@ try { return await call(); } catch (error) {
         const { message, response } = (yield* Schema.decodeUnknownEffect(ToolFailed)(
           executed.structured,
         )).execution.error;
-        expect(siteless(message)).toBe(
-          `ToolCallFailed (HTTP 502): The app’s MCP server did not answer the tool call in time, so Executor stopped waiting. The server may still finish it. Recovery: ${unknownOutcomeAction} Retryable (unchanged call): no.`,
+        expect(siteless(message)).toMatch(
+          /^ToolCallFailed \(HTTP 502\): The app’s MCP server did not answer the tool call in time, so Executor stopped waiting\. The server may still finish it\. Recovery: You may retry once\. If it times out again, investigate before repeating it\. Retryable \(unchanged call\): yes\./,
         );
-        expect(response).toMatchObject({ code: "ToolCallFailed", retryable: false });
-        expectUnknownOutcome(
-          response.recovery,
-          "For a call that only reads, the advice for this failure is: “You may retry once.",
-        );
+        expect(response).toMatchObject({
+          code: "ToolCallFailed",
+          retryable: true,
+          recovery: { action: readAction },
+        });
+        expect(JSON.stringify(response)).not.toContain("may have changed data");
 
         // A direct call gets the same answer.
         const direct = yield* app.client.use("Call a hinted read directly", (client, signal) =>
@@ -2544,11 +2548,11 @@ try { return await call(); } catch (error) {
         )(direct.structuredContent);
         expect(called.execution.value.error.response).toMatchObject({
           code: "ToolCallFailed",
-          retryable: false,
-          recovery: { action: unknownOutcomeAction },
+          retryable: true,
+          recovery: { action: readAction },
         });
 
-        // So does an API caller that names the call a query: the caller's kind is not the app's.
+        // So does an API caller that names the call a query.
         const rest = yield* api.request(actors.owner, "POST", `${app.path}/tools/call`, {
           tool: "peek",
           kind: "query",
@@ -2558,12 +2562,31 @@ try { return await call(); } catch (error) {
         expect(rest.body).toMatchObject({
           _tag: "ToolCallFailed",
           mcp: { phase: "call", reason: "timeout" },
-          mayHaveWritten: true,
+          recovery: { action: readAction },
+        });
+        expect(rest.body).not.toHaveProperty("mayHaveWritten");
+
+        // A tool that does not declare that it only reads keeps the conservative advice.
+        const looked = yield* executeOnce(
+          app.client,
+          "Call an unhinted tool whose MCP server never answers",
+          `return await ${tools}.lookup({});`,
+          "unhinted-call.json",
+        );
+        const write = (yield* Schema.decodeUnknownEffect(ToolFailed)(looked.structured)).execution
+          .error;
+        expect(write.response).toMatchObject({
+          code: "ToolCallFailed",
+          retryable: false,
           recovery: { action: unknownOutcomeAction },
         });
+        expectUnknownOutcome(
+          write.response.recovery,
+          "For a call that only reads, the advice for this failure is: “You may retry once.",
+        );
 
-        // Each call reached the server once: neither Executor nor the advice repeated one.
-        expect(yield* server.silentCalls).toBe(4);
+        // Each call reached the server once: Executor repeated none of them.
+        expect(yield* server.silentCalls).toBe(6);
       }).pipe(Effect.provide(McpClient.layer)),
     ),
   );
@@ -2684,6 +2707,138 @@ return { failed: failed.isError, text: failed.content[0].text, read: read.isErro
 
         // Executor repeated none of the calls.
         expect(yield* server.answeredCalls).toEqual(["lookup", "peek", "lookup", "lookup"]);
+      }).pipe(Effect.provide(McpClient.layer)),
+    ),
+  );
+  it.effect(scenarios.mcpExecuteRejectedPromiseAll.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        // `quick` answers at once, `fails` throws after a second and `slow` outlasts the program.
+        const app = yield* hostedApp(
+          "Rejected Promise.all",
+          `import { defineApp, query, object, router } from "apps";
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+export default defineApp({}, async () => ({ tools: router({
+  quick: query({ input: object({}) }, async () => "done"),
+  fails: query({ input: object({}) }, async () => {
+    await wait(1_000);
+    throw new Error("The batch lookup failed");
+  }),
+  slow: query({ input: object({}) }, async () => {
+    await wait(30_000);
+    return "late";
+  }),
+}) }));`,
+        );
+        const tools = `tools[${JSON.stringify(app.slug)}]`;
+        const interruptedNote =
+          "Other tool calls were still running when the program stopped and were interrupted. toolCalls lists every call with its outcome: calls marked success did run.";
+        const Reported = Schema.Struct({
+          status: Schema.Literal("completed"),
+          execution: Schema.Struct({
+            ok: Schema.Literal(false),
+            error: Schema.Struct({ kind: Schema.String, message: Schema.String }),
+            toolCalls: Schema.Array(
+              Schema.Struct({
+                name: Schema.String,
+                outcome: Schema.String,
+                reference: Schema.optional(Schema.String),
+              }),
+            ),
+          }),
+        });
+        const executed = yield* executeOnce(
+          app.client,
+          "Run calls with Promise.all where one rejects while others still run",
+          `return await Promise.all([
+  ${tools}.quick({}), ${tools}.quick({}), ${tools}.quick({}),
+  ${tools}.fails({}), ${tools}.slow({}), ${tools}.slow({}),
+]);`,
+          "rejected-promise-all.json",
+        );
+        const { execution } = yield* Schema.decodeUnknownEffect(Reported)(executed.structured);
+        // The program stops at the rejection; it does not wait for the calls still running.
+        expect(executed.elapsed).toBeLessThan(20_000);
+        // Each call reports what happened to it: finished calls ran, the failing call failed
+        // with its own reference, and the calls still running were interrupted.
+        expect(execution.toolCalls.map(({ name, outcome }) => [name, outcome])).toEqual([
+          [`${app.slug}.quick`, "success"],
+          [`${app.slug}.quick`, "success"],
+          [`${app.slug}.quick`, "success"],
+          [`${app.slug}.fails`, "failure"],
+          [`${app.slug}.slow`, "interrupted"],
+          [`${app.slug}.slow`, "interrupted"],
+        ]);
+        expect(execution.toolCalls[3]?.reference).toMatch(/^call_/u);
+        // The failure names the call's own error, then says the others were interrupted and that
+        // the calls marked success did run, leaving whether to repeat them to the agent, and
+        // ends with how to keep the results of the calls that succeed.
+        expect(execution.error.kind).toBe("ToolFailure");
+        expect(execution.error.message).toContain("The batch lookup failed");
+        expect(
+          execution.error.message.endsWith(
+            ` ${interruptedNote} To keep the results of the calls that succeed when one fails, use Promise.allSettled or a .catch on each call.`,
+          ),
+        ).toBe(true);
+        expect(execution.error.message).not.toContain("repeat");
+
+        // A failure that leaves no call running carries no such note.
+        const alone = yield* executeOnce(
+          app.client,
+          "Run one call after another until one fails",
+          `await ${tools}.quick({});
+return await ${tools}.fails({});`,
+          "rejected-alone.json",
+        );
+        const single = (yield* Schema.decodeUnknownEffect(Reported)(alone.structured)).execution;
+        expect(single.toolCalls.map(({ outcome }) => outcome)).toEqual(["success", "failure"]);
+        expect(single.error.message).toContain("The batch lookup failed");
+        expect(single.error.message).not.toContain("still running");
+
+        // A program that throws on its own while calls still run gets the note, but not the
+        // advice about tool-call rejections.
+        const thrown = yield* executeOnce(
+          app.client,
+          "Throw from the program while calls still run",
+          `const pending = [${tools}.slow({}), ${tools}.slow({})];
+await ${tools}.quick({});
+throw new Error("The program gave up");`,
+          "program-throws.json",
+        );
+        const own = (yield* Schema.decodeUnknownEffect(Reported)(thrown.structured)).execution;
+        expect(thrown.elapsed).toBeLessThan(20_000);
+        expect(own.toolCalls.map(({ name, outcome }) => [name, outcome])).toEqual([
+          [`${app.slug}.slow`, "interrupted"],
+          [`${app.slug}.slow`, "interrupted"],
+          [`${app.slug}.quick`, "success"],
+        ]);
+        expect(own.error.kind).toBe("ExecutionFailure");
+        expect(own.error.message).toContain("The program gave up");
+        expect(own.error.message.endsWith(` ${interruptedNote}`)).toBe(true);
+        expect(own.error.message).not.toContain("Promise.allSettled");
+        expect(own.error.message).not.toContain("repeat");
+
+        // The code-mode skill recommends allSettled for independent calls, keeps Promise.all for
+        // calls that must all succeed, and says what an uncaught Promise.all rejection does.
+        const skill = yield* app.client.use("Read the code-mode skill", (client, signal) =>
+          client.callTool(
+            { name: "skills", arguments: { app: "executor", name: "code-mode" } },
+            undefined,
+            { signal },
+          ),
+        );
+        const { content } = yield* Schema.decodeUnknownEffect(
+          Schema.Struct({ content: Schema.String }),
+        )(skill.structuredContent);
+        const prose = content.replace(/\s+/gu, " ");
+        expect(prose).toContain(
+          "Use `await`, and `Promise.allSettled` for independent calls: one failed call then does not end the program, and the other results are kept; each entry has `status` and `value` or `reason`. Use `Promise.all` only when every call must succeed.",
+        );
+        expect(prose).toContain(
+          "`Promise.all` rejects on the first failure. If the program does not catch it, the program ends, and calls still running are `interrupted`; calls marked `success` did run.",
+        );
+        expect(prose).not.toContain("Use `await` and `Promise.all` for independent calls");
       }).pipe(Effect.provide(McpClient.layer)),
     ),
   );

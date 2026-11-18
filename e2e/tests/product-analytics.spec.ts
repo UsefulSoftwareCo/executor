@@ -1,5 +1,6 @@
 import { expect, layer } from "@effect/vitest";
-import { Effect, Schema, Schedule } from "effect";
+import { Effect, Redacted, Schema, Schedule } from "effect";
+import { HttpClient, HttpClientRequest } from "effect/http";
 import { scenarios } from "../test-plan.ts";
 import { App } from "../support/contracts.ts";
 import { Actors } from "../support/actors.ts";
@@ -12,6 +13,7 @@ import { Target } from "../support/platform.ts";
 import { captureBrowserAnalytics, renderBrowserReplay } from "../support/product-analytics.ts";
 import { appsManifest } from "../support/apps-release.ts";
 import { Onboarding } from "../support/onboarding.ts";
+import { McpClient } from "../support/mcp-client.ts";
 
 const Event = Schema.Struct({
   event: Schema.String,
@@ -340,6 +342,120 @@ export default defineApp({}, async () => ({ tools: router({
             .then((html) => expect(html).not.toContain("PRIVATE_"));
         });
       }),
+    ),
+  );
+
+  it.effect(scenarios.productAnalyticsMcpClient.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const actors = yield* Actors,
+          api = yield* Api,
+          evidence = yield* Evidence,
+          mcp = yield* McpClient,
+          target = yield* Target,
+          http = yield* HttpClient.HttpClient;
+        const prefix = `/api/organizations/${actors.organization.id}`;
+        const key = yield* body(
+          Schema.Struct({ id: Schema.String, key: Schema.RedactedFromValue(Schema.String) }),
+          yield* api.request(actors.owner, "POST", "/api/auth/api-key/create", {
+            name: "MCP client name",
+          }),
+        );
+        yield* Effect.addFinalizer(() =>
+          api
+            .request(actors.owner, "POST", "/api/auth/api-key/delete", { keyId: key.id })
+            .pipe(Effect.orDie),
+        );
+        const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+          name: "MCP client name probe",
+          files: [
+            {
+              path: "index.ts",
+              content: `
+import { defineApp, query, object, string, router } from "apps";
+export default defineApp({}, async () => ({ tools: router({
+  echo: query({ input: object({ message: string() }) }, async (_, input) => input.message),
+}) }));`,
+            },
+            appsManifest,
+          ],
+        });
+        expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
+        const app = yield* body(App, deployed);
+        const code = (message: string) =>
+          `return await tools[${JSON.stringify(app.slug)}].echo({ message: ${JSON.stringify(message)} })`;
+
+        // 2026-07-28 has no initialize: the client names itself in every request's metadata.
+        const revision = "2026-07-28";
+        const stateless = "Stateless e2e client";
+        yield* evidence.step(
+          "A 2026-07-28 client calls a tool, naming itself in the request",
+          Effect.gen(function* () {
+            const response = yield* http.execute(
+              yield* HttpClientRequest.bodyJson(
+                HttpClientRequest.post(`${target.metadata.origin}/mcp`).pipe(
+                  HttpClientRequest.bearerToken(Redacted.value(key.key)),
+                  HttpClientRequest.setHeaders({
+                    accept: "application/json, text/event-stream",
+                    "mcp-protocol-version": revision,
+                    "mcp-method": "tools/call",
+                    "mcp-name": "execute",
+                    "x-executor-organization": actors.organization.id,
+                  }),
+                ),
+                {
+                  jsonrpc: "2.0",
+                  id: 1,
+                  method: "tools/call",
+                  params: {
+                    name: "execute",
+                    arguments: { code: code("stateless") },
+                    _meta: {
+                      "io.modelcontextprotocol/protocolVersion": revision,
+                      "io.modelcontextprotocol/clientCapabilities": {},
+                      "io.modelcontextprotocol/clientInfo": { name: stateless, version: "1" },
+                    },
+                  },
+                },
+              ),
+            );
+            const text = yield* response.text;
+            expect(response.status, text).toBe(200);
+            expect(text).toContain('"stateless"');
+          }).pipe(Effect.scoped, Effect.provideService(HttpClient.TracerPropagationEnabled, false)),
+        );
+
+        // An earlier version names the client once, at initialize.
+        const session = yield* mcp.connect(key.key, "client-name", {
+          organization: actors.organization.id,
+        });
+        const called = yield* session.use("An initialized client calls a tool", (client, signal) =>
+          client.callTool(
+            { name: "execute", arguments: { code: code("initialized") } },
+            undefined,
+            { signal },
+          ),
+        );
+        expect(JSON.stringify(called.structuredContent)).toContain('"initialized"');
+
+        const completed = yield* analyticsEvents({ app: app.id }).pipe(
+          Effect.map((events) =>
+            events.filter((event) => event.event === "tool_execution_completed"),
+          ),
+          Effect.repeat({
+            schedule: Schedule.spaced("100 millis"),
+            until: (events) => events.length >= 2,
+          }),
+          Effect.timeout("15 seconds"),
+        );
+        yield* evidence.json("mcp-client-names.json", completed);
+        expect(completed.map((event) => event.properties.client_name).sort()).toEqual(
+          ["executor-e2e", stateless].sort(),
+        );
+        for (const event of completed)
+          expect(event.properties).toMatchObject({ source: "mcp", ok: true });
+      }).pipe(Effect.provide(McpClient.layer)),
     ),
   );
 

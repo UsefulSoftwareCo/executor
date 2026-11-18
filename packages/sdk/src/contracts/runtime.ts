@@ -281,8 +281,10 @@ export class RuntimeBuildFailed extends Schema.TaggedError<RuntimeBuildFailed>()
     message: Schema.optional(BuildMessage),
     location: Schema.optional(SourceLocation),
     /**
-     * The compiler did not answer in time: a host failure that says nothing about the source, and
-     * that building again may not repeat.
+     * The host's compiler or runner did not answer: the compiler did not reply in time, or a call
+     * to the compiler or to the runner that reads the build's requirements failed before it
+     * replied. A host failure that says nothing about the source, and that building again may not
+     * repeat. Set only where the host made the call, never from an error's text.
      */
     unanswered: Schema.optional(Schema.Literal(true)),
   },
@@ -314,6 +316,7 @@ export const RuntimeFailure = Schema.Literals([
   "invalid-reply",
   "too-large",
   "data",
+  "unloading",
   "build",
   "unsupported",
   "managed",
@@ -334,6 +337,7 @@ export const runtimeFailures: Record<RuntimeFailure, string> = {
   "invalid-reply": "The app's reply does not match its host protocol",
   "too-large": "A value crossing Workers RPC for the app exceeded its size limit",
   data: "The app's data supervisor failed the call",
+  unloading: "The app's previous Worker did not finish unloading",
   build: "The app's build could not be read",
   unsupported: "The app's build speaks a host protocol this host does not run",
   managed:

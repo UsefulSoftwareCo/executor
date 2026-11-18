@@ -11,6 +11,7 @@ import { Effect, Layer } from "effect";
 import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { createServer } from "node:http";
 import { appsVersion } from "./apps-release.ts";
+import snapshots from "./catalog-snapshots.json" with { type: "json" };
 
 const icon = (fill: string) =>
   `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><rect width="24" height="24" rx="6" fill="${fill}"/></svg>`;
@@ -111,8 +112,56 @@ export default defineApp({ user: { accounts: { tracker: tracker.many() } } }, as
 }));
 `;
 
+type SnapshotFile = { readonly path: string; readonly content: string };
+
+/**
+ * Real catalog sources from the integrations repository's history, byte for byte
+ * (`catalog-snapshots.json`): Popupsmart as the feed served it on 2026-10-13 (apps beta.88) and
+ * on 2026-11-17 (beta.100, the catalog's own move of the same source). The feed serves them by ID
+ * but does not list them, so the catalog scenarios see only the synthetic apps.
+ * catalog-copy-rebuild.spec.ts installs them, plus two stand-ins: the October source with an
+ * edited README, which is no published snapshot, and the October source under the package name
+ * of a package whose tool names change on beta.140.
+ */
+export const catalogSnapshots = {
+  october: { id: "popupsmart-2026-10-13", package: "@executor.sh/popupsmart" },
+  november: { id: "popupsmart-2026-11-17", package: "@executor.sh/popupsmart" },
+  altered: { id: "popupsmart-altered", package: "@executor.sh/popupsmart" },
+  held: { id: "netsapiens-stand-in", package: "@executor.sh/netsapiens" },
+} as const;
+const october: ReadonlyArray<SnapshotFile> = snapshots["popupsmart-2026-10-13"].files;
+/** The snapshot files of `id`, as the feed serves them. */
+export const catalogSnapshotFiles = (
+  id: (typeof catalogSnapshots)[keyof typeof catalogSnapshots]["id"],
+): ReadonlyArray<SnapshotFile> =>
+  id === catalogSnapshots.october.id
+    ? october
+    : id === catalogSnapshots.november.id
+      ? snapshots["popupsmart-2026-11-17"].files
+      : id === catalogSnapshots.altered.id
+        ? october.map((file) =>
+            file.path === "README.md" ? { ...file, content: `${file.content}\nEdited.\n` } : file,
+          )
+        : october.map((file) =>
+            file.path === "package.json"
+              ? {
+                  ...file,
+                  content: file.content.replace(
+                    `"${catalogSnapshots.october.package}"`,
+                    `"${catalogSnapshots.held.package}"`,
+                  ),
+                }
+              : file,
+          );
+
 /** Each app's complete source, as the feed serves it. */
 const catalogSources: Readonly<Record<string, unknown>> = {
+  ...Object.fromEntries(
+    Object.values(catalogSnapshots).map((snapshot) => [
+      `apps/${snapshot.id}.json`,
+      { package: snapshot.package, files: catalogSnapshotFiles(snapshot.id) },
+    ]),
+  ),
   [officialApps.mail.source]: {
     package: officialApps.mail.package,
     files: [

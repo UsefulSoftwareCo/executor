@@ -151,6 +151,7 @@ export function DashboardFrame({
   banner,
   support,
   notice,
+  news,
   pendingPage = "apps",
   account = false,
   children,
@@ -162,8 +163,10 @@ export function DashboardFrame({
   readonly banner?: ReactNode;
   /** Cloud offers a support dialog; self-host has no support channel of its own. */
   readonly support?: ReactNode;
-  /** A small product-owned card above the resource links. */
+  /** A small product-owned block, such as an update, shown in place of the resource links. */
   readonly notice?: ReactNode;
+  /** A product's news, such as Cloud's what's new, above the resource links, which stay. */
+  readonly news?: ReactNode;
   readonly pendingPage?: string;
   /** Account pages have no organization settings link; their wordmark returns to the root. */
   readonly account?: boolean;
@@ -190,6 +193,7 @@ export function DashboardFrame({
       banner={banner}
       support={support}
       notice={notice}
+      news={news}
       navigation={
         <>
           {navigation}

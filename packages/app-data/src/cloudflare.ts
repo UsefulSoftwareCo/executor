@@ -60,6 +60,8 @@ export const FacetResult = Schema.Struct({
   value: Schema.Json,
   revision: Schema.Int,
   cacheChanged: Schema.optionalKey(Schema.Boolean),
+  /** The call met its supervisor resetting before it started, and was sent to the new instance. */
+  resent: Schema.optionalKey(Schema.Literal(true)),
   timing: Schema.optionalKey(
     Schema.Struct({
       elapsedMs: Schema.Finite,

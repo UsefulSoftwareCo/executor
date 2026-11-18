@@ -12,7 +12,7 @@ export {
 } from "./implementation/worker-build-storage.ts";
 export { bindingWorkerdApps } from "./implementation/binding-workerd-apps.ts";
 export { declarationFailed } from "./implementation/worker-source-map.ts";
-export { workerdHostHandler } from "./implementation/workerd-client.ts";
+export { workerdHostHandler, type RegistryRead } from "./implementation/workerd-client.ts";
 export {
   IsolateStarted,
   makeAppRunner,
@@ -26,6 +26,7 @@ export {
 export { appRuntime, buildLoadSpan, type AppRuntimeHost } from "./implementation/app-runtime.ts";
 export {
   remoteAppRunner,
+  RunnerUnanswered,
   serveAppRunner,
   type RemoteAppRunner,
   type RemoteCapabilities,

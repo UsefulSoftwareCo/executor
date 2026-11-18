@@ -178,7 +178,7 @@ const jobs = {
     runner: 3,
 
     pattern:
-      "Cloud SSO SAML accepts|Cloud's operator OAuth client signs in|Cloud's own Executor for Google registration refuses|Safari reports only the page's own failures|Cloud cron triggers run their jobs|Cloud cron jobs record their outcome|Cloud support dialog lists every channel|Hosted feedback enforces its API contract|Executor's catalog calls an app's own cache methods|Executor app is installed with nothing left pending|Cloud MCP routes a request inside a session|Cloud MCP sessions continue after their session object is evicted|Request and workflow attempts at one team|remote skill catalog|a skill read without a revision|abandons a GitHub skills load|reads its catalog and the tool in one cache command|a cold call's wake is reported by that call alone|another organization's admin cannot read the link|account connections cannot cross organizations|Deploys wake webhook source setup|Cloud's schedule coordinator keeps nine slow scheduled runs|a webhook source reconciling for an activation that another supersedes|A skill catalog refreshed in the background after a dashboard batch read|Cloud MCP session objects run parallel tool calls|Cloud MCP session objects cancel a statement|Cloud MCP session objects discover the other apps|Cloud MCP session objects' database pool|Cloud's database pool runs a statement whose connection|Hosted MCP resume reports an approved call's own failure|Cloud refuses to remove an organization while one of its app workflows runs|Cloud v1 session handoff|Cloud accepts MCP requests v1 forwards|Cloud validates a v1 WorkOS API key|Hosted MCP operation and bearer-check spans name|Hosted management API request spans name only|Hosted request spans record the client, the credential|Cloud's gateway names an authenticated MCP request's organization|A person deletes their own user|Cloud invitations left pending after their inviter lost|On Cloud a slow tool call log write|A Cloud scenario's clean-up returns once its organization's removal is accepted|The end-of-run removal check answers each look within its request limit|The end-of-run removal check asks again after a dropped request|The end-of-run removal check keeps waiting for a removal recorded done|a run's sleep whose engine call failed is called again",
+      "Cloud SSO SAML accepts|Cloud's operator OAuth client signs in|Cloud's own Executor for Google registration refuses|Safari reports only the page's own failures|Cloud cron triggers run their jobs|Cloud cron jobs record their outcome|Cloud support dialog lists every channel|Cloud shows every member the newest note|Hosted feedback enforces its API contract|Executor's catalog calls an app's own cache methods|Executor app is installed with nothing left pending|Cloud MCP routes a request inside a session|Cloud MCP sessions continue after their session object is evicted|Request and workflow attempts at one team|remote skill catalog|a skill read without a revision|abandons a GitHub skills load|reads its catalog and the tool in one cache command|a cold call's wake is reported by that call alone|another organization's admin cannot read the link|account connections cannot cross organizations|Deploys wake webhook source setup|Cloud's schedule coordinator keeps nine slow scheduled runs|a webhook source reconciling for an activation that another supersedes|A skill catalog refreshed in the background after a dashboard batch read|Cloud MCP session objects run parallel tool calls|Cloud MCP session objects cancel a statement|Cloud MCP session objects discover the other apps|Cloud MCP session objects' database pool|Cloud's database pool runs a statement whose connection|Hosted MCP resume reports an approved call's own failure|Cloud refuses to remove an organization while one of its app workflows runs|Removing an organization revokes the refresh token|Cloud v1 session handoff|Cloud accepts MCP requests v1 forwards|Cloud validates a v1 WorkOS API key|Hosted MCP operation and bearer-check spans name|Hosted management API request spans name only|Hosted request spans record the client, the credential|Cloud's gateway names an authenticated MCP request's organization|A person deletes their own user|Cloud invitations left pending after their inviter lost|On Cloud a slow tool call log write|A Cloud scenario's clean-up returns once its organization's removal is accepted|The end-of-run removal check answers each look within its request limit|The end-of-run removal check asks again after a dropped request|The end-of-run removal check keeps waiting for a removal recorded done|a run's sleep whose engine call failed is called again",
   },
   // Cloud's hosts: role hosts, the edge and sign-in on `app.`. Run in `cloud-product`, their
   // load kept the team installation's workflow span from arriving within its 30-second wait, so
@@ -293,6 +293,22 @@ const jobs = {
     cloudMode: "oauth-proxy-preview",
     pattern:
       "A test stage signs in through production's OAuth proxy|A test stage connects an account with production's OAuth callback",
+  },
+  // Managed Cloud keeps organization removal's deployed revocation budget; this job starts one with
+  // it shortened, so only this scenario's removals run it out.
+  "cloud-revocation-budget": {
+    target: "cloud",
+    runner: 6,
+    cloudMode: "revocation-budget",
+    pattern: "Removing an organization whose service never answers revocations",
+  },
+  // Managed Cloud builds its dashboard with fixed notes; this job starts one built with an empty
+  // notes file, as a deploy whose window has no notes builds it.
+  "cloud-empty-release-notes": {
+    target: "cloud",
+    runner: 6,
+    cloudMode: "empty-release-notes",
+    pattern: "Cloud built with an empty notes file",
   },
 } as const satisfies Record<
   string,
@@ -623,12 +639,15 @@ const verify = (suite: string | undefined, directory: string | undefined) =>
 const patchGuards: Readonly<Record<string, ReadonlyArray<string>>> = {
   // Its workflow worker is the products' workflow engine: the local engine scenarios and the
   // durability scenarios prove its behaviour from source, and the release-docker lane runs the
-  // image's packaged engine scenarios too (e2e/packaged-engine.ts).
+  // image's packaged engine scenarios too (e2e/packaged-engine.ts). The engine calls scenario
+  // proves a sleepUntil the engine refuses as past ends, so a rewording of that refusal in the
+  // patch runs it; `scripts/check-engine-refusals.ts` reads the patch for those words.
   "@alchemy.run/cloudflare-runtime": [
     "mcp-protocol-versions.spec.ts",
     "local-workflow-engine-steps.spec.ts",
     "local-workflow-engine-memory.spec.ts",
     "workflow-durability.spec.ts",
+    "workflow-engine-calls.spec.ts",
   ],
   // Its patch makes cancelling refuse an invitation that is no longer pending (the reaccept and
   // dialog scenarios), has self-host SSO read UserInfo claims through generic OAuth's guarded
@@ -775,6 +794,7 @@ const suiteConfigs: Record<string, () => Promise<unknown>> = {
   "desktop-next-server.config.ts": () => import("./desktop-next-server.config.ts"),
   "desktop-recovery.config.ts": () => import("./desktop-recovery.config.ts"),
   "desktop-release.config.ts": () => import("./desktop-release.config.ts"),
+  "desktop-update.config.ts": () => import("./desktop-update.config.ts"),
   "emulator-failures.config.ts": () => import("./emulator-failures.config.ts"),
   "export-public.config.ts": () => import("./export-public.config.ts"),
   "docker-release.config.ts": () => import("./docker-release.config.ts"),
@@ -796,6 +816,8 @@ const suiteConfigs: Record<string, () => Promise<unknown>> = {
   "cloud-postgres-volumes.config.ts": () => import("./cloud-postgres-volumes.config.ts"),
   "release-archives.config.ts": () => import("./release-archives.config.ts"),
   "release-evidence.config.ts": () => import("./release-evidence.config.ts"),
+  "release-notes.config.ts": () => import("./release-notes.config.ts"),
+  "release-notes-render.config.ts": () => import("./release-notes-render.config.ts"),
   "removal-evidence.config.ts": () => import("./removal-evidence.config.ts"),
   "request-failures.config.ts": () => import("./request-failures.config.ts"),
   "run-retention.config.ts": () => import("./run-retention.config.ts"),

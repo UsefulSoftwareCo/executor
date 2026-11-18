@@ -5,7 +5,7 @@
  * return encoded `WorkflowRpcResult`s, and are rebuilt on the runner's side. The invocation names
  * its build, and the runner's Worker reads it from its own store.
  */
-import { Cause, Effect, Redacted, Schema } from "effect";
+import { Cause, Data, Effect, Redacted, Schema } from "effect";
 import { withRemoteSpan } from "@executor-js/telemetry";
 import {
   HostAccounts,
@@ -356,31 +356,44 @@ export const serveAppRunner = (
  * that revision: a runner deployed before that check ignores it, and would fill the revision's
  * cache with whichever document it read.
  */
+const replyResult =
+  (hostApi?: string) =>
+  (reply: string): Effect.Effect<unknown, RuntimeProtocolFailed | RuntimeProtocolUnsupported> =>
+    Schema.decodeUnknownEffect(RemoteResult)(reply).pipe(
+      Effect.catch(() => Effect.fail(new RuntimeProtocolFailed({ reason: "invalid-reply" }))),
+      Effect.flatMap(
+        (reply): Effect.Effect<unknown, RuntimeProtocolFailed | RuntimeProtocolUnsupported> =>
+          reply.ok
+            ? hostApi === undefined || reply.hostApi === hostApi
+              ? Effect.succeed(reply.value)
+              : Effect.fail(new RuntimeProtocolFailed({ reason: "unsupported" }))
+            : reply.unsupported !== undefined
+              ? Effect.fail(reply.unsupported)
+              : Effect.fail(
+                  new RuntimeProtocolFailed({
+                    ...(reply.reason === undefined ? {} : { reason: reply.reason }),
+                    ...(reply.message === undefined ? {} : { message: reply.message }),
+                  }),
+                ),
+      ),
+    );
+
+/** The runner's reply, or the failure of a call it rejected; see `replyResult`. */
 export const runnerResult = <E>(effect: Effect.Effect<string, E>, hostApi?: string) =>
   effect.pipe(
     // A rejected RPC carries the platform's text, such as a size or memory limit, only here.
     Effect.catch(failedFrom(false, "runner")),
-    Effect.flatMap((reply) =>
-      Schema.decodeUnknownEffect(RemoteResult)(reply).pipe(
-        Effect.catch(() => Effect.fail(new RuntimeProtocolFailed({ reason: "invalid-reply" }))),
-      ),
-    ),
-    Effect.flatMap(
-      (reply): Effect.Effect<unknown, RuntimeProtocolFailed | RuntimeProtocolUnsupported> =>
-        reply.ok
-          ? hostApi === undefined || reply.hostApi === hostApi
-            ? Effect.succeed(reply.value)
-            : Effect.fail(new RuntimeProtocolFailed({ reason: "unsupported" }))
-          : reply.unsupported !== undefined
-            ? Effect.fail(reply.unsupported)
-            : Effect.fail(
-                new RuntimeProtocolFailed({
-                  ...(reply.reason === undefined ? {} : { reason: reply.reason }),
-                  ...(reply.message === undefined ? {} : { message: reply.message }),
-                }),
-              ),
-    ),
+    Effect.flatMap(replyResult(hostApi)),
   );
+
+/**
+ * A call to the runner that failed without a reply, such as a lost connection. The runner answers
+ * every call it handled, an app's failure included (`runnerReply`), so this says nothing about the
+ * app: its code may never have run. `failure` is the call's failure as `runnerResult` reports it.
+ */
+export class RunnerUnanswered extends Data.TaggedError("RunnerUnanswered")<{
+  readonly failure: RuntimeProtocolFailed;
+}> {}
 
 /** The caller's side: the runner's operations over the runner Worker's service. */
 export const remoteAppRunner = <E>(remote: RemoteAppRunner<Effect.Effect<string, E>>) => ({
@@ -409,7 +422,18 @@ export const remoteAppRunner = <E>(remote: RemoteAppRunner<Effect.Effect<string,
       try: () => encodeLoadedBuild(bundle),
       catch: () => new RuntimeProtocolFailed(),
     }).pipe(
-      Effect.flatMap((encoded) => runnerResult(remote.declare(encoded, headers))),
+      Effect.flatMap((encoded) =>
+        remote.declare(encoded, headers).pipe(
+          // Told apart here, where the rejection is known to be the call's, never from its text.
+          Effect.catch((cause) =>
+            failedFrom(
+              false,
+              "runner",
+            )(cause).pipe(Effect.mapError((failure) => new RunnerUnanswered({ failure }))),
+          ),
+          Effect.flatMap(replyResult()),
+        ),
+      ),
       Effect.withSpan("runtime.app.remote.declare"),
     ),
 });

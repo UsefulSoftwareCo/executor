@@ -67,14 +67,24 @@ export const engineCallOf = (failure: WorkflowFailure) => {
 /**
  * What an engine's error says, as a code, from its message alone; the message is never kept.
  * The local engine (miniflare's `workflows/binding.worker.js`) aborts a paused, restarted or
- * terminated instance's calls with "Aborting engine: …", and refuses a `sleepUntil` in the past.
+ * terminated instance's calls with "Aborting engine: …", and refuses a `sleepUntil` in the past
+ * (`pastSleep`).
  * Cloudflare's engine names instance states as `instance.<state>`. Neither documents a full list,
  * so a message no rule recognises is `unclassified`.
  */
+/**
+ * The engine's refusal of a `sleepUntil` whose time has passed, in each engine's words:
+ * - "You can't sleep until a time in the past, time-traveler": upstream's engine (miniflare's
+ *   `binding.worker.js`, and `@alchemy.run/cloudflare-runtime`'s copy of it);
+ * - "Sleep deadline is in the past": our recovery change to that engine's `sleepUntil`, which keeps
+ *   a step's duration across a restart (`patches/@alchemy.run%2Fcloudflare-runtime@*.patch`). Local,
+ *   self-host and loopback Cloud run this one. A change to the patch's wording must change this too.
+ */
+const pastSleep = /sleep until a time in the past|sleep deadline is in the past/i;
 export const engineErrorCode = (error: unknown): string => {
   const message = error instanceof Error ? error.message : "";
   if (message.startsWith("Aborting engine:")) return "aborted";
-  if (/sleep until a time in the past/i.test(message)) return "past";
+  if (pastSleep.test(message)) return "past";
   const instance = /instance\.([a-z_]+)/.exec(message)?.[0];
   if (instance !== undefined) return instance;
   if (/terminat/i.test(message)) return "terminated";

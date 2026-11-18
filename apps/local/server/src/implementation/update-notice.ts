@@ -3,8 +3,11 @@
  * installed. It only reports; `executor upgrade` installs on request. The desktop app updates itself.
  */
 import {
-  compareReleaseVersions,
+  defaultNpmRegistry,
+  distTagsPath,
+  newerRelease,
   releaseChannel,
+  releasesFromDistTags,
   ReleaseVersion,
 } from "@executor-js/utils/release-version";
 import { Clock, Config, Console, Duration, Effect, FileSystem, Option, Path, Schema } from "effect";
@@ -14,8 +17,6 @@ import { HttpClient, HttpClientResponse } from "effect/http";
 const checkInterval = Duration.days(1);
 const requestTimeout = Duration.seconds(5);
 
-// npm `latest` still names Executor 1 until the v2 stable cutover, so non-v2 tags are ignored.
-const DistTags = Schema.Record(Schema.String, Schema.Unknown);
 const LastCheck = Schema.fromJsonString(
   Schema.Struct({
     checkedAt: Schema.Number,
@@ -76,12 +77,9 @@ const updateCommand = (method: InstallMethod, version: typeof ReleaseVersion.Typ
       ? `Run: brew upgrade ${releaseChannel(version) === "beta" ? "executor-beta" : "executor"}`
       : "Run: executor upgrade";
 
-const releaseTag = (tags: typeof DistTags.Type, name: string) =>
-  Schema.decodeUnknownOption(ReleaseVersion)(tags[name]).pipe(Option.getOrUndefined);
-
 /** The registry Executor reads releases from. `EXECUTOR_NPM_REGISTRY` names a registry mirror. */
 export const npmRegistry = Config.String("EXECUTOR_NPM_REGISTRY").pipe(
-  Config.withDefault("https://registry.npmjs.org"),
+  Config.withDefault(defaultNpmRegistry),
   Config.map((registry) => registry.replace(/\/+$/u, "")),
 );
 
@@ -89,35 +87,16 @@ export const npmRegistry = Config.String("EXECUTOR_NPM_REGISTRY").pipe(
 export const fetchReleases = (timeout: Duration.Input) =>
   Effect.gen(function* () {
     const registry = yield* npmRegistry;
-    const tags = yield* HttpClient.get(`${registry}/-/package/executor/dist-tags`).pipe(
+    const tags = yield* HttpClient.get(`${registry}${distTagsPath}`).pipe(
       Effect.flatMap(HttpClientResponse.filterStatusOk),
       Effect.flatMap((response) => response.json),
-      Effect.flatMap(Schema.decodeUnknownEffect(DistTags)),
       Effect.timeout(timeout),
       // node:http destroys an unanswered connection on timeout; an aborted fetch keeps the
       // process alive until the operating system gives up on connecting.
       Effect.provide(NodeHttpClient.layerNodeHttp),
     );
-    return { beta: releaseTag(tags, "beta"), latest: releaseTag(tags, "latest") };
+    return releasesFromDistTags(tags);
   });
-
-/** The newest release this installation should move to, if any. */
-export const newerRelease = (
-  current: typeof ReleaseVersion.Type,
-  known: {
-    readonly beta?: typeof ReleaseVersion.Type | undefined;
-    readonly latest?: typeof ReleaseVersion.Type | undefined;
-  },
-) => {
-  // Beta installs move to stable once it is newer; stable installs never move to beta.
-  const candidates =
-    releaseChannel(current) === "beta" ? [known.latest, known.beta] : [known.latest];
-  const [newer] = candidates
-    .filter((version) => version !== undefined)
-    .filter((version) => compareReleaseVersions(version, current) > 0)
-    .sort((left, right) => compareReleaseVersions(right, left));
-  return newer;
-};
 
 /** This build's release version, or none for development and commit builds. */
 export const currentRelease = Config.schema(ReleaseVersion, "EXECUTOR_BUILD_VERSION").pipe(

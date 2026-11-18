@@ -37,6 +37,7 @@ import { roleHost } from "./role-hosts.ts";
 import { freePort } from "./ports.ts";
 import { OperatorOAuthFixture, operatorOAuthFile, syntheticCloudGoogle } from "./operator-oauth.ts";
 import { reveal, secret } from "./failure-text.ts";
+import { cloudTestNotes, emptyCloudNotes } from "./cloud-release-notes.ts";
 
 /**
  * The operator settings for `fixture`: one test client, whose tokens go only to its own host, and
@@ -104,6 +105,18 @@ export const startCloudEnvironment = (input: {
    * scenarios that prove it.
    */
   readonly authRateLimit: boolean;
+  /**
+   * Organization removal's revocation budget, 5 minutes deployed. Only the Cloud of the scenarios
+   * that run it out sets it (`e2e:cloud --removal-revocation-budget`), so every other scenario's
+   * removals revoke under the deployed budget. Only `alchemy dev` honours it.
+   */
+  readonly removalRevocationBudgetMs?: number;
+  /**
+   * Build the dashboard with an empty notes file, as a deploy whose window has no notes does,
+   * instead of `cloudTestNotes`. Only the Cloud of the scenarios that show that sets it
+   * (`e2e:cloud --empty-release-notes`).
+   */
+  readonly emptyReleaseNotes?: true;
   /**
    * Which host serves the dashboard and sign-in: `app.` of the origin, or, with the rollback
    * switch (`CLOUD_BROWSER_ORIGIN=deployment`), the origin itself.
@@ -229,6 +242,9 @@ export const startCloudEnvironment = (input: {
       OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: `${collector}/v1/logs`,
       EXECUTOR_ENVIRONMENT: "test-local",
       TEST_STAGE_AUTH_RATE_LIMIT: String(input.authRateLimit),
+      ...(input.removalRevocationBudgetMs === undefined
+        ? {}
+        : { TEST_STAGE_REMOVAL_REVOCATION_BUDGET_MS: String(input.removalRevocationBudgetMs) }),
       VITE_POSTHOG_KEY: "synthetic-ingestion-key",
       VITE_POSTHOG_PATH: "/api/0123456789abcdef",
       VITE_POSTHOG_HOST: `http://127.0.0.1:${analyticsPort}`,
@@ -251,6 +267,11 @@ export const startCloudEnvironment = (input: {
       CLOUD_DEV_DATABASE_PASSWORD: databasePassword,
       CLOUD_DEV_EXTERNAL_DATABASE: "true",
       EXECUTOR_EMULATORS: JSON.stringify(reveal(fixture).services),
+      // The dashboard's notes input: these fixed notes, or an empty file, as a deploy's build takes
+      // the notes it wrote (e2e/support/cloud-release-notes.ts).
+      EXECUTOR_CLOUD_RELEASE_NOTES: JSON.stringify(
+        input.emptyReleaseNotes === true ? emptyCloudNotes : cloudTestNotes,
+      ),
       // Fails only engine calls to steps the workflow engine calls scenario's app names.
       EXECUTOR_TEST_WORKFLOW_ENGINE_FAULTS: JSON.stringify(engineCallFaults),
       V1_MCP_FORWARD_SECRET: v1ForwardSecret,

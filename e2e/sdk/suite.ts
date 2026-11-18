@@ -18,6 +18,7 @@ import { scenariosForSuite, type CloudMode, type TestPlan } from "../test-plan.t
 import { readEvidence, combineEvidenceReports, reportRuntimeCrashes } from "../evidence-results.ts";
 import { type EvidenceReport, type RunMetadata } from "../report-model.ts";
 import { startCloudEnvironment } from "../support/cloud-environment.ts";
+import { removalRevocationBudgetMs } from "../support/removal-revocation-budget.ts";
 import { lockedNpmRegistry } from "../support/npm-registry.ts";
 import { publicCatalogs } from "../support/public-catalogs.ts";
 import { type FixtureControl, fixtureControlEnvironment } from "./fixtures.ts";
@@ -64,6 +65,8 @@ export const runSuite = ({
   authRateLimit = false,
   rollback = false,
   oauthProxyPreview = false,
+  removalRevocationBudget = false,
+  emptyReleaseNotes = false,
   attachment,
 }: {
   readonly target: "self-host" | "local" | "cloud" | "all" | "hosted";
@@ -84,6 +87,16 @@ export const runSuite = ({
    * signs in through it, for the scenarios that prove the proxy.
    */
   readonly oauthProxyPreview?: boolean;
+  /**
+   * Start managed Cloud with organization removal's revocation budget shortened to
+   * `removalRevocationBudgetMs`, for the scenarios that run it out.
+   */
+  readonly removalRevocationBudget?: boolean;
+  /**
+   * Start managed Cloud with its dashboard built from an empty notes file, for the scenarios that
+   * show it.
+   */
+  readonly emptyReleaseNotes?: boolean;
   readonly attachment?: {
     readonly origin: string;
     readonly directory?: string;
@@ -148,6 +161,31 @@ export const runSuite = ({
           message:
             "The OAuth proxy preview runs only on managed Cloud, without --auth-rate-limit or --rollback. Use --target cloud without E2E_CLOUD_URL.",
         });
+      if (
+        removalRevocationBudget &&
+        (authRateLimit ||
+          rollback ||
+          oauthProxyPreview ||
+          selected !== "cloud" ||
+          Option.isSome(cloud))
+      )
+        return yield* new RunFailed({
+          message:
+            "The shortened revocation budget runs only on managed Cloud, without --auth-rate-limit, --rollback or --oauth-proxy-preview. Use --target cloud without E2E_CLOUD_URL.",
+        });
+      if (
+        emptyReleaseNotes &&
+        (authRateLimit ||
+          rollback ||
+          oauthProxyPreview ||
+          removalRevocationBudget ||
+          selected !== "cloud" ||
+          Option.isSome(cloud))
+      )
+        return yield* new RunFailed({
+          message:
+            "The empty notes file runs only on managed Cloud, without --auth-rate-limit, --rollback, --oauth-proxy-preview or --removal-revocation-budget. Use --target cloud without E2E_CLOUD_URL.",
+        });
       const interactive = yield* Config.Boolean("E2E_INTERACTIVE").pipe(Config.withDefault(false));
       const observeUI = yield* Config.Boolean("E2E_UI_OBSERVE").pipe(Config.withDefault(false));
       if (observeUI && (selected !== "cloud" || Option.isSome(cloud)))
@@ -192,7 +230,11 @@ export const runSuite = ({
             ? "rolled-back"
             : oauthProxyPreview
               ? "oauth-proxy-preview"
-              : "managed";
+              : removalRevocationBudget
+                ? "revocation-budget"
+                : emptyReleaseNotes
+                  ? "empty-release-notes"
+                  : "managed";
       const plan = scenariosForSuite(selected === "hosted" ? "hosted" : "all", cloudMode);
       const filter = yield* Effect.try({
         try: () => new RegExp(name),
@@ -239,7 +281,7 @@ export const runSuite = ({
                 runtime:
                   target === "cloud"
                     ? managedCloud
-                      ? `Local Cloud Worker + Postgres · no saved credentials · auth rate limit ${authRateLimit ? "on" : "off"}${rollback ? " · sign-in on the deployment origin" : ""}${oauthProxyPreview ? " · a test stage signing in through a second local Cloud's OAuth proxy" : ""}`
+                      ? `Local Cloud Worker + Postgres · no saved credentials · auth rate limit ${authRateLimit ? "on" : "off"}${rollback ? " · sign-in on the deployment origin" : ""}${oauthProxyPreview ? " · a test stage signing in through a second local Cloud's OAuth proxy" : ""}${removalRevocationBudget ? ` · organization removal revocation budget ${removalRevocationBudgetMs} ms` : ""}${emptyReleaseNotes ? " · an empty notes file" : ""}`
                       : "Cloud endpoint"
                     : target === "local" && Option.isSome(packagedEntry)
                       ? "Installed npm CLI + PGlite per scenario"
@@ -300,6 +342,8 @@ export const runSuite = ({
                         commit,
                         observeUI,
                         authRateLimit,
+                        ...(removalRevocationBudget ? { removalRevocationBudgetMs } : {}),
+                        ...(emptyReleaseNotes ? { emptyReleaseNotes: true as const } : {}),
                         browserOrigin: rollback ? "deployment" : "app",
                         ...Option.match(production, {
                           onNone: () => ({}),

@@ -90,6 +90,12 @@ export const CompileWorkerResult = Schema.Union([
 export interface WorkerdAppApi {
   cancel(): Promise<void>;
   compile(input: string): Promise<string>;
+  /**
+   * GET `path` on the npm registry builds install from, as builds read it: the apps Worker's
+   * global `fetch`, with no header and no redirect followed. The registry's status and body, or
+   * 502 when it was not reached, and 400 for a path that is not absolute.
+   */
+  readRegistry(path: string): Promise<{ readonly status: number; readonly body: string }>;
   invoke(input: string, callbacks: AppHostCallbacks): Promise<string>;
 }
 /** Background runs use finite host requests; no step callback or Promise lives in Node. */

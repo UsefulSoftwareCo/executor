@@ -229,6 +229,28 @@ TypeScript 7 has no JavaScript compiler API. The `packages/apps` build scripts
 and `e2e/check-boundary.ts` import TypeScript 5.9 as `typescript-5` for it;
 do not use that package to typecheck.
 
+## Release notes
+
+A public release lists only the changes whose squashed commit has a line
+`Release-note: <text>`; pull request titles are never published. For a change a
+user of the CLI, the desktop app or the self-host image would notice, put one
+such line, one plain sentence for users, at the start of a line of its own (not
+indented or quoted) in the body of a commit message on the pull request's
+branch: the squashed commit's body is its commits' messages, not the pull
+request's description. A message that holds `<`, `[`, `$`, ` ``` ` or `~~~`
+anywhere has no notes, so keep HTML, links, math and code blocks out of it. The
+one exception is a line that is only a co-author trailer,
+`Co-authored-by: Name <name@host>` (a bot's name may end `[bot]`), with nothing
+after it, anywhere in the message.
+Every such line is listed. A note is plain prose of at most 300 characters:
+ASCII letters, digits, spaces and `.,;:!?'"()-`, starting with a letter or
+digit, with no `@`, `#`, `/`, URL, host name, code, Markdown, `GH-123` or whole
+word of 7 or more hex characters or digits; any other is left out whole. Name no
+customer, organization or reporter, use no internal names, and say nothing
+about a security problem not yet fixed and disclosed. Write none for tests, CI,
+tooling or internal refactors. The rules are in
+[Release notes](RELEASING.md#release-notes).
+
 ## CI
 
 `.github/workflows/ci.yml` runs on pull requests, pushes to `main` and manual
@@ -388,7 +410,10 @@ REST or GraphQL API to get around a refusal, and no change to the ruleset. Only
 Rhys turns it off, in an emergency. See [CI configuration](notes/ci.md#the-main-ruleset).
 
 A failure on `main` is a regression or a flake that a PR selection missed. Fixing
-it takes priority over new work that touches the same area.
+it takes priority over new work that touches the same area. While CI on `main` is red, one
+open issue labelled `main-red` names the failed jobs and scenarios and the commits
+since the last green run (`.github/workflows/main-health.yml`); it closes itself
+on the next green run. Read it before investigating.
 
 A PR run takes at most about seven minutes. Wait for it once; do not poll post-merge
 suites before handing off. When a job fails in a scenario the change does not

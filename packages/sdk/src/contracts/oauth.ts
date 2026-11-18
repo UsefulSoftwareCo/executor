@@ -1564,7 +1564,8 @@ const attemptFields = {
   reconnect: Schema.optional(Schema.Boolean),
   redirectUri: HttpUrl,
   state: Schema.NonEmptyString,
-  verifier: Schema.NonEmptyString,
+  /** Absent when the provider declares `pkce: false`; only a secret client signs in so. */
+  verifier: Schema.optionalKey(Schema.NonEmptyString),
   response: JsonObject,
 };
 /** Protocol context frozen when authorization starts, preventing callback-supplied identity changes. */

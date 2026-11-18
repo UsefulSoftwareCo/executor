@@ -40,6 +40,8 @@ export default defineConfig({
       "e2e/tests/docker-release-live-query.spec.ts",
       "e2e/tests/docker-release-mcp-session-release.spec.ts",
       "e2e/tests/docker-release-runtime-files.spec.ts",
+      "e2e/tests/docker-release-stall.spec.ts",
+      "e2e/tests/docker-release-stall-load.spec.ts",
       "e2e/tests/docker-release-workflow-memory.spec.ts",
       "e2e/tests/docker-release-workflow-idle-window.spec.ts",
       "e2e/tests/docker-release-workflow-restart.spec.ts",

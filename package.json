@@ -74,7 +74,7 @@
     "format:check": "oxfmt --check .",
     "lint": "oxlint -c .oxlintrc.jsonc . --deny-warnings",
     "lint:fix": "oxlint -c .oxlintrc.jsonc --fix .",
-    "check": "node scripts/check-conflict-markers.ts && bun run patches:check && bun run versions:check && bun run format:check && bun run lint && bun run typecheck && bun run apps:protocols && bun run apps:telemetry && bun run api:errors && bun run auth:rate-limit && node packages/apps/scripts/browser-scripts.mjs --check && node packages/app-templates/scripts/executor-intro.ts --check && node scripts/check-no-unit-tests.ts && node packages/sdk/scripts/check-storage-versions.ts && node scripts/check-local-data-steps.ts && node apps/hosted/cloud/scripts/edge-contract.ts --check && node e2e/check-boundary.ts",
+    "check": "node scripts/check-conflict-markers.ts && bun run patches:check && node scripts/check-engine-refusals.ts && bun run versions:check && bun run format:check && bun run lint && bun run typecheck && bun run apps:protocols && bun run apps:telemetry && bun run api:errors && bun run auth:rate-limit && node packages/apps/scripts/browser-scripts.mjs --check && node packages/app-templates/scripts/executor-intro.ts --check && node scripts/check-no-unit-tests.ts && node packages/sdk/scripts/check-storage-versions.ts && node scripts/check-local-data-steps.ts && node apps/hosted/cloud/scripts/edge-contract.ts --check && node e2e/check-boundary.ts",
     "edge:contract": "node apps/hosted/cloud/scripts/edge-contract.ts",
     "e2e:prepare": "node scripts/e2e-prepare.ts",
     "e2e:runtime": "node scripts/build-test-runtime.ts",
@@ -147,6 +147,8 @@
     "e2e:local-disk": "vitest run --config e2e/local-disk.config.ts",
     "e2e:export-public": "vitest run --config e2e/export-public.config.ts",
     "e2e:beta-due": "vitest run --config e2e/beta-due.config.ts",
+    "e2e:release-notes": "vitest run --config e2e/release-notes.config.ts",
+    "e2e:release-notes-render": "vitest run --config e2e/release-notes-render.config.ts",
     "e2e:lockfile-sync": "vitest run --config e2e/lockfile-sync.config.ts",
     "e2e:alchemy-first-builds": "vitest run --config e2e/alchemy-first-builds.config.ts",
     "e2e:alchemy-dev-output": "vitest run --config e2e/alchemy-dev-output.config.ts",
@@ -205,7 +207,7 @@
     "typescript": "7.0.2",
     "typescript-5": "npm:typescript@5.9.3",
     "vitest": "5.0.1",
-    "workerd": "1.20260918.1",
+    "workerd": "1.20261117.1",
     "yaml": "2.9.1"
   },
   "overrides": {

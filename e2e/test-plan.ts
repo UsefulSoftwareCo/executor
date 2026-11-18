@@ -13,6 +13,8 @@ export const TargetPlan = Schema.Union([
         "rate-limited",
         "rolled-back",
         "oauth-proxy-preview",
+        "revocation-budget",
+        "empty-release-notes",
       ]),
     ),
   }),
@@ -74,6 +76,16 @@ const rateLimitedCloud = { status: "scheduled", runtime: "rate-limited" } as con
 const rolledBackCloud = { status: "scheduled", runtime: "rolled-back" } as const;
 /** Runs on a managed test stage that signs in through a second local Cloud's OAuth proxy. */
 const oauthProxyPreviewCloud = { status: "scheduled", runtime: "oauth-proxy-preview" } as const;
+/**
+ * Runs alone on a managed local Cloud whose organization removal revocation budget is shortened to
+ * `removalRevocationBudgetMs`; every other local Cloud keeps the deployed budget.
+ */
+const revocationBudgetCloud = { status: "scheduled", runtime: "revocation-budget" } as const;
+/**
+ * Runs alone on a managed local Cloud whose dashboard is built with an empty notes file, as a deploy
+ * whose window has no notes builds it; every other local Cloud builds it with fixed notes.
+ */
+const emptyReleaseNotesCloud = { status: "scheduled", runtime: "empty-release-notes" } as const;
 const na = (reason: string) => ({ status: "not-applicable", reason }) as const;
 const cloudOnboarding = {
   cloud: scheduled,
@@ -81,6 +93,13 @@ const cloudOnboarding = {
     "Self-host has instance setup and password/SSO admission instead of Cloud onboarding.",
   ),
   local: na("Local uses device pairing instead of Cloud account onboarding."),
+};
+
+/** The self-host update check's scenarios: only self-host has an update to offer. */
+const updateCheckTargets = {
+  "self-host": scheduled,
+  cloud: na("Cloud always runs the newest code; it has no update to offer."),
+  local: na("The CLI prints its own update notice and the desktop app updates itself."),
 };
 
 /** App Workers the budget scenarios keep loaded; their spec asserts this limit. */
@@ -124,7 +143,8 @@ const plan = <Name extends string>(scenarios: { readonly [_ in Name]: typeof Tes
  * (`EXECUTOR_TEST_WORKFLOW_ENGINE_FAULTS`, `engine-faults.ts`): each sleep of `napOnce` fails once,
  * every call of `nap-never` fails, `count-once`'s write runs before its answer fails once,
  * `waited-out` fails only after the engine waited, four times, the three `*-once` sleeps get the
- * engine's own answer once, and the three `*-until` sleepUntils get an answer once after their time. Each names a step only that scenario's app uses, so managed Cloud,
+ * engine's own answer once, the three `*-until` sleepUntils get an answer once after their time,
+ * and `late-until` reaches the engine three seconds late, after its time. Each names a step only that scenario's app uses, so managed Cloud,
  * whose one Worker serves every scenario, can carry the list for all of them.
  */
 export const engineCallFaults = [
@@ -139,6 +159,7 @@ export const engineCallFaults = [
   { call: "until", step: "paused-until", failures: 1, when: "after", answer: "paused" },
   { call: "until", step: "terminated-until", failures: 1, when: "after", answer: "terminated" },
   { call: "until", step: "transient-until", failures: 1, when: "after", answer: "internal" },
+  { call: "until", step: "late-until", failures: 1, lateMillis: 3000 },
 ] as const;
 
 export const scenarios = plan({
@@ -527,6 +548,87 @@ export const scenarios = plan({
     targets: {
       local: scheduled,
       "self-host": na("Hosted budgets are covered through organization routes."),
+      cloud: na("Cloudflare unloads Cloud's app Workers itself."),
+    },
+  },
+  appDataBurstMemory: {
+    file: "app-data-burst-memory.spec.ts",
+    title:
+      "a burst of apps with a database past the app Worker limit leaves the app runtime memory bounded",
+    serverEnvironment: { EXECUTOR_APP_WORKERS: "4" },
+    targets: {
+      local: scheduled,
+      "self-host": na("Local runs the same apps runtime and data supervisor."),
+      cloud: na("Cloudflare unloads Cloud's app Workers itself."),
+    },
+  },
+  appDataResetResend: {
+    file: "app-data-reset-resend.spec.ts",
+    title:
+      "a call and a change subscription that meet their data supervisor resetting are sent once more, the call runs once, and listing the app's tools meanwhile succeeds",
+    serverEnvironment: {
+      EXECUTOR_APP_WORKERS: "1",
+      EXECUTOR_TEST_SUPERVISOR_RESET_HOLD_MS: "10000",
+    },
+    targets: {
+      local: scheduled,
+      "self-host": na("Local runs the same apps runtime and data supervisor."),
+      cloud: na("Cloudflare unloads Cloud's app Workers itself."),
+    },
+  },
+  appDataResetKeepsPage: {
+    file: "app-data-reset-idle.spec.ts",
+    title:
+      "a data supervisor with a page connected does not reset, and the page keeps receiving changes",
+    serverEnvironment: {
+      EXECUTOR_APP_WORKERS: "1",
+      EXECUTOR_TEST_SUPERVISOR_RESET_DELAY_MS: "10000",
+    },
+    targets: {
+      local: scheduled,
+      "self-host": na("Local runs the same apps runtime and data supervisor."),
+      cloud: na("Cloudflare unloads Cloud's app Workers itself."),
+    },
+  },
+  appDataResetKeepsCall: {
+    file: "app-data-reset-idle.spec.ts",
+    title: "a data supervisor with a call in its facet does not reset, and the call runs once",
+    serverEnvironment: {
+      EXECUTOR_APP_WORKERS: "1",
+      EXECUTOR_TEST_SUPERVISOR_RESET_DELAY_MS: "10000",
+    },
+    targets: {
+      local: scheduled,
+      "self-host": na("Local runs the same apps runtime and data supervisor."),
+      cloud: na("Cloudflare unloads Cloud's app Workers itself."),
+    },
+  },
+  appDataResetKeepsLateCall: {
+    file: "app-data-reset-idle.spec.ts",
+    title:
+      "a data supervisor that received a call after its facet was unloaded does not reset, and the call runs once",
+    serverEnvironment: {
+      EXECUTOR_APP_WORKERS: "1",
+      EXECUTOR_TEST_SUPERVISOR_RESET_DELAY_MS: "10000",
+      EXECUTOR_TEST_SUPERVISOR_REPLY_DELAY_MS: "15000",
+    },
+    targets: {
+      local: scheduled,
+      "self-host": na("Local runs the same apps runtime and data supervisor."),
+      cloud: na("Cloudflare unloads Cloud's app Workers itself."),
+    },
+  },
+  appDataResetSelections: {
+    file: "app-data-reset-selections.spec.ts",
+    title:
+      "a call that arrives after one account selection's unload is not cut off when another selection's unload follows",
+    serverEnvironment: {
+      EXECUTOR_APP_WORKERS: "2",
+      EXECUTOR_TEST_SUPERVISOR_RESET_DELAY_MS: "25000",
+    },
+    targets: {
+      local: scheduled,
+      "self-host": na("Local runs the same apps runtime and data supervisor."),
       cloud: na("Cloudflare unloads Cloud's app Workers itself."),
     },
   },
@@ -1790,6 +1892,20 @@ export const scenarios = plan({
       },
       cloud: na("Desktop clipboard permission"),
       "self-host": na("Desktop clipboard permission"),
+    },
+  },
+  desktopUpdate: {
+    file: "desktop-update.spec.ts",
+    title:
+      "desktop shows a downloaded update in the sidebar and the Updates menu, clears both when a newer download fails verification, and installs from either",
+    targets: {
+      local: {
+        status: "not-run",
+        reason:
+          "Runs on macOS against a development build with desktop-update.config.ts (e2e/README.md, Desktop update).",
+      },
+      cloud: na("Only the desktop app updates itself."),
+      "self-host": na("Only the desktop app updates itself."),
     },
   },
   desktopReset: {
@@ -3340,6 +3456,39 @@ export const scenarios = plan({
       local: na("Local does not export product analytics or replay."),
     },
   },
+  productAnalyticsMcpClient: {
+    fixtures: "actors",
+    file: "product-analytics.spec.ts",
+    title:
+      "Cloud product events name the MCP client, sent with each request on 2026-07-28 or once at initialize on earlier versions",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Self-host does not export product analytics."),
+      local: na("Local does not export product analytics."),
+    },
+  },
+  cloudWhatsNew: {
+    fixtures: "actors",
+    file: "cloud-whats-new.spec.ts",
+    title:
+      "Cloud shows every member the newest note its build holds above the sidebar's links, which stay, and opens all of them by day, also in a short window and not in the collapsed rail, whatever the browser's clock says, and shows nothing where there are none",
+    targets: {
+      cloud: managedCloud,
+      "self-host": scheduled,
+      local: na("Cloud's notes are Cloud's; the desktop shows its update's notes."),
+    },
+  },
+  cloudWhatsNewEmpty: {
+    fixtures: "actors",
+    file: "cloud-whats-new.spec.ts",
+    title:
+      "Cloud built with an empty notes file shows no what's new and keeps no room for it, and keeps the sidebar's links",
+    targets: {
+      cloud: emptyReleaseNotesCloud,
+      "self-host": na("Self-host has no Cloud notes; the scenario with notes covers it."),
+      local: na("Cloud's notes are Cloud's; the desktop shows its update's notes."),
+    },
+  },
   supportDialog: {
     fixtures: "actors",
     file: "support-dialog.spec.ts",
@@ -3348,6 +3497,26 @@ export const scenarios = plan({
       cloud: managedCloud,
       "self-host": scheduled,
       local: na("The local dashboard is covered by its own support scenario."),
+    },
+  },
+  localDesktopUpdate: {
+    file: "local-desktop-update.spec.ts",
+    title:
+      "local dashboard shows the desktop's update as a tag and one line in place of the sidebar's resource links only while there is one, with no card around them, as a download status and then a named restart link the keyboard reaches, without moving the navigation or the version, also in the shortest window, leaves it out of the collapsed rail, which keeps the links and marks the download and the ready update with one small icon that expands the rail to it, announces once that it is ready, and wraps a long version in full",
+    targets: {
+      local: scheduled,
+      "self-host": na("Only the desktop app, which runs the local dashboard, updates itself."),
+      cloud: na("Only the desktop app, which runs the local dashboard, updates itself."),
+    },
+  },
+  localDesktopUpdateNotes: {
+    file: "local-desktop-update.spec.ts",
+    title:
+      "local dashboard leads the desktop's ready update with its newest note and opens every note since the running version, newest first, as text with each release page, leaving out lines the release notes' allow-list refuses, and says they are the changes since the running version only when the feed says its notes are whole back to it",
+    targets: {
+      local: scheduled,
+      "self-host": na("Only the desktop app, which runs the local dashboard, updates itself."),
+      cloud: na("Only the desktop app, which runs the local dashboard, updates itself."),
     },
   },
   localSupportDialog: {
@@ -4979,6 +5148,38 @@ export const scenarios = plan({
       local: na("The hosted and local dashboards share the credential form and check contract."),
     },
   },
+  connectFormLongLabel: {
+    fixtures: "actors",
+    file: "connect-form-layout.spec.ts",
+    title:
+      "The connect form keeps a paragraph-long sign-in method label, an unbroken field title and a long host list inside its dialog at desktop and phone widths, and its submit button says Validate and keeps its accessible name while the form announces the check once",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Self-host renders the same hosted connect dialog and shared form."),
+      local: na("The local dialog has its own scenario."),
+    },
+  },
+  connectFormHostList: {
+    fixtures: "actors",
+    file: "connect-form-layout.spec.ts",
+    title:
+      "The connect form names one or two credential hosts, says how many hosts share each domain for a longer list while naming every host on another domain, every wildcard and every host with a port, lists every declared host in order behind a keyboard-operable Show all button, and stays inside its dialog at desktop and phone widths",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Self-host renders the same hosted connect dialog and shared form."),
+      local: na("The local dialog renders the same shared form; its layout has its own scenario."),
+    },
+  },
+  localConnectFormLongLabel: {
+    file: "connect-form-layout.spec.ts",
+    title:
+      "The local connect dialog keeps a paragraph-long sign-in method label and a long host list inside it at desktop and phone widths",
+    targets: {
+      local: scheduled,
+      "self-host": na("The hosted connect dialog has its own scenario."),
+      cloud: na("The hosted connect dialog has its own scenario."),
+    },
+  },
   accountSecretFieldsExact: {
     fixtures: "actors",
     file: "account-secret-fields.spec.ts",
@@ -5678,6 +5879,39 @@ export const scenarios = plan({
     file: "oauth-client-authentication.spec.ts",
     title:
       "OAuth clients authenticate to services that accept only Basic credentials, read them literally, or read only the request body, through sign-in, registration, refresh and revocation",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a scoped loopback OAuth issuer."),
+      local: na("Exercises shared OAuth through the hosted API."),
+    },
+  },
+  oauthPkceRefused: {
+    fixtures: "actors",
+    file: "oauth-pkce-refused.spec.ts",
+    title:
+      "A service that refuses PKCE from confidential clients signs in and reconnects when its provider declares pkce: false, with secrets of reserved characters unchanged however the client was saved",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a scoped loopback OAuth issuer."),
+      local: na("Exercises shared OAuth through the hosted API."),
+    },
+  },
+  oauthPkceDefault: {
+    fixtures: "actors",
+    file: "oauth-pkce-refused.spec.ts",
+    title:
+      "A provider that declares nothing about PKCE signs in and reconnects with an S256 challenge and its verifier",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a scoped loopback OAuth issuer."),
+      local: na("Exercises shared OAuth through the hosted API."),
+    },
+  },
+  oauthPkceChanged: {
+    fixtures: "actors",
+    file: "oauth-pkce-refused.spec.ts",
+    title:
+      "Turning PKCE off gives a new provider: an account connected before is refused a reconnect and a sign-in in flight fails when it saves, each telling the person to connect again",
     targets: {
       "self-host": scheduled,
       cloud: na("Uses a scoped loopback OAuth issuer."),
@@ -6573,6 +6807,134 @@ export const scenarios = plan({
       local: na(
         "Local regenerates its own Executor app from the template at every start whose template changed.",
       ),
+    },
+  },
+  catalogCopyRebuild: {
+    fixtures: "actors",
+    legacyStorage: true,
+    serverEnvironment: { EXECUTOR_DATA_STEPS: "report", EXECUTOR_CATALOG_COPY_REBUILD: "on" },
+    file: "catalog-copy-rebuild.spec.ts",
+    title:
+      "Untouched catalog copies are rebuilt once on beta.140 from their own source, and a report writes nothing",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Cloud runs the same step from its Worker's cron; the local Worker never reaches it because the earlier framework pin step keeps retrying there without Cloudflare Artifacts.",
+      ),
+      local: na("Local never lists the catalog copy rebuild."),
+    },
+  },
+  catalogCopyRebuildUnreachableRegistry: {
+    fixtures: "actors",
+    serverEnvironment: { EXECUTOR_DATA_STEPS: "report", EXECUTOR_CATALOG_COPY_REBUILD: "on" },
+    file: "catalog-copy-rebuild.spec.ts",
+    title:
+      "A catalog copy rebuild that cannot reach the npm registry is retried at the next start, not skipped",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Cloud runs the same step from its Worker's cron; the local Worker never reaches it because the earlier framework pin step keeps retrying there without Cloudflare Artifacts.",
+      ),
+      local: na("Local never lists the catalog copy rebuild."),
+    },
+  },
+  catalogCopyRebuildCompilerUnavailable: {
+    fixtures: "actors",
+    serverEnvironment: { EXECUTOR_DATA_STEPS: "report", EXECUTOR_CATALOG_COPY_REBUILD: "on" },
+    file: "catalog-copy-rebuild.spec.ts",
+    title:
+      "A catalog copy rebuild whose compiler does not answer is retried at the next start, not skipped",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Cloud runs the same step from its Worker's cron; the local Worker never reaches it because the earlier framework pin step keeps retrying there without Cloudflare Artifacts.",
+      ),
+      local: na("Local never lists the catalog copy rebuild."),
+    },
+  },
+  catalogCopyRebuildConcurrentActivation: {
+    fixtures: "actors",
+    legacyStorage: true,
+    serverEnvironment: { EXECUTOR_DATA_STEPS: "report", EXECUTOR_CATALOG_COPY_REBUILD: "on" },
+    file: "catalog-copy-rebuild.spec.ts",
+    title: "A catalog copy rebuild never deploys over a version activated while it builds",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Cloud runs the same step from its Worker's cron; the local Worker never reaches it because the earlier framework pin step keeps retrying there without Cloudflare Artifacts.",
+      ),
+      local: na("Local never lists the catalog copy rebuild."),
+    },
+  },
+  catalogCopyRebuildInterrupted: {
+    fixtures: "actors",
+    serverEnvironment: { EXECUTOR_DATA_STEPS: "report", EXECUTOR_CATALOG_COPY_REBUILD: "on" },
+    file: "catalog-copy-rebuild.spec.ts",
+    title:
+      "A catalog copy rebuild stopped after its deploy is finished by the next start, not redeployed",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Cloud runs the same step from its Worker's cron; the local Worker never reaches it because the earlier framework pin step keeps retrying there without Cloudflare Artifacts.",
+      ),
+      local: na("Local never lists the catalog copy rebuild."),
+    },
+  },
+  catalogCopyRebuildStaged: {
+    fixtures: "actors",
+    serverEnvironment: { EXECUTOR_DATA_STEPS: "report", EXECUTOR_CATALOG_COPY_REBUILD: "on" },
+    file: "catalog-copy-rebuild.spec.ts",
+    title:
+      "A catalog copy rebuild applies only to its stage's scope, and a wider stage rebuilds the copies left",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Cloud runs the same step from its Worker's cron; the local Worker never reaches it because the earlier framework pin step keeps retrying there without Cloudflare Artifacts.",
+      ),
+      local: na("Local never lists the catalog copy rebuild."),
+    },
+  },
+  catalogCopyRebuildGivesUp: {
+    fixtures: "actors",
+    serverEnvironment: { EXECUTOR_DATA_STEPS: "report", EXECUTOR_CATALOG_COPY_REBUILD: "on" },
+    file: "catalog-copy-rebuild.spec.ts",
+    title:
+      "A catalog copy rebuild whose registry never comes back gives up after three starts, and the next stage tries again",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Cloud runs the same step from its Worker's cron; the local Worker never reaches it because the earlier framework pin step keeps retrying there without Cloudflare Artifacts.",
+      ),
+      local: na("Local never lists the catalog copy rebuild."),
+    },
+  },
+  catalogCopyRebuildPaced: {
+    fixtures: "actors",
+    serverEnvironment: { EXECUTOR_DATA_STEPS: "report", EXECUTOR_CATALOG_COPY_REBUILD: "on" },
+    file: "catalog-copy-rebuild.spec.ts",
+    title:
+      "A paced catalog copy rebuild starts no more compiler builds per run than its pace, and deploys a copy it stopped after its check at the next run",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Cloud runs the same step from its Worker's cron; the local Worker never reaches it because the earlier framework pin step keeps retrying there without Cloudflare Artifacts.",
+      ),
+      local: na("Local never lists the catalog copy rebuild."),
+    },
+  },
+  catalogCopyRebuildIntentKept: {
+    fixtures: "actors",
+    legacyStorage: true,
+    serverEnvironment: { EXECUTOR_DATA_STEPS: "report", EXECUTOR_CATALOG_COPY_REBUILD: "on" },
+    file: "catalog-copy-rebuild.spec.ts",
+    title:
+      "A catalog copy rebuild left part way stays to be finished when the app cannot be read, through the retry bound and into a stage that does not name it",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Cloud runs the same step from its Worker's cron; the local Worker never reaches it because the earlier framework pin step keeps retrying there without Cloudflare Artifacts.",
+      ),
+      local: na("Local never lists the catalog copy rebuild."),
     },
   },
   buildFrameworkMigration: {
@@ -7616,6 +7978,16 @@ export const scenarios = plan({
       ),
     },
   },
+  localOAuthTokenLimit: {
+    file: "local-oauth-token-limit.spec.ts",
+    title:
+      "A local MCP client whose token requests keep failing does not stop another local client getting its tokens",
+    targets: {
+      local: scheduled,
+      "self-host": na("Self-host limits token requests by each caller's own address."),
+      cloud: na("Cloud limits token requests by each caller's own address."),
+    },
+  },
   localMcpOAuthWithoutResource: {
     file: "local-mcp-connections.spec.ts",
     title: "Local MCP OAuth without a resource parameter grants the plain /mcp URL",
@@ -8185,8 +8557,7 @@ export const scenarios = plan({
   mcpExecuteHintedReadTimedOut: {
     fixtures: "actors",
     file: "mcp-execute-failures.spec.ts",
-    title:
-      "MCP tools only their server labels read-only are not offered as retries after they time out",
+    title: "MCP tools their server labels read-only are offered as retries after they time out",
     targets: {
       "self-host": scheduled,
       cloud: na("The silent MCP server is a loopback listener."),
@@ -8200,6 +8571,17 @@ export const scenarios = plan({
     targets: {
       "self-host": scheduled,
       cloud: na("The reporting MCP server is a loopback listener."),
+      local: na("Hosted self-host covers the shared execute path."),
+    },
+  },
+  mcpExecuteRejectedPromiseAll: {
+    fixtures: "actors",
+    file: "mcp-execute-failures.spec.ts",
+    title:
+      "MCP programs stopped while calls still run report each call, and how to keep the others when a call rejected",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Hosted self-host covers the shared execute path."),
       local: na("Hosted self-host covers the shared execute path."),
     },
   },
@@ -10056,6 +10438,52 @@ export const scenarios = plan({
       local: na("Local uses device pairing instead of administrator setup."),
     },
   },
+  selfHostUpdateCheck: {
+    file: "self-host-update-check.spec.ts",
+    title:
+      "Self-host asks its npm registry once for a newer release, with only a plain client's headers, and shows owners and admins how to update, never members",
+    targets: updateCheckTargets,
+  },
+  selfHostUpdateCheckChannels: {
+    file: "self-host-update-check.spec.ts",
+    title:
+      "Self-host offers a stable instance only a stable release, and a beta instance a newer stable release",
+    targets: updateCheckTargets,
+  },
+  selfHostUpdateCheckDaily: {
+    file: "self-host-update-check.spec.ts",
+    title:
+      "Self-host asks its npm registry for a newer release at most once a day whatever the answer or restarts, and keeps showing the release it last heard of through an outage",
+    targets: updateCheckTargets,
+  },
+  selfHostUpdateCheckRecord: {
+    file: "self-host-update-check.spec.ts",
+    title:
+      "Self-host asks nothing for a newer release and warns once a start when it cannot record the attempt, and asks once it can",
+    targets: updateCheckTargets,
+  },
+  selfHostUpdateCheckMirror: {
+    file: "self-host-update-check.spec.ts",
+    title:
+      "Self-host reads a private plain-HTTP mirror for a newer release as app installs do, directly whatever the proxy variables say",
+    targets: updateCheckTargets,
+  },
+  selfHostUpdateCheckOff: {
+    file: "self-host-update-check.spec.ts",
+    title: "Self-host shows no update and asks nothing when its update check is turned off",
+    targets: updateCheckTargets,
+  },
+  selfHostUpdateCheckAirGapped: {
+    file: "self-host-update-check.spec.ts",
+    title: "Self-host shows no update and no error when its npm registry cannot be reached",
+    targets: updateCheckTargets,
+  },
+  selfHostUpdateCheckUnanswered: {
+    file: "self-host-update-check.spec.ts",
+    title:
+      "Self-host starts, sets up and serves without an update while its npm registry never answers",
+    targets: updateCheckTargets,
+  },
   selfHostCatalogFeed: {
     file: "self-host-catalog-feed.spec.ts",
     title:
@@ -11341,6 +11769,30 @@ export const scenarios = plan({
       local: na("Local has no hosted organizations and serves no owner removal."),
     },
   },
+  organizationRemovalRevocation: {
+    fixtures: "actors",
+    file: "organization-removal-revocation.spec.ts",
+    title:
+      "Removing an organization revokes the refresh token of each of its OAuth accounts at the service once",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Self-host has a single instance organization and no organization removal."),
+      local: na("Local has no hosted organizations."),
+    },
+  },
+  organizationRemovalRevocationBudget: {
+    fixtures: "actors",
+    file: "organization-removal-revocation.spec.ts",
+    title:
+      "Removing an organization whose service never answers revocations finishes within its revocation budget and records how many OAuth grants it did not revoke",
+    targets: {
+      // Only a local Cloud of its own shortens the budget to fit a scenario; every other local
+      // Cloud and every deployed stage keep 5 minutes.
+      cloud: revocationBudgetCloud,
+      "self-host": na("Self-host has a single instance organization and no organization removal."),
+      local: na("Local has no hosted organizations."),
+    },
+  },
   organizationRemovalRecovery: {
     fixtures: "actors",
     file: "organization-removal-recovery.spec.ts",
@@ -11509,14 +11961,19 @@ export const scenarios = plan({
  * How the run reaches Cloud. Managed Cloud is local and turns the per-address auth limit off, as
  * deployed test stages do; a rate-limited run starts it with the limit on for the scenarios that
  * prove it, and runs only those. A rolled-back run starts it with its rollback switch on, sign-in
- * on the deployment origin, and runs only the scenarios that prove the switch.
+ * on the deployment origin, and runs only the scenarios that prove the switch. A revocation-budget
+ * run starts it with organization removal's revocation budget shortened, and runs only the
+ * scenarios that run that budget out. An empty-release-notes run builds its dashboard with an
+ * empty notes file, and runs only the scenarios that show it.
  */
 export type CloudMode =
   | "managed"
   | "attached"
   | "rate-limited"
   | "rolled-back"
-  | "oauth-proxy-preview";
+  | "oauth-proxy-preview"
+  | "revocation-budget"
+  | "empty-release-notes";
 
 const cloudRuntimeReasons = {
   managed: "Requires the managed local Cloud target and its local collectors.",
@@ -11527,6 +11984,10 @@ const cloudRuntimeReasons = {
     "Requires a managed local Cloud with its rollback switch on: e2e:cloud --rollback.",
   "oauth-proxy-preview":
     "Requires a managed test stage signing in through a second local Cloud's OAuth proxy: e2e:cloud --oauth-proxy-preview.",
+  "revocation-budget":
+    "Requires a managed local Cloud with organization removal's revocation budget shortened: e2e:cloud --removal-revocation-budget.",
+  "empty-release-notes":
+    "Requires a managed local Cloud whose dashboard is built with an empty notes file: e2e:cloud --empty-release-notes.",
 } as const;
 
 /**
@@ -11559,7 +12020,9 @@ export const scenariosForSuite = (
         cloud.runtime === undefined
           ? cloudMode !== "rate-limited" &&
             cloudMode !== "rolled-back" &&
-            cloudMode !== "oauth-proxy-preview"
+            cloudMode !== "oauth-proxy-preview" &&
+            cloudMode !== "revocation-budget" &&
+            cloudMode !== "empty-release-notes"
           : cloud.runtime === cloudMode;
       return runs
         ? scenario
@@ -11573,7 +12036,11 @@ export const scenariosForSuite = (
                     ? "Runs on Cloud with sign-in on app., without the rollback switch."
                     : cloudMode === "oauth-proxy-preview"
                       ? "Runs on Cloud as the OAuth proxy's production, not on a stage signing in through it."
-                      : "Runs on Cloud without the per-address auth limit."
+                      : cloudMode === "revocation-budget"
+                        ? "Runs on Cloud with organization removal's deployed revocation budget."
+                        : cloudMode === "empty-release-notes"
+                          ? "Runs on Cloud built with the fixed test notes."
+                          : "Runs on Cloud without the per-address auth limit."
                   : cloudRuntimeReasons[cloud.runtime],
               ),
             },
