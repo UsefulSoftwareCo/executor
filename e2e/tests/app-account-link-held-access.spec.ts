@@ -1,6 +1,6 @@
 /**
  * Linking an account for everyone needs edit access to the app and use of the account, and
- * unlinking one needs edit access. Saving an MCP connection that runs an app as an account links
+ * unlinking someone else's needs edit access. Saving an MCP connection that runs an app as an account links
  * that account for the member, which needs use of the app and of the account. Each route checks
  * before its write, which then waits for the app's link lock; access revoked in between must refuse
  * the write. The self-host test entry point holds the request just after its last check has
@@ -248,22 +248,28 @@ layer(HostedLive, { excludeTestServices: true })("App account link held access",
         expect(linked.status, JSON.stringify(linked.body)).toBe(200);
         expect(yield* appLinks).toEqual([["service", first]]);
 
+        // The owner links their account again. Its owner may unlink an account from any app, so
+        // the admin's unlinks below are of the owner's account, which needs edit access.
+        const relinked = yield* send(owner, "PUT", linkPath(second));
+        expect(relinked.status, JSON.stringify(relinked.body)).toBe(200);
+        expect(yield* appLinks).toEqual([["service", second]]);
+
         // Demoted while its unlink waits, the admin no longer edits the app: the link stays.
         const kept = yield* held(
           "app-access",
           app,
-          send(admin, "DELETE", linkPath(first)),
+          send(admin, "DELETE", linkPath(second)),
           setRole("member"),
         );
         yield* refused(kept);
-        expect(yield* appLinks).toEqual([["service", first]]);
+        expect(yield* appLinks).toEqual([["service", second]]);
         yield* setRole("admin");
 
         // Held and released with nothing changed, the unlink removes it.
         const unlinked = yield* held(
           "app-access",
           app,
-          send(admin, "DELETE", linkPath(first)),
+          send(admin, "DELETE", linkPath(second)),
           Effect.void,
         );
         expect(unlinked.status, JSON.stringify(unlinked.body)).toBe(200);

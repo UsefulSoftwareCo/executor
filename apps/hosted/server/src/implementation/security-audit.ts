@@ -66,13 +66,14 @@ export const recordSecurityAudit = (event: SecurityAuditEvent) =>
  * `auth.failure.reason` when a check recorded one. A request that ends before the action does is
  * `interrupted`: a change it started may still be stored. Only a completed action names its target,
  * by `target.id` of its result, a record the action found authorized or stored; what the request
- * asked for can be any text.
+ * asked for can be any text. `succeeded` adds detail read from a completed action's result.
  */
 export const audited =
   <A>(
     action: SecurityAuditAction,
     target: { readonly kind: string; readonly id: (value: A) => string | undefined },
     detail?: Readonly<Record<string, string>>,
+    succeeded?: (value: A) => Readonly<Record<string, string>>,
   ) =>
   <E, R>(effect: Effect.Effect<A, E, R>) =>
     Effect.onExit(effect, (exit) =>
@@ -84,6 +85,9 @@ export const audited =
             ? "interrupted"
             : "failure",
         target: { kind: target.kind, id: Exit.isSuccess(exit) ? target.id(exit.value) : undefined },
-        detail,
+        detail:
+          Exit.isSuccess(exit) && succeeded !== undefined
+            ? { ...detail, ...succeeded(exit.value) }
+            : detail,
       }),
     );

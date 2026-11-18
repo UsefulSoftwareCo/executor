@@ -32,7 +32,7 @@ import { CurrentUserId } from "../contracts/auth.ts";
 import { CurrentPolicy } from "../contracts/authorization.ts";
 import { ConnectionAccountUnlinked, RequirementMismatch } from "../contracts/app-accounts.ts";
 
-import { OrganizationForbidden } from "../contracts/organization.ts";
+import { CurrentOrganization, OrganizationForbidden } from "../contracts/organization.ts";
 import {
   AppAccountReads,
   LinkedAccount,
@@ -283,6 +283,8 @@ export const lockedChange = <A, E, R>(
     readonly app: AppId;
     readonly access: "manage" | "use" | "unlink";
     readonly account?: AccountId | undefined;
+    /** Reuses another app's link: serialize with every other reuse in the organization. */
+    readonly reuse?: boolean | undefined;
   },
   change: (sql: SqlClient.SqlClient, actor: ResourceAuthority) => Effect.Effect<A, E, R>,
 ) =>
@@ -290,6 +292,12 @@ export const lockedChange = <A, E, R>(
     const sql = yield* policyDatabase;
     return yield* executor[StorageHost].transaction(
       Effect.gen(function* () {
+        // A reuse share-locks its source links and may replace a link another reuse relies on;
+        // one at a time per organization, taken before any app lock, so two cannot deadlock.
+        if (input.reuse === true)
+          yield* sql`select pg_advisory_xact_lock(hashtextextended(${`executor-app-link-reuse:${(yield* CurrentOrganization).organization}`}, 0))`.pipe(
+            Effect.catchTag("SqlError", () => new StorageError()),
+          );
         yield* lockAppLinks(sql, input.app);
         const actor = yield* lockCurrentActor;
         if (input.access === "unlink") {
@@ -547,15 +555,20 @@ export const removeAppLinksOf = (
 ) =>
   executor[StorageHost].transaction(
     Effect.gen(function* () {
-      const rows = yield* Schema.decodeUnknownEffect(Schema.Array(AppLinkRow))(
-        yield* sql`select distinct app, requirement from hosted_app_account_links
-          where account = ${account} and subject is null
-            and ${app === undefined ? sql`true` : sql`app = ${app}`} order by app, requirement`,
-      );
       let removed = false;
-      for (const row of rows)
-        if (yield* removeLink(sql, executor.webhooks, { ...row, account, subject: null }))
-          removed = true;
+      // A reuse that held a link this removes may have committed a new one meanwhile, which the
+      // last read missed; read again until none is left, a bounded number of times.
+      for (let pass = 0; pass < 8; pass++) {
+        const rows = yield* Schema.decodeUnknownEffect(Schema.Array(AppLinkRow))(
+          yield* sql`select distinct app, requirement from hosted_app_account_links
+            where account = ${account} and subject is null
+              and ${app === undefined ? sql`true` : sql`app = ${app}`} order by app, requirement`,
+        );
+        if (rows.length === 0) break;
+        for (const row of rows)
+          if (yield* removeLink(sql, executor.webhooks, { ...row, account, subject: null }))
+            removed = true;
+      }
       return removed;
     }).pipe(Effect.catchTags(sqlFailures)),
   );

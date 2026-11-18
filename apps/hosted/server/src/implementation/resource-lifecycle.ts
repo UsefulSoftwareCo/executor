@@ -27,6 +27,7 @@ import {
   linkedAccounts,
   sourceActorLost,
 } from "./app-accounts.ts";
+import { recordSecurityAudit } from "./security-audit.ts";
 import { usableAppLinks } from "./resource-policy.ts";
 
 type AppCreation =
@@ -697,13 +698,28 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
             if (!usable.has(input.account.id)) return yield* new AccountConnectionRefused(target);
           }
           const sources = yield* webhooks;
-          yield* addLink(sql, sources, {
+          const changed = yield* addLink(sql, sources, {
             app: input.app,
             requirement: input.requirement,
             account: input.account.id,
             subject: input.scope === "app" ? null : user,
             linkedBy: user,
           }).pipe(Effect.mapError(() => new StorageError()));
+          // A connection completing for an app requirement links the new account for everyone.
+          if (input.scope === "app")
+            yield* recordSecurityAudit({
+              action: "app_account.link",
+              outcome: "success",
+              target: { kind: "account", id: input.account.id },
+              detail: {
+                app: input.app,
+                authority: "owner",
+                via: "connect",
+                changed: String(changed),
+              },
+              user,
+              organization,
+            });
         }).pipe(
           Effect.catchTags({
             SqlError: () => new StorageError(),

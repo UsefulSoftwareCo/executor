@@ -193,7 +193,7 @@ const scopeEndpoints = <const S extends AccountScope>(scope: S) => {
       .annotate(
         OpenApi.Description,
         forEveryone
-          ? "Read one of this app's own requirements: the accounts linked to it, then the other accounts of its provider you could link, each marked linked or not: your own, and accounts already linked for everyone to an app you can edit. Needs edit access to the app."
+          ? "Read one of this app's own requirements: the accounts linked to it, then the other accounts of its provider you could link, each marked linked or not: your own and, for an organization owner or admin, accounts already linked for everyone to an app they can edit, unless a member other than the account's owner created this app. Needs edit access to the app."
           : "Read one of this app's user requirements: the accounts you linked to it, then the other accounts of its provider you can use and could link, each marked linked or not. Choose from these accounts before linking.",
       ),
     HttpApiEndpoint.put(`${scope}Link`, `${path}/:requirement/:account`, {
@@ -205,7 +205,7 @@ const scopeEndpoints = <const S extends AccountScope>(scope: S) => {
       .annotate(
         OpenApi.Description,
         forEveryone
-          ? "Link an account to one of this app's own requirements, so every caller and the app's background work use it through the app, without access to the account itself. Needs edit access to the app, and the account must be your own or already linked for everyone to an app you can edit; it stays its owner's. Linking an account to a plain requirement replaces the account linked to it before; for many() it adds one. Linking again changes nothing. The replaced account stays saved."
+          ? "Link an account to one of this app's own requirements, so every caller and the app's background work use it through the app, without access to the account itself. Needs edit access to the app, and the account must be your own, or, for an organization owner or admin, already linked for everyone to an app they can edit and this app not created by a member other than the account's owner; it stays its owner's. Linking an account to a plain requirement replaces the account linked to it before; for many() it adds one. Linking again changes nothing. The replaced account stays saved."
           : "Link one of your accounts to one of this app's user requirements. Needs use of the app and of the account. Linking an account to a plain requirement replaces the account you linked to it before; for many() it adds one. Linking again changes nothing. The replaced account stays saved.",
       ),
     HttpApiEndpoint.delete(`${scope}Unlink`, `${path}/:requirement/:account`, {
