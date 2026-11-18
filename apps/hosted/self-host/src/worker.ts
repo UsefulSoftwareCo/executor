@@ -25,6 +25,7 @@ import {
 import {
   FetchHttpClient,
   HttpEffect,
+  HttpMiddleware,
   HttpRouter,
   HttpServer,
   HttpServerRequest,
@@ -217,9 +218,9 @@ const prepare = (state: DurableObjectState, env: Environment) =>
         return endsWithRequest(request, response);
       });
       return {
-        fetch: HttpEffect.toWebHandlerWith<never, Effect.Services<typeof addressed>>(context)(
-          addressed,
-        ),
+        fetch: HttpEffect.toWebHandlerWith<never, Effect.Services<typeof addressed>>(
+          Context.add(context, HttpMiddleware.TracerDisabledWhen, isHostProbe),
+        )(addressed),
         workflow: HttpEffect.toWebHandlerWith<never, Effect.Services<typeof workflow>>(context)(
           workflow,
         ),
@@ -227,6 +228,16 @@ const prepare = (state: DurableObjectState, env: Environment) =>
       };
     }).pipe(Effect.provideContext(common));
   });
+
+/**
+ * The image's host asks /health every second to notice when the product stops answering; that
+ * request records no trace, or it would fill the telemetry store. Only the host sends the header:
+ * it removes it from every request it proxies, and `SelfOrigin` removes it from the requests apps
+ * send to their own instance.
+ */
+const hostProbeHeader = "x-executor-host-probe";
+const isHostProbe = (request: HttpServerRequest.HttpServerRequest) =>
+  request.url === "/health" && request.headers[hostProbeHeader] === "1";
 
 /**
  * The product store has its own disk service, namespace and migration journal.
@@ -327,6 +338,7 @@ export class SelfOrigin extends WorkerEntrypoint<Environment> {
   async fetch(request: Request): Promise<Response> {
     const internal = new Request(request);
     internal.headers.set("x-executor-client-ip", "127.0.0.1");
+    internal.headers.delete(hostProbeHeader);
     return this.env.PRODUCT.getByName("product").fetch(internal);
   }
 }
