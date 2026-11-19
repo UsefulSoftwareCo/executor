@@ -166,7 +166,8 @@ export const selfHostExecutorServices = <E, R>(
           allowInsecureCallbacks: egress.policy.allowLoopbackHttp,
         },
       }).pipe(Effect.provide([SecureRandom.layerWebCrypto, Digest.layerWebCrypto]));
-      yield* lifecycle.attach(executor);
+      // Password registration is admitted locally; self-host does not send verification mail.
+      yield* lifecycle.attach(executor, { requireVerifiedEmail: false });
       yield* Deferred.succeed(ready, executor);
       yield* Effect.forkScoped(deliverEvents(executor));
       // The schema is current and nothing serves or builds yet; the caller holds the data lock.

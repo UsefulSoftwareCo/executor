@@ -7686,6 +7686,120 @@ export const scenarios = plan({
       local: na("Local uses its configured instance API key."),
     },
   },
+  executorManagedKeyRenewed: {
+    fixtures: "actors",
+    managementApps: ["owner"],
+    file: "executor-managed-key.spec.ts",
+    title:
+      "Executor app's managed key revoked on the Tokens page is recreated once by the next management calls from an MCP client",
+    targets: {
+      "self-host": scheduled,
+      cloud: managedCloud,
+      local: na("Local uses its configured instance API key."),
+    },
+  },
+  executorManagedKeyIneligible: {
+    fixtures: "actors",
+    managementApps: ["admin"],
+    file: "executor-managed-key.spec.ts",
+    title:
+      "Executor app's managed key is not recreated for a member who may no longer hold one, and its refusal says how to replace it",
+    targets: {
+      "self-host": scheduled,
+      cloud: managedCloud,
+      local: na("Local uses its configured instance API key."),
+    },
+  },
+  executorManagedKeyOtherApp: {
+    fixtures: "actors",
+    managementApps: ["owner"],
+    file: "executor-managed-key.spec.ts",
+    title:
+      "Executor app's managed key is recreated only for the Executor app's own calls, never for another app its account is linked to, and once for a hundred calls at a time",
+    targets: {
+      "self-host": scheduled,
+      cloud: managedCloud,
+      local: na("Local uses its configured instance API key."),
+    },
+  },
+  executorManagedKeyAccountDeleted: {
+    fixtures: "actors",
+    managementApps: ["owner"],
+    file: "executor-managed-key.spec.ts",
+    title:
+      "Executor app's managed key is never recreated once its account is deleted, however many calls arrive",
+    targets: {
+      "self-host": scheduled,
+      cloud: managedCloud,
+      local: na("Local uses its configured instance API key."),
+    },
+  },
+  executorManagedKeyTwoOrganizations: {
+    fixtures: "actors",
+    managementApps: ["owner"],
+    file: "executor-managed-key.spec.ts",
+    title:
+      "Executor app's managed key is recreated only in the organization whose app was refused, for a member of two organizations",
+    targets: {
+      "self-host": na("Self-host has one organization; its members cannot create another."),
+      cloud: managedCloud,
+      local: na("Local uses its configured instance API key."),
+    },
+  },
+  executorKeyReconnectDuringRenewal: {
+    fixtures: "actors",
+    managementApps: ["owner"],
+    file: "executor-managed-key-locks.spec.ts",
+    title:
+      "A member's own token reconnected into the Executor app's key account while its renewal commits never takes the renewal's generation",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na(
+        "Self-host's single PGlite connection runs one transaction at a time, and its database cannot be written beside the server.",
+      ),
+      local: na("Local uses its configured instance API key."),
+    },
+  },
+  executorKeyNameNotMarking: {
+    fixtures: "actors",
+    managementApps: ["owner"],
+    file: "executor-managed-key-locks.spec.ts",
+    title:
+      "A token that already bears the Executor app's key name stays an ordinary token on the Tokens page and is never recreated",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na(
+        "Self-host's single PGlite connection runs one transaction at a time, and its database cannot be written beside the server.",
+      ),
+      local: na("Local uses its configured instance API key."),
+    },
+  },
+  executorKeyExistingOrFailedRenewal: {
+    fixtures: "actors",
+    managementApps: ["owner"],
+    file: "executor-managed-key-locks.spec.ts",
+    title:
+      "A disabled Executor app key is never recreated, an expired one is recreated once its refusal deletes it, and a renewal that fails after minting leaves no key and is not repeated",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na(
+        "Self-host's single PGlite connection runs one transaction at a time, and its database cannot be written beside the server.",
+      ),
+      local: na("Local uses its configured instance API key."),
+    },
+  },
+  executorKeyOrganizationChecked: {
+    fixtures: "actors",
+    managementApps: ["owner"],
+    file: "executor-managed-key.spec.ts",
+    title:
+      "Executor app's managed key replacement is refused when its organization is a name or out of the token's reach",
+    targets: {
+      "self-host": scheduled,
+      cloud: managedCloud,
+      local: na("Local uses its configured instance API key."),
+    },
+  },
   executorCustomization: {
     fixtures: "actors",
     managementApps: ["owner"],

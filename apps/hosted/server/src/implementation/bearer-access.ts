@@ -730,10 +730,12 @@ export const apiBearerAccess = (
   origins: HostedOAuthOrigins,
   request: BearerRequest,
   unknownKeys?: UnknownApiKeys,
-) =>
-  Effect.gen(function* () {
+) => {
+  const token = bearer(request.headers);
+  // A refused API key says how to replace it; no sign-in would help.
+  const presentedKey = token !== undefined && isApiKey(token);
+  return Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
-    const token = bearer(request.headers);
     if (token === undefined) return yield* noBearer(request.headers);
     const access: Omit<ApiBearerAccess, "organizationSlug"> & {
       readonly organizationSlug: string | null;
@@ -762,11 +764,17 @@ export const apiBearerAccess = (
     return { ...access, organizationSlug } satisfies ApiBearerAccess;
   }).pipe(
     Effect.tapError(recordRefusal),
-    Effect.mapError(({ reason }) =>
+    Effect.mapError(({ reason, failure }) =>
       reason === "unauthorized"
-        ? new Unauthorized()
+        ? new Unauthorized(
+            presentedKey &&
+              (failure === "unknown" || failure === "revoked" || failure === "expired")
+              ? { credential: "apiKey" }
+              : {},
+          )
         : reason === "unavailable"
           ? new AuthenticationUnavailable()
           : new OrganizationForbidden(),
     ),
   );
+};

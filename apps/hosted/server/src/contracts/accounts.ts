@@ -65,6 +65,53 @@ export const AccountLinkedToApp = UserFacingError.define({
 });
 /** Parsed AccountLinkedToApp failure. */
 export type AccountLinkedToApp = typeof AccountLinkedToApp.Type;
+/**
+ * The built-in Executor app's "Executor API key" account would fail every call: its Organization is
+ * not a URL slug or ID (`organization`), the token cannot reach that organization (`unreachable`),
+ * or Executor does not accept the token (`token`). Nothing is saved.
+ */
+export const ExecutorKeyRefused = UserFacingError.define({
+  tag: "ExecutorKeyRefused",
+  status: 422,
+  fields: { reason: Schema.Literals(["organization", "unreachable", "token"]) },
+  recorded: ({ reason }) => `The Executor API key account was refused (${reason})`,
+  presentation: ({ reason }) =>
+    reason === "organization"
+      ? {
+          title: "Enter the organization's URL slug",
+          description:
+            "Organization must be the organization's URL slug or ID, as in its dashboard address after /org/, not its name.",
+          recovery: {
+            action: "Enter the URL slug from the dashboard address, then connect again.",
+            instructions:
+              "Ask the user for the organization's URL slug or ID. Do not guess it from the organization's name.",
+          },
+        }
+      : reason === "unreachable"
+        ? {
+            title: "This token cannot reach that organization",
+            description:
+              "Executor accepted the token, but it cannot reach the organization entered: no organization has that URL slug or ID, the token is for another organization, or its user is not a member.",
+            recovery: {
+              action:
+                "Check the organization's URL slug, or create a token for that organization on the Tokens page.",
+              instructions:
+                "Ask the user to check the organization's URL slug and the token's scope. Do not change the token or organization without them.",
+            },
+          }
+        : {
+            title: "Token not accepted",
+            description:
+              "Executor did not accept this token: it was revoked, has expired or was copied incompletely.",
+            recovery: {
+              action: "Create a new token on the Tokens page and paste it here.",
+              instructions:
+                "Ask the user to create a new token on the Tokens page. Never ask them to paste a token into chat.",
+            },
+          },
+});
+/** Parsed ExecutorKeyRefused failure. */
+export type ExecutorKeyRefused = typeof ExecutorKeyRefused.Type;
 
 const params = { organization: OrganizationReference };
 const app = { ...params, app: AppId };
@@ -226,7 +273,13 @@ export const HostedAccounts = HttpApiGroup.make("accounts")
         fields: AccountFieldsInput,
       }),
       success: Account,
-      error: [...completionErrors, AuthMethodInvalid, AccountFieldsInvalid],
+      error: [
+        ...completionErrors,
+        AuthMethodInvalid,
+        AccountFieldsInvalid,
+        ExecutorKeyRefused,
+        AuthenticationUnavailable,
+      ],
     }).annotate(RequiredAction, "manage"),
   )
   .add(

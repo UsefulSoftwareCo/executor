@@ -200,7 +200,7 @@ const noRows = "'[]'::text";
  * `createExecutor` as `hooks`, then hand the created executor to `attach`.
  */
 export const hostedResourceLifecycle = Effect.gen(function* () {
-  const created: { executor?: Executor } = {};
+  const created: { executor?: Executor; requireVerifiedEmail?: boolean | undefined } = {};
   const executor = Effect.suspend(() =>
     created.executor === undefined
       ? Effect.fail(new StorageError())
@@ -493,6 +493,17 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
           yield* sql`insert into hosted_app_access (id, organization_id, creator_id, audience)
         values (${app.id}, ${organization}, ${creator}, ${intent.kind === "member" ? "private" : "everyone"})`;
         }).pipe(Effect.catchTag("SqlError", () => new StorageError())),
+      // Renewal mints keys with Better Auth's key plugin, so it loads only after a refusal.
+      secretsRejected: (input) =>
+        Effect.promise(() => import("./managed-executor-key.ts")).pipe(
+          Effect.flatMap(({ renewManagedExecutorKey }) =>
+            renewManagedExecutorKey(
+              executor,
+              Effect.sync(() => created.requireVerifiedEmail ?? true),
+            )(input),
+          ),
+          Effect.provideService(SqlClient.SqlClient, sql),
+        ),
       accountCreated: (account) =>
         Effect.gen(function* () {
           const organization = yield* organizationOf(account.owner);
@@ -693,10 +704,15 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
   });
   return {
     hooks,
-    /** Let the hooks reach the executor they were created for. */
-    attach: (instance: Executor) =>
+    /**
+     * Let the hooks reach the executor they were created for. `requireVerifiedEmail` is what the
+     * host's member setup requires of a managed key's member (default true), which renewing one
+     * requires too.
+     */
+    attach: (instance: Executor, options?: { readonly requireVerifiedEmail?: boolean }) =>
       Effect.sync(() => {
         created.executor = instance;
+        created.requireVerifiedEmail = options?.requireVerifiedEmail;
       }),
   };
 });

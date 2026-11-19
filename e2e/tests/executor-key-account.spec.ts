@@ -408,6 +408,14 @@ layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it
           Schema.Struct({ id: Schema.String }),
           yield* api.request(actors.owner, "POST", connectionsPath(path, "user", "service"), {}),
         );
+        // An ordinary token the member made: connecting checks it, so it is live until revoked.
+        const ordinary = yield* body(
+          Schema.Struct({ id: Schema.String, key: Schema.String }),
+          yield* api.request(actors.owner, "POST", "/api/auth/api-key/create", {
+            name: "Manual key token",
+            metadata: { organization: actors.organization.id },
+          }),
+        );
         const manual = yield* body(
           Schema.Struct({ id: Schema.String }),
           yield* api.request(
@@ -417,10 +425,15 @@ layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it
             {
               method: "apiKey",
               label: "Manual key",
-              fields: { token: "synthetic-manual-key", organization: actors.organization.id },
+              fields: { token: ordinary.key, organization: actors.organization.id },
             },
           ),
         );
+        expect(
+          (yield* api.request(actors.owner, "POST", "/api/auth/api-key/delete", {
+            keyId: ordinary.id,
+          })).status,
+        ).toBe(200);
         // Connecting from the app links the manual key in place of the managed one, which stays
         // saved; member setup on later reads neither links it again nor mints another.
         const afterManual = yield* read(actors.owner);
@@ -428,15 +441,38 @@ layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it
         expect(
           afterManual.accounts.filter((item) => item.method === "apiKey").map((item) => item.id),
         ).toEqual(expect.arrayContaining([account, manual.id]));
-        // Calls now run with the manual key, whose synthetic token the API refuses.
-        const manualCall = yield* call(actors.owner);
-        expect(manualCall.status, JSON.stringify(manualCall.body)).toBe(502);
-        expect(manualCall.body).toMatchObject({
-          _tag: "AppProviderFailed",
-          reason: "unauthorized",
-          status: 401,
-          account: { id: manual.id, label: "Manual key" },
-        });
+        // Calls now run with the manual key, whose revoked token the API refuses. Only the
+        // Executor app's own key is ever recreated: this one stays refused, call after call, and
+        // the refusal tells the agent how to replace it.
+        for (const attempt of ["first", "second"]) {
+          const manualCall = yield* call(actors.owner);
+          expect(manualCall.status, `${attempt}: ${JSON.stringify(manualCall.body)}`).toBe(502);
+          expect(manualCall.body).toMatchObject({
+            _tag: "AppProviderFailed",
+            reason: "unauthorized",
+            status: 401,
+            account: { id: manual.id, label: "Manual key" },
+            upstream: {
+              code: "Unauthorized",
+              message:
+                "This Executor API key was revoked, has expired or does not exist; unless Executor restores access by itself, create a new token on the Tokens page and connect it to the account that uses this key.",
+            },
+          });
+        }
+        const keysAfterManual = yield* body(
+          Schema.Struct({
+            apiKeys: Schema.Array(
+              Schema.Struct({ id: Schema.String, name: Schema.NullOr(Schema.String) }),
+            ),
+          }),
+          yield* api.request(actors.owner, "GET", "/api/auth/api-key/list"),
+        );
+        expect(keysAfterManual.apiKeys.some((key) => key.id === ordinary.id)).toBe(false);
+        expect(
+          keysAfterManual.apiKeys.filter(
+            (key) => key.name === "Executor app (created automatically)",
+          ),
+        ).toHaveLength(1);
         // Linking the managed key again replaces the manual one.
         yield* linkAccount(actors.owner, path, "service", account);
         expect(yield* linkedAccountIds(actors.owner, path)).toEqual([account]);

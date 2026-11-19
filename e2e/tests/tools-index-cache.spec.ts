@@ -158,6 +158,19 @@ layer(HostedLive, { excludeTestServices: true })("Tools index cache", (it) => {
             {},
           ),
         );
+        // Connecting checks the key against Executor's API, so it is a real token of the owner's.
+        const secondToken = yield* body(
+          Schema.Struct({ id: Schema.String, key: Schema.String }),
+          yield* api.request(actors.owner, "POST", "/api/auth/api-key/create", {
+            name: "Second Executor key",
+            metadata: { organization: actors.organization.id },
+          }),
+        );
+        yield* Effect.addFinalizer(() =>
+          api
+            .request(actors.owner, "POST", "/api/auth/api-key/delete", { keyId: secondToken.id })
+            .pipe(Effect.orDie),
+        );
         const submitted = yield* api.request(
           actors.owner,
           "POST",
@@ -165,7 +178,7 @@ layer(HostedLive, { excludeTestServices: true })("Tools index cache", (it) => {
           {
             method: "apiKey",
             label: "Second Executor key",
-            fields: { token: "synthetic-second-key", organization: actors.organization.id },
+            fields: { token: secondToken.key, organization: actors.organization.id },
           },
         );
         expect(submitted.status, JSON.stringify(submitted.body)).toBe(200);
