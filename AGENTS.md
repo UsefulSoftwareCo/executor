@@ -457,10 +457,15 @@ REST or GraphQL API to get around a refusal, and no change to the ruleset. Only
 Rhys turns it off, in an emergency. See [CI configuration](notes/ci.md#the-main-ruleset).
 
 A failure on `main` is a regression or a flake that a PR selection missed. Fixing
-it takes priority over new work that touches the same area. While CI on `main` is red, one
-open issue labelled `main-red` names the failed jobs and scenarios and the commits
-since the last green run (`.github/workflows/main-health.yml`); it closes itself
-on the next green run. Read it before investigating.
+it takes priority over new work that touches the same area. While CI on `main` is red, the
+paced Windows check is red, or a beta release is held for more than six hours (or by five
+failed attempts in a day), one open issue labelled `main-health` says so: the failed jobs and
+scenarios, the commits since the last green run, and why the beta is held. Main health
+(`.github/workflows/main-health.yml`) is its only writer; each run rewrites it whole from
+those three facts, closes it once each is known to be fine, and while one cannot be read
+(no run yet, no recent Beta decision) opens or closes nothing. It touches only issues
+github-actions opened with its marker; an older `main-red` issue is closed by hand. Read it
+before investigating.
 
 A PR run takes at most about seven minutes. Wait for it once; do not poll post-merge
 suites before handing off. When a job fails in a scenario the change does not
