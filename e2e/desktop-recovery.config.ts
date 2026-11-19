@@ -1,4 +1,5 @@
 import { defineConfig } from "vitest/config";
+import { snapshotUpdate } from "./snapshot-updates.ts";
 import { scenarios } from "./test-plan.ts";
 import { exactly } from "./scenario-parts.ts";
 
@@ -55,6 +56,8 @@ if (part !== undefined && selected === undefined)
 
 export default defineConfig({
   test: {
+    // Writes no snapshot unless asked (snapshot-updates.ts).
+    update: snapshotUpdate(),
     include: ["e2e/tests/desktop-recovery.spec.ts"],
     testTimeout: 180_000,
     // Each scenario owns a desktop window; keep them from competing for focus and CPU.

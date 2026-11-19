@@ -1,4 +1,5 @@
 import { defineConfig } from "vitest/config";
+import { snapshotUpdate } from "./snapshot-updates.ts";
 import {
   packagedEngineSpecs,
   packagedEngineUnchanged,
@@ -28,6 +29,8 @@ const rank = (file: string) => {
 
 export default defineConfig({
   test: {
+    // Writes no snapshot unless asked (snapshot-updates.ts).
+    update: snapshotUpdate(),
     include: [
       "e2e/tests/docker-release.spec.ts",
       "e2e/tests/docker-release-catalog.spec.ts",

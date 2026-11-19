@@ -141,6 +141,11 @@ CI runs it in the `collector-native` job when the crate, its build script
 on Ubuntu 22.04. A run on main saves it to the cache under its identity; a pull request's run
 restores main's entry when the identity matches and otherwise builds from scratch, saving nothing.
 
+A snapshot (`toMatchInlineSnapshot`) is an assertion. Use one when the whole text is the
+behaviour; read every line of a changed one as a changed assertion. No run writes one unless
+asked: record it locally with `--update-snapshots --test-name '<title>'`, which CI refuses
+([Snapshots](e2e/README.md#snapshots)).
+
 Tests are not sacred. Delete a scenario when it no longer proves behavior a user
 or public API caller depends on, or when other scenarios already cover it. Say
 what it covered and why that coverage is not needed. Deletion is not a fix for

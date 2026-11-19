@@ -1,4 +1,5 @@
 import { defineConfig } from "vitest/config";
+import { snapshotUpdate } from "./snapshot-updates.ts";
 
 /**
  * The desktop update scenario, on a development build of the desktop on macOS: it stands in for
@@ -8,6 +9,8 @@ import { defineConfig } from "vitest/config";
  */
 export default defineConfig({
   test: {
+    // Writes no snapshot unless asked (snapshot-updates.ts).
+    update: snapshotUpdate(),
     include: ["e2e/tests/desktop-update.spec.ts"],
     testTimeout: 240_000,
     // Prints each desktop close's duration.

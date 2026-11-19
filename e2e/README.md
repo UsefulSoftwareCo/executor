@@ -57,6 +57,27 @@ writers. Smaller runs use the same assertions. `--test-name` is a regular expres
 matched against scenario titles, without the enclosing Vitest suite name.
 Filtered cases are not counted as executed cases in the evidence view.
 
+## Snapshots
+
+Use an inline snapshot (`toMatchInlineSnapshot`) when the whole text is the behaviour, such as
+rendered output or the error an agent reads, and it would otherwise take a row of `toContain`
+checks. Assert one field directly, keep `toMatchObject` where it ignores fields on purpose, and
+replace ids, times and paths with stable labels first. A snapshot is an assertion: a changed one
+is a changed assertion, so read every line of its diff and accept only what the change intends.
+Keep it under 30 lines and inline; lint refuses larger ones, interpolated ones and `.snap` files.
+
+No run writes a snapshot unless asked (`e2e/snapshot-updates.ts`): a missing, empty or changed
+one fails, and under the runner its failure shows what the scenario produced. To record one on purpose, on your machine, run its
+scenario alone with `--update-snapshots`, then read the result in `git diff`:
+
+```sh
+bun run e2e:self-host --test-name '<scenario title>' --update-snapshots
+```
+
+The runner refuses `--update-snapshots` in CI, without `--test-name` and with `--part`. A tooling
+suite (`bun run e2e:<name>`) records when asked with `E2E_UPDATE_SNAPSHOTS=1` or Vitest's own `-u`;
+in CI every config refuses both, however Vitest was started.
+
 ## Line coverage
 
 `E2E_COVERAGE=1` profiles every self-host and local product process. Self-host runs

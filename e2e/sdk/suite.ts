@@ -39,6 +39,13 @@ import { holdRun, pruneRuns } from "./run-retention.ts";
 class RunFailed extends Schema.TaggedError<RunFailed>()("RunFailed", { message: Schema.String }) {}
 import { freePort } from "../support/ports.ts";
 import { reveal, secret } from "../support/failure-text.ts";
+import {
+  ciRefusal,
+  inCi,
+  namesNoScenario,
+  unnamedRefusal,
+  updateSnapshotsVariable,
+} from "../snapshot-updates.ts";
 
 /**
  * Managed Cloud workers share one local Cloud Worker and one telemetry collector, so more cores add
@@ -72,6 +79,7 @@ export const runSuite = ({
   oauthProxyPreview = false,
   removalRevocationBudget = false,
   releaseNotes,
+  updateSnapshots = false,
   attachment,
 }: {
   readonly target: "self-host" | "local" | "cloud" | "all" | "hosted";
@@ -102,6 +110,11 @@ export const runSuite = ({
    * (`CloudNotesSource`), for the scenarios that show them.
    */
   readonly releaseNotes?: CloudNotesSource | undefined;
+  /**
+   * Let Vitest write the selected scenarios' snapshots. Without it the run writes none, so a
+   * missing, empty or changed snapshot fails (e2e/snapshot-updates.ts).
+   */
+  readonly updateSnapshots?: boolean;
   readonly attachment?: {
     readonly origin: string;
     readonly directory?: string;
@@ -191,6 +204,11 @@ export const runSuite = ({
           message:
             "--release-notes runs only on managed Cloud, without --auth-rate-limit, --rollback, --oauth-proxy-preview or --removal-revocation-budget. Use --target cloud without E2E_CLOUD_URL.",
         });
+      // Vitest never sees CI here (its environment is listed below), so the runner refuses.
+      if (updateSnapshots && inCi(process.env))
+        return yield* new RunFailed({ message: `--update-snapshots refused: ${ciRefusal}` });
+      if (updateSnapshots && namesNoScenario(name))
+        return yield* new RunFailed({ message: unnamedRefusal });
       const interactive = yield* Config.Boolean("E2E_INTERACTIVE").pipe(Config.withDefault(false));
       const observeUI = yield* Config.Boolean("E2E_UI_OBSERVE").pipe(Config.withDefault(false));
       if (observeUI && (selected !== "cloud" || Option.isSome(cloud)))
@@ -490,6 +508,7 @@ export const runSuite = ({
                           E2E_INTERACTIVE: interactive ? "1" : "0",
                           E2E_UI_OBSERVE: observeUI ? "1" : "0",
                           E2E_RECORDING_PACE_MS: String(recordingPaceMs),
+                          ...(updateSnapshots ? { [updateSnapshotsVariable]: "1" } : {}),
                         },
                         stdout: "inherit",
                         stderr: "inherit",

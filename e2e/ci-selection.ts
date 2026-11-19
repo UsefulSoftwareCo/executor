@@ -861,6 +861,7 @@ const suiteConfigs: Record<string, () => Promise<unknown>> = {
   "removal-evidence.config.ts": () => import("./removal-evidence.config.ts"),
   "request-failures.config.ts": () => import("./request-failures.config.ts"),
   "run-retention.config.ts": () => import("./run-retention.config.ts"),
+  "snapshot-updates.config.ts": () => import("./snapshot-updates.config.ts"),
   "standalone-lockdown.config.ts": () => import("./standalone-lockdown.config.ts"),
   "subrequest-depth.config.ts": () => import("./subrequest-depth.config.ts"),
   "test-stage-branch.config.ts": () => import("./test-stage-branch.config.ts"),

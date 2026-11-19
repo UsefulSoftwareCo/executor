@@ -1623,6 +1623,16 @@ export const scenarios = plan({
       cloud: na("The runner starts every target's worker with the same variable list."),
     },
   },
+  workerSnapshotUpdates: {
+    fixtures: "cli",
+    file: "failure-text.spec.ts",
+    title: "Only the runner's --update-snapshots lets the scenario worker write snapshots",
+    targets: {
+      "self-host": scheduled,
+      local: na("The runner starts every target's worker with the same variable list."),
+      cloud: na("The runner starts every target's worker with the same variable list."),
+    },
+  },
   testingSdk: {
     fixtures: "actors",
     file: "testing-sdk.spec.ts",

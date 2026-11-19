@@ -1,4 +1,5 @@
 import { defineConfig } from "vitest/config";
+import { snapshotUpdate } from "./snapshot-updates.ts";
 import { Schema } from "effect";
 import { Target } from "./report-model.ts";
 import { filesForTarget, patternForTarget } from "./test-plan.ts";
@@ -24,6 +25,8 @@ const cloudMode = Schema.decodeUnknownSync(
 )(process.env.E2E_CLOUD_MODE);
 export default defineConfig({
   test: {
+    // Writes no snapshot unless asked (snapshot-updates.ts).
+    update: snapshotUpdate(),
     name: target,
     setupFiles: ["e2e/setup.ts"],
     include: filesForTarget(target, suite, cloudMode, process.env.E2E_TEST_NAME ?? ""),
