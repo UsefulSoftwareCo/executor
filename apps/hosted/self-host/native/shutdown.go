@@ -23,7 +23,10 @@ const (
 	cutGrace = time.Second
 )
 
-var errStopping = errors.New("Executor is stopping")
+var (
+	errStopping  = errors.New("Executor is stopping")
+	errEndStream = errors.New("ending open-ended response")
+)
 
 func stoppingResponse(w http.ResponseWriter) {
 	w.Header().Set("Retry-After", "5")
@@ -31,8 +34,9 @@ func stoppingResponse(w http.ResponseWriter) {
 }
 
 type edge struct {
-	base context.Context
-	cut  context.CancelCauseFunc
+	base   context.Context
+	cut    context.CancelCauseFunc
+	ending chan struct{}
 
 	mu     sync.Mutex
 	active map[*edgeRequest]struct{}
@@ -44,13 +48,14 @@ type edgeRequestKey struct{}
 type edgeRequest struct {
 	method string
 	media  string
+	cancel context.CancelCauseFunc
 }
 
 func newEdge() *edge {
 	base, cut := context.WithCancelCause(context.Background())
 	idle := make(chan struct{})
 	close(idle)
-	return &edge{base: base, cut: cut, active: make(map[*edgeRequest]struct{}), idle: idle}
+	return &edge{base: base, cut: cut, ending: make(chan struct{}), active: make(map[*edgeRequest]struct{}), idle: idle}
 }
 
 func (e *edge) handler(next http.Handler) http.Handler {
@@ -65,9 +70,12 @@ func (e *edge) handler(next http.Handler) http.Handler {
 		if len(e.active) == 0 {
 			e.idle = make(chan struct{})
 		}
+		ctx, cancel := context.WithCancelCause(r.Context())
+		request.cancel = cancel
 		e.active[request] = struct{}{}
 		e.mu.Unlock()
 		defer func() {
+			cancel(nil)
 			e.mu.Lock()
 			delete(e.active, request)
 			if len(e.active) == 0 {
@@ -75,24 +83,44 @@ func (e *edge) handler(next http.Handler) http.Handler {
 			}
 			e.mu.Unlock()
 		}()
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), edgeRequestKey{}, request)))
+		next.ServeHTTP(w, r.WithContext(context.WithValue(ctx, edgeRequestKey{}, request)))
 	})
 }
 
 func (e *edge) response(r *http.Response) error {
 	media, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
-	if r.StatusCode == http.StatusSwitchingProtocols {
+	upgrade := r.StatusCode == http.StatusSwitchingProtocols
+	ctx := r.Request.Context()
+	openEnded := r.Request.Method == http.MethodGet &&
+		(media == "text/event-stream" || media == "application/x-ndjson")
+	if upgrade {
 		media = "upgrade"
 	} else {
 		if media == "" {
 			media = "unspecified"
 		}
-		r.Body = &cutBody{ReadCloser: r.Body, ctx: r.Request.Context()}
+		r.Body = &cutBody{ReadCloser: r.Body, ctx: ctx}
 	}
-	if request, ok := r.Request.Context().Value(edgeRequestKey{}).(*edgeRequest); ok {
+	if request, ok := ctx.Value(edgeRequestKey{}).(*edgeRequest); ok {
 		e.mu.Lock()
 		request.media = media
 		e.mu.Unlock()
+		if openEnded || upgrade {
+			if !upgrade {
+				// We may end before the advertised length, so frame it as a stream.
+				r.Header.Del("Content-Length")
+				r.ContentLength = -1
+			}
+			go func() {
+				select {
+				case <-e.ending:
+					// Cancels a blocked transport read, or closes the backend of an upgrade
+					// through ReverseProxy, without losing its half-close support.
+					request.cancel(errEndStream)
+				case <-ctx.Done():
+				}
+			}()
+		}
 	}
 	return nil
 }
@@ -104,6 +132,9 @@ type cutBody struct {
 
 func (b *cutBody) Read(buf []byte) (int, error) {
 	n, err := b.ReadCloser.Read(buf)
+	if errors.Is(context.Cause(b.ctx), errEndStream) {
+		return 0, io.EOF
+	}
 	if err != nil && errors.Is(context.Cause(b.ctx), errStopping) {
 		// ReverseProxy still aborts the response, but does not log an intentional cut
 		// as an upstream read error or present the truncated body as complete.
@@ -194,6 +225,7 @@ type shutdownParts struct {
 	stalled       <-chan error
 	endWatching   func()
 	endAnnouncing func()
+	endStreams    func()
 	joinWatching  func()
 	public        publicServer
 	listener      io.Closer
@@ -239,6 +271,7 @@ func shutdown(parts shutdownParts, plan shutdownPlan) error {
 		parts.apps.hold()
 	}
 	parts.collector.hold()
+	parts.endStreams()
 	// Close explicitly as Serve may not yet have registered the listener.
 	parts.listener.Close()
 	ctx, cancel := context.WithCancel(context.Background())

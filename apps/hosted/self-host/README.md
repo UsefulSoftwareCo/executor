@@ -399,6 +399,14 @@ To stop the server while retaining its data:
 docker compose -f apps/hosted/self-host/compose.yaml down
 ```
 
+On SIGTERM or SIGINT the native host stops accepting new requests and gives
+in-flight work up to 10 seconds to finish. Open GET event streams and NDJSON
+streams end immediately, as do upgraded connections. A second signal ends the request
+drain immediately without shortening the child processes' grace periods. The
+product and apps get 10 seconds together to exit, then the telemetry collector
+gets 3 seconds. If a child has to be killed, the host names it in the log and
+exits nonzero.
+
 ## App catalog
 
 Onboarding and **Add app** list Executor's official apps from the published

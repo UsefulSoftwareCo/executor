@@ -91,7 +91,11 @@ func runShutdownChild(role, name, journal, socket, edgeAddress string) {
 				case <-r.Context().Done():
 				}
 			default:
-				w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+				media := "text/event-stream; charset=utf-8"
+				if r.URL.Path == "/ndjson" {
+					media = "application/x-ndjson"
+				}
+				w.Header().Set("Content-Type", media)
 				fmt.Fprint(w, "data: open\n\n")
 				w.(http.Flusher).Flush()
 				<-r.Context().Done()
@@ -236,6 +240,7 @@ func newShutdownFixture(t *testing.T) *shutdownFixture {
 	f.parts = shutdownParts{
 		signals: f.signals, stalled: f.stalled, public: public, listener: listener, edge: edge,
 		endWatching: func() { close(f.draining) }, endAnnouncing: func() {}, joinWatching: func() {},
+		endStreams: func() { close(edge.ending) },
 		closeIdle: func() {
 			proxy.Transport.(*http.Transport).CloseIdleConnections()
 			if errors.Is(context.Cause(edge.base), errStopping) {
@@ -503,11 +508,34 @@ func TestStopCutsAHijackedTunnelAtTheDeadline(t *testing.T) {
 	// A POST keeps the drain open even though http.Server ignores the hijacked tunnel.
 	f.request(http.MethodPost, "/stream")
 	tunnel, _ := openTestTunnel(t, strings.TrimPrefix(f.url, "http://"))
+	// Exercise the BaseContext cut independently of the drain-start policy.
+	f.parts.endStreams = func() {}
 	result := f.start()
 	f.signals <- syscall.SIGTERM
 	f.timers.timer(testDrain) <- time.Now()
 	if _, err := tunnel.ReadByte(); !errors.Is(err, io.EOF) {
 		t.Fatalf("tunnel still open after cut: %v", err)
+	}
+	f.clean(result)
+}
+
+func TestStopEndsOpenEndedStreamsAtOnce(t *testing.T) {
+	f := newShutdownFixture(t)
+	f.child("drains", "product")
+	f.child("quick", "collector")
+	eventStream := f.request(http.MethodGet, "/stream")
+	ndjson := f.request(http.MethodGet, "/ndjson")
+	tunnel, _ := openTestTunnel(t, strings.TrimPrefix(f.url, "http://"))
+	result := f.start()
+	f.signals <- syscall.SIGTERM
+	for _, response := range []*http.Response{eventStream, ndjson} {
+		body, err := io.ReadAll(response.Body)
+		if err != nil || len(body) == 0 {
+			t.Fatalf("stream did not end with a clean EOF: %q (%v)", body, err)
+		}
+	}
+	if _, err := tunnel.ReadByte(); !errors.Is(err, io.EOF) {
+		t.Fatalf("upgrade not closed at drain start: %v", err)
 	}
 	f.clean(result)
 }
@@ -750,6 +778,7 @@ func TestShutdownKeepsItsOrderForEveryEventOrder(t *testing.T) {
 					}),
 					endWatching:   func() { log("watchdogs off") },
 					endAnnouncing: func() { log("announcer off") },
+					endStreams:    func() {},
 					joinWatching:  func() {},
 					closeIdle: func() {
 						if errors.Is(context.Cause(e.base), errStopping) {

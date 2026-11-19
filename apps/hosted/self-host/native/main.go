@@ -875,7 +875,8 @@ func serve(mode string) error {
 	parts := shutdownParts{
 		signals: signals, serverError: serverError, stalled: stalled,
 		endWatching: endWatching, endAnnouncing: stopAnnouncing, joinWatching: watchers.Wait,
-		public: public, listener: publicListener, edge: edge,
+		endStreams: func() { close(edge.ending) },
+		public:     public, listener: publicListener, edge: edge,
 		closeIdle: proxy.Transport.(*http.Transport).CloseIdleConnections, closeBridge: closeBridge,
 		product: product, productExited: product.exited, collector: telemetryCollector,
 	}
