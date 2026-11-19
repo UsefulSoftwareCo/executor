@@ -1,13 +1,17 @@
 /**
  * The host's stall check against real work: a released image that builds large apps and installs
- * packages, with restart turned on at the default limit, logs no stall and is not restarted, and
- * every stretch of that work in which its thread is busy without answering ends with an answer.
- * See docker-release-stall.spec.ts for the check itself; the busy rule's counting is covered by
- * the host's Go tests.
+ * packages, with restart turned on at the default limit, logs no stall and is not restarted; and a
+ * tool holding workerd's main thread at a one-tick setting leaves workerd running and serving, with
+ * an answer for every stall the host logs. See docker-release-stall.spec.ts for the check itself.
+ *
+ * Whether a busy stretch counts as a stall is the machine's to decide (the CPU each tick gives the
+ * thread against the host's threshold), so no scenario here requires one. The rule itself, which
+ * ticks count and when it fires and recovers, is proved by native/stall_test.go. No scenario here
+ * proves recovery at a one-tick setting over real large builds and package installs any longer.
  */
 import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Effect, Schedule, Schema } from "effect";
+import { Console, Effect, Schedule, Schema } from "effect";
 import { appsManifest, withApps } from "../support/apps-release.ts";
 import { releasedServerWith } from "../support/docker-release-server.ts";
 import {
@@ -18,6 +22,7 @@ import {
   logLines,
   stalledLine,
   workerdPid,
+  workerdStart,
 } from "../support/docker-stall.ts";
 
 /**
@@ -140,42 +145,105 @@ it.live(
   300_000,
 );
 
+/**
+ * A tool that keeps workerd's main thread busy until its own clock has advanced `ms`: the clock
+ * advances inside the loop, so the burn lasts as long on any machine.
+ */
+const burnMs = 5000;
+/**
+ * The most rounds the burn may run, so a workerd whose clock stood still inside the loop fails the
+ * scenario at once instead of hanging to its budget: four times the fastest machine measured (about
+ * 50,000,000 rounds a CPU-second, a Ryzen 9 9950X) for 5 s, twice over.
+ */
+const burnRoundCap = 2_000_000_000;
+/** How long the burn's call may take, well inside the scenario's budget. */
+const burnCallLimit = "120 seconds";
+const burnApp = [
+  {
+    path: "index.ts",
+    content: `import { defineApp, number, object, query, router } from "apps";
+export default defineApp({}, {
+  tools: router({
+    burn: query({ input: object({ ms: number(), cap: number() }) }, async (_, { ms, cap }) => {
+      const start = Date.now();
+      let x = 1;
+      let rounds = 0;
+      while (Date.now() - start < ms && rounds < cap) {
+        for (let i = 0; i < 100000; i++) x = (x * 1103515245 + 12345) % 2147483648;
+        rounds += 100000;
+      }
+      return { x, clockMs: Date.now() - start, capped: Date.now() - start < ms };
+    }),
+  }),
+});`,
+  },
+  appsManifest,
+];
+
 it.live(
-  "released image ends every busy, silent stretch of large builds and package installs with an answer",
+  "released image keeps workerd running and answering while a tool holds its main thread, and logs an answer for every stall",
   () =>
     Effect.scoped(
       Effect.gen(function* () {
-        // The check logs every tick the thread is busy without answering, and when it answers
-        // again how long that lasted, so this scenario reads each such stretch from the log:
-        // every one must end with an answer. It asserts no bound on a stretch's length. The
-        // length depends on the machine and what else runs on it (3 ticks on an otherwise idle
-        // 16-CPU machine, 8 on a loaded 4-CPU one), and no bound holds on every machine; the
-        // scenario above checks this work against the shipped default limit.
         const server = yield* releasedServerWith({
           environment: { EXECUTOR_HOST_STALL_SECONDS: "1" },
         });
         yield* awaitLogLine(server, armedLine, 30);
         const pid = yield* workerdPid(server);
-        yield* healthyWork(server);
+        // A restarted container can give workerd the same PID; its start time tells them apart.
+        const started = yield* workerdStart(server, pid);
+        const Deployed = Schema.Struct({ id: Schema.String });
+        const app = yield* server.deploy("Burn", burnApp);
+        expect(Schema.is(Deployed)(app)).toBe(true);
+        const { id } = app as typeof Deployed.Type;
+        const Burned = Schema.Struct({
+          x: Schema.Number,
+          clockMs: Schema.Number,
+          capped: Schema.Boolean,
+        });
+        const call = (ms: number) =>
+          server.json(Burned, `${server.prefix}/apps/${id}/tools/call`, {
+            tool: "burn",
+            input: { ms, cap: burnRoundCap },
+          });
+        const burn = yield* call(burnMs).pipe(
+          Effect.timeoutOrElse({
+            duration: burnCallLimit,
+            orElse: () =>
+              Effect.die(
+                new Error(
+                  `The burn did not return within ${burnCallLimit}: either workerd's clock did not advance inside the loop, or this machine is far slower than the ${burnRoundCap}-round cap assumes.`,
+                ),
+              ),
+          }),
+        );
+        expect(
+          burn.capped,
+          `The burn reached its cap of ${burnRoundCap} rounds after ${burn.clockMs} ms on the tool's own clock: workerd's clock did not advance inside the loop, so this scenario's way of holding the main thread no longer works and needs replacing.`,
+        ).toBe(false);
+        // Every stall the host logged has ended with its answer, once workerd answers again: as
+        // many answer lines as stall lines. None is required; whether one happened is the machine's.
         const settled = yield* Effect.all({
           stalls: logLines(server, stalledLine),
           answers: logLines(server, answeredLine),
         }).pipe(
           Effect.repeat({
             schedule: Schedule.spaced("1 second"),
-            until: (lines) => lines.stalls.length === lines.answers.length,
+            until: (seen) => seen.stalls.length === seen.answers.length,
             times: 30,
           }),
         );
-        expect(settled.answers.length, "every busy, silent stretch ended with an answer").toBe(
+        yield* Console.log(
+          `During the burn the host logged ${settled.stalls.length} stall(s) and ${settled.answers.length} answer(s)`,
+        );
+        expect(settled.answers.length, "an answer line for every stall line").toBe(
           settled.stalls.length,
         );
-        expect(
-          settled.stalls.length,
-          "the work kept the thread busy without answering",
-        ).toBeGreaterThan(0);
+        // workerd was left running and serves the next call.
+        expect((yield* call(0)).x).toBeGreaterThanOrEqual(0);
         expect(yield* containerState(server)).toEqual({ running: true, restarts: 0 });
         expect(yield* workerdPid(server)).toBe(pid);
+        expect(yield* workerdStart(server, pid), "workerd's start time").toBe(started);
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
   300_000,
