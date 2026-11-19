@@ -203,6 +203,19 @@ export const scenarios = plan({
       cloud: na("Cloud exports to Axiom, not a bundled collector."),
     },
   },
+  selfHostNativeGracefulShutdown: {
+    file: "self-host-native-telemetry.spec.ts",
+    title: "Native self-host exits cleanly on SIGTERM with open streams",
+    targets: {
+      "self-host": {
+        status: "not-run",
+        reason:
+          "Runs against the separately prepared Go/workerd runtime through e2e/self-host-native.config.ts; the ordinary self-host runner uses Bun.",
+      },
+      local: na("Local does not use the Go/workerd host."),
+      cloud: na("Cloud does not own the Worker process lifecycle."),
+    },
+  },
   teamRegistry: {
     fixtures: "actors",
     file: "team-registry.spec.ts",

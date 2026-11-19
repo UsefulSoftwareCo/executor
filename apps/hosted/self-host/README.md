@@ -42,11 +42,14 @@ session and encryption keys in the persistent volume on first boot.
 
 ```sh
 docker pull ghcr.io/usefulsoftwareco/executor-selfhost:beta
-docker run --detach --name executor-v2 --init --restart unless-stopped \
+docker run --detach --name executor-v2 --init --restart unless-stopped --stop-timeout 30 \
   --publish 127.0.0.1:4400:4400 \
   --volume executor-v2-data:/app/data \
   ghcr.io/usefulsoftwareco/executor-selfhost:beta
 ```
+
+Docker's default 10-second stop timeout is shorter than the host's request drain
+plus child process grace periods; keep `--stop-timeout 30` when recreating the container.
 
 Open `http://localhost:4400` and create the first administrator. The container
 includes the dashboard, API, MCP server, database, and app runtime. For a pinned
@@ -263,6 +266,8 @@ Create an image service from `ghcr.io/usefulsoftwareco/executor-selfhost:beta`,
 attach a new volume at `/app/data`, and generate a public domain routed to port
 `8080` (Railway injects `PORT=8080`; use your own value if you override it).
 Set the healthcheck path to `/health` with a 120-second startup timeout.
+Set `RAILWAY_DEPLOYMENT_DRAINING_SECONDS=30` (or `deploy.drainingSeconds` to `30`)
+so Railway gives the host time to drain before SIGKILL; the default is zero.
 Deploy, or redeploy if the service already started, so it picks up the new
 public domain. Open the domain and create the first administrator.
 
@@ -398,6 +403,16 @@ To stop the server while retaining its data:
 ```sh
 docker compose -f apps/hosted/self-host/compose.yaml down
 ```
+
+On SIGTERM or SIGINT the native host stops accepting new requests and gives
+in-flight work up to 10 seconds to finish. Open GET event streams and NDJSON
+responses end immediately with a clean EOF, even if a finite NDJSON response
+has more records; upgraded connections also close immediately. A second signal
+ends the request drain without shortening the child processes' grace periods. The
+product and apps get 10 seconds together to exit, then the telemetry collector
+gets 3 seconds. If a child has to be killed, the host names it in the log and
+exits nonzero.
+On Linux, terminal Ctrl-C drains the host just like `docker stop`.
 
 ## App catalog
 
@@ -577,10 +592,12 @@ the body reaches a sleep before each wake.
 
 The product process has its own watchdog. Once the product has answered its first health check, the
 host probes `/health` every `EXECUTOR_WATCHDOG_INTERVAL` seconds (default 10). After
-`EXECUTOR_WATCHDOG_FAILURES` failed probes in a row (default 9, about 90 seconds), it kills workerd
-and exits non-zero. Run the container with a restart policy such as `restart: unless-stopped` (the
-bundled compose file sets it), so a fresh process starts. `EXECUTOR_WATCHDOG=off` turns both
-watchdogs off.
+`EXECUTOR_WATCHDOG_FAILURES` failed probes in a row (default 9, about 90 seconds), it logs
+`Executor watchdog: the product did not answer …` and cuts public requests without draining.
+It then sends SIGTERM to workerd, gives the product and apps five seconds together to stop,
+kills any that are still running, and exits non-zero. Run the container with a restart policy such
+as `restart: unless-stopped` (the bundled compose file sets it), so a fresh process starts.
+`EXECUTOR_WATCHDOG=off` turns both watchdogs off.
 
 `EXECUTOR_APP_PROCESS=shared` runs app code in the product's process as earlier releases did; then
 only the product watchdog applies, and a looping app restarts the whole host. Exports always use

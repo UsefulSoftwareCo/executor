@@ -564,8 +564,17 @@ func serve(mode string) error {
 	}
 	defer listener.Close()
 	server := &http.Server{Handler: &bridge{config: values, repositories: repositories, temporary: temporary}, ReadHeaderTimeout: 10 * time.Second}
-	defer server.Close()
-	serverError := make(chan error, 1)
+	closeBridge := func() { server.Close() }
+	if mode == "serve" {
+		base, cancel := context.WithCancel(context.Background())
+		server.BaseContext = func(net.Listener) context.Context { return base }
+		closeBridge = func() {
+			cancel()
+			server.Close()
+		}
+	}
+	defer closeBridge()
+	serverError := make(chan error, 2)
 	go func() { serverError <- server.Serve(listener) }()
 	config, err := os.ReadFile(filepath.Join(runtime, "workerd.capnp"))
 	if err != nil {
@@ -731,11 +740,17 @@ func serve(mode string) error {
 	// images used are refused after the upgrade; apps get new ones on their next invocation.
 	// Only the product process gets it; the Motel collector never sees it.
 	handleSecret := "EXECUTOR_CREDENTIAL_HANDLE_SECRET=" + credentialHandleSecret(values["EXECUTOR_ENCRYPTION_KEY"])
-	stopApps, restartApps := func() {}, func() {}
+	var signals chan os.Signal
+	if mode == "serve" {
+		signals = make(chan os.Signal, 2)
+		signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
+		defer signal.Stop(signals)
+	}
+	var apps *supervisor
 	if separate {
 		// Only the app process seals handles, so only it gets the secret. It starts first; product
 		// calls to apps fail as disconnected until it listens.
-		stopApps, restartApps = superviseProcess("App process", func() *exec.Cmd {
+		apps = startSupervisor("App process", func() *exec.Cmd {
 			// A process that exited leaves its socket file behind; the next one binds the same path.
 			os.Remove(appsSocket)
 			appArgs := []string{"serve", appsConfigPath, "-I/", "--experimental", "--socket-addr=apps=unix:" + appsSocket, "--external-addr=product-self=unix:" + selfSocket, "--external-addr=product-callbacks=unix:" + callbacksSocket}
@@ -746,24 +761,34 @@ func serve(mode string) error {
 			apps.Env = append(apps.Env, handleSecret)
 			return apps
 		}, time.Second, 30*time.Second, time.After)
-		defer stopApps()
 	} else {
 		command.Env = append(command.Env, handleSecret)
 	}
+	stopStartingWorkerd := func(product *process) {
+		if apps != nil {
+			apps.hold()
+		}
+		if product != nil {
+			product.cmd.Process.Kill()
+			<-product.exited
+		}
+		if apps != nil {
+			stopChildren(workerdGrace, time.After, apps)
+		}
+	}
 	if err = command.Start(); err != nil {
-		stopApps()
+		stopStartingWorkerd(nil)
 		return err
 	}
-	stopped := make(chan error, 1)
-	go func() { stopped <- command.Wait() }()
+	product := waitProcess("Product process", command)
 	if mode == "export" {
 		defer func() {
 			command.Process.Signal(syscall.SIGTERM)
 			select {
-			case <-stopped:
+			case <-product.exited:
 			case <-time.After(15 * time.Second):
 				command.Process.Kill()
-				<-stopped
+				<-product.exited
 			}
 		}()
 		if len(os.Args) != 3 {
@@ -773,12 +798,11 @@ func serve(mode string) error {
 	}
 	forget, err := recordTelemetrySocket(directory, collector)
 	if err != nil {
-		command.Process.Kill()
-		<-stopped
+		stopStartingWorkerd(product)
 		return err
 	}
 	defer forget()
-	stopCollector := supervise(func() *exec.Cmd {
+	telemetryCollector := startSupervisor("Telemetry collector", func() *exec.Cmd {
 		// A collector that was killed leaves its socket file behind, and the collector never
 		// removes a path it did not create; this directory is the host's own, so the next one
 		// binds the same path.
@@ -792,88 +816,82 @@ func serve(mode string) error {
 		command.Dir = runtime
 		return command
 	}, time.Second, 30*time.Second, time.After)
-	defer stopCollector()
-
-	proxy := productProxy(filepath.Join(temporary, "product.sock"), workerdIdleTimeout, proxies...)
-	if trustedProxy != nil {
-		proxy = productProxyFor(filepath.Join(temporary, "product.sock"), workerdIdleTimeout, trustedProxy.clientIP)
-	}
 
 	publicListener, err := net.Listen("tcp", net.JoinHostPort(setting("HOST", "0.0.0.0"), port))
 	if err != nil {
-		command.Process.Kill()
-		<-stopped
+		telemetryCollector.hold()
+		stopStartingWorkerd(product)
+		stopChildren(collectorGrace, time.After, telemetryCollector)
 		return err
 	}
+	socketPath := filepath.Join(temporary, "product.sock")
+	edge := newEdge()
+	var proxy *httputil.ReverseProxy
+	if trustedProxy != nil {
+		proxy = productProxyFor(socketPath, workerdIdleTimeout, trustedProxy.clientIP)
+	} else {
+		proxy = productProxy(socketPath, workerdIdleTimeout, proxies...)
+	}
+	proxy.ModifyResponse = edge.response
 	opened := make(chan struct{})
-	public := &http.Server{Handler: startingGate(opened, publicHandler(proxy)), ReadHeaderTimeout: 10 * time.Second}
-	defer public.Close()
+	public := &http.Server{
+		Handler:           edge.handler(startingGate(opened, publicHandler(proxy))),
+		BaseContext:       func(net.Listener) context.Context { return edge.base },
+		ReadHeaderTimeout: 10 * time.Second,
+	}
 	go func() { serverError <- public.Serve(publicListener) }()
 	// One app isolate in a synchronous loop holds workerd's only JavaScript thread, so the product
 	// and every other app stop answering and no timeout inside workerd can fire. OSS workerd does
 	// not enforce CPU limits, so the host bounds the outage instead: once the product has answered,
-	// a run of failed health probes kills workerd, this host exits non-zero, and the container's
-	// restart policy starts a fresh process.
-	watchdogDone := make(chan struct{})
-	defer close(watchdogDone)
+	// a run of failed health probes starts a bounded shutdown. This host exits non-zero and
+	// the container's restart policy starts a fresh process.
+	watchCtx, endWatching := context.WithCancel(context.Background())
+	var watchers sync.WaitGroup
+	stalled := make(chan error, 1)
 	if interval, failures, enabled := watchdogSettings(); enabled {
-		probe := productProbe(filepath.Join(temporary, "product.sock"), min(interval, 5*time.Second))
-		go watchdog(probe, interval, failures, time.After, watchdogDone, func() {
-			fmt.Fprintf(os.Stderr, "Executor watchdog: the product did not answer %d health checks in a row (every %s); workerd is unresponsive, restarting it\n", failures, interval)
-			command.Process.Kill()
+		probe := healthProbe(watchCtx, socketPath, min(interval, 5*time.Second), false)
+		watchers.Go(func() {
+			watchdog(probe, interval, failures, time.After, watchCtx.Done(), func() {
+				reportProductStall(os.Stderr, stalled, failures, interval)
+			})
 		})
 	}
 	// The app process has its own watchdog. Any answer from its socket shows its thread is free,
 	// even a refusal. After a run of silent probes it restarts that process alone, then re-arms
 	// once the new process answers.
-	if interval, failures, enabled := appWatchdogSettings(); separate && enabled {
-		probe := anyAnswer(appsSocket, min(interval, 5*time.Second))
-		go func() {
+	if interval, failures, enabled := appWatchdogSettings(); apps != nil && enabled {
+		probe := healthProbe(watchCtx, appsSocket, min(interval, 5*time.Second), true)
+		watchers.Go(func() {
 			for {
 				stalled := false
-				watchdog(probe, interval, failures, time.After, watchdogDone, func() {
+				watchdog(probe, interval, failures, time.After, watchCtx.Done(), func() {
 					stalled = true
-					fmt.Fprintf(os.Stderr, "Executor watchdog: the app process did not answer %d health checks in a row (every %s); restarting it, the product keeps running\n", failures, interval)
-					restartApps()
+					apps.restartUnlessStopping(watchCtx, func() {
+						fmt.Fprintf(os.Stderr, "Executor watchdog: the app process did not answer %d health checks in a row (every %s); restarting it, the product keeps running\n", failures, interval)
+					})
 				})
 				if !stalled {
 					return
 				}
 			}
-		}()
+		})
 	}
-	stopAnnouncing := make(chan struct{})
-	defer close(stopAnnouncing)
-	go announceReady(filepath.Join(temporary, "product.sock"), values["BETTER_AUTH_URL"], startupProgressInterval, time.Second, os.Stderr, opened, stopAnnouncing)
-
-	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
-	defer signal.Stop(signals)
-	select {
-	case err := <-stopped:
-		return err
-	case <-signals:
-	case err := <-serverError:
-		if !errors.Is(err, http.ErrServerClosed) {
-			fmt.Fprintln(os.Stderr, "Native host stopped")
-		}
+	announceCtx, stopAnnouncing := context.WithCancel(context.Background())
+	watchers.Go(func() {
+		announceReady(announceCtx, socketPath, values["BETTER_AUTH_URL"], startupProgressInterval, time.Second, os.Stderr, opened)
+	})
+	parts := shutdownParts{
+		signals: signals, serverError: serverError, stalled: stalled,
+		endWatching: endWatching, endAnnouncing: stopAnnouncing, joinWatching: watchers.Wait,
+		endStreams: func() { close(edge.ending) },
+		public:     public, listener: publicListener, edge: edge,
+		closeIdle: proxy.Transport.(*http.Transport).CloseIdleConnections, closeBridge: closeBridge,
+		product: product, productExited: product.exited, collector: telemetryCollector,
 	}
-	// Stop both processes together so shutdown fits one deadline, and so a collector
-	// already stopped by a terminal's process-group signal is not restarted meanwhile.
-	telemetryStopped := make(chan struct{})
-	go func() {
-		stopCollector()
-		close(telemetryStopped)
-	}()
-	command.Process.Signal(syscall.SIGTERM)
-	select {
-	case err = <-stopped:
-	case <-time.After(15 * time.Second):
-		command.Process.Kill()
-		err = <-stopped
+	if apps != nil {
+		parts.apps = apps
 	}
-	<-telemetryStopped
-	return err
+	return shutdown(parts, shutdownPlan{drainGrace, workerdGrace, collectorGrace, time.After, os.Stderr})
 }
 
 // collectorBounds are the bounds the image gives its telemetry collector, the ones it gave Motel:
@@ -888,19 +906,10 @@ const startupProgressInterval = 15 * time.Second
 // would otherwise initialize only once the first visitor or health probe arrived. It asks the
 // product's /health until one answers 200, waiting retry after the first failure and doubling up
 // to 30 seconds, and logs every progress interval while it waits. It closes opened when the
-// product first answers, ready or not, and returns once the product is ready or done closes.
-func announceReady(socket, origin string, progress, retry time.Duration, log io.Writer, opened chan<- struct{}, done <-chan struct{}) {
+// product first answers, ready or not, and returns once the product is ready or ctx is cancelled.
+func announceReady(ctx context.Context, socket, origin string, progress, retry time.Duration, log io.Writer, opened chan<- struct{}) {
 	started := time.Now()
 	fmt.Fprintln(log, "Executor is starting. The first start initializes the database, which can take a minute or more on slower hardware.")
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go func() {
-		select {
-		case <-done:
-			cancel()
-		case <-ctx.Done():
-		}
-	}()
 	// A fresh connection each time: a pooled one could reach workerd as it closes it.
 	client := &http.Client{Transport: &http.Transport{
 		DisableKeepAlives: true,
@@ -910,10 +919,12 @@ func announceReady(socket, origin string, progress, retry time.Duration, log io.
 	}}
 	ticker := time.NewTicker(progress)
 	defer ticker.Stop()
+	var requests sync.WaitGroup
+	defer requests.Wait()
 	var answered sync.Once
 	ready := func() <-chan bool {
 		result := make(chan bool, 1)
-		go func() {
+		requests.Go(func() {
 			request, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://product.internal/health", nil)
 			request.Header.Set("x-executor-client-ip", "127.0.0.1")
 			response, err := client.Do(request)
@@ -924,14 +935,14 @@ func announceReady(socket, origin string, progress, retry time.Duration, log io.
 			response.Body.Close()
 			answered.Do(func() { close(opened) })
 			result <- response.StatusCode == http.StatusOK
-		}()
+		})
 		return result
 	}
 	answer := ready()
 	var again <-chan time.Time
 	for {
 		select {
-		case <-done:
+		case <-ctx.Done():
 			return
 		case <-ticker.C:
 			fmt.Fprintf(log, "Executor is still starting (%s)\n", time.Since(started).Round(time.Second))
@@ -1072,7 +1083,6 @@ func productProxy(socket string, upstreamIdleTimeout time.Duration, trusted ...n
 }
 
 func productProxyFor(socket string, upstreamIdleTimeout time.Duration, addressOf func(*http.Request) string) *httputil.ReverseProxy {
-
 	return &httputil.ReverseProxy{
 		Rewrite: func(request *httputil.ProxyRequest) {
 			request.SetURL(&url.URL{Scheme: "http", Host: "product.internal"})
@@ -1097,6 +1107,10 @@ func productProxyFor(socket string, upstreamIdleTimeout time.Duration, addressOf
 		},
 		FlushInterval: -1,
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			if errors.Is(context.Cause(r.Context()), errStopping) {
+				stoppingResponse(w)
+				return
+			}
 			// Until workerd listens, its socket is missing or refuses connections.
 			if errors.Is(err, syscall.ENOENT) || errors.Is(err, syscall.ECONNREFUSED) {
 				http.Error(w, "Executor is starting", http.StatusServiceUnavailable)
@@ -1144,9 +1158,9 @@ func appWatchdogSettings() (time.Duration, int, bool) {
 	return time.Duration(seconds * float64(time.Second)), failures, true
 }
 
-// anyAnswer reports whether a process answered any HTTP response on its socket within timeout.
-// Its JavaScript thread is free whenever it answers, even when it refuses the request.
-func anyAnswer(socket string, timeout time.Duration) func() bool {
+// healthProbe bypasses the public proxy and asks the child's socket for /health.
+// For the apps process any response shows that its JavaScript thread is free, even a refusal.
+func healthProbe(ctx context.Context, socket string, timeout time.Duration, anyAnswer bool) func() bool {
 	client := http.Client{
 		Timeout: timeout,
 		Transport: &http.Transport{
@@ -1156,37 +1170,19 @@ func anyAnswer(socket string, timeout time.Duration) func() bool {
 			DisableKeepAlives: true,
 		},
 	}
+	address := "http://product/health"
+	if anyAnswer {
+		address = "http://apps/health"
+	}
 	return func() bool {
-		response, err := client.Get("http://apps/health")
+		request, _ := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
+		response, err := client.Do(request)
 		if err != nil {
 			return false
 		}
 		io.Copy(io.Discard, response.Body)
 		response.Body.Close()
-		return true
-	}
-}
-
-// productProbe asks the product's own socket for /health, bypassing the public proxy, and
-// reports whether it answered 200 within timeout.
-func productProbe(socket string, timeout time.Duration) func() bool {
-	client := http.Client{
-		Timeout: timeout,
-		Transport: &http.Transport{
-			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				return (&net.Dialer{}).DialContext(ctx, "unix", socket)
-			},
-			DisableKeepAlives: true,
-		},
-	}
-	return func() bool {
-		response, err := client.Get("http://product/health")
-		if err != nil {
-			return false
-		}
-		io.Copy(io.Discard, response.Body)
-		response.Body.Close()
-		return response.StatusCode == http.StatusOK
+		return anyAnswer || response.StatusCode == http.StatusOK
 	}
 }
 
@@ -1220,77 +1216,11 @@ func watchdog(probe func() bool, interval time.Duration, failures int, after fun
 	}
 }
 
-// supervise keeps the telemetry collector running beside the product; see superviseProcess.
-func supervise(newCommand func() *exec.Cmd, minDelay, maxDelay time.Duration, after func(time.Duration) <-chan time.Time) func() {
-	stop, _ := superviseProcess("Telemetry collector", newCommand, minDelay, maxDelay, after)
-	return stop
-}
-
-// superviseProcess keeps an auxiliary process running beside the product: it restarts the process
-// after an exit, waiting from minDelay up to maxDelay between attempts, and the product never
-// waits for it. A process that ran longer than maxDelay restarts after minDelay again. after
-// starts each wait. It returns a function that stops the process and waits for it to exit, and one
-// that kills the running process so it restarts.
-func superviseProcess(name string, newCommand func() *exec.Cmd, minDelay, maxDelay time.Duration, after func(time.Duration) <-chan time.Time) (func(), func()) {
-	done := make(chan struct{})
-	finished := make(chan struct{})
-	var mutex sync.Mutex
-	var current *exec.Cmd
-	go func() {
-		defer close(finished)
-		delay := minDelay
-		for {
-			command := newCommand()
-			started := time.Now()
-			if err := command.Start(); err != nil {
-				fmt.Fprintln(os.Stderr, name+" could not start:", err)
-			} else {
-				mutex.Lock()
-				current = command
-				mutex.Unlock()
-				exited := make(chan struct{})
-				go func() { command.Wait(); close(exited) }()
-				select {
-				case <-exited:
-					fmt.Fprintln(os.Stderr, name+" stopped; restarting")
-				case <-done:
-					command.Process.Signal(syscall.SIGTERM)
-					select {
-					case <-exited:
-					case <-time.After(15 * time.Second):
-						command.Process.Kill()
-						<-exited
-					}
-					return
-				}
-				mutex.Lock()
-				current = nil
-				mutex.Unlock()
-			}
-			if time.Since(started) > maxDelay {
-				delay = minDelay
-			}
-			select {
-			case <-after(delay):
-			case <-done:
-				return
-			}
-			delay = min(delay*2, maxDelay)
-		}
-	}()
-	var once sync.Once
-	stop := func() {
-		once.Do(func() { close(done) })
-		<-finished
-	}
-	kill := func() {
-		mutex.Lock()
-		defer mutex.Unlock()
-		if current != nil && current.Process != nil {
-			current.Process.Kill()
-		}
-	}
-	return stop, kill
+// Keep the detection log separate from the final shutdown result: an operator needs to
+// see why the host is restarting before it waits on any child.
+func reportProductStall(log io.Writer, stalled chan<- error, failures int, interval time.Duration) {
+	fmt.Fprintf(log, "Executor watchdog: the product did not answer %d health checks in a row (every %s); workerd is unresponsive, restarting it\n", failures, interval)
+	stalled <- errors.New("product watchdog detected unresponsive workerd")
 }
 
 // healthTimeout is how long `executor-host health` waits for /health. Every response, /health

@@ -3,10 +3,12 @@ import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { randomBytes } from "node:crypto";
 import { request } from "node:http";
-import { Effect, Fiber, Schedule, Schema } from "effect";
+import { Effect, Fiber, FileSystem, Schedule, Schema } from "effect";
 import { FetchHttpClient } from "effect/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { appsManifest } from "../support/apps-release.ts";
 import { collectorRequest, nativeSelfHost } from "../support/native-self-host.ts";
+import { lockedNpmRegistry } from "../support/npm-registry.ts";
 import { driver } from "../support/platform.ts";
 import { scenarios } from "../test-plan.ts";
 
@@ -229,9 +231,9 @@ it.live(scenarios.selfHostNativeTelemetryLifecycle.title, () =>
         (pending) => Effect.sync(() => pending.destroy()),
       );
       yield* Effect.sleep("500 millis");
-      // Ctrl-C in a terminal signals the collector and the host together. The host stops the
-      // supervisor immediately, so the collector stays down through the product drain, past the
-      // one-second restart backoff.
+      // Signal the collector and host separately to exercise a collector exit as the host starts
+      // draining. The host holds the supervisor so the collector stays down past its one-second
+      // restart backoff. Terminal Ctrl-C on Linux signals only the host's group.
       const signalled = performance.now();
       yield* Effect.sync(() => {
         process.kill(restarted, "SIGINT");
@@ -249,6 +251,277 @@ it.live(scenarios.selfHostNativeTelemetryLifecycle.title, () =>
         Effect.orElseSucceed(() => true),
       );
       expect(refused, "the collector socket is closed after shutdown").toBe(true);
+    }),
+  ).pipe(Effect.provide(NodeServices.layer), Effect.provide(FetchHttpClient.layer)),
+);
+
+type NativeRequest = {
+  readonly path: string;
+  readonly headers?: Readonly<Record<string, string>>;
+  readonly body?: object;
+};
+
+/** Dial the fixture listener directly, including when the app has a different Host. */
+const nativeRequest = (origin: string, options: NativeRequest) => {
+  const body = options.body === undefined ? undefined : JSON.stringify(options.body);
+  return request(new URL(options.path, origin), {
+    method: body === undefined ? "GET" : "POST",
+    headers: {
+      ...options.headers,
+      ...(body === undefined
+        ? {}
+        : { "content-type": "application/json", "content-length": Buffer.byteLength(body) }),
+    },
+  }).end(body);
+};
+
+const nativeReply = (origin: string, options: NativeRequest) =>
+  driver(
+    `${options.body === undefined ? "GET" : "POST"} ${new URL(options.path, origin).pathname}`,
+    () =>
+      new Promise<{ response: import("node:http").IncomingMessage; text: string }>(
+        (resolve, reject) => {
+          nativeRequest(origin, options)
+            .once("error", reject)
+            .once("response", (response) => {
+              const chunks: Buffer[] = [];
+              response.on("data", (chunk: Buffer) => chunks.push(chunk));
+              response.once("error", reject);
+              response.once("end", () =>
+                resolve({ response, text: Buffer.concat(chunks).toString("utf8") }),
+              );
+            });
+        },
+      ),
+  );
+
+const sessionCookies = (headers: import("node:http").IncomingHttpHeaders) =>
+  (headers["set-cookie"] ?? []).map((cookie) => cookie.split(";")[0]).join("; ");
+
+const streamEvent = <A>() => {
+  let resolve!: (value: A) => void;
+  const promise = new Promise<A>((complete) => {
+    resolve = complete;
+  });
+  return { promise, resolve };
+};
+
+const liveStream = (
+  origin: string,
+  options: NativeRequest,
+  firstFrame: (text: string) => boolean,
+) =>
+  Effect.gen(function* () {
+    const stream = yield* Effect.acquireRelease(
+      Effect.sync(() => {
+        const outgoing = nativeRequest(origin, options);
+        const ready = streamEvent<string>();
+        const finished = streamEvent<void>();
+        let ended = false;
+        outgoing.once("error", (error) => {
+          ready.resolve(String(error));
+          ended = true;
+          finished.resolve();
+        });
+        outgoing.once("response", (response) => {
+          const media = response.headers["content-type"]?.split(";")[0];
+          if (response.statusCode !== 200 || media !== "text/event-stream") {
+            ready.resolve(`expected event stream, got ${response.statusCode} ${media}`);
+            response.resume();
+          } else {
+            let text = "";
+            response.setEncoding("utf8");
+            const received = (chunk: string) => {
+              text += chunk;
+              if (firstFrame(text)) {
+                ready.resolve("open");
+                response.off("data", received);
+                response.resume();
+              }
+            };
+            response.on("data", received);
+          }
+          response.once("error", () => {});
+          response.once("close", () => {
+            ended = true;
+            ready.resolve("stream closed before its first frame");
+            finished.resolve();
+          });
+        });
+        return { outgoing, ready: ready.promise, finished: finished.promise, ended: () => ended };
+      }),
+      ({ outgoing }) => Effect.sync(() => outgoing.destroy()),
+    );
+    const ready = yield* driver("wait for a stream frame", () => stream.ready).pipe(
+      Effect.timeout("10 seconds"),
+    );
+    expect(ready, options.path).toBe("open");
+    return stream;
+  });
+
+it.live(scenarios.selfHostNativeGracefulShutdown.title, () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const registry = yield* lockedNpmRegistry;
+      const host = yield* nativeSelfHost({ EXECUTOR_NPM_REGISTRY: `${registry.url}/` });
+      const send = (options: NativeRequest) => nativeReply(host.origin, options);
+      const json = <S extends Schema.Top>(
+        schema: S,
+        reply: Effect.Success<ReturnType<typeof send>>,
+      ) => {
+        expect(reply.response.statusCode).toBe(200);
+        return Schema.decodeUnknownEffect(Schema.fromJsonString(schema))(reply.text);
+      };
+      const setup = yield* send({
+        path: "/api/auth/self-host/setup",
+        headers: { origin: host.origin },
+        body: {
+          name: "Shutdown Owner",
+          email: "shutdown@example.test",
+          password: "Synthetic-shutdown-password-123!",
+          organizationName: "Shutdown lab",
+        },
+      });
+      expect(setup.response.statusCode).toBe(200);
+      const owner = { origin: host.origin, cookie: sessionCookies(setup.response.headers) };
+      const [organization] = yield* json(
+        Schema.NonEmptyArray(Schema.Struct({ id: Schema.String })),
+        yield* send({ path: "/api/auth/organization/list", headers: owner }),
+      );
+      const key = yield* json(
+        Schema.Struct({ key: Schema.String }),
+        yield* send({
+          path: "/api/auth/api-key/create",
+          headers: owner,
+          body: { name: "Shutdown MCP" },
+        }),
+      );
+      const apps = `/api/organizations/${organization.id}/apps`;
+      const app = yield* json(
+        Schema.Struct({ id: Schema.String }),
+        yield* send({
+          path: `${apps}/deploy`,
+          headers: owner,
+          body: {
+            name: "Shutdown subscription",
+            files: [
+              appsManifest,
+              {
+                path: "index.ts",
+                content: `import { defineApp, number, object, query, router } from "apps";
+export const latest = query({ input: object({}), output: object({ count: number() }) }, async ({ sql }) =>
+  sql.exec("SELECT COUNT(*) AS count FROM notes").one() as { count: number });
+export default defineApp({}, { tools: router({ latest }) });`,
+              },
+              {
+                path: "migrations/0001_notes.sql",
+                content: "CREATE TABLE notes (id TEXT PRIMARY KEY NOT NULL);\n",
+              },
+              {
+                path: "ui/index.html",
+                content:
+                  "<!doctype html><html><head><title>Shutdown</title></head><body></body></html>",
+              },
+            ],
+          },
+        }),
+      );
+      const appHost = yield* send({ path: `${apps}/${app.id}/ui`, headers: owner }).pipe(
+        Effect.flatMap((reply) =>
+          json(Schema.Struct({ status: Schema.String, url: Schema.NullOr(Schema.String) }), reply),
+        ),
+        Effect.flatMap(({ status, url }) =>
+          status === "ready" && url !== null
+            ? Effect.succeed(new URL(url).host)
+            : Effect.fail("The app address is not ready"),
+        ),
+        Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 40 }),
+      );
+      const navigation = { accept: "text/html", "sec-fetch-mode": "navigate" };
+      const redirectPath = (location: string | undefined) => {
+        const url = new URL(location ?? "", host.origin);
+        return `${url.pathname}${url.search}`;
+      };
+      const visit = yield* send({ path: "/", headers: { ...navigation, host: appHost } });
+      expect(visit.response.statusCode).toBe(302);
+      const approve = yield* send({
+        path: redirectPath(visit.response.headers.location),
+        headers: { ...navigation, cookie: owner.cookie },
+      });
+      expect(approve.response.statusCode).toBe(302);
+      const signedIn = yield* send({
+        path: redirectPath(approve.response.headers.location),
+        headers: { ...navigation, host: appHost, cookie: sessionCookies(visit.response.headers) },
+      });
+      expect(signedIn.response.statusCode).toBe(302);
+      const appSession = { host: appHost, cookie: sessionCookies(signedIn.response.headers) };
+      const page = yield* send({ path: "/", headers: { ...navigation, ...appSession } });
+      expect(page.response.statusCode).toBe(200);
+      const context = /<script[^>]*id="executor-context"[^>]*>([^<]+)<\/script>/u.exec(page.text);
+      const { version } = yield* Schema.decodeUnknownEffect(
+        Schema.fromJsonString(Schema.Struct({ version: Schema.String })),
+      )(context?.[1]);
+
+      const subscription = yield* liveStream(
+        host.origin,
+        {
+          path: "/_executor/api/subscribe",
+          headers: { ...appSession, origin: `http://${appHost}`, accept: "text/event-stream" },
+          body: { version, name: "latest", input: {} },
+        },
+        (text) => text.includes('"type":"snapshot"'),
+      );
+      const events = yield* liveStream(
+        host.origin,
+        {
+          path: "/mcp",
+          // Streamable HTTP here exposes subscriptions/listen as POST, not GET /mcp.
+          headers: {
+            authorization: `Bearer ${key.key}`,
+            "x-executor-organization": organization.id,
+            "mcp-protocol-version": "2026-07-28",
+            "mcp-method": "subscriptions/listen",
+            accept: "application/json, text/event-stream",
+          },
+          body: {
+            jsonrpc: "2.0",
+            id: 1,
+            method: "subscriptions/listen",
+            params: {
+              _meta: {
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientCapabilities": {},
+              },
+              notifications: { toolsListChanged: true },
+            },
+          },
+        },
+        (text) => text.startsWith(":") || text.includes("data:"),
+      );
+      expect(events.ended(), "MCP is still streaming").toBe(false);
+      expect(subscription.ended(), "the app is still subscribed").toBe(false);
+
+      const signalled = performance.now();
+      yield* Effect.sync(() => process.kill(host.pid, "SIGTERM"));
+      // Observe the whole stop even if it exceeds the expected shutdown window.
+      const exitCode = yield* host.exitCode.pipe(Effect.timeout("25 seconds"));
+      const elapsed = performance.now() - signalled;
+      yield* driver("both streams ended", () =>
+        Promise.all([events.finished, subscription.finished]),
+      ).pipe(Effect.timeout("1 second"));
+      const log = yield* fs.readFileString(`${host.dataDirectory}/../server.log`);
+      yield* Effect.log(
+        `SIGTERM to host exit: ${Math.round(elapsed)}ms, exit code ${exitCode}, log at ${host.dataDirectory}/../server.log`,
+      );
+      // drainGrace in apps/hosted/self-host/native/shutdown.go gives POST streams 10 seconds.
+      const drainGraceMs = 10_000;
+      expect
+        .soft(elapsed, "POST streams get the drain window")
+        .toBeGreaterThanOrEqual(drainGraceMs - 1_000);
+      expect.soft(elapsed, "SIGTERM to host exit").toBeLessThanOrEqual(drainGraceMs + 5_000);
+      expect.soft(exitCode).toBe(0);
+      expect.soft(log).not.toMatch(/killed|ReverseProxy read error/u);
     }),
   ).pipe(Effect.provide(NodeServices.layer), Effect.provide(FetchHttpClient.layer)),
 );

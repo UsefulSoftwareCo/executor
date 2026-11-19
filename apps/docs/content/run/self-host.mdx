@@ -226,7 +226,8 @@ still fail now and then; only three failures in a row count. Give your own probe
 1. Attach a new persistent volume at `/app/data`.
 2. Generate a public domain in the service's networking settings. Route it to port `8080`, which Railway supplies through `PORT`. If you override `PORT`, use that value.
 3. Set the Railway healthcheck path to `/health`, with a startup timeout of 120 seconds.
-4. Deploy (or redeploy if the service already started). This loads the new public domain into the server. Open that domain to create the first administrator.
+4. Set `RAILWAY_DEPLOYMENT_DRAINING_SECONDS=30` (or `deploy.drainingSeconds` to `30`) so Railway gives the host time to drain before SIGKILL; the default is zero.
+5. Deploy (or redeploy if the service already started). This loads the new public domain into the server. Open that domain to create the first administrator.
 
 No database service or secret variables are needed. Executor reads
 `RAILWAY_PUBLIC_DOMAIN` and `PORT`. The container prepares the root-owned volume,
@@ -246,12 +247,17 @@ it. This example uses HTTPS port `4443`, for a host where another service
 already uses `443`:
 
 ```bash
-docker run -d --name executor-v2 --init --restart unless-stopped \
+docker run -d --name executor-v2 --init --restart unless-stopped --stop-timeout 30 \
   -p 127.0.0.1:4400:4400 -v executor-v2-data:/app/data \
   -e BETTER_AUTH_URL=https://<machine>.<tailnet>.ts.net:4443 \
   ghcr.io/usefulsoftwareco/executor-selfhost:beta
 tailscale serve --bg --https=4443 http://127.0.0.1:4400
 ```
+
+Docker's default 10-second stop timeout is shorter than the host's request drain
+plus child process grace periods; keep `--stop-timeout 30` when recreating the container.
+On Railway, set `RAILWAY_DEPLOYMENT_DRAINING_SECONDS=30` (or `deploy.drainingSeconds`
+to `30`) instead; Railway's default drain is zero seconds.
 
 `tailscale serve status` shows the address. `BETTER_AUTH_URL` must match it
 exactly, including a port other than `443`; without the port, browser sign-in

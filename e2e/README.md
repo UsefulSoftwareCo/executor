@@ -81,8 +81,8 @@ install that executable. The copy and byte comparison above stage the verified b
 The host supervises the collector on a private Unix socket, recorded at `.executor-telemetry`
 in the product data directory. Nothing listens on TCP
 port 4318. The scenarios check that collector ingest does not delay product health, that a crashed
-collector restarts on its retained store after the supervisor's one-second backoff, and that
-Ctrl-C stops it with a draining product without a restart.
+collector restarts on its retained store after the supervisor's one-second backoff, and that a
+collector signalled separately as the host starts draining does not restart.
 
 This needs Go and the current platform's workerd executable. The scenario owns
 its listeners, data directories and processes; logs remain in `.local/native-auth/`
