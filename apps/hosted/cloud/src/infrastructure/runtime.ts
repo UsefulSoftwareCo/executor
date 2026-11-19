@@ -30,6 +30,7 @@ import type { DurableObjectNamespace } from "@cloudflare/workers-types";
 import { CloudCompileResult } from "../contracts/builds.ts";
 import { AppCompiler } from "./compiler.ts";
 import { AppData } from "./app-data-worker.ts";
+import { CurrentRequest } from "./served-request.ts";
 import type { AppDataSupervisor } from "./app-data.ts";
 import {
   loadCloudBuildRecord,
@@ -85,6 +86,23 @@ const NativeNamespace = Schema.declare(
  */
 const SupervisorRun = Schema.UndefinedOr(Schema.String);
 
+/** The group each incoming request's app calls name; see `AppInvocation.outboundGroup`. */
+const outboundGroups = new WeakMap<object, string>();
+/**
+ * Name the incoming request a call serves as the group its outgoing requests count against.
+ * Cloudflare lets one incoming request have six connections waiting for response headers, counting
+ * every app call it makes, and AppData's network counts them by this name (`app-outbound.ts`).
+ */
+const outboundGroup = (unserved: object) =>
+  Effect.map(CurrentRequest, (request) => {
+    const key = request ?? unserved;
+    const known = outboundGroups.get(key);
+    if (known !== undefined) return known;
+    const named = crypto.randomUUID();
+    outboundGroups.set(key, named);
+    return named;
+  });
+
 /** Native Alchemy bindings are resolved once; actual work belongs to the current invocation. */
 export const cloudRuntime = Effect.fn(function* (
   origin: string,
@@ -129,6 +147,8 @@ export const cloudRuntime = Effect.fn(function* (
             ),
         declare: (bundle, headers) => appData.declare(bundle, headers),
       });
+    // Work outside a served request, such as a workflow step, names one group for its runtime.
+    const unserved = {};
     // Cache writes run in this event scope, bounded when it closes.
     const warming = yield* FiberSet.make();
     yield* Effect.addFinalizer(() =>
@@ -149,12 +169,14 @@ export const cloudRuntime = Effect.fn(function* (
       name: "runtime.cloud",
       actor: runtimeActor,
       loadBuild: load,
+      // A database call goes to its supervisor, an object with its own connection limit.
       invoke: (invocation, capabilities) =>
         withActor(
-          (runsInFacet(invocation) ? supervised(invocation.app) : runner).invoke(
-            invocation,
-            capabilities,
-          ),
+          runsInFacet(invocation)
+            ? supervised(invocation.app).invoke(invocation, capabilities)
+            : Effect.flatMap(outboundGroup(unserved), (group) =>
+                runner.invoke({ ...invocation, outboundGroup: group }, capabilities),
+              ),
         ),
       build: ({ files, public: publicPaths = [], retain = true }) =>
         withActor(

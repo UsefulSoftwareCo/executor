@@ -823,6 +823,7 @@ const suiteConfigs: Record<string, () => Promise<unknown>> = {
   "publish-guard.config.ts": () => import("./publish-guard.config.ts"),
   "workflow-caches.config.ts": () => import("./workflow-caches.config.ts"),
   "telemetry-event-lifetime.config.ts": () => import("./telemetry-event-lifetime.config.ts"),
+  "outbound-routes.config.ts": () => import("./outbound-routes.config.ts"),
   "cli-startup-imports.config.ts": () => import("./cli-startup-imports.config.ts"),
   "process-output-exit.config.ts": () => import("./process-output-exit.config.ts"),
   "cloud-deploy-origin.config.ts": () => import("./cloud-deploy-origin.config.ts"),

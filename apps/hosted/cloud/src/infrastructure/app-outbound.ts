@@ -12,8 +12,11 @@ import {
   HostApiCheck,
   NetworkUnreachable,
   networkUnreachableResponse,
+  outboundGroupHeader,
 } from "@executor-js/sdk/workerd";
 import { type AppEgressFailed, egressFailure } from "../implementation/app-egress.ts";
+import { type RelayObjects, relayed, relayScript } from "../implementation/app-outbound-relay.ts";
+import { appOutboundRoutes, type Sent } from "../implementation/app-outbound-routes.ts";
 import { cloudSentry, reportCloudFailure } from "../implementation/error-reporting.ts";
 import { platformObservability } from "./telemetry.ts";
 
@@ -29,6 +32,26 @@ export const AppOutbound = Effect.gen(function* () {
     script: `export default {
       fetch(request) { return fetch(request); }
     };`,
+    ...(yield* platformObservability),
+  });
+});
+
+/**
+ * The relay's own Worker, with `AppOutbound`'s flags and no bindings or credentials besides its
+ * objects. It is a Worker of its own so that removing it is the last step of a deploy that stops
+ * using it: Alchemy deletes a removed Worker, and its class with it, after updating the Workers
+ * that bound it, so a plain revert never deletes the class while AppData still sends to it.
+ */
+export const AppOutboundRelay = Effect.gen(function* () {
+  if (globalThis.__ALCHEMY_RUNTIME__) return yield* Cloudflare.Worker.ref("AppOutboundRelay");
+  return yield* Cloudflare.Worker("AppOutboundRelay", {
+    workersDev: false,
+    compatibility: {
+      date: "2026-09-08",
+      flags: ["global_fetch_strictly_public", "no_brotli_content_encoding"],
+    },
+    script: relayScript,
+    env: { AppOutboundRelay: Cloudflare.DurableObject("AppOutboundRelay") },
     ...(yield* platformObservability),
   });
 });
@@ -59,6 +82,26 @@ const NativeNetwork = Schema.declare(
     "fetch" in value &&
     typeof value.fetch === "function",
 );
+const NativeRelayObjects = Schema.declare(
+  (value): value is RelayObjects =>
+    typeof value === "object" &&
+    value !== null &&
+    "idFromName" in value &&
+    typeof value.idFromName === "function" &&
+    "get" in value &&
+    typeof value.get === "function",
+);
+
+/** The routes of this isolate's app requests; see `app-outbound-routes.ts`. */
+const routes = appOutboundRoutes();
+
+/** `request` without the group's name, with its body, signal and redirect mode. */
+const withoutGroup = (request: Request) => {
+  const headers = new Headers(request.headers);
+  headers.delete(outboundGroupHeader);
+  return new Request(request, { headers });
+};
+
 type Loopback = (options: { readonly props: typeof OutboundProps.Type }) => Fetcher;
 const Exports = Schema.Struct({
   exports: Schema.Struct({
@@ -75,9 +118,20 @@ const Exports = Schema.Struct({
  */
 export const appCredentialOutbound = Effect.gen(function* () {
   const network = yield* AppOutbound;
+  const relay = yield* AppOutboundRelay;
   const worker = yield* Cloudflare.Worker;
   yield* worker.bind`${network}`({
     bindings: [{ type: "service", name: "AppOutbound", service: network.workerName }],
+  });
+  yield* worker.bind`${relay}`({
+    bindings: [
+      {
+        type: "durable_object_namespace",
+        name: "AppOutboundRelay",
+        className: "AppOutboundRelay",
+        scriptName: relay.workerName,
+      },
+    ],
   });
   const environment = yield* Cloudflare.WorkerEnvironment;
   // The runner and this Worker's outbound entrypoint share it; app code never receives it.
@@ -95,6 +149,15 @@ export const appCredentialOutbound = Effect.gen(function* () {
   );
   return {
     key,
+    /**
+     * Count the app requests of calls naming `group` against one incoming request, for as long as
+     * the scope; see `app-outbound-routes.ts`.
+     */
+    outboundGroup: (group: string) =>
+      Effect.acquireRelease(
+        Effect.sync(() => routes.hold(group)),
+        (release) => Effect.sync(release),
+      ).pipe(Effect.asVoid),
     /** The network one app's isolates use for global `fetch`. */
     outbound: Effect.gen(function* () {
       const exports = yield* loopback;
@@ -117,12 +180,28 @@ export const appCredentialOutbound = Effect.gen(function* () {
         if (props._tag === "None") return yield* handler;
         // The path is the app's request to its upstream, so its span records none of it.
         yield* recordRoute("/:upstream");
+        // Which app sent it, so its route can be read with the app's other spans.
+        yield* Effect.annotateCurrentSpan("executor.app.id", props.value.appOutbound);
         const request = yield* HttpServerRequest.HttpServerRequest;
-        const source = request.source;
-        if (!(source instanceof Request)) return yield* Effect.die("App request is not a Request");
-        const send = yield* Schema.decodeUnknownEffect(NativeNetwork)(environment.AppOutbound).pipe(
-          Effect.orDie,
-        );
+        const received = request.source;
+        if (!(received instanceof Request))
+          return yield* Effect.die("App request is not a Request");
+        // The group the runner named for the call's incoming request goes no further.
+        const group = received.headers.get(outboundGroupHeader);
+        const source = group === null ? received : withoutGroup(received);
+        const network = yield* Schema.decodeUnknownEffect(NativeNetwork)(
+          environment.AppOutbound,
+        ).pipe(Effect.orDie);
+        const relay = yield* Schema.decodeUnknownEffect(NativeRelayObjects)(
+          environment.AppOutboundRelay,
+        ).pipe(Effect.orDie);
+        // How each request was sent, for the span once the app's request is answered.
+        const sent: Array<Sent> = [];
+        const transport = {
+          direct: (request: Request) => network.fetch(request),
+          relay: (slot: number, request: Request) => relayed(relay, slot, request),
+        };
+        const send = (request: Request) => routes.send(group, request, transport, sent);
         // The secret is read from this event's Worker environment.
         const sealing = yield* key;
         const privateFetch = yield* Schema.decodeUnknownEffect(Schema.Boolean)(
@@ -139,7 +218,7 @@ export const appCredentialOutbound = Effect.gen(function* () {
               // Cloud's own origin is public, so it needs no exemption.
               egress: { refusePrivateAddresses: !privateFetch, selfOrigin: undefined },
               send: (request) =>
-                send.fetch(request).catch((error: unknown) => {
+                send(request).catch((error: unknown) => {
                   if (!source.signal.aborted) unsent = egressFailure("send", error);
                   throw error;
                 }),
@@ -156,6 +235,13 @@ export const appCredentialOutbound = Effect.gen(function* () {
                 ),
           ),
         );
+        const last = sent.at(-1);
+        if (last !== undefined)
+          yield* Effect.annotateCurrentSpan(
+            Object.fromEntries(
+              Object.entries(last).map(([name, value]) => [`executor.outbound.${name}`, value]),
+            ),
+          );
         if (unsent !== undefined) yield* report(unsent);
         return HttpServerResponse.fromWeb(response);
       }),

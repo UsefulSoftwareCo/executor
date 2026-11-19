@@ -39,6 +39,8 @@ export const WorkerInvocation = Schema.Struct({
   /** The scheduled run the invocation serves, for telemetry; see `InvocationRun`. */
   run: Schema.optionalKey(Schema.String),
   headers: Schema.Record(Schema.String, Schema.String),
+  /** The incoming request the call's outgoing requests count against; see `AppInvocation.outboundGroup`. */
+  outboundGroup: Schema.optionalKey(Schema.NonEmptyString),
   /** Whether the invocation may ask for input or manage workflows through its callbacks. */
   elicitation: Schema.Boolean,
   workflowControls: Schema.Boolean,

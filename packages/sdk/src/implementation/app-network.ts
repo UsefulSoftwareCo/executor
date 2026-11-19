@@ -80,6 +80,16 @@ export const hostApiChangingResponse = () =>
   });
 
 /**
+ * The header naming the host's incoming request an app request counts against; see
+ * `AppInvocation.outboundGroup`. The runner names a call's group in the headers it starts the call
+ * with, the bridge runs that call in `outboundGroup`, and the first module sets the header on each
+ * request the call sends, replacing any value app code gave it. Only a host that names groups
+ * (Cloud) sets it, and its network removes it before anything else reads the request, so it never
+ * reaches a service. A value the host did not name is ignored.
+ */
+export const outboundGroupHeader = "x-executor-outbound-group";
+
+/**
  * The first module of every app isolate. Before app code loads, it replaces the platform's `fetch`
  * wherever the global scope holds it (workerd defines it on the scope's prototype), so a marked
  * response rejects with a `TypeError`, as the platform's `fetch` does when its network fails. Every
@@ -90,7 +100,10 @@ export const hostApiChangingResponse = () =>
  * limit means for the call and keeps the platform's error as its cause.
  */
 export const appNetworkModule = `
+import { AsyncLocalStorage } from "node:async_hooks";
 const { apply, defineProperty, getOwnPropertyDescriptor, getPrototypeOf } = Reflect;
+/** The group of the call running; see \`outboundGroupHeader\`. */
+export const outboundGroup = new AsyncLocalStorage();
 const accessor = (type, name) => {
   for (let scope = type.prototype; ; scope = getPrototypeOf(scope)) {
     const own = getOwnPropertyDescriptor(scope, name);
@@ -101,6 +114,18 @@ const status = accessor(Response, "status");
 const headers = accessor(Response, "headers");
 const body = accessor(Response, "body");
 const header = Headers.prototype.get;
+const setHeader = Headers.prototype.set;
+const Outgoing = Request;
+const outgoingHeaders = accessor(Request, "headers");
+const groupStore = outboundGroup.getStore;
+/** The arguments \`fetch(input, init)\` sends with, its request named for the call's group. */
+const grouped = (input, init) => {
+  const group = apply(groupStore, outboundGroup, []);
+  if (typeof group !== "string") return [input, init];
+  const request = new Outgoing(input, init);
+  apply(setHeader, apply(outgoingHeaders, request, []), [${JSON.stringify(outboundGroupHeader)}, group]);
+  return [request];
+};
 const cancel = ReadableStream.prototype.cancel;
 const decode = decodeURIComponent;
 const Rejection = TypeError;
@@ -117,7 +142,7 @@ const platformFetch = globalThis.fetch;
 async function fetch(input, init) {
   let response;
   try {
-    response = await apply(platformFetch, globalThis, [input, init]);
+    response = await apply(platformFetch, globalThis, grouped(input, init));
   } catch (error) {
     if (error instanceof PlatformError && apply(test, limited, [error.message])) throw new SubrequestLimitReached(error);
     throw error;

@@ -3190,6 +3190,45 @@ export const scenarios = plan({
       local: na("Exercises the hosted import and account connection APIs."),
     },
   },
+  concurrentOutbound: {
+    fixtures: "actors",
+    file: "concurrent-outbound.spec.ts",
+    title: "Ten concurrent calls in one execute each wait one answer time for a slow service",
+    targets: {
+      "self-host": scheduled,
+      // Only Cloudflare limits how many connections one request may have waiting, so only a
+      // deployed stage shows calls queueing; managed local Cloud still sends them through the relay.
+      cloud: scheduled,
+      local: na("Exercises the hosted app deploy, account and MCP execute APIs."),
+    },
+  },
+  concurrentOutboundChecks: {
+    fixtures: "actors",
+    file: "concurrent-outbound.spec.ts",
+    title:
+      "Requests sent while five others wait keep every outbound check and carry no Executor header",
+    targets: {
+      "self-host": scheduled,
+      // Managed local Cloud sends them through the relay; a deployed stage also shows they did not
+      // wait for the five.
+      cloud: scheduled,
+      local: na("Exercises the hosted app deploy, account and MCP execute APIs."),
+    },
+  },
+  concurrentOutboundPrivate: {
+    fixtures: "actors",
+    file: "concurrent-outbound.spec.ts",
+    title:
+      "Requests to private addresses sent while five others wait are refused, redirected or not",
+    targets: {
+      "self-host": na(
+        "The self-host scenarios reach their loopback fixtures, so private fetch is on.",
+      ),
+      // The local test Worker lets apps reach the scenarios' loopback fixtures.
+      cloud: { status: "scheduled", runtime: "attached" },
+      local: na("Local lets app code reach private addresses by design."),
+    },
+  },
   appFetchUserAgent: {
     fixtures: "actors",
     file: "app-fetch-user-agent.spec.ts",
