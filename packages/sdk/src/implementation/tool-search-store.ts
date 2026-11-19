@@ -131,22 +131,28 @@ interface Kept {
   /** What the entry holds, its key included, as counted against {@link keptBytes}. */
   readonly bytes: number;
 }
-/** A search whose order is larger than {@link keptOrderBytes}: its pages rank as before. */
-interface Oversized {
-  readonly bytes: number;
-}
-/** Most searches kept at once. */
+/** Most searches kept at once, and most searches remembered as too large to keep. */
 const keptOrders = 32;
-/** Most bytes all kept searches hold together; the least recently used go first. */
+/** Most bytes all kept searches hold together. */
 const keptBytes = 6_000_000;
-/** Most bytes one kept search holds: about 160,000 tools. A larger one is not kept. */
-const keptOrderBytes = 2_000_000;
 /**
- * How long a kept search goes unread before a new one may evict it. While every kept search is
- * being paged, a new one is not kept: its pages rank as before, so more concurrent walks than
- * {@link keptOrders} cost what they did before orders were kept, instead of evicting each other.
+ * Most bytes one kept search holds: about 160,000 tools. A larger one is not kept, and a search
+ * whose key alone is larger is neither kept nor remembered: each of its pages ranks, as before.
+ */
+const keptOrderBytes = 2_000_000;
+/** Most bytes the keys of searches remembered as too large to keep hold together. */
+const oversizedBytes = 2_000_000;
+/**
+ * How long a kept search goes unread before a new one may evict it; a search read since is never
+ * evicted. While every kept search is being paged, a new one is not kept: its pages rank as
+ * before, so more concurrent walks than {@link keptOrders} cost what they did before orders were
+ * kept, instead of evicting each other. Once 32 searches have each been read within 30 s, or
+ * their orders fill {@link keptBytes}, every further walk goes uncached until one of them idles.
+ * Times are monotonic, so a wall-clock step neither evicts a search in use nor keeps an idle one.
  */
 const keptIdleMillis = 30_000;
+/** Milliseconds on the monotonic clock, for {@link keptIdleMillis}. */
+const monotonicMillis = Effect.map(Clock.monotonicTimeNanos, (nanos) => Number(nanos / 1_000_000n));
 /** Bytes an entry takes beyond its arrays: its key, stamp and object headers. */
 const entryBytes = (key: string, stamp: string, missing: number) =>
   256 + 2 * (key.length + stamp.length) + 8 * missing;
@@ -191,30 +197,70 @@ export const supersededRetentionMillis = 60 * 60_000;
 const BM25 = { k1: 1.2, b: 0.75 } as const;
 
 export const makeToolSearchStore = (sql: SqlClient.SqlClient) => {
-  /** Kept orders by search, least recently used first; see {@link Kept}. */
-  const orders = new Map<string, { readonly entry: Kept | Oversized; readonly used: number }>();
+  /** Kept orders by search, least recently read first; see {@link Kept}. */
+  const orders = new Map<string, { readonly order: Kept; readonly used: number }>();
   let ordersBytes = 0;
+  /**
+   * Searches whose order is larger than {@link keptOrderBytes}, least recently read first, with
+   * the bytes their key takes: their pages rank without the order. They are bounded apart from
+   * {@link orders}, so remembering one never evicts a kept order.
+   */
+  const oversized = new Map<string, number>();
+  let oversizedHeld = 0;
   const forget = (key: string) => {
     const kept = orders.get(key);
     if (kept === undefined) return;
     orders.delete(key);
-    ordersBytes -= kept.entry.bytes;
+    ordersBytes -= kept.order.bytes;
   };
-  /** Keep an entry as the most recently used, evicting the least recently used past the bounds. */
-  const keep = (key: string, entry: Kept | Oversized, used: number) => {
-    forget(key);
-    orders.set(key, { entry, used });
-    ordersBytes += entry.bytes;
-    for (const old of orders.keys()) {
-      if (orders.size <= keptOrders && ordersBytes <= keptBytes) break;
-      forget(old);
+  /** Mark a kept order read now, as the most recently read. */
+  const touch = (key: string, order: Kept, used: number) => {
+    orders.delete(key);
+    orders.set(key, { order, used });
+  };
+  /**
+   * The searches to evict for an order of `bytes` to fit, least recently read first, or nothing
+   * when it fits only by evicting a search read in the last {@link keptIdleMillis}.
+   */
+  const evictable = (bytes: number, now: number) => {
+    let count = orders.size + 1;
+    let held = ordersBytes + bytes;
+    const idle: Array<string> = [];
+    for (const [key, { order, used }] of orders) {
+      if (count <= keptOrders && held <= keptBytes) break;
+      if (now - used < keptIdleMillis) continue;
+      idle.push(key);
+      count -= 1;
+      held -= order.bytes;
     }
+    return count <= keptOrders && held <= keptBytes ? idle : undefined;
   };
-  /** Whether a new order fits without evicting a search read in the last `keptIdleMillis`. */
-  const room = (now: number) => {
-    if (orders.size < keptOrders && ordersBytes + keptOrderBytes <= keptBytes) return true;
-    const [oldest] = orders.values();
-    return oldest !== undefined && now - oldest.used >= keptIdleMillis;
+  /**
+   * Keep an order if it fits by evicting only idle searches. It is decided when the order is in
+   * hand, after the ranking it waited on, since other searches may have been kept meanwhile.
+   */
+  const admit = (key: string, order: Kept, now: number) => {
+    forget(key);
+    const idle = evictable(order.bytes, now);
+    if (idle === undefined) return;
+    for (const old of idle) forget(old);
+    orders.set(key, { order, used: now });
+    ordersBytes += order.bytes;
+  };
+  /** Remember a search as too large to keep, dropping the least recently read past the bound. */
+  const remember = (key: string, bytes: number) => {
+    const held = oversized.get(key);
+    if (held !== undefined) {
+      oversized.delete(key);
+      oversizedHeld -= held;
+    }
+    oversized.set(key, bytes);
+    oversizedHeld += bytes;
+    for (const [old, oldBytes] of oversized) {
+      if (oversized.size <= keptOrders && oversizedHeld <= oversizedBytes) break;
+      oversized.delete(old);
+      oversizedHeld -= oldBytes;
+    }
   };
   const failed = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     effect.pipe(Effect.mapError(() => new StorageError()));
@@ -666,24 +712,24 @@ export const makeToolSearchStore = (sql: SqlClient.SqlClient) => {
           return pageOf(yield* ranked());
         }
         const key = JSON.stringify([input.targets, input.terms]);
-        const now = yield* Clock.currentTimeMillis;
-        const remembered = orders.get(key)?.entry;
-        if (remembered !== undefined && !("cells" in remembered)) {
+        const keyBytes = entryBytes(key, "", 0);
+        if (keyBytes > keptOrderBytes || oversized.has(key)) {
           // Too large to keep: each page ranks, as before.
-          keep(key, remembered, now);
+          if (oversized.has(key)) remember(key, keyBytes);
           yield* Effect.annotateCurrentSpan("executor.search.order", "ranked");
           return pageOf(yield* ranked());
         }
+        const remembered = orders.get(key)?.order;
         if (remembered !== undefined) {
           const page = yield* kept(remembered);
           if (page !== undefined) {
-            keep(key, remembered, now);
+            touch(key, remembered, yield* monotonicMillis);
             yield* Effect.annotateCurrentSpan("executor.search.order", "kept");
             return page;
           }
           forget(key);
         }
-        if (!room(now)) {
+        if (evictable(keptOrderBytes, yield* monotonicMillis) === undefined) {
           // Every kept search is in use: rank this page as before rather than evict one.
           yield* Effect.annotateCurrentSpan("executor.search.order", "ranked");
           return pageOf(yield* ranked());
@@ -702,13 +748,14 @@ export const makeToolSearchStore = (sql: SqlClient.SqlClient) => {
           parsed === undefined
             ? undefined
             : overhead + parsed.cells.byteLength + parsed.extras.byteLength;
-        keep(
-          key,
-          parsed === undefined || bytes === undefined || bytes > keptOrderBytes
-            ? { bytes: entryBytes(key, "", 0) }
-            : { total: row.total, missing: row.missing, stamp: row.stamp, ...parsed, bytes },
-          now,
-        );
+        if (parsed === undefined || bytes === undefined || bytes > keptOrderBytes)
+          remember(key, keyBytes);
+        else
+          admit(
+            key,
+            { total: row.total, missing: row.missing, stamp: row.stamp, ...parsed, bytes },
+            yield* monotonicMillis,
+          );
         return pageOf(row);
       }).pipe(failed),
   };

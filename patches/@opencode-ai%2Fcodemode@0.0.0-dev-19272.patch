@@ -769,10 +769,10 @@ index 7b1492c21fbe95d6b995327ad7aec31ba345bf6b..a2ebe70b30121ff5e4b6ca60e0b6109a
 +export declare const rejectCircularInsertion: (container: object, value: unknown, label: string, node: AstNode, seen?: Set<object>, meter?: (visited: number) => void) => void;
  export declare const typeofValue: (value: unknown) => string;
 diff --git a/dist/interpreter/references.js b/dist/interpreter/references.js
-index 314a7c3752745de0b8680531b64cf37bc584a812..a4bf237d4e716d3259b0f617695268cc47c5b289 100644
+index 314a7c3752745de0b8680531b64cf37bc584a812..7ed7bd6c4563e35524453655e9f161b1256ffc7d 100644
 --- a/dist/interpreter/references.js
 +++ b/dist/interpreter/references.js
-@@ -70,23 +70,82 @@ export const containsOpaqueReference = (value) => {
+@@ -70,23 +70,110 @@ export const containsOpaqueReference = (value) => {
      }
      return false;
  };
@@ -797,10 +797,7 @@ index 314a7c3752745de0b8680531b64cf37bc584a812..a4bf237d4e716d3259b0f617695268cc
 +            meter(visited);
 +            visited = 0;
 +        }
-         const current = next.value;
--        if (current === container)
--            throw new InterpreterRuntimeError(`${label} contains a circular value.`, node, "InvalidDataValue");
--        if (current === null || typeof current !== "object" || isRuntimeReference(current) || seen.has(current))
++        const current = next.value;
 +        if (isCodeModeValue(current))
 +            continue;
 +        if (isRuntimeReference(current)) {
@@ -808,53 +805,83 @@ index 314a7c3752745de0b8680531b64cf37bc584a812..a4bf237d4e716d3259b0f617695268cc
 +            return true;
 +        }
 +        if (current === null || typeof current !== "object" || seen.has(current))
-             continue;
-         seen.add(current);
-         pending.push(childValues(current));
-     }
++            continue;
++        seen.add(current);
++        pending.push(childValues(current));
++    }
 +    meter(visited);
 +    return false;
 +};
 +/** An interpreter reference that is not CodeMode data, such as a function or the tools root. */
 +export const isOpaqueReference = (value) => !isCodeModeValue(value) && isRuntimeReference(value);
 +// Reject cycles before mutation so later boundary walks remain safe.
-+// Data objects whose own values are all primitives or interpreter references, so a cycle walk
-+// that reaches one can stop there: the container it looks for is a data object and cannot be among
-+// them. An object leaves the set when an object is inserted into it, and every insertion of a
-+// value into existing program data runs rejectCircularInsertion first, so membership stays exact.
-+const leafData = new WeakSet();
++// Data objects a cycle walk has already checked, so a later walk can stop at one. The invariant:
++// every data object inside a walked object is walked too, so the container a walk looks for, which
++// it removes from `walked` first, is never inside one. A leaf, an object holding no objects, maps
++// to LEAF and stays walked until an object is stored into it. Any other object maps to the epoch
++// it was walked in and counts as walked only during that epoch. Every insertion of a value into
++// existing program data runs rejectCircularInsertion first, so a store into a walked object that
++// sits inside another walked object (`insideWalked`) starts a new epoch, which drops every
++// non-leaf entry at once, as their graphs may now hold new values. A store into an object no
++// walked object holds, such as the array rows are pushed into, keeps the epoch.
++const LEAF = -1;
++const walked = new WeakMap();
++const insideWalked = new WeakSet();
++let walkEpoch = 0;
++const isWalked = (value) => {
++    const epoch = walked.get(value);
++    return epoch !== undefined && (epoch === LEAF || epoch === walkEpoch);
++};
 +// The walk visits each value once and reports visits to `meter` in batches of METER_BATCH, so the
-+// caller can charge it and stop it partway; a leaf seen before costs one visit.
++// caller can charge it and stop it partway; a walked object costs one visit.
 +export const rejectCircularInsertion = (container, value, label, node, seen = new Set(), meter) => {
 +    if (value === null || typeof value !== "object")
 +        return;
-+    leafData.delete(container);
-+    const pending = [{ children: [value].values(), owner: undefined, leaf: true }];
++    if (insideWalked.has(container) && isWalked(container))
++        walkEpoch++;
++    walked.delete(container);
++    const pending = [{ children: [value].values(), owner: undefined, leaf: true, complete: true }];
 +    let visited = 0;
 +    while (pending.length > 0) {
 +        const frame = pending.at(-1);
 +        const next = frame.children.next();
 +        if (next.done) {
 +            pending.pop();
-+            if (frame.owner !== undefined && frame.leaf)
-+                leafData.add(frame.owner);
++            if (frame.owner === undefined)
++                continue;
++            if (frame.complete)
++                walked.set(frame.owner, frame.leaf ? LEAF : walkEpoch);
++            else
++                pending.at(-1).complete = false;
 +            continue;
 +        }
 +        if (meter !== undefined && ++visited === METER_BATCH) {
 +            meter(visited);
 +            visited = 0;
 +        }
-+        const current = next.value;
-+        if (current === container)
-+            throw new InterpreterRuntimeError(`${label} contains a circular value.`, node, "InvalidDataValue");
+         const current = next.value;
+         if (current === container)
+             throw new InterpreterRuntimeError(`${label} contains a circular value.`, node, "InvalidDataValue");
+-        if (current === null || typeof current !== "object" || isRuntimeReference(current) || seen.has(current))
 +        if (current === null || typeof current !== "object" || isRuntimeReference(current))
 +            continue;
 +        frame.leaf = false;
-+        if (seen.has(current) || leafData.has(current))
++        // Only a walked object's own values need the mark, and the stored value's parent is the
++        // container, which is not walked; marking every child of a frame keeps the check simple.
++        if (frame.owner !== undefined)
++            insideWalked.add(current);
++        if (isWalked(current))
+             continue;
++        // Seen earlier in this walk, or by the caller, without being marked walked: its owner
++        // cannot be marked either.
++        if (seen.has(current)) {
++            frame.complete = false;
 +            continue;
-+        seen.add(current);
-+        pending.push({ children: childValues(current), owner: current, leaf: true });
-+    }
++        }
+         seen.add(current);
+-        pending.push(childValues(current));
++        pending.push({ children: childValues(current), owner: current, leaf: true, complete: true });
+     }
 +    if (meter !== undefined)
 +        meter(visited);
  };

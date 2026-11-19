@@ -8157,6 +8157,17 @@ export const scenarios = plan({
       local: na("Hosted MCP scenario"),
     },
   },
+  mcpSearchKeptOrders: {
+    fixtures: "actors",
+    file: "mcp-search-kept-orders.spec.ts",
+    title:
+      "A search being paged keeps its order beside 40 new searches at once and beside a search too large to keep",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("This scenario reads search spans from the self-host Motel collector."),
+      local: na("Hosted MCP scenario"),
+    },
+  },
   mcpSearchStatements: {
     fixtures: "actors",
     file: "mcp-search-statements.spec.ts",

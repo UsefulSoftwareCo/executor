@@ -9,7 +9,9 @@
  * operators that walk or coerce a whole value. A value a call returns that the program already
  * holds, such as a group `Map.get` returns, is not charged, so grouping many rows into few groups
  * completes. Storing a value walks it once to reject cycles; that walk is charged, and a value
- * holding no objects is not walked again, so attaching one shared value to every row completes.
+ * whose graph was walked is not walked again until something changes inside it, so attaching one
+ * shared value to every row completes, even one of 1,000 records, while storing a row into that
+ * shared value is still rejected as a cycle.
  * Storing the value a property already holds skips that walk, so grouping row objects with
  * `g[k] = g[k] || []` completes. Joining strings with `+` or a template is charged by the length
  * of the result, so a loop that joins a megabyte string stops in seconds.
@@ -159,6 +161,26 @@ const meta = { columns: Array.from({ length: 50000 }, (_, i) => 'c' + i) };
 const rows = Array.from({ length: 20000 }, (_, i) => ({ id: i }));
 for (const r of rows) { r.meta = meta }
 return rows.length;`;
+
+/**
+ * Attaches one shared value of 1,000 records, each an object, to each of 20,000 rows. Each store
+ * walked all 1,000 records, about 500 steps, and the program stopped at the budget halfway.
+ */
+const sharedRecordsMeta = `
+const meta = { records: Array.from({ length: 1000 }, (_, i) => ({ id: 'm' + i, label: 'L' + i, w: i })) };
+const rows = [];
+for (let i = 0; i < 20000; i++) rows.push({ id: i, meta });
+return rows.length;`;
+
+/**
+ * Stores rows holding the shared value, then a row into one of its records: the walk must not stop
+ * at the shared value it walked before, because the record it changes is inside it.
+ */
+const sharedMetaCycle = `
+const meta = { records: Array.from({ length: 1000 }, (_, i) => ({ id: 'm' + i })) };
+const rows = [];
+for (let i = 0; i < 10; i++) rows.push({ id: i, meta });
+try { meta.records[5].back = rows[3]; return 'stored'; } catch (e) { return String(e) }`;
 
 /**
  * The review's proof that string `+` escaped the budget: joining a megabyte string to a number is
@@ -325,6 +347,16 @@ layer(HostedLive, { excludeTestServices: true })("Hosted MCP execute step budget
           const shared = yield* execute(runner, "shared-meta", sharedMeta);
           expect(shared.execution).toMatchObject({ ok: true, value: 20000 });
           expect(shared.ms).toBeLessThan(20_000);
+          // Also when that value holds 1,000 records, each an object.
+          const sharedRecords = yield* execute(runner, "shared-records-meta", sharedRecordsMeta);
+          expect(sharedRecords.execution).toMatchObject({ ok: true, value: 20000 });
+          expect(sharedRecords.ms).toBeLessThan(5_000);
+          // Storing a row into the shared value it already walked is still a cycle.
+          const cycle = yield* execute(runner, "shared-meta-cycle", sharedMetaCycle);
+          expect(cycle.execution).toMatchObject({
+            ok: true,
+            value: expect.stringContaining("contains a circular value"),
+          });
 
           // Grouping row objects by storing each group back into itself completes, in both forms.
           const groupedRows = yield* execute(runner, "group-rows-or-push", groupRowsOrPush);
@@ -382,6 +414,7 @@ layer(HostedLive, { excludeTestServices: true })("Hosted MCP execute step budget
           yield* evidence.measure("group-by-50-ms", grouped50.ms);
           yield* evidence.measure("group-by-object-ms", groupedObject.ms);
           yield* evidence.measure("shared-meta-ms", shared.ms);
+          yield* evidence.measure("shared-records-meta-ms", sharedRecords.ms);
           yield* evidence.measure("concat-runaway-ms", concat.ms);
           yield* evidence.measure("group-rows-or-push-ms", groupedRows.ms);
           yield* evidence.measure("group-rows-reduce-ms", reducedRows.ms);
