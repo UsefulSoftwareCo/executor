@@ -246,12 +246,15 @@ it. This example uses HTTPS port `4443`, for a host where another service
 already uses `443`:
 
 ```bash
-docker run -d --name executor-v2 --init --restart unless-stopped \
+docker run -d --name executor-v2 --init --restart unless-stopped --stop-timeout 30 \
   -p 127.0.0.1:4400:4400 -v executor-v2-data:/app/data \
   -e BETTER_AUTH_URL=https://<machine>.<tailnet>.ts.net:4443 \
   ghcr.io/usefulsoftwareco/executor-selfhost:beta
 tailscale serve --bg --https=4443 http://127.0.0.1:4400
 ```
+
+Docker's default 10-second stop timeout is shorter than the host's request drain
+plus child process grace periods; keep `--stop-timeout 30` when recreating the container.
 
 `tailscale serve status` shows the address. `BETTER_AUTH_URL` must match it
 exactly, including a port other than `443`; without the port, browser sign-in

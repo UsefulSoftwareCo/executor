@@ -1,9 +1,10 @@
 /**
  * One app isolate in a synchronous loop holds the image's only workerd JavaScript thread, so the
  * product and every other app stop answering, and no timeout inside workerd can fire. OSS workerd
- * enforces no CPU limit, so the host's watchdog bounds the outage: it kills workerd after a run of
- * failed health probes, the host exits, and the container's restart policy starts a fresh process
- * in which the other apps answer again.
+ * enforces no CPU limit, so the host's watchdog bounds the outage: after a run of failed health
+ * probes, it sends SIGTERM and kills workerd five seconds later if it is still running. The host
+ * exits, and the container's restart policy starts a fresh process in which the other apps answer
+ * again.
  */
 import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
