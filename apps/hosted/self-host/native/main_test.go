@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -396,7 +397,7 @@ func TestSuperviseRestartsAnExitedProcessWithBackoff(t *testing.T) {
 		return time.After(0)
 	}
 	var starts atomic.Int32
-	stop := supervise(func() *exec.Cmd {
+	collector := startSupervisor("Telemetry collector", func() *exec.Cmd {
 		// The fifth process outlives the maximum wait; every other one exits at once.
 		if starts.Add(1) == 5 {
 			return exec.Command("sh", "-c", "sleep 0.6; exit 1")
@@ -407,7 +408,7 @@ func TestSuperviseRestartsAnExitedProcessWithBackoff(t *testing.T) {
 	for starts.Load() < 7 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
-	stop()
+	stopChildren(workerdGrace, time.After, collector)
 	mutex.Lock()
 	recorded := append([]time.Duration(nil), waits...)
 	mutex.Unlock()
@@ -429,12 +430,12 @@ func TestSuperviseRestartsAnExitedProcessWithBackoff(t *testing.T) {
 
 func TestSuperviseStopsARunningProcess(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "stopped")
-	stop := supervise(func() *exec.Cmd {
+	collector := startSupervisor("Telemetry collector", func() *exec.Cmd {
 		return exec.Command("sh", "-c", `trap 'touch "$0"; exit 0' TERM; while :; do sleep 0.05; done`, marker)
 	}, time.Second, time.Second, time.After)
 	time.Sleep(200 * time.Millisecond)
 	returned := make(chan struct{})
-	go func() { stop(); close(returned) }()
+	go func() { stopChildren(workerdGrace, time.After, collector); close(returned) }()
 	select {
 	case <-returned:
 	case <-time.After(5 * time.Second):
@@ -519,7 +520,7 @@ func TestAnnounceReadyOpensTheProductAtBootAndSaysWhenItIsReady(t *testing.T) {
 	opened := make(chan struct{})
 	returned := make(chan struct{})
 	go func() {
-		announceReady(socket, "https://executor.example.test:4443", 30*time.Millisecond, 5*time.Millisecond, &log, opened, make(chan struct{}))
+		announceReady(context.Background(), socket, "https://executor.example.test:4443", 30*time.Millisecond, 5*time.Millisecond, &log, opened)
 		close(returned)
 	}()
 	select {
@@ -561,9 +562,9 @@ func TestAnnounceReadyOpensTheGateOnTheFirstAnswerEvenWhenItFails(t *testing.T) 
 	}))
 
 	opened := make(chan struct{})
-	done := make(chan struct{})
-	defer close(done)
-	go announceReady(socket, "http://localhost:4400", time.Hour, time.Hour, io.Discard, opened, done)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go announceReady(ctx, socket, "http://localhost:4400", time.Hour, time.Hour, io.Discard, opened)
 	select {
 	case <-opened:
 	case <-time.After(5 * time.Second):
@@ -629,14 +630,15 @@ func TestAnnounceReadyStopsWithTheHost(t *testing.T) {
 
 	var log syncBuffer
 	opened := make(chan struct{})
-	done := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	returned := make(chan struct{})
 	go func() {
-		announceReady(socket, "http://localhost:4400", time.Hour, time.Millisecond, &log, opened, done)
+		announceReady(ctx, socket, "http://localhost:4400", time.Hour, time.Millisecond, &log, opened)
 		close(returned)
 	}()
 	<-requested
-	close(done)
+	cancel()
 	select {
 	case <-returned:
 	case <-time.After(time.Second):
@@ -836,7 +838,7 @@ func TestProductProbeReportsOnlyOK(t *testing.T) {
 	})}
 	go server.Serve(listener)
 	defer server.Close()
-	probe := productProbe(socket, time.Second)
+	probe := healthProbe(context.Background(), socket, time.Second, false)
 	if !probe() {
 		t.Fatal("a 200 from /health is an answer")
 	}
@@ -852,12 +854,12 @@ func TestProductProbeReportsOnlyOK(t *testing.T) {
 
 func TestSuperviseProcessKillRestartsOnlyThatProcess(t *testing.T) {
 	var starts atomic.Int32
-	stop, kill := superviseProcess("Test process", func() *exec.Cmd {
+	child := startSupervisor("Test process", func() *exec.Cmd {
 		starts.Add(1)
 		// A process that never exits on its own, like a workerd whose thread is stuck.
 		return exec.Command("sh", "-c", "while :; do sleep 0.05; done")
 	}, 10*time.Millisecond, 50*time.Millisecond, func(time.Duration) <-chan time.Time { return time.After(0) })
-	defer stop()
+	defer stopChildren(workerdGrace, time.After, child)
 	waitFor := func(count int32) {
 		deadline := time.Now().Add(5 * time.Second)
 		for starts.Load() < count && time.Now().Before(deadline) {
@@ -870,7 +872,7 @@ func TestSuperviseProcessKillRestartsOnlyThatProcess(t *testing.T) {
 	waitFor(1)
 	// Let the first process be registered as running before killing it.
 	time.Sleep(100 * time.Millisecond)
-	kill()
+	child.restartUnlessStopping(context.Background(), func() {})
 	waitFor(2)
 	time.Sleep(100 * time.Millisecond)
 	if count := starts.Load(); count != 2 {

@@ -19,6 +19,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -53,7 +54,7 @@ func runShutdownChild(role, name, journal, socket, edgeAddress string) {
 		journalEvent(journal, name+":"+event)
 		fmt.Println(event)
 	}
-	if role == "drains" {
+	if role == "drains" || role == "stalled" {
 		var err error
 		listener, err = net.Listen("unix", socket)
 		if err != nil {
@@ -115,7 +116,7 @@ func runShutdownChild(role, name, journal, socket, edgeAddress string) {
 		}
 	}
 	notify("term")
-	if role == "stubborn" {
+	if role == "stubborn" || role == "stalled" {
 		for range signals {
 		}
 	}
@@ -223,7 +224,8 @@ func newShutdownFixture(t *testing.T) *shutdownFixture {
 		t.Fatal(err)
 	}
 	edge := newEdge()
-	proxy := productProxyFor(f.socket, workerdIdleTimeout, func(*http.Request) string { return "127.0.0.1" }, edge)
+	proxy := productProxy(f.socket, workerdIdleTimeout)
+	proxy.ModifyResponse = edge.response
 	public := &http.Server{
 		Handler:     edge.handler(publicHandler(proxy)),
 		BaseContext: func(net.Listener) context.Context { return edge.base },
@@ -565,8 +567,10 @@ func TestSupervisorDoesNotRestartAfterHold(t *testing.T) {
 			if inBackoff {
 				child.cmd.Process.Signal(syscall.SIGTERM)
 				timer := await(t, backoff)
+				// Rescue a broken supervisor at cleanup only. The wait below must end
+				// without firing the backoff timer.
+				t.Cleanup(func() { timer <- time.Now() })
 				s.hold()
-				timer <- time.Now()
 			} else {
 				s.hold()
 				reported := false
@@ -623,6 +627,7 @@ func TestStopKillsOnlyAChildThatIgnoresSIGTERM(t *testing.T) {
 
 func TestStopAfterTheProductExitedSkipsTheDrain(t *testing.T) {
 	f := newShutdownFixture(t)
+	ending := f.parts.edge.ending
 	// A blocked handler makes waiting for graceful HTTP Shutdown observable.
 	enter, leave := make(chan struct{}), make(chan struct{})
 	existing := f.parts.edge.handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -649,6 +654,11 @@ func TestStopAfterTheProductExitedSkipsTheDrain(t *testing.T) {
 	var exited *exec.ExitError
 	if err := await(t, result); !errors.As(err, &exited) || exited.ExitCode() != 42 {
 		t.Fatalf("want product exit 42, got %v", err)
+	}
+	select {
+	case <-ending:
+		t.Fatal("product exit must abort responses, not end streams cleanly")
+	default:
 	}
 }
 
@@ -683,6 +693,67 @@ func TestAStalledProductAfterTheStopBeganIsIgnored(t *testing.T) {
 	}
 }
 
+func TestStopAfterWatchdogStallCutsStreamsAndUsesShortGrace(t *testing.T) {
+	f := newShutdownFixture(t)
+	product := f.child("stalled", "product")
+	f.child("quick", "collector")
+	stream := f.request(http.MethodGet, "/stream")
+	result := f.start()
+	var log bytes.Buffer
+	reportProductStall(&log, f.stalled, 3, 2*time.Second)
+	const want = "Executor watchdog: the product did not answer 3 health checks in a row (every 2s); workerd is unresponsive, restarting it\n"
+	if log.String() != want {
+		t.Fatalf("watchdog detection log = %q; want %q", log.String(), want)
+	}
+	if _, err := io.ReadAll(stream.Body); !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("stalled product stream must be aborted, got %v", err)
+	}
+	select {
+	case <-f.parts.edge.ending:
+		t.Fatal("watchdog must abort responses, not end streams cleanly")
+	default:
+	}
+	for event := await(t, product.events); event != "term"; event = await(t, product.events) {
+		if event != "request-ended" {
+			t.Fatalf("got %q waiting for product SIGTERM", event)
+		}
+	}
+	f.timers.timer(5 * time.Second) <- time.Now()
+	if err := await(t, result); err == nil || !strings.Contains(err.Error(), "product did not stop within 5s; killed") {
+		t.Fatalf("want watchdog failure with five-second escalation, got %v", err)
+	}
+}
+
+type readerFunc func([]byte) (int, error)
+
+func (f readerFunc) Read(buf []byte) (int, error) { return f(buf) }
+
+func TestCutBodyPreservesCleanEOF(t *testing.T) {
+	ctx, cut := context.WithCancelCause(context.Background())
+	body := cutBody{ctx: ctx, ReadCloser: io.NopCloser(readerFunc(func(buf []byte) (int, error) {
+		n := copy(buf, "last chunk")
+		cut(errStopping)
+		return n, io.EOF
+	}))}
+	got, err := io.ReadAll(&body)
+	if string(got) != "last chunk" || err != nil {
+		t.Fatalf("a response that completed at the cut returned %q, %v", got, err)
+	}
+}
+
+func TestCutBodyDeliversTheLastReadWhenEndingAnOpenStream(t *testing.T) {
+	ctx, cut := context.WithCancelCause(context.Background())
+	body := cutBody{ctx: ctx, ReadCloser: io.NopCloser(readerFunc(func(buf []byte) (int, error) {
+		n := copy(buf, "last chunk")
+		cut(errEndStream)
+		return n, nil
+	}))}
+	got, err := io.ReadAll(&body)
+	if string(got) != "last chunk" || err != nil {
+		t.Fatalf("an open-ended stream returned %q, %v; want last chunk and clean EOF", got, err)
+	}
+}
+
 type closeFunc func()
 
 func (f closeFunc) Close() error { f(); return nil }
@@ -696,7 +767,6 @@ type modelChild struct {
 	log    func(string)
 	exited chan struct{}
 	err    error
-	term   chan struct{}
 }
 
 func (c *modelChild) hold() { c.log("hold " + c.name) }
@@ -709,7 +779,6 @@ func (c *modelChild) stop(grace time.Duration, deadline <-chan struct{}) error {
 	default:
 	}
 	c.log("term " + c.name)
-	close(c.term)
 	select {
 	case <-c.exited:
 		return c.err
@@ -720,132 +789,176 @@ func (c *modelChild) stop(grace time.Duration, deadline <-chan struct{}) error {
 		default:
 		}
 		c.log("kill " + c.name)
+		<-c.exited // A kill is not a reap; the driver must acknowledge the exit.
 		return killedChild(c.name, grace)
 	}
 }
 
 func TestShutdownKeepsItsOrderForEveryEventOrder(t *testing.T) {
-	const (
-		secondSignal = iota
-		productExit
-		appsExit
-		collectorExit
-		drainTimeout
-		workerdTimeout
-	)
-	events := []int{secondSignal, productExit, appsExit, collectorExit, drainTimeout, workerdTimeout}
-	var permutations func(int)
-	permutations = func(from int) {
-		if from < len(events) {
-			for i := from; i < len(events); i++ {
-				events[from], events[i] = events[i], events[from]
-				permutations(from + 1)
-				events[from], events[i] = events[i], events[from]
-			}
-			return
-		}
-		t.Run(fmt.Sprint(events), func(t *testing.T) {
-			var mu sync.Mutex
-			var trace []string
-			log := func(event string) {
-				mu.Lock()
-				defer mu.Unlock()
-				trace = append(trace, event)
-			}
-			snapshot := func() []string {
-				mu.Lock()
-				defer mu.Unlock()
-				return slices.Clone(trace)
-			}
-			child := func(name string) *modelChild {
-				return &modelChild{name, log, make(chan struct{}), nil, make(chan struct{})}
-			}
-			product, apps, collector := child("product"), child("apps"), child("collector")
-			product.err = errors.New("product failed")
-			public := modelPublic{func() { log("close public") }}
-			signals := make(chan os.Signal, 2)
-			timers := manualTimers{timers: make(map[time.Duration]chan time.Time)}
-			timers.timer(cutGrace) <- time.Now()
-			e := newEdge()
-			stopped := make(chan error, 1)
-			draining := make(chan struct{})
-			go func() {
-				stopped <- shutdown(shutdownParts{
-					signals: signals, edge: e, public: public, product: product, productExited: product.exited,
-					apps: apps, collector: collector, listener: closeFunc(func() {
-						log("close listener")
-						close(draining)
-					}),
-					endWatching:   func() { log("watchdogs off") },
-					endAnnouncing: func() { log("announcer off") },
-					endStreams:    func() {},
-					joinWatching:  func() {},
-					closeIdle: func() {
-						if errors.Is(context.Cause(e.base), errStopping) {
-							log("cut")
-						}
-					},
-					closeBridge: func() { log("close bridge") },
-				}, shutdownPlan{testDrain, workerdGrace, collectorGrace, timers.after, io.Discard})
-			}()
-			signals <- syscall.SIGTERM
-			await(t, draining)
-			cutAllowed, killAllowed := false, false
-			check := func(trace []string) {
-				t.Helper()
-				before := func(first, second string) {
-					i, j := slices.Index(trace, first), slices.Index(trace, second)
-					if j >= 0 && (i < 0 || i >= j) {
-						t.Fatalf("%s must precede %s: %v", first, second, trace)
-					}
-				}
-				for _, name := range []string{"product", "apps"} {
-					for _, prerequisite := range []string{"hold apps", "hold collector", "watchdogs off", "announcer off", "close listener", "cut", "close public"} {
-						before(prerequisite, "term "+name)
-					}
-					before("reap "+name, "close bridge")
-					before("term "+name, "kill "+name)
-					if !killAllowed && slices.Contains(trace, "kill "+name) {
-						t.Fatalf("child killed before its grace: %v", trace)
-					}
-				}
-				before("close bridge", "term collector")
-				if !cutAllowed && slices.Contains(trace, "cut") {
-					t.Fatalf("premature cut: %v", trace)
-				}
-				if slices.Contains(trace, "kill collector") {
-					t.Fatalf("collector used the workerd deadline: %v", trace)
-				}
-			}
-			for _, event := range events {
-				switch event {
-				case secondSignal:
-					cutAllowed = true
-					signals <- syscall.SIGINT
-				case productExit:
-					cutAllowed = true
-					close(product.exited)
-				case appsExit:
-					close(apps.exited)
-				case collectorExit:
-					close(collector.exited)
-				case drainTimeout:
-					cutAllowed = true
-					timers.timer(testDrain) <- time.Now()
-				case workerdTimeout:
-					killAllowed = true
-					timers.timer(workerdGrace) <- time.Now()
-				}
-				check(snapshot())
-			}
-			stopErr := await(t, stopped)
-			final := snapshot()
-			check(final)
-			if !slices.Contains(final, "reap collector") || stopErr == nil ||
-				(!errors.Is(stopErr, product.err) && !slices.Contains(final, "kill product")) {
-				t.Fatalf("incorrect terminal outcome: trace %v, error %v", final, stopErr)
-			}
-		})
+	// Drain has one winning event. Workerd exit events race a shared deadline, and the
+	// collector then has its own deadline. Enumerate those orders within their phases,
+	// not permutations that inject every child exit before reaching the stop phase.
+	workerdOrders := [][3]string{
+		{"product", "apps", "timer"}, {"apps", "product", "timer"},
+		{"product", "timer", "apps"}, {"apps", "timer", "product"},
+		{"timer", "product", "apps"}, {"timer", "apps", "product"},
 	}
-	permutations(0)
+	for _, drain := range []string{"second-signal", "product-exit", "drain-timer"} {
+		for _, order := range workerdOrders {
+			for _, collectorTimesOut := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/%s/collector-timeout=%t", drain, strings.Join(order[:], "-"), collectorTimesOut), func(t *testing.T) {
+					synctest.Test(t, func(t *testing.T) {
+						checkShutdownOrder(t, drain, order, collectorTimesOut)
+					})
+				})
+			}
+		}
+	}
+}
+
+func checkShutdownOrder(t *testing.T, drain string, order [3]string, collectorTimesOut bool) {
+	var mu sync.Mutex
+	var trace []string
+	log := func(event string) {
+		mu.Lock()
+		defer mu.Unlock()
+		trace = append(trace, event)
+	}
+	child := func(name string) *modelChild {
+		return &modelChild{name: name, log: log, exited: make(chan struct{})}
+	}
+	product, apps, collector := child("product"), child("apps"), child("collector")
+	if drain == "product-exit" {
+		product.err = errors.New("product failed")
+	}
+	signals := make(chan os.Signal, 2)
+	timers := manualTimers{timers: make(map[time.Duration]chan time.Time)}
+	e := newEdge()
+	stopped := make(chan error, 1)
+	go func() {
+		stopped <- shutdown(shutdownParts{
+			signals: signals, edge: e, public: modelPublic{func() { log("close public") }},
+			product: product, productExited: product.exited, apps: apps, collector: collector,
+			listener:      closeFunc(func() { log("close listener") }),
+			endWatching:   func() { log("watchdogs off") },
+			endAnnouncing: func() { log("announcer off") },
+			endStreams:    func() {},
+			joinWatching:  func() {},
+			closeIdle: func() {
+				if errors.Is(context.Cause(e.base), errStopping) {
+					log("cut")
+				}
+			},
+			closeBridge: func() { log("close bridge") },
+		}, shutdownPlan{testDrain, workerdGrace, collectorGrace, timers.after, io.Discard})
+	}()
+
+	// Check exact effects after each event, once shutdown and all children have
+	// settled. No next event can retroactively permit an early cut, TERM or KILL.
+	expected := map[string]bool{}
+	check := func() {
+		t.Helper()
+		synctest.Wait()
+		has := func(event string) bool { return slices.Contains(trace, event) }
+		before := func(first, second string) {
+			i, j := slices.Index(trace, first), slices.Index(trace, second)
+			if j >= 0 && (i < 0 || i >= j) {
+				t.Errorf("%s must precede %s: %v", first, second, trace)
+			}
+		}
+		for _, event := range []string{"cut", "close public", "close bridge",
+			"term product", "term apps", "term collector",
+			"kill product", "kill apps", "kill collector",
+			"reap product", "reap apps", "reap collector"} {
+			if has(event) != expected[event] {
+				t.Errorf("want %s=%t: %v", event, expected[event], trace)
+			}
+		}
+		for _, name := range []string{"product", "apps"} {
+			for _, first := range []string{"hold apps", "hold collector", "watchdogs off", "announcer off", "close listener", "cut", "close public"} {
+				before(first, "term "+name)
+			}
+			before("reap "+name, "close bridge")
+		}
+		before("close bridge", "term collector")
+		for _, name := range []string{"product", "apps", "collector"} {
+			before("term "+name, "kill "+name)
+			if has("reap "+name) && has("kill "+name) {
+				before("kill "+name, "reap "+name)
+			}
+		}
+	}
+
+	signals <- syscall.SIGTERM
+	check()
+	switch drain {
+	case "second-signal":
+		signals <- syscall.SIGINT
+	case "product-exit":
+		close(product.exited)
+	case "drain-timer":
+		timers.timer(testDrain) <- time.Now()
+	}
+	expected["cut"] = true
+	check()
+
+	timers.timer(cutGrace) <- time.Now()
+	expected["close public"], expected["term apps"] = true, true
+	expected["term product"] = drain != "product-exit"
+	expected["reap product"] = drain == "product-exit"
+	check()
+	if !slices.Contains(trace, "term apps") && !slices.Contains(trace, "term product") {
+		t.Error("the model must observe at least one workerd TERM in every run")
+	}
+
+	for _, event := range order {
+		switch event {
+		case "timer":
+			for _, name := range []string{"product", "apps"} {
+				// A child that has not exited must be killed when its grace expires,
+				// but is still not reaped until we observe its exit.
+				expected["kill "+name] = !expected["reap "+name]
+			}
+			if expected["kill product"] || expected["kill apps"] {
+				timers.timer(workerdGrace) <- time.Now()
+			}
+		case "product":
+			if drain != "product-exit" {
+				close(product.exited)
+			}
+			expected["reap product"] = true
+		case "apps":
+			close(apps.exited)
+			expected["reap apps"] = true
+		}
+		expected["close bridge"] = expected["reap product"] && expected["reap apps"]
+		expected["term collector"] = expected["close bridge"]
+		check()
+	}
+	if collectorTimesOut {
+		timers.timer(collectorGrace) <- time.Now()
+		expected["kill collector"] = true
+		check()
+	}
+	close(collector.exited)
+	expected["reap collector"] = true
+	check()
+	select {
+	case err := <-stopped:
+		for _, name := range []string{"product", "apps", "collector"} {
+			reportedKilled := err != nil && strings.Contains(err.Error(), name+" did not stop")
+			if reportedKilled != expected["kill "+name] {
+				t.Errorf("want kill of %s reported=%t, got %v", name, expected["kill "+name], err)
+			}
+		}
+		if product.err != nil && !errors.Is(err, product.err) {
+			t.Errorf("product failure lost: %v", err)
+		}
+		wantFailure := product.err != nil || expected["kill product"] || expected["kill apps"] || expected["kill collector"]
+		if (err != nil) != wantFailure {
+			t.Errorf("want failure=%t, got %v", wantFailure, err)
+		}
+	default:
+		t.Error("shutdown did not return after the collector was reaped")
+	}
 }

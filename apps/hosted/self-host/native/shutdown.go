@@ -17,6 +17,7 @@ import (
 const (
 	drainGrace     = 10 * time.Second
 	workerdGrace   = 10 * time.Second
+	stallGrace     = 5 * time.Second
 	collectorGrace = 3 * time.Second
 	// Let cancelled handlers release their upstreams and flush a 503 before Close tears
 	// down their downstreams. A client that isn't reading cannot extend this wait.
@@ -133,9 +134,9 @@ type cutBody struct {
 func (b *cutBody) Read(buf []byte) (int, error) {
 	n, err := b.ReadCloser.Read(buf)
 	if errors.Is(context.Cause(b.ctx), errEndStream) {
-		return 0, io.EOF
+		return n, io.EOF
 	}
-	if err != nil && errors.Is(context.Cause(b.ctx), errStopping) {
+	if err != nil && !errors.Is(err, io.EOF) && errors.Is(context.Cause(b.ctx), errStopping) {
 		// ReverseProxy still aborts the response, but does not log an intentional cut
 		// as an upstream read error or present the truncated body as complete.
 		err = context.Canceled
@@ -255,6 +256,7 @@ func shutdown(parts shutdownParts, plan shutdownPlan) error {
 	// Serving. Only this select can act on a product watchdog report.
 	var reason error
 	skipDrain := false
+	grace := plan.workerd
 	select {
 	case <-parts.signals:
 	case reason = <-parts.serverError:
@@ -262,6 +264,7 @@ func shutdown(parts shutdownParts, plan shutdownPlan) error {
 		skipDrain = true
 	case reason = <-parts.stalled:
 		skipDrain = true
+		grace = stallGrace
 	}
 
 	// Draining. Stop creating upstream work before waiting on existing requests.
@@ -271,7 +274,6 @@ func shutdown(parts shutdownParts, plan shutdownPlan) error {
 		parts.apps.hold()
 	}
 	parts.collector.hold()
-	parts.endStreams()
 	// Close explicitly as Serve may not yet have registered the listener.
 	parts.listener.Close()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -281,6 +283,7 @@ func shutdown(parts shutdownParts, plan shutdownPlan) error {
 		close(drained)
 	}()
 	if !skipDrain {
+		parts.endStreams()
 		select {
 		case <-drained:
 		case <-plan.after(plan.drain):
@@ -307,7 +310,7 @@ func shutdown(parts shutdownParts, plan shutdownPlan) error {
 
 	// Stopping workerd. Both processes share one deadline; neither waits on the
 	// other to receive SIGTERM. Keep the bridge and collector alive for both.
-	err := errors.Join(reason, stopChildren(plan.workerd, plan.after, parts.product, parts.apps))
+	err := errors.Join(reason, stopChildren(grace, plan.after, parts.product, parts.apps))
 	parts.closeBridge()
 	parts.joinWatching()
 
@@ -346,8 +349,6 @@ const (
 	running childState = iota
 	held
 	stopping
-	exited
-	killed
 )
 
 type supervisor struct {
@@ -361,6 +362,8 @@ type supervisor struct {
 	stopErr  error
 }
 
+// startSupervisor restarts an auxiliary process after an exit, backing off from minDelay
+// up to maxDelay. A process that ran longer than maxDelay resets the wait to minDelay.
 func startSupervisor(name string, newCommand func() *exec.Cmd, minDelay, maxDelay time.Duration, after func(time.Duration) <-chan time.Time) *supervisor {
 	s := &supervisor{name: name, held: make(chan struct{}), finished: make(chan struct{})}
 	go s.run(newCommand, minDelay, maxDelay, after)
@@ -426,21 +429,12 @@ func (s *supervisor) stop(grace time.Duration, deadline <-chan struct{}) error {
 		s.state = stopping
 		p := s.current
 		s.mu.Unlock()
-		wasKilled := stopProcess(p, deadline)
-		<-s.finished
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		s.state = exited
-		if wasKilled {
-			s.state = killed
+		if stopProcess(p, deadline) {
 			s.stopErr = killedChild(s.name, grace)
 		}
+		<-s.finished
 	})
 	return s.stopErr
-}
-
-func (s *supervisor) restart() {
-	s.restartUnlessStopping(context.Background(), func() {})
 }
 
 func (s *supervisor) restartUnlessStopping(ctx context.Context, report func()) {
