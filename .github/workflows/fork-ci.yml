@@ -16,6 +16,21 @@ permissions:
   contents: read
 
 jobs:
+  native:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: apps/hosted/self-host/native/go.mod
+          cache-dependency-path: apps/hosted/self-host/native/go.sum
+      - name: Vet and race-test the Go host
+        working-directory: apps/hosted/self-host/native
+        run: go vet ./... && go test -race -count=1 ./...
+
   check:
     runs-on: ubuntu-latest
     timeout-minutes: 30
