@@ -99,6 +99,40 @@ func TestOneStallIsReportedOnce(t *testing.T) {
 	}
 }
 
+func TestTheBusyCPUIsTheThreshold(t *testing.T) {
+	// A silent tick that used exactly the busy CPU counts as busy; one clock tick less does not.
+	c := newStallClassifier(3, 50, threadSample{state: 'S'})
+	if at, rule := firedAt(run(c, repeat(3, step{state: 'R', used: 50}))); at != 2 || rule != ruleBusy {
+		t.Fatalf("at the busy CPU: fired at tick %d by %q, want tick 2 by busy", at, rule)
+	}
+	c = newStallClassifier(3, 50, threadSample{state: 'S'})
+	if at, rule := firedAt(run(c, repeat(100, step{state: 'R', used: 49}))); at != -1 {
+		t.Fatalf("below the busy CPU: fired at tick %d by %q", at, rule)
+	}
+}
+
+func TestARecoveryReportsItsWindowOnce(t *testing.T) {
+	// Three busy ticks fire the rule; a sleeping tick and a disk wait follow before the answer.
+	c := newStallClassifier(2, 50, threadSample{state: 'S'})
+	run(c, append(repeat(3, step{state: 'R', used: 60}), step{state: 'S'}, step{state: 'D'}))
+	_, _, recovered := c.tick(true, threadSample{state: 'S', cpu: c.last.cpu})
+	if recovered == nil {
+		t.Fatal("the sign of life after a stall reported no recovery")
+	}
+	if recovered.silent != 5 || recovered.busy != 3 || recovered.idle != 1 || recovered.cpu != 180 {
+		t.Fatalf("recovered %+v, want 5 silent, 3 busy, 1 idle, 180 clock ticks", *recovered)
+	}
+	if _, _, again := c.tick(true, threadSample{state: 'S', cpu: c.last.cpu}); again != nil {
+		t.Fatalf("a second sign of life reported a recovery again: %+v", *again)
+	}
+	// A sign of life that ends a window which found no stall reports no recovery.
+	c = newStallClassifier(5, 50, threadSample{state: 'S'})
+	run(c, repeat(2, step{state: 'R', used: 60}))
+	if _, _, quiet := c.tick(true, threadSample{state: 'S', cpu: c.last.cpu}); quiet != nil {
+		t.Fatalf("a window with no stall reported a recovery: %+v", *quiet)
+	}
+}
+
 func TestDiskWaitNeitherCountsNorResets(t *testing.T) {
 	c := newStallClassifier(5, 50, threadSample{state: 'S'})
 	steps := append(repeat(4, step{state: 'R', used: 99}), repeat(500, step{state: 'D', used: 1})...)
@@ -317,6 +351,29 @@ func TestLogOnlyLogsAStallOnceAndKeepsWatching(t *testing.T) {
 	}
 	if !regexp.MustCompile(`Executor answered again after 1\d silent ticks \(10 busy, \d+ sleeping or stopped`).MatchString(w.log.String()) {
 		t.Fatalf("log: %q", w.log.String())
+	}
+	// A second busy window, after the first ended with its answer: one more stall, then exactly
+	// one more answer, however long workerd keeps answering after it.
+	w.answer.Store(false)
+	for range 10 {
+		if strings.Count(w.log.String(), "Executor stopped responding") == 2 {
+			break
+		}
+		w.tick(t, 'R', 99)
+	}
+	w.answer.Store(true)
+	for range 100 {
+		if strings.Count(w.log.String(), "Executor answered again") == 2 {
+			break
+		}
+		w.tick(t, 'S', 0)
+	}
+	for range 10 {
+		w.tick(t, 'S', 0)
+	}
+	log = w.log.String()
+	if stalls, answers := strings.Count(log, "Executor stopped responding"), strings.Count(log, "Executor answered again"); stalls != 2 || answers != 2 {
+		t.Fatalf("%d stalls and %d answers over two busy windows, want one answer per stall: %q", stalls, answers, log)
 	}
 }
 
