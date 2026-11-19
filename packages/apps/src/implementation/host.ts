@@ -26,6 +26,7 @@ import {
   type DeclaredAccountSlots,
   InvocationDeadline,
   ToolResultObservation,
+  AfterReply,
   HostAccountsInvalid,
   HostDeclarationInvalid,
   HostOperationNotFound,
@@ -920,16 +921,21 @@ function dispatch(
           const output = yield* Effect.gen(function* () {
             running = yield* captureTelemetry;
             const fetch = yield* appInvocationFetch(fetching.signal);
-            return yield* tool.run(
-              {
-                ...bound,
-                fetch,
-                workflows: kind === "mutate" ? workflowControls : workflowReads,
-                sql: kind === "mutate" ? session.writer : session.reader,
-                ...(kind === "mutate" ? { events: emitter() } : {}),
-              },
-              input,
-            );
+            return yield* tool
+              .run(
+                {
+                  ...bound,
+                  fetch,
+                  workflows: kind === "mutate" ? workflowControls : workflowReads,
+                  sql: kind === "mutate" ? session.writer : session.reader,
+                  ...(kind === "mutate" ? { events: emitter() } : {}),
+                },
+                input,
+              )
+              .pipe(
+                // The cache session's background runner, which the host drains after the reply.
+                Effect.provideService(AfterReply, context.cache?.background),
+              );
           }).pipe(
             Effect.ensuring(
               Effect.sync(() => {

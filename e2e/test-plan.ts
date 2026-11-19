@@ -771,6 +771,39 @@ export const scenarios = plan({
       local: na("Hosted app version scenario"),
     },
   },
+  mcpCallTeardownCompleted: {
+    fixtures: "actors",
+    file: "mcp-call-teardown.spec.ts",
+    title:
+      "a completed MCP app call cancels nothing and returns before its server answers the session's DELETE",
+    targets: {
+      "self-host": scheduled,
+      cloud: managedCloud,
+      local: na("Hosted MCP app call; the app runtime is shared with Local."),
+    },
+  },
+  mcpCallTeardownCancelled: {
+    fixtures: "actors",
+    file: "mcp-call-teardown.spec.ts",
+    title:
+      "an MCP app call given up in flight still tells its server, and a completed one does not",
+    targets: {
+      "self-host": scheduled,
+      cloud: managedCloud,
+      local: na("Hosted MCP app call; the app runtime is shared with Local."),
+    },
+  },
+  mcpCallTeardownConcurrent: {
+    fixtures: "actors",
+    file: "mcp-call-teardown.spec.ts",
+    title:
+      "ten concurrent MCP app calls behind six connections send five requests each and end every session",
+    targets: {
+      "self-host": scheduled,
+      cloud: managedCloud,
+      local: na("Hosted MCP app call; the app runtime is shared with Local."),
+    },
+  },
   mcpCatalogCache: {
     fixtures: "actors",
     file: "mcp-catalog.spec.ts",

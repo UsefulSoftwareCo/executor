@@ -162,7 +162,10 @@ export const mcpCall = (
       return yield* Effect.tryPromise({
         try: (signal) =>
           client.callTool({ name, arguments: input }, undefined, {
-            signal: AbortSignal.any([signal, lifetime.signal]),
+            // Only this request's own signal, which Effect aborts when the call is interrupted, as
+            // a failed prompt or an expired budget does. The SDK never removes its abort listener,
+            // so `lifetime`, aborted at release, would cancel a call the server already answered.
+            signal,
             timeout: mcpSdkTimerCeilingMs,
           }),
         catch: (error) => failure("call", error),
