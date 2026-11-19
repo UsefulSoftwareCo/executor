@@ -22,6 +22,28 @@
   },
   "overrides": [
     {
+      // Snapshots are assertions a person reads (e2e/README.md, "Snapshots"): small enough to read,
+      // never built from interpolated values, and inline beside the code, never in a .snap file.
+      // The plugin's other default rules that fire here do not know `it.effect` from
+      // @effect/vitest is a test, so they read every scenario's expect as outside one.
+      "files": ["e2e/**"],
+      "plugins": ["vitest"],
+      "rules": {
+        "vitest/no-large-snapshots": ["error", { "maxSize": 30, "inlineMaxSize": 30 }],
+        "vitest/no-interpolation-in-snapshots": "error",
+        "vitest/no-restricted-matchers": [
+          "error",
+          {
+            "toMatchSnapshot": "Use toMatchInlineSnapshot, beside the code that produced the value.",
+            "toThrowErrorMatchingSnapshot": "Use toThrowErrorMatchingInlineSnapshot.",
+          },
+        ],
+        "vitest/no-standalone-expect": "off",
+        "vitest/valid-expect": "off",
+        "vitest/require-awaited-expect-poll": "off",
+      },
+    },
+    {
       // The live host protocol reaches these patterns, and its record is compared with every
       // released protocol's, flags included; see notes/apps-publishing.md.
       "files": [

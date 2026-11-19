@@ -52,7 +52,18 @@
  * runs, since two release runs on main must not overlap.
  *
  * Writes `decision` (`none`, `bump`, `dispatch` or `rerun`), `version` and `run` to
- * `GITHUB_OUTPUT`. Reads npm with `npm view`, the release runs with `gh run list`, `gh run view`
+ * `GITHUB_OUTPUT`, and `held` with `held_since` for Main health (scripts/ci/main-health.ts):
+ *
+ * - `held` when a hold (a skip with a warning) has kept a due beta back for more than `heldFor`,
+ *   or at once when the daily bound on failed attempts holds it. `held_since` is when the beta
+ *   became due, from what the tick already reads: the `Release <version>` commit while npm lacks
+ *   the committed version, else six hours after npm published it or the first commit after it,
+ *   whichever is later; empty when git has no such commit, which shows the hold at once.
+ * - `clear` when npm lists the committed version and nothing holds the next beta.
+ * - empty otherwise, which leaves the issue as it is: a release run running (a build dispatched to
+ *   clear a red matrix included, while the matrix goes unread), a retry dispatched, a shorter
+ *   hold, or a re-run. A stuck release passes through those between its holds, and the issue must
+ *   neither close nor open again on each. Reads npm with `npm view`, the release runs with `gh run list`, `gh run view`
  * and `gh api`, and the history with `git`, so `e2e/tests/beta-due.spec.ts` drives it with stubs. It
  * changes nothing itself: beta.yml acts on its decision.
  */
@@ -71,6 +82,12 @@ const backOff = 6 * hour;
 const stale = 24 * hour;
 /** At most this many failed publishing attempts a day retry early, on a newer green main. */
 const dailyAttempts = 5;
+/**
+ * How long a hold may keep a due beta back before the red-main issue shows it. A healthy release
+ * goes out within about an hour of being due; two failures in a row wait six hours before the
+ * next attempt, so a hold past that is one that no retry is about to end.
+ */
+const heldFor = 6 * hour;
 /** How many builds and publications the gate reads (`gh run list -L`). */
 const runLimit = 30;
 /**
@@ -165,6 +182,10 @@ interface Decision {
   readonly reason: string;
   /** Skipped for a reason someone should see, such as a release that keeps failing. */
   readonly warning: boolean;
+  /** Held by the daily bound on failed attempts, which the red-main issue shows at once. */
+  readonly exhausted?: boolean;
+  /** Waiting on a release run, so the tick read nothing that could clear a held beta. */
+  readonly pending?: boolean;
   /** The run to re-run, for `rerun`. */
   readonly run?: Run;
 }
@@ -377,7 +398,8 @@ NodeRuntime.runMain(
       // Any build or publication: two must not run on main at once. A check, which publishes
       // nothing and may pace for two hours, is not in this list and holds no tick.
       const active = runs.find((run) => run.status !== "completed");
-      if (active !== undefined) return wait(`A release run is ${active.status}: ${active.url}`);
+      if (active !== undefined)
+        return { ...wait(`A release run is ${active.status}: ${active.url}`), pending: true };
 
       const published = registry.time[version];
       if (published !== undefined) {
@@ -443,9 +465,12 @@ NodeRuntime.runMain(
       // of Beta included: at most five failed publishing attempts a day.
       const counted = yield* failedInLastDay;
       if (counted.failed >= dailyAttempts || !counted.known)
-        return hold(
-          `executor@${version} is not on npm, and ${counted.failed >= dailyAttempts ? `at least ${counted.failed} publishing attempts failed in the last day` : `how many publishing attempts failed in the last day could not be counted within ${countRequests} requests, so it holds`}; at most ${dailyAttempts} a day are started, so the next waits until fewer than ${dailyAttempts} fall in the last 24 hours. The last is ${last.url}. To publish now, inspect the failures and dispatch Executor releases with channel beta by hand (RELEASING.md, "Publish beta").`,
-        );
+        return {
+          ...hold(
+            `executor@${version} is not on npm, and ${counted.failed >= dailyAttempts ? `at least ${counted.failed} publishing attempts failed in the last day` : `how many publishing attempts failed in the last day could not be counted within ${countRequests} requests, so it holds`}; at most ${dailyAttempts} a day are started, so the next waits until fewer than ${dailyAttempts} fall in the last 24 hours. The last is ${last.url}. To publish now, inspect the failures and dispatch Executor releases with channel beta by hand (RELEASING.md, "Publish beta").`,
+          ),
+          exhausted: counted.failed >= dailyAttempts,
+        };
       const failedToday = counted.failed;
       // A failure in a step that publishes anything, in the publish job or any other (the image's
       // architecture tags are pushed in the docker job), may have left something public: the run's
@@ -611,6 +636,40 @@ NodeRuntime.runMain(
         ? hold(`apps@${apps} is not on npm yet; the deploy from main publishes it.`)
         : gated;
 
+    /** When the held beta became due, as `held_since` documents above, or undefined. */
+    const dueSince = Effect.gen(function* () {
+      const release = yield* releaseCommit;
+      const published = registry.time[version];
+      if (published === undefined) {
+        if (release === "") return undefined;
+        return Date.parse(yield* succeed("git", ["log", "-1", "--format=%cI", release]));
+      }
+      const afterPublished = Date.parse(published) + gap;
+      if (release === "") return afterPublished;
+      const first = (yield* succeed("git", [
+        "log",
+        "--reverse",
+        "--format=%cI",
+        "-E",
+        "--invert-grep",
+        "--grep=^Refresh bun\\.lock \\[skip ci\\]$",
+        `${release}..HEAD`,
+      ])).split("\n")[0];
+      return first === undefined || first === ""
+        ? afterPublished
+        : Math.max(afterPublished, Date.parse(first));
+    });
+    const held = result.warning
+      ? yield* Effect.gen(function* () {
+          const since = yield* dueSince;
+          const shown = result.exhausted === true || since === undefined || now - since > heldFor;
+          return { state: shown ? "held" : "", since };
+        })
+      : {
+          state: registry.time[version] !== undefined && result.pending !== true ? "clear" : "",
+          since: undefined,
+        };
+
     // An annotation, so a release that keeps failing is visible on the tick that skips it.
     yield* Console.log(`${result.warning ? "::warning::" : ""}${result.reason}`);
     yield* fs.writeFileString(
@@ -620,6 +679,8 @@ NodeRuntime.runMain(
         `version=${version}`,
         `run=${result.run?.databaseId ?? ""}`,
         `reason=${result.reason}`,
+        `held=${held.state}`,
+        `held_since=${held.since === undefined ? "" : new Date(held.since).toISOString()}`,
       ]
         .map((line) => `${line}\n`)
         .join(""),

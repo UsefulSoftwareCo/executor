@@ -3,11 +3,17 @@
  * changes that reached Cloud in the 30 days before the deployed commit, which the deploy writes and
  * the dashboard's build takes. The scenarios' local Cloud builds it with fixed notes
  * (e2e/support/cloud-release-notes.ts), so the block, its panel and its layout are checked against
- * the same notes whatever main's history holds; which notes the deploy writes from that history is
+ * the same notes whatever main's history holds. The block leads with the newest note its writer
+ * called a feature or an improvement, never a newer fix, and the panel lists every note, fixes
+ * included; which notes the deploy writes from that history is
  * the release notes cases' to check (`release-notes.spec.ts`), and a build without notes the
  * dashboard build cases' (`dashboard-file-names.spec.ts`). The browser's clock is set, and shown
  * to change nothing. A local Cloud of its own builds the dashboard with an empty notes file, as a
- * deploy whose window has no notes does (`e2e:cloud --empty-release-notes`).
+ * deploy whose window has no notes does (`e2e:cloud --release-notes empty`). Two more build it
+ * with notes the deploy's own notes script writes from commit messages (`cloudChanges`), so the
+ * kind words are cut where a deploy cuts them: one whose notes are all fixes, one marked `Fix:`
+ * and one unmarked, shows a plain line (`--release-notes fixes`), and one whose newest note is a
+ * feature leads with it (`--release-notes feature`).
  */
 import { expect, layer } from "@effect/vitest";
 import { Effect } from "effect";
@@ -97,8 +103,9 @@ layer(HostedLive, { excludeTestServices: true })("Cloud what's new", (it) => {
           return;
         }
 
-        // The block: a "What's new" tag and the newest note the allow-list accepts, as one button
-        // with no card around it, below the navigation and above the divider. The resource links
+        // The block: a "What's new" tag and the newest feature or improvement the allow-list
+        // accepts, not the newer fix above it, as one button with no card around it, below the
+        // navigation and above the divider. The resource links
         // and the support trigger stay under it: only an update takes their place.
         yield* browser.use("Wait for the block", (page) => opener(page).waitFor());
         yield* browser.checkpoint("What's new in the sidebar");
@@ -128,8 +135,8 @@ layer(HostedLive, { excludeTestServices: true })("Cloud what's new", (it) => {
           true,
         ]);
 
-        // It opens every note by the day it reached Cloud, newest first, as text, without the
-        // refused line, and Escape returns focus to it.
+        // It opens every note by the day it reached Cloud, newest first, as text, the fix the block
+        // passed over included and without the refused line, and Escape returns focus to it.
         yield* browser.use("Open what's new", (page) =>
           opener(page)
             .focus()
@@ -160,8 +167,8 @@ layer(HostedLive, { excludeTestServices: true })("Cloud what's new", (it) => {
         expect(byDay(accepted)).toEqual([
           [
             "Nov 14, 2026",
+            "The apps page no longer shows a blank list first.",
             "Apps open from the sidebar in one click.",
-            "The apps page loads faster for large teams.",
           ],
           ["Nov 12, 2026", "Search finds apps by the tools they offer."],
           ["Nov 3, 2026", "Members can leave an organization themselves."],
@@ -234,6 +241,67 @@ layer(HostedLive, { excludeTestServices: true })("Cloud what's new", (it) => {
           "Apps open from the sidebar in one click.",
         ]);
       }),
+    ),
+  );
+
+  /**
+   * The block and the panel of a Cloud built with `cloudChanges[source]`: the block's line is
+   * `line`, and the panel lists `notes`, every change's note newest first as the text after its
+   * kind word.
+   */
+  const fromCommits = (line: string, notes: ReadonlyArray<string>) =>
+    Effect.gen(function* () {
+      const browser = yield* Browser,
+        actors = yield* Actors;
+      yield* browser.login(actors.owner);
+      yield* browser.use("Open the dashboard", (page) =>
+        page
+          .setViewportSize({ width: 1280, height: 800 })
+          .then(() => openAt(page, actors.organization.slug, "2026-11-15T12:00:00Z"))
+          .then(() => opener(page).waitFor()),
+      );
+      yield* browser.checkpoint("What's new in the sidebar");
+      expect(yield* browser.use("Read the block", lines)).toEqual(["What's new", line]);
+      yield* browser.use("Open what's new", (page) =>
+        opener(page)
+          .click()
+          .then(() => panel(page).waitFor()),
+      );
+      yield* browser.checkpoint("What's new panel");
+      const listed = yield* browser.use("Read the panel", (page) =>
+        panel(page).evaluate((element) => ({
+          days: element.querySelectorAll(".release-notes-release").length,
+          notes: [...element.querySelectorAll("li")].map((item) => item.textContent),
+          text: element.textContent ?? "",
+        })),
+      );
+      // The changes merged today, so their notes are one day's, and no kind word reaches the
+      // dashboard.
+      expect(listed.days).toBe(1);
+      expect(listed.notes).toEqual(notes);
+      expect(listed.text).not.toMatch(/\b(?:Feature|Improvement|Fix):/iu);
+    });
+
+  it.effect(scenarios.cloudWhatsNewFixes.title, (context) =>
+    withHostedCase(
+      context,
+      // Neither fix leads, the one marked Fix: nor the unmarked one: the block says to look.
+      fromCommits("See recent changes to Executor Cloud.", [
+        "The apps page no longer shows a blank list first.",
+        "Search no longer drops the last result.",
+      ]),
+    ),
+  );
+
+  it.effect(scenarios.cloudWhatsNewFeature.title, (context) =>
+    withHostedCase(
+      context,
+      // The newest note is a feature, so it leads, without the Feature: its writer put before it.
+      fromCommits("Apps open from the sidebar in one click.", [
+        "Apps open from the sidebar in one click.",
+        "The apps page no longer shows a blank list first.",
+        "Search finds apps by the tools they offer.",
+      ]),
     ),
   );
 

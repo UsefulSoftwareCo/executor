@@ -47,6 +47,7 @@ const workerIds = [
   "AppData",
   "AppDomainController",
   "AppOutbound",
+  "AppOutboundRelay",
   "AppPages",
   "ArtifactsCredentials",
   "Authoring",

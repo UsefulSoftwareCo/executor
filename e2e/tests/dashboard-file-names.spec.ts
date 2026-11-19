@@ -94,8 +94,16 @@ layer(NodeServices.layer, { excludeTestServices: true })("Dashboard file names",
       Effect.gen(function* () {
         const notes = {
           notes: [
-            { date: "2026-11-14", text: "Apps open from the sidebar in one click." },
-            { date: "2026-11-03", text: "Members can leave an organization themselves." },
+            {
+              date: "2026-11-14",
+              text: "Apps open from the sidebar in one click.",
+              kind: "feature",
+            },
+            {
+              date: "2026-11-03",
+              text: "Members can leave an organization themselves.",
+              kind: "fix",
+            },
           ],
         };
         // Given notes, as a production deploy's build is: its browser files hold them.

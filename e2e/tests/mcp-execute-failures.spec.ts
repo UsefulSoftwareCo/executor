@@ -1568,7 +1568,10 @@ layer(HostedLive, { excludeTestServices: true })("Hosted MCP execute failures", 
           code: "server_url",
           fields: { reason: "Server URLs must use HTTPS", pointer: "/servers/0/url" },
         });
-        expectThrownDetail(failure.message);
+        // Its whole message: the thrown error's name, code and each of its fields.
+        expect(failure.message).toMatchInlineSnapshot(
+          `"Executor could not load this app’s tool definitions. The app threw SpecInvalid (server_url): SpecInvalid was thrown without a message. Details: reason: "Server URLs must use HTTPS"; pointer: "/servers/0/url"."`,
+        );
         // A call into the app reports the same detail, both in the diagnostic and the error.
         const root = yield* executeOnce(
           whole.client,

@@ -15,6 +15,8 @@ export const TargetPlan = Schema.Union([
         "oauth-proxy-preview",
         "revocation-budget",
         "empty-release-notes",
+        "fix-release-notes",
+        "feature-release-notes",
       ]),
     ),
   }),
@@ -86,6 +88,17 @@ const revocationBudgetCloud = { status: "scheduled", runtime: "revocation-budget
  * whose window has no notes builds it; every other local Cloud builds it with fixed notes.
  */
 const emptyReleaseNotesCloud = { status: "scheduled", runtime: "empty-release-notes" } as const;
+/**
+ * Runs alone on a managed local Cloud whose dashboard is built with notes the deploy's notes script
+ * writes from commit messages that hold only fixes (`cloudChanges` in
+ * e2e/support/cloud-release-notes.ts).
+ */
+const fixReleaseNotesCloud = { status: "scheduled", runtime: "fix-release-notes" } as const;
+/**
+ * Runs alone on a managed local Cloud whose dashboard is built with notes the deploy's notes script
+ * writes from commit messages whose newest is a feature.
+ */
+const featureReleaseNotesCloud = { status: "scheduled", runtime: "feature-release-notes" } as const;
 const na = (reason: string) => ({ status: "not-applicable", reason }) as const;
 const cloudOnboarding = {
   cloud: scheduled,
@@ -756,6 +769,39 @@ export const scenarios = plan({
       "self-host": scheduled,
       cloud: na("Loopback GraphQL fixture"),
       local: na("Hosted app version scenario"),
+    },
+  },
+  mcpCallTeardownCompleted: {
+    fixtures: "actors",
+    file: "mcp-call-teardown.spec.ts",
+    title:
+      "a completed MCP app call cancels nothing and returns before its server answers the session's DELETE",
+    targets: {
+      "self-host": scheduled,
+      cloud: managedCloud,
+      local: na("Hosted MCP app call; the app runtime is shared with Local."),
+    },
+  },
+  mcpCallTeardownCancelled: {
+    fixtures: "actors",
+    file: "mcp-call-teardown.spec.ts",
+    title:
+      "an MCP app call given up in flight still tells its server, and a completed one does not",
+    targets: {
+      "self-host": scheduled,
+      cloud: managedCloud,
+      local: na("Hosted MCP app call; the app runtime is shared with Local."),
+    },
+  },
+  mcpCallTeardownConcurrent: {
+    fixtures: "actors",
+    file: "mcp-call-teardown.spec.ts",
+    title:
+      "ten concurrent MCP app calls behind six connections send five requests each and end every session",
+    targets: {
+      "self-host": scheduled,
+      cloud: managedCloud,
+      local: na("Hosted MCP app call; the app runtime is shared with Local."),
     },
   },
   mcpCatalogCache: {
@@ -1571,6 +1617,16 @@ export const scenarios = plan({
     fixtures: "cli",
     file: "failure-text.spec.ts",
     title: "Variables in the runner's own environment do not reach the scenario worker",
+    targets: {
+      "self-host": scheduled,
+      local: na("The runner starts every target's worker with the same variable list."),
+      cloud: na("The runner starts every target's worker with the same variable list."),
+    },
+  },
+  workerSnapshotUpdates: {
+    fixtures: "cli",
+    file: "failure-text.spec.ts",
+    title: "Only the runner's --update-snapshots lets the scenario worker write snapshots",
     targets: {
       "self-host": scheduled,
       local: na("The runner starts every target's worker with the same variable list."),
@@ -3144,6 +3200,45 @@ export const scenarios = plan({
       local: na("Exercises the hosted import and account connection APIs."),
     },
   },
+  concurrentOutbound: {
+    fixtures: "actors",
+    file: "concurrent-outbound.spec.ts",
+    title: "Ten concurrent calls in one execute each wait one answer time for a slow service",
+    targets: {
+      "self-host": scheduled,
+      // Only Cloudflare limits how many connections one request may have waiting, so only a
+      // deployed stage shows calls queueing; managed local Cloud still sends them through the relay.
+      cloud: scheduled,
+      local: na("Exercises the hosted app deploy, account and MCP execute APIs."),
+    },
+  },
+  concurrentOutboundChecks: {
+    fixtures: "actors",
+    file: "concurrent-outbound.spec.ts",
+    title:
+      "Requests sent while five others wait keep every outbound check and carry no Executor header",
+    targets: {
+      "self-host": scheduled,
+      // Managed local Cloud sends them through the relay; a deployed stage also shows they did not
+      // wait for the five.
+      cloud: scheduled,
+      local: na("Exercises the hosted app deploy, account and MCP execute APIs."),
+    },
+  },
+  concurrentOutboundPrivate: {
+    fixtures: "actors",
+    file: "concurrent-outbound.spec.ts",
+    title:
+      "Requests to private addresses sent while five others wait are refused, redirected or not",
+    targets: {
+      "self-host": na(
+        "The self-host scenarios reach their loopback fixtures, so private fetch is on.",
+      ),
+      // The local test Worker lets apps reach the scenarios' loopback fixtures.
+      cloud: { status: "scheduled", runtime: "attached" },
+      local: na("Local lets app code reach private addresses by design."),
+    },
+  },
   appFetchUserAgent: {
     fixtures: "actors",
     file: "app-fetch-user-agent.spec.ts",
@@ -3471,10 +3566,32 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "cloud-whats-new.spec.ts",
     title:
-      "Cloud shows every member the newest note its build holds above the sidebar's links, which stay, and opens all of them by day, also in a short window and not in the collapsed rail, whatever the browser's clock says, and shows nothing where there are none",
+      "Cloud shows every member the newest feature or improvement its build holds, not a newer fix, above the sidebar's links, which stay, and opens all of them by day, fixes included, also in a short window and not in the collapsed rail, whatever the browser's clock says, and shows nothing where there are none",
     targets: {
       cloud: managedCloud,
       "self-host": scheduled,
+      local: na("Cloud's notes are Cloud's; the desktop shows its update's notes."),
+    },
+  },
+  cloudWhatsNewFixes: {
+    fixtures: "actors",
+    file: "cloud-whats-new.spec.ts",
+    title:
+      "Cloud built with notes that are all fixes, one marked Fix: and one unmarked, leads what's new with a plain line, never a fix, and lists every fix without its kind word",
+    targets: {
+      cloud: fixReleaseNotesCloud,
+      "self-host": na("Self-host has no Cloud notes; the scenario with notes covers it."),
+      local: na("Cloud's notes are Cloud's; the desktop shows its update's notes."),
+    },
+  },
+  cloudWhatsNewFeature: {
+    fixtures: "actors",
+    file: "cloud-whats-new.spec.ts",
+    title:
+      "Cloud built with notes whose newest is a feature leads what's new with that feature, without its kind word, over an older improvement and fix, and lists every note without one",
+    targets: {
+      cloud: featureReleaseNotesCloud,
+      "self-host": na("Self-host has no Cloud notes; the scenario with notes covers it."),
       local: na("Cloud's notes are Cloud's; the desktop shows its update's notes."),
     },
   },
@@ -7566,6 +7683,120 @@ export const scenarios = plan({
     targets: {
       "self-host": scheduled,
       cloud: scheduled,
+      local: na("Local uses its configured instance API key."),
+    },
+  },
+  executorManagedKeyRenewed: {
+    fixtures: "actors",
+    managementApps: ["owner"],
+    file: "executor-managed-key.spec.ts",
+    title:
+      "Executor app's managed key revoked on the Tokens page is recreated once by the next management calls from an MCP client",
+    targets: {
+      "self-host": scheduled,
+      cloud: managedCloud,
+      local: na("Local uses its configured instance API key."),
+    },
+  },
+  executorManagedKeyIneligible: {
+    fixtures: "actors",
+    managementApps: ["admin"],
+    file: "executor-managed-key.spec.ts",
+    title:
+      "Executor app's managed key is not recreated for a member who may no longer hold one, and its refusal says how to replace it",
+    targets: {
+      "self-host": scheduled,
+      cloud: managedCloud,
+      local: na("Local uses its configured instance API key."),
+    },
+  },
+  executorManagedKeyOtherApp: {
+    fixtures: "actors",
+    managementApps: ["owner"],
+    file: "executor-managed-key.spec.ts",
+    title:
+      "Executor app's managed key is recreated only for the Executor app's own calls, never for another app its account is linked to, and once for a hundred calls at a time",
+    targets: {
+      "self-host": scheduled,
+      cloud: managedCloud,
+      local: na("Local uses its configured instance API key."),
+    },
+  },
+  executorManagedKeyAccountDeleted: {
+    fixtures: "actors",
+    managementApps: ["owner"],
+    file: "executor-managed-key.spec.ts",
+    title:
+      "Executor app's managed key is never recreated once its account is deleted, however many calls arrive",
+    targets: {
+      "self-host": scheduled,
+      cloud: managedCloud,
+      local: na("Local uses its configured instance API key."),
+    },
+  },
+  executorManagedKeyTwoOrganizations: {
+    fixtures: "actors",
+    managementApps: ["owner"],
+    file: "executor-managed-key.spec.ts",
+    title:
+      "Executor app's managed key is recreated only in the organization whose app was refused, for a member of two organizations",
+    targets: {
+      "self-host": na("Self-host has one organization; its members cannot create another."),
+      cloud: managedCloud,
+      local: na("Local uses its configured instance API key."),
+    },
+  },
+  executorKeyReconnectDuringRenewal: {
+    fixtures: "actors",
+    managementApps: ["owner"],
+    file: "executor-managed-key-locks.spec.ts",
+    title:
+      "A member's own token reconnected into the Executor app's key account while its renewal commits never takes the renewal's generation",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na(
+        "Self-host's single PGlite connection runs one transaction at a time, and its database cannot be written beside the server.",
+      ),
+      local: na("Local uses its configured instance API key."),
+    },
+  },
+  executorKeyNameNotMarking: {
+    fixtures: "actors",
+    managementApps: ["owner"],
+    file: "executor-managed-key-locks.spec.ts",
+    title:
+      "A token that already bears the Executor app's key name stays an ordinary token on the Tokens page and is never recreated",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na(
+        "Self-host's single PGlite connection runs one transaction at a time, and its database cannot be written beside the server.",
+      ),
+      local: na("Local uses its configured instance API key."),
+    },
+  },
+  executorKeyExistingOrFailedRenewal: {
+    fixtures: "actors",
+    managementApps: ["owner"],
+    file: "executor-managed-key-locks.spec.ts",
+    title:
+      "A disabled Executor app key is never recreated, an expired one is recreated once its refusal deletes it, and a renewal that fails after minting leaves no key and is not repeated",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na(
+        "Self-host's single PGlite connection runs one transaction at a time, and its database cannot be written beside the server.",
+      ),
+      local: na("Local uses its configured instance API key."),
+    },
+  },
+  executorKeyOrganizationChecked: {
+    fixtures: "actors",
+    managementApps: ["owner"],
+    file: "executor-managed-key.spec.ts",
+    title:
+      "Executor app's managed key replacement is refused when its organization is a name or out of the token's reach",
+    targets: {
+      "self-host": scheduled,
+      cloud: managedCloud,
       local: na("Local uses its configured instance API key."),
     },
   },
@@ -11964,7 +12195,9 @@ export const scenarios = plan({
  * on the deployment origin, and runs only the scenarios that prove the switch. A revocation-budget
  * run starts it with organization removal's revocation budget shortened, and runs only the
  * scenarios that run that budget out. An empty-release-notes run builds its dashboard with an
- * empty notes file, and runs only the scenarios that show it.
+ * empty notes file, and a fix-release-notes or feature-release-notes run with notes the deploy's
+ * notes script writes from commit messages (`cloudChanges`), and each runs only the scenarios that
+ * show its notes.
  */
 export type CloudMode =
   | "managed"
@@ -11973,7 +12206,9 @@ export type CloudMode =
   | "rolled-back"
   | "oauth-proxy-preview"
   | "revocation-budget"
-  | "empty-release-notes";
+  | "empty-release-notes"
+  | "fix-release-notes"
+  | "feature-release-notes";
 
 const cloudRuntimeReasons = {
   managed: "Requires the managed local Cloud target and its local collectors.",
@@ -11987,7 +12222,11 @@ const cloudRuntimeReasons = {
   "revocation-budget":
     "Requires a managed local Cloud with organization removal's revocation budget shortened: e2e:cloud --removal-revocation-budget.",
   "empty-release-notes":
-    "Requires a managed local Cloud whose dashboard is built with an empty notes file: e2e:cloud --empty-release-notes.",
+    "Requires a managed local Cloud whose dashboard is built with an empty notes file: e2e:cloud --release-notes empty.",
+  "fix-release-notes":
+    "Requires a managed local Cloud whose dashboard is built with notes that are all fixes: e2e:cloud --release-notes fixes.",
+  "feature-release-notes":
+    "Requires a managed local Cloud whose dashboard is built with notes whose newest is a feature: e2e:cloud --release-notes feature.",
 } as const;
 
 /**
@@ -12022,7 +12261,9 @@ export const scenariosForSuite = (
             cloudMode !== "rolled-back" &&
             cloudMode !== "oauth-proxy-preview" &&
             cloudMode !== "revocation-budget" &&
-            cloudMode !== "empty-release-notes"
+            cloudMode !== "empty-release-notes" &&
+            cloudMode !== "fix-release-notes" &&
+            cloudMode !== "feature-release-notes"
           : cloud.runtime === cloudMode;
       return runs
         ? scenario
@@ -12038,7 +12279,9 @@ export const scenariosForSuite = (
                       ? "Runs on Cloud as the OAuth proxy's production, not on a stage signing in through it."
                       : cloudMode === "revocation-budget"
                         ? "Runs on Cloud with organization removal's deployed revocation budget."
-                        : cloudMode === "empty-release-notes"
+                        : cloudMode === "empty-release-notes" ||
+                            cloudMode === "fix-release-notes" ||
+                            cloudMode === "feature-release-notes"
                           ? "Runs on Cloud built with the fixed test notes."
                           : "Runs on Cloud without the per-address auth limit."
                   : cloudRuntimeReasons[cloud.runtime],

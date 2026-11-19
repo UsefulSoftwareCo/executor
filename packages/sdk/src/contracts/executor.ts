@@ -53,6 +53,7 @@ import type {
   AccountId,
   AppId,
   ApprovalRequestId,
+  JsonObject,
   OwnerId,
   StorageError,
   VersionId,
@@ -228,6 +229,25 @@ export interface ResourceLifecycle {
   readonly accountCreated: (account: Account) => Effect.Effect<void, StorageError>;
   /** Called after active-work checks, before deleting credentials in the same transaction. */
   readonly accountRemoving: (account: Account) => Effect.Effect<void, StorageError>;
+  /**
+   * A service refused the credentials of an account that signs in with secrets the product may
+   * have issued itself, such as a key for the product's own API, during a run of `app`. `app` is
+   * the app the SDK was running, never a value its code supplied; refusals reported outside an
+   * app's run, such as account checks, are never offered. The product may replace the credentials
+   * (through `managedAccounts.replaceCredentials`) and answers whether the account now holds
+   * credentials other than `rejected` that it may use for this call. The SDK then reads the account
+   * again and uses those, as it does a renewed OAuth grant: a read is repeated once, a call that may
+   * write reports the renewal. A product that does not renew for this app answers false, which
+   * leaves the call exactly as without the hook. `generation` is the credential generation
+   * `rejected` belongs to. Called outside resource transactions, for the `CurrentActor`; a failure
+   * is no renewal. Whatever it answers, the SDK checks authority again before using credentials.
+   */
+  readonly secretsRejected?: (input: {
+    readonly app: { readonly id: AppId; readonly owner: OwnerId };
+    readonly account: Pick<Account, "id" | "owner" | "provider">;
+    readonly generation: number;
+    readonly rejected: Redacted.Redacted<JsonObject>;
+  }) => Effect.Effect<boolean, StorageError>;
   /**
    * Called once for a newly stored OAuth client, registered by a person or automatically, before
    * its transaction commits. A product that decides who may use clients records that here.

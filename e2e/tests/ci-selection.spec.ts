@@ -55,6 +55,8 @@ const jobs = [
   "cloud-oauth-proxy-preview",
   "cloud-revocation-budget",
   "cloud-empty-release-notes",
+  "cloud-fix-release-notes",
+  "cloud-feature-release-notes",
 ];
 /** The outputs that start the E2E runners: each sharded job's parts and the Cloud runners. */
 const runnerOutputs = ["local-shards", "self-host-shards", "cloud-runners"];
@@ -130,6 +132,11 @@ const select = (input: {
   readonly compared?: ReadonlyArray<string> | "unknown";
   /** Files the comparison lists as renamed, with the name each had before. */
   readonly renamed?: ReadonlyArray<{ readonly from: string; readonly to: string }>;
+  /**
+   * Entries the comparison lists as GitHub writes them, after `compared` and `renamed`: a status,
+   * counts and a previous name, for a change with no lines, such as a mode change or a rename.
+   */
+  readonly compareEntries?: ReadonlyArray<Readonly<Record<string, unknown>>>;
   readonly main?: Readonly<Record<string, string>>;
   readonly stackedAbove?: string | ReadonlyArray<string>;
   readonly wait?: number;
@@ -218,6 +225,7 @@ const select = (input: {
               filename: to,
               previous_filename: from,
             })),
+            ...(input.compareEntries ?? []),
           ],
         }),
       );
@@ -467,6 +475,12 @@ const e2eJobs = Object.keys(startedBy) as ReadonlyArray<E2eJob>;
  * host slows them and does not fail them; every other case keeps the default.
  */
 const heavyCaseTimeout = 120_000;
+
+/**
+ * Cases that run alone while the others run two at once (e2e/ci-selection.config.ts). Each runs
+ * many processes itself, and beside another case on four busy cores it neared its limit.
+ */
+const alone = { concurrent: false } as const;
 
 /**
  * Main's files for `select`'s reads, as this checkout has them (patches and guarded files
@@ -769,13 +783,13 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
           expect(productParts).toBeGreaterThan(1);
           expect(runners.map(({ name }) => name)).toEqual([
             "cloud",
-            "cloud-isolate, cloud-telemetry-flush, cloud-connections",
+            "cloud-isolate, cloud-telemetry-flush, cloud-connections, cloud-feature-release-notes",
             ...Array.from(
               { length: productParts },
               (_, index) => `cloud-product ${index + 1}/${productParts}`,
             ),
             "cloud-workers, cloud-locks, cloud-batch, cloud-autumn",
-            "cloud-domains, cloud-rate-limit, cloud-rollback, cloud-oauth-proxy-preview",
+            "cloud-domains, cloud-rate-limit, cloud-rollback, cloud-oauth-proxy-preview, cloud-fix-release-notes",
             "cloud-removal-recovery, cloud-export-hang, cloud-listings, cloud-revocation-budget, cloud-empty-release-notes",
           ]);
           // Each Cloud job's pattern is on exactly one runner and empty on the others. The runner
@@ -1340,6 +1354,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         for (const [index, run] of proseRuns.entries())
           expect(run.exitCode, `${prose[index]}\n${run.log}`).toBe(0);
       }),
+    alone,
   );
 
   it.effect(
@@ -2253,6 +2268,116 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
   );
 
   it.effect(
+    "the save path is read for every comparison that lists a file, a rename, mode change or deletion included, and not for one that lists none",
+    () =>
+      Effect.gen(function* () {
+        const lookup = scenarios.webhookSourceLookup.title;
+        // Entries GitHub lists with no changed lines: each names a file a save runs or reads.
+        const unchanged = { additions: 0, deletions: 0, changes: 0 };
+        const runs = yield* Effect.all(
+          {
+            empty: select({ body: block("none"), compared: [] }),
+            // Moved away from a file the save path holds, so the comparison lists it by its old name.
+            renamed: select({
+              body: block("none"),
+              compareEntries: [
+                {
+                  filename: "apps/hosted/server/src/implementation/accounts-moved.ts",
+                  previous_filename: "apps/hosted/server/src/implementation/accounts.ts",
+                  status: "renamed",
+                  ...unchanged,
+                },
+              ],
+            }),
+            modeChanged: select({
+              body: block("none"),
+              compareEntries: [
+                {
+                  filename: "apps/hosted/server/src/implementation/app-accounts.ts",
+                  status: "changed",
+                  ...unchanged,
+                },
+              ],
+            }),
+            // Reached only through the SDK's exports.
+            deleted: select({
+              body: block("none"),
+              compareEntries: [
+                {
+                  filename: "packages/fumadb-effect/src/implementation/sql/query.ts",
+                  status: "removed",
+                  additions: 0,
+                  deletions: 40,
+                  changes: 40,
+                },
+              ],
+            }),
+            onlySavePath: select({
+              body: block("none"),
+              compared: ["packages/sdk/src/implementation/storage-schema.ts"],
+            }),
+            elsewhere: select({ body: block("none"), compared: ["apps/marketing/src/pages.ts"] }),
+          },
+          { concurrency: 4 },
+        );
+        const read = /The save path \(e2e\/save-path\.ts\) has \d+ files\./;
+        const skipped =
+          "The save path (e2e/save-path.ts) was not read: the comparison lists no changed file, so no file a save runs or reads changed.";
+        const seen = Object.fromEntries(
+          Object.entries(runs).map(([name, run]) => {
+            expect(run.exitCode, `${name}: ${run.log}`).toBe(0);
+            const selected = run.outputs["cloud-locks"] ?? "";
+            return [
+              name,
+              {
+                runs: selected !== "" && new RegExp(selected).test(lookup),
+                read: read.test(run.summary),
+                skipped: run.summary.includes(skipped),
+              },
+            ];
+          }),
+        );
+        expect(seen).toEqual({
+          empty: { runs: false, read: false, skipped: true },
+          renamed: { runs: true, read: true, skipped: false },
+          modeChanged: { runs: true, read: true, skipped: false },
+          deleted: { runs: true, read: true, skipped: false },
+          onlySavePath: { runs: true, read: true, skipped: false },
+          elsewhere: { runs: false, read: true, skipped: false },
+        });
+      }),
+  );
+
+  it.effect(
+    "a save path that cannot be read fails every comparison that lists a file, and one that lists none does not read it",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        // One of the save's roots no longer exists.
+        const savePath = (yield* fs.readFileString("e2e/save-path.ts")).replace(
+          '"apps/hosted/server/src/implementation/accounts.ts",',
+          '"apps/hosted/server/src/implementation/accounts-gone.ts",',
+        );
+        expect(savePath).toContain("accounts-gone.ts");
+        const root = yield* fixture({ "e2e/save-path.ts": savePath });
+        const { empty, elsewhere } = yield* Effect.all(
+          {
+            // Pushes to main: the fixture holds no spec files for a pull request's release lanes.
+            empty: select({ root, compared: [] }),
+            elsewhere: select({ root, compared: ["apps/marketing/src/pages.ts"] }),
+          },
+          { concurrency: 2 },
+        );
+        expect(empty.exitCode, empty.log).toBe(0);
+        expect(empty.summary).toContain("The save path (e2e/save-path.ts) was not read");
+        expect(elsewhere.exitCode, elsewhere.log).toBe(1);
+        expect(elsewhere.log).toContain(
+          "apps/hosted/server/src/implementation/accounts-gone.ts, which e2e/save-path.ts follows, does not exist. Update its roots.",
+        );
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
     "the harness scenarios run when a harness path changed, or when nothing says it did not",
     () =>
       Effect.gen(function* () {
@@ -2937,6 +3062,10 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
           }).pipe(Effect.scoped);
         const head = (yield* run("git", ["rev-parse", "HEAD"])).log.trim();
         const originUrl = (yield* run("git", ["remote", "get-url", "origin"])).log.trim();
+        // What this checkout's origin/main is, or that it has none: no check below may move it.
+        const trackedMain = () =>
+          run("git", ["rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"]);
+        const trackedBefore = yield* trackedMain();
         // origin: a bare repository whose main is this commit, borrowing this checkout's objects.
         const origin = path.join(scratch, "origin.git");
         yield* run("git", ["init", "--quiet", "--bare", origin]);
@@ -3138,8 +3267,12 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         });
         expect(offline.exitCode, offline.log).toBe(2);
         expect(offline.log).toContain("It needs the network, and cannot check offline");
+
+        // The fetches went to refs of pr:check's own: this checkout's origin/main is as it was,
+        // not the stand-in's main.
+        expect(yield* trackedMain()).toEqual(trackedBefore);
       }).pipe(Effect.scoped),
-    heavyCaseTimeout,
+    { ...alone, timeout: heavyCaseTimeout },
   );
 
   it.effect(
@@ -3729,6 +3862,8 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         "cloud-oauth-proxy-preview",
         "cloud-revocation-budget",
         "cloud-empty-release-notes",
+        "cloud-fix-release-notes",
+        "cloud-feature-release-notes",
       ])
         expect(noCloud.log).toMatch(
           new RegExp(`- the ${job} job on cloud: (\\d+) of \\1 scenarios did not run`),

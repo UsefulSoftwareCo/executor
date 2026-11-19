@@ -1,6 +1,7 @@
 import { retireMethod } from "@executor-js/app-data/worker-bundle";
 import type { SourceFile } from "../contracts/version.ts";
 import { asciiJson } from "./ascii-json.ts";
+import { outboundGroupHeader } from "./app-network.ts";
 
 /**
  * The text files a server entry retains as `ctx.files`. `ui/` is the browser app: the host serves
@@ -100,7 +101,7 @@ const collect = () => { const gc = globalThis.gc; if (typeof gc !== "function" |
  * anything unexpected while reading it sends the original on unchanged.
  */
 export const appRpcBridge = (module: string, load: "module" | "call" = "module") => `
-${networkImport}
+import { outboundGroup } from "./${appNetworkModuleName}";
 ${
   load === "module"
     ? `import app from ${JSON.stringify(`./${module}`)};`
@@ -139,12 +140,15 @@ class Invocation extends RpcTarget {
     this.#stubs = [delivery, execution, management];
     // The app runs once the runner asks for its result, after this start has returned: starting is
     // the runner's own time and never overlaps the app's.
+    // A call the host names a group for runs in \`outboundGroup\`, so each request it sends names it.
+    const { [${JSON.stringify(outboundGroupHeader)}]: group, ...forwarded } = headers;
     this.#dispatch = () => {
       const clock = bridge.clock;
       const started = clock?.();
-      return bridge.fetch(new Request("https://app.internal/dispatch", {
-        method: "POST", headers: { ...headers, "content-type": "application/json" }, body, signal: this.#controller.signal
-      }), { ELICITATION: delivery, WORKFLOW: execution, WORKFLOW_CONTROLS: management, CACHE: this.#cache?.cache }).then(response => response.json()).then(value => ({ ok: true, value: dispatched(clock, started, value) }), error => ({ ok: false, error })).finally(() => this.#release());
+      const send = () => bridge.fetch(new Request("https://app.internal/dispatch", {
+        method: "POST", headers: { ...forwarded, "content-type": "application/json" }, body, signal: this.#controller.signal
+      }), { ELICITATION: delivery, WORKFLOW: execution, WORKFLOW_CONTROLS: management, CACHE: this.#cache?.cache });
+      return (typeof group === "string" ? outboundGroup.run(group, send) : send()).then(response => response.json()).then(value => ({ ok: true, value: dispatched(clock, started, value) }), error => ({ ok: false, error })).finally(() => this.#release());
     };
   }
   #release() { for (const stub of this.#stubs) stub?.[Symbol.dispose](); this.#stubs = []; }

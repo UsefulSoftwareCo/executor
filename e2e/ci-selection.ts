@@ -202,7 +202,7 @@ const jobs = {
     runner: 3,
 
     pattern:
-      "Cloud SSO SAML accepts|Cloud's operator OAuth client signs in|Cloud's own Executor for Google registration refuses|Safari reports only the page's own failures|Cloud cron triggers run their jobs|Cloud cron jobs record their outcome|Cloud support dialog lists every channel|Cloud shows every member the newest note|Hosted feedback enforces its API contract|Executor's catalog calls an app's own cache methods|Executor app is installed with nothing left pending|Cloud MCP routes a request inside a session|Cloud MCP sessions continue after their session object is evicted|Request and workflow attempts at one team|remote skill catalog|a skill read without a revision|abandons a GitHub skills load|reads its catalog and the tool in one cache command|a cold call's wake is reported by that call alone|another organization's admin cannot read the link|account connections cannot cross organizations|Deploys wake webhook source setup|Cloud's schedule coordinator keeps nine slow scheduled runs|a webhook source reconciling for an activation that another supersedes|A skill catalog refreshed in the background after a dashboard batch read|Cloud MCP session objects run parallel tool calls|Cloud MCP session objects cancel a statement|Cloud MCP session objects discover the other apps|Cloud MCP session objects' database pool|Cloud's database pool runs a statement whose connection|Hosted MCP resume reports an approved call's own failure|Cloud refuses to remove an organization while one of its app workflows runs|Removing an organization revokes the refresh token|Cloud v1 session handoff|Cloud accepts MCP requests v1 forwards|Cloud validates a v1 WorkOS API key|Hosted MCP operation and bearer-check spans name|Hosted management API request spans name only|Hosted request spans record the client, the credential|Cloud's gateway names an authenticated MCP request's organization|A person deletes their own user|Cloud invitations left pending after their inviter lost|On Cloud a slow tool call log write|A Cloud scenario's clean-up returns once its organization's removal is accepted|The end-of-run removal check answers each look within its request limit|The end-of-run removal check asks again after a dropped request|The end-of-run removal check keeps waiting for a removal recorded done|a run's sleep whose engine call failed is called again",
+      "Cloud SSO SAML accepts|Cloud's operator OAuth client signs in|Cloud's own Executor for Google registration refuses|Safari reports only the page's own failures|Cloud cron triggers run their jobs|Cloud cron jobs record their outcome|Cloud support dialog lists every channel|Cloud shows every member the newest feature or improvement|Hosted feedback enforces its API contract|Executor's catalog calls an app's own cache methods|Executor app is installed with nothing left pending|Executor app's managed key|reconnected into the Executor app.s key account while its renewal commits|already bears the Executor app.s key name|A disabled Executor app key is never recreated|Cloud MCP routes a request inside a session|Cloud MCP sessions continue after their session object is evicted|Request and workflow attempts at one team|remote skill catalog|a skill read without a revision|abandons a GitHub skills load|reads its catalog and the tool in one cache command|a cold call's wake is reported by that call alone|another organization's admin cannot read the link|account connections cannot cross organizations|Deploys wake webhook source setup|Cloud's schedule coordinator keeps nine slow scheduled runs|a webhook source reconciling for an activation that another supersedes|A skill catalog refreshed in the background after a dashboard batch read|Cloud MCP session objects run parallel tool calls|Cloud MCP session objects cancel a statement|Cloud MCP session objects discover the other apps|Cloud MCP session objects' database pool|Cloud's database pool runs a statement whose connection|Hosted MCP resume reports an approved call's own failure|Cloud refuses to remove an organization while one of its app workflows runs|Removing an organization revokes the refresh token|Cloud v1 session handoff|Cloud accepts MCP requests v1 forwards|Cloud validates a v1 WorkOS API key|Hosted MCP operation and bearer-check spans name|Hosted management API request spans name only|Hosted request spans record the client, the credential|Cloud's gateway names an authenticated MCP request's organization|A person deletes their own user|Cloud invitations left pending after their inviter lost|On Cloud a slow tool call log write|A Cloud scenario's clean-up returns once its organization's removal is accepted|The end-of-run removal check answers each look within its request limit|The end-of-run removal check asks again after a dropped request|The end-of-run removal check keeps waiting for a removal recorded done|a run's sleep whose engine call failed is called again|a completed MCP app call cancels nothing|an MCP app call given up in flight|ten concurrent MCP app calls behind six connections",
   },
   // Cloud's hosts: role hosts, the edge and sign-in on `app.`. Run in `cloud-product`, their
   // load kept the team installation's workflow span from arriving within its 30-second wait, so
@@ -333,6 +333,20 @@ const jobs = {
     runner: 6,
     cloudMode: "empty-release-notes",
     pattern: "Cloud built with an empty notes file",
+  },
+  // And these two with notes the deploy's notes script writes from commit messages: only fixes, or
+  // a feature newest.
+  "cloud-fix-release-notes": {
+    target: "cloud",
+    runner: 5,
+    cloudMode: "fix-release-notes",
+    pattern: "Cloud built with notes that are all fixes",
+  },
+  "cloud-feature-release-notes": {
+    target: "cloud",
+    runner: 2,
+    cloudMode: "feature-release-notes",
+    pattern: "Cloud built with notes whose newest is a feature",
   },
 } as const satisfies Record<
   string,
@@ -803,11 +817,13 @@ const suiteConfigs: Record<string, () => Promise<unknown>> = {
   "ci-repeat.config.ts": () => import("./ci-repeat.config.ts"),
   "collector-job.config.ts": () => import("./collector-job.config.ts"),
   "conflict-markers.config.ts": () => import("./conflict-markers.config.ts"),
+  "coverage-unreadable.config.ts": () => import("./coverage-unreadable.config.ts"),
   "macos-staple.config.ts": () => import("./macos-staple.config.ts"),
   "npm-channel.config.ts": () => import("./npm-channel.config.ts"),
   "publish-guard.config.ts": () => import("./publish-guard.config.ts"),
   "workflow-caches.config.ts": () => import("./workflow-caches.config.ts"),
   "telemetry-event-lifetime.config.ts": () => import("./telemetry-event-lifetime.config.ts"),
+  "outbound-routes.config.ts": () => import("./outbound-routes.config.ts"),
   "cli-startup-imports.config.ts": () => import("./cli-startup-imports.config.ts"),
   "process-output-exit.config.ts": () => import("./process-output-exit.config.ts"),
   "cloud-deploy-origin.config.ts": () => import("./cloud-deploy-origin.config.ts"),
@@ -845,6 +861,7 @@ const suiteConfigs: Record<string, () => Promise<unknown>> = {
   "removal-evidence.config.ts": () => import("./removal-evidence.config.ts"),
   "request-failures.config.ts": () => import("./request-failures.config.ts"),
   "run-retention.config.ts": () => import("./run-retention.config.ts"),
+  "snapshot-updates.config.ts": () => import("./snapshot-updates.config.ts"),
   "standalone-lockdown.config.ts": () => import("./standalone-lockdown.config.ts"),
   "subrequest-depth.config.ts": () => import("./subrequest-depth.config.ts"),
   "test-stage-branch.config.ts": () => import("./test-stage-branch.config.ts"),
@@ -1647,16 +1664,22 @@ NodeRuntime.runMain(
         ),
       );
     // The save scenarios, from the same comparison: a change to any file a save runs or reads.
-    // How many files the save path has, when it was read; the summary reports it.
+    // A comparison that lists no file changes none of them, so the save path is not read then: no
+    // file of it can be in an empty list, and what a read could fail on (a missing root, an import
+    // it cannot follow) is then as it is on main, whose own run read it. A renamed, deleted or
+    // re-moded file is listed (by both names when renamed), so only a comparison with no entry at
+    // all skips the read. Most select processes the ci-selection cases start compare nothing.
+    // How many files the save path has, when it was read; the summary reports it, or the skip.
     let savePathSize: number | undefined;
     const saveChanged =
       compared === undefined ||
       compared.length >= compareFileLimit ||
-      (yield* savePathFiles.pipe(
-        Effect.tap((files) => Effect.sync(() => (savePathSize = files.size))),
-        Effect.map((files) => compared.some((file) => files.has(file))),
-        Effect.mapError((error) => new SelectionFailed({ message: error.message })),
-      ));
+      (compared.length > 0 &&
+        (yield* savePathFiles.pipe(
+          Effect.tap((files) => Effect.sync(() => (savePathSize = files.size))),
+          Effect.map((files) => compared.some((file) => files.has(file))),
+          Effect.mapError((error) => new SelectionFailed({ message: error.message })),
+        )));
     // The MCP search and session scenarios, from the same comparison (e2e/mcp-search-guard.ts): a
     // floor under the block for the code they run through, in their own Cloud jobs.
     const searchChanged =
@@ -1948,9 +1971,14 @@ NodeRuntime.runMain(
             `A file MCP search or sessions run through differs from main (e2e/mcp-search-guard.ts), so these Cloud scenarios run too: ${[...mcpSearchTitles].join("; ")}`,
           ]
         : []),
-      ...(savePathSize === undefined
-        ? []
-        : ["", `The save path (e2e/save-path.ts) has ${savePathSize} files.`]),
+      ...(savePathSize !== undefined
+        ? ["", `The save path (e2e/save-path.ts) has ${savePathSize} files.`]
+        : compared?.length === 0
+          ? [
+              "",
+              "The save path (e2e/save-path.ts) was not read: the comparison lists no changed file, so no file a save runs or reads changed.",
+            ]
+          : []),
       "",
       ...(lanes === undefined
         ? ["Release lanes: none on main, where Executor releases runs the full matrix after merge."]

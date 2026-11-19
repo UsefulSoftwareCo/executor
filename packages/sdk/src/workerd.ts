@@ -37,5 +37,9 @@ export {
   type AppEgress,
   type CredentialOutbound,
 } from "./implementation/credential-handles.ts";
-export { NetworkUnreachable, networkUnreachableResponse } from "./implementation/app-network.ts";
+export {
+  NetworkUnreachable,
+  networkUnreachableResponse,
+  outboundGroupHeader,
+} from "./implementation/app-network.ts";
 export { HostApiCheck } from "./contracts/host-api.ts";

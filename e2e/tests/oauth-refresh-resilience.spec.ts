@@ -1115,7 +1115,7 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
             renewed,
           );
           expect(renewedFailure.message).toContain(
-            "Executor has renewed the account’s access, but did not repeat this call automatically.",
+            "Access was restored. This call was not repeated; earlier steps may have changed data. Check the result and retry only if the user chooses.",
           );
           expectUnknownOutcome(renewedFailure.recovery);
           assertPrivate(renewed.body);

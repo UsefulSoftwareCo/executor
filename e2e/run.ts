@@ -12,6 +12,8 @@ import { hostSlot } from "./host-slot.ts";
 import { runSuite } from "./sdk/suite.ts";
 import { exactly, split } from "./scenario-parts.ts";
 import { scenariosForSuite } from "./test-plan.ts";
+import { cloudNotesSources } from "./support/cloud-release-notes.ts";
+import { namesNoScenario, unnamedRefusal } from "./snapshot-updates.ts";
 
 /**
  * Self-host and local workers each run their own product server, PGlite database and browser, which
@@ -67,15 +69,29 @@ const command = Command.make(
     removalRevocationBudget: Flag.Boolean("removal-revocation-budget").pipe(
       Flag.withDefault(false),
     ),
-    // Start managed Cloud with its dashboard built from an empty notes file, and run only the
-    // scenarios that show it.
-    emptyReleaseNotes: Flag.Boolean("empty-release-notes").pipe(Flag.withDefault(false)),
+    // Start managed Cloud with its dashboard built from other notes than the fixed ones (an empty
+    // file, only fixes, or a feature newest; `CloudNotesSource`), and run only the scenarios that
+    // show them.
+    releaseNotes: Flag.Literals("release-notes", cloudNotesSources).pipe(Flag.optional),
     // Run one part of a local or self-host run; see `partPattern`.
     part: Flag.String("part").pipe(Flag.optional),
+    // Record the snapshots of the scenarios --test-name names, instead of failing on missing,
+    // empty or changed ones. Refused in CI (e2e/snapshot-updates.ts).
+    updateSnapshots: Flag.Boolean("update-snapshots").pipe(Flag.withDefault(false)),
   },
   // Outside CI, one run per machine: see host-slot.ts.
   ({ part, ...flags }) =>
     Effect.gen(function* () {
+      // Read before `--part` turns an empty --test-name into a pattern naming every scenario.
+      if (flags.updateSnapshots && namesNoScenario(flags.name))
+        return yield* Effect.die(new Error(unnamedRefusal));
+      // A part is a share of CI's split of a run, and CI records no snapshot.
+      if (flags.updateSnapshots && Option.isSome(part))
+        return yield* Effect.die(
+          new Error(
+            "--update-snapshots records the scenarios --test-name names, not a part of a run: leave out --part.",
+          ),
+        );
       const name = Option.isNone(part)
         ? flags.name
         : flags.target === "local" || flags.target === "self-host"
@@ -86,6 +102,7 @@ const command = Command.make(
         ...flags,
         name,
         workers: Option.getOrUndefined(flags.workers),
+        releaseNotes: Option.getOrUndefined(flags.releaseNotes),
         defaultWorkers: available,
       });
     }).pipe(Effect.scoped),

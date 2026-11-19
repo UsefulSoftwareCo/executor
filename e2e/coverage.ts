@@ -32,6 +32,7 @@
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Config, Console, Effect, FileSystem, Option, Path, Schema } from "effect";
+import { createHash } from "node:crypto";
 import { scenarios } from "./test-plan.ts";
 
 class CoverageFailed extends Schema.TaggedError<CoverageFailed>()("CoverageFailed", {
@@ -282,11 +283,275 @@ const scriptLength = (functions: typeof V8Functions.Type) =>
     ),
   );
 
+/**
+ * What `collect` says about a JSON file it cannot decode, in place of the file itself: its path,
+ * size, modification time and SHA-256, the parser's or the schema's error with the byte at which
+ * the file stops being JSON, and an excerpt of its bytes.
+ *
+ * Every JSON file `collect` decodes comes here when it fails: each scenario's `scenario.json` and
+ * raw coverage reports (V8's `*.json`, Chromium's `browser-*.json`, workerd's `workerd-*.json`),
+ * which the harness writes; the dashboards' source maps (`*.js.map` beside their built bundles
+ * under `apps/`); the app framework's `packages/apps/dist/runtime.json` and its map; and the host
+ * bundle and its map that a workerd report names by path (`bundle`). They hold source paths,
+ * offsets and source code, not secrets, but that last path is read out of a report, so it could
+ * name any file. So the record shows few of its bytes. The rule: a file of at most
+ * `excerptBytes` bytes is shown whole; of a larger one, `excerptWindow` bytes from its start and
+ * from its end and twice that around the failing byte when the parser names one, never more than
+ * `excerptBytes` in all. Every byte other than printable ASCII is escaped, in the path too, and
+ * the path and the error are cut to a fixed length. A position V8's own message names counts
+ * characters of the decoded text; the record's `at byte` counts the file's bytes.
+ */
+const excerptWindow = 64;
+const excerptBytes = 4 * excerptWindow;
+/** The longest error message kept, after escaping, as a schema's message can quote a value. */
+const messageLength = 240;
+/** The most bytes of a path kept: its start and, as the file's name is there, more of its end. */
+const pathBytes = 256;
+
+/** Each byte as printable ASCII, a backslash doubled, or else `\xNN`. */
+const escapedBytes = (bytes: Uint8Array) =>
+  Array.from(bytes, (byte) =>
+    byte === 0x5c
+      ? "\\\\"
+      : byte >= 0x20 && byte < 0x7f
+        ? String.fromCharCode(byte)
+        : `\\x${byte.toString(16).padStart(2, "0")}`,
+  );
+const escapeBytes = (bytes: Uint8Array) => escapedBytes(bytes).join("");
+
+const escapeText = (text: string, limit: number) => {
+  const escaped = escapeBytes(Buffer.from(text, "utf8"));
+  return escaped.length <= limit ? escaped : `${escaped.slice(0, limit)}... (cut)`;
+};
+
+/** A path's bytes escaped, its middle cut when it has more than `pathBytes`. */
+const escapePath = (file: string) => {
+  const bytes = escapedBytes(Buffer.from(file, "utf8"));
+  if (bytes.length <= pathBytes) return bytes.join("");
+  const head = pathBytes / 4;
+  return `${bytes.slice(0, head).join("")}...(cut)...${bytes.slice(bytes.length - (pathBytes - head)).join("")}`;
+};
+
+/** The text a JSON file's bytes decode to, as `FileSystem.readFileString` decodes them. */
+const decodeUtf8 = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
+
+/** V8's message without the input it quotes (`Unexpected token 'x', "..." is not valid JSON`). */
+const withoutQuotedInput = (message: string) =>
+  message.replace(
+    /^(Unexpected token '.*?'), (?:\.\.\.)?".*"(?:\.\.\.)? is not valid JSON$/su,
+    "$1, not valid JSON",
+  );
+
+/**
+ * The first byte of `bytes` at which they stop being a JSON text, `bytes.length` when they end
+ * early, or undefined when they are one. Counted in the file's bytes, never in decoded text: a
+ * byte that is not UTF-8 decodes to a replacement character, which is valid inside a string and
+ * nowhere else, and that is how it is judged here. A leading byte order mark is skipped, as the
+ * decoder drops it. One pass, without backtracking, whatever the file holds.
+ */
+const firstInvalidByte = (bytes: Uint8Array): number | undefined => {
+  const size = bytes.length;
+  let at = bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf ? 3 : 0;
+  const isDigit = (byte: number | undefined) => byte !== undefined && byte >= 0x30 && byte <= 0x39;
+  const skipSpace = () => {
+    while (at < size) {
+      const byte = bytes[at];
+      if (byte !== 0x20 && byte !== 0x09 && byte !== 0x0a && byte !== 0x0d) return;
+      at++;
+    }
+  };
+  /** Past a string starting at `at`; false with `at` at the byte that ends it wrongly. */
+  const string = () => {
+    at++;
+    while (at < size) {
+      const byte = bytes[at]!;
+      if (byte === 0x22) {
+        at++;
+        return true;
+      }
+      if (byte < 0x20) return false;
+      if (byte === 0x5c) {
+        const escape = bytes[at + 1];
+        if (escape === undefined) {
+          at = size;
+          return false;
+        }
+        if (escape === 0x75) {
+          at += 2;
+          for (let digit = 0; digit < 4; digit++, at++) {
+            const hex = bytes[at];
+            if (hex === undefined) return false;
+            const isHex =
+              isDigit(hex) || (hex >= 0x41 && hex <= 0x46) || (hex >= 0x61 && hex <= 0x66);
+            if (!isHex) return false;
+          }
+          continue;
+        }
+        // `"`, `\`, `/`, b, f, n, r, t
+        if (![0x22, 0x5c, 0x2f, 0x62, 0x66, 0x6e, 0x72, 0x74].includes(escape)) {
+          at++;
+          return false;
+        }
+        at += 2;
+        continue;
+      }
+      at++;
+    }
+    return false;
+  };
+  const digits = () => {
+    if (!isDigit(bytes[at])) return false;
+    while (isDigit(bytes[at])) at++;
+    return true;
+  };
+  /** Past a number, `true`, `false` or `null` starting at `at`; false where it goes wrong. */
+  const scalar = () => {
+    const first = bytes[at];
+    if (first === 0x2d || isDigit(first)) {
+      if (first === 0x2d) at++;
+      if (bytes[at] === 0x30) at++;
+      else if (!digits()) return false;
+      if (bytes[at] === 0x2e) {
+        at++;
+        if (!digits()) return false;
+      }
+      if (bytes[at] === 0x65 || bytes[at] === 0x45) {
+        at++;
+        if (bytes[at] === 0x2b || bytes[at] === 0x2d) at++;
+        if (!digits()) return false;
+      }
+      return true;
+    }
+    for (const word of ["true", "false", "null"])
+      if (first === word.charCodeAt(0)) {
+        for (let index = 0; index < word.length; index++, at++)
+          if (bytes[at] !== word.charCodeAt(index)) return false;
+        return true;
+      }
+    return false;
+  };
+  const closers: Array<number> = [];
+  let expecting: "value" | "first value" | "key" | "first key" | "after" = "value";
+  while (true) {
+    skipSpace();
+    const next = bytes[at];
+    const closer = closers.at(-1);
+    if (expecting === "after") {
+      if (closer === undefined) return at < size ? at : undefined;
+      if (next === 0x2c) expecting = closer === 0x5d ? "value" : "key";
+      else if (next === closer) closers.pop();
+      else return at;
+      at++;
+    } else if (
+      (expecting === "first value" && next === 0x5d) ||
+      (expecting === "first key" && next === 0x7d)
+    ) {
+      closers.pop();
+      at++;
+      expecting = "after";
+    } else if (expecting === "key" || expecting === "first key") {
+      if (next !== 0x22 || !string()) return Math.min(at, size);
+      skipSpace();
+      if (bytes[at] !== 0x3a) return at;
+      at++;
+      expecting = "value";
+    } else if (next === 0x5b || next === 0x7b) {
+      closers.push(next === 0x5b ? 0x5d : 0x7d);
+      at++;
+      expecting = next === 0x5b ? "first value" : "first key";
+    } else if (next === 0x22 ? string() : scalar()) expecting = "after";
+    else return Math.min(at, size);
+  }
+};
+
+/** The record `collect` fails with for a JSON file it cannot decode; see `excerptBytes`. */
+const jsonFailureRecord = (failure: {
+  readonly file: string;
+  readonly bytes: Uint8Array;
+  readonly modified: string | undefined;
+  readonly parser: string | undefined;
+  readonly schema: string | undefined;
+}) => {
+  const { bytes } = failure;
+  const size = bytes.length;
+  // Never past the file's end, so the window around it is always within the file.
+  const found = failure.parser === undefined ? undefined : firstInvalidByte(bytes);
+  const offset = found === undefined ? undefined : Math.min(found, size);
+  const windows: Array<[number, number]> = [];
+  if (size <= excerptBytes) windows.push([0, size]);
+  else {
+    windows.push([0, excerptWindow]);
+    if (offset !== undefined)
+      windows.push([Math.max(0, offset - excerptWindow), Math.min(size, offset + excerptWindow)]);
+    windows.push([size - excerptWindow, size]);
+  }
+  const merged: Array<[number, number]> = [];
+  for (const [start, end] of windows.sort(([a], [b]) => a - b)) {
+    const last = merged.at(-1);
+    if (last !== undefined && start <= last[1]) last[1] = Math.max(last[1], end);
+    else merged.push([start, end]);
+  }
+  const error =
+    failure.parser !== undefined
+      ? `JSON.parse: ${escapeText(failure.parser, messageLength)}; at byte ${offset ?? "unknown"}`
+      : `schema: ${escapeText(failure.schema ?? "", messageLength)}`;
+  return [
+    `${escapePath(failure.file)} could not be read as JSON (${error}).`,
+    `  ${size} bytes, sha256 ${createHash("sha256").update(bytes).digest("hex")}, modified ${failure.modified ?? "unknown"}.`,
+    `  Excerpt (the whole file up to ${excerptBytes} bytes, else at most ${excerptBytes} of them; other than printable ASCII escaped as \\xNN, a backslash as \\\\):`,
+    ...merged.map(
+      ([start, end]) => `  bytes ${start}-${end}: ${escapeBytes(bytes.subarray(start, end))}`,
+    ),
+  ].join("\n");
+};
+
 const collect = (out: string, directories: ReadonlyArray<string>) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const root = path.resolve(".");
+    /**
+     * `bytes`, read from `file`, decoded as JSON. Bytes that do not decode fail the step with
+     * `jsonFailureRecord` of them, which never copies the file.
+     */
+    const decodeJson =
+      <S extends Schema.Top>(schema: S, file: string) =>
+      (bytes: Uint8Array) =>
+        Effect.try({
+          try: (): unknown => JSON.parse(decodeUtf8(bytes)),
+          catch: (error) => (error instanceof Error ? error.message : String(error)),
+        }).pipe(
+          Effect.matchEffect({
+            onFailure: (message) =>
+              unreadableJson(file, bytes, { parser: withoutQuotedInput(message) }),
+            onSuccess: (value) =>
+              Schema.decodeUnknownEffect(schema)(value).pipe(
+                Effect.catch((error) => unreadableJson(file, bytes, { schema: error.message })),
+              ),
+          }),
+        );
+    /** Fails the step with `jsonFailureRecord` of `file`, whose bytes were `bytes`. */
+    const unreadableJson = (
+      file: string,
+      bytes: Uint8Array,
+      error: { readonly parser?: string; readonly schema?: string },
+    ) =>
+      Effect.gen(function* () {
+        const info = yield* fs.stat(file).pipe(Effect.option);
+        return yield* new CoverageFailed({
+          message: jsonFailureRecord({
+            file: path.relative(root, file),
+            bytes,
+            modified: Option.getOrUndefined(
+              Option.flatMap(info, ({ mtime }) => mtime),
+            )?.toISOString(),
+            parser: error.parser,
+            schema: error.schema,
+          }),
+        });
+      });
+    const readJson = <S extends Schema.Top>(schema: S, file: string) =>
+      fs.readFile(file).pipe(Effect.flatMap(decodeJson(schema, file)));
     const sources = new Map<string, string | undefined>();
     const source = (file: string) => sources.get(file);
     const fileOf = new Map(Object.values(scenarios).map(({ title, file }) => [title, file]));
@@ -326,9 +591,7 @@ const collect = (out: string, directories: ReadonlyArray<string>) =>
         if (workerdBundles.has(`${key}\0`)) return;
         workerdBundles.set(`${key}\0`, undefined);
         const texts = yield* modules;
-        const maps = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(SourceMaps))(
-          yield* fs.readFileString(mapsFile),
-        );
+        const maps = yield* readJson(SourceMaps, mapsFile);
         for (const [name, map] of Object.entries(maps)) {
           const text = texts.get(name);
           if (text !== undefined)
@@ -356,30 +619,28 @@ const collect = (out: string, directories: ReadonlyArray<string>) =>
       });
     for (const directory of directories) yield* walk(path.resolve(directory));
     for (const directory of scenarioDirectories) {
-      const { target, title } = yield* Schema.decodeUnknownEffect(
-        Schema.fromJsonString(Schema.Struct({ target: Schema.String, title: Schema.String })),
-      )(yield* fs.readFileString(path.join(directory, "scenario.json")));
+      const { target, title } = yield* readJson(
+        Schema.Struct({ target: Schema.String, title: Schema.String }),
+        path.join(directory, "scenario.json"),
+      );
       const found: FileLines = new Map();
       for (const generation of yield* fs.readDirectory(directory)) {
         const reports = path.join(directory, generation);
         if ((yield* fs.stat(reports)).type !== "Directory") continue;
         for (const report of yield* fs.readDirectory(reports)) {
-          const text = yield* fs.readFileString(path.join(reports, report));
-          if (report === "lcov.info") readLcov(text, found);
+          const file = path.join(reports, report);
+          const bytes = yield* fs.readFile(file);
+          if (report === "lcov.info") readLcov(decodeUtf8(bytes), found);
           else if (report.startsWith("browser-")) {
-            const coverage = yield* Schema.decodeUnknownEffect(
-              Schema.fromJsonString(BrowserCoverage),
-            )(text);
+            const coverage = yield* decodeJson(BrowserCoverage, file)(bytes);
             for (const { url } of coverage) {
               const name = path.basename(new URL(url).pathname);
-              const file = bundleFiles.get(name);
-              if (file === undefined || bundles.has(name)) continue;
+              const bundle = bundleFiles.get(name);
+              if (bundle === undefined || bundles.has(name)) continue;
               bundles.set(name, {
-                text: yield* fs.readFileString(file),
-                map: yield* Schema.decodeUnknownEffect(Schema.fromJsonString(SourceMap))(
-                  yield* fs.readFileString(`${file}.map`),
-                ),
-                directory: path.dirname(file),
+                text: yield* fs.readFileString(bundle),
+                map: yield* readJson(SourceMap, `${bundle}.map`),
+                directory: path.dirname(bundle),
               });
             }
             readBrowser(
@@ -390,13 +651,10 @@ const collect = (out: string, directories: ReadonlyArray<string>) =>
               found,
             );
           } else if (report.startsWith("workerd-")) {
-            const coverage = yield* Schema.decodeUnknownEffect(
-              Schema.fromJsonString(WorkerdCoverage),
-            )(text);
+            const coverage = yield* decodeJson(WorkerdCoverage, file)(bytes);
             yield* loadModules(
               coverage.bundle,
-              fs.readFileString(coverage.bundle).pipe(
-                Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(BundleModules))),
+              readJson(BundleModules, coverage.bundle).pipe(
                 Effect.map(
                   (modules) =>
                     new Map(
@@ -410,8 +668,7 @@ const collect = (out: string, directories: ReadonlyArray<string>) =>
             );
             yield* loadModules(
               framework,
-              fs.readFileString(framework).pipe(
-                Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(FrameworkModules))),
+              readJson(FrameworkModules, framework).pipe(
                 Effect.map(({ server }) => new Map(Object.entries(server))),
               ),
               `${framework}.map`,
@@ -428,17 +685,15 @@ const collect = (out: string, directories: ReadonlyArray<string>) =>
               found,
             );
           } else if (report.endsWith(".json")) {
-            const coverage = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(V8Coverage))(
-              text,
-            );
+            const coverage = yield* decodeJson(V8Coverage, file)(bytes);
             for (const { url } of coverage.result) {
               if (!url.startsWith(`file://${root}/`)) continue;
-              const file = decodeURIComponent(url.slice(`file://${root}/`.length));
-              if (isProduct(file) && !sources.has(file))
+              const product = decodeURIComponent(url.slice(`file://${root}/`.length));
+              if (isProduct(product) && !sources.has(product))
                 sources.set(
-                  file,
+                  product,
                   yield* fs
-                    .readFileString(path.join(root, file))
+                    .readFileString(path.join(root, product))
                     .pipe(Effect.orElseSucceed(() => undefined)),
                 );
             }

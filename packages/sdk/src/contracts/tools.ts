@@ -1469,11 +1469,11 @@ export const AppProviderFailed = UserFacingError.define({
         case "unauthorized":
           if (credentialsRenewed === true)
             return {
-              title: "Access renewed; request not repeated",
-              description: `${service} rejected the credentials${target}${context}.${reported} Executor has renewed the account’s access, but did not repeat this call automatically.`,
+              title: "Access restored; call not repeated",
+              description: `${service} rejected the credentials${target}${context}.${reported} Access was restored. This call was not repeated; earlier steps may have changed data. Check the result and retry only if the user chooses.`,
               recovery: {
-                action: "The renewed access is used from now on.",
-                instructions: `Executor renewed the account’s access but did not repeat this call. Renewal does not establish whether an earlier part of the call changed data. ${instructions}`,
+                action: "Check the result and retry only if the user chooses.",
+                instructions: `Access was restored, but this call was not repeated, and earlier steps of it may have changed data. Check what it did before anything else, and retry only if the user chooses. ${instructions}`,
               },
               retryable: false,
             };

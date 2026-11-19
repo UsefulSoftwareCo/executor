@@ -29,10 +29,11 @@ import {
   type Executor,
   type OwnerId,
   type OAuthClientSelection,
+  type JsonObject,
   StorageError,
 } from "@executor-js/sdk/core";
 import { connectionClient, usableOAuthClients } from "./oauth-clients.ts";
-import { Effect, Schema } from "effect";
+import { Effect, Option, Redacted, Schema } from "effect";
 import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import { HttpApiBuilder } from "effect/http-api";
 import { HostedApi } from "../contracts/api.ts";
@@ -40,12 +41,17 @@ import {
   BearerAuthentication,
   SessionAuthentication,
   CurrentPrincipal,
+  CurrentUserId,
 } from "../contracts/auth.ts";
-import { OrganizationSlug, organizationOwner } from "../contracts/organization.ts";
+import {
+  OrganizationReference,
+  OrganizationSlug,
+  organizationOwner,
+} from "../contracts/organization.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
 import { currentOrganizationSlug, currentOwner, ownedConnection } from "./access.ts";
 import { appLinkApps, appLinkedAccounts, callerLinkedAccounts } from "./app-accounts.ts";
-import { AccountLinkedToApp } from "../contracts/accounts.ts";
+import { AccountLinkedToApp, ExecutorKeyRefused } from "../contracts/accounts.ts";
 import { visibleAccountRefusal } from "./webhooks.ts";
 import { RequirementMismatch } from "../contracts/app-accounts.ts";
 
@@ -262,6 +268,61 @@ export const getConnection = (
     yield* checkConnection(connection);
     return connection;
   });
+const ExecutorKeyFields = Schema.Struct({ token: Schema.String, organization: Schema.String });
+/**
+ * An "Executor API key" account for the organization's built-in Executor app is checked before it
+ * is saved, by the API's own bearer check with exactly what the app sends: the token as its
+ * bearer, and the Organization as the path's organization and its `X-Executor-Organization`
+ * header. An account every call of which would be refused is never shown as connected.
+ */
+const checkExecutorKey = (owner: OwnerId, app: AppId, fields: Redacted.Redacted<JsonObject>) =>
+  Effect.gen(function* () {
+    if (!owner.startsWith("organization:")) return;
+    const sql = yield* policyDatabase;
+    const rows = yield* sql`select id from "organization"
+      where id = ${owner.slice("organization:".length)}
+      and metadata::jsonb -> 'executorDefaults' ->> 'app' = ${app}`.pipe(
+      Effect.mapError(() => new StorageError()),
+    );
+    if (rows.length === 0) return;
+    const entered = Option.getOrUndefined(
+      Schema.decodeUnknownOption(ExecutorKeyFields)(Redacted.value(fields)),
+    );
+    // The provider's own field validation reports missing fields.
+    if (entered === undefined) return;
+    const organization = Option.getOrUndefined(
+      Schema.decodeUnknownOption(OrganizationReference)(entered.organization),
+    );
+    if (organization === undefined)
+      return yield* new ExecutorKeyRefused({ reason: "organization" });
+    const api = yield* BearerAuthentication;
+    yield* api
+      .authenticate(
+        new Headers({
+          authorization: `Bearer ${entered.token}`,
+          "x-executor-organization": organization,
+        }),
+        organization,
+      )
+      .pipe(
+        Effect.catchTags({
+          Unauthorized: () => new ExecutorKeyRefused({ reason: "token" }),
+          // The name of one of the member's own organizations is the usual mistake; say so.
+          OrganizationForbidden: () =>
+            Effect.gen(function* () {
+              const user = yield* CurrentUserId;
+              const named =
+                yield* sql`select o.id from "organization" o join member m on m."organizationId" = o.id
+                where m."userId" = ${user ?? null} and o.name = ${entered.organization} limit 1`.pipe(
+                  Effect.mapError(() => new StorageError()),
+                );
+              return yield* new ExecutorKeyRefused({
+                reason: named.length === 0 ? "unreachable" : "organization",
+              });
+            }),
+        }),
+      );
+  });
 /** Save credentials and complete the connection's selected app requirement. */
 export const submitConnection = (
   owner: OwnerId,
@@ -269,7 +330,10 @@ export const submitConnection = (
 ) =>
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
-    yield* checkConnection(yield* ownedConnection(executor, owner, input.connection));
+    const connection = yield* ownedConnection(executor, owner, input.connection);
+    yield* checkConnection(connection);
+    if (input.method === "apiKey")
+      yield* checkExecutorKey(owner, connection.target.app, input.fields);
     return yield* executor.accountConnections
       .submit({ ...input, owner })
       .pipe(Effect.tap(() => Effect.flatten(ScheduleWakeup)));
@@ -348,7 +412,9 @@ export const hostedAccountHandlers = HttpApiBuilder.group(HostedApi, "accounts",
       )
       .handle("submit", ({ params, payload }) =>
         Effect.flatMap(currentOwner, (owner) =>
-          submitConnection(owner, { connection: params.connection, ...payload }),
+          submitConnection(owner, { connection: params.connection, ...payload }).pipe(
+            Effect.provideService(BearerAuthentication, api),
+          ),
         ),
       )
       .handle("startOAuth", ({ params, payload }) =>

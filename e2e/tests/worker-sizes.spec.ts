@@ -514,7 +514,9 @@ interface GitHubAnswers {
   >;
 }
 
-const stubGh = `#!/usr/bin/env node
+// The stand-in runs on bun, which starts in about two thirds of the time node takes: the skip
+// check's cases start it about 500 times.
+const stubGh = `#!/usr/bin/env bun
 const fs = require("node:fs");
 const path = require("node:path");
 const answers = JSON.parse(fs.readFileSync(path.join(__dirname, "answers.json"), "utf8"));
@@ -1279,14 +1281,15 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
 
   /** A `skip` layer `lower` at `head`, its stack ending on `bottom`, and one layer above. */
   const lowerHead = sha("c");
-  // A thousandth of the rule's time: a 240-second bound takes a quarter of a second.
+  // The rule's waits take no time of the clock: the check counts them and sleeps none, so a
+  // 3000-second bound costs only the looks that reach it.
   /** A skip layer's check, as a draft's unless `ready`: a ready one is enforced on merge gates. */
   const skipLayer = (bottom = "main", ready = false) => ({
     HEAD_REF: "lower",
     HEAD_SHA: lowerHead,
     BASELINE_BRANCH: bottom,
     GITHUB_RUN_ID: "500",
-    SKIP_ABOVE_TIME_SCALE: "0.001",
+    SKIP_ABOVE_TIME_SCALE: "0",
     LOWER_DRAFT: ready ? "false" : "true",
   });
   const upperHead = sha("d");
@@ -1336,12 +1339,71 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
           },
         });
         const ready = skipLayer("main", true);
-        // The ready top layer's full run passed: the skip layer passes, enforced.
-        const green = yield* baseline(
-          ["above"],
-          ready,
-          upper(gated("full"), jobs("success", "success")),
+        const oldFormats = [
+          record(lowerHead, `main@${sha("6")}`, ""),
+          record(lowerHead, `main@${sha("6")}`, "3", sha("e")),
+        ] as const;
+        // Each case is its own run of the check, with its own directory, stand-in gh and answers,
+        // so they run four at a time; each result is read below under its case's name. The run
+        // that waits out the testing bound makes 214 reads, a third of the scenario's, so it starts
+        // first.
+        const runs = yield* Effect.all(
+          {
+            running: baseline(["above"], ready, upper(gated("full"), jobs(null, null))),
+            green: baseline(["above"], ready, upper(gated("full"), jobs("success", "success"))),
+            narrowed: baseline(
+              ["above"],
+              ready,
+              upper(gated("narrowed"), jobs("success", "success")),
+            ),
+            draft: baseline(["above"], ready, upper(gated("draft"), jobs("success", "success"))),
+            red: baseline(["above"], ready, upper(gated("full"), jobs("success", "failure"))),
+            oldUnformatted: baseline(
+              ["above"],
+              ready,
+              upper(oldFormats[0], jobs("success", "success")),
+            ),
+            oldFormat3: baseline(
+              ["above"],
+              ready,
+              upper(oldFormats[1], jobs("success", "success")),
+            ),
+            stacked: baseline(["above"], ready, upper(gated("stack", "pass"))),
+            stackedFailed: baseline(["above"], ready, upper(gated("stack", "fail"))),
+            moved: baseline(
+              ["above"],
+              ready,
+              upper(gated("full").replace(`base ${lowerHead}`, `base ${sha("b")}`), {
+                ...jobs("success", "success"),
+                contains: { [`${lowerHead}...${sha("e")}`]: "diverged" },
+              }),
+            ),
+            observed: baseline(
+              ["above"],
+              skipLayer(),
+              upper(gated("draft"), jobs("success", "success")),
+            ),
+            draftAgain: baseline(["above"], ready, {
+              ...upper(gated("full"), jobs("success", "success")),
+              uppers: [{ number: 11, headRefOid: upperHead, isDraft: true }],
+            }),
+            stackedDraft: baseline(["above"], ready, {
+              ...upper(gated("stack", "pass")),
+              uppers: [{ number: 11, headRefOid: upperHead, isDraft: true }],
+            }),
+            paged: baseline(["above"], ready, {
+              ...upper(gated("full"), jobs("success", "success")),
+              matrixJobs: { "600": 120 },
+            }),
+            pagedRed: baseline(["above"], ready, {
+              ...upper(gated("full"), jobs("success", "failure")),
+              matrixJobs: { "600": 230 },
+            }),
+          },
+          { concurrency: 4 },
         );
+        // The ready top layer's full run passed: the skip layer passes, enforced.
+        const green = runs.green;
         expect(green.exitCode, green.log).toBe(0);
         expect(decided(green.log)).toMatchObject({
           mode: "enforce",
@@ -1350,18 +1412,10 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
         });
         expect(green.outputs.decision).toBe("pass");
         // So does the narrowing table's selection, which is what that layer merges on.
-        const narrowed = yield* baseline(
-          ["above"],
-          ready,
-          upper(gated("narrowed"), jobs("success", "success")),
-        );
+        const narrowed = runs.narrowed;
         expect(narrowed.exitCode, narrowed.log).toBe(0);
         // The review's case: the layer above ran a draft's selection. It fails the step.
-        const draft = yield* baseline(
-          ["above"],
-          ready,
-          upper(gated("draft"), jobs("success", "success")),
-        );
+        const draft = runs.draft;
         expect(draft.exitCode).not.toBe(0);
         expect(decided(draft.log)).toMatchObject({ mode: "enforce", decision: "fail" });
         expect(decided(draft.log)!.reason).toContain(
@@ -1369,57 +1423,38 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
         );
         expect(decided(draft.log)!.message).toContain("mark #11 ready for review (gh pr ready 11)");
         // A full run that failed, or one still running when the wait ends, fails it too.
-        const red = yield* baseline(
-          ["above"],
-          ready,
-          upper(gated("full"), jobs("success", "failure")),
-        );
+        const red = runs.red;
         expect(red.exitCode).not.toBe(0);
         expect(decided(red.log)!.reason).toContain(
           "ended with checks / check success and checks / e2e failure",
         );
-        const running = yield* baseline(["above"], ready, upper(gated("full"), jobs(null, null)));
+        const running = runs.running;
         expect(running.exitCode).not.toBe(0);
         expect(running.log).toContain("runs the full suite for a merge and has not finished");
         expect(decided(running.log)!.waited).toBeGreaterThanOrEqual(skipCheck.bounds.testing);
         // A record from before the rule, old format or format 3, proves no merge gate.
-        for (const text of [
-          record(lowerHead, `main@${sha("6")}`, ""),
-          record(lowerHead, `main@${sha("6")}`, "3", sha("e")),
-        ]) {
-          const old = yield* baseline(["above"], ready, upper(text, jobs("success", "success")));
+        for (const [text, old] of [
+          [oldFormats[0], runs.oldUnformatted],
+          [oldFormats[1], runs.oldFormat3],
+        ] as const) {
           expect(old.exitCode, text).not.toBe(0);
           expect(decided(old.log)!.reason).toContain("recorded no merge gate");
         }
         // A ready skip layer above passes on its own check having passed by this rule.
-        const stacked = yield* baseline(["above"], ready, upper(gated("stack", "pass")));
+        const stacked = runs.stacked;
         expect(stacked.exitCode, stacked.log).toBe(0);
-        const stackedFailed = yield* baseline(["above"], ready, upper(gated("stack", "fail")));
+        const stackedFailed = runs.stackedFailed;
         expect(stackedFailed.exitCode).not.toBe(0);
         // A merge gate on another head (this layer moved) never passes it.
-        const moved = yield* baseline(
-          ["above"],
-          ready,
-          upper(gated("full").replace(`base ${lowerHead}`, `base ${sha("b")}`), {
-            ...jobs("success", "success"),
-            contains: { [`${lowerHead}...${sha("e")}`]: "diverged" },
-          }),
-        );
+        const moved = runs.moved;
         expect(moved.exitCode).not.toBe(0);
         // A draft skip layer is only observed: the same draft run above is logged, and passes.
-        const observed = yield* baseline(
-          ["above"],
-          skipLayer(),
-          upper(gated("draft"), jobs("success", "success")),
-        );
+        const observed = runs.observed;
         expect(observed.exitCode, observed.log).toBe(0);
         expect(decided(observed.log)).toMatchObject({ mode: "observe", decision: "would pass" });
         // The layer above was marked ready, ran in full and passed, and is a draft again: its run
         // stays on its head, but a draft is not merged, so it gates nothing.
-        const draftAgain = yield* baseline(["above"], ready, {
-          ...upper(gated("full"), jobs("success", "success")),
-          uppers: [{ number: 11, headRefOid: upperHead, isDraft: true }],
-        });
+        const draftAgain = runs.draftAgain;
         expect(draftAgain.exitCode).not.toBe(0);
         expect(decided(draftAgain.log)).toMatchObject({ mode: "enforce", decision: "fail" });
         expect(decided(draftAgain.log)!.reason).toContain(
@@ -1427,27 +1462,18 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
         );
         expect(decided(draftAgain.log)!.message).toContain("gh pr ready 11");
         // Nor does a ready skip layer above that has become a draft.
-        const stackedDraft = yield* baseline(["above"], ready, {
-          ...upper(gated("stack", "pass")),
-          uppers: [{ number: 11, headRefOid: upperHead, isDraft: true }],
-        });
+        const stackedDraft = runs.stackedDraft;
         expect(stackedDraft.exitCode).not.toBe(0);
         // A full run lists more jobs than a page holds (96 E2E matrix jobs on 18 Nov), and its
         // required checks come last: they are read from the page they are on.
-        const paged = yield* baseline(["above"], ready, {
-          ...upper(gated("full"), jobs("success", "success")),
-          matrixJobs: { "600": 120 },
-        });
+        const paged = runs.paged;
         expect(paged.exitCode, paged.log).toBe(0);
         expect(decided(paged.log)).toMatchObject({ decision: "pass", rule: "gate" });
         expect(
           paged.calls.some((call) => call.includes("/runs/600/jobs?per_page=100&page=2")),
         ).toBe(true);
         // And a failure on that page fails it, as on the first.
-        const pagedRed = yield* baseline(["above"], ready, {
-          ...upper(gated("full"), jobs("success", "failure")),
-          matrixJobs: { "600": 230 },
-        });
+        const pagedRed = runs.pagedRed;
         expect(pagedRed.exitCode).not.toBe(0);
         expect(decided(pagedRed.log)!.reason).toContain(
           "ended with checks / check success and checks / e2e failure",
@@ -1964,12 +1990,35 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
     "no read can hang the check: each has its own time limit, and one that passes is no answer",
     () =>
       Effect.gen(function* () {
-        // Stalled twice, then answering: the check looks again and passes.
-        const stalled = yield* baseline(
-          ["above"],
-          skipLayer(),
-          upper(good, { hangs: { "/pulls?base=": 2 } }),
+        // Each case waits out real limits, not counted ones, and is its own run of the check with
+        // its own directory, stand-in gh and answers, so the four run at once: the scenario takes
+        // as long as the slowest, the look limit reached at each of seven looks, about 14 s.
+        const { stalled, download, slow, never } = yield* Effect.all(
+          {
+            stalled: baseline(
+              ["above"],
+              skipLayer(),
+              upper(good, { hangs: { "/pulls?base=": 2 } }),
+            ),
+            download: baseline(
+              ["above"],
+              skipLayer(),
+              upper(good, { hangs: { "run download": 1 } }),
+            ),
+            slow: baseline(
+              ["above"],
+              skipLayer(),
+              upper(good, { slow: { "/actions/runs": 700, "run download": 700 } }),
+            ),
+            never: baseline(
+              ["above"],
+              skipLayer(),
+              upper(good, { hangs: { "/pulls?base=": 1000 } }),
+            ),
+          },
+          { concurrency: "unbounded" },
         );
+        // Stalled twice, then answering: the check looks again and passes.
         expect(decided(stalled.log)).toMatchObject({ decision: "would pass" });
         expect(stalled.log).toContain("Waiting: the pull requests above could not be read (");
         // The read that stalled is named: each has its own limit (20 s; 1 s in this spec).
@@ -1977,27 +2026,12 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
           "repos/owner/repository/pulls?base=lower&state=open&per_page=100: no answer within 1 s",
         );
         // A download that stalls is no answer either.
-        const download = yield* baseline(
-          ["above"],
-          skipLayer(),
-          upper(good, { hangs: { "run download": 1 } }),
-        );
         expect(decided(download.log)).toMatchObject({ decision: "would pass" });
         // Reads that each answer in time but together outlast the look: the look itself has a limit
         // (a minute; 2 s in this spec), and ends as no answer.
-        const slow = yield* baseline(
-          ["above"],
-          skipLayer(),
-          upper(good, { slow: { "/actions/runs": 700, "run download": 700 } }),
-        );
         expect(decided(slow.log)).toMatchObject({ decision: "would fail" });
         expect(decided(slow.log)?.reason).toContain("the look got no answer within 2 s");
         // Never answering: the deadline decides, and the step ends.
-        const never = yield* baseline(
-          ["above"],
-          skipLayer(),
-          upper(good, { hangs: { "/pulls?base=": 1000 } }),
-        );
         expect(never.exitCode).toBe(0);
         expect(decided(never.log)).toMatchObject({ decision: "would fail" });
         expect(decided(never.log)?.reason).toContain("no answer within");
@@ -2427,6 +2461,288 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
       }),
   );
 
+  it.effect(
+    "a duplicate queued behind a run that is testing for a merge waits as long as the testing, and names the other run's answer",
+    () =>
+      Effect.sync(() => {
+        const lower = {
+          ref: "lower",
+          head: lowerHead,
+          bottom: "main",
+          repository: "o/r",
+          runId: "5",
+          ready: true,
+        };
+        const gated = skipCheck.parseRecord(
+          `format 4\npull request 11\nmerge tree ${sha("e")}\nbase ${lowerHead}\ntested ${sha("e")}\nselection x\nworker-growth y\nbaseline main@${sha("6")}\nabove none\ngate full\n`,
+        );
+        // A stack push sent the upper's event twice: run 2 tests the full suite, and run 1, its
+        // duplicate, waits its turn behind it, choosing nothing until run 2 has ended.
+        const look = (gates: { check?: string; e2e?: string }) =>
+          skipCheck.judge(
+            {
+              _tag: "Read",
+              uppers: [
+                {
+                  pull: 11,
+                  head: upperHead,
+                  draft: false,
+                  runs: [
+                    { id: 1, url: "u1", selectDone: false, waitingAbove: false },
+                    {
+                      id: 2,
+                      url: "u2",
+                      record: gated,
+                      selectDone: true,
+                      waitingAbove: false,
+                      gates,
+                    },
+                  ],
+                },
+              ],
+            },
+            lower,
+          );
+        // Still testing: the wait is the testing bound, so the full run's result still decides.
+        const testing = look({});
+        expect(testing).toMatchObject({ _tag: "Wait", bound: "testing" });
+        if (testing._tag !== "Wait") return;
+        expect(testing.why).toContain("u1, has not chosen what it tests yet");
+        expect(testing.why).toContain("u2, runs the full suite for a merge and has not finished");
+        expect(skipCheck.next(testing, lower, skipCheck.bounds.selecting + 1, 9)._tag).toBe("Poll");
+        // It passed: the layer passes on it, whatever its duplicate is doing.
+        expect(look({ check: "success", e2e: "success" })).toMatchObject({
+          _tag: "Pass",
+          run: "u2",
+        });
+        // It failed: it fails now, named with what to do, and so is the duplicate, which tests
+        // the head again in full once that run ends (only a pass is handed on, e2e/ci-repeat.ts).
+        const failed = look({ check: "success", e2e: "failure" });
+        expect(failed).toMatchObject({ _tag: "Fail" });
+        if (failed._tag !== "Fail") return;
+        expect(failed.why).toContain("ended with checks / check success and checks / e2e failure");
+        expect(failed.remedy).toContain("fix #11");
+        expect(failed.why).toContain("run u1 on the same head has not chosen yet");
+      }),
+  );
+
+  it.effect(
+    "a ready skip layer fails at once when a required check above has failed, passes only when both passed, and waits only while neither has failed and one runs",
+    () =>
+      Effect.sync(() => {
+        const lower = {
+          ref: "lower",
+          head: lowerHead,
+          bottom: "main",
+          repository: "o/r",
+          runId: "5",
+          ready: true,
+        };
+        const gated = skipCheck.parseRecord(
+          `format 4\npull request 11\nmerge tree ${sha("e")}\nbase ${lowerHead}\ntested ${sha("e")}\nselection x\nworker-growth y\nbaseline main@${sha("6")}\nabove none\ngate full\n`,
+        );
+        type Gates = { check?: string | undefined; e2e?: string | undefined };
+        const gatedRun = (id: number, gates: Gates) => ({
+          id,
+          url: `u${id}`,
+          record: gated,
+          selectDone: true,
+          waitingAbove: false,
+          gates,
+        });
+        const queuedDuplicate = { id: 9, url: "u9", selectDone: false, waitingAbove: false };
+        const look = (
+          runs: ReadonlyArray<skipCheck.RunSeen>,
+          more: ReadonlyArray<skipCheck.UpperSeen> = [],
+        ) =>
+          skipCheck.judge(
+            {
+              _tag: "Read",
+              uppers: [{ pull: 11, head: upperHead, draft: false, runs }, ...more],
+            },
+            lower,
+          );
+        /** The decision at the step's first look, and whether a wait still polls past a bound. */
+        const atOnce = (verdict: skipCheck.Verdict) => skipCheck.next(verdict, lower, 0, 0);
+        const failsAtOnce = (verdict: skipCheck.Verdict, named: ReadonlyArray<string>) => {
+          expect(verdict._tag).toBe("Fail");
+          const step = atOnce(verdict);
+          expect(step).toMatchObject({ _tag: "Done", decision: { decision: "fail", waited: 0 } });
+          if (step._tag !== "Done") return;
+          for (const text of named) expect(step.decision.reason).toContain(text);
+          expect(step.decision.message).toContain("fix #11");
+        };
+        const waitsTesting = (verdict: skipCheck.Verdict) => {
+          expect(verdict).toMatchObject({ _tag: "Wait", bound: "testing" });
+          expect(skipCheck.next(verdict, lower, skipCheck.bounds.selecting + 1, 9)._tag).toBe(
+            "Poll",
+          );
+          expect(skipCheck.next(verdict, lower, skipCheck.bounds.testing - 1, 9)._tag).toBe("Poll");
+          expect(skipCheck.next(verdict, lower, skipCheck.bounds.testing, 9)).toMatchObject({
+            _tag: "Done",
+            decision: { decision: "fail" },
+          });
+        };
+
+        // The review's case (18 Nov): `check` failed, or was cancelled, while `e2e` still runs,
+        // with a duplicate queued behind it. It used to wait the testing bound, 50 minutes, and
+        // fail saying only that the suite had not finished.
+        for (const ended of ["failure", "cancelled"])
+          for (const running of ["queued", "in_progress", undefined])
+            for (const runs of [
+              [gatedRun(2, { check: ended, e2e: running })],
+              [queuedDuplicate, gatedRun(2, { check: ended, e2e: running })],
+            ])
+              failsAtOnce(look(runs), ["u2", `checks / check ended ${ended}`, "cannot pass"]);
+
+        // Every state of each required check, against every state of the other: any that ended
+        // other than success fails at once; both successes pass; otherwise it is still testing.
+        const failedStates = ["failure", "cancelled", "skipped", "timed_out", "missing"];
+        const undecided = ["queued", "in_progress", undefined];
+        const states = ["success", ...failedStates, ...undecided];
+        for (const check of states)
+          for (const e2e of states) {
+            const verdict = look([gatedRun(2, { check, e2e })]);
+            const label = `check ${check}, e2e ${e2e}`;
+            if (failedStates.includes(check!) || failedStates.includes(e2e!)) {
+              expect(verdict._tag, label).toBe("Fail");
+              // Named as it ended, beside the other's outcome or its state while it runs.
+              const [name, state, other] = failedStates.includes(check!)
+                ? ["checks / check", check, e2e]
+                : ["checks / e2e", e2e, check];
+              failsAtOnce(verdict, [
+                undecided.includes(other) ? `${name} ended ${state} while` : `${name} ${state}`,
+              ]);
+            } else if (check === "success" && e2e === "success")
+              expect(verdict, label).toMatchObject({ _tag: "Pass", run: "u2", rule: "gate" });
+            else waitsTesting(verdict);
+          }
+        // Both ended badly: both are named.
+        failsAtOnce(look([gatedRun(2, { check: "failure", e2e: "cancelled" })]), [
+          "ended with checks / check failure and checks / e2e cancelled",
+        ]);
+
+        // The run above cancelled as a whole, with no other run on its head: nothing can pass it
+        // until someone runs it again, so it fails at once and names the run.
+        const cancelled = {
+          id: 3,
+          url: "u3",
+          selectDone: true,
+          waitingAbove: false,
+          cancelled: true,
+        };
+        const whole = look([cancelled]);
+        expect(whole._tag).toBe("Fail");
+        expect(atOnce(whole)).toMatchObject({ _tag: "Done", decision: { waited: 0 } });
+        if (whole._tag === "Fail") {
+          expect(whole.why).toContain("u3, was cancelled");
+          expect(whole.remedy).toContain("gh run rerun 3 --repo o/r");
+        }
+        // Beside a live run it counts for nothing: that run decides.
+        waitsTesting(look([gatedRun(4, {}), cancelled]));
+        expect(look([cancelled, gatedRun(4, { check: "success", e2e: "success" })])).toMatchObject({
+          _tag: "Pass",
+          run: "u4",
+        });
+
+        // The run above never started: no run on its head waits for one, briefly; a run that is
+        // queued and has not chosen waits the choosing bound. Neither is an outcome yet.
+        expect(look([])).toMatchObject({ _tag: "Wait", bound: "noRun" });
+        expect(look([queuedDuplicate])).toMatchObject({ _tag: "Wait", bound: "selecting" });
+
+        // Replaced by a newer run on the same head (newest first): a newer run still testing
+        // decides, whatever the older run's failure, and passes once it passes; in either order.
+        const old = gatedRun(1, { check: "failure", e2e: "failure" });
+        waitsTesting(look([gatedRun(2, { check: "in_progress" }), old]));
+        waitsTesting(look([old, gatedRun(2, { check: "in_progress" })]));
+        expect(look([gatedRun(2, { check: "success", e2e: "success" }), old])).toMatchObject({
+          _tag: "Pass",
+          run: "u2",
+        });
+        // Both failed: it fails at once, naming both.
+        failsAtOnce(look([gatedRun(2, { check: "success", e2e: "failure" }), old]), ["u2", "u1"]);
+        // A newer run still choosing does not hold a failed one: queued behind it, it starts only
+        // once that run ends. It is named, as it may yet pass.
+        failsAtOnce(look([queuedDuplicate, old]), ["u1", "run u9 on the same head has not chosen"]);
+
+        // Another pull request above that may still pass this layer keeps the wait, and the
+        // failure is named; only when every one above has failed does it fail at once.
+        const other = (runs: ReadonlyArray<skipCheck.RunSeen>) => ({
+          pull: 12,
+          head: sha("8"),
+          draft: false,
+          runs,
+        });
+        const mixed = look([old], [other([gatedRun(5, { e2e: "in_progress" })])]);
+        waitsTesting(mixed);
+        if (mixed._tag === "Wait")
+          expect(mixed.why).toContain("u1, ended with checks / check failure");
+        expect(
+          look([old], [other([gatedRun(5, { check: "success", e2e: "success" })])]),
+        ).toMatchObject({ _tag: "Pass", run: "u5" });
+        failsAtOnce(look([old], [other([gatedRun(5, { check: "cancelled" })])]), ["u1", "u5"]);
+      }),
+  );
+
+  it.effect(
+    "a ready skip layer reads a failed required check above at its first look, while the run still goes, and a run cancelled as a whole",
+    () =>
+      Effect.gen(function* () {
+        const gated = `format 4\npull request 11\nmerge tree ${sha("e")}\nbase ${lowerHead}\ntested ${sha("e")}\nselection x\nworker-growth y\nbaseline main@${sha("6")}\nabove none\ngate full\n`;
+        const ready = skipLayer("main", true);
+        const job = (name: string, state: string) =>
+          ["queued", "in_progress"].includes(state)
+            ? { name, status: state, conclusion: null }
+            : { name, status: "completed", conclusion: state };
+        const live = { [upperHead]: [{ id: 600, status: "in_progress", conclusion: null }] };
+        // `check` ended badly while `e2e` is queued or running, and a duplicate is queued behind.
+        for (const [check, e2e] of [
+          ["failure", "queued"],
+          ["cancelled", "in_progress"],
+        ] as const) {
+          const early = yield* baseline(["above"], ready, {
+            ...upper(gated, {
+              runJobs: { "600": [job("checks / check", check), job("checks / e2e", e2e)] },
+            }),
+            upperRuns: {
+              [upperHead]: [{ id: 601, status: "queued", conclusion: null }, ...live[upperHead]!],
+            },
+            selectJobs: { "601": { status: "queued" } },
+          });
+          expect(early.exitCode).not.toBe(0);
+          expect(decided(early.log)).toMatchObject({
+            mode: "enforce",
+            decision: "fail",
+            waited: 0,
+          });
+          expect(decided(early.log)!.reason).toContain(
+            `runs/600, has failed: checks / check ended ${check} while checks / e2e is ${e2e}`,
+          );
+          expect(decided(early.log)!.message).toContain("once that run has ended, run it again");
+        }
+        // A run that ended without one of them listed: that check is missing, which fails at once.
+        const missing = yield* baseline(["above"], ready, {
+          ...upper(gated, { runJobs: { "600": [job("checks / check", "success")] } }),
+        });
+        expect(missing.exitCode).not.toBe(0);
+        expect(decided(missing.log)).toMatchObject({ decision: "fail", waited: 0 });
+        expect(decided(missing.log)!.reason).toContain(
+          "ended with checks / check success and checks / e2e missing",
+        );
+        // The only run on the head was cancelled as a whole: it fails at once, naming it.
+        const cancelled = yield* baseline(["above"], ready, {
+          ...upper(gated),
+          upperRuns: { [upperHead]: [{ id: 600, conclusion: "cancelled" }] },
+        });
+        expect(cancelled.exitCode).not.toBe(0);
+        expect(decided(cancelled.log)).toMatchObject({ decision: "fail", waited: 0 });
+        expect(decided(cancelled.log)!.reason).toContain("runs/600, was cancelled");
+        expect(decided(cancelled.log)!.message).toContain("gh run rerun 600");
+        // Its record is not read: it may have recorded and then stopped.
+        expect(cancelled.calls.some((call) => call.startsWith("run download"))).toBe(false);
+      }),
+  );
+
   it.effect("one constant decides observe or enforce, and the bounds compose", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -2726,32 +3042,50 @@ const replay = (push: Push) => {
   };
   const look = (at: number): skipCheck.Observation => ({
     _tag: "Read",
-    uppers: push.uppers.map((upper) => ({
-      pull: upper.pull,
-      head: upper.head,
-      // The lower layer is a draft's, which no upper's state decides.
-      draft: false,
-      runs: push.runs
+    uppers: push.uppers.map((upper) => {
+      const started = push.runs
         .filter(
           (run) =>
             run.pull === upper.pull &&
             run.head === upper.head &&
             run.fork !== true &&
-            run.phases[0]!.at <= at &&
-            (run.cancelledAt === undefined || run.cancelledAt > at),
+            run.phases[0]!.at <= at,
         )
-        .toSorted((a, b) => b.id - a.id)
-        .map((run) => {
-          const phase = run.phases.findLast((each) => each.at <= at)!;
-          return {
-            id: run.id,
-            url: String(run.id),
-            record: phase.record === undefined ? undefined : skipCheck.parseRecord(phase.record),
-            selectDone: phase.selectDone,
-            waitingAbove: false,
-          };
-        }),
-    })),
+        .toSorted((a, b) => b.id - a.id);
+      const cancelled = (run: (typeof started)[number]) =>
+        run.cancelledAt !== undefined && run.cancelledAt <= at;
+      const live = started.filter((run) => !cancelled(run));
+      // As the reader sees them: the live runs, or, when every run was cancelled, the newest.
+      const newest = started[0];
+      return {
+        pull: upper.pull,
+        head: upper.head,
+        // The lower layer is a draft's, which no upper's state decides.
+        draft: false,
+        runs:
+          live.length === 0 && newest !== undefined
+            ? [
+                {
+                  id: newest.id,
+                  url: String(newest.id),
+                  selectDone: true,
+                  waitingAbove: false,
+                  cancelled: true,
+                },
+              ]
+            : live.map((run) => {
+                const phase = run.phases.findLast((each) => each.at <= at)!;
+                return {
+                  id: run.id,
+                  url: String(run.id),
+                  record:
+                    phase.record === undefined ? undefined : skipCheck.parseRecord(phase.record),
+                  selectDone: phase.selectDone,
+                  waitingAbove: false,
+                };
+              }),
+      };
+    }),
   });
   let previous: skipCheck.Verdict | undefined;
   for (let at = 0, polls = 0; ; polls += 1) {

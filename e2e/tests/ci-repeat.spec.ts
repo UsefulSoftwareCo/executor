@@ -700,19 +700,29 @@ layer(NodeServices.layer)("CI repeat", (it) => {
   );
 
   it.effect(
-    "a repeat's e2e fails when any of this run's own E2E jobs failed or was cancelled",
+    "a repeat's check and e2e fail when any of this run's own jobs they stand for failed or was cancelled",
     () =>
       Effect.gen(function* () {
-        // e2e runs with always(), so a repeat's e2e runs after this run's E2E jobs whatever they did.
-        // A job a repeat skips may still have run (a re-run of all jobs, or a rule change), and a
-        // failed or cancelled one must fail the required check even when the repeated run passed.
+        // check and e2e run with always(), so a repeat's runs after this run's other jobs whatever
+        // they did. A job a repeat skips may still have run (a re-run of all jobs, or a rule
+        // change), and a failed or cancelled one must fail the required check even when the
+        // repeated run passed.
         const text = yield* checks;
-        const dependencies = jobOf(text, "e2e")
-          .match(/^ {4}needs:\s*\[([^\]]*)\]/m)![1]!
-          .split(",")
-          .map((name) => name.trim())
-          .filter((name) => name.length > 0 && name !== "select");
-        expect(dependencies).toEqual([
+        const dependenciesOf = (job: "check" | "e2e") =>
+          jobOf(text, job)
+            .match(/^ {4}needs:\s*\[([^\]]*)\]/m)![1]!
+            .split(",")
+            .map((name) => name.trim())
+            .filter((name) => name.length > 0 && name !== "select");
+        expect(dependenciesOf("check")).toEqual([
+          "static",
+          "site",
+          "apps-package",
+          "tooling",
+          "tooling-cloud",
+          "collector-native",
+        ]);
+        expect(dependenciesOf("e2e")).toEqual([
           "collector",
           "e2e-local",
           "e2e-self-host",
@@ -722,17 +732,22 @@ layer(NodeServices.layer)("CI repeat", (it) => {
           "release-local-cli",
           "release-local-desktop",
         ]);
-        for (const dependency of dependencies)
-          for (const result of ["failure", "cancelled"]) {
-            const run = yield* report({ job: "e2e", now: {}, results: { [dependency]: result } });
-            expect(run.exitCode, `${dependency} ${result}: ${run.log}`).toBe(1);
-            expect(run.log, `${dependency} ${result}`).toContain(`${dependency}: ${result}`);
+        for (const job of ["check", "e2e"] as const) {
+          const dependencies = dependenciesOf(job);
+          for (const dependency of dependencies)
+            for (const result of ["failure", "cancelled"]) {
+              const run = yield* report({ job, now: {}, results: { [dependency]: result } });
+              expect(run.exitCode, `${job}: ${dependency} ${result}: ${run.log}`).toBe(1);
+              expect(run.log, `${job}: ${dependency} ${result}`).toContain(
+                `${dependency}: ${result}`,
+              );
+            }
+          // Skipped, as a repeat skips them, or passed, each still hands the repeated run's pass on.
+          expect((yield* report({ job, now: {} })).exitCode, job).toBe(0);
+          for (const dependency of dependencies) {
+            const run = yield* report({ job, now: {}, results: { [dependency]: "success" } });
+            expect(run.exitCode, `${job}: ${dependency} success: ${run.log}`).toBe(0);
           }
-        // Skipped, as a repeat skips them, or passed, each still hands the repeated run's pass on.
-        expect((yield* report({ job: "e2e", now: {} })).exitCode).toBe(0);
-        for (const dependency of dependencies) {
-          const run = yield* report({ job: "e2e", now: {}, results: { [dependency]: "success" } });
-          expect(run.exitCode, `${dependency} success: ${run.log}`).toBe(0);
         }
       }),
   );

@@ -7,7 +7,7 @@ import { fullAuthority } from "@executor-js/authorization";
 import { authCall } from "@executor-js/mcp-auth/oauth";
 import { APIError, createAuthMiddleware, getSessionFromCtx } from "better-auth/api";
 import { Effect, Option, Redacted, Schema } from "effect";
-import { ApiKeyId, ApiKeyMetadata, CreateApiKey } from "../contracts/api-keys.ts";
+import { ApiKeyId, ApiKeyMetadata, CreateApiKey, managedKeyName } from "../contracts/api-keys.ts";
 import { OrganizationId } from "../contracts/organization.ts";
 
 /** Better Auth owns the only key store and lifecycle for personal and saved Executor accounts. */
@@ -37,6 +37,10 @@ export const apiKeyManagement = createAuthMiddleware(async (ctx) => {
   if (ctx.path === "/api-key/create") {
     const input = Schema.decodeUnknownOption(CreateApiKey, { onExcessProperty: "error" })(ctx.body);
     if (Option.isNone(input)) throw new APIError("BAD_REQUEST");
+    if (input.value.name.trim() === managedKeyName)
+      throw new APIError("BAD_REQUEST", {
+        message: "That name is reserved for the Executor app's own key. Choose another name.",
+      });
     // A pinned key must belong to an organization the creator is a member of today.
     const organization = input.value.metadata?.organization;
     if (organization !== undefined) {
@@ -155,10 +159,9 @@ export const browserPersonalTokenAccess = (
 /**
  * Insert a native Better Auth key in the caller's account transaction. The only cleartext
  * copy is returned redacted for encrypted SDK storage; rollback removes both records.
- * Fields follow the pinned api-key plugin's public schema and native create endpoint.
+ * Fields follow the pinned api-key plugin's public schema and native create endpoint. Its metadata
+ * pins it to the organization and marks it as the Executor app's, which no Tokens page key can carry.
  */
-/** Names the key on the Tokens page so its owner knows where it came from. */
-export const managedKeyName = "Executor app (created automatically)";
 export const managedAccountKey = (organization: OrganizationId, user: string) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -170,6 +173,6 @@ export const managedAccountKey = (organization: OrganizationId, user: string) =>
     yield* sql`insert into apikey (id, "configId", name, prefix, start, key, "referenceId", enabled,
       "rateLimitEnabled", "rateLimitTimeWindow", "rateLimitMax", "requestCount", "createdAt", "updatedAt", metadata)
       values (${crypto.randomUUID()}, 'default', ${managedKeyName}, 'exp_', ${Redacted.value(token).slice(0, 6)}, ${hash}, ${user}, true,
-        false, 86400000, 10, 0, now(), now(), ${JSON.stringify(pinnedKeyMetadata(organization))})`;
+        false, 86400000, 10, 0, now(), now(), ${JSON.stringify({ ...pinnedKeyMetadata(organization), executorApp: true })})`;
     return token;
   }).pipe(Effect.mapError(() => new StorageError()));

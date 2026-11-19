@@ -191,6 +191,9 @@ const program = Effect.gen(function* () {
   yield* read("git", [
     "fetch",
     "--quiet",
+    // Only the refs named here: without it git also moves refs/remotes/origin/main to what it
+    // fetched, so a check against another origin (the selection spec's) rewrote the checkout's.
+    "--refmap=",
     "origin",
     "+refs/heads/main:refs/pr-check/main",
     `+refs/heads/${baseBranch}:refs/pr-check/base`,

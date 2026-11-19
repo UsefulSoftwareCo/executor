@@ -678,16 +678,27 @@ const look = (
           HeadRuns,
           `repos/${repository}/actions/runs?event=pull_request&head_sha=${pull.head.sha}&per_page=50`,
         );
-        // CI's runs, not another workflow's; a cancelled run may have recorded and then stopped.
-        const runs = all
+        // CI's runs, not another workflow's; a cancelled run may have recorded and then stopped,
+        // so its record is not read.
+        const ci = all
           .filter(
             (run) =>
               run.path === ".github/workflows/ci.yml" &&
-              run.head_repository?.full_name === repository &&
-              run.conclusion !== "cancelled",
+              run.head_repository?.full_name === repository,
           )
           .toSorted((a, b) => b.id - a.id);
+        const runs = ci.filter((run) => run.conclusion !== "cancelled");
         const seen: Array<RunSeen> = [];
+        // Only cancelled runs on the head: the newest is seen as cancelled, which fails at once.
+        const cancelled = ci[0];
+        if (runs.length === 0 && cancelled !== undefined)
+          seen.push({
+            id: cancelled.id,
+            url: cancelled.html_url,
+            selectDone: true,
+            waitingAbove: false,
+            cancelled: true,
+          });
         // Every run on the head is read, since any one with a fitting record passes; the ten newest
         // cover a stack's duplicates and re-runs.
         for (const run of runs.slice(0, 10)) {
@@ -721,19 +732,22 @@ const look = (
           }
           const record = newest === undefined ? undefined : records.get(newest.id);
           if (record !== undefined) {
-            // A ready layer passes only on a merge gate that passed: how its required checks
-            // ended, once both have (read only then, one request a look).
+            // A ready layer passes only on a merge gate that passed: the state of its required
+            // checks (gateOutcome). A job the run's jobs do not list is `missing` once the run has
+            // ended, and not listed yet before.
             const gates =
               lower.ready && !pull.draft && (record.gate === "full" || record.gate === "narrowed")
                 ? yield* jobsOf(run.id, ["checks / check", "checks / e2e"]).pipe(
                     Effect.map((jobs) => {
-                      const ended = (name: string) => {
+                      const state = (name: string) => {
                         const job = jobs.find((candidate) => candidate.name === name);
-                        return job?.status === "completed"
-                          ? (job.conclusion ?? undefined)
-                          : undefined;
+                        if (job === undefined)
+                          return run.status === "completed" ? "missing" : undefined;
+                        return job.status === "completed"
+                          ? (job.conclusion ?? "unknown")
+                          : job.status;
                       };
-                      return { check: ended("checks / check"), e2e: ended("checks / e2e") };
+                      return { check: state("checks / check"), e2e: state("checks / e2e") };
                     }),
                   )
                 : undefined;

@@ -22,7 +22,7 @@
  * desktop update feed reads the file under the same rule (notes-history.ts), and this script
  * checks it so before writing it.
  *
- * `--cloud` writes Cloud's notes instead, `{ notes: [{ date, text }] }`, newest change first and a
+ * `--cloud` writes Cloud's notes instead, `{ notes: [{ date, text, kind }] }`, newest change first and a
  * change's own lines in the order written: the accepted lines of main's commits in the
  * `cloudWindowDays` days before `--to`, at most `cloudMaxNotes`, on changes that reach Cloud
  * (`reachesCloud`) and change no other product's own code (`anotherProducts`), Cloud-only ones
@@ -38,7 +38,9 @@
  * The checkout needs that history.
  *
  * Only a commit whose message has a line `Release-note: <text>` is listed, and its text is the
- * line, as written. A line counts only when `Release-note:` starts a line of the message's body, so
+ * line, as written, less the kind its writer may put first (`Feature: `, `Improvement: ` or `Fix: `,
+ * `kindOfNote`; a note without one is a fix), which only `--cloud` writes and Cloud's what's new
+ * reads, to lead with the newest feature or improvement. A line counts only when `Release-note:` starts a line of the message's body, so
  * not indented, quoted or inline. A message that holds `<`, `[`, `$`, "```" or `~~~` anywhere,
  * title included, other than in the address `<name@host>` and a name's closing `[bot]`
  * (`trailerParts`) of a line that is, whole, a `Co-authored-by: <name> <address>` trailer
@@ -85,9 +87,15 @@ import { Console, Effect, FileSystem, Option, Path, Schedule, Schema, Stream } f
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { matchesAny, shippedSources } from "../../e2e/release-lanes.ts";
 import { compareReleaseVersions, release, ReleaseVersion } from "./config.ts";
-import { cloudNoteDays, refusal } from "@executor-js/utils/release-notes";
+import {
+  cloudNoteDays,
+  kindOfNote,
+  type NoteKind,
+  refusal,
+} from "@executor-js/utils/release-notes";
 import { notDeployInputs } from "../../apps/hosted/cloud/src/infrastructure/deploy-inputs.ts";
 import { type NotesHistory, notesHistoryProblem } from "./notes-history.ts";
+import { earlierNoteKind } from "./note-kinds.ts";
 
 class ReleaseNotesFailed extends Schema.TaggedError<ReleaseNotesFailed>()("ReleaseNotesFailed", {
   message: Schema.String,
@@ -235,7 +243,7 @@ interface Commit {
   readonly sha: string;
   /** When it reached main: its committer date, as GitHub's squash merge writes it. */
   readonly date: string;
-  /** Private: used only to match a revert to its target, never printed. */
+  /** Private: used only to match a revert to its target and in note-kinds.ts, never printed. */
   readonly title: string;
   readonly message: string;
   readonly files: ReadonlyArray<string>;
@@ -322,13 +330,14 @@ const coAuthors = (lines: ReadonlyArray<string>) => {
 
 /**
  * A commit message's notes: each line of its body that starts with `Release-note: <text>`, in order
- * and once each, `none` and empty ones aside, and accepted by `refusal`. A message that holds any
+ * and once each, `none` and empty ones aside, and accepted by `refusal`, each with the kind its
+ * writer put before it (`kindOfNote`), which is not part of its text. A message that holds any
  * of `hiding` outside the `trailerParts` of its `coAuthor` lines has none, and `hiddenBy` says which.
  * Any other line that holds `Release-note:` is returned as ignored, and a note `refusal` refuses as
  * refused, both by line number.
  */
 const notesOf = (message: string) => {
-  const notes: Array<string> = [];
+  const notes: Array<{ readonly text: string; readonly kind: NoteKind }> = [];
   const ignored: Array<{ readonly line: number; readonly reason: string }> = [];
   const refused: Array<{ readonly line: number; readonly reason: string }> = [];
   const lines = message.split("\n").map((line) => line.replace(/\r$/u, ""));
@@ -357,11 +366,15 @@ const notesOf = (message: string) => {
       });
       continue;
     }
-    const text = note[1]!;
-    if (text === "" || text.toLowerCase() === "none") continue;
-    const reason = refusal(text);
+    if (note[1] === "" || note[1]!.toLowerCase() === "none") continue;
+    const { kind, text } = kindOfNote(note[1]!);
+    // A kind with nothing after it, or with `none`, has no note: it is refused, never published.
+    const reason =
+      text === "" || text.toLowerCase() === "none"
+        ? `names its kind, ${kind}, but no note after it`
+        : refusal(text);
     if (reason !== undefined) refused.push({ line: index + 1, reason });
-    else if (!notes.includes(text)) notes.push(text);
+    else if (!notes.some((listed) => listed.text === text)) notes.push({ kind, text });
   }
   return { notes, ignored, refused, hiddenBy };
 };
@@ -453,7 +466,14 @@ const checkBranch = (base: string, title: string) =>
           `line ${line} of the squashed message has a Release-note: line that ${reason}`,
       ),
     ];
-    for (const note of notes) yield* Console.log(`Release-note accepted: ${note}`);
+    for (const note of notes)
+      yield* Console.log(
+        `Release-note accepted: ${note.text}\n  Kind: ${note.kind}${
+          note.kind === "fix"
+            ? ", so Cloud's what's new never leads with it (write Feature: or Improvement: before a note that is one)"
+            : ""
+        }`,
+      );
     if (problems.length > 0)
       return yield* new ReleaseNotesFailed({
         message: [
@@ -575,6 +595,7 @@ NodeRuntime.runMain(
         const plain: Array<{
           readonly area: Area;
           readonly text: string;
+          readonly kind: NoteKind;
           readonly date: string;
           readonly sha: string;
         }> = [];
@@ -659,7 +680,7 @@ NodeRuntime.runMain(
                     : ""
                 })`;
           // An accepted note renders as its text alone, so it is printed as written.
-          const lines = notes.map((note) => `- ${note}${credit}`);
+          const lines = notes.map((note) => `- ${note.text}${credit}`);
           const added = lines.reduce((total, line) => total + line.length, 0);
           // Once one change does not fit, later ones do not either, so the notes keep merge order.
           // Cloud's notes have their own bound, the newest `cloudMaxNotes`, so the length a release's
@@ -684,7 +705,16 @@ NodeRuntime.runMain(
                   : "All installs";
           if (ported !== undefined) credited.add(ported);
           listed.get(area)!.push(...lines);
-          plain.push(...notes.map((text) => ({ area, text, date: commit.date, sha: commit.sha })));
+          plain.push(
+            ...notes.map(({ text, kind }) => ({
+              area,
+              text,
+              // A note merged before kinds could be written has the kind note-kinds.ts gives it.
+              kind: kind === "fix" ? (earlierNoteKind(commit.title, text) ?? kind) : kind,
+              date: commit.date,
+              sha: commit.sha,
+            })),
+          );
         }
         return { listed, plain, other, length };
       });
@@ -731,7 +761,11 @@ NodeRuntime.runMain(
         .toReversed()
         .flat()
         .slice(0, cloudMaxNotes)
-        .map((note) => ({ date: new Date(note.date).toISOString().slice(0, 10), text: note.text }));
+        .map((note) => ({
+          date: new Date(note.date).toISOString().slice(0, 10),
+          text: note.text,
+          kind: note.kind,
+        }));
       const json = `${JSON.stringify({ notes }, null, 2)}\n`;
       if (cloudFile === "-") return yield* Effect.sync(() => process.stdout.write(json));
       yield* fs.makeDirectory(path.dirname(cloudFile), { recursive: true });

@@ -119,7 +119,7 @@ import {
   type OAuthClientKind,
   type OAuthProtocolFailed,
 } from "./oauth-protocol.ts";
-import { defaultLabel, ownedAccount, resumeWaitingSources } from "./accounts.ts";
+import { defaultLabel, lockedAccount, ownedAccount, resumeWaitingSources } from "./accounts.ts";
 import type { OAuthCallbackField, OAuthFailureDetail } from "./oauth-diagnostics.ts";
 
 /**
@@ -342,6 +342,15 @@ type CredentialUse =
  * `oauth.resolve` records it as `oauth.resolve.purpose`.
  */
 type CredentialPurpose = CredentialUse["kind"] | "resolve";
+/**
+ * Credentials a service refused. `app` is the app whose own run reported the refusal, as this
+ * executor runs it, never anything the app's code says; a refusal reported anywhere else, such as
+ * an account check, names none, and only a refusal that names one is offered to the product.
+ */
+interface Rejection {
+  readonly fields: JsonObject;
+  readonly app?: { readonly id: AppId; readonly owner: OwnerId } | undefined;
+}
 /**
  * What an `oauth.resolve` span records about the credentials it decrypts: the account, the
  * organization that owns it, the actor it is decrypted for and why. All opaque IDs or closed
@@ -1776,7 +1785,7 @@ export const makeOAuth = (
             const stored =
               existing === undefined
                 ? undefined
-                : yield* ownedAccount(tx, { account: account.id, owner: input.owner });
+                : yield* lockedAccount(tx, { account: account.id, owner: input.owner });
             const saved = stored ?? {
               ...account,
               label: input.label ?? (yield* defaultLabel(tx, input.owner, input.provider)),
@@ -1967,18 +1976,14 @@ export const makeOAuth = (
 
   const reconnectTarget = (tx: Query, attempt: typeof OAuthAttemptRecord.Type) =>
     Effect.gen(function* () {
-      const row = yield* query(() =>
-        tx.findFirst("accounts", { where: (b) => b("id", "=", attempt.account) }),
+      // Locked before its generation is read, as every credential writer does.
+      const row = yield* lockedAccount(tx, { account: attempt.account, owner: attempt.owner }).pipe(
+        Effect.catchTag("AccountNotFound", () => Effect.succeed(undefined)),
       );
-      if (
-        row === null ||
-        row.owner !== attempt.owner ||
-        row.provider !== attempt.provider ||
-        row.method !== attempt.method
-      ) {
+      if (row === undefined || row.provider !== attempt.provider || row.method !== attempt.method) {
         return yield* new OAuthCompletionFailed({ reason: "account_unavailable" });
       }
-      return yield* decode(StoredAccount, row);
+      return row;
     });
 
   const failed = (reason: OAuthCompletionReason) => new OAuthCompletionFailed({ reason });
@@ -2434,7 +2439,9 @@ export const makeOAuth = (
    * Resolve the account's current credentials. With `rejected`, the service has refused those
    * credentials: a grant still holding them is renewed now, whatever its recorded lifetime, and a
    * grant another call already renewed returns its newer credentials. A grant that cannot be
-   * renewed returns the same credentials, so the caller can tell that nothing changed.
+   * renewed returns the same credentials, so the caller can tell that nothing changed. A secrets
+   * account is offered to the product only for a refusal an app's own run reported, naming that
+   * app; the product's answer marks the resolution contested, so authority is checked again.
    *
    * A grant that needs reconnecting is an expected account state, not a fault of this operation:
    * it is returned as a value and recorded as the span's outcome, and only failed after the span.
@@ -2444,21 +2451,54 @@ export const makeOAuth = (
     account: StoredAccount,
     provider: ProviderDefinition,
     resolution: Resolution,
-    rejected?: JsonObject,
+    rejection?: Rejection,
   ) =>
     Effect.gen(function* () {
+      const rejected = rejection?.fields;
       yield* Effect.annotateCurrentSpan(
         credentialAccess(purpose, account, provider, yield* CurrentActor),
       );
       if (rejected !== undefined)
         yield* Effect.annotateCurrentSpan("oauth.renewal.trigger", "credentials_rejected");
-      // Secrets the user brought.
-      if (provider.auth[account.method]?.type === "secrets")
+      // Secrets the user brought, or the product issued. A refusal an app's own run reported asks
+      // the product, naming that app, whether it replaced them; if it did, the account is read
+      // again for what it now holds. The product may wait on its own locks, and whatever it
+      // answers, the resolution is contested: authority is checked again before anything is used.
+      if (provider.auth[account.method]?.type === "secrets") {
+        const app = rejection?.app;
+        const offered =
+          rejected !== undefined && app !== undefined && lifecycle?.secretsRejected !== undefined
+            ? lifecycle.secretsRejected
+            : undefined;
+        if (offered !== undefined) resolution.contested = true;
+        const replaced =
+          offered === undefined || rejected === undefined || app === undefined
+            ? undefined
+            : yield* offered({
+                app,
+                account: { id: account.id, owner: account.owner, provider: account.provider },
+                generation: account.credentialGeneration,
+                rejected: Redacted.make(rejected),
+              }).pipe(
+                Effect.catchTag("StorageError", () => Effect.succeed(false)),
+                Effect.flatMap((renewed) =>
+                  renewed
+                    ? ownedAccount(db, { account: account.id, owner: account.owner }).pipe(
+                        // Removed since: the refused credentials are all it had.
+                        Effect.catchTag("AccountNotFound", () => Effect.succeed(undefined)),
+                      )
+                    : Effect.succeed(undefined),
+                ),
+              );
+        const current = replaced ?? account;
+        if (replaced !== undefined)
+          yield* Effect.annotateCurrentSpan("oauth.renewal.secrets", "replaced");
         return {
-          fields: yield* credentials.decrypt(account.id, account.encryptedCredentials),
+          fields: yield* credentials.decrypt(current.id, current.encryptedCredentials),
           firstParty: undefined,
-          generation: account.credentialGeneration,
+          generation: current.credentialGeneration,
         } satisfies AccountCredential;
+      }
       /** Record why the grant cannot be used on this span; only fixed vocabularies and codes. */
       const reconnect = (reason: ReconnectReason, cause?: OAuthFailureCause) =>
         reconnectRequired("oauth.resolve", account.id, reason, cause);
@@ -2989,7 +3029,7 @@ export const makeOAuth = (
     provider: ProviderDefinition,
     allowed: ReadonlySet<AccountId> | undefined,
     resolution: Resolution,
-    rejected?: JsonObject,
+    rejection?: Rejection,
     recheck: Effect.Effect<void, StorageError | AccountUseRefused> = enforced(
       authorized([account]),
       [account],
@@ -2997,14 +3037,21 @@ export const makeOAuth = (
   ) =>
     Effect.gen(function* () {
       if (allowed !== undefined && !allowed.has(account.id)) return yield* new AccountUseRefused();
-      const fields = yield* resolveCredentials(purpose, account, provider, resolution, rejected);
+      const fields = yield* resolveCredentials(purpose, account, provider, resolution, rejection);
       // A remote token refresh can outlive a permission change, an unlinking or account deletion.
       if (resolution.contested) yield* recheck;
       return fields;
     });
   const resolve = (account: StoredAccount, provider: ProviderDefinition, rejected?: JsonObject) =>
     Effect.flatMap(authorized([account]), (allowed) =>
-      resolveAuthorized("resolve", account, provider, allowed, { contested: false }, rejected),
+      resolveAuthorized(
+        "resolve",
+        account,
+        provider,
+        allowed,
+        { contested: false },
+        rejected === undefined ? undefined : { fields: rejected },
+      ),
     ).pipe(
       // A refusal is the storage failure callers that do not distinguish it have always seen.
       Effect.catchTag("AccountUseRefused", () => Effect.fail(new StorageError())),
@@ -3157,7 +3204,8 @@ export const makeOAuth = (
         provider,
         undefined,
         { contested: false },
-        rejected,
+        // Only an app's own run names the app the refusal came from.
+        { fields: rejected, app: use.kind === "run" ? use.app : undefined },
         recheck,
       ),
     ).pipe(

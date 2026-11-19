@@ -18,6 +18,11 @@ import { scenariosForSuite, type CloudMode, type TestPlan } from "../test-plan.t
 import { readEvidence, combineEvidenceReports, reportRuntimeCrashes } from "../evidence-results.ts";
 import { type EvidenceReport, type RunMetadata } from "../report-model.ts";
 import { startCloudEnvironment } from "../support/cloud-environment.ts";
+import {
+  cloudNotesDescriptions,
+  cloudNotesModes,
+  type CloudNotesSource,
+} from "../support/cloud-release-notes.ts";
 import { removalRevocationBudgetMs } from "../support/removal-revocation-budget.ts";
 import { lockedNpmRegistry } from "../support/npm-registry.ts";
 import { publicCatalogs } from "../support/public-catalogs.ts";
@@ -34,6 +39,13 @@ import { holdRun, pruneRuns } from "./run-retention.ts";
 class RunFailed extends Schema.TaggedError<RunFailed>()("RunFailed", { message: Schema.String }) {}
 import { freePort } from "../support/ports.ts";
 import { reveal, secret } from "../support/failure-text.ts";
+import {
+  ciRefusal,
+  inCi,
+  namesNoScenario,
+  unnamedRefusal,
+  updateSnapshotsVariable,
+} from "../snapshot-updates.ts";
 
 /**
  * Managed Cloud workers share one local Cloud Worker and one telemetry collector, so more cores add
@@ -66,7 +78,8 @@ export const runSuite = ({
   rollback = false,
   oauthProxyPreview = false,
   removalRevocationBudget = false,
-  emptyReleaseNotes = false,
+  releaseNotes,
+  updateSnapshots = false,
   attachment,
 }: {
   readonly target: "self-host" | "local" | "cloud" | "all" | "hosted";
@@ -93,10 +106,15 @@ export const runSuite = ({
    */
   readonly removalRevocationBudget?: boolean;
   /**
-   * Start managed Cloud with its dashboard built from an empty notes file, for the scenarios that
-   * show it.
+   * Start managed Cloud with its dashboard built from these notes instead of the fixed ones
+   * (`CloudNotesSource`), for the scenarios that show them.
    */
-  readonly emptyReleaseNotes?: boolean;
+  readonly releaseNotes?: CloudNotesSource | undefined;
+  /**
+   * Let Vitest write the selected scenarios' snapshots. Without it the run writes none, so a
+   * missing, empty or changed snapshot fails (e2e/snapshot-updates.ts).
+   */
+  readonly updateSnapshots?: boolean;
   readonly attachment?: {
     readonly origin: string;
     readonly directory?: string;
@@ -174,7 +192,7 @@ export const runSuite = ({
             "The shortened revocation budget runs only on managed Cloud, without --auth-rate-limit, --rollback or --oauth-proxy-preview. Use --target cloud without E2E_CLOUD_URL.",
         });
       if (
-        emptyReleaseNotes &&
+        releaseNotes !== undefined &&
         (authRateLimit ||
           rollback ||
           oauthProxyPreview ||
@@ -184,8 +202,13 @@ export const runSuite = ({
       )
         return yield* new RunFailed({
           message:
-            "The empty notes file runs only on managed Cloud, without --auth-rate-limit, --rollback, --oauth-proxy-preview or --removal-revocation-budget. Use --target cloud without E2E_CLOUD_URL.",
+            "--release-notes runs only on managed Cloud, without --auth-rate-limit, --rollback, --oauth-proxy-preview or --removal-revocation-budget. Use --target cloud without E2E_CLOUD_URL.",
         });
+      // Vitest never sees CI here (its environment is listed below), so the runner refuses.
+      if (updateSnapshots && inCi(process.env))
+        return yield* new RunFailed({ message: `--update-snapshots refused: ${ciRefusal}` });
+      if (updateSnapshots && namesNoScenario(name))
+        return yield* new RunFailed({ message: unnamedRefusal });
       const interactive = yield* Config.Boolean("E2E_INTERACTIVE").pipe(Config.withDefault(false));
       const observeUI = yield* Config.Boolean("E2E_UI_OBSERVE").pipe(Config.withDefault(false));
       if (observeUI && (selected !== "cloud" || Option.isSome(cloud)))
@@ -232,8 +255,8 @@ export const runSuite = ({
               ? "oauth-proxy-preview"
               : removalRevocationBudget
                 ? "revocation-budget"
-                : emptyReleaseNotes
-                  ? "empty-release-notes"
+                : releaseNotes !== undefined
+                  ? cloudNotesModes[releaseNotes]
                   : "managed";
       const plan = scenariosForSuite(selected === "hosted" ? "hosted" : "all", cloudMode);
       const filter = yield* Effect.try({
@@ -281,7 +304,7 @@ export const runSuite = ({
                 runtime:
                   target === "cloud"
                     ? managedCloud
-                      ? `Local Cloud Worker + Postgres · no saved credentials · auth rate limit ${authRateLimit ? "on" : "off"}${rollback ? " · sign-in on the deployment origin" : ""}${oauthProxyPreview ? " · a test stage signing in through a second local Cloud's OAuth proxy" : ""}${removalRevocationBudget ? ` · organization removal revocation budget ${removalRevocationBudgetMs} ms` : ""}${emptyReleaseNotes ? " · an empty notes file" : ""}`
+                      ? `Local Cloud Worker + Postgres · no saved credentials · auth rate limit ${authRateLimit ? "on" : "off"}${rollback ? " · sign-in on the deployment origin" : ""}${oauthProxyPreview ? " · a test stage signing in through a second local Cloud's OAuth proxy" : ""}${removalRevocationBudget ? ` · organization removal revocation budget ${removalRevocationBudgetMs} ms` : ""}${releaseNotes === undefined ? "" : ` · ${cloudNotesDescriptions[releaseNotes]}`}`
                       : "Cloud endpoint"
                     : target === "local" && Option.isSome(packagedEntry)
                       ? "Installed npm CLI + PGlite per scenario"
@@ -343,7 +366,7 @@ export const runSuite = ({
                         observeUI,
                         authRateLimit,
                         ...(removalRevocationBudget ? { removalRevocationBudgetMs } : {}),
-                        ...(emptyReleaseNotes ? { emptyReleaseNotes: true as const } : {}),
+                        ...(releaseNotes === undefined ? {} : { releaseNotes }),
                         browserOrigin: rollback ? "deployment" : "app",
                         ...Option.match(production, {
                           onNone: () => ({}),
@@ -485,6 +508,7 @@ export const runSuite = ({
                           E2E_INTERACTIVE: interactive ? "1" : "0",
                           E2E_UI_OBSERVE: observeUI ? "1" : "0",
                           E2E_RECORDING_PACE_MS: String(recordingPaceMs),
+                          ...(updateSnapshots ? { [updateSnapshotsVariable]: "1" } : {}),
                         },
                         stdout: "inherit",
                         stderr: "inherit",

@@ -18,6 +18,7 @@ const allowed = new Set([
   "@modelcontextprotocol/sdk/validation/cfworker",
   "vitest",
   "vitest/config",
+  "vitest/node",
   "effect/http",
   "effect/cli",
   "effect",
