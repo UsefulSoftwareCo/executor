@@ -1,5 +1,5 @@
 diff --git a/dist/codemode.d.ts b/dist/codemode.d.ts
-index 7e9424e..47295db 100644
+index 7e9424edcc57ed3c533ac1a55da8f6f0b6a1c8a4..847f79c154eb8a5d1a4f629f932b74ec31eb4fd5 100644
 --- a/dist/codemode.d.ts
 +++ b/dist/codemode.d.ts
 @@ -1,8 +1,8 @@
@@ -13,7 +13,28 @@ index 7e9424e..47295db 100644
  /** Signature-construction helpers for host-owned catalog instructions. */
  export { searchSignature, toolExpression } from "./tool-runtime.js";
  /** Resource budgets enforced independently during each CodeMode program execution. */
-@@ -37,6 +37,11 @@ export type ExecuteOptions<Provided extends Record<string, unknown> = {}> = {
+@@ -14,6 +14,12 @@ export type ExecutionLimits = {
+     readonly timeoutMs?: number;
+     /** Maximum number of tool calls admitted by the runtime. No default: absent means unlimited. */
+     readonly maxToolCalls?: number;
++    /**
++     * Maximum statements and expressions the interpreter evaluates, across every function and job of
++     * the program. Waiting on tool calls evaluates nothing. Past it the program fails with
++     * `TimeoutExceeded`, which its own catch cannot stop. No default: absent means unlimited.
++     */
++    readonly maxSteps?: number;
+     /**
+      * Maximum UTF-8 bytes retained from the result and logs. Warnings have a separate equal budget;
+      * truncation notices and host formatting are additional.
+@@ -23,6 +29,7 @@ export type ExecutionLimits = {
+ export type ResolvedExecutionLimits = {
+     readonly timeoutMs: number | undefined;
+     readonly maxToolCalls: number | undefined;
++    readonly maxSteps: number | undefined;
+     readonly maxOutputBytes: number | undefined;
+ };
+ /** Options for one CodeMode execution. */
+@@ -37,6 +44,11 @@ export type ExecuteOptions<Provided extends Record<string, unknown> = {}> = {
      onToolCallStart?: (call: ToolRuntime.ToolCallStarted) => Effect.Effect<void, never, Services<Provided>>;
      /** Observes each admitted tool call as it succeeds, fails, or is interrupted. */
      onToolCallEnd?: (call: ToolRuntime.ToolCallEnded) => Effect.Effect<void, never, Services<Provided>>;
@@ -25,7 +46,7 @@ index 7e9424e..47295db 100644
  };
  /** A JSON value that can cross the confined interpreter boundary. */
  export type DataValue = Schema.Json;
-@@ -58,6 +63,8 @@ export declare const Diagnostic: Schema.Struct<{
+@@ -58,6 +70,8 @@ export declare const Diagnostic: Schema.Struct<{
          readonly column: Schema.Number;
      }>>;
      readonly suggestions: Schema.optionalKey<Schema.$Array<Schema.String>>;
@@ -34,7 +55,7 @@ index 7e9424e..47295db 100644
  }>;
  /** A normalized program diagnostic safe to return across an agent tool boundary. */
  export type Diagnostic = typeof Diagnostic.Type;
-@@ -141,6 +148,8 @@ export type Result = typeof Result.Type;
+@@ -141,6 +155,8 @@ export type Result = typeof Result.Type;
  export type Runtime<R = never> = {
      readonly catalog: () => ReadonlyArray<ToolDescription>;
      readonly execute: (code: string) => Effect.Effect<Result, never, R>;
@@ -44,7 +65,7 @@ index 7e9424e..47295db 100644
  /** Executes one Effect-native CodeMode program without constructing a reusable runtime. */
  export declare const execute: <const Provided extends Record<string, unknown>>(options: ExecuteOptions<Provided>) => Effect.Effect<Result, never, Services<Provided>>;
 diff --git a/dist/codemode.js b/dist/codemode.js
-index e94b56b..8064157 100644
+index e94b56b920a396f6bae79fb51cd60bd07b83d591..4bcf465da622258b15b75e3de0520416791cd2c9 100644
 --- a/dist/codemode.js
 +++ b/dist/codemode.js
 @@ -23,6 +23,8 @@ export const Diagnostic = Schema.Struct({
@@ -56,7 +77,15 @@ index e94b56b..8064157 100644
  });
  const ToolCallSchema = Schema.Struct({ name: Schema.String });
  export const Success = Schema.Struct({
-@@ -65,6 +67,7 @@ export const make = (options = {}) => {
+@@ -51,6 +53,7 @@ const validateLimit = (name, value, minimum) => {
+ const resolveExecutionLimits = (limits) => ({
+     timeoutMs: validateLimit("timeoutMs", limits?.timeoutMs, 1),
+     maxToolCalls: validateLimit("maxToolCalls", limits?.maxToolCalls, 0),
++    maxSteps: validateLimit("maxSteps", limits?.maxSteps, 1),
+     maxOutputBytes: validateLimit("maxOutputBytes", limits?.maxOutputBytes, 0),
+ });
+ /** Executes one Effect-native CodeMode program without constructing a reusable runtime. */
+@@ -65,6 +68,7 @@ export const make = (options = {}) => {
      const prepared = ToolRuntime.prepare(tools);
      return {
          catalog: () => prepared.catalog,
@@ -66,7 +95,7 @@ index e94b56b..8064157 100644
      };
  };
 diff --git a/dist/interpreter/errors.js b/dist/interpreter/errors.js
-index 78e59e5..078dab7 100644
+index 78e59e5eb170dfcf427d136b52fb1682ff010d39..078dab75e4755260cb9229405e3cea42bfdf41cc 100644
 --- a/dist/interpreter/errors.js
 +++ b/dist/interpreter/errors.js
 @@ -22,7 +22,11 @@ export const normalizeError = (error) => {
@@ -100,7 +129,7 @@ index 78e59e5..078dab7 100644
  export const constructErrorValue = (name, args) => createErrorValue(name, args[0] === undefined ? "" : coerceToString(args[0]));
  export const constructAggregateErrorValue = (runner, args, node) => Effect.gen(function* () {
 diff --git a/dist/interpreter/execute.d.ts b/dist/interpreter/execute.d.ts
-index e17d584..aeb1771 100644
+index e17d5849420a0266e37bf14b7f0fc257ebce2818..aeb177171d6c924b02c4174edb767bc70aa232b4 100644
 --- a/dist/interpreter/execute.d.ts
 +++ b/dist/interpreter/execute.d.ts
 @@ -1,4 +1,4 @@
@@ -110,9 +139,18 @@ index e17d584..aeb1771 100644
 -export declare const executeWithLimits: <const Provided extends Record<string, unknown>>(options: ExecuteOptions<Provided>, limits: ResolvedExecutionLimits, searchIndex: ToolRuntime.DiscoveryPlan["searchIndex"]) => Effect.Effect<Result, never, Services<Provided>>;
 +export declare const executeWithLimits: <const Provided extends Record<string, unknown>>(options: ExecuteOptions<Provided>, limits: ResolvedExecutionLimits, searchIndex: ToolRuntime.DiscoveryPlan["searchIndexOnUse"]) => Effect.Effect<Result, never, Services<Provided>>;
 diff --git a/dist/interpreter/execute.js b/dist/interpreter/execute.js
-index 3d7f507..41edd0a 100644
+index 3d7f507ef37117b1d3ca12a3fa1d9754abca4031..82ffd78ab9661d809225c8e6326b142e225fd60d 100644
 --- a/dist/interpreter/execute.js
 +++ b/dist/interpreter/execute.js
+@@ -5,7 +5,7 @@ import { Cause, Effect, Scope } from "effect";
+ import { transpile } from "#transpile";
+ import { copyIn, copyOut, ToolRuntime } from "../tool-runtime.js";
+ import { normalizeError } from "./errors.js";
+-import { InterpreterRuntimeError, isRecord } from "./model.js";
++import { InterpreterRuntimeError, isRecord, StepBudget } from "./model.js";
+ import { PromiseRuntime } from "./promises.js";
+ import { Interpreter } from "./runtime.js";
+ export const executeWithLimits = (options, limits, searchIndex) => {
 @@ -21,7 +21,7 @@ export const executeWithLimits = (options, limits, searchIndex) => {
          const tools = ToolRuntime.make((options.tools ?? {}), limits.maxToolCalls, searchIndex, {
              onToolCallStart: options.onToolCallStart,
@@ -122,10 +160,11 @@ index 3d7f507..41edd0a 100644
          const logs = [];
          const logged = () => (logs.length > 0 ? { logs: [...logs] } : {});
          // Set only after copy-out so timeouts cannot report invalid values as completed.
-@@ -30,17 +30,21 @@ export const executeWithLimits = (options, limits, searchIndex) => {
+@@ -29,18 +29,22 @@ export const executeWithLimits = (options, limits, searchIndex) => {
+         const base = Effect.acquireUseRelease(Scope.make("parallel"), (scope) => Effect.gen(function* () {
              const program = parseProgram(options.code);
              const promises = new PromiseRuntime(scope);
-             const interpreter = new Interpreter(tools.execute, tools.search, tools.keys, promises, logs);
+-            const interpreter = new Interpreter(tools.execute, tools.search, tools.keys, promises, logs);
 -            const value = yield* interpreter.run(program);
 -            const result = copyOut(copyIn(value, "Execution result"), "nullify");
 -            returned = { value: result, promises };
@@ -137,6 +176,7 @@ index 3d7f507..41edd0a 100644
 -                ...logged(),
 -                toolCalls: tools.calls,
 -            };
++            const interpreter = new Interpreter(tools.execute, tools.search, tools.keys, promises, logs, new StepBudget(limits.maxSteps));
 +            // The program's main job holds the turn until its leftover jobs are interrupted.
 +            return yield* Effect.gen(function* () {
 +                yield* promises.turn.take;
@@ -156,20 +196,144 @@ index 3d7f507..41edd0a 100644
          const timeoutMs = limits.timeoutMs;
          const operation = timeoutMs === undefined
 diff --git a/dist/interpreter/methods.d.ts b/dist/interpreter/methods.d.ts
-index db276e3..d5b7dfc 100644
+index db276e322e6eb9108c09dff9b5218bc4e29df616..ec1067b6c1d80e8688dd006858d4924fb0769086 100644
 --- a/dist/interpreter/methods.d.ts
 +++ b/dist/interpreter/methods.d.ts
-@@ -6,6 +6,8 @@ export type CallbackRunner<R> = {
+@@ -5,12 +5,15 @@ import { type SyncIteratorRunner } from "./iterator.js";
+ export type CallbackRunner<R> = {
      readonly invokeFunction: (fn: CodeModeFunction, args: Array<unknown>) => Effect.Effect<unknown, unknown, R>;
      readonly invokeCallable: (callable: unknown, args: Array<unknown>, node: AstNode) => Effect.Effect<unknown, unknown, R>;
++    readonly meterWalk: (node: AstNode) => (visited: number) => void;
      readonly settlePromise: (promise: CodeModePromise) => Effect.Effect<unknown, unknown, never>;
 +    readonly suspend: <A, E>(wait: Effect.Effect<A, E>) => Effect.Effect<A, E>;
 +    readonly leave: <A, E>(wait: Effect.Effect<A, E>) => Effect.Effect<A, E>;
  };
  export type SupportedCallback = CodeModeFunction | CoercionFunction | UriFunction | PromiseCapabilityFunction | GlobalMethodReference | JsonMethodReference | IntrinsicReference | ErrorConstructorReference | GlobalNamespace | PromiseNamespace;
  export declare const isSupportedCallback: (value: unknown) => value is SupportedCallback;
+ export declare const invokeIntrinsic: <R>(runner: CallbackRunner<R>, ref: IntrinsicReference, args: Array<unknown>, node: AstNode) => Effect.Effect<unknown, unknown, R>;
+-export declare const invokeGlobalMethod: (ref: GlobalMethodReference, args: Array<unknown>, node: AstNode) => unknown;
++export declare const invokeGlobalMethod: (ref: GlobalMethodReference, args: Array<unknown>, node: AstNode, meter?: (visited: number) => void) => unknown;
+ export declare const arrayStatics: Set<string>;
+ export declare const invokeArrayFrom: <R>(runner: CallbackRunner<R> & SyncIteratorRunner<R>, args: Array<unknown>, node: AstNode) => Effect.Effect<unknown, unknown, R>;
+ export declare const invokeGroupBy: <R>(runner: CallbackRunner<R> & SyncIteratorRunner<R>, namespace: "Map" | "Object", args: Array<unknown>, node: AstNode) => Effect.Effect<unknown, unknown, R>;
+diff --git a/dist/interpreter/methods.js b/dist/interpreter/methods.js
+index 320c1cada40e573468be75551742898317b0bd5f..70a5cce54ec26ea422ff5ee20fcddb5d4ba602bb 100644
+--- a/dist/interpreter/methods.js
++++ b/dist/interpreter/methods.js
+@@ -92,11 +92,11 @@ const coerceNumericArgument = (runner, value, node) => {
+         throw new InterpreterRuntimeError("Cannot convert object to primitive value.", node).as("TypeError");
+     });
+ };
+-export const invokeGlobalMethod = (ref, args, node) => {
++export const invokeGlobalMethod = (ref, args, node, meter) => {
+     if (ref.namespace === "console")
+         throw new InterpreterRuntimeError(`console.${ref.name} is not available.`, node);
+     if (ref.namespace === "Object")
+-        return invokeObjectMethod(ref.name, args, node);
++        return invokeObjectMethod(ref.name, args, node, meter);
+     if (ref.namespace === "Math")
+         return invokeMathMethod(ref.name, args, node);
+     if (ref.namespace === "Array")
+@@ -810,13 +810,13 @@ const invokeArrayMethod = (runner, target, name, args, node) => {
+         case "push": {
+             // Validate all insertions before mutating to avoid partial cyclic updates.
+             for (const item of args)
+-                rejectCircularInsertion(target, item, "Array.push result", node);
++                rejectCircularInsertion(target, item, "Array.push result", node, undefined, runner.meterWalk(node));
+             target.push(...args);
+             return Effect.succeed(target.length);
+         }
+         case "unshift": {
+             for (const item of args)
+-                rejectCircularInsertion(target, item, "Array.unshift result", node);
++                rejectCircularInsertion(target, item, "Array.unshift result", node, undefined, runner.meterWalk(node));
+             target.unshift(...args);
+             return Effect.succeed(target.length);
+         }
+@@ -833,7 +833,7 @@ const invokeArrayMethod = (runner, target, name, args, node) => {
+             const deleteCount = optNumber(args[1], "delete count") ?? 0;
+             const inserted = args.slice(2);
+             for (const item of inserted)
+-                rejectCircularInsertion(target, item, "Array.splice result", node);
++                rejectCircularInsertion(target, item, "Array.splice result", node, undefined, runner.meterWalk(node));
+             return Effect.succeed(target.splice(start, deleteCount, ...inserted));
+         }
+         case "toSpliced": {
+@@ -851,7 +851,7 @@ const invokeArrayMethod = (runner, target, name, args, node) => {
+             return Effect.succeed(copied);
+         }
+         case "fill": {
+-            rejectCircularInsertion(target, args[0], "Array.fill result", node);
++            rejectCircularInsertion(target, args[0], "Array.fill result", node, undefined, runner.meterWalk(node));
+             return Effect.succeed(target.fill(args[0], optNumber(args[1], "start"), optNumber(args[2], "end")));
+         }
+         case "copyWithin":
+diff --git a/dist/interpreter/model.d.ts b/dist/interpreter/model.d.ts
+index ed2accf68c9f24fa26154e266617ef587340445a..852ea1d07aeb70be1730579dc561f636e9ae938f 100644
+--- a/dist/interpreter/model.d.ts
++++ b/dist/interpreter/model.d.ts
+@@ -136,6 +136,18 @@ export declare class InterpreterRuntimeError extends Error {
+     constructor(message: string, node?: AstNode, kind?: DiagnosticKind, suggestions?: ReadonlyArray<string> | undefined);
+     as(errorName: string): this;
+ }
++/** Thrown at every interpreter step after an execution spends its step budget. */
++export declare class StepBudgetExceeded extends InterpreterRuntimeError {
++    constructor(limit: number, node?: AstNode);
++}
++/** Counts the statements and expressions one execution evaluates; past its limit every step throws. */
++export declare class StepBudget {
++    readonly limit: number | undefined;
++    steps: number;
++    constructor(limit: number | undefined);
++    step(node?: AstNode): void;
++    charge(steps: number, node?: AstNode): void;
++}
+ export declare const unsupportedSyntax: (kind: string, node: AstNode) => InterpreterRuntimeError;
+ export declare const isRecord: (value: unknown) => value is Record<string, unknown>;
+ export declare const asNode: (value: unknown, context: string) => AstNode;
+diff --git a/dist/interpreter/model.js b/dist/interpreter/model.js
+index d3a203d737409a4a51759206a156d90fed0ef918..1184bdb43edd332f54cc50134fcc05a7f663c1c4 100644
+--- a/dist/interpreter/model.js
++++ b/dist/interpreter/model.js
+@@ -141,6 +141,36 @@ export class InterpreterRuntimeError extends Error {
+         return this;
+     }
+ }
++/** Thrown at every interpreter step after an execution spends its step budget. */
++export class StepBudgetExceeded extends InterpreterRuntimeError {
++    constructor(limit, node) {
++        super(`Execution exceeded its compute budget of ${limit} interpreter steps and was stopped. Programs run in an interpreter many times slower than native code, so move heavy computation, such as parsing, diffing or rewriting large text or data, out of the program and pass it only the results.`, node, "TimeoutExceeded");
++    }
++}
++/**
++ * Counts the statements and expressions one execution evaluates, across all of its functions and
++ * jobs. Time spent waiting on tool calls evaluates nothing, so it is not counted. Once the limit is
++ * spent every further step throws, so a program's catch or finally cannot keep it running.
++ */
++export class StepBudget {
++    limit;
++    steps = 0;
++    constructor(limit) {
++        this.limit = limit;
++    }
++    step(node) {
++        if (this.limit !== undefined && ++this.steps > this.limit)
++            throw new StepBudgetExceeded(this.limit, node);
++    }
++    /** Charges native work, measured in steps, done or about to be done on the program's behalf. */
++    charge(steps, node) {
++        if (this.limit === undefined || steps < 1)
++            return;
++        this.steps += Math.floor(steps);
++        if (this.steps > this.limit)
++            throw new StepBudgetExceeded(this.limit, node);
++    }
++}
+ export const unsupportedSyntax = (kind, node) => new InterpreterRuntimeError(`Syntax '${kind}' is not supported. ${supportedSyntaxMessage}`, node, "UnsupportedSyntax", [supportedSyntaxMessage]);
+ export const isRecord = (value) => typeof value === "object" && value !== null;
+ export const asNode = (value, context) => {
 diff --git a/dist/interpreter/promises.d.ts b/dist/interpreter/promises.d.ts
-index 3c4016c..51e2419 100644
+index 3c4016c3d1e0d7c2b2bf29382489e2957fe7cce2..51e241995cdbf2598a0283161b8db99dc8d0f6d2 100644
 --- a/dist/interpreter/promises.d.ts
 +++ b/dist/interpreter/promises.d.ts
 @@ -1,21 +1,44 @@
@@ -221,7 +385,7 @@ index 3c4016c..51e2419 100644
      interrupt(): Effect.Effect<Array<Diagnostic>>;
  }
 diff --git a/dist/interpreter/promises.js b/dist/interpreter/promises.js
-index 996f9a5..55843d5 100644
+index 996f9a5090879de5104b8ecb439ee15fecee6f40..55843d5d6d27b370a235d66e1a242ab274b03770 100644
 --- a/dist/interpreter/promises.js
 +++ b/dist/interpreter/promises.js
 @@ -5,9 +5,212 @@ import { applyCollectionCallback, isSupportedCallback } from "./methods.js";
@@ -593,16 +757,131 @@ index 996f9a5..55843d5 100644
  const chainReaction = (runner, promises, source, onFulfilled, onRejected, method, node) => {
      const box = {};
      const body = Effect.gen(function* () {
+diff --git a/dist/interpreter/references.d.ts b/dist/interpreter/references.d.ts
+index 7b1492c21fbe95d6b995327ad7aec31ba345bf6b..a2ebe70b30121ff5e4b6ca60e0b6109ac317f633 100644
+--- a/dist/interpreter/references.d.ts
++++ b/dist/interpreter/references.d.ts
+@@ -2,5 +2,5 @@ import { type AstNode } from "./model.js";
+ export declare const isRuntimeReference: (value: unknown) => boolean;
+ export declare const containsRuntimeReference: (value: unknown) => boolean;
+ export declare const containsOpaqueReference: (value: unknown) => boolean;
+-export declare const rejectCircularInsertion: (container: object, value: unknown, label: string, node: AstNode, seen?: Set<object>) => void;
++export declare const rejectCircularInsertion: (container: object, value: unknown, label: string, node: AstNode, seen?: Set<object>, meter?: (visited: number) => void) => void;
+ export declare const typeofValue: (value: unknown) => string;
+diff --git a/dist/interpreter/references.js b/dist/interpreter/references.js
+index 314a7c3752745de0b8680531b64cf37bc584a812..a4bf237d4e716d3259b0f617695268cc47c5b289 100644
+--- a/dist/interpreter/references.js
++++ b/dist/interpreter/references.js
+@@ -70,23 +70,82 @@ export const containsOpaqueReference = (value) => {
+     }
+     return false;
+ };
+-// Reject cycles before mutation so later boundary walks remain safe.
+-export const rejectCircularInsertion = (container, value, label, node, seen = new Set()) => {
++// Like containsOpaqueReference, but reports every value it visits to `meter` in batches of
++// METER_BATCH, so the caller can charge the walk and stop it partway. Primitives return at once.
++const METER_BATCH = 1024;
++export const containsOpaqueReferenceMetered = (value, meter) => {
++    if (value === null || typeof value !== "object")
++        return false;
+     const pending = [[value].values()];
++    const seen = new Set();
++    let visited = 0;
+     while (pending.length > 0) {
+         const next = pending.at(-1).next();
+         if (next.done) {
+             pending.pop();
+             continue;
+         }
++        if (++visited === METER_BATCH) {
++            meter(visited);
++            visited = 0;
++        }
+         const current = next.value;
+-        if (current === container)
+-            throw new InterpreterRuntimeError(`${label} contains a circular value.`, node, "InvalidDataValue");
+-        if (current === null || typeof current !== "object" || isRuntimeReference(current) || seen.has(current))
++        if (isCodeModeValue(current))
++            continue;
++        if (isRuntimeReference(current)) {
++            meter(visited);
++            return true;
++        }
++        if (current === null || typeof current !== "object" || seen.has(current))
+             continue;
+         seen.add(current);
+         pending.push(childValues(current));
+     }
++    meter(visited);
++    return false;
++};
++/** An interpreter reference that is not CodeMode data, such as a function or the tools root. */
++export const isOpaqueReference = (value) => !isCodeModeValue(value) && isRuntimeReference(value);
++// Reject cycles before mutation so later boundary walks remain safe.
++// Data objects whose own values are all primitives or interpreter references, so a cycle walk
++// that reaches one can stop there: the container it looks for is a data object and cannot be among
++// them. An object leaves the set when an object is inserted into it, and every insertion of a
++// value into existing program data runs rejectCircularInsertion first, so membership stays exact.
++const leafData = new WeakSet();
++// The walk visits each value once and reports visits to `meter` in batches of METER_BATCH, so the
++// caller can charge it and stop it partway; a leaf seen before costs one visit.
++export const rejectCircularInsertion = (container, value, label, node, seen = new Set(), meter) => {
++    if (value === null || typeof value !== "object")
++        return;
++    leafData.delete(container);
++    const pending = [{ children: [value].values(), owner: undefined, leaf: true }];
++    let visited = 0;
++    while (pending.length > 0) {
++        const frame = pending.at(-1);
++        const next = frame.children.next();
++        if (next.done) {
++            pending.pop();
++            if (frame.owner !== undefined && frame.leaf)
++                leafData.add(frame.owner);
++            continue;
++        }
++        if (meter !== undefined && ++visited === METER_BATCH) {
++            meter(visited);
++            visited = 0;
++        }
++        const current = next.value;
++        if (current === container)
++            throw new InterpreterRuntimeError(`${label} contains a circular value.`, node, "InvalidDataValue");
++        if (current === null || typeof current !== "object" || isRuntimeReference(current))
++            continue;
++        frame.leaf = false;
++        if (seen.has(current) || leafData.has(current))
++            continue;
++        seen.add(current);
++        pending.push({ children: childValues(current), owner: current, leaf: true });
++    }
++    if (meter !== undefined)
++        meter(visited);
+ };
+ export const typeofValue = (value) => {
+     if (value instanceof CodeModeFunction ||
 diff --git a/dist/interpreter/runtime.d.ts b/dist/interpreter/runtime.d.ts
-index bd1bc70..3ad5894 100644
+index bd1bc708017c1a30b0c81d37639b55ff12a2e3bc..0ef22693f3e8bbed507161502b837c59590d8675 100644
 --- a/dist/interpreter/runtime.d.ts
 +++ b/dist/interpreter/runtime.d.ts
-@@ -11,11 +11,12 @@ export declare class Interpreter<R> {
+@@ -1,6 +1,7 @@
+ import { Effect } from "effect";
+ import { type ProgramNode } from "./model.js";
+ import { PromiseRuntime } from "./promises.js";
++import { StepBudget } from "./model.js";
+ export declare class Interpreter<R> {
+     private scopes;
+     private readonly executeTool;
+@@ -8,14 +9,16 @@ export declare class Interpreter<R> {
+     private readonly toolKeys;
+     private readonly logs;
+     private readonly promises;
++    private readonly budget;
      private generatorState?;
      private generatorAsync;
      private readonly runner;
 -    constructor(executeTool: (path: ReadonlyArray<string>, args: Array<unknown>) => Effect.Effect<unknown, unknown, R>, invokeSearch: (args: Array<unknown>) => Effect.Effect<unknown, unknown, R>, toolKeys: (path: ReadonlyArray<string>) => ReadonlyArray<string>, promises: PromiseRuntime<R>, logs?: Array<string>);
-+    constructor(executeTool: (path: ReadonlyArray<string>, args: Array<unknown>) => Effect.Effect<unknown, unknown, R>, invokeSearch: (args: Array<unknown>) => Effect.Effect<unknown, unknown, R>, toolKeys: (path: ReadonlyArray<string>) => Effect.Effect<ReadonlyArray<string>, unknown, R>, promises: PromiseRuntime<R>, logs?: Array<string>);
++    constructor(executeTool: (path: ReadonlyArray<string>, args: Array<unknown>) => Effect.Effect<unknown, unknown, R>, invokeSearch: (args: Array<unknown>) => Effect.Effect<unknown, unknown, R>, toolKeys: (path: ReadonlyArray<string>) => Effect.Effect<ReadonlyArray<string>, unknown, R>, promises: PromiseRuntime<R>, logs?: Array<string>, budget?: StepBudget);
      run(program: ProgramNode): Effect.Effect<unknown, unknown, R>;
      private createToolCallPromise;
      private createPromise;
@@ -611,20 +890,153 @@ index bd1bc70..3ad5894 100644
      private evaluateStatement;
      private evaluateBlock;
      private createFunction;
+@@ -71,6 +74,7 @@ export declare class Interpreter<R> {
+     private evaluateUpdateExpression;
+     private evaluateCallExpression;
+     private invokeCallable;
++    private dispatchCallable;
+     private invokeObjectMethodOnTools;
+     private invokeConsole;
+     private evaluateCallArguments;
 diff --git a/dist/interpreter/runtime.js b/dist/interpreter/runtime.js
-index 8c1b549..3575409 100644
+index 8c1b549d3da8c2287e330e63d7370cd3838e57df..bc213c7be488a22deac6d42fe4b1f630647bb577 100644
 --- a/dist/interpreter/runtime.js
 +++ b/dist/interpreter/runtime.js
-@@ -154,6 +154,8 @@ export class Interpreter {
+@@ -1,11 +1,11 @@
+ import { Cause, Deferred, Effect, Exit } from "effect";
+ import { isBlockedMember, ToolReference, ToolRuntimeError } from "../tool-runtime.js";
+-import { AsyncIteratorSymbol, asNode, CodeModeFunction, CodeModeGenerator, CoercionFunction, ComputedValue, ErrorConstructorReference, GlobalMethodReference, GlobalNamespace, GeneratorMethodReference, GeneratorReturn, getArray, getBoolean, getNode, getOptionalNode, getString, IntrinsicReference, InterpreterRuntimeError, isRecord, IteratorSymbol, IteratorSymbols, JsonMethodReference, OptionalShortCircuit, PromiseCapabilityFunction, PromiseInstanceMethodReference, PromiseMethodReference, PromiseNamespace, ProgramThrow, SearchFunction, SymbolNamespace, unsupportedSyntax, UriFunction, } from "./model.js";
++import { AsyncIteratorSymbol, asNode, CodeModeFunction, CodeModeGenerator, CoercionFunction, ComputedValue, ErrorConstructorReference, GlobalMethodReference, GlobalNamespace, GeneratorMethodReference, GeneratorReturn, getArray, getBoolean, getNode, getOptionalNode, getString, IntrinsicReference, InterpreterRuntimeError, isRecord, IteratorSymbol, IteratorSymbols, JsonMethodReference, OptionalShortCircuit, PromiseCapabilityFunction, PromiseInstanceMethodReference, PromiseMethodReference, PromiseNamespace, ProgramThrow, SearchFunction, StepBudget, StepBudgetExceeded, SymbolNamespace, unsupportedSyntax, UriFunction, } from "./model.js";
+ import { caughtErrorValue, constructAggregateErrorValue, constructErrorValue } from "./errors.js";
+ import { arrayStatics, invokeArrayFrom, invokeGlobalMethod, invokeGroupBy, invokeIntrinsic, } from "./methods.js";
+ import { preserveConsumerError } from "./iterator.js";
+ import { constructPromise, invokePromiseInstanceMethod, invokePromiseMethod, PromiseRuntime, resolvePromise, resolvePromiseValue, } from "./promises.js";
+-import { containsOpaqueReference, isRuntimeReference, rejectCircularInsertion, typeofValue } from "./references.js";
++import { containsOpaqueReference, containsOpaqueReferenceMetered, isOpaqueReference, isRuntimeReference, rejectCircularInsertion, typeofValue } from "./references.js";
+ import { ScopeStack } from "./scope.js";
+ import { arrayMethods, mapMethods, mapStatics, setMethods } from "../stdlib/collections.js";
+ import { consoleMethods, formatConsoleMessage } from "../stdlib/console.js";
+@@ -140,6 +140,96 @@ const copyIteratorSymbols = (source, target, consumed) => {
+     }
+ };
+ const promiseResolutionNode = { type: "PromiseResolution" };
++// Native work runs at host speed but still copies or walks its data. Each native call is charged
++// steps for the data it reads and returns: one per ELEMENTS_PER_STEP array elements, object keys
++// or Map and Set entries, and one per CHARS_PER_STEP string characters. An array of records or
++// arrays counts each element as wide as the widest of up to RECORD_WIDTH_SAMPLES evenly spaced
++// elements (at most RECORD_WIDTH_LIMIT), as copying a result walks every field.
++const ELEMENTS_PER_STEP = 2;
++const CHARS_PER_STEP = 256;
++const RECORD_WIDTH_LIMIT = 64;
++const RECORD_WIDTH_SAMPLES = 8;
++const SCAN_ITEMS_PER_STEP = 512;
++const CONCAT_CHARS_PER_STEP = 4096;
++const isPlainData = (value) => {
++    if (value === null || typeof value !== "object")
++        return false;
++    const prototype = Object.getPrototypeOf(value);
++    return prototype === Object.prototype || prototype === null;
++};
++const shallowWidth = (value) => Array.isArray(value) ? value.length : isPlainData(value) ? Object.keys(value).length : 0;
++const recordWidth = (array) => {
++    const length = array.length;
++    if (length === 0)
++        return 0;
++    const stride = Math.max(1, Math.floor(length / RECORD_WIDTH_SAMPLES));
++    let width = shallowWidth(array[length - 1]);
++    for (let index = 0; index < length && width < RECORD_WIDTH_LIMIT; index += stride)
++        width = Math.max(width, shallowWidth(array[index]));
++    return Math.min(width, RECORD_WIDTH_LIMIT);
++};
++const nativeSteps = (value) => {
++    if (typeof value === "string")
++        return value.length / CHARS_PER_STEP;
++    if (Array.isArray(value))
++        return (value.length * (1 + recordWidth(value))) / ELEMENTS_PER_STEP;
++    if (value instanceof CodeModeMap)
++        return value.map.size / ELEMENTS_PER_STEP;
++    if (value instanceof CodeModeSet)
++        return value.set.size / ELEMENTS_PER_STEP;
++    if (isPlainData(value))
++        return Object.keys(value).length / ELEMENTS_PER_STEP;
++    return 0;
++};
++// Spread and Set and Map construction take a string one character at a time, so a string costs as
++// many elements as it has characters there.
++const iterationSteps = (value) => typeof value === "string" ? value.length / ELEMENTS_PER_STEP : nativeSteps(value);
++// Comparing two strings reads them up to their first difference; equality first compares lengths.
++const comparisonSteps = (operator, l, r) => {
++    if (typeof l !== "string" || typeof r !== "string")
++        return 0;
++    if (operator === "===" || operator === "!==" || operator === "==" || operator === "!=")
++        return l.length === r.length ? l.length / CHARS_PER_STEP : 0;
++    return Math.min(l.length, r.length) / CHARS_PER_STEP;
++};
++// Methods whose native work is bounded by their result, or is a native-speed move, rather than a
++// pass over their receiver: only the result is charged, so loops that call them stay linear.
++const resultSizedMethods = new Set([
++    "at", "charAt", "charCodeAt", "codePointAt", "push", "pop", "shift", "unshift", "slice",
++    "substring", "substr", "splice", "startsWith", "endsWith", "padStart", "padEnd", "concat",
++]);
++// Searches compare without copying, scanning their receiver from their start position at most to
++// its end, at native scan speed: one step per SCAN_ITEMS_PER_STEP elements or characters.
++const searchMethods = new Set(["indexOf", "includes", "lastIndexOf"]);
++// String methods that do more per character than copying it, charged this many times its length.
++const heavyStringMethods = new Map([["normalize", 8], ["localeCompare", 8]]);
++// Methods that return a value the program already holds, an element or an accumulator, not a copy:
++// their result is not charged. Their work is charged for their receiver or counted in callbacks.
++const elementReturningMethods = new Set(["get", "at", "pop", "shift", "find", "findLast", "reduce", "reduceRight"]);
++// Global functions that read one key or the type of their argument, not its contents.
++const constantGlobalMethods = new Set(["Object.hasOwn", "Array.isArray"]);
++const isObjectValue = (value) => value !== null && typeof value === "object";
++const receiverSteps = (receiver, name, args) => {
++    if (typeof receiver !== "string" && !Array.isArray(receiver))
++        return 0;
++    if (resultSizedMethods.has(name))
++        return 0;
++    if (typeof receiver === "string" && heavyStringMethods.has(name))
++        return heavyStringMethods.get(name) * nativeSteps(receiver);
++    if (!searchMethods.has(name))
++        return nativeSteps(receiver);
++    const from = typeof args[1] === "number" ? Math.min(Math.max(Math.trunc(args[1]), 0), receiver.length) : 0;
++    const scanned = name === "lastIndexOf" && typeof args[1] === "number" ? from + 1 : receiver.length - from;
++    return scanned / SCAN_ITEMS_PER_STEP;
++};
++// Calls that run program code or wait on the host. Program code counts its own steps.
++const isProgramCall = (callable) => callable instanceof ToolReference ||
++    callable instanceof PromiseMethodReference ||
++    callable instanceof PromiseInstanceMethodReference ||
++    callable instanceof CodeModeFunction ||
++    callable instanceof GeneratorMethodReference ||
++    callable instanceof SearchFunction ||
++    callable instanceof PromiseCapabilityFunction;
+ export class Interpreter {
+     scopes;
+     executeTool;
+@@ -147,6 +237,7 @@ export class Interpreter {
+     toolKeys;
+     logs;
+     promises;
++    budget;
+     generatorState;
+     generatorAsync = false;
+     runner = {
+@@ -154,9 +245,13 @@ export class Interpreter {
          invokeCallable: (callable, args, node) => this.invokeCallable(callable, args, node),
          settlePromise: (promise) => this.settlePromise(promise),
          syncIterator: (value, node) => this.syncIterator(value, node),
 +        suspend: (wait) => this.promises.turn.suspend(wait),
 +        leave: (wait) => this.promises.turn.leave(wait),
++        meterWalk: (node) => this.meterWalk(node),
      };
-     constructor(executeTool, invokeSearch, toolKeys, promises, logs = []) {
+-    constructor(executeTool, invokeSearch, toolKeys, promises, logs = []) {
++    constructor(executeTool, invokeSearch, toolKeys, promises, logs = [], budget = new StepBudget(undefined)) {
          const globalScope = new Map();
-@@ -223,21 +225,26 @@ export class Interpreter {
++        this.budget = budget;
+         this.scopes = new ScopeStack([globalScope]);
+         this.executeTool = executeTool;
+         this.invokeSearch = invokeSearch;
+@@ -223,22 +318,28 @@ export class Interpreter {
              return value;
          }).pipe(Effect.ensuring(Effect.sync(() => self.scopes.pop())));
      }
@@ -654,9 +1066,29 @@ index 8c1b549..3575409 100644
 +        return this.promises.turn.suspend(Effect.yieldNow);
 +    }
      evaluateStatement(node) {
++        this.budget.step(node);
          switch (node.type) {
              case "ExpressionStatement":
-@@ -510,7 +517,7 @@ export class Interpreter {
+                 return Effect.as(this.evaluateExpression(getNode(node, "expression")), { kind: "none" });
+@@ -346,7 +447,7 @@ export class Interpreter {
+         const self = this;
+         return Effect.gen(function* () {
+             const discriminant = yield* self.evaluateExpression(getNode(node, "discriminant"));
+-            if (containsOpaqueReference(discriminant)) {
++            if (containsOpaqueReferenceMetered(discriminant, self.meterWalk(node))) {
+                 throw new InterpreterRuntimeError("Switch discriminants must be data values.", node, "InvalidDataValue");
+             }
+             self.scopes.push();
+@@ -362,7 +463,7 @@ export class Interpreter {
+                         continue;
+                     }
+                     const candidate = yield* self.evaluateExpression(test);
+-                    if (containsOpaqueReference(candidate)) {
++                    if (containsOpaqueReferenceMetered(candidate, self.meterWalk(test))) {
+                         throw new InterpreterRuntimeError("Switch case values must be data values.", test, "InvalidDataValue");
+                     }
+                     if (candidate === discriminant) {
+@@ -510,7 +611,7 @@ export class Interpreter {
              const close = () => iterator
                  ? self.closeIterator(iterator, node, awaiting)
                  : awaiting
@@ -665,7 +1097,7 @@ index 8c1b549..3575409 100644
                      : (cursor?.close ?? Effect.void);
              let assignment;
              if (left.type !== "VariableDeclaration" &&
-@@ -656,7 +663,7 @@ export class Interpreter {
+@@ -656,7 +757,7 @@ export class Interpreter {
              const called = yield* Effect.exit(self.invokeCallable(iterator.next, [], node));
              if (!Exit.isSuccess(called)) {
                  if (awaiting)
@@ -674,7 +1106,7 @@ index 8c1b549..3575409 100644
                  return yield* Effect.failCause(called.cause);
              }
              const captured = yield* Effect.exit(Effect.sync(() => {
-@@ -665,7 +672,7 @@ export class Interpreter {
+@@ -665,7 +766,7 @@ export class Interpreter {
              }));
              if (!Exit.isSuccess(captured)) {
                  if (awaiting)
@@ -683,7 +1115,7 @@ index 8c1b549..3575409 100644
                  return yield* Effect.failCause(captured.cause);
              }
              return {
-@@ -681,7 +688,7 @@ export class Interpreter {
+@@ -681,7 +782,7 @@ export class Interpreter {
              ? new GeneratorMethodReference(iterator.iterator, "return")
              : iterator.iterator.return;
          if (close === undefined || close === null)
@@ -692,7 +1124,7 @@ index 8c1b549..3575409 100644
          const self = this;
          return Effect.gen(function* () {
              const method = self.requireIteratorMethod(close, "Iterator return", node);
-@@ -692,13 +699,13 @@ export class Interpreter {
+@@ -692,13 +793,13 @@ export class Interpreter {
              const called = yield* Effect.exit(self.invokeCallable(method, [], node));
              if (!Exit.isSuccess(called)) {
                  if (awaiting)
@@ -708,7 +1140,7 @@ index 8c1b549..3575409 100644
                  return yield* Effect.failCause(captured.cause);
              }
              if (awaiting)
-@@ -720,17 +727,18 @@ export class Interpreter {
+@@ -720,17 +821,18 @@ export class Interpreter {
              return value;
          throw new InterpreterRuntimeError(`${context} must be a function.`, node).as("TypeError");
      }
@@ -731,16 +1163,197 @@ index 8c1b549..3575409 100644
      }
      evaluateForInStatement(node, labels) {
          const left = getNode(node, "left");
-@@ -743,7 +751,7 @@ export class Interpreter {
+@@ -743,7 +845,9 @@ export class Interpreter {
                  self.predeclarePattern(declared.pattern, declared.mutable, left);
              const right = yield* self.evaluateExpression(getNode(node, "right"));
              const body = getNode(node, "body");
 -            const keys = self.enumerableKeys(right);
 +            const keys = yield* self.enumerableKeys(right);
++            if (keys !== undefined)
++                self.budget.charge(keys.length / ELEMENTS_PER_STEP, node);
              if (keys === undefined) {
                  throw new InterpreterRuntimeError("for...in requires a plain object, array, or tools reference. Use for...of for arrays/strings/Maps/Sets, or Object.keys(value) for a key list.", node);
              }
-@@ -1592,7 +1600,7 @@ export class Interpreter {
+@@ -833,7 +937,10 @@ export class Interpreter {
+         const self = this;
+         const attempted = Effect.matchCauseEffect(this.evaluateStatement(body), {
+             onFailure: (cause) => {
+-                if (cause.reasons.some(Cause.isInterruptReason) || Cause.squash(cause) instanceof GeneratorReturn || !handler) {
++                if (cause.reasons.some(Cause.isInterruptReason) ||
++                    Cause.squash(cause) instanceof GeneratorReturn ||
++                    Cause.squash(cause) instanceof StepBudgetExceeded ||
++                    !handler) {
+                     return Effect.failCause(cause);
+                 }
+                 const caught = caughtErrorValue(Cause.squash(cause));
+@@ -897,6 +1004,7 @@ export class Interpreter {
+                 for (const propertyValue of getArray(pattern, "properties")) {
+                     const property = asNode(propertyValue, "properties");
+                     if (property.type === "RestElement") {
++                        self.budget.charge(nativeSteps(value), property);
+                         const rest = Object.create(null);
+                         for (const [key, item] of Object.entries(value)) {
+                             if (!consumed.has(key) && !isBlockedMember(key))
+@@ -946,6 +1054,7 @@ export class Interpreter {
+                 for (const propertyValue of getArray(pattern, "properties")) {
+                     const property = asNode(propertyValue, "properties");
+                     if (property.type === "RestElement") {
++                        self.budget.charge(nativeSteps(source), property);
+                         const rest = Object.create(null);
+                         for (const [key, item] of Object.entries(source)) {
+                             if (!consumed.has(key) && !isBlockedMember(key))
+@@ -998,6 +1107,8 @@ export class Interpreter {
+                     if (!step.done)
+                         rest.push(step.value);
+                     while (!done) {
++                        // Each element is one interpreter-level iterator step.
++                        self.budget.step(element);
+                         const next = yield* cursor.next;
+                         done = next.done;
+                         if (!done)
+@@ -1037,6 +1148,7 @@ export class Interpreter {
+         return undefined;
+     }
+     evaluateExpression(node) {
++        this.budget.step(node);
+         switch (node.type) {
+             case "Literal": {
+                 const regex = node.regex;
+@@ -1114,7 +1226,11 @@ export class Interpreter {
+         }
+         // Array and Object construct identically with or without new, like JS.
+         if (name === "Array") {
+-            return Effect.map(this.evaluateCallArguments(argNodes), (args) => self.constructArray(args, node));
++            return Effect.map(this.evaluateCallArguments(argNodes), (args) => {
++                const array = self.constructArray(args, node);
++                self.budget.charge(nativeSteps(array), node);
++                return array;
++            });
+         }
+         if (name === "Object") {
+             return Effect.map(this.evaluateCallArguments(argNodes), (args) => self.constructObject(args, node));
+@@ -1122,6 +1238,8 @@ export class Interpreter {
+         if (valueConstructors.has(name)) {
+             return Effect.gen(function* () {
+                 const args = yield* self.evaluateCallArguments(argNodes);
++                for (const arg of args)
++                    self.budget.charge(iterationSteps(arg), node);
+                 switch (name) {
+                     case "Date":
+                         return yield* self.constructDate(args, node);
+@@ -1333,12 +1451,22 @@ export class Interpreter {
+             return boundedData(self.applyBinaryOperator(operator, lhs, rhs, node), "Binary expression result");
+         });
+     }
++    // Charges a walk over operands at the rate of copying them, as the walk visits every value.
++    meterWalk(node) {
++        return (visited) => this.budget.charge(visited / ELEMENTS_PER_STEP, node);
++    }
+     applyBinaryOperator(operator, lhs, rhs, node) {
+-        if (operator === "===")
+-            return lhs === rhs;
+-        if (operator === "!==")
+-            return lhs !== rhs;
+-        if (containsOpaqueReference(lhs) || containsOpaqueReference(rhs)) {
++        if (operator === "===" || operator === "!==") {
++            this.budget.charge(comparisonSteps(operator, lhs, rhs), node);
++            return operator === "===" ? lhs === rhs : lhs !== rhs;
++        }
++        // `in` reads one own key of its right-hand object, so only that object itself must be data;
++        // its contents are never read. Other operators coerce whole operands, so both are walked,
++        // and the walk is charged.
++        const meter = this.meterWalk(node);
++        if (operator === "in"
++            ? containsOpaqueReferenceMetered(lhs, meter) || isOpaqueReference(rhs)
++            : containsOpaqueReferenceMetered(lhs, meter) || containsOpaqueReferenceMetered(rhs, meter)) {
+             throw new InterpreterRuntimeError("Binary operators require data values.", node, "InvalidDataValue");
+         }
+         // Null-prototype data needs explicit primitive coercion; identity and `in` retain raw objects.
+@@ -1352,9 +1480,16 @@ export class Interpreter {
+         const bothObjects = lhs !== null && typeof lhs === "object" && rhs !== null && typeof rhs === "object";
+         const l = coerceOperand(lhs);
+         const r = coerceOperand(rhs);
++        if (!bothObjects)
++            this.budget.charge(comparisonSteps(operator, l, r), node);
+         switch (operator) {
+-            case "+":
+-                return l + r;
++            case "+": {
++                // Joining strings makes a rope; whatever reads it next flattens the whole result.
++                const sum = l + r;
++                if (typeof sum === "string")
++                    this.budget.charge(sum.length / CONCAT_CHARS_PER_STEP, node);
++                return sum;
++            }
+             case "-":
+                 return l - r;
+             case "*":
+@@ -1429,7 +1564,7 @@ export class Interpreter {
+                 return !value;
+             if (operator === "void")
+                 return undefined;
+-            if (containsOpaqueReference(value)) {
++            if (containsOpaqueReferenceMetered(value, this.meterWalk(node))) {
+                 throw new InterpreterRuntimeError("Unary operators require data values.", node, "InvalidDataValue");
+             }
+             const operand = value instanceof CodeModeDate
+@@ -1561,8 +1696,54 @@ export class Interpreter {
+             return yield* self.invokeCallable(callable, args, node, callee);
+         });
+     }
+-    // The single dispatch for every invocation: call expressions and callbacks share it.
++    // The single dispatch for every invocation: call expressions and callbacks share it. A native
++    // call is charged for its receiver and arguments before it runs and for its result after.
+     invokeCallable(callable, args, node, callee = node) {
++        if (isProgramCall(callable))
++            return this.dispatchCallable(callable, args, node, callee);
++        return Effect.suspend(() => {
++            let input = 0;
++            if (callable instanceof IntrinsicReference) {
++                input += receiverSteps(callable.receiver, callable.name, args);
++                // Arguments of a method are charged when they are text, such as a separator or a needle.
++                for (const arg of args)
++                    if (typeof arg === "string")
++                        input += nativeSteps(arg);
++            }
++            else {
++                // Object, Array, JSON and coercion functions read their whole arguments, except
++                // Object.assign's target, which it only writes, and functions that read one key.
++                const qualified = callable instanceof GlobalMethodReference ? `${callable.namespace}.${callable.name}` : undefined;
++                const constant = constantGlobalMethods.has(qualified);
++                for (const [index, arg] of args.entries()) {
++                    if (constant ? typeof arg !== "string" : qualified === "Object.assign" && index === 0)
++                        continue;
++                    input += nativeSteps(arg);
++                }
++            }
++            this.budget.charge(input, node);
++            return Effect.map(this.dispatchCallable(callable, args, node, callee), (result) => {
++                // Only fresh results are charged. A result the program already holds (its receiver,
++                // an argument, or an element a method returns) was paid for when it was built.
++                if (!isObjectValue(result)) {
++                    this.budget.charge(nativeSteps(result), node);
++                    return result;
++                }
++                if (callable instanceof IntrinsicReference) {
++                    if (elementReturningMethods.has(callable.name))
++                        return result;
++                    // sort, reverse and fill return their array: charged again for the pass.
++                    if (result === callable.receiver && !Array.isArray(result))
++                        return result;
++                }
++                if (args.includes(result))
++                    return result;
++                this.budget.charge(nativeSteps(result), node);
++                return result;
++            });
++        });
++    }
++    dispatchCallable(callable, args, node, callee) {
+         const self = this;
+         return Effect.gen(function* () {
+             if (callable instanceof ToolReference) {
+@@ -1592,12 +1773,12 @@ export class Interpreter {
                  if (callable.namespace === "console")
                      return self.invokeConsole(callable.name, args, node);
                  if (callable.namespace === "Object" && args[0] instanceof ToolReference) {
@@ -749,7 +1362,13 @@ index 8c1b549..3575409 100644
                  }
                  if (callable.namespace === "Object" && objectMethodsPreservingIdentity.has(callable.name)) {
                      if (callable.name === "fromEntries")
-@@ -1665,7 +1673,7 @@ export class Interpreter {
+                         return yield* invokeObjectFromEntries(self.runner, args[0], node);
+-                    return invokeGlobalMethod(callable, args, node);
++                    return invokeGlobalMethod(callable, args, node, self.meterWalk(node));
+                 }
+                 if (callable.namespace === "Array" && callable.name === "from") {
+                     return yield* invokeArrayFrom(self.runner, args, node);
+@@ -1665,7 +1846,7 @@ export class Interpreter {
      }
      invokeObjectMethodOnTools(name, ref, node) {
          if (name === "keys") {
@@ -758,7 +1377,24 @@ index 8c1b549..3575409 100644
          }
          throw new InterpreterRuntimeError(`Object.${name}(...) cannot read tool references: they are not plain data. Use Object.keys(tools) for names, or search({ query }) for signatures.`, node, "InvalidDataValue");
      }
-@@ -1730,7 +1738,7 @@ export class Interpreter {
+@@ -1683,6 +1864,7 @@ export class Interpreter {
+                 const argNode = asNode(arg, `arguments[${index}]`);
+                 if (argNode.type === "SpreadElement") {
+                     const spread = yield* self.evaluateExpression(getNode(argNode, "argument"));
++                    self.budget.charge(iterationSteps(spread), argNode);
+                     const cursor = yield* self.syncIterator(spread, argNode);
+                     if (cursor === undefined)
+                         throw new InterpreterRuntimeError("Spread arguments require a synchronous iterable.", argNode).as("TypeError");
+@@ -1701,7 +1883,7 @@ export class Interpreter {
+         });
+     }
+     invokeFunction(fn, args) {
+-        const invocation = new Interpreter(this.executeTool, this.invokeSearch, this.toolKeys, this.promises, this.logs);
++        const invocation = new Interpreter(this.executeTool, this.invokeSearch, this.toolKeys, this.promises, this.logs, this.budget);
+         invocation.scopes = new ScopeStack([...fn.capturedScopes, new Map()]);
+         const run = Effect.gen(function* () {
+             // Seed all parameters first so defaults cannot fall through to same-named outer bindings.
+@@ -1730,7 +1912,7 @@ export class Interpreter {
              return run;
          // The initial yield assigns the promise before the body can self-resolve.
          const box = {};
@@ -767,7 +1403,7 @@ index 8c1b549..3575409 100644
              box.promise = promise;
              return promise;
          });
-@@ -1739,8 +1747,17 @@ export class Interpreter {
+@@ -1739,8 +1921,17 @@ export class Interpreter {
          const state = { started: false, completed: false, draining: false, pending: [], pendingIndex: 0 };
          invocation.generatorState = state;
          invocation.generatorAsync = asynchronous;
@@ -786,7 +1422,7 @@ index 8c1b549..3575409 100644
              if (!asynchronous && state.active) {
                  return Effect.fail(new InterpreterRuntimeError("Generator is already running.", node).as("TypeError"));
              }
-@@ -1749,11 +1766,11 @@ export class Interpreter {
+@@ -1749,11 +1940,11 @@ export class Interpreter {
                  state.completed = true;
                  state.pending.push(request);
                  if (state.draining)
@@ -800,7 +1436,7 @@ index 8c1b549..3575409 100644
              }
              if (state.completed) {
                  if (kind === "throw")
-@@ -1766,11 +1783,19 @@ export class Interpreter {
+@@ -1766,11 +1957,19 @@ export class Interpreter {
                      return Effect.fail(new ProgramThrow(value));
                  return Effect.succeed({ value, done: true });
              }
@@ -821,7 +1457,7 @@ index 8c1b549..3575409 100644
              }
              if (!state.started) {
                  state.started = true;
-@@ -1789,10 +1814,10 @@ export class Interpreter {
+@@ -1789,10 +1988,10 @@ export class Interpreter {
                      yield* invocation.completeGeneratorRequests(state, asynchronous);
                      state.completed = true;
                  });
@@ -835,7 +1471,7 @@ index 8c1b549..3575409 100644
          return generator;
      }
      completeGeneratorRequests(state, asynchronous) {
-@@ -1820,7 +1845,7 @@ export class Interpreter {
+@@ -1820,7 +2019,7 @@ export class Interpreter {
          if (next)
              return Effect.succeed(next);
          state.available = Deferred.makeUnsafe();
@@ -844,8 +1480,60 @@ index 8c1b549..3575409 100644
      }
      dequeueGeneratorRequest(state) {
          const request = state.pending[state.pendingIndex];
+@@ -1952,6 +2151,7 @@ export class Interpreter {
+                     if (typeof spread !== "object" || Array.isArray(spread) || isRuntimeReference(spread)) {
+                         throw new InterpreterRuntimeError("Object spread requires a data object.", property, "InvalidDataValue");
+                     }
++                    self.budget.charge(nativeSteps(spread), property);
+                     for (const [key, value] of Object.entries(spread)) {
+                         if (isBlockedMember(key))
+                             throw new InterpreterRuntimeError(`Property '${key}' is not available.`, property);
+@@ -2004,6 +2204,7 @@ export class Interpreter {
+                 const element = asNode(elementValue, "elements");
+                 if (element.type === "SpreadElement") {
+                     const spread = yield* self.evaluateExpression(getNode(element, "argument"));
++                    self.budget.charge(iterationSteps(spread), element);
+                     const cursor = yield* self.syncIterator(spread, element);
+                     if (cursor === undefined)
+                         throw new InterpreterRuntimeError("Array spread requires a synchronous iterable.", element).as("TypeError");
+@@ -2036,9 +2237,14 @@ export class Interpreter {
+                 output += rawValue.cooked;
+                 if (index < expressions.length) {
+                     const raw = yield* self.evaluateExpression(asNode(expressions[index], "expressions"));
++                    // An array or object is copied and then joined.
++                    if (Array.isArray(raw) || isPlainData(raw))
++                        self.budget.charge(2 * nativeSteps(raw), node);
+                     output += coerceToString(boundedData(raw, "Template interpolation"));
+                 }
+             }
++            // Like string `+`: the result is a rope that the next read copies whole.
++            self.budget.charge(output.length / CONCAT_CHARS_PER_STEP, node);
+             return output;
+         });
+     }
+@@ -2312,7 +2518,9 @@ export class Interpreter {
+             if (typeof key !== "number" || parseArrayIndex(key) === undefined) {
+                 throw new InterpreterRuntimeError("Array assignment index must be a valid array index.", node, "InvalidDataValue");
+             }
+-            rejectCircularInsertion(target, next, "Array assignment result", node);
++            // Storing the value a slot already holds cannot change the graph, so it skips the walk.
++            if (!(Object.hasOwn(target, key) && target[key] === next))
++                rejectCircularInsertion(target, next, "Array assignment result", node, undefined, this.meterWalk(node));
+             target[key] = next;
+             return;
+         }
+@@ -2337,7 +2545,8 @@ export class Interpreter {
+             return;
+         }
+         const target = reference.target;
+-        rejectCircularInsertion(target, next, "Object assignment result", node);
++        if (!(Object.hasOwn(target, key) && target[key] === next))
++            rejectCircularInsertion(target, next, "Object assignment result", node, undefined, this.meterWalk(node));
+         Reflect.set(target, key, next);
+     }
+     toPropertyKey(value, node) {
 diff --git a/dist/namespace.d.ts b/dist/namespace.d.ts
-index e464076..220d157 100644
+index e4640762c1139d5a864f966035446f5d890040f0..220d15700f5e0f2d4dbee3f5500875ccbf3cb86d 100644
 --- a/dist/namespace.d.ts
 +++ b/dist/namespace.d.ts
 @@ -1,9 +1,21 @@
@@ -877,7 +1565,7 @@ index e464076..220d157 100644
 +/** Declares a namespace whose tools are loaded when a program first reaches it. */
 +export declare const lazy: <R = never>(options: LazyOptions<R>) => Namespace<R>;
 diff --git a/dist/namespace.js b/dist/namespace.js
-index 93db240..e0e44b0 100644
+index 93db2408fe35817f6d53add795822e91dadcedfd..e0e44b0e8c823133cc390d3a12d7b87873006236 100644
 --- a/dist/namespace.js
 +++ b/dist/namespace.js
 @@ -5,3 +5,10 @@ export const make = (options) => ({
@@ -892,7 +1580,7 @@ index 93db240..e0e44b0 100644
 +    load: options.load,
 +});
 diff --git a/dist/openapi/index.js b/dist/openapi/index.js
-index 1702476..2425925 100644
+index 1702476510e1019a2a2b6b7e14423c84a350e8c9..2425925a7bd394917d57f36b84e6f0fa29e5f79e 100644
 --- a/dist/openapi/index.js
 +++ b/dist/openapi/index.js
 @@ -1,4 +1,4 @@
@@ -902,7 +1590,7 @@ index 1702476..2425925 100644
  import { invoke } from "./runtime.js";
  import { componentDefinitions, hasDirectionalSchemas, inputSchema, isRecord, methods, nonEmptyString, operationInput, operationOutput, operationPath, operationSecurityRequirements, securityRequirements, securitySchemes, specServerUrl, validateBaseUrl, } from "./spec.js";
 diff --git a/dist/openapi/runtime.d.ts b/dist/openapi/runtime.d.ts
-index 86ae0c3..2da6eeb 100644
+index 86ae0c3d2183e89bc3d83c1548d860bc8d69c78b..2da6eeb1b50263f69bc593a4fe0eb0cc4cc3a1d3 100644
 --- a/dist/openapi/runtime.d.ts
 +++ b/dist/openapi/runtime.d.ts
 @@ -1,4 +1,4 @@
@@ -912,7 +1600,7 @@ index 86ae0c3..2da6eeb 100644
  import type { Plan } from "./types.js";
  export declare const invoke: (plan: Plan, input: unknown) => Effect.Effect<unknown, unknown, HttpClient.HttpClient>;
 diff --git a/dist/openapi/runtime.js b/dist/openapi/runtime.js
-index 0fa6088..4e2d042 100644
+index 0fa6088d164442dfc9c41fff6ab71357f7386317..4e2d042f4f2b20b800bd26cd270014eee6b8dac6 100644
 --- a/dist/openapi/runtime.js
 +++ b/dist/openapi/runtime.js
 @@ -1,5 +1,5 @@
@@ -923,7 +1611,7 @@ index 0fa6088..4e2d042 100644
  import { isRecord, own } from "./spec.js";
  const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 diff --git a/dist/openapi/types.d.ts b/dist/openapi/types.d.ts
-index 52d2cb7..80e1db3 100644
+index 52d2cb7dbb75f6998a9dd2a4ad4e8a780ba9ceb0..80e1db35c82b1434144608a797077030f2c386b1 100644
 --- a/dist/openapi/types.d.ts
 +++ b/dist/openapi/types.d.ts
 @@ -1,5 +1,5 @@
@@ -934,15 +1622,48 @@ index 52d2cb7..80e1db3 100644
  /** A parsed OpenAPI 3.x document. YAML must be parsed by the host. */
  export type Document = Record<string, unknown>;
 diff --git a/dist/openapi/types.js b/dist/openapi/types.js
-index bc386d2..483cc3f 100644
+index bc386d2cd78bffa1bd1f76bf98509183f61c57d1..483cc3fd953ab434bf0209462d9a88ddce404fb0 100644
 --- a/dist/openapi/types.js
 +++ b/dist/openapi/types.js
 @@ -1,2 +1,2 @@
  import { Effect } from "effect";
 -import { HttpClient } from "effect/unstable/http";
 +import { HttpClient } from "effect/http";
+diff --git a/dist/stdlib/object.d.ts b/dist/stdlib/object.d.ts
+index 5d8d15cd307e58e08f9b3757d31eee35501d72b7..7ce4a7e5491c6c0ce1f0d26ee49f82fe438fac06 100644
+--- a/dist/stdlib/object.d.ts
++++ b/dist/stdlib/object.d.ts
+@@ -3,5 +3,5 @@ import { type AstNode } from "../interpreter/model.js";
+ import { type SyncIteratorRunner } from "../interpreter/iterator.js";
+ export declare const objectMethodsPreservingIdentity: Set<string>;
+ export declare const objectStatics: Set<string>;
+-export declare const invokeObjectMethod: (name: string, args: Array<unknown>, node: AstNode) => unknown;
++export declare const invokeObjectMethod: (name: string, args: Array<unknown>, node: AstNode, meter?: (visited: number) => void) => unknown;
+ export declare const invokeObjectFromEntries: <R>(runner: SyncIteratorRunner<R>, source: unknown, node: AstNode) => Effect.Effect<Record<string, unknown>, unknown, R>;
+diff --git a/dist/stdlib/object.js b/dist/stdlib/object.js
+index fe2d225693f15eece4838b62a22fab7b43351da1..6e874045f38719d8032186938d55435388718814 100644
+--- a/dist/stdlib/object.js
++++ b/dist/stdlib/object.js
+@@ -7,7 +7,7 @@ import { boundedData, coerceToString } from "./value.js";
+ import { preserveConsumerError } from "../interpreter/iterator.js";
+ export const objectMethodsPreservingIdentity = new Set(["assign", "values", "entries", "fromEntries"]);
+ export const objectStatics = new Set(["keys", "values", "entries", "hasOwn", "is", "assign", "fromEntries", "groupBy"]);
+-export const invokeObjectMethod = (name, args, node) => {
++export const invokeObjectMethod = (name, args, node, meter) => {
+     const requireObject = () => {
+         const input = args[0];
+         if (Array.isArray(input))
+@@ -50,7 +50,7 @@ export const invokeObjectMethod = (name, args, node) => {
+             const guardedSet = (key, item) => {
+                 if (typeof key === "string" && isBlockedMember(key))
+                     throw new InterpreterRuntimeError(`Property '${key}' is not available.`, node);
+-                rejectCircularInsertion(out, item, "Object.assign result", node, seen);
++                rejectCircularInsertion(out, item, "Object.assign result", node, seen, meter);
+                 if (!Reflect.set(out, key, item))
+                     throw new InterpreterRuntimeError(`Object.assign could not assign property '${String(key)}'.`, node).as("TypeError");
+             };
 diff --git a/dist/tool-error.d.ts b/dist/tool-error.d.ts
-index 1adc0b7..9489b77 100644
+index 1adc0b7af422b5ca0ffe5b79abc7a14ceccb7627..9489b77bae4a0833ee2ff82811a859b22621775f 100644
 --- a/dist/tool-error.d.ts
 +++ b/dist/tool-error.d.ts
 @@ -2,10 +2,11 @@ import { Schema } from "effect";
@@ -960,7 +1681,7 @@ index 1adc0b7..9489b77 100644
 +export declare const toolError: (message: string, cause?: unknown, properties?: Readonly<Record<string, string>>) => ToolError;
  export {};
 diff --git a/dist/tool-error.js b/dist/tool-error.js
-index 6a8d1d2..492ad48 100644
+index 6a8d1d2243d9fc43281a19793e296dfa1556ee0f..492ad4845a7cc5023ee9e23b2eb264ce78a1f279 100644
 --- a/dist/tool-error.js
 +++ b/dist/tool-error.js
 @@ -3,7 +3,16 @@ import { Schema } from "effect";
@@ -983,7 +1704,7 @@ index 6a8d1d2..492ad48 100644
 +    ...(properties === undefined ? {} : { properties }),
 +});
 diff --git a/dist/tool-runtime.d.ts b/dist/tool-runtime.d.ts
-index 7b04d8e..98c08f7 100644
+index 7b04d8e485966e56e673286c9ac9415ac5f60a7f..98c08f773aeb548386a0b6d48ff26c72445d543c 100644
 --- a/dist/tool-runtime.d.ts
 +++ b/dist/tool-runtime.d.ts
 @@ -4,7 +4,12 @@ export type Services<T> = ServicesOf<T, []>;
@@ -1047,7 +1768,7 @@ index 7b04d8e..98c08f7 100644
 +export declare const make: <R>(tools: Tools<R>, maxToolCalls: number | undefined, searchIndex: () => ReadonlyArray<SearchEntry>, hooks?: ToolCallHooks<R>, search?: Search<R>) => ToolRuntime<R>;
  export * as ToolRuntime from "./tool-runtime.js";
 diff --git a/dist/tool-runtime.js b/dist/tool-runtime.js
-index f649a9a..8ccc826 100644
+index f649a9a04eea271c852510a4deef6efa7b6252bc..8ccc826028e82460cfe2227170f6cfea1c05d75d 100644
 --- a/dist/tool-runtime.js
 +++ b/dist/tool-runtime.js
 @@ -1,5 +1,5 @@

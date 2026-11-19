@@ -526,12 +526,30 @@ export class CatalogUnavailable extends Schema.TaggedError<CatalogUnavailable>()
 export const McpLimits = Schema.Struct({
   timeoutMs: Schema.Int.check(Schema.isGreaterThan(0)),
   maxToolCalls: Schema.Int.check(Schema.isGreaterThan(0)),
+  /**
+   * Interpreter steps one program may spend: one per statement or expression evaluated, plus steps
+   * for native calls, for operators that walk or coerce a whole value, and for storing a value (which
+   * walks it for cycles), in proportion to the data they read, copy and return (about one per two
+   * array elements or object keys and one per 256 string characters); `+` or a template that
+   * yields a string costs one per 4,096 characters of the result. A value a call returns that the
+   * program already holds, such as the group `Map.get` returns, is not charged. Waiting on tool calls and approvals spends nothing. This
+   * limits the work a program does on the server's own thread, which `timeoutMs` alone does not;
+   * one native call, or one backtracking regular expression match, still runs to its end before it
+   * is charged. The default stops a comparator `sort` of about 100,000 objects, which takes about 20
+   * million steps; self-host and local raise it with `EXECUTOR_MCP_MAX_STEPS`.
+   */
+  maxSteps: Schema.Int.check(Schema.isGreaterThan(0)),
 });
 export type McpLimits = typeof McpLimits.Type;
 /** Default interpreter budgets; each product may supply different limits. */
 export const defaultMcpLimits: McpLimits = {
   timeoutMs: 5 * 60_000,
   maxToolCalls: 100,
+  // About 9 s of interpreter time in workerd, which runs about 550,000 steps a second (Node runs
+  // about 2 million); native-heavy programs are charged so they stop sooner, not later. Ordinary
+  // programs spend 0.1-0.5 s before their first call; the program that held production's thread
+  // for 203 s took about 110 million steps.
+  maxSteps: 5_000_000,
 };
 /** UTF-8 bytes of JSON one search page may hold; `next` continues past it. */
 export const searchPageBytes = 25_000;

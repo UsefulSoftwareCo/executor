@@ -64,6 +64,9 @@ export const config = Config.all({
     maxToolCalls: Config.Number("EXECUTOR_MCP_MAX_TOOL_CALLS").pipe(
       Config.withDefault(defaultMcpLimits.maxToolCalls),
     ),
+    maxSteps: Config.Number("EXECUTOR_MCP_MAX_STEPS").pipe(
+      Config.withDefault(defaultMcpLimits.maxSteps),
+    ),
   }),
 }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.toType(ServerConfig))));
 

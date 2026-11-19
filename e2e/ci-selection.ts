@@ -634,6 +634,7 @@ const patchGuards: Readonly<Record<string, ReadonlyArray<string>>> = {
     "mcp-catalog.spec.ts",
     "mcp-execute-concurrency.spec.ts",
     "mcp-execute-lazy.spec.ts",
+    "mcp-execute-step-budget.spec.ts",
     "local-mcp-connections.spec.ts",
   ],
   effect: [

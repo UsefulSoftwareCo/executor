@@ -1228,6 +1228,17 @@ export const scenarios = plan({
       cloud: na("Hosted products run the same programs in mcpExecuteCallDepth."),
     },
   },
+  mcpExecuteStepBudget: {
+    fixtures: "actors",
+    file: "mcp-execute-step-budget.spec.ts",
+    title:
+      "Hosted MCP execute stops a program that only computes, in the interpreter, through native calls, operators or string joins, at its step budget with TimeoutExceeded, while other callers stay fast and ordinary programs, including grouping, shared values and `in` lookups, complete",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Shared execute path and CodeMode patch; covered on self-host"),
+      local: na("Shared execute path and CodeMode patch; covered on self-host"),
+    },
+  },
   mcpExecuteReach: {
     fixtures: "actors",
     file: "mcp-execute-reach.spec.ts",

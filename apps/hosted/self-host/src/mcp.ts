@@ -46,6 +46,9 @@ export const selfHostMcp = Effect.gen(function* () {
     timeoutMs: yield* Config.Number("EXECUTOR_MCP_TIMEOUT_MS").pipe(
       Config.withDefault(defaultMcpLimits.timeoutMs),
     ),
+    maxSteps: yield* Config.Number("EXECUTOR_MCP_MAX_STEPS").pipe(
+      Config.withDefault(defaultMcpLimits.maxSteps),
+    ),
   });
   const sessions = yield* RcMap.make({
     // Each session keeps what its callers' last tool calls read (CallStateCache).

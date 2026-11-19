@@ -1704,6 +1704,9 @@ export const timeoutMessage = (timeoutMs: number, phase: "discovery" | "program"
     ? `Execution timed out after ${timeoutMs}ms while loading app tools; no program code ran.`
     : `Execution timed out after ${timeoutMs}ms; earlier tool calls may have completed.`;
 
+/** How the patched CodeMode starts the message of a program that spent `maxSteps`. */
+const stepBudgetMessage = "Execution exceeded its compute budget of ";
+
 /**
  * After the budget is spent, CodeMode interrupts the program and returns its calls and logs.
  * The driver waits this long for that result. If it does not arrive, the driver reports the
@@ -1845,7 +1848,11 @@ function runProgram(
             }),
           ),
         // No output limit: the program's value and logs come back whole.
-        limits: { timeoutMs: limits.timeoutMs, maxToolCalls: limits.maxToolCalls },
+        limits: {
+          timeoutMs: limits.timeoutMs,
+          maxToolCalls: limits.maxToolCalls,
+          maxSteps: limits.maxSteps,
+        },
         // Both hooks run on the fiber that makes the call.
         onToolCallStart: ({ index, name }) =>
           Effect.map(Effect.fiberId, (fiber) => {
@@ -1873,7 +1880,12 @@ function runProgram(
       result.toolCalls.forEach(({ name }, index) => {
         progress.calls[index] ??= { name, outcome: "interrupted" };
       });
-      const timedOut = !result.ok && result.error.kind === "TimeoutExceeded";
+      // A spent step budget keeps CodeMode's message, which names the budget and the line.
+      const stepsSpent =
+        !result.ok &&
+        result.error.kind === "TimeoutExceeded" &&
+        result.error.message.startsWith(stepBudgetMessage);
+      const timedOut = !result.ok && result.error.kind === "TimeoutExceeded" && !stepsSpent;
       const unavailable = result.ok
         ? undefined
         : unavailableTarget(result.error, prepared.namespaces);
@@ -1907,6 +1919,11 @@ function runProgram(
         toolCalls: reportedCalls(progress),
       });
       if (timedOut) yield* Effect.annotateCurrentSpan("executor.timeout.phase", "program");
+      if (stepsSpent)
+        yield* Effect.annotateCurrentSpan({
+          "executor.timeout.phase": "program",
+          "executor.timeout.budget": "steps",
+        });
       // Signatures cost CPU per tool; a program renders them only for its global `search()` pages.
       yield* Effect.annotateCurrentSpan(
         "executor.codemode.signatures_rendered",
