@@ -1662,16 +1662,22 @@ NodeRuntime.runMain(
         ),
       );
     // The save scenarios, from the same comparison: a change to any file a save runs or reads.
-    // How many files the save path has, when it was read; the summary reports it.
+    // A comparison that lists no file changes none of them, so the save path is not read then: no
+    // file of it can be in an empty list, and what a read could fail on (a missing root, an import
+    // it cannot follow) is then as it is on main, whose own run read it. A renamed, deleted or
+    // re-moded file is listed (by both names when renamed), so only a comparison with no entry at
+    // all skips the read. Most select processes the ci-selection cases start compare nothing.
+    // How many files the save path has, when it was read; the summary reports it, or the skip.
     let savePathSize: number | undefined;
     const saveChanged =
       compared === undefined ||
       compared.length >= compareFileLimit ||
-      (yield* savePathFiles.pipe(
-        Effect.tap((files) => Effect.sync(() => (savePathSize = files.size))),
-        Effect.map((files) => compared.some((file) => files.has(file))),
-        Effect.mapError((error) => new SelectionFailed({ message: error.message })),
-      ));
+      (compared.length > 0 &&
+        (yield* savePathFiles.pipe(
+          Effect.tap((files) => Effect.sync(() => (savePathSize = files.size))),
+          Effect.map((files) => compared.some((file) => files.has(file))),
+          Effect.mapError((error) => new SelectionFailed({ message: error.message })),
+        )));
     // The MCP search and session scenarios, from the same comparison (e2e/mcp-search-guard.ts): a
     // floor under the block for the code they run through, in their own Cloud jobs.
     const searchChanged =
@@ -1963,9 +1969,14 @@ NodeRuntime.runMain(
             `A file MCP search or sessions run through differs from main (e2e/mcp-search-guard.ts), so these Cloud scenarios run too: ${[...mcpSearchTitles].join("; ")}`,
           ]
         : []),
-      ...(savePathSize === undefined
-        ? []
-        : ["", `The save path (e2e/save-path.ts) has ${savePathSize} files.`]),
+      ...(savePathSize !== undefined
+        ? ["", `The save path (e2e/save-path.ts) has ${savePathSize} files.`]
+        : compared?.length === 0
+          ? [
+              "",
+              "The save path (e2e/save-path.ts) was not read: the comparison lists no changed file, so no file a save runs or reads changed.",
+            ]
+          : []),
       "",
       ...(lanes === undefined
         ? ["Release lanes: none on main, where Executor releases runs the full matrix after merge."]
