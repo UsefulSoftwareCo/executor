@@ -410,6 +410,7 @@ ends the request drain without shortening the child processes' grace periods. Th
 product and apps get 10 seconds together to exit, then the telemetry collector
 gets 3 seconds. If a child has to be killed, the host names it in the log and
 exits nonzero.
+On Linux, terminal Ctrl-C drains the host just like `docker stop`.
 
 ## App catalog
 

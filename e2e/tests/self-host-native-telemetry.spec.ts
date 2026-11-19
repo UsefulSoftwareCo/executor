@@ -231,9 +231,9 @@ it.live(scenarios.selfHostNativeTelemetryLifecycle.title, () =>
         (pending) => Effect.sync(() => pending.destroy()),
       );
       yield* Effect.sleep("500 millis");
-      // Ctrl-C in a terminal signals the collector and the host together. The host stops the
-      // supervisor immediately, so the collector stays down through the product drain, past the
-      // one-second restart backoff.
+      // Signal the collector and host separately to exercise a collector exit as the host starts
+      // draining. The host holds the supervisor so the collector stays down past its one-second
+      // restart backoff. Terminal Ctrl-C on Linux signals only the host's group.
       const signalled = performance.now();
       yield* Effect.sync(() => {
         process.kill(restarted, "SIGINT");
