@@ -8135,6 +8135,17 @@ export const scenarios = plan({
       local: na("Local has no hosted organization policies."),
     },
   },
+  mcpSearchWalk: {
+    fixtures: "actors",
+    file: "mcp-search-walk.spec.ts",
+    title:
+      "An MCP search without a query pages through 8,000 tools ranking them once, each later page reading only its own rows",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("This scenario reads SQL spans from the self-host Motel collector."),
+      local: na("Hosted MCP scenario"),
+    },
+  },
   mcpSearchStatements: {
     fixtures: "actors",
     file: "mcp-search-statements.spec.ts",

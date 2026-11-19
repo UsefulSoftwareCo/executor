@@ -87,6 +87,89 @@ const Ranked = Schema.Struct({
   definitions: Schema.Array(Schema.Tuple([Schema.String, Schema.Int, Json])),
 });
 export type RankedPage = typeof Ranked.Type;
+/** A ranked page with the order of every item it ranked; see {@link Kept}. */
+const RankedInOrder = Schema.Struct({
+  ...Ranked.fields,
+  stamp: Schema.String,
+  /**
+   * Every item in rank order as `target.position[.ordinal...]`, comma-separated: the target it is
+   * at, the position of its first row in that target's listing, and every other target it merges.
+   */
+  ranking: Schema.NullOr(Schema.String),
+});
+/** The rows of a page of a kept order, read with the stamp of the listings they belong to. */
+const Shown = Schema.Struct({
+  stamp: Schema.String,
+  items: Schema.Array(
+    Schema.Struct({
+      id: Schema.String,
+      listing: Schema.String,
+      tool: StoredTool,
+      router: Schema.NullOr(ToolRouter),
+    }),
+  ),
+  definitions: Ranked.fields.definitions,
+});
+
+/**
+ * A search's order, kept for its later pages. A page past the first reads its rows by the kept
+ * order instead of ranking every row the targets hold again, so paging through a catalog of n
+ * tools costs one ranking and n rows, not one ranking per page. The order is used only while
+ * every listing it ranked still has the digest it had (`stamp`), so a page never mixes two
+ * rankings.
+ *
+ * Items are kept as integers: `cells` holds three per item, its target, the position of its first
+ * row in that target's listing (row ids are `listing:position`) and the end of its other merged
+ * targets in `extras`. An item takes 12 bytes, so an order of 11,467 tools about 140 KB.
+ */
+interface Kept {
+  readonly total: number;
+  readonly missing: ReadonlyArray<number>;
+  readonly stamp: string;
+  readonly cells: Int32Array;
+  readonly extras: Int32Array;
+  /** What the entry holds, its key included, as counted against {@link keptBytes}. */
+  readonly bytes: number;
+}
+/** A search whose order is larger than {@link keptOrderBytes}: its pages rank as before. */
+interface Oversized {
+  readonly bytes: number;
+}
+/** Most searches kept at once. */
+const keptOrders = 32;
+/** Most bytes all kept searches hold together; the least recently used go first. */
+const keptBytes = 6_000_000;
+/** Most bytes one kept search holds: about 160,000 tools. A larger one is not kept. */
+const keptOrderBytes = 2_000_000;
+/**
+ * How long a kept search goes unread before a new one may evict it. While every kept search is
+ * being paged, a new one is not kept: its pages rank as before, so more concurrent walks than
+ * {@link keptOrders} cost what they did before orders were kept, instead of evicting each other.
+ */
+const keptIdleMillis = 30_000;
+/** Bytes an entry takes beyond its arrays: its key, stamp and object headers. */
+const entryBytes = (key: string, stamp: string, missing: number) =>
+  256 + 2 * (key.length + stamp.length) + 8 * missing;
+
+/** The cells and extras of an order as the ranking statement writes it, or nothing if malformed. */
+const parseOrder = (order: string, total: number) => {
+  const cells = new Int32Array(total * 3);
+  const extras: Array<number> = [];
+  let item = 0;
+  for (const encoded of order === "" ? [] : order.split(",")) {
+    const parts = encoded.split(".");
+    if (item >= total || parts.length < 2) return undefined;
+    for (const [index, part] of parts.entries()) {
+      const value = Number(part);
+      if (!Number.isInteger(value) || value < 0 || value > 0x7fffffff) return undefined;
+      if (index < 2) cells[item * 3 + index] = value;
+      else extras.push(value);
+    }
+    cells[item * 3 + 2] = extras.length;
+    item += 1;
+  }
+  return item === total ? { cells, extras: Int32Array.from(extras) } : undefined;
+};
 
 /**
  * Rows per insert statement: nine parameters each stays well inside Postgres's bound. A batch
@@ -108,6 +191,31 @@ export const supersededRetentionMillis = 60 * 60_000;
 const BM25 = { k1: 1.2, b: 0.75 } as const;
 
 export const makeToolSearchStore = (sql: SqlClient.SqlClient) => {
+  /** Kept orders by search, least recently used first; see {@link Kept}. */
+  const orders = new Map<string, { readonly entry: Kept | Oversized; readonly used: number }>();
+  let ordersBytes = 0;
+  const forget = (key: string) => {
+    const kept = orders.get(key);
+    if (kept === undefined) return;
+    orders.delete(key);
+    ordersBytes -= kept.entry.bytes;
+  };
+  /** Keep an entry as the most recently used, evicting the least recently used past the bounds. */
+  const keep = (key: string, entry: Kept | Oversized, used: number) => {
+    forget(key);
+    orders.set(key, { entry, used });
+    ordersBytes += entry.bytes;
+    for (const old of orders.keys()) {
+      if (orders.size <= keptOrders && ordersBytes <= keptBytes) break;
+      forget(old);
+    }
+  };
+  /** Whether a new order fits without evicting a search read in the last `keptIdleMillis`. */
+  const room = (now: number) => {
+    if (orders.size < keptOrders && ordersBytes + keptOrderBytes <= keptBytes) return true;
+    const [oldest] = orders.values();
+    return oldest !== undefined && now - oldest.used >= keptIdleMillis;
+  };
   const failed = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     effect.pipe(Effect.mapError(() => new StorageError()));
   /** A tool is in a scope when it is read-only under a read-only scope or the scope names it. */
@@ -368,9 +476,12 @@ export const makeToolSearchStore = (sql: SqlClient.SqlClient) => {
      * their rows matches, the item is at their first permitted target, lists every other
      * permitted target with that tool, and ranks by the best matching row.
      *
-     * Ranking and reading the page's tools, definitions and routers are one statement, so they
-     * read one snapshot: a page never holds a row the scopes did not rank, even while another
-     * evaluation replaces the listing's rows. `missing` names targets whose listing has no rows.
+     * The first page ranks and reads the page's tools, definitions and routers in one statement,
+     * so they read one snapshot: a page never holds a row the scopes did not rank, even while
+     * another evaluation replaces the listing's rows. A later page reads its rows by the order the
+     * search kept (see `keptOrders`) and checks, in the same statement, that every listing still
+     * has the digest it was ranked with; a listing written since is ranked again.
+     * `missing` names targets whose listing has no rows.
      */
     page: (input: {
       readonly targets: ReadonlyArray<RankedTarget>;
@@ -408,12 +519,12 @@ export const makeToolSearchStore = (sql: SqlClient.SqlClient) => {
                       + ${BM25.b}::float8 * hits.length / stats.avgdl)))::float8 as score
                 from hits join df using (term) cross join stats
                 group by hits.ordinal, hits.id, hits.name, hits.signature)`;
-        const [page] =
-          yield* sql`with t(ordinal, listing, app, target, labels, length) as (values ${values}),
+        const listed = sql`t(ordinal, listing, app, target, labels, length) as (values ${values}),
           present as (
-            select t.ordinal from t
+            select t.ordinal, l.digest from t
             join executor_tool_search_listings l
-              on l.listing = t.listing and l.app = t.app and l.target = t.target),
+              on l.listing = t.listing and l.app = t.app and l.target = t.target)`;
+        const merged = sql`${listed},
           scope as materialized (
             select t.ordinal, t.app, s.id, s.name, s.signature, string_to_array(s.terms, ' ') as own,
               string_to_array(t.labels, ' ') as labels, s.length + t.length as length
@@ -434,7 +545,33 @@ export const makeToolSearchStore = (sql: SqlClient.SqlClient) => {
             join scope
               on scope.app = best.app and scope.name = best.name
                 and scope.signature = best.signature
-            group by best.app, best.name, best.signature, best.score),
+            group by best.app, best.name, best.signature, best.score)`;
+        const missing = sql`coalesce((select json_agg(t.ordinal order by t.ordinal) from t
+              where not exists (select 1 from present where present.ordinal = t.ordinal)),
+              '[]'::json)`;
+        const stamp = sql`coalesce((select json_agg(json_build_array(ordinal, digest)
+              order by ordinal) from present), '[]'::json)::text`;
+        /** A page's tool's router and the definitions its tools name, from `shown`. */
+        const router = sql`(select router from json_array_elements(shown.routers) as r(router)
+                  where router->>'path' = shown.tool->>'router' limit 1)`;
+        const definitions = sql`coalesce((select json_agg(json_build_array(d.listing, d.position, d.definition))
+              from executor_tool_search_definitions d
+              where d.id in (
+                select shown.listing || ':' || p.position
+                from shown, json_array_elements_text(shown.definitions) as p(position))),
+              '[]'::json)`;
+        const pageOf = (row: typeof Ranked.Type | undefined): RankedPage => ({
+          total: row?.total ?? 0,
+          missing: row?.missing ?? [],
+          items: row?.items ?? [],
+          definitions: row?.definitions ?? [],
+        });
+        /**
+         * Rank and read one page in one statement; with `order`, also the stamp and the order of
+         * every item ranked, for {@link Kept}.
+         */
+        const statement = (order: boolean) =>
+          sql`with ${merged},
           page as (
             select id, target, ordinals,
               row_number() over (order by score desc, target, name collate "C") as rank
@@ -447,25 +584,132 @@ export const makeToolSearchStore = (sql: SqlClient.SqlClient) => {
             from page
             join executor_tool_search s on s.id = page.id
             join executor_tool_search_listings l on l.listing = s.listing)
-          select (select count(*) from merged)::int as total,
-            coalesce((select json_agg(t.ordinal order by t.ordinal) from t
-              where not exists (select 1 from present where present.ordinal = t.ordinal)),
-              '[]'::json) as missing,
+          select (select count(*) from merged)::int as total, ${missing} as missing,
             coalesce((select json_agg(json_build_object(
                 'target', shown.target, 'ordinals', to_json(shown.ordinals),
-                'listing', shown.listing, 'tool', shown.tool,
-                'router', (select router from json_array_elements(shown.routers) as r(router)
-                  where router->>'path' = shown.tool->>'router' limit 1))
+                'listing', shown.listing, 'tool', shown.tool, 'router', ${router})
               order by shown.rank) from shown), '[]'::json) as items,
-            coalesce((select json_agg(json_build_array(d.listing, d.position, d.definition))
-              from executor_tool_search_definitions d
-              where d.id in (
-                select shown.listing || ':' || p.position
-                from shown, json_array_elements_text(shown.definitions) as p(position))),
-              '[]'::json) as definitions`.pipe(
+            ${definitions} as definitions${
+              order
+                ? sql`, ${stamp} as stamp,
+            (select string_agg(concat_ws('.', merged.target, substr(merged.id, length(t.listing) + 2),
+                nullif(array_to_string(merged.ordinals[2:], '.'), '')), ','
+              order by merged.score desc, merged.target, merged.name collate "C")
+              from merged join t on t.ordinal = merged.target) as ranking`
+                : sql``
+            }`;
+        const ranked = () =>
+          statement(false).pipe(
             Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(Ranked))),
+            Effect.map(([row]) => row),
           );
-        return page ?? { total: 0, missing: [], items: [], definitions: [] };
+        const rankedInOrder = () =>
+          statement(true).pipe(
+            Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(RankedInOrder))),
+            Effect.map(([row]) => row),
+          );
+        /** A page of a kept order, or nothing when a listing it ranked has changed since. */
+        const kept = (order: Kept) =>
+          Effect.gen(function* () {
+            const from = Math.min(input.offset, order.total);
+            const to = Math.min(input.offset + input.limit, order.total);
+            const slice: Array<{ id: string; target: number; ordinals: Array<number> }> = [];
+            for (let item = from; item < to; item++) {
+              const target = order.cells[item * 3]!;
+              const listing = input.targets[target]?.listing;
+              if (listing === undefined) return undefined;
+              const start = item === 0 ? 0 : order.cells[item * 3 - 1]!;
+              slice.push({
+                id: `${listing}:${order.cells[item * 3 + 1]}`,
+                target,
+                ordinals: [target, ...order.extras.subarray(start, order.cells[item * 3 + 2])],
+              });
+            }
+            const [shown] = yield* sql`with ${listed},
+              shown as (
+                select s.id, s.listing, s.tool, s.definitions, l.routers
+                from executor_tool_search s
+                join executor_tool_search_listings l on l.listing = s.listing
+                where s.id in (select value from json_array_elements_text(
+                  ${JSON.stringify(slice.map(({ id }) => id))}::json)))
+              select ${stamp} as stamp,
+                coalesce((select json_agg(json_build_object('id', shown.id,
+                    'listing', shown.listing, 'tool', shown.tool, 'router', ${router}))
+                  from shown), '[]'::json) as items,
+                ${definitions} as definitions`.pipe(
+              Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(Shown))),
+            );
+            if (shown === undefined || shown.stamp !== order.stamp) return undefined;
+            const rows = new Map(shown.items.map((item) => [item.id, item]));
+            const items: Array<RankedPage["items"][number]> = [];
+            for (const { id, target, ordinals } of slice) {
+              const row = rows.get(id);
+              if (row === undefined) return undefined;
+              items.push({
+                target,
+                ordinals,
+                listing: row.listing,
+                tool: row.tool,
+                router: row.router,
+              });
+            }
+            return {
+              total: order.total,
+              missing: order.missing,
+              items,
+              definitions: shown.definitions,
+            } satisfies RankedPage;
+          });
+        // The first page, which most searches end at, ranks and reads in one statement.
+        if (input.offset === 0) {
+          yield* Effect.annotateCurrentSpan("executor.search.order", "ranked");
+          return pageOf(yield* ranked());
+        }
+        const key = JSON.stringify([input.targets, input.terms]);
+        const now = yield* Clock.currentTimeMillis;
+        const remembered = orders.get(key)?.entry;
+        if (remembered !== undefined && !("cells" in remembered)) {
+          // Too large to keep: each page ranks, as before.
+          keep(key, remembered, now);
+          yield* Effect.annotateCurrentSpan("executor.search.order", "ranked");
+          return pageOf(yield* ranked());
+        }
+        if (remembered !== undefined) {
+          const page = yield* kept(remembered);
+          if (page !== undefined) {
+            keep(key, remembered, now);
+            yield* Effect.annotateCurrentSpan("executor.search.order", "kept");
+            return page;
+          }
+          forget(key);
+        }
+        if (!room(now)) {
+          // Every kept search is in use: rank this page as before rather than evict one.
+          yield* Effect.annotateCurrentSpan("executor.search.order", "ranked");
+          return pageOf(yield* ranked());
+        }
+        // No order kept, or a listing changed since: rank, read the page from that ranking in the
+        // same statement, and keep the order for the pages after it.
+        const row = yield* rankedInOrder();
+        yield* Effect.annotateCurrentSpan("executor.search.order", "ordered");
+        if (row === undefined) return pageOf(row);
+        const overhead = entryBytes(key, row.stamp, row.missing.length);
+        const parsed =
+          overhead + 12 * row.total > keptOrderBytes
+            ? undefined
+            : parseOrder(row.ranking ?? "", row.total);
+        const bytes =
+          parsed === undefined
+            ? undefined
+            : overhead + parsed.cells.byteLength + parsed.extras.byteLength;
+        keep(
+          key,
+          parsed === undefined || bytes === undefined || bytes > keptOrderBytes
+            ? { bytes: entryBytes(key, "", 0) }
+            : { total: row.total, missing: row.missing, stamp: row.stamp, ...parsed, bytes },
+          now,
+        );
+        return pageOf(row);
       }).pipe(failed),
   };
 };
