@@ -266,6 +266,8 @@ Create an image service from `ghcr.io/usefulsoftwareco/executor-selfhost:beta`,
 attach a new volume at `/app/data`, and generate a public domain routed to port
 `8080` (Railway injects `PORT=8080`; use your own value if you override it).
 Set the healthcheck path to `/health` with a 120-second startup timeout.
+Set `RAILWAY_DEPLOYMENT_DRAINING_SECONDS=30` (or `deploy.drainingSeconds` to `30`)
+so Railway gives the host time to drain before SIGKILL; the default is zero.
 Deploy, or redeploy if the service already started, so it picks up the new
 public domain. Open the domain and create the first administrator.
 
