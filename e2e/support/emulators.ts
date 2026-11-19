@@ -409,21 +409,20 @@ export const repeatability = (
 
 /**
  * Retried only when the service failed to answer: a 5xx that is not a fault the harness armed, a
- * refused, reset or closed connection with no response, or no answer within the attempt's deadline.
- * Never a 4xx, a body that is not JSON, or a failed name lookup or TLS handshake.
+ * refused, reset or closed connection with no response, a GET whose connection was reset or closed
+ * while its body was read, or no answer within the attempt's deadline. Never a 4xx, a body that is
+ * not JSON, or a failed name lookup or TLS handshake. A GET only reads, so reading it again changes
+ * nothing; another call's answer was cut off after the service acted on it, so it is not repeated.
  */
-const retryable = (error: EmulatorFailed) => {
+const retryable = (error: EmulatorFailed, method: string) => {
   if (error.armed === true) return false;
   if (error.status !== undefined) return error.status >= 500;
   const failure = error.failure;
   if (failure === undefined) return false;
   if (failure.stage === "timeout") return true;
-  return (
-    failure.stage === "before response" &&
-    (failure.connection === "connect" ||
-      failure.connection === "reset" ||
-      failure.connection === "closed")
-  );
+  const lost = failure.connection === "reset" || failure.connection === "closed";
+  if (failure.stage === "reading body") return method === "GET" && lost;
+  return failure.stage === "before response" && (failure.connection === "connect" || lost);
 };
 
 /** The last attempt's failure, listing every earlier one. */
@@ -607,7 +606,7 @@ export const emulatorRequest = (
       failures.push(error);
       const spacing = policy.spacingMs[failures.length - 1];
       if (
-        !retryable(error) ||
+        !retryable(error, method) ||
         spacing === undefined ||
         failures.length >= policy.attempts ||
         (yield* elapsed) + spacing >= deadline

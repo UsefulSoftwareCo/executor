@@ -3,7 +3,7 @@
  * never present a start whose run is saved as one to repeat.
  */
 import { expect, layer } from "@effect/vitest";
-import { Effect, Layer, Schema } from "effect";
+import { Clock, Effect, Layer, Schema } from "effect";
 import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
 import { Api, body, SessionClients } from "../support/api.ts";
@@ -49,6 +49,7 @@ const Settled = Schema.Union([
   Schema.Struct({ failed: Failed }),
 ]);
 const Page = Schema.Struct({ items: Schema.Array(Schema.Struct({ id: Schema.String })) });
+const Run = Schema.Struct({ status: Schema.String, output: Schema.optionalKey(Schema.Json) });
 
 type Send = (
   method: "GET" | "POST" | "DELETE",
@@ -72,6 +73,22 @@ const appClient = (send: Send, path: string) => ({
     expect(response.status, JSON.stringify(response.body)).toBe(200);
     return (yield* body(Page, response)).items.map((item) => item.id).toSorted();
   }),
+  /**
+   * The run once it has ended. An app with an active run cannot be deleted, so a scenario waits
+   * for its runs before its clean-up deletes the app.
+   */
+  ended: (run: string) =>
+    Effect.gen(function* () {
+      const deadline = (yield* Clock.currentTimeMillis) + 20_000;
+      for (;;) {
+        const response = yield* send("GET", `${path}/workflow-runs/${run}`);
+        expect(response.status, JSON.stringify(response.body)).toBe(200);
+        const state = yield* body(Run, response);
+        if (!["queued", "running", "waiting"].includes(state.status)) return state;
+        expect(yield* Clock.currentTimeMillis, JSON.stringify(state)).toBeLessThan(deadline);
+        yield* Effect.sleep("100 millis");
+      }
+    }),
 });
 
 /** The self-host test host's storage fault; see `apps/hosted/testing/storage-fault-fixture.ts`. */
@@ -168,7 +185,7 @@ layer(HostedLive, { excludeTestServices: true })("Workflow controls", (it) => {
 
         const check = (path: string) =>
           Effect.gen(function* () {
-            const { call, history } = appClient(send, path);
+            const { call, history, ended } = appClient(send, path);
             // Start, list and get each answer with the run, and the start made exactly one.
             const key = `controls-${randomUUID()}`;
             const started = yield* call("launch", { label: "first", key });
@@ -198,6 +215,8 @@ layer(HostedLive, { excludeTestServices: true })("Workflow controls", (it) => {
               },
             });
             expect(yield* history).toEqual([run]);
+            // The one run ends with its input, so the app can be deleted.
+            expect(yield* ended(run)).toEqual({ status: "complete", output: "first" });
           });
 
         // An app on this checkout's `apps` release.
