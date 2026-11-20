@@ -64,6 +64,17 @@ export const OperatorSettings = Schema.Struct({
   EXECUTOR_OAUTH_CLIENT_METADATA_URL: Schema.optionalKey(Schema.NonEmptyString),
   /** The build an upgrade installs. */
   EXECUTOR_BUILD_VERSION: Schema.optionalKey(Schema.NonEmptyString),
+  /** The npm registry builds install from, as when an operator's mirror is out of reach. */
+  EXECUTOR_NPM_REGISTRY: Schema.optionalKey(Schema.NonEmptyString),
+  /**
+   * E2E only: the product's calls to its compiler fail as a lost connection does, for every build
+   * (`all`) or only builds a deploy keeps (`retained`). An empty value ends the outage.
+   */
+  EXECUTOR_TEST_COMPILER_UNAVAILABLE: Schema.optionalKey(Schema.Literals(["all", "retained", ""])),
+  /** The copies the next start's catalog-copy rebuild stage may change; unset, every copy. */
+  EXECUTOR_CATALOG_COPY_REBUILD_SCOPE: Schema.optionalKey(Schema.String),
+  /** E2E only: the most compiler builds each start's catalog-copy rebuild starts, as Cloud's pace. */
+  EXECUTOR_TEST_CATALOG_COPY_REBUILD_PACE: Schema.optionalKey(Schema.NonEmptyString),
   /**
    * The operator's OAuth clients (notes/oauth.md, "First-party clients"): test client definitions
    * an E2E host adds to the reviewed ones, and the credentials of the clients scenarios turn on.

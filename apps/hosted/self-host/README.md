@@ -98,10 +98,52 @@ still fail now and then; only three failures in a row count. Give your own probe
   later, or 60 to 90 seconds once its connections are refused, plus the pod's termination grace
   period.
 
+  On a very slow disk the first start, which creates the database, can outlast that: with the disk
+  limited to 5 writes a second it took 204 seconds. On storage that slow, raise the startup probe's
+  `failureThreshold`, for example to 36 for about six minutes.
+
 - **Railway** checks `/health` only while a deployment starts, to decide when to send it traffic,
   and does not probe a running service. Set the path to `/health` and the timeout to 120 seconds.
 - **Docker Compose or another supervisor** with its own check: allow 30 seconds a probe and three
   failures, for example `timeout: 30s`, `interval: 30s` and `retries: 3`.
+
+### When the server stops answering
+
+Everything the server does runs on one thread, so app code that never returns, or any other fault
+that holds that thread, stops the whole instance from answering. The image's health check only
+marks such a container unhealthy; Docker does not restart an unhealthy container.
+
+Once the server is ready, the image's host checks every second whether the server answered and how
+its main thread spent that second. It decides the server has stalled when, since its last answer,
+the thread was busy in `EXECUTOR_HOST_STALL_SECONDS` of those seconds (60 by default), or sleeping or
+stopped in five times as many. A busy second is one in which the thread used at least half a
+CPU-second, or proportionally less when the container may use less than one CPU: a quarter of a
+CPU-second at half a CPU. Seconds the thread spends waiting on disk count toward neither, so a slow
+disk does not trip it; nor does a paused container or a sleeping host, since the check counts only
+the seconds it was itself running. `0` turns the check off; the most it accepts is `3600`.
+
+By default the check only logs. Its line starts with `Executor stopped responding:` and gives the
+rule, the counts, the CPU the thread used, the thread states it saw and what it would have done; if
+the server answers again, a line starting with `Executor answered again` follows. Set
+`EXECUTOR_HOST_STALL_RESTART=true` to have it act instead: the host stops the server and exits with
+an error, and the container's restart policy starts it again, which took a few seconds in our tests.
+Restart is off by default. It needs a restart policy, or the container stays stopped, and a restart
+ends every open session, call in progress and paused approval; stored data is kept.
+
+The check cannot tell a long stretch of real work from a server that will never answer: in both, the
+thread stays busy without answering. So before turning restart on, run with the default, which only
+logs, through a period of normal use and watch for the `Executor stopped responding:` line. If
+`Executor answered again` follows it, the server answered after the reported stall. Long-running
+work can cause this too; restarting may interrupt it again if it is retried. If normal work needs
+longer, raise `EXECUTOR_HOST_STALL_SECONDS` or leave restart off. If no recovery line appears while
+the check is still running, it has not observed another answer. If the server remains unresponsive,
+restart it to try to restore service. In two earlier loaded test runs, the check reached the default
+limit; neither retained log recorded an answer again before the test ended.
+
+Use `--restart unless-stopped` or `always` rather than `--restart on-failure`. `on-failure` restarts
+only a container that exits with an error, and the server can exit cleanly without Docker asking it
+to stop, for example when something else in the container sends its runtime a stop signal; the
+container then stays stopped.
 
 ### Runtime packaging
 
@@ -213,6 +255,34 @@ build your own. When the feed cannot be reached or read, both pages say so with
 a retry, and the built-in Executor app stays listed. An agent's catalog query
 fails with the same explanation, as it failed before.
 
+## Update check
+
+The server checks once a day whether a newer Executor release exists, and shows
+owners and admins an **Update available** note at the bottom of the sidebar, with
+how to update. Members see nothing. It sends one `GET` of
+`/-/package/executor/dist-tags` to the npm registry the server already installs
+app packages from: `EXECUTOR_NPM_REGISTRY`, by default `https://registry.npmjs.org`.
+That request has no query string, cookie or header of its own, and nothing that
+identifies this instance, its version, its organizations or its users. The app
+runtime that installs app packages sends it, in the image and on the native
+server built from source alike, so it reaches the registry exactly as installs
+do: a mirror that installs can use, on a private network or over plain HTTP,
+works for the check too, and both connect directly, without reading `HTTP_PROXY`
+or `HTTPS_PROXY`. It follows no redirect and gives up after 5 seconds. Each attempt is saved with the instance's
+data before the request goes out, so it asks at most once a day: a failed or
+unanswered request, or a restart, doesn't ask again within the day. If the
+attempt can't be saved, the check is off: the server doesn't ask, and logs one
+warning that says where it tried to save it, then one line once saving works
+again. With `EXECUTOR_NPM_REGISTRY` set it asks only your mirror, never the
+public registry. Members' browsers never contact the registry; they ask only
+this server. A beta image compares against betas and newer stable releases; a
+stable image compares against stable releases only. The server keeps the last
+answer it got, with the time of its last check, with the instance's data. When
+the registry can't be reached, it keeps showing the newer release from that
+answer, since that release still exists, and logs one debug line; startup and
+requests never wait for it. Set `EXECUTOR_NO_UPDATE_CHECK=1`
+to turn the check off, as for the CLI: the server then makes no request at all.
+
 ## Serve other users
 
 The supplied Compose file binds port 4400 to the host's loopback interface.
@@ -272,7 +342,11 @@ same server, with a matching TLS certificate. App addresses take the form
 App code can reach only public addresses. Requests to the dashboard origin go
 straight to the server, so the built-in Executor app works when that origin
 resolves to a private address. Set `EXECUTOR_APPS_ALLOW_PRIVATE_FETCH=true` to
-let app code reach other private network addresses.
+let app code reach other private network addresses. App builds follow the same
+setting for every download off the registry's origin: a dependency declared by
+tarball URL, and a tarball or redirect the registry's metadata sends elsewhere.
+Downloads from the registry's own origin, including a private
+`EXECUTOR_NPM_REGISTRY`, work either way.
 
 Host-side MCP import and OAuth requests have a separate exact-origin allowlist.
 Set `EXECUTOR_URL_ALLOW_HTTP_ORIGINS` to a JSON array of HTTP or HTTPS origins,

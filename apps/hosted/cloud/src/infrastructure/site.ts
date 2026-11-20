@@ -5,6 +5,7 @@ import { Stage } from "alchemy/Stage";
 import { Effect, Option } from "effect";
 import { chatGptSettings } from "../implementation/chatgpt-sign-in.ts";
 import { postHogBindings } from "./posthog.ts";
+import { cloudReleaseNotesInput } from "./release-notes.ts";
 import { sentryBindings } from "./sentry.ts";
 import { cloudHosts } from "./stage.ts";
 
@@ -19,6 +20,8 @@ export const cloudSite = Effect.gen(function* () {
   // the browser origin (`app.executor.sh`). `/api/*` on the edge belongs to v1, so the site reads
   // the public app registry from the API host (`api.executor.sh`).
   const hosts = yield* cloudHosts.pipe(Effect.orDie);
+  // Production builds only with the notes the deploy wrote; other builds may have none.
+  const notes = yield* cloudReleaseNotesInput.pipe(Effect.orDie);
   return yield* Command.Build("Site", {
     cwd: "../../..",
     command: "bun run hosted:cloud:site:build",
@@ -38,6 +41,10 @@ export const cloudSite = Effect.gen(function* () {
       }),
       PUBLIC_EXECUTOR_COOKIE_DOMAIN: Option.getOrElse(hosts.sharedCookieDomain, () => ""),
       VITE_CHATGPT_SIGN_IN: String(Option.isSome(yield* chatGptSettings.pipe(Effect.orDie))),
+      ...Option.match(notes, {
+        onNone: () => ({}),
+        onSome: (json) => ({ EXECUTOR_CLOUD_RELEASE_NOTES: json }),
+      }),
     },
   });
 });

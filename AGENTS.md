@@ -141,6 +141,11 @@ CI runs it in the `collector-native` job when the crate, its build script
 on Ubuntu 22.04. A run on main saves it to the cache under its identity; a pull request's run
 restores main's entry when the identity matches and otherwise builds from scratch, saving nothing.
 
+A snapshot (`toMatchInlineSnapshot`) is an assertion. Use one when the whole text is the
+behaviour; read every line of a changed one as a changed assertion. No run writes one unless
+asked: record it locally with `--update-snapshots --test-name '<title>'`, which CI refuses
+([Snapshots](e2e/README.md#snapshots)).
+
 Tests are not sacred. Delete a scenario when it no longer proves behavior a user
 or public API caller depends on, or when other scenarios already cover it. Say
 what it covered and why that coverage is not needed. Deletion is not a fix for
@@ -171,6 +176,16 @@ private and out of tool output.
 
 Run `bun run format` before committing. `bun run check` runs the format check,
 `oxlint`, and the typecheck; CI-style verification should use it.
+Before every push to a pull request, run `bun run pr:check` (`--description <file>` before the
+pull request is open): it runs some of the cheap gates CI applies, with CI's own code, in about 25
+seconds: `bun run check`, the `select` job's check of this branch's `e2e` block and of each other
+open stack layer's (each on a checkout of its local head, so a spec file it names must exist in its
+own tree, and a `skip` with no open layer above fails), bun.lock, the apps version bump, the host
+protocols and the Release-note lines of the squashed commit. It does not check, and says so at the
+end of every run: a `skip` layer's check that the layer above's CI run was computed on it, `site`
+(the build, links and Worker size budgets), `apps-package`, `tooling`, the native and collector
+jobs, any E2E scenario or release lane, and line coverage. It needs the network (origin, and `gh`
+signed in, with gh-stack for a stack) and fails with a message saying so when it cannot reach them.
 
 `packages/apps/protocols/*.json` are generated records of the app host
 protocols. Never read, grep or edit them; run `bun run apps:protocols` and read
@@ -229,6 +244,33 @@ TypeScript 7 has no JavaScript compiler API. The `packages/apps` build scripts
 and `e2e/check-boundary.ts` import TypeScript 5.9 as `typescript-5` for it;
 do not use that package to typecheck.
 
+## Release notes
+
+A public release lists only the changes whose squashed commit has a line
+`Release-note: <text>`; pull request titles are never published. For a change a
+user of the CLI, the desktop app or the self-host image would notice, put one
+such line, one plain sentence for users, at the start of a line of its own (not
+indented or quoted) in the body of a commit message on the pull request's
+branch: the squashed commit's body is its commits' messages, not the pull
+request's description. A message that holds `<`, `[`, `$`, ` ``` ` or `~~~`
+anywhere has no notes, so keep HTML, links, math and code blocks out of it. The
+one exception is a line that is only a co-author trailer,
+`Co-authored-by: Name <name@host>` (a bot's name may end `[bot]`), with nothing
+after it, anywhere in the message.
+Every such line is listed. Start the note with its kind, `Feature: `, `Improvement: ` or `Fix: `
+(the word, a colon and exactly one space; a tab or two spaces leave the note refused), as in
+`Release-note: Feature: Teams can be renamed.`: Cloud's What's new leads only with a feature
+or an improvement, the kind is cut off before the rules below are applied and is never published,
+and a note without one is a fix. Mark a note for what it is, and never reword a fix to sound like a
+feature. A note, after its kind, is plain prose of at most 300 characters:
+ASCII letters, digits, spaces and `.,;:!?'"()-`, starting with a letter or
+digit, with no `@`, `#`, `/`, URL, host name, code, Markdown, `GH-123` or whole
+word of 7 or more hex characters or digits; any other is left out whole. Name no
+customer, organization or reporter, use no internal names, and say nothing
+about a security problem not yet fixed and disclosed. Write none for tests, CI,
+tooling or internal refactors. The rules are in
+[Release notes](RELEASING.md#release-notes).
+
 ## CI
 
 `.github/workflows/ci.yml` runs on pull requests, pushes to `main` and manual
@@ -237,15 +279,30 @@ A PR run on an earlier head is cancelled by the new head's run; two runs on the
 same head both run, one after the other. Each push to `main` has its own
 concurrency group, so every push finishes a run and gives each merge a baseline,
 even when merges come in a burst. A stack that lands in one push gets one run, at
-its top commit. Overlapping `main` runs share no deployed stage, database or
+its top commit; `gh stack merge` lands it that way. Overlapping `main` runs share no deployed stage, database or
 secret. They do read the npm registry and create hosted emulators.dev instances,
 each named with a random UUID, so they do not interfere. The jobs live in `.github/workflows/checks.yml`,
 a `workflow_call` workflow, so another repository can call the same jobs.
 
 ### Choosing a PR's E2E scenarios
 
-A pull request runs only the E2E scenarios it selects. Pushes to `main` run the
-full suite. The selection reaches the jobs as title patterns; no value it puts in
+A draft pull request runs only the E2E scenarios it selects. Once it is ready for
+review, it runs the full suite, unless everything it changes since `main` is in the
+narrowing table in [`e2e/narrowing.ts`](e2e/narrowing.ts) (notes, the repository's
+documents and skills, spec files); then it keeps its selection. Marking it ready starts
+that run, and the merge waits for it, so mark a pull request ready when you push the
+head you mean to merge, not after its draft run passes. Whether it is a draft is read
+live when `select` runs, so re-running a draft's run on a ready pull request runs it as
+ready. A draft's `e2e` job is named `e2e (draft)` and never reports the required
+`checks / e2e`, so a draft's green cannot stand for the merge. A stack's top layer is
+compared with `main`, so a tests layer above a code layer runs the full suite, and every
+spec file any layer changed runs on it. A ready pull request
+also runs its new local and self-host scenarios (those of the spec files the stack changed
+that `main`'s `e2e/test-plan.ts` does not name) four more times, each on its own runner and
+the last with half the cores busy; any failure fails it, so a new scenario that passes only
+sometimes never reaches `main`. Fix the race; never add a retry or a longer deadline. At
+most 60 repeat, the first by title, and the run summary says when there were more. Pushes to `main`
+run the full suite. The selection reaches the jobs as title patterns; no value it puts in
 an environment variable or argument may approach Linux's 128 KiB limit, and a case in
 `e2e/tests/ci-selection.spec.ts` fails at a quarter of it, naming the value. Make room by
 splitting (more shards) or by passing it through a file: scenario titles are not a budget,
@@ -285,7 +342,9 @@ them; run it before merging. A scenario new to the deployed suite (one main's `e
 does not name) first runs on a deployed stage after merge even when managed local Cloud runs it
 here, so the `select` job fails until the description has a line `Verified on a deployed stage:`
 saying what ran and its result, for example the `bun run e2e:deployed --database planetscale
---test-name '…'` command the failure prints. Write `none` for a change no scenario exercises, such as documentation. Write each name as it appears in
+--test-name '…'` command the failure prints. A scenario is known by its exact title, so renaming one, even
+cosmetically and only in `e2e/test-plan.ts`, makes it new and needs that line; moving a scenario to
+another file under the same title does not. Write `none` for a change no scenario exercises, such as documentation. Write each name as it appears in
 `e2e/tests/`, optionally prefixed with `e2e/tests/`. The `select` job fails when the
 description has no block, a name is not a spec file there, or a named file is one these
 jobs never run: the release, desktop, billing and PGlite suites have their own
@@ -321,15 +380,30 @@ open PR targets the layer's branch, so a lone PR or the top layer cannot skip. T
 `select` job waits up to 3 minutes for that PR to open, so open the stack's layers together
 (`gh stack submit` does). It then checks that that PR's latest run on its head was built on
 this layer's head and compared Worker sizes with the base the stack ends on
-([`e2e/ci-skip-check.ts`](e2e/ci-skip-check.ts)). For now it only logs what it would
-decide (`skip-check` in the select log and summary); once enforced, it fails and says which command
-runs the layer above again. Never write `skip` on a long-lived branch's PR into `main`: it must be
-compared with `main` itself.
+([`e2e/ci-skip-check.ts`](e2e/ci-skip-check.ts)). On a layer that is ready for review the
+check is enforced and stricter, because a ready layer can be merged alone: it passes only when a
+ready layer above has a run on its head that contains this layer's head and finished green, its
+`checks / check` and `checks / e2e` passed, having run the full suite (or the narrowing table's
+selection, which is what that layer merges on), or when the ready skip layer above passed this same
+check. Its `select` waits up to 50 minutes for that run, so mark the whole stack ready together,
+top included; a draft above never passes it. On a draft it only logs what it would decide
+(`skip-check` in the select log and summary): a draft cannot be merged. Never write `skip` on a
+long-lived branch's PR into `main`: it must be compared with `main` itself.
 After changing a lower layer, rebase the layers above it so the top runs again.
-Merge the stack only when the top layer passes, bottom first, without pausing between
-layers: each merge deploys production.
+Land a stack only when the top layer passes, and only with `gh stack merge <top PR> --yes
+--squash`, never layer by layer. It merges every layer in one operation and one push to
+`main`, so `main` runs CI, Deploy and the public export once, on the top commit, with no
+commit in between that has a code layer without its tests (checked with #5035 and #5036 on
+18 Nov 2026, `notes/ci.md`). A lower layer merged by itself lands untested by the run that
+covered it; `main`'s CI then warns "Stack layer landed alone".
+`gh stack merge` merges only the GitHub stack its argument is in, into that stack's base. First
+check that every layer is in one stack based on `main`: `gh api
+repos/UsefulSoftwareCo/executor-next/pulls/<top PR> --jq .stack` shows its number, size and base.
+If the layers sit in two stacks, run `gh stack unstack <upper stack>` and then `gh stack link <lower
+stack> <each PR above it>`, which changes no branch or base (done for #4989 to #5002 on 18 Nov 2026).
 
-Choose from the actual callers of the changed code. Search `e2e/tests/` for the
+The draft's selection is for fast answers while you work; the ready run is the one that
+cannot miss. Choose from the actual callers of the changed code. Search `e2e/tests/` for the
 routes, tools and UI the change touches, and include every file that exercises them
 on any target. A tests PR on top of a stack gets its own new or changed spec files
 for free; add the existing files that cover the code layers below it. `main` runs the
@@ -388,7 +462,15 @@ REST or GraphQL API to get around a refusal, and no change to the ruleset. Only
 Rhys turns it off, in an emergency. See [CI configuration](notes/ci.md#the-main-ruleset).
 
 A failure on `main` is a regression or a flake that a PR selection missed. Fixing
-it takes priority over new work that touches the same area.
+it takes priority over new work that touches the same area. While CI on `main` is red, the
+paced Windows check is red, or a beta release is held for more than six hours (or by five
+failed attempts in a day), one open issue labelled `main-health` says so: the failed jobs and
+scenarios, the commits since the last green run, and why the beta is held. Main health
+(`.github/workflows/main-health.yml`) is its only writer; each run rewrites it whole from
+those three facts, closes it once each is known to be fine, and while one cannot be read
+(no run yet, no recent Beta decision) opens or closes nothing. It touches only issues
+github-actions opened with its marker; an older `main-red` issue is closed by hand. Read it
+before investigating.
 
 A PR run takes at most about seven minutes. Wait for it once; do not poll post-merge
 suites before handing off. When a job fails in a scenario the change does not

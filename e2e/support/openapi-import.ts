@@ -314,6 +314,130 @@ export const requestEchoUpstream = Effect.gen(function* () {
   return { origin: `http://127.0.0.1:${server.address.port}` };
 });
 
+/** A HuJSON policy file: a comment and trailing commas, so it is not valid JSON. */
+export const hujsonPolicy = `// Engineers reach CI runners.
+{
+  "grants": [
+    { "src": ["group:eng"], "dst": ["tag:ci"], "ip": ["*"], },
+  ],
+}
+`;
+
+/**
+ * JSON answers that are not `application/json`, by path: AWS's JSON protocols and a `+json` type
+ * outside `application`.
+ */
+export const jsonAnswers = {
+  "/aws/json-1.0": {
+    contentType: "application/x-amz-json-1.0",
+    body: { TableNames: ["synthetic-table"] },
+  },
+  "/aws/json-1.1": {
+    contentType: "application/x-amz-json-1.1",
+    body: { StreamNames: ["synthetic-stream"] },
+  },
+  "/scene": { contentType: "model/gltf+json", body: { asset: { version: "2.0" } } },
+} as const;
+
+/**
+ * An API whose bodies are JSON or text by media type. Its policy file is shaped like Tailscale's:
+ * it takes the policy as JSON, HuJSON or a JSON merge patch, and answers with it as HuJSON. AWS's
+ * JSON protocols and a glTF scene take and answer JSON under their own types (`jsonAnswers`). It
+ * records each request: method, path, Content-Type and body as sent.
+ */
+export const mediaTypeUpstream = Effect.gen(function* () {
+  const requests = yield* Ref.make<
+    readonly {
+      readonly method: string;
+      readonly url: string;
+      readonly contentType: string | null;
+      readonly body: string;
+    }[]
+  >([]);
+  const services = yield* Layer.build(
+    HttpRouter.serve(
+      Layer.mergeAll(
+        HttpRouter.add(
+          "GET",
+          "/policy",
+          Effect.succeed(
+            HttpServerResponse.text(hujsonPolicy, { contentType: "application/hujson" }),
+          ),
+        ),
+        HttpRouter.add(
+          "POST",
+          "/*",
+          Effect.gen(function* () {
+            const request = yield* HttpServerRequest.HttpServerRequest;
+            const observed = {
+              method: request.method,
+              url: request.url,
+              contentType: request.headers["content-type"] ?? null,
+              body: yield* request.text,
+            };
+            yield* Ref.update(requests, (previous) => [...previous, observed]);
+            const answer = Object.entries(jsonAnswers).find(([path]) => path === request.url)?.[1];
+            return answer === undefined
+              ? yield* HttpServerResponse.json({})
+              : HttpServerResponse.text(JSON.stringify(answer.body), {
+                  contentType: answer.contentType,
+                });
+          }),
+        ),
+      ),
+      { disableLogger: true, disableListenLog: true },
+    ).pipe(Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 }))),
+  );
+  const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(services));
+  if (!("port" in server.address)) return yield* Effect.die("Fixture must listen on TCP");
+  const origin = `http://127.0.0.1:${server.address.port}`;
+  const object = { type: "object" };
+  /** An operation that takes and answers one JSON media type. */
+  const jsonOperation = (operationId: string, type: string) => ({
+    post: {
+      operationId,
+      requestBody: { required: true, content: { [type]: { schema: object } } },
+      responses: { "200": { description: "OK", content: { [type]: { schema: object } } } },
+    },
+  });
+  const document = {
+    openapi: "3.1.0",
+    info: { title: "Media types", version: "1" },
+    servers: [{ url: origin }],
+    paths: {
+      "/policy": {
+        get: {
+          operationId: "getPolicyFile",
+          responses: {
+            "200": {
+              description: "The policy file",
+              content: { "application/hujson": { schema: { type: "string" } } },
+            },
+          },
+        },
+        post: {
+          operationId: "setPolicyFile",
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: { type: "object", properties: { grants: { type: "array" } } },
+              },
+              "application/hujson": { schema: { type: "string" } },
+              "application/merge-patch+json": { schema: { type: "object" } },
+            },
+          },
+          responses: ok,
+        },
+      },
+      "/aws/json-1.0": jsonOperation("listTables", "application/x-amz-json-1.0"),
+      "/aws/json-1.1": jsonOperation("listStreams", "application/x-amz-json-1.1"),
+      "/scene": jsonOperation("putScene", "model/gltf+json"),
+    },
+  };
+  return { origin, document, requests: Ref.get(requests) };
+});
+
 /**
  * Shapes Executor v1 imported that the OpenAPI specification forbids or leaves unclear: schema
  * references to a component whose name is not URI-encoded, into another component's properties,

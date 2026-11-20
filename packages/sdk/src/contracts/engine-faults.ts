@@ -10,6 +10,11 @@
  * engine's own: `internal`, a transient internal error; `paused` and `terminated`, the local
  * engine's "Aborting engine: …" for a paused or terminated instance; `relayed`, a failure carrying
  * our marker, as the engine relays a step's own failure.
+ *
+ * A late fault (`EngineLate`) fails nothing: it holds a run's first `failures` sleeps or
+ * sleepUntils of one step name for `lateMillis` before they reach the engine, as a call slow in
+ * transit would be, and the engine then answers as it would. A sleepUntil held past its time meets
+ * the engine's refusal of a time in the past.
  */
 import { Schema } from "effect";
 import { WorkflowFailure } from "apps/contracts";
@@ -24,7 +29,15 @@ export const EngineFault = Schema.Struct({
   answer: Schema.Literals(["internal", "paused", "terminated", "relayed"]),
 });
 export type EngineFault = typeof EngineFault.Type;
-export const EngineFaults = Schema.Array(EngineFault);
+export const EngineLate = Schema.Struct({
+  call: Schema.Literals(["sleep", "until"]),
+  step: Schema.String.check(Schema.isMaxLength(100)),
+  failures: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
+  lateMillis: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
+});
+export type EngineLate = typeof EngineLate.Type;
+export const EngineFaults = Schema.Array(Schema.Union([EngineFault, EngineLate]));
+export type EngineFaultList = typeof EngineFaults.Type;
 
 /** How many calls each configured fault has failed, by run and by the call it fails. */
 const faulted = new Map<string, number>();
@@ -32,12 +45,12 @@ const faulted = new Map<string, number>();
  * The fault that fails this call to the engine, counting it, or undefined once its failures are
  * spent. `name` is the engine's name for the call, `<kind>:<authored name>:<hash>`.
  */
-export const engineFaultFor = (
-  faults: ReadonlyArray<EngineFault> | null | undefined,
+const counted = <F extends EngineFault | EngineLate>(
+  faults: ReadonlyArray<F>,
   run: string,
   name: string,
-) => {
-  for (const fault of faults ?? []) {
+): F | undefined => {
+  for (const fault of faults) {
     if (!name.startsWith(`${fault.call}:${fault.step}:`)) continue;
     const key = `${run}\u0000${fault.call}:${fault.step}`;
     const count = faulted.get(key) ?? 0;
@@ -47,6 +60,27 @@ export const engineFaultFor = (
   }
   return undefined;
 };
+export const engineFaultFor = (
+  faults: EngineFaultList | null | undefined,
+  run: string,
+  name: string,
+) =>
+  counted(
+    (faults ?? []).filter((fault): fault is EngineFault => "answer" in fault),
+    run,
+    name,
+  );
+/** How long a late fault holds this sleep or sleepUntil before it reaches the engine, if one does. */
+export const engineLateFor = (
+  faults: EngineFaultList | null | undefined,
+  run: string,
+  name: string,
+) =>
+  counted(
+    (faults ?? []).filter((fault): fault is EngineLate => "lateMillis" in fault),
+    run,
+    name,
+  )?.lateMillis;
 /** The error an engine would throw for the fault's answer. */
 export const engineFaultError = (fault: EngineFault): Error => {
   switch (fault.answer) {

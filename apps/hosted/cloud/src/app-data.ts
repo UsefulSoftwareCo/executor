@@ -175,6 +175,7 @@ const runnerBindings = Effect.gen(function* () {
             Effect.orDie,
           ),
           outbound: yield* credentials.outbound,
+          outboundGroup: credentials.outboundGroup,
           credentialKey: credentials.key,
           data: options.data,
           waitUntil: options.waitUntil,

@@ -6,7 +6,9 @@
  * that never became ready, a killed process), destroy logs that the branch "exists in the cloud but
  * is not owned by this stack" and leaves it, billing, while the run looks finished.
  *
- * What this may delete, and nothing else:
+ * It reads the branch `test-<slug>` for any stage in the registry, so a manually deployed
+ * PlanetScale stage whose branch the destroy removed reads 404 and its lease goes. What it may
+ * delete, and nothing else:
  * - one branch, named exactly `test-<slug>` for the stage being destroyed, where the slug is a
  *   deployed E2E run's (`e2e-` and 1-13 lowercase letters or digits, `e2e/sdk/deployment.ts`). The
  *   name is derived from the slug; it is never taken from a branch list or matched by a pattern;
@@ -24,6 +26,7 @@
 import { Config, Duration, Effect, Option, Redacted, Schedule, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
 import { planetScaleApi } from "./test-stage-orphans.ts";
+import { TestStageSlug } from "../contracts/test-stage-lifetime.ts";
 
 /** A deployed E2E run's slug (`e2e/sdk/deployment.ts`). */
 const e2eSlug = /^e2e-[a-z0-9]{1,13}$/u;
@@ -39,6 +42,17 @@ export const stageBranchFor = (
     ? { branch: `test-${slug}` }
     : { refused: `"${slug}" is not a deployed E2E run's slug (e2e- and 1-13 letters or digits)` };
 
+/**
+ * The branch a stage's teardown reads: `test-<slug>` for any test stage's slug, which only a
+ * deployed E2E run's may also delete. Anything that is not a slug is refused before any request.
+ */
+const stageBranchToRead = (
+  slug: string,
+): { readonly branch: string; readonly mayDelete: boolean } | { readonly refused: string } =>
+  Schema.is(TestStageSlug)(slug)
+    ? { branch: `test-${slug}`, mayDelete: e2eSlug.test(slug) }
+    : { refused: `"${slug}" is not a test stage's slug` };
+
 /** Whether `name` is exactly the branch `stageBranchFor(slug)` derives. */
 export const isStageBranch = (name: string, slug: string) => {
   const derived = stageBranchFor(slug);
@@ -50,6 +64,11 @@ export type BranchOutcome =
   | { readonly _tag: "Refused"; readonly reason: string }
   /** PlanetScale answered 404 before any delete was sent: nothing to remove. */
   | { readonly _tag: "Absent" }
+  /**
+   * The branch is still there after the destroy, and it is not a deployed E2E run's, so no delete
+   * was sent.
+   */
+  | { readonly _tag: "NotDeleted"; readonly reason: string }
   /** A production branch; no delete was sent. */
   | { readonly _tag: "Production" }
   /** The branch could not be read (an answer other than 200 or 404, or none in time); no delete was sent. */
@@ -74,6 +93,8 @@ export const branchOutcomeMessage = (branch: string, outcome: BranchOutcome) => 
   switch (outcome._tag) {
     case "Refused":
       return `Not deleting PlanetScale branch ${branch}: ${outcome.reason}. No request was sent.`;
+    case "NotDeleted":
+      return `PlanetScale branch ${branch} is still there after the destroy. ${outcome.reason}, so no delete was sent. ${remover}.`;
     case "Absent":
       return `PlanetScale branch ${branch} is gone (PlanetScale answers 404). No delete was needed.`;
     case "Deleted":
@@ -113,7 +134,7 @@ const confirmPolls = 24;
  */
 export const removeStageBranch = (slug: string) =>
   Effect.gen(function* () {
-    const derived = stageBranchFor(slug);
+    const derived = stageBranchToRead(slug);
     if ("refused" in derived)
       return Option.some<BranchOutcome>({ _tag: "Refused", reason: derived.refused });
     const database = yield* Config.option(Config.NonEmptyString("TEST_STAGE_DATABASE"));
@@ -165,6 +186,11 @@ export const removeStageBranch = (slug: string) =>
     if (found.value.production) return Option.some<BranchOutcome>({ _tag: "Production" });
     // The destroy's own delete may still be landing: give it time before sending one.
     if (yield* gone(settlePolls)) return Option.some<BranchOutcome>({ _tag: "Absent" });
+    if (!derived.mayDelete)
+      return Option.some<BranchOutcome>({
+        _tag: "NotDeleted",
+        reason: `Only a deployed E2E run's branch is deleted by name (e2e- and 1-13 letters or digits)`,
+      });
 
     const deleted = yield* call(HttpClientRequest.delete(url));
     if (Option.isNone(deleted)) return Option.some<BranchOutcome>({ _tag: "DeleteUnanswered" });

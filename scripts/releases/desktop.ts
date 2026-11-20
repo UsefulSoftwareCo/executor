@@ -13,6 +13,17 @@ import {
   desktopRuntimeBuildFile,
 } from "../../apps/local/desktop/src/contracts/desktop.ts";
 
+/**
+ * Development-only desktop code, which `build.mjs --release` leaves out of the bundle. The bundled
+ * electron-updater defines `forceDevUpdateConfig` itself, so the check names the desktop's use of it.
+ */
+const developmentOnly = [
+  "EXECUTOR_DESKTOP_DEV_UPDATE_CONFIG",
+  "autoUpdater.forceDevUpdateConfig",
+  "autoUpdater.updateConfigPath",
+  "development-updates",
+];
+
 const build = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -83,10 +94,16 @@ const build = Effect.gen(function* () {
       build: Hex.encode(crypto.getRandomValues(new Uint8Array(6))),
     }),
   );
-  yield* run("node", ["apps/local/desktop/scripts/build.mjs"], root);
+  yield* run("node", ["apps/local/desktop/scripts/build.mjs", "--release"], root);
   // The main entry and the server starter it runs in a utility process.
-  for (const entry of ["main.cjs", "starter.cjs"])
+  for (const entry of ["main.cjs", "starter.cjs"]) {
     yield* fs.copyFile(path.join(root, "apps/local/desktop/dist", entry), path.join(stage, entry));
+    // A development override that names where updates come from must not exist in a release.
+    const bundled = yield* fs.readFileString(path.join(stage, entry));
+    for (const development of developmentOnly)
+      if (bundled.includes(development))
+        return yield* Effect.die(new Error(`The release ${entry} contains ${development}`));
+  }
   yield* fs.writeFileString(
     path.join(stage, "package.json"),
     JSON.stringify({

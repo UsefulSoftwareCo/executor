@@ -81,7 +81,7 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
                         response.request().method() === "POST" &&
                         new URL(response.url()).pathname.endsWith("/credential-checks"),
                     ),
-                    connect.getByRole("button", { name: "Validate API key", exact: true }).click(),
+                    connect.getByRole("button", { name: "Validate", exact: true }).click(),
                   ]),
                 )
                 .then(([response]) => response.json() as Promise<unknown>),
@@ -114,8 +114,8 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
         });
         // The check is the app's own code, so the form says it may be wrong and saving stays open.
         expect(yield* verdict("The form shows the app's explanation")).toBe(
-          "Couldn't verify this API key: 403: token [redacted] lacks the accounts scope\n" +
-            "The app's check may be wrong. You can still add this API key and ask your agent to fix the check.\n" +
+          "Couldn't verify these credentials: 403: token [redacted] lacks the accounts scope\n" +
+            "The app's check may be wrong. You can still add these credentials and ask your agent to fix the check.\n" +
             "Copy fix prompt",
         );
         yield* browser.checkpoint("App explains why the check failed");
@@ -133,11 +133,11 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
         );
         expect(prompt).toBe(
           [
-            `The account check in my Executor app (app ID: ${app.id}) failed for my Check fixture API key, and the check itself may be wrong.`,
+            `The account check in my Executor app (app ID: ${app.id}) failed for my Check fixture credentials (sign-in method: API key), and the check itself may be wrong.`,
             "",
-            "The check reported: Couldn't verify this API key: 403: token [redacted] lacks the accounts scope",
+            "The check reported: Couldn't verify these credentials: 403: token [redacted] lacks the accounts scope",
             "",
-            "Start with the Executor app's executor skill. Read the app's source, find the health check for the Check fixture provider, and fix it so it accepts a working API key and still rejects a bad one. Deploy the updated app. Don't ask me to paste the API key into chat.",
+            "Start with the Executor app's executor skill. Read the app's source, find the health check for the Check fixture provider, and fix it so it accepts working credentials and still rejects bad ones. Deploy the updated app. Don't ask me to paste the credentials into chat.",
           ].join("\n"),
         );
         expect(prompt).not.toContain(missingScope);

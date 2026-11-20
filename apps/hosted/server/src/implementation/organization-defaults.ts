@@ -1,6 +1,7 @@
 import { organizationAppCreation, personalAccountCreation } from "./resource-lifecycle.ts";
 import type { HostedApiDocument } from "../contracts/api.ts";
 import { managedAccountKey } from "./api-keys.ts";
+import { managedKeyEligible } from "./managed-key-eligibility.ts";
 import { sourceFilesEqual } from "@executor-js/sdk/core";
 import { AccountId, AppId, StorageError, StorageHost, type Executor } from "@executor-js/sdk/core";
 import { Effect, Redacted, Schema } from "effect";
@@ -101,8 +102,10 @@ export const organizationDefaults = (
           );
         }
         if (user === undefined) return;
-        // A recorded member already has a key, or deliberately deleted it. Setup never replaces
-        // either, and never changes the app: it is the organization's to edit and deploy.
+        // A recorded member already has a key account, or deliberately deleted it. Setup never
+        // replaces either, and never changes the app: it is the organization's to edit and deploy.
+        // A key revoked from under a recorded account is renewed when the app is refused with it
+        // (`renewManagedExecutorKey`); the account itself is never recreated.
         if (Object.hasOwn(state.accounts, user.userId)) return;
         // The stored ID follows renames; deletion never recreates an initialized app.
         const app =
@@ -137,12 +140,10 @@ export const organizationDefaults = (
               const requirement = (yield* executor.apps.get({ owner, app: app.id })).requirements
                 .accounts.service;
               if (requirement === undefined) return;
-              const eligible =
-                yield* sql`select member.id from member join "user" on "user".id = member."userId"
-                where member."organizationId" = ${organization} and member."userId" = ${user.userId}
-                and member.role in ('owner', 'admin') and (${requireVerifiedEmail} = false or "user"."emailVerified" = true)
-                for share of member, "user"`.pipe(Effect.mapError(() => new StorageError()));
-              if (eligible.length === 0) return;
+              if (
+                !(yield* managedKeyEligible(sql, organization, user.userId, requireVerifiedEmail))
+              )
+                return;
               const token = yield* managedAccountKey(organization, user.userId).pipe(
                 Effect.provideService(SqlClient.SqlClient, sql),
               );

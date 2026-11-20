@@ -10,7 +10,18 @@
  * request and reply passes through the adapter of the protocol the build's framework speaks.
  */
 import type { Fetcher, WorkerLoader } from "@cloudflare/workers-types";
-import { Clock, Context, Effect, Exit, Option, Redacted, Result, Schema, Semaphore } from "effect";
+import {
+  Clock,
+  Context,
+  Effect,
+  Exit,
+  Option,
+  Redacted,
+  Result,
+  Schema,
+  type Scope,
+  Semaphore,
+} from "effect";
 import {
   ElicitationReply,
   type HostRequest,
@@ -52,7 +63,7 @@ import type { StartedPart } from "../contracts/runtime.ts";
 import { appCacheNamespace, type HostApiCheck } from "../contracts/host-api.ts";
 import { appProtocol, type AppProtocol } from "./app-protocols.ts";
 import { appFacetBridge, appNetworkModuleName, appRpcBridge } from "./worker-bridge.ts";
-import { appNetworkModule } from "./app-network.ts";
+import { appNetworkModule, outboundGroupHeader } from "./app-network.ts";
 import { sealAccounts, unsealedAccounts } from "./credential-handles.ts";
 import { AppRpcEntrypoint, AppRpcInvocation } from "./worker-elicitation.ts";
 import { invocationWorkflow } from "./worker-workflow-rpc.ts";
@@ -122,6 +133,12 @@ export interface AppRunnerHost {
    * no isolate of its own to start, and its caller's hop to it carries the supervisor's start.
    */
   readonly within?: { readonly supervisor: { readonly serves: (app: string) => boolean } };
+  /**
+   * Hold `group` open for the host's network while a call of it runs: the network counts a request
+   * only against a group some call holds, so a value app code sets on its own requests counts for
+   * nothing. A host without it never names groups; see `AppInvocation.outboundGroup`.
+   */
+  readonly outboundGroup?: (group: string) => Effect.Effect<void, never, Scope.Scope>;
 }
 
 /** The authorized call. Credentials travel here, never in a Worker name or retained code. */
@@ -142,6 +159,14 @@ export interface AppInvocation {
   /** The scheduled run the invocation serves, for telemetry; see `InvocationRun`. */
   readonly run?: string;
   readonly headers: Readonly<Record<string, string>>;
+  /**
+   * The host's incoming request that this call's outgoing requests count against, for a host whose
+   * network limits how many requests one incoming request may have waiting for response headers
+   * (Cloud allows six). The runner names it on each request the call sends, while the call runs, so
+   * the host's network (`AppRunnerHost.outboundGroup`) can count them; see `outboundGroupHeader`.
+   * Only the host sets it, with a value no app can guess.
+   */
+  readonly outboundGroup?: string;
 }
 
 /** Capabilities owned by one invocation and released with it. */
@@ -840,6 +865,7 @@ export const makeAppRunner = (host: AppRunnerHost) => {
         ...value,
         executorRevision: result.revision,
         ...(result.cacheChanged === true ? { cacheChanged: true } : {}),
+        ...(result.resent === true ? { resent: true } : {}),
         // The supervisor's own part, on its clock, when it reports one.
         ...(result.timing === undefined ? {} : { supervisor: result.timing }),
       };
@@ -925,6 +951,13 @@ export const makeAppRunner = (host: AppRunnerHost) => {
           return yield* Effect.scoped(
             Effect.gen(function* () {
               // The facet Worker counts against the same limit as app Workers while it is loaded.
+              // The hold is per account selection and lasts until the call's reply is back, past
+              // the supervisor's output gate, so the limit never unloads that selection's facet
+              // while its reply could still fail with the reset's reason after its write
+              // committed. A call of another selection of the same app can arrive during that
+              // unload; the supervisor holds its reset off for any request received after the
+              // unload began. Together they let the host resend a call that met a reset and know
+              // it runs once.
               const unloadFacet = host.unloadFacet;
               if (host.residency !== undefined && unloadFacet !== undefined) {
                 const hold = host.residency.hold(
@@ -996,9 +1029,18 @@ export const makeAppRunner = (host: AppRunnerHost) => {
         // The Worker Loader starting the app's Worker, as the call's start-up reports it, is the
         // other sign the call is cold.
         const started = yield* IsolateStarted;
+        // A host that counts a call's requests holds the call's group until the call ends.
+        const group = host.outboundGroup === undefined ? undefined : invocation.outboundGroup;
+        if (group !== undefined && host.outboundGroup !== undefined)
+          yield* host.outboundGroup(group);
+        const grouped =
+          group === undefined
+            ? invocation.headers
+            : { ...invocation.headers, [outboundGroupHeader]: group };
         const reply = yield* start(name, load, {
           body,
-          headers: invocation.headers,
+          // The Worker's network is fixed when it loads, so a call's group travels per call.
+          headers: grouped,
           globalOutbound: host.outbound(invocation.app, invocation.hostApi),
           elicit: capabilities.elicit,
           controls: capabilities.controls,

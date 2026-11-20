@@ -3,8 +3,9 @@ import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { Api, body } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
-import { Actors } from "../support/actors.ts";
+import { Actors, password } from "../support/actors.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
+import { Target } from "../support/platform.ts";
 import { freeSeat } from "../support/seats.ts";
 import { scenarios } from "../test-plan.ts";
 
@@ -127,6 +128,16 @@ layer(HostedLive, { excludeTestServices: true })("Invitation privacy", (it) => {
             invitationId: invitation.id,
           })).status,
         ).toBe(200);
+        // A cancelled link no longer registers an account on self-host.
+        if ((yield* Target).metadata.target !== "cloud")
+          expect(
+            (yield* api.request(yield* api.session(), "POST", "/api/auth/self-host/register", {
+              invitation: invitation.id,
+              email: invitation.email,
+              name: "Invited user",
+              password,
+            })).status,
+          ).toBe(403);
 
         const administrator = yield* body(
           Schema.Struct({ userId: Schema.String }),
@@ -144,6 +155,16 @@ layer(HostedLive, { excludeTestServices: true })("Invitation privacy", (it) => {
         );
         const membership = roster.members.find((member) => member.userId === administrator.userId);
         expect(membership).toBeDefined();
+        // The admin invites the member back as an administrator, then loses the admin role.
+        const departed = yield* freeSeat;
+        const sent = yield* api.request(
+          actors.admin,
+          "POST",
+          "/api/auth/organization/invite-member",
+          { organizationId, email: departed.email, role: "admin" },
+        );
+        expect(sent.status).toBe(200);
+        const pending = yield* body(Invitation, sent);
         expect(
           (yield* api.request(actors.owner, "POST", "/api/auth/organization/update-member-role", {
             organizationId,
@@ -154,6 +175,21 @@ layer(HostedLive, { excludeTestServices: true })("Invitation privacy", (it) => {
         // Existing sessions lose invitation access as soon as membership changes.
         for (const path of [list, full])
           expect((yield* api.request(actors.admin, "GET", path)).status).toBe(403);
+        // The invitations the admin sent are cancelled with the role, and cannot be accepted.
+        const remaining = yield* body(
+          Schema.Array(Schema.Struct({ id: Schema.String, status: Schema.String })),
+          yield* api.request(actors.owner, "GET", list),
+        );
+        expect(remaining.find((value) => value.id === pending.id)?.status).toBe("canceled");
+        expect(
+          (yield* api.request(actors.member, "POST", "/api/auth/organization/accept-invitation", {
+            invitationId: pending.id,
+          })).status,
+        ).toBe(400);
+        expect(
+          (yield* api.request(actors.member, "GET", `/api/organizations/${organizationId}/access`))
+            .status,
+        ).toBe(403);
       }),
     ),
   );

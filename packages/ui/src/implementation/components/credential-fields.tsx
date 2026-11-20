@@ -171,7 +171,7 @@ export function CredentialFields({
           <div className="flex flex-col gap-1.5" key={name}>
             <label className="field-label flex flex-col gap-2.25 text-[13px] font-medium [&_[data-slot='select-trigger']]:w-full">
               <span className="flex w-full items-center gap-1.5">
-                {fieldLabel(name, field)}
+                <span className="min-w-0 wrap-anywhere">{fieldLabel(name, field)}</span>
                 {field.type === "string" && !fields.plain?.includes(name) && (
                   <FieldAccess
                     hidden={hosts !== undefined && !fields.raw?.includes(name)}

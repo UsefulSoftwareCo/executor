@@ -57,6 +57,27 @@ writers. Smaller runs use the same assertions. `--test-name` is a regular expres
 matched against scenario titles, without the enclosing Vitest suite name.
 Filtered cases are not counted as executed cases in the evidence view.
 
+## Snapshots
+
+Use an inline snapshot (`toMatchInlineSnapshot`) when the whole text is the behaviour, such as
+rendered output or the error an agent reads, and it would otherwise take a row of `toContain`
+checks. Assert one field directly, keep `toMatchObject` where it ignores fields on purpose, and
+replace ids, times and paths with stable labels first. A snapshot is an assertion: a changed one
+is a changed assertion, so read every line of its diff and accept only what the change intends.
+Keep it under 30 lines and inline; lint refuses larger ones, interpolated ones and `.snap` files.
+
+No run writes a snapshot unless asked (`e2e/snapshot-updates.ts`): a missing, empty or changed
+one fails, and under the runner its failure shows what the scenario produced. To record one on purpose, on your machine, run its
+scenario alone with `--update-snapshots`, then read the result in `git diff`:
+
+```sh
+bun run e2e:self-host --test-name '<scenario title>' --update-snapshots
+```
+
+The runner refuses `--update-snapshots` in CI, without `--test-name` and with `--part`. A tooling
+suite (`bun run e2e:<name>`) records when asked with `E2E_UPDATE_SNAPSHOTS=1` or Vitest's own `-u`;
+in CI every config refuses both, however Vitest was started.
+
 ## Line coverage
 
 `E2E_COVERAGE=1` profiles every self-host and local product process. Self-host runs
@@ -1029,7 +1050,17 @@ only the scenarios declaring `runtime: "rolled-back"`. Managed local Cloud runs
 with Better Auth's OAuth proxy on, as the proxy's production (its edge), as
 production does. `bun run e2e:cloud --oauth-proxy-preview` also starts a second
 local Cloud as that production and tests a stage that signs in through it,
-running only the scenarios declaring `runtime: "oauth-proxy-preview"`. Production (`v2`),
+running only the scenarios declaring `runtime: "oauth-proxy-preview"`.
+`bun run e2e:cloud --removal-revocation-budget` starts it with organization
+removal's revocation budget shortened to five seconds and runs only the
+scenarios declaring `runtime: "revocation-budget"`; every other local Cloud
+keeps the deployed five minutes. `bun run e2e:cloud --release-notes empty`
+builds its dashboard with an empty notes file and runs only the scenarios
+declaring `runtime: "empty-release-notes"`; `--release-notes fixes` and
+`--release-notes feature` build it with notes the deploy's notes script writes
+from commit messages (`cloudChanges` in `e2e/support/cloud-release-notes.ts`)
+and run only those declaring `runtime: "fix-release-notes"` or
+`"feature-release-notes"`; every other local Cloud builds it with fixed notes. Production (`v2`),
 ordinary previews and every other deployed stage always retain rate limits,
 whatever their configuration; `bun run auth:rate-limit` (part of `check`)
 proves it. Local and
@@ -1086,6 +1117,27 @@ The release executable runs no preload, so the local CLI owns the runner's two p
 executable loads from disk, such as the OS credential store binding, start it from a shadow
 copy of its install (`support/stand-in-package.ts`).
 
+Test-only hooks in the product. Each is read only when `EXECUTOR_ENVIRONMENT=e2e` (Cloud: only
+with emulated providers, on loopback Cloud and `test-e2e-` stages); any other run ignores it:
+
+- `EXECUTOR_TEST_CLOCK_OFFSET_MS`, `EXECUTOR_TEST_CLOCK_CONTROL` and `EXECUTOR_TEST_STOP_FD`:
+  the local CLI's clock and stop requests (`apps/local/server/src/implementation/e2e-process.ts`).
+- `EXECUTOR_TEST_OAUTH_CLIENT_DEFINITIONS`: synthetic first-party OAuth clients
+  (`apps/hosted/server/src/implementation/first-party-oauth.ts`; self-host allows them only in e2e
+  at `apps/hosted/self-host/src/implementation/executor-services.ts`). Set outside e2e, it stops
+  the server instead of being ignored.
+- `EXECUTOR_TEST_COMPILER_UNAVAILABLE`: calls to the compiler fail as a lost connection does,
+  `all` or only `retained` builds (`packages/sdk/src/implementation/workerd-client.ts`).
+- `EXECUTOR_TEST_CATALOG_COPY_REBUILD_PACE`: paces the catalog copy rebuild at each start, as
+  Cloud paces each tick (`packages/app-management/src/implementation/host-data-steps.ts`).
+- `EXECUTOR_TEST_WORKFLOW_ENGINE_FAULTS`: workflow engine call faults
+  (`packages/sdk/src/contracts/engine-faults.ts`).
+- `EXECUTOR_TEST_SUPERVISOR_RESET_DELAY_MS`, `EXECUTOR_TEST_SUPERVISOR_RESET_HOLD_MS` and
+  `EXECUTOR_TEST_SUPERVISOR_REPLY_DELAY_MS`: delays that make a data supervisor's reset meet other
+  work on purpose. The first waits before the reset's checks with its input open, the second holds
+  its input after them, and the third holds a call's reply after the call has left the facet
+  (`packages/sdk/src/implementation/workerd-apps.ts`; the `app-data-reset-*` scenarios).
+
 The first-launch key scenarios also run against an installed entry:
 
 ```sh
@@ -1140,6 +1192,22 @@ starts the server again:
 ```sh
 EXECUTOR_E2E_DESKTOP_EXECUTABLE='/path/to/Executor Preview.app/Contents/MacOS/Executor Preview' \
   bunx vitest run --config e2e/desktop-release.config.ts
+```
+
+### Desktop update
+
+The desktop update scenario (`desktopUpdate`) runs the desktop's updater from its feed to its
+restart: the sidebar's block and the Updates menu offer a downloaded version, a newer download that
+fails verification clears both, and the menu's item and the block's link each install. It runs
+only on macOS, against a development build, which reads the loopback feed the scenario serves from
+`EXECUTOR_DESKTOP_DEV_UPDATE_CONFIG` (a release build does not contain that setting). Squirrel.Mac, which installs a
+macOS update and accepts only Executor's signed app, is played through Electron's `autoUpdater`.
+No CI job runs it; run it before merging a change to the desktop's updater or its menu:
+
+```sh
+node apps/local/desktop/scripts/build.mjs
+bun run web:build
+bunx vitest run --config e2e/desktop-update.config.ts
 ```
 
 Verify a locally built image without pushing it:

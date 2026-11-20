@@ -6,6 +6,7 @@ import {
   Array as Arr,
   Clock,
   Context,
+  type Duration,
   Effect,
   Exit,
   Fiber,
@@ -51,6 +52,8 @@ import {
   OAuthFirstPartyAttempt,
   OAuthServer,
   allowedScopes,
+  grantableScopes,
+  type OperatorScopeRefusal,
   type FirstPartyOAuthClient,
   type FirstPartyOAuthClientId,
   isFirstPartyAttempt,
@@ -116,7 +119,7 @@ import {
   type OAuthClientKind,
   type OAuthProtocolFailed,
 } from "./oauth-protocol.ts";
-import { defaultLabel, ownedAccount, resumeWaitingSources } from "./accounts.ts";
+import { defaultLabel, lockedAccount, ownedAccount, resumeWaitingSources } from "./accounts.ts";
 import type { OAuthCallbackField, OAuthFailureDetail } from "./oauth-diagnostics.ts";
 
 /**
@@ -339,6 +342,15 @@ type CredentialUse =
  * `oauth.resolve` records it as `oauth.resolve.purpose`.
  */
 type CredentialPurpose = CredentialUse["kind"] | "resolve";
+/**
+ * Credentials a service refused. `app` is the app whose own run reported the refusal, as this
+ * executor runs it, never anything the app's code says; a refusal reported anywhere else, such as
+ * an account check, names none, and only a refusal that names one is offered to the product.
+ */
+interface Rejection {
+  readonly fields: JsonObject;
+  readonly app?: { readonly id: AppId; readonly owner: OwnerId } | undefined;
+}
 /**
  * What an `oauth.resolve` span records about the credentials it decrypts: the account, the
  * organization that owns it, the actor it is decrypted for and why. All opaque IDs or closed
@@ -658,12 +670,15 @@ export const makeOAuth = (
       .flatMap((part) => (separator === undefined ? [part] : part.split(separator)))
       .filter((granted) => granted !== "");
   };
-  /** Whether a token response for the operator's client reports only scopes the client allows. */
+  /**
+   * Whether a token response for the operator's client reports only scopes a grant of it may hold:
+   * those it allows, and its held scopes, which grants it issued earlier keep through renewal.
+   */
   const grantAllowed = (id: FirstPartyOAuthClientId, scope: string | undefined) => {
     const client = firstPartyClients.get(id);
     if (client === undefined) return false;
-    const allowed = allowedScopes(client);
-    return (grantedScopes(client, scope) ?? []).every((granted) => allowed.includes(granted));
+    const grantable = grantableScopes(client);
+    return (grantedScopes(client, scope) ?? []).every((granted) => grantable.includes(granted));
   };
   /**
    * The operator's client and authorization server as configured now, or undefined when the
@@ -758,6 +773,10 @@ export const makeOAuth = (
    * Scopes discovered only in the resource's advertised list are what it offers, not what it
    * requires, so they are narrowed to `allowedScopes`; the client is offered when any remain.
    * An `unlisted` client is offered only to reconnect an account whose grant it issued, `reconnecting`.
+   * A client whose endpoints match but which may not ask for every requested scope is not offered.
+   * When one of those is a held scope, `refused` names every scope it may not ask for, so a
+   * sign-in with no other automatic client can say why rather than send the person to a service
+   * that would refuse the client.
    */
   const firstPartyClient = (
     discovered: {
@@ -767,9 +786,16 @@ export const makeOAuth = (
       readonly scopesAdvertised?: true | undefined;
     },
     reconnecting?: FirstPartyOAuthClientId,
-  ) => {
-    if (discovered.grant !== "authorization_code") return undefined;
+  ): {
+    readonly offered?: {
+      readonly client: FirstPartyOAuthClient;
+      readonly scopes: readonly string[];
+    };
+    readonly refused?: OperatorScopeRefusal;
+  } => {
+    if (discovered.grant !== "authorization_code") return {};
     const { server } = discovered;
+    let refused: OperatorScopeRefusal | undefined;
     const same = (declared: string | undefined, configured: string) =>
       declared !== undefined && new URL(declared).href === new URL(configured).href;
     for (const client of firstPartyClients.values()) {
@@ -783,13 +809,27 @@ export const makeOAuth = (
       if (discovered.scopesAdvertised === true && discovered.scopes.length > 0) {
         const scopes = discovered.scopes.filter((scope) => allowed.includes(scope));
         if (scopes.length === 0) continue;
-        return { client, scopes };
+        return { offered: { client, scopes } };
       }
       const scopes = discovered.scopes.length === 0 ? client.defaultScopes : discovered.scopes;
-      if (!scopes.every((scope) => allowed.includes(scope))) continue;
-      return { client, scopes };
+      const [first, ...others] = scopes.filter((scope) => !allowed.includes(scope));
+      if (first === undefined) return { offered: { client, scopes } };
+      // Only a held scope, which the client once asked for, makes the client's refusal the
+      // answer; any other scope outside its menu leaves it simply not offered.
+      const held = (client.heldScopes ?? []).map((entry) => entry.scope);
+      if (![first, ...others].some((scope) => held.includes(scope))) continue;
+      refused ??= {
+        client: client.label,
+        scopes: [first, ...others],
+        instead: (client.heldScopes ?? []).flatMap((held) => {
+          const [replacement, ...rest] = held.instead;
+          return [first, ...others].includes(held.scope) && replacement !== undefined
+            ? [{ scope: held.scope, scopes: [replacement, ...rest] }]
+            : [];
+        }),
+      };
     }
-    return undefined;
+    return refused === undefined ? {} : { refused };
   };
   const encrypt = (identity: AccountId | OAuthAttemptId | OAuthClientId, value: unknown) =>
     decode(JsonObject, value).pipe(
@@ -1186,11 +1226,17 @@ export const makeOAuth = (
       // A registered client the caller is refused still counts, as a start finds it too.
       const existing = yield* existingAutomatic(input.owner, resolved);
       // The operator's own client, after the owner's registered clients and before CIMD and DCR.
-      const firstParty = existing === undefined ? firstPartyClient(discovered) : undefined;
+      const operating = existing === undefined ? firstPartyClient(discovered) : {};
+      const firstParty = operating.offered;
       const mode =
         existing === undefined && firstParty === undefined && registration === "manual"
           ? ("client-required" as const)
           : ("automatic" as const);
+      // Said only when no automatic client signs in, as a start then fails with it.
+      const refusal =
+        mode === "client-required" && operating.refused !== undefined
+          ? { operatorScopeRefusal: operating.refused }
+          : {};
       const resource =
         firstParty !== undefined
           ? sentResource(firstParty.client.server.resource, "operator")
@@ -1221,6 +1267,7 @@ export const makeOAuth = (
             : [];
       return {
         mode,
+        ...refusal,
         scopes: firstParty?.scopes ?? discovered.scopes,
         grant: "authorization_code",
         issuer: HttpUrl.make(resolved.issuer),
@@ -1464,7 +1511,8 @@ export const makeOAuth = (
           kind: "stored" as const,
           ...(yield* authorizedClientUse(existing.row, existing.secret, input, resolved)),
         };
-      const firstParty = firstPartyClient(discovered, reconnecting);
+      const operating = firstPartyClient(discovered, reconnecting);
+      const firstParty = operating.offered;
       if (firstParty !== undefined) return { kind: "firstParty" as const, firstParty };
       if (registration === "client_id_metadata_document") {
         const url =
@@ -1479,7 +1527,13 @@ export const makeOAuth = (
         return { kind: "entered" as const, client, callback: clientCallback(client, redirect) };
       }
       if (discovered.grant !== "authorization_code" || registration !== "dynamic")
-        return yield* new OAuthClientUnavailable(input);
+        return yield* operating.refused === undefined
+          ? new OAuthClientUnavailable(input)
+          : new OAuthSetupFailed({
+              reason: "operator_scope_refused",
+              operatorScopes: operating.refused,
+              ...(redirect === undefined ? {} : { callbackUrl: HttpUrl.make(redirect.href) }),
+            });
       if (redirect === undefined)
         return yield* new OAuthSetupFailed({ reason: "invalid_redirect" });
       const client = yield* protocol
@@ -1516,6 +1570,15 @@ export const makeOAuth = (
       // before this sign-in uses it, as it will for every later one.
       return { kind: "stored" as const, ...(yield* useStoredClient(used, input, resolved)) };
     }).pipe(Effect.withSpan("oauth.clients.automatic"));
+
+  /**
+   * Whether an automatic choice found no client to sign in with: none fits the service, or the
+   * operator's client fits it but may not ask for a held scope the sign-in requests. A reconnect then keeps the
+   * client its account signed in with in either case.
+   */
+  const noAutomaticClient = (error: unknown): error is OAuthClientUnavailable | OAuthSetupFailed =>
+    Schema.is(OAuthClientUnavailable)(error) ||
+    (Schema.is(OAuthSetupFailed)(error) && error.reason === "operator_scope_refused");
 
   /**
    * The client a sign-in uses. Without a choice, a reconnect keeps the stored client its account
@@ -1595,13 +1658,13 @@ export const makeOAuth = (
           // fall back to the copy the grant holds of the same client.
           if (kept.source === "manual") return yield* keep;
           return yield* automaticChoice(input, resolved, reconnecting).pipe(
-            Effect.catchTag("OAuthClientUnavailable", () => keep),
+            Effect.catchIf(noAutomaticClient, () => keep),
           );
         }
         // No stored client holds or held the grant's copy, so reusing it uses no stored client's
         // credentials. Completion checks again, in case one is stored meanwhile.
         return yield* automaticChoice(input, resolved, reconnecting).pipe(
-          Effect.catchTag("OAuthClientUnavailable", (error) =>
+          Effect.catchIf(noAutomaticClient, (error) =>
             reusable === undefined
               ? Effect.fail(error)
               : Effect.succeed({
@@ -1722,7 +1785,7 @@ export const makeOAuth = (
             const stored =
               existing === undefined
                 ? undefined
-                : yield* ownedAccount(tx, { account: account.id, owner: input.owner });
+                : yield* lockedAccount(tx, { account: account.id, owner: input.owner });
             const saved = stored ?? {
               ...account,
               label: input.label ?? (yield* defaultLabel(tx, input.owner, input.provider)),
@@ -1913,18 +1976,14 @@ export const makeOAuth = (
 
   const reconnectTarget = (tx: Query, attempt: typeof OAuthAttemptRecord.Type) =>
     Effect.gen(function* () {
-      const row = yield* query(() =>
-        tx.findFirst("accounts", { where: (b) => b("id", "=", attempt.account) }),
+      // Locked before its generation is read, as every credential writer does.
+      const row = yield* lockedAccount(tx, { account: attempt.account, owner: attempt.owner }).pipe(
+        Effect.catchTag("AccountNotFound", () => Effect.succeed(undefined)),
       );
-      if (
-        row === null ||
-        row.owner !== attempt.owner ||
-        row.provider !== attempt.provider ||
-        row.method !== attempt.method
-      ) {
+      if (row === undefined || row.provider !== attempt.provider || row.method !== attempt.method) {
         return yield* new OAuthCompletionFailed({ reason: "account_unavailable" });
       }
-      return yield* decode(StoredAccount, row);
+      return row;
     });
 
   const failed = (reason: OAuthCompletionReason) => new OAuthCompletionFailed({ reason });
@@ -2380,7 +2439,9 @@ export const makeOAuth = (
    * Resolve the account's current credentials. With `rejected`, the service has refused those
    * credentials: a grant still holding them is renewed now, whatever its recorded lifetime, and a
    * grant another call already renewed returns its newer credentials. A grant that cannot be
-   * renewed returns the same credentials, so the caller can tell that nothing changed.
+   * renewed returns the same credentials, so the caller can tell that nothing changed. A secrets
+   * account is offered to the product only for a refusal an app's own run reported, naming that
+   * app; the product's answer marks the resolution contested, so authority is checked again.
    *
    * A grant that needs reconnecting is an expected account state, not a fault of this operation:
    * it is returned as a value and recorded as the span's outcome, and only failed after the span.
@@ -2390,21 +2451,54 @@ export const makeOAuth = (
     account: StoredAccount,
     provider: ProviderDefinition,
     resolution: Resolution,
-    rejected?: JsonObject,
+    rejection?: Rejection,
   ) =>
     Effect.gen(function* () {
+      const rejected = rejection?.fields;
       yield* Effect.annotateCurrentSpan(
         credentialAccess(purpose, account, provider, yield* CurrentActor),
       );
       if (rejected !== undefined)
         yield* Effect.annotateCurrentSpan("oauth.renewal.trigger", "credentials_rejected");
-      // Secrets the user brought.
-      if (provider.auth[account.method]?.type === "secrets")
+      // Secrets the user brought, or the product issued. A refusal an app's own run reported asks
+      // the product, naming that app, whether it replaced them; if it did, the account is read
+      // again for what it now holds. The product may wait on its own locks, and whatever it
+      // answers, the resolution is contested: authority is checked again before anything is used.
+      if (provider.auth[account.method]?.type === "secrets") {
+        const app = rejection?.app;
+        const offered =
+          rejected !== undefined && app !== undefined && lifecycle?.secretsRejected !== undefined
+            ? lifecycle.secretsRejected
+            : undefined;
+        if (offered !== undefined) resolution.contested = true;
+        const replaced =
+          offered === undefined || rejected === undefined || app === undefined
+            ? undefined
+            : yield* offered({
+                app,
+                account: { id: account.id, owner: account.owner, provider: account.provider },
+                generation: account.credentialGeneration,
+                rejected: Redacted.make(rejected),
+              }).pipe(
+                Effect.catchTag("StorageError", () => Effect.succeed(false)),
+                Effect.flatMap((renewed) =>
+                  renewed
+                    ? ownedAccount(db, { account: account.id, owner: account.owner }).pipe(
+                        // Removed since: the refused credentials are all it had.
+                        Effect.catchTag("AccountNotFound", () => Effect.succeed(undefined)),
+                      )
+                    : Effect.succeed(undefined),
+                ),
+              );
+        const current = replaced ?? account;
+        if (replaced !== undefined)
+          yield* Effect.annotateCurrentSpan("oauth.renewal.secrets", "replaced");
         return {
-          fields: yield* credentials.decrypt(account.id, account.encryptedCredentials),
+          fields: yield* credentials.decrypt(current.id, current.encryptedCredentials),
           firstParty: undefined,
-          generation: account.credentialGeneration,
+          generation: current.credentialGeneration,
         } satisfies AccountCredential;
+      }
       /** Record why the grant cannot be used on this span; only fixed vocabularies and codes. */
       const reconnect = (reason: ReconnectReason, cause?: OAuthFailureCause) =>
         reconnectRequired("oauth.resolve", account.id, reason, cause);
@@ -2935,7 +3029,7 @@ export const makeOAuth = (
     provider: ProviderDefinition,
     allowed: ReadonlySet<AccountId> | undefined,
     resolution: Resolution,
-    rejected?: JsonObject,
+    rejection?: Rejection,
     recheck: Effect.Effect<void, StorageError | AccountUseRefused> = enforced(
       authorized([account]),
       [account],
@@ -2943,14 +3037,21 @@ export const makeOAuth = (
   ) =>
     Effect.gen(function* () {
       if (allowed !== undefined && !allowed.has(account.id)) return yield* new AccountUseRefused();
-      const fields = yield* resolveCredentials(purpose, account, provider, resolution, rejected);
+      const fields = yield* resolveCredentials(purpose, account, provider, resolution, rejection);
       // A remote token refresh can outlive a permission change, an unlinking or account deletion.
       if (resolution.contested) yield* recheck;
       return fields;
     });
   const resolve = (account: StoredAccount, provider: ProviderDefinition, rejected?: JsonObject) =>
     Effect.flatMap(authorized([account]), (allowed) =>
-      resolveAuthorized("resolve", account, provider, allowed, { contested: false }, rejected),
+      resolveAuthorized(
+        "resolve",
+        account,
+        provider,
+        allowed,
+        { contested: false },
+        rejected === undefined ? undefined : { fields: rejected },
+      ),
     ).pipe(
       // A refusal is the storage failure callers that do not distinguish it have always seen.
       Effect.catchTag("AccountUseRefused", () => Effect.fail(new StorageError())),
@@ -3103,7 +3204,8 @@ export const makeOAuth = (
         provider,
         undefined,
         { contested: false },
-        rejected,
+        // Only an app's own run names the app the refusal came from.
+        { fields: rejected, app: use.kind === "run" ? use.app : undefined },
         recheck,
       ),
     ).pipe(
@@ -3166,27 +3268,33 @@ export const makeOAuth = (
 
   /**
    * Best-effort revocation of a grant whose account was already deleted. Nothing here can fail or
-   * undo the deletion.
+   * undo the deletion. `deadline` bounds this one revocation below the protocol's own request
+   * timeout; one that runs out is recorded as failed.
    */
-  const revokeGrant = (removed: {
-    readonly account: AccountId;
-    readonly provider: string;
-    readonly encrypted: Uint8Array;
-  }) =>
-    settledRevocation(
-      Effect.gen(function* () {
-        yield* Effect.annotateCurrentSpan("oauth.provider.id", removed.provider);
-        const stored = yield* decrypt(removed.account, removed.encrypted, OAuthGrant);
-        // A grant to the operator's client is revoked at the client's configured endpoint.
-        const grant = yield* operatingGrant(stored);
-        if (grant === undefined) return "unsupported" as const;
-        return yield* revokeTokens(grant, grantClientKind(stored), {
-          refreshToken: grant.grant === "client_credentials" ? undefined : grant.refreshToken,
-          accessToken: grant.fields["access_token"],
-        });
-      }),
+  const revokeGrant = (
+    removed: {
+      readonly account: AccountId;
+      readonly provider: string;
+      readonly encrypted: Uint8Array;
+    },
+    deadline?: Duration.Input,
+  ) => {
+    const revocation = Effect.gen(function* () {
+      yield* Effect.annotateCurrentSpan("oauth.provider.id", removed.provider);
+      const stored = yield* decrypt(removed.account, removed.encrypted, OAuthGrant);
+      // A grant to the operator's client is revoked at the client's configured endpoint.
+      const grant = yield* operatingGrant(stored);
+      if (grant === undefined) return "unsupported" as const;
+      return yield* revokeTokens(grant, grantClientKind(stored), {
+        refreshToken: grant.grant === "client_credentials" ? undefined : grant.refreshToken,
+        accessToken: grant.fields["access_token"],
+      });
+    });
+    return settledRevocation(
+      deadline === undefined ? revocation : Effect.timeout(revocation, deadline),
       "oauth.revokeGrant",
     );
+  };
   /** Revoke after the deletion commits; see `revokeLater`. */
   const revokeRemoved = (removed: Parameters<typeof revokeGrant>[0]) =>
     revokeLater(revokeGrant(removed));
@@ -3244,5 +3352,6 @@ export const makeOAuth = (
     usableAll,
     usableEach,
     revokeRemoved,
+    revokeGrant,
   };
 };

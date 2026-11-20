@@ -91,6 +91,7 @@ const errorMessage = Match.type<HostedError>().pipe(
       "An app uses this account for everyone. Unlink it under App accounts on the app’s Accounts tab before deleting it.",
     AccountSelectionInvalid: () => "Choose accounts that match this app’s requirements.",
     AccountFieldsInvalid: () => "Check the account details and try again.",
+    ExecutorKeyRefused: (error) => `${error.description} ${error.recovery.action}`,
     AuthMethodInvalid: () =>
       "This sign-in method is no longer available. Start account setup again.",
     AccountConnectionNotFound: () =>

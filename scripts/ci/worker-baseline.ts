@@ -68,7 +68,7 @@ import {
   type UpperSeen,
   type Verdict,
   decisionLine,
-  enforce,
+  enforcing,
   fails,
   guarded,
   summarySentence,
@@ -544,6 +544,7 @@ const Pulls = Schema.fromJsonString(
   Schema.Array(
     Schema.Struct({
       number: Schema.Number,
+      draft: Schema.Boolean,
       head: Schema.Struct({
         sha: Schema.String,
         repo: Schema.NullOr(Schema.Struct({ full_name: Schema.String })),
@@ -575,10 +576,12 @@ const RunArtifacts = Schema.fromJsonString(
 
 const RunJobs = Schema.fromJsonString(
   Schema.Struct({
+    total_count: Schema.Number,
     jobs: Schema.Array(
       Schema.Struct({
         name: Schema.String,
         status: Schema.String,
+        conclusion: Schema.optional(Schema.NullOr(Schema.String)),
         steps: Schema.optional(
           Schema.Array(Schema.Struct({ name: Schema.String, status: Schema.String })),
         ),
@@ -591,6 +594,37 @@ const RunJobs = Schema.fromJsonString(
 const checkStep = "Check that the layer above was computed on this layer";
 
 /**
+ * Whether `lower.head` is an ancestor of `tested`, the merge commit an upper run tested: GitHub's
+ * compare of the two, which says `ahead` or `identical` exactly when it is (the equivalent of `git
+ * merge-base --is-ancestor`, without the history a shallow checkout lacks). Asked once per tested
+ * commit and remembered; an answer that could not be read is undefined, so the check keeps waiting.
+ */
+const containsLower = (
+  lower: Lower,
+  tested: string,
+  limit: Duration.Duration,
+  contained: Map<string, boolean>,
+) =>
+  Effect.gen(function* () {
+    const known = contained.get(tested);
+    if (known !== undefined) return known;
+    const status = (yield* gh(
+      [
+        "api",
+        `repos/${lower.repository}/compare/${lower.head}...${tested}?per_page=1`,
+        "--jq",
+        ".status",
+      ],
+      limit,
+    )).trim();
+    if (!["ahead", "identical", "behind", "diverged"].includes(status))
+      return yield* new BaselineFailed({ message: `the compare answered ${status}` });
+    const answer = status === "ahead" || status === "identical";
+    contained.set(tested, answer);
+    return answer;
+  }).pipe(Effect.catchCause(() => Effect.succeed<boolean | undefined>(undefined)));
+
+/**
  * One look at the pull requests above `lower`: this repository's open pull requests based on its
  * branch, and their CI runs on their current heads. A record is downloaded once per artifact.
  */
@@ -599,6 +633,7 @@ const look = (
   scratch: string,
   records: Map<number, RecordFields>,
   limits: { readonly read: Duration.Duration; readonly look: Duration.Duration },
+  contained: Map<string, boolean>,
 ) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -611,6 +646,26 @@ const look = (
           ),
         ),
       );
+    // A run's jobs, page by page until those named are all listed or the run's jobs end: a full run
+    // has more than the 100 a page holds (96 E2E matrix jobs alone), and its required checks come
+    // last. Each page is a conditional read, free while it has not changed.
+    const jobsOf = (run: number, names: ReadonlyArray<string>) =>
+      Effect.gen(function* () {
+        const jobs: Array<(typeof RunJobs.Type)["jobs"][number]> = [];
+        for (let page = 1; ; page += 1) {
+          const listed = yield* read(
+            RunJobs,
+            `repos/${repository}/actions/runs/${run}/jobs?per_page=100&page=${page}`,
+          );
+          jobs.push(...listed.jobs);
+          if (
+            names.every((name) => jobs.some((job) => job.name === name)) ||
+            listed.jobs.length === 0 ||
+            jobs.length >= listed.total_count
+          )
+            return jobs;
+        }
+      });
     // A fork's pull request, and a fork's run on the same commit, run the fork's code, which could
     // write any record: only this repository's count.
     const pulls = (yield* read(
@@ -623,16 +678,27 @@ const look = (
           HeadRuns,
           `repos/${repository}/actions/runs?event=pull_request&head_sha=${pull.head.sha}&per_page=50`,
         );
-        // CI's runs, not another workflow's; a cancelled run may have recorded and then stopped.
-        const runs = all
+        // CI's runs, not another workflow's; a cancelled run may have recorded and then stopped,
+        // so its record is not read.
+        const ci = all
           .filter(
             (run) =>
               run.path === ".github/workflows/ci.yml" &&
-              run.head_repository?.full_name === repository &&
-              run.conclusion !== "cancelled",
+              run.head_repository?.full_name === repository,
           )
           .toSorted((a, b) => b.id - a.id);
+        const runs = ci.filter((run) => run.conclusion !== "cancelled");
         const seen: Array<RunSeen> = [];
+        // Only cancelled runs on the head: the newest is seen as cancelled, which fails at once.
+        const cancelled = ci[0];
+        if (runs.length === 0 && cancelled !== undefined)
+          seen.push({
+            id: cancelled.id,
+            url: cancelled.html_url,
+            selectDone: true,
+            waitingAbove: false,
+            cancelled: true,
+          });
         // Every run on the head is read, since any one with a fitting record passes; the ten newest
         // cover a stack's duplicates and re-runs.
         for (const run of runs.slice(0, 10)) {
@@ -666,12 +732,36 @@ const look = (
           }
           const record = newest === undefined ? undefined : records.get(newest.id);
           if (record !== undefined) {
+            // A ready layer passes only on a merge gate that passed: the state of its required
+            // checks (gateOutcome). A job the run's jobs do not list is `missing` once the run has
+            // ended, and not listed yet before.
+            const gates =
+              lower.ready && !pull.draft && (record.gate === "full" || record.gate === "narrowed")
+                ? yield* jobsOf(run.id, ["checks / check", "checks / e2e"]).pipe(
+                    Effect.map((jobs) => {
+                      const state = (name: string) => {
+                        const job = jobs.find((candidate) => candidate.name === name);
+                        if (job === undefined)
+                          return run.status === "completed" ? "missing" : undefined;
+                        return job.status === "completed"
+                          ? (job.conclusion ?? "unknown")
+                          : job.status;
+                      };
+                      return { check: state("checks / check"), e2e: state("checks / e2e") };
+                    }),
+                  )
+                : undefined;
             seen.push({
               id: run.id,
               url: run.html_url,
               record,
               selectDone: true,
               waitingAbove: false,
+              contains:
+                record.tested === undefined || record.base === lower.head
+                  ? undefined
+                  : yield* containsLower(lower, record.tested, limits.read, contained),
+              gates,
             });
             continue;
           }
@@ -679,10 +769,9 @@ const look = (
             seen.push({ id: run.id, url: run.html_url, selectDone: true, waitingAbove: false });
             continue;
           }
-          const select = (yield* read(
-            RunJobs,
-            `repos/${repository}/actions/runs/${run.id}/jobs?per_page=100`,
-          )).jobs.find((job) => job.name === "checks / select");
+          const select = (yield* jobsOf(run.id, ["checks / select"])).find(
+            (job) => job.name === "checks / select",
+          );
           seen.push({
             id: run.id,
             url: run.html_url,
@@ -693,7 +782,12 @@ const look = (
               ) ?? false,
           });
         }
-        return { pull: pull.number, head: pull.head.sha, runs: seen } satisfies UpperSeen;
+        return {
+          pull: pull.number,
+          head: pull.head.sha,
+          draft: pull.draft,
+          runs: seen,
+        } satisfies UpperSeen;
       }),
     );
     return { _tag: "Read", uppers } as Observation;
@@ -721,40 +815,54 @@ const look = (
  * The check of the layer above a skip layer (e2e/ci-skip-check.ts): it looks, waits within the
  * bounds, logs one decision line and a summary sentence, and fails only when enforcing.
  */
-const decide = Effect.gen(function* () {
-  const lower: Lower = {
+const readLower = Effect.gen(function* () {
+  return {
     repository: yield* Config.String("GITHUB_REPOSITORY"),
     ref: yield* Config.String("HEAD_REF"),
     head: yield* Config.String("HEAD_SHA"),
     bottom: yield* Config.String("BASELINE_BRANCH"),
     runId: yield* Config.String("GITHUB_RUN_ID").pipe(Config.withDefault("<run-id>")),
-  };
-  const scratch = `${yield* Config.String("RUNNER_TEMP").pipe(Config.withDefault("/tmp"))}/ci-above`;
-  // Seconds of the clock per second of the rule. The spec runs the waits faster, and then counts
-  // only the waits, since its stand-in reads take longer than the waits it shortens.
-  const scale = yield* Config.Number("SKIP_ABOVE_TIME_SCALE").pipe(Config.withDefault(1));
-  // Each read, download included, gets 20 seconds and each look a minute: a stalled connection
-  // is no answer, and cannot hold the step past its deadline.
-  const limits = {
-    read: Duration.millis(Math.max(1000, 20_000 * scale)),
-    look: Duration.millis(Math.max(2000, 60_000 * scale)),
-  };
-  const records = new Map<number, RecordFields>();
-  const start = yield* Clock.currentTimeMillis;
-  let previous: Verdict | undefined;
-  let waited = 0;
-  for (let polls = 0; ; polls += 1) {
-    const verdict = judge(yield* look(lower, scratch, records, limits), lower, previous);
-    if (verdict._tag === "Wait" && verdict.why !== (previous?._tag === "Wait" ? previous.why : ""))
-      yield* Console.log(`Waiting: ${verdict.why}.`);
-    previous = verdict;
-    const elapsed = scale === 1 ? ((yield* Clock.currentTimeMillis) - start) / 1000 : waited;
-    const step = next(verdict, lower, elapsed, polls);
-    if (step._tag === "Done") return step.decision;
-    waited += step.after;
-    yield* Effect.sleep(Duration.millis(step.after * 1000 * scale));
-  }
+    // Ready unless select read it as a draft: a value it did not write is no proof of a draft.
+    ready: (yield* Config.String("LOWER_DRAFT").pipe(Config.withDefault(""))) !== "true",
+  } satisfies Lower;
 });
+
+const decide = (lower: Lower) =>
+  Effect.gen(function* () {
+    const scratch = `${yield* Config.String("RUNNER_TEMP").pipe(Config.withDefault("/tmp"))}/ci-above`;
+    // Seconds of the clock per second of the rule. The spec runs the waits faster, and then counts
+    // only the waits, since its stand-in reads take longer than the waits it shortens.
+    const scale = yield* Config.Number("SKIP_ABOVE_TIME_SCALE").pipe(Config.withDefault(1));
+    // Each read, download included, gets 20 seconds and each look a minute: a stalled connection
+    // is no answer, and cannot hold the step past its deadline.
+    const limits = {
+      read: Duration.millis(Math.max(1000, 20_000 * scale)),
+      look: Duration.millis(Math.max(2000, 60_000 * scale)),
+    };
+    const records = new Map<number, RecordFields>();
+    const contained = new Map<string, boolean>();
+    const start = yield* Clock.currentTimeMillis;
+    let previous: Verdict | undefined;
+    let waited = 0;
+    for (let polls = 0; ; polls += 1) {
+      const verdict = judge(
+        yield* look(lower, scratch, records, limits, contained),
+        lower,
+        previous,
+      );
+      if (
+        verdict._tag === "Wait" &&
+        verdict.why !== (previous?._tag === "Wait" ? previous.why : "")
+      )
+        yield* Console.log(`Waiting: ${verdict.why}.`);
+      previous = verdict;
+      const elapsed = scale === 1 ? ((yield* Clock.currentTimeMillis) - start) / 1000 : waited;
+      const step = next(verdict, lower, elapsed, polls);
+      if (step._tag === "Done") return step.decision;
+      waited += step.after;
+      yield* Effect.sleep(Duration.millis(step.after * 1000 * scale));
+    }
+  });
 
 /**
  * The check of the layer above a skip layer (e2e/ci-skip-check.ts): it looks, waits within the
@@ -762,13 +870,20 @@ const decide = Effect.gen(function* () {
  * observing nothing in it can fail the step, a defect included: that is logged as `error`.
  */
 const above = Effect.gen(function* () {
-  const outcome = yield* guarded(decide, enforce);
-  yield* Console.log(decisionLine(outcome));
+  // Whether to enforce is read apart from the rest, so a missing variable is still a defect the
+  // guard turns into the error outcome while observing.
+  const enforce = enforcing({
+    ready: (yield* Config.String("LOWER_DRAFT").pipe(Config.withDefault(""))) !== "true",
+  });
+  const outcome = yield* guarded(Effect.flatMap(readLower, decide), enforce);
+  yield* Console.log(decisionLine(outcome, enforce));
   const report = Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const summary = yield* Config.String("GITHUB_STEP_SUMMARY").pipe(Config.option);
     if (Option.isSome(summary))
-      yield* fs.writeFileString(summary.value, `${summarySentence(outcome)}\n`, { flag: "a" });
+      yield* fs.writeFileString(summary.value, `${summarySentence(outcome, enforce)}\n`, {
+        flag: "a",
+      });
     if (outcome._tag === "Decided" && outcome.decision.oldFormat)
       yield* Console.log(`::notice title=Skip check::${outcome.decision.message}`);
     yield* write({ decision: outcome._tag === "Error" ? "error" : outcome.decision.decision });

@@ -225,7 +225,7 @@ layer(HostedLive, { excludeTestServices: true })("Account secret fields", (it) =
                   response.request().method() === "POST" &&
                   new URL(response.url()).pathname.endsWith("/credential-checks"),
               ),
-              connect.getByRole("button", { name: "Validate API key", exact: true }).click(),
+              connect.getByRole("button", { name: "Validate", exact: true }).click(),
             ]).then(([response]) => response.json() as Promise<unknown>),
           )
           .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Check)));
@@ -284,7 +284,7 @@ layer(HostedLive, { excludeTestServices: true })("Account secret fields", (it) =
                   request.method() === "POST" &&
                   new URL(request.url()).pathname.endsWith("/credential-checks"),
               ),
-              connect.getByRole("button", { name: "Validate API key", exact: true }).click(),
+              connect.getByRole("button", { name: "Validate", exact: true }).click(),
             ]).then(([request]) =>
               connect
                 .getByRole("button", { name: /^Continue/ })

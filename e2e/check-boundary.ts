@@ -18,6 +18,7 @@ const allowed = new Set([
   "@modelcontextprotocol/sdk/validation/cfworker",
   "vitest",
   "vitest/config",
+  "vitest/node",
   "effect/http",
   "effect/cli",
   "effect",
@@ -91,9 +92,6 @@ const check = Effect.gen(function* () {
           // the TLS session as an edge would.
           if (label === `tests${path.sep}lost-connections.spec.ts` && specifier === "node:tls")
             return;
-          // The temporary edge probe's cases stand Cloudflare's edge in over TLS
-          // (scripts/ci/edge-probe.ts).
-          if (label === `tests${path.sep}edge-probe.spec.ts` && specifier === "node:tls") return;
           // This external MCP fixture needs a real TLS listener, not a product implementation.
           if (label === `support${path.sep}mcp-auth-patterns.ts` && specifier === "node:https")
             return;

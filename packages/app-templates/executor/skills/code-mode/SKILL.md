@@ -13,9 +13,11 @@ your context.
 The interpreter has no imports, `fetch`, `process` or filesystem, no timers
 (`setTimeout`, `setInterval`, `queueMicrotask`), and no `btoa`, `atob`,
 `TextEncoder`, `TextDecoder` or `globalThis`. A tool
-call is its only way out. Use `await` and `Promise.all` for independent calls.
-As in JavaScript, code between two awaits runs without interruption, so
-concurrent async functions can update shared variables. `console.log` output
+call is its only way out. Use `await`, and `Promise.allSettled` for independent
+calls: one failed call then does not end the program, and the other results are
+kept; each entry has `status` and `value` or `reason`. Use `Promise.all` only
+when every call must succeed. As in JavaScript, code between two awaits runs
+without interruption, so concurrent async functions can update shared variables. `console.log` output
 comes back in `logs`. Write JavaScript; TypeScript syntax is not portable across
 Executor hosts.
 
@@ -195,6 +197,11 @@ help and is considered safe. It does not guarantee success. Correcting input,
 configuration or access may allow a new attempt even when `retryable` is false.
 Never rerun an entire `execute` program merely to retry one failed tool.
 `toolCalls` lists every call in order with its `outcome`.
+
+`Promise.all` rejects on the first failure. If the program does not catch it,
+the program ends, and calls still running are `interrupted`; calls marked
+`success` did run. To keep the results of the calls that succeed when one
+fails, use `Promise.allSettled` or a `.catch` on each call.
 
 - `ParseError`, `UnsupportedSyntax`: fix the program; `location` points at it.
 - `UnknownTool`: the path is wrong, its app did not load, or the app was

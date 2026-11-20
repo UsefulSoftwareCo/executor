@@ -1,4 +1,5 @@
 import { defineConfig } from "vitest/config";
+import { snapshotUpdate } from "../snapshot-updates.ts";
 
 // failure-text.spec.ts runs these cases in their own process, with EXECUTOR_E2E_RUN set to a run
 // directory of their own, and reads their log, results and evidence.
@@ -6,6 +7,8 @@ const directory = process.env.EXECUTOR_E2E_RUN;
 if (!directory) throw new Error("failure-text.spec.ts starts these cases.");
 export default defineConfig({
   test: {
+    // Writes no snapshot unless asked (snapshot-updates.ts).
+    update: snapshotUpdate(),
     setupFiles: ["e2e/setup.ts"],
     include: ["e2e/failure-text/cases.ts"],
     sequence: { concurrent: true },

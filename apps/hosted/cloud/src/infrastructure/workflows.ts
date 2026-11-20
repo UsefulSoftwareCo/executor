@@ -12,7 +12,9 @@ import {
   EngineFaults,
   engineFaultError,
   engineFaultFor,
+  engineLateFor,
   type EngineFault,
+  type EngineFaultList,
   nativeEngineFailure,
   workflowFailureMessage,
 } from "@executor-js/sdk/core";
@@ -54,17 +56,32 @@ const engineFaults = Effect.gen(function* () {
   ).pipe(Effect.orDie);
 });
 
-/** A sleep failed by an E2E fault, before the engine sees it or after it waited. */
-const faulted = (fault: EngineFault | undefined, sleep: Effect.Effect<void>) =>
-  fault === undefined
+/**
+ * A sleep held by an E2E late fault before it reaches the engine, then failed by a fault before the
+ * engine sees it or after it waited. The hold is a real timer, as a slow call would be.
+ */
+const faulted = (
+  late: number | undefined,
+  fault: EngineFault | undefined,
+  call: Effect.Effect<void>,
+) => {
+  const sleep =
+    late === undefined
+      ? call
+      : Effect.andThen(
+          Effect.promise(() => new Promise((settle) => setTimeout(settle, late))),
+          call,
+        );
+  return fault === undefined
     ? sleep
     : fault.when === "before"
       ? Effect.die(engineFaultError(fault))
       : Effect.flatMap(sleep, () => Effect.die(engineFaultError(fault)));
+};
 
 const runWorkflow = (
   input: { run: string },
-  faults: ReadonlyArray<EngineFault> | null,
+  faults: EngineFaultList | null,
 ): Effect.Effect<Schema.Json, never, Cloudflare.Workflows.WorkflowServices | HostedExecutor> =>
   Effect.gen(function* () {
     const { NonRetryableError } = yield* Effect.promise(() => import("cloudflare:workflows"));
@@ -109,9 +126,21 @@ const runWorkflow = (
             );
       },
       sleep: (name, duration) =>
-        nativeSleep(faulted(engineFaultFor(faults, run, name), step.sleep(name, duration))),
+        nativeSleep(
+          faulted(
+            engineLateFor(faults, run, name),
+            engineFaultFor(faults, run, name),
+            step.sleep(name, duration),
+          ),
+        ),
       sleepUntil: (name, timestamp) =>
-        nativeSleep(faulted(engineFaultFor(faults, run, name), step.sleepUntil(name, timestamp))),
+        nativeSleep(
+          faulted(
+            engineLateFor(faults, run, name),
+            engineFaultFor(faults, run, name),
+            step.sleepUntil(name, timestamp),
+          ),
+        ),
     };
     const started = yield* Clock.currentTimeMillis;
     return yield* executor[WorkflowHost].execute(run, driver).pipe(

@@ -15,6 +15,7 @@
  * The state lives in the runner's own isolate, which workerd keeps for the life of the process.
  * Cloud has no residency: Cloudflare unloads its Workers itself.
  */
+import { RuntimeProtocolFailed } from "../contracts/runtime.ts";
 import type { WorkerLoader } from "@cloudflare/workers-types";
 import { Clock, Config, type Context, Effect, Option, Schema } from "effect";
 import { replaceWorker, unloadWorker } from "@executor-js/app-data/cloudflare";
@@ -45,6 +46,8 @@ export const appWorkerIdleSeconds = Config.schema(
 ).pipe(Config.option);
 /** An unload that has not settled by then is abandoned; its name then loads fresh code. */
 const unloadLimit = "10 seconds";
+/** How long a call waits for another call's unload of its Worker: the unload's limit and a margin. */
+const waitLimit = 15_000;
 
 interface Resident {
   active: number;
@@ -77,7 +80,7 @@ export interface AppWorkerResidency {
     name: string,
     unload: Unload,
     waitUntil: (task: Promise<unknown>) => void,
-  ) => Effect.Effect<Effect.Effect<void>>;
+  ) => Effect.Effect<Effect.Effect<void>, RuntimeProtocolFailed>;
 }
 
 export interface AppWorkerResidencyOptions {
@@ -219,8 +222,16 @@ export const makeAppWorkerResidency = ({
         // Checked and claimed without yielding, so an unload cannot start in between.
         const current = residents.get(name);
         if (current?.unloading !== undefined) {
-          const pending = current.unloading;
-          yield* Effect.promise(() => pending);
+          // Another call's request started the unload, and its promise belongs to that request:
+          // a call waiting on it can stay suspended after it settles. Check on this call's own
+          // timer until the unload has removed the Worker. An unload is abandoned after its
+          // limit, so one still there well past it never settles; this call then fails.
+          const until = now + waitLimit;
+          while (residents.get(name) === current) {
+            if ((yield* Clock.currentTimeMillis) > until)
+              return yield* new RuntimeProtocolFailed({ reason: "unloading" });
+            yield* Effect.sleep("10 millis");
+          }
           continue;
         }
         resident = current ?? {

@@ -1,4 +1,5 @@
 import { defineConfig } from "vitest/config";
+import { snapshotUpdate } from "./snapshot-updates.ts";
 
 /**
  * The lost-request records written by the real scenario lifecycle (`e2e/setup.ts`), against a
@@ -7,6 +8,8 @@ import { defineConfig } from "vitest/config";
  */
 export default defineConfig({
   test: {
+    // Writes no snapshot unless asked (snapshot-updates.ts).
+    update: snapshotUpdate(),
     include: ["e2e/tests/lost-connections-lifecycle.spec.ts"],
     setupFiles: ["e2e/setup.ts"],
     globalSetup: ["e2e/lost-connections-lifecycle.global.ts"],

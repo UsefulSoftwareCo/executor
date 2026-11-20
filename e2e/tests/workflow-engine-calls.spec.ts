@@ -1,7 +1,8 @@
 /**
  * A run's body meets an engine whose calls fail. The server's E2E fault list
  * (`EXECUTOR_TEST_WORKFLOW_ENGINE_FAULTS`, honoured only with `EXECUTOR_ENVIRONMENT=e2e`) fails
- * chosen calls as the platform's engine would, so no case depends on timing or on the platform.
+ * chosen calls as the platform's engine would, or holds one before it reaches the engine as a slow
+ * call would be, so no case depends on timing or on the platform.
  */
 import { expect, layer } from "@effect/vitest";
 import { Clock, Effect, Schedule, Schema } from "effect";
@@ -17,6 +18,14 @@ import { scenarios } from "../test-plan.ts";
 
 /** How long `napOnce`'s first sleep waits; the case reads it to judge how that sleep ended. */
 const napOnceMillis = 50;
+/**
+ * How far ahead the paused, terminated and transient sleepUntils wait. Their faults fail the
+ * engine's answer after it waited, so the call must reach the engine before its time: one that
+ * arrives after it meets the engine's refusal of a time in the past instead, which ends the sleep
+ * (`sleep-until.ts`), and the fault never answers. The hop to the engine on a loaded runner has
+ * taken over 100 ms; this leaves it far more than that.
+ */
+const untilAheadMillis = 3000;
 
 /** Each workflow meets the fault the plan configures for its step names. */
 const files = [
@@ -81,7 +90,7 @@ const answered = (name) => async (ctx) => {
 /** As \`answered\`, for a sleepUntil whose engine waited until its time and then answered. */
 const answeredUntil = (name) => async (ctx) => {
   try {
-    await ctx.step.sleepUntil(name, Date.now() + 50);
+    await ctx.step.sleepUntil(name, Date.now() + ${untilAheadMillis});
     return { slept: true };
   } catch (error) {
     return { slept: false, reason: error?.reason ?? null, errorName: error?.errorName ?? null, message: error?.message ?? null };
@@ -91,6 +100,19 @@ export const pausedOnce = workflow({ input: object({}) }, answered("paused-once"
 export const pausedUntil = workflow({ input: object({}) }, answeredUntil("paused-until"));
 export const terminatedUntil = workflow({ input: object({}) }, answeredUntil("terminated-until"));
 export const transientUntil = workflow({ input: object({}) }, answeredUntil("transient-until"));
+/**
+ * Its sleepUntil, a second ahead, reaches the engine three seconds late: after its time. The step
+ * after it counts how often it ran.
+ */
+export const lateUntil = workflow({ input: object({}) }, async (ctx) => {
+  try {
+    await ctx.step.sleepUntil("late-until", Date.now() + 1000);
+  } catch (error) {
+    return { slept: false, reason: error?.reason ?? null, errorName: error?.errorName ?? null, message: error?.message ?? null };
+  }
+  await ctx.step.runMutation("after-late-until", count, { label: "after-late-until" }, { retries: { limit: 0, delay: 0 } });
+  return { slept: true };
+});
 export const terminatedOnce = workflow({ input: object({}) }, answered("terminated-once"));
 export const relayedOnce = workflow({ input: object({}) }, answered("relayed-once"));
 `,
@@ -406,6 +428,17 @@ layer(HostedLive, { excludeTestServices: true })("Workflow engine calls", (it) =
           status: "complete",
           output: { slept: true },
         });
+
+        // A sleepUntil that reaches the engine after its time meets the engine's refusal of a time
+        // in the past, which ends the sleep: its time has passed. This engine words that refusal its
+        // own way (`workflow-errors.ts`, `pastSleep`).
+        const lateUntil = yield* ended(yield* start("lateUntil"));
+        expect(lateUntil, JSON.stringify(lateUntil)).toMatchObject({
+          status: "complete",
+          output: { slept: true },
+        });
+        // The run went on past the sleep once: the step after it ran exactly once.
+        expect(yield* calls("after-late-until")).toBe(1);
       }),
     ),
   );

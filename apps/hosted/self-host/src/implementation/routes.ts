@@ -54,7 +54,12 @@ import { SelfHostAuth } from "../auth.ts";
 import { selfHostAnalytics } from "./product-analytics.ts";
 
 import type { SourceTextFile as SourceFile } from "@executor-js/sdk/core";
-import type { selfHostExecutorServices } from "./executor-services.ts";
+import { SelfHostRegistry, type selfHostExecutorServices } from "./executor-services.ts";
+import {
+  selfHostUpdateCheck,
+  selfHostUpdateStatus,
+  type UpdateCheckStore,
+} from "./update-check.ts";
 /** Compose the self-host route map without opening a listener; shared by the process entry and HTTP tests. */
 export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
   readonly skills: readonly SourceFile[];
@@ -63,9 +68,15 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
     Layer.Success<ReturnType<typeof selfHostExecutorServices>>
   >;
   readonly dashboard: Effect.Effect<HttpServerResponse.HttpServerResponse, DashboardE, DashboardR>;
+  /** Where the daily release check keeps its last answer (`update-check.ts`). */
+  readonly updateCheckStore: UpdateCheckStore;
 }) =>
   Effect.gen(function* () {
     const { skills, egress, executorServices, dashboard } = options;
+    const update = yield* selfHostUpdateCheck(
+      yield* SelfHostRegistry.pipe(Effect.provide(executorServices)),
+      options.updateCheckStore,
+    );
     const auth = yield* SelfHostAuth.pipe(Effect.provide(executorServices));
     const analytics = yield* selfHostAnalytics;
     /** Requests and background schedules record through this instance's sink unless it opted out. */
@@ -164,6 +175,9 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
         HttpRouter.provideRequest(executorServices),
       ),
       HttpRouter.add("*", "/api/auth/*", auth.handler),
+      HttpRouter.add("GET", "/api/self-host/update", selfHostUpdateStatus(update)).pipe(
+        HttpRouter.provideRequest(auth.identity),
+      ),
       HttpRouter.add("GET", "/api/oauth/callback", hostedOAuthCallback).pipe(
         HttpRouter.provideRequest(auth.identity),
       ),

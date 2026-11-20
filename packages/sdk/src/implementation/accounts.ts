@@ -122,6 +122,24 @@ export const defaultLabel = (tx: Query, owner: OwnerId, provider: ProviderId) =>
 export const ownedAccount = (db: Query, input: Parameters<Executor["accounts"]["get"]>[0]) =>
   storedAccount(db, input.account, input.owner);
 
+/**
+ * Lock a saved account's row in the caller's transaction, then read it. Every writer of an
+ * account's credentials starts here, so its credential generation is read only once no other
+ * writer can still commit one: two writers never both write the generation after one they read.
+ */
+export const lockedAccount = (tx: Query, input: Parameters<Executor["accounts"]["get"]>[0]) =>
+  Effect.gen(function* () {
+    const found = yield* ownedAccount(tx, input);
+    // The no-op update waits for any writer holding the row; the read after it sees its commit.
+    yield* query(() =>
+      tx.updateMany("accounts", {
+        where: (b) => b("id", "=", found.id),
+        set: { createdAt: found.createdAt },
+      }),
+    );
+    return yield* ownedAccount(tx, input);
+  });
+
 /** An encrypted OAuth grant whose account deletion has committed. */
 export interface RemovedGrant {
   readonly account: AccountId;
@@ -212,7 +230,7 @@ export const makeAccounts = (
   replaceCredentials: (input: typeof ManagedAccountInputs.replaceCredentials.Type) =>
     transaction(db, (tx) =>
       Effect.gen(function* () {
-        const account = yield* ownedAccount(tx, input);
+        const account = yield* lockedAccount(tx, input);
         const row = yield* query(() =>
           tx.findFirst("providers", { where: (b) => b("id", "=", account.provider) }),
         );

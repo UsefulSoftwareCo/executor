@@ -1,18 +1,27 @@
 /**
  * Run pending data steps in order against a SQL journal. A pass walks a step's items in ID order,
  * records each outcome and a cursor as it goes, so an interrupted pass resumes after the last
- * recorded item. Items are handled one at a time and must be safe to handle again. When a pass
+ * recorded item. Items are handled one at a time and must be safe to handle again. Each item sees
+ * its latest outcome in the run (`previous`), and an apply may `record` an in-progress retry
+ * outcome before it writes, so an item a stopped pass left part way is finished. When a pass
  * ends with retry outcomes, the next run starts another pass over only those items; a step is
  * complete once a pass has none. Later steps wait for earlier ones, as schema migrations do.
  *
  * Background runs back off between retry passes: each retrying pass records when the next may
  * start, doubling with the pass number up to an hour. Startup runs retry at the next start.
+ *
+ * An operator holds a background run without a deploy by setting its `retry_at` in the future
+ * (`'infinity'` until released): no run claims it, a run that holds it stops before its next item,
+ * and a retrying pass that ends meanwhile never brings it forward. Startup runs, which hold the
+ * host exclusively, ignore it.
  */
 import { Clock, Effect, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import {
+  DataStepProgressUnrecorded,
   DataStepUnavailable,
   dataStepLogPrefix,
+  dataStepPaused,
   type DataStep,
   type DataStepJournal,
   type DataStepMode,
@@ -81,7 +90,10 @@ const Unclaimed = Schema.Array(
   Schema.Struct({ completed: Schema.Boolean, retryAt: Schema.NullOr(Schema.String) }),
 );
 const Retry = Schema.Array(Schema.Struct({ retryAt: Schema.String }));
+const Held = Schema.Array(Schema.Struct({ held: Schema.Boolean }));
+const Count = Schema.Array(Schema.Struct({ count: Schema.Number }));
 const Items = Schema.Array(Schema.Struct({ item: Schema.String }));
+const Outcomes = Schema.Array(Schema.Struct({ outcome: Schema.String }));
 const Counts = Schema.Array(
   Schema.Struct({ owner: Schema.String, outcome: Schema.String, count: Schema.Number }),
 );
@@ -95,13 +107,15 @@ export const runDataSteps = <R>(
     const sql = yield* SqlClient.SqlClient;
     const journal = sql(`${options.journal}_data_steps`);
     const outcomes = sql(`${options.journal}_data_step_items`);
-    const run = options.mode === "apply" ? "apply" : `report:${options.report}`;
+    const report = `report:${options.report}`;
     // Only the caller reads these; the journal, retries and logs do not depend on them.
     let attempted = 0;
     let failed = 0;
 
     const advance = (step: DataStep<R>) =>
       Effect.gen(function* () {
+        const applyRun = step.applyRun ?? "apply";
+        const run = options.mode === "apply" ? applyRun : report;
         const completed = (candidate: string) =>
           sql`select completed_at is not null as completed from ${journal}
             where name = ${step.name} and run = ${candidate}`.pipe(
@@ -112,7 +126,7 @@ export const runDataSteps = <R>(
         if (
           options.mode === "report" &&
           step.reportsAfterApply !== true &&
-          (yield* completed("apply"))
+          (yield* completed(applyRun))
         )
           return "complete" as const;
         yield* sql`insert into ${journal} (name, run, mode)
@@ -156,18 +170,71 @@ export const runDataSteps = <R>(
         // Later passes revisit only the items the previous pass left to retry.
         const revisit =
           pass === 1 ? undefined : new Set((yield* retryItems).map((row) => row.item));
+        // An operator's hold (a future `retry_at`) stops a background run before its next item.
+        const held = sql`select coalesce(retry_at > now(), false) as held from ${journal}
+          where name = ${step.name} and run = ${run}`.pipe(
+          Effect.flatMap(Schema.decodeUnknownEffect(Held)),
+          Effect.map((rows) => rows[0]?.held === true),
+        );
+        const exhausted =
+          step.exhausted !== undefined && pass >= step.exhausted.passes
+            ? step.exhausted.outcomes
+            : undefined;
         for (const item of items) {
           if (revisit !== undefined && !revisit.has(item.id)) continue;
           if (cursor !== null && item.id <= cursor) continue;
-          if (
-            options.deadline !== undefined &&
-            (yield* Clock.currentTimeMillis) >= options.deadline
-          ) {
+          const stop =
+            (options.deadline !== undefined &&
+              (yield* Clock.currentTimeMillis) >= options.deadline) ||
+            (step.more !== undefined && !(yield* step.more)) ||
+            (!options.exclusive && (yield* held));
+          if (stop) {
             yield* release;
             yield* Effect.annotateCurrentSpan("data_step.status", "pending");
             return "pending" as const;
           }
-          const outcome = yield* item.run(options.mode);
+          // An apply run with no outcome for the item reads the step's latest earlier apply run
+          // that has one: a stage that stopped part way left it for the next stage to finish.
+          const previous = (yield* sql`select item.outcome from ${outcomes} item
+            join ${journal} run on run.name = item.name and run.run = item.run
+            where item.name = ${step.name} and item.item = ${item.id}
+              and (item.run = ${run} or (${options.mode === "apply"} and run.mode = 'apply'))
+            order by item.run = ${run} desc, run.started_at desc limit 1`.pipe(
+            Effect.flatMap(Schema.decodeUnknownEffect(Outcomes)),
+          ))[0]?.outcome;
+          const record = (progress: string) =>
+            options.mode !== "apply" || !step.retry.includes(progress)
+              ? Effect.die(`Data step ${step.name} recorded ${progress} outside an apply retry`)
+              : sql`insert into ${outcomes} (name, run, item, owner, outcome, pass)
+                  values (${step.name}, ${run}, ${item.id}, ${item.owner}, ${progress}, ${pass})
+                  on conflict (name, run, item) do update set outcome = excluded.outcome, pass = excluded.pass`.pipe(
+                  Effect.asVoid,
+                  Effect.mapError(() => new DataStepProgressUnrecorded()),
+                );
+          const count = (counted: ReadonlyArray<string>) =>
+            sql`select count(*)::integer as count from ${outcomes}
+              where name = ${step.name} and run = ${run} and ${sql.in("outcome", [...counted])}`.pipe(
+              Effect.flatMap(Schema.decodeUnknownEffect(Count)),
+              Effect.map((rows) => rows[0]?.count ?? 0),
+              Effect.mapError(() => new DataStepUnavailable({ step: step.name })),
+            );
+          const handled = yield* item.run(options.mode, { previous, record, count });
+          // The step's pace stopped the item part way: nothing is recorded for it, and the next
+          // run handles it again from the cursor before it.
+          if (handled === dataStepPaused) {
+            yield* release;
+            yield* Effect.annotateCurrentSpan("data_step.status", "pending");
+            return "pending" as const;
+          }
+          // A retry outcome past the step's last allowed pass is recorded as its bounded outcome.
+          const outcome = exhausted?.[handled] ?? handled;
+          if (outcome !== handled)
+            yield* Effect.logWarning("Data step item gave up retrying", {
+              step: step.name,
+              item: item.id,
+              pass,
+              outcome: handled,
+            });
           yield* sql.withTransaction(
             Effect.gen(function* () {
               yield* sql`insert into ${outcomes} (name, run, item, owner, outcome, pass)
@@ -198,7 +265,7 @@ export const runDataSteps = <R>(
         const retrying = counts.some((row) => step.retry.includes(row.outcome));
         const retryAt = retrying
           ? (yield* sql`update ${journal} set pass = ${pass + 1}, cursor = null, lease_until = null,
-              retry_at = now() + make_interval(secs => ${retryDelaySeconds(pass)})
+              retry_at = greatest(retry_at, now() + make_interval(secs => ${retryDelaySeconds(pass)}))
               where name = ${step.name} and run = ${run}
               returning to_json(retry_at) #>> '{}' as "retryAt"`.pipe(
               Effect.flatMap(Schema.decodeUnknownEffect(Retry)),

@@ -16,6 +16,16 @@ const version = "2.0.0-beta.5";
 const apps = "0.0.1-beta.3";
 const hour = 60 * 60 * 1000;
 
+/** The gate's `gh api` reads, without their `--jq`: pages of release runs and earlier attempts. */
+const apiReads = (calls: ReadonlyArray<string>) =>
+  calls.filter((call) => call.startsWith("api ")).map((call) => call.split(" --jq ")[0]);
+/** One page of the release workflow's dispatched runs on main, newest first. */
+const runsPage = (page: number) =>
+  `api repos/${repository}/actions/workflows/release-artifacts.yml/runs?event=workflow_dispatch&branch=main&per_page=100&page=${page}`;
+/** The read of one earlier attempt of a run. */
+const attemptRead = (run: number, attempt: number) =>
+  `api repos/${repository}/actions/runs/${run}/attempts/${attempt}`;
+
 /** Answers `npm view <package> time dist-tags --json` from `$FAKE_NPM/<package>.json`. */
 const stubNpm = `#!/bin/sh
 [ "$1" = view ] && [ "$3 $4 $5" = "time dist-tags --json" ] || { echo "stub npm: unsupported: $*" >&2; exit 2; }
@@ -25,8 +35,10 @@ cat "$FAKE_NPM/$2.json"
 /**
  * Answers `gh run list` as GitHub does: the runs of `$FAKE_GITHUB/runs.json`, newest first, with
  * the event `-e` names, at most `-L` of them. Fails it when `$FAKE_GITHUB/list-fails` exists.
- * Answers `gh run view <id> --json jobs` from `$FAKE_GITHUB/jobs-<id>.json`. Appends every call
- * to `$FAKE_GITHUB/calls`.
+ * Answers `gh run view <id> --json jobs` from `$FAKE_GITHUB/jobs-<id>.json`, the read of one
+ * attempt of a run (`gh api .../runs/<id>/attempts/<n>`) from `$FAKE_GITHUB/attempt-<id>-<n>.json`,
+ * and a page of the release workflow's dispatched runs (`gh api .../workflows/<file>/runs?...`)
+ * from the same runs, newest first, 100 a page. Appends every call to `$FAKE_GITHUB/calls`.
  */
 const stubGh = `#!/bin/sh
 echo "$*" >> "$FAKE_GITHUB/calls"
@@ -40,6 +52,10 @@ if [ "$1 $2" = "run list" ]; then
 fi
 case "$1 $2 $*" in
   "run view "*) cat "$FAKE_GITHUB/jobs-$3.json" ;;
+  "api "*/attempts/*) exec cat "$FAKE_GITHUB/attempt-$(echo "$2" | sed 's|.*/runs/||; s|/attempts/|-|').json" ;;
+  "api "*/workflows/release-artifacts.yml/runs\\?*)
+    page=$(echo "$2" | sed 's/.*[?&]page=\\([0-9]*\\).*/\\1/')
+    exec jq -c --argjson page "$page" '[.[] | select(.event == "workflow_dispatch")][($page - 1) * 100:$page * 100] | map(del(.event))' "$FAKE_GITHUB/runs.json" ;;
   *) echo "stub gh: unsupported: $*" >&2; exit 2 ;;
 esac
 `;
@@ -51,6 +67,11 @@ interface ReleaseRun {
   readonly hoursAgo: number;
   readonly headSha: string;
   readonly attempt?: number;
+  /**
+   * When each attempt ran, in hours ago, first to latest, one for each of `attempt`; every one ran
+   * when the run was created (`hoursAgo`) by default.
+   */
+  readonly attemptsHoursAgo?: ReadonlyArray<number>;
   /** The publish job's conclusion; it is skipped when a build or test job failed. */
   readonly publish?: "success" | "failure" | "skipped";
   /** `build` builds and tests without publishing; a dispatch of Beta asks for `beta`. */
@@ -61,6 +82,10 @@ interface ReleaseRun {
   readonly title?: string;
   /** The name of the metadata step that runs only when publishing, if the workflow renamed it. */
   readonly publishingStep?: string;
+  /** The docker job's architecture push: it publishes an image tag outside the publish job. */
+  readonly dockerPush?: "success" | "failure" | "skipped";
+  /** Further failed jobs, by the name the run gives them, each with the step that failed. */
+  readonly failedJobs?: ReadonlyArray<{ readonly name: string; readonly step: string }>;
 }
 
 /** A paced check on main, which the Release check workflow dispatches after a relevant push. */
@@ -167,10 +192,12 @@ const world = Effect.gen(function* () {
     path.join(main, "packages/apps/package.json"),
     JSON.stringify({ version: apps }),
   );
-  yield* fs.copyFile(
-    ".github/workflows/release-artifacts.yml",
-    path.join(main, ".github/workflows/release-artifacts.yml"),
-  );
+  // The tick reads which release steps publish from these (scripts/releases/publishing-steps.ts).
+  for (const workflow of ["release-artifacts.yml", "bun-runtime.yml"])
+    yield* fs.copyFile(
+      `.github/workflows/${workflow}`,
+      path.join(main, `.github/workflows/${workflow}`),
+    );
   yield* git("init", "--quiet");
   yield* git("add", "--all");
   yield* git("commit", "--quiet", "-m", "Start");
@@ -183,6 +210,19 @@ const world = Effect.gen(function* () {
     yield* git("commit", "--quiet", "--allow-empty", "-m", "Change the product (#1)");
     return yield* git("rev-parse", "HEAD");
   });
+  /** Lands a merge on main committed `hoursAgo` hours ago, and returns its commit. */
+  const mergeAt = (hoursAgo: number) =>
+    Effect.gen(function* () {
+      const date = new Date(Date.now() - hoursAgo * hour).toISOString();
+      const result = yield* run(
+        main,
+        "git",
+        ["commit", "--quiet", "--allow-empty", "-m", "Change the product (#3)"],
+        { ...env, GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date },
+      );
+      expect(result.exitCode, result.output).toBe(0);
+      return yield* git("rev-parse", "HEAD");
+    });
   /** Lands a commit on main that changes these files, and returns it. */
   const change = (files: ReadonlyArray<string>, subject = "Change the product (#2)") =>
     Effect.gen(function* () {
@@ -211,7 +251,7 @@ const world = Effect.gen(function* () {
 
   /** Runs the script on this event, with npm and the release runs in this state. */
   const decide = (input: {
-    readonly event?: "push" | "schedule" | "workflow_dispatch" | "pull_request";
+    readonly event?: "push" | "schedule" | "workflow_dispatch" | "workflow_run" | "pull_request";
     /** Hours since npm published the committed version; npm lacks it when undefined. */
     readonly published?: number;
     readonly betaTag?: string;
@@ -221,6 +261,8 @@ const world = Effect.gen(function* () {
     readonly matrix?: ReadonlyArray<MatrixRun>;
     /** GitHub fails the listing of release runs. */
     readonly listFails?: boolean;
+    /** Commits on main CI passed on, newest first, as pushes. */
+    readonly green?: ReadonlyArray<{ readonly headSha: string; readonly hoursAgo: number }>;
   }) =>
     Effect.gen(function* () {
       const time: Record<string, string> = { "2.0.0-beta.4": ago(30) };
@@ -275,6 +317,7 @@ const world = Effect.gen(function* () {
         readonly headSha: string;
         readonly hoursAgo: number;
         readonly attempt?: number;
+        readonly attemptsHoursAgo?: ReadonlyArray<number>;
       }) => ({
         databaseId: run.id,
         status: run.status ?? "completed",
@@ -284,6 +327,8 @@ const world = Effect.gen(function* () {
             : "",
         headSha: run.headSha,
         createdAt: ago(run.hoursAgo),
+        startedAt: ago(run.attemptsHoursAgo?.at(-1) ?? run.hoursAgo),
+        updatedAt: ago(run.attemptsHoursAgo?.at(-1) ?? run.hoursAgo),
         attempt: run.attempt ?? 1,
         url: `https://github.com/${repository}/actions/runs/${run.id}`,
       });
@@ -305,6 +350,14 @@ const world = Effect.gen(function* () {
                 displayTitle: "Executor releases (check)",
               },
             })),
+            ...(input.green ?? []).map((ci, index) => ({
+              hoursAgo: ci.hoursAgo,
+              run: {
+                ...listed({ id: 5000 + index, conclusion: "success", ...ci }),
+                event: "push",
+                displayTitle: "Change the product",
+              },
+            })),
             ...runs.map((release) => ({
               hoursAgo: release.hoursAgo,
               run: {
@@ -321,6 +374,11 @@ const world = Effect.gen(function* () {
         ),
       );
       for (const release of runs) {
+        for (const [index, hoursAgo] of (release.attemptsHoursAgo ?? []).entries())
+          yield* fs.writeFileString(
+            path.join(github, `attempt-${release.id}-${index + 1}.json`),
+            JSON.stringify({ startedAt: ago(hoursAgo), updatedAt: ago(hoursAgo) }),
+          );
         const metadata = release.metadata ?? "success";
         yield* fs.writeFileString(
           path.join(github, `jobs-${release.id}.json`),
@@ -340,9 +398,32 @@ const world = Effect.gen(function* () {
               },
               {
                 name: "docker (blacksmith-16vcpu-ubuntu-2404-arm, arm64)",
-                conclusion: release.publish === undefined ? "failure" : "success",
-                steps: [],
+                conclusion:
+                  release.dockerPush === "failure" || release.publish === undefined
+                    ? "failure"
+                    : "success",
+                steps:
+                  release.dockerPush === undefined
+                    ? []
+                    : [
+                        {
+                          name: "Verify setup, OAuth, execution, retained data and interrupted renewals",
+                          conclusion: "success",
+                        },
+                        {
+                          name: "Push the tested architecture without moving a channel",
+                          conclusion: release.dockerPush,
+                        },
+                      ],
               },
+              ...(release.failedJobs ?? []).map((job) => ({
+                name: job.name,
+                conclusion: "failure",
+                steps: [
+                  { name: "Set up job", conclusion: "success" },
+                  { name: job.step, conclusion: "failure" },
+                ],
+              })),
               { name: "publish", conclusion: release.publish ?? "skipped", steps: [] },
               {
                 name: "releases",
@@ -417,6 +498,7 @@ const world = Effect.gen(function* () {
   return {
     decide,
     merge,
+    mergeAt,
     change,
     released,
     previous,
@@ -588,6 +670,486 @@ layer(NodeServices.layer, { excludeTestServices: true })("Beta publication gate"
         const manual = yield* decide({ event: "workflow_dispatch", runs: failed(0.2) });
         expect(manual.outputs.decision, manual.output).toBe("dispatch");
       }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "after two failed attempts, CI passing on a newer main commit retries at once, at most five a day",
+    () =>
+      Effect.gen(function* () {
+        const { decide, merge, released, previous } = yield* world;
+        const failed = (count: number): ReadonlyArray<ReleaseRun> => [
+          ...Array.from({ length: count }, (_, index) => ({
+            id: 10 + index,
+            hoursAgo: 0.5 + index,
+            headSha: released,
+          })),
+          { id: 1, conclusion: "success", publish: "success", hoursAgo: 30, headSha: previous },
+        ];
+
+        // A fix merged, but CI has not passed on it yet: the back-off holds.
+        const fix = yield* merge;
+        const waiting = yield* decide({
+          runs: failed(2),
+          green: [{ headSha: released, hoursAgo: 2 }],
+        });
+        expect(waiting.outputs.decision, waiting.output).toBe("none");
+        expect(waiting.outputs.reason).toContain("waits for CI to pass on a newer main commit");
+
+        // CI passed on the fix: the next tick, a CI completion included, publishes again.
+        for (const event of ["schedule", "push", "workflow_run"] as const) {
+          const green = yield* decide({
+            event,
+            runs: failed(2),
+            green: [{ headSha: fix, hoursAgo: 0.1 }],
+          });
+          expect(green.exitCode, green.output).toBe(0);
+          expect(green.outputs.decision, `${event}: ${green.output}`).toBe("dispatch");
+          expect(green.outputs.reason).toContain(`CI passed on ${fix.slice(0, 9)} after it`);
+          expect(green.outputs.reason).toContain("2 of 5 attempts today failed");
+        }
+
+        // Five failed attempts in a day: a green main no longer retries early.
+        const many = yield* decide({ runs: failed(5), green: [{ headSha: fix, hoursAgo: 0.1 }] });
+        expect(many.outputs.decision, many.output).toBe("none");
+        expect(many.output).toContain("::warning::");
+
+        // A failure in the publish job is never retried this way: it is re-run from its artifacts.
+        const publishing = yield* decide({
+          runs: [
+            { id: 30, publish: "failure", attempt: 2, hoursAgo: 0.5, headSha: released },
+            ...failed(1),
+          ],
+          green: [{ headSha: fix, hoursAgo: 0.1 }],
+        });
+        expect(publishing.outputs.decision, publishing.output).toBe("none");
+        expect(publishing.outputs.reason).toContain("failed to publish");
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "five failed attempts in a day hold every path, the six-hour one and a manual one",
+    () =>
+      Effect.gen(function* () {
+        const { decide, merge, released, previous } = yield* world;
+        // The review's probe: five failures in the last day, the newest more than six hours ago,
+        // and main moved since. The six-hour path dispatched a sixth.
+        const five: ReadonlyArray<ReleaseRun> = [
+          ...[6.5, 9, 12, 15, 18].map((hoursAgo, index) => ({
+            id: 40 + index,
+            hoursAgo,
+            headSha: released,
+          })),
+          { id: 1, conclusion: "success", publish: "success", hoursAgo: 30, headSha: previous },
+        ];
+        const fix = yield* merge;
+        for (const event of ["schedule", "push", "workflow_run", "workflow_dispatch"] as const) {
+          const held = yield* decide({
+            event,
+            runs: five,
+            green: [{ headSha: fix, hoursAgo: 0.1 }],
+          });
+          expect(held.exitCode, held.output).toBe(0);
+          expect(held.outputs.decision, `${event}: ${held.output}`).toBe("none");
+          expect(held.output).toContain("::warning::");
+          expect(held.outputs.reason).toContain("5 publishing attempts failed in the last day");
+        }
+        // A re-run of a publish failure counts against the same bound.
+        const rerun = yield* decide({
+          runs: [{ id: 50, publish: "failure", hoursAgo: 0.5, headSha: released }, ...five],
+        });
+        expect(rerun.outputs.decision, rerun.output).toBe("none");
+        expect(rerun.outputs.reason).toContain("6 publishing attempts failed in the last day");
+        // Once the oldest falls out of the last day, four remain, and the six-hour path runs again.
+        const four = yield* decide({
+          runs: [
+            ...[6.5, 9, 12, 15, 25].map((hoursAgo, index) => ({
+              id: 60 + index,
+              hoursAgo,
+              headSha: released,
+            })),
+            { id: 1, conclusion: "success", publish: "success", hoursAgo: 30, headSha: previous },
+          ],
+        });
+        expect(four.outputs.decision, four.output).toBe("dispatch");
+        expect(four.outputs.reason).toContain("4 of 5 attempts today failed");
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "failed attempts are counted from the runs of the last month, not the last 30 records",
+    () =>
+      Effect.gen(function* () {
+        const { decide, merge, released, previous } = yield* world;
+        const fix = yield* merge;
+        // The fourth review's probes. One fresh failure, then builds, then a run created 70 hours ago whose four re-runs
+        // today failed: beyond the 30 runs the gate lists, it gave "1 of 5" and dispatched. With
+        // 120 builds the run is on the second page.
+        for (const builds of [29, 120])
+          for (const event of ["schedule", "workflow_dispatch"] as const) {
+            const held = yield* decide({
+              event,
+              runs: [
+                { id: 401, hoursAgo: 0.5, headSha: released },
+                ...Array.from({ length: builds }, (_, index) => ({
+                  id: 1000 + index,
+                  hoursAgo: 30 + index * 0.3,
+                  headSha: released,
+                  channel: "build" as const,
+                  conclusion: "success" as const,
+                  publish: "skipped" as const,
+                })),
+                {
+                  id: 440,
+                  hoursAgo: 70,
+                  attempt: 5,
+                  attemptsHoursAgo: [70, 20, 15, 10, 2],
+                  headSha: released,
+                },
+              ],
+              green: [{ headSha: fix, hoursAgo: 0.1 }],
+            });
+            expect(held.outputs.decision, `${builds} builds, ${event}: ${held.output}`).toBe(
+              "none",
+            );
+            expect(held.output).toContain("::warning::");
+            expect(held.outputs.reason).toContain("5 publishing attempts failed in the last day");
+            expect(apiReads(held.calls)).toEqual([
+              ...(builds === 29 ? [runsPage(1)] : [runsPage(1), runsPage(2)]),
+              attemptRead(440, 4),
+              attemptRead(440, 3),
+              attemptRead(440, 2),
+            ]);
+          }
+        // Two fresh failures and a run created 50 hours ago, re-run
+        // three times today, make five: two of its earlier attempts are read, then it stops.
+        const mixed = yield* decide({
+          runs: [
+            { id: 301, hoursAgo: 0.5, headSha: released },
+            { id: 302, hoursAgo: 1, headSha: released },
+            {
+              id: 303,
+              hoursAgo: 50,
+              attempt: 4,
+              attemptsHoursAgo: [50, 10, 5, 2],
+              headSha: released,
+            },
+            { id: 304, hoursAgo: 80, conclusion: "success", publish: "success", headSha: previous },
+          ],
+          green: [{ headSha: fix, hoursAgo: 0.1 }],
+        });
+        expect(mixed.outputs.decision, mixed.output).toBe("none");
+        expect(mixed.outputs.reason).toContain("5 publishing attempts failed in the last day");
+        expect(apiReads(mixed.calls)).toEqual([
+          runsPage(1),
+          attemptRead(303, 3),
+          attemptRead(303, 2),
+        ]);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("when counting takes more than ten requests, the count is unknown and holds", () =>
+    Effect.gen(function* () {
+      const { decide, released } = yield* world;
+      // Ten runs from earlier days, each re-run in the last day and cancelled: whether a first
+      // attempt ran in the last day takes one request each, ten beside the page of runs.
+      const rerun: ReadonlyArray<ReleaseRun> = Array.from({ length: 10 }, (_, index) => ({
+        id: 100 + index,
+        attempt: 2,
+        conclusion: "cancelled",
+        hoursAgo: 30 + index,
+        attemptsHoursAgo: [30 + index, 1 + index * 0.5],
+        headSha: released,
+      }));
+      for (const event of ["schedule", "workflow_dispatch"] as const) {
+        const held = yield* decide({
+          event,
+          runs: [{ id: 99, hoursAgo: 0.2, headSha: released }, ...rerun],
+        });
+        expect(held.exitCode, held.output).toBe(0);
+        expect(held.outputs.decision, `${event}: ${held.output}`).toBe("none");
+        expect(held.output).toContain("::warning::");
+        expect(held.outputs.reason).toContain(
+          "could not be counted within 10 requests, so it holds",
+        );
+        expect(apiReads(held.calls)).toEqual([
+          runsPage(1),
+          ...rerun.slice(0, 9).map((each) => attemptRead(each.id, 1)),
+        ]);
+      }
+      // Nine take ten requests in all, and the count is known: one failed, so one more starts.
+      const nine = yield* decide({
+        event: "workflow_dispatch",
+        runs: [{ id: 99, hoursAgo: 0.2, headSha: released }, ...rerun.slice(0, 9)],
+      });
+      expect(nine.outputs.decision, nine.output).toBe("dispatch");
+      expect(nine.outputs.reason).toContain("1 of 5 attempts today failed");
+      expect(apiReads(nine.calls)).toHaveLength(10);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "a failed image tag push in the docker job is a publishing failure, never retried early",
+    () =>
+      Effect.gen(function* () {
+        const { decide, merge, released, previous } = yield* world;
+        const fix = yield* merge;
+        const earlier: ReadonlyArray<ReleaseRun> = [
+          { id: 70, hoursAgo: 2, headSha: released },
+          { id: 1, conclusion: "success", publish: "success", hoursAgo: 30, headSha: previous },
+        ];
+        // The review's case: the push failed, so publish was skipped, and CI is green on a fix.
+        const first = yield* decide({
+          runs: [{ id: 71, dockerPush: "failure", hoursAgo: 0.5, headSha: released }, ...earlier],
+          green: [{ headSha: fix, hoursAgo: 0.1 }],
+        });
+        expect(first.exitCode, first.output).toBe(0);
+        expect(first.outputs).toMatchObject({ decision: "rerun", run: "71", version });
+        expect(first.outputs.reason).toContain(
+          "docker (blacksmith-16vcpu-ubuntu-2404-arm, arm64): Push the tested architecture without moving a channel",
+        );
+        const again = yield* decide({
+          runs: [
+            { id: 71, dockerPush: "failure", attempt: 2, hoursAgo: 0.5, headSha: released },
+            ...earlier,
+          ],
+          green: [{ headSha: fix, hoursAgo: 0.1 }],
+        });
+        expect(again.outputs.decision, again.output).toBe("none");
+        expect(again.outputs.reason).toContain("inspect it");
+        // A push that succeeded before a test failed elsewhere published nothing that failed: the
+        // early retry stands.
+        const tested = yield* decide({
+          runs: [
+            {
+              id: 72,
+              dockerPush: "success",
+              failedJobs: [
+                {
+                  name: "cli (win32, x64)",
+                  step: "Exercise the installed CLI through HTTP and the browser",
+                },
+              ],
+              hoursAgo: 0.5,
+              headSha: released,
+            },
+            ...earlier,
+          ],
+          green: [{ headSha: fix, hoursAgo: 0.1 }],
+        });
+        expect(tested.outputs.decision, tested.output).toBe("dispatch");
+        expect(tested.outputs.reason).toContain(`CI passed on ${fix.slice(0, 9)} after it`);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "a failure in the Bun runtime's release, or in a job nothing lists, is not retried early",
+    () =>
+      Effect.gen(function* () {
+        const { decide, merge, released, previous } = yield* world;
+        const fix = yield* merge;
+        for (const job of [
+          { name: "bun-runtime / release", step: "Publish" },
+          { name: "sign-everything (linux-x64)", step: "Run a step no table knows" },
+        ]) {
+          const result = yield* decide({
+            runs: [
+              { id: 80, failedJobs: [job], hoursAgo: 0.5, headSha: released },
+              { id: 79, hoursAgo: 2, headSha: released },
+              { id: 1, conclusion: "success", publish: "success", hoursAgo: 30, headSha: previous },
+            ],
+            green: [{ headSha: fix, hoursAgo: 0.1 }],
+          });
+          expect(result.outputs.decision, `${job.name}: ${result.output}`).toBe("rerun");
+          expect(result.outputs.reason).toContain(job.name);
+        }
+        // Build and test failures, in any job, qualify as before.
+        for (const job of [
+          { name: "bun-runtime / build linux-x64", step: "Build" },
+          { name: "collector (darwin-arm64)", step: "Run ./.github/actions/collector" },
+          { name: "metadata", step: "Write the release notes" },
+          { name: "local (linux-x64)", step: "Verify packaged desktop startup and restart" },
+        ]) {
+          const result = yield* decide({
+            runs: [
+              { id: 81, failedJobs: [job], hoursAgo: 0.5, headSha: released },
+              { id: 79, hoursAgo: 2, headSha: released },
+              { id: 1, conclusion: "success", publish: "success", hoursAgo: 30, headSha: previous },
+            ],
+            green: [{ headSha: fix, hoursAgo: 0.1 }],
+          });
+          expect(result.outputs.decision, `${job.name}: ${result.output}`).toBe("dispatch");
+        }
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "a job whose name GitHub cut short is found by its id, so beta.61's failed CLI test retries early",
+    () =>
+      Effect.gen(function* () {
+        const { decide, merge, released, previous } = yield* world;
+        const fix = yield* merge;
+        // beta.61's run 44248912608: GitHub listed the failed Windows CLI job with its matrix values
+        // cut off by an ellipsis, without the closing parenthesis.
+        const truncated =
+          "cli (win32, x64, true, blacksmith-16vcpu-windows-2025, win, exe, 8, .local/releases/2.0.0-beta.61...";
+        const earlier: ReadonlyArray<ReleaseRun> = [
+          { id: 89, hoursAgo: 2, headSha: released },
+          { id: 1, conclusion: "success", publish: "success", hoursAgo: 30, headSha: previous },
+        ];
+        const result = yield* decide({
+          runs: [
+            {
+              id: 90,
+              failedJobs: [
+                {
+                  name: truncated,
+                  step: "Exercise the installed CLI through HTTP and the browser",
+                },
+              ],
+              hoursAgo: 0.5,
+              headSha: released,
+            },
+            ...earlier,
+          ],
+          green: [{ headSha: fix, hoursAgo: 0.1 }],
+        });
+        expect(result.exitCode, result.output).toBe(0);
+        expect(result.outputs.decision, result.output).toBe("dispatch");
+        expect(result.outputs.reason).toContain(`CI passed on ${fix.slice(0, 9)} after it`);
+        // Cut short anywhere, a job keeps its id, and a step it does not have counts as publishing.
+        for (const [name, step, decision] of [
+          [
+            "docker (blacksmith-16vcpu-ubuntu-2404-a...",
+            "Push the tested architecture without moving a channel",
+            "rerun",
+          ],
+          [
+            "local-macos-arm64 (darwin, arm64, true, blacksmith-6vcpu-...",
+            "Verify packaged desktop startup and restart",
+            "dispatch",
+          ],
+          [
+            "cli (win32, x64, true, blacksmith-16vcpu-windows-2025, win, exe, 8...",
+            "A step cli does not have",
+            "rerun",
+          ],
+        ] as const) {
+          const each = yield* decide({
+            runs: [
+              { id: 91, failedJobs: [{ name, step }], hoursAgo: 0.5, headSha: released },
+              ...earlier,
+            ],
+            green: [{ headSha: fix, hoursAgo: 0.1 }],
+          });
+          expect(each.outputs.decision, `${name}: ${each.output}`).toBe(decision);
+        }
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("every failed attempt counts toward the five a day, re-runs included", () =>
+    Effect.gen(function* () {
+      const { decide, merge, released, previous } = yield* world;
+      const fix = yield* merge;
+      const done = {
+        id: 1,
+        conclusion: "success",
+        publish: "success",
+        hoursAgo: 30,
+        headSha: previous,
+      } as const;
+      // The review's probe: three runs, two of them on their second attempt, five failures in
+      // the last day. Counting runs saw three and dispatched a sixth.
+      const five: ReadonlyArray<ReleaseRun> = [
+        { id: 20, attempt: 2, hoursAgo: 1, headSha: released },
+        { id: 21, attempt: 2, hoursAgo: 3, headSha: released },
+        { id: 22, hoursAgo: 7, headSha: released },
+        done,
+      ];
+      for (const event of ["schedule", "workflow_run", "workflow_dispatch"] as const) {
+        const held = yield* decide({ event, runs: five, green: [{ headSha: fix, hoursAgo: 0.1 }] });
+        expect(held.outputs.decision, `${event}: ${held.output}`).toBe("none");
+        expect(held.outputs.reason).toContain("5 publishing attempts failed in the last day");
+      }
+      // An earlier attempt counts as failed whatever ended the latest, a cancellation included:
+      // two, one and one make four, so one more may start.
+      const four = yield* decide({
+        runs: [
+          { id: 23, attempt: 2, hoursAgo: 1, headSha: released },
+          { id: 24, attempt: 2, conclusion: "cancelled", hoursAgo: 3, headSha: released },
+          { id: 25, hoursAgo: 5, headSha: released },
+          done,
+        ],
+        green: [{ headSha: fix, hoursAgo: 0.1 }],
+      });
+      expect(four.outputs.decision, four.output).toBe("dispatch");
+      expect(four.outputs.reason).toContain("4 of 5 attempts today failed");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("a failed attempt counts by when it ran, so re-runs today of an older run count", () =>
+    Effect.gen(function* () {
+      const { decide, merge, released, previous } = yield* world;
+      const fix = yield* merge;
+      const done = {
+        id: 1,
+        conclusion: "success",
+        publish: "success",
+        hoursAgo: 40,
+        headSha: previous,
+      } as const;
+      // The review's probe: a run created 25 hours ago, its first attempt then and four failed
+      // re-runs in the last day, beside one fresh failure. Dating attempts by the run's creation
+      // counted 1 of 5 and dispatched; five failed in the last day, so every path holds.
+      const rerunToday = {
+        id: 40,
+        attempt: 5,
+        hoursAgo: 25,
+        attemptsHoursAgo: [25, 20, 15, 10, 2],
+        headSha: released,
+      } as const;
+      const five: ReadonlyArray<ReleaseRun> = [
+        { id: 41, hoursAgo: 0.5, headSha: released },
+        rerunToday,
+        done,
+      ];
+      for (const event of ["schedule", "workflow_run", "workflow_dispatch"] as const) {
+        const held = yield* decide({ event, runs: five, green: [{ headSha: fix, hoursAgo: 0.1 }] });
+        expect(held.outputs.decision, `${event}: ${held.output}`).toBe("none");
+        expect(held.outputs.reason).toContain("5 publishing attempts failed in the last day");
+        // One page of runs, then its earlier attempts newest first, one request each, until five
+        // are known: attempt 1 is never read. The fresh run needs none.
+        expect(apiReads(held.calls)).toEqual([
+          runsPage(1),
+          attemptRead(40, 4),
+          attemptRead(40, 3),
+          attemptRead(40, 2),
+        ]);
+      }
+      // Attempts that ran over a day ago do not count: the first two, at 25 and 24.5 hours, and
+      // none of a run whose latest attempt started over a day ago, so three of the old run's and
+      // the fresh one make four, and one more may start.
+      const four = yield* decide({
+        runs: [
+          { id: 42, hoursAgo: 0.5, headSha: released },
+          { ...rerunToday, id: 43, attemptsHoursAgo: [25, 24.5, 15, 10, 2] },
+          { id: 44, attempt: 3, hoursAgo: 40, attemptsHoursAgo: [40, 35, 30], headSha: released },
+          done,
+        ],
+        green: [{ headSha: fix, hoursAgo: 0.1 }],
+      });
+      expect(four.outputs.decision, four.output).toBe("dispatch");
+      expect(four.outputs.reason).toContain("4 of 5 attempts today failed");
+      // A run created and re-run within the day is counted without reading its attempts.
+      const within = yield* decide({
+        runs: [
+          { id: 45, attempt: 3, hoursAgo: 6, attemptsHoursAgo: [6, 4, 2], headSha: released },
+          done,
+        ],
+        green: [{ headSha: fix, hoursAgo: 0.1 }],
+      });
+      expect(within.outputs.reason, within.output).toContain("3 of 5 attempts today failed");
+      expect(apiReads(within.calls)).toEqual([runsPage(1)]);
+    }).pipe(Effect.scoped),
   );
 
   it.effect("an attempt that failed in its publish job is re-run once from its own artifacts", () =>
@@ -955,6 +1517,114 @@ layer(NodeServices.layer, { excludeTestServices: true })("Beta publication gate"
         "fix the cause, then dispatch Executor releases from main with channel build (gh workflow run release-artifacts.yml --ref main -f channel=build), or merge the fix",
       );
     }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "a hold shows in the red-main issue after six hours, or at once when five attempts failed",
+    () =>
+      Effect.gen(function* () {
+        const { decide, mergeAt, released, previous } = yield* world;
+        const redMatrix = [{ id: 901, hoursAgo: 1, headSha: previous }] as const;
+        // A beta due since a merge two hours ago, held by a red matrix: not yet.
+        yield* mergeAt(2);
+        const recent = yield* decide({ published: 30, matrix: redMatrix });
+        expect(recent.outputs.decision, recent.output).toBe("none");
+        expect(recent.output).toContain("::warning::");
+        expect(recent.outputs.held).toBe("");
+        // Due since the first merge after the release, ten hours ago: npm published the last
+        // beta 30 hours ago, so that merge, not six hours after it, is when this one became due.
+        const { decide: decideOld, mergeAt: mergeOld, git: gitOld } = yield* world;
+        const first = yield* mergeOld(10);
+        yield* mergeOld(1);
+        const old = yield* decideOld({ published: 30, matrix: redMatrix });
+        expect(old.outputs.decision, old.output).toBe("none");
+        expect(old.outputs.held).toBe("held");
+        expect(old.outputs.held_since).toBe(
+          new Date(yield* gitOld("log", "-1", "--format=%cI", first)).toISOString(),
+        );
+        // Published seven hours ago with a merge since an hour before that: due one hour ago.
+        const { decide: decideFresh, mergeAt: mergeFresh } = yield* world;
+        yield* mergeFresh(8);
+        const fresh = yield* decideFresh({ published: 7, matrix: redMatrix });
+        expect(fresh.outputs.decision, fresh.output).toBe("none");
+        expect(fresh.outputs.held).toBe("");
+        expect(Date.parse(fresh.outputs.held_since!)).toBeGreaterThan(Date.now() - 1.1 * hour);
+
+        // Five failed attempts in a day hold it at once, since the release commit.
+        const five: ReadonlyArray<ReleaseRun> = [
+          ...Array.from({ length: 5 }, (_, index) => ({
+            id: 40 + index,
+            hoursAgo: 0.5 + index,
+            headSha: released,
+          })),
+          { id: 1, conclusion: "success", publish: "success", hoursAgo: 30, headSha: previous },
+        ];
+        const exhausted = yield* decide({ runs: five });
+        expect(exhausted.outputs.reason).toContain("5 publishing attempts failed in the last day");
+        expect(exhausted.outputs.held).toBe("held");
+        expect(Date.parse(exhausted.outputs.held_since!)).toBeGreaterThan(Date.now() - hour);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "the red-main issue is cleared only once npm lists the version, and left as it is between holds",
+    () =>
+      Effect.gen(function* () {
+        const { decide, merge, released, previous } = yield* world;
+        // Out, and nothing due: the held part goes.
+        const out = yield* decide({ published: 5.5 });
+        expect(out.outputs.decision).toBe("none");
+        expect(out.outputs.held).toBe("clear");
+        yield* merge;
+        const bump = yield* decide({ published: 30 });
+        expect(bump.outputs.decision).toBe("bump");
+        expect(bump.outputs.held).toBe("clear");
+        // Not out: a retry dispatched or running, or a hold under six hours, leaves it as it is,
+        // so a release that keeps failing neither closes the issue nor opens it again.
+        const failedOnce = yield* decide({
+          runs: [
+            { id: 2, hoursAgo: 0.2, headSha: released },
+            { id: 1, conclusion: "success", publish: "success", hoursAgo: 30, headSha: previous },
+          ],
+        });
+        expect(failedOnce.outputs.decision).toBe("dispatch");
+        expect(failedOnce.outputs.held).toBe("");
+        const running = yield* decide({
+          runs: [
+            { id: 3, status: "in_progress", hoursAgo: 0.1, headSha: released },
+            { id: 1, conclusion: "success", publish: "success", hoursAgo: 30, headSha: previous },
+          ],
+        });
+        expect(running.outputs.decision).toBe("none");
+        expect(running.outputs.held).toBe("");
+        // A build dispatched from main to clear a red matrix, while npm lists the last beta and
+        // the next is held: the tick waits on it and reads no matrix, so it clears nothing.
+        const building = yield* decide({
+          published: 30,
+          matrix: [{ id: 901, hoursAgo: 1, headSha: previous }],
+          runs: [
+            {
+              id: 5,
+              status: "in_progress",
+              title: "Executor releases (build)",
+              hoursAgo: 0.1,
+              headSha: released,
+            },
+          ],
+        });
+        expect(building.outputs.reason).toContain("A release run is in_progress");
+        expect(building.outputs.held).toBe("");
+        const backOff = yield* decide({
+          runs: [
+            { id: 4, hoursAgo: 1, headSha: released },
+            { id: 3, hoursAgo: 2, headSha: released },
+            { id: 1, conclusion: "success", publish: "success", hoursAgo: 30, headSha: previous },
+          ],
+        });
+        expect(backOff.outputs.reason).toContain("after two or more failed attempts in a row");
+        expect(backOff.output).toContain("::warning::");
+        expect(backOff.outputs.held).toBe("");
+      }).pipe(Effect.scoped),
   );
 
   it.effect("the gate reads checks past a busy day of checks that gave way", () =>
@@ -1341,32 +2011,53 @@ layer(NodeServices.layer, { excludeTestServices: true })("Release matrix pacing"
 
 /**
  * A `gh` for `scripts/releases/matrix-issue.sh`. `gh api <path>` answers from
- * `$FAKE_GITHUB/<path with every character but letters and digits as _>`: `.json` through the
- * call's `--jq` filter, `.txt` as a job's log, and a 404 when neither exists, as for a deleted run.
- * The open issue is `open.json`; `issue view N` reads `issue-N.json`; `issue edit` and `issue
- * create` copy their body file to `edited-N.md` and `created.md`. Every call goes to `calls`.
+ * `$FAKE_GITHUB/<path with every character but letters and digits as _>`: `.json`
+ * through the call's `--jq` filter, `.txt` as a job's log, and a 404 when neither exists, as for a
+ * deleted run. As the real gh does, it refuses to print a log holding terminal escape sequences
+ * unless the call passes `--allow-escape-sequences`. The open issues are `open.json`; `issue view N`
+ * reads `issue-N.json` through its `--jq`; `issue edit` and `issue create` copy their body file to
+ * `edited-N.md` and `created.md` and their title to `title-N` and `created-title`; `issue close`
+ * adds the number to `closed`. Every call goes to `calls`.
  */
 const stubIssueGh = `#!/bin/sh
 dir="$FAKE_GITHUB"
 echo "$*" >> "$dir/calls"
 filter=""
+allow=""
+jqarg() { while [ $# -gt 0 ]; do [ "$1" = --jq ] && { printf '%s' "$2"; return; }; shift; done; }
 case "$1 $2" in
   "api --paginate") path=$3; filter=$5 ;;
-  "issue list") exec jq -r '.[0].number // empty' "$dir/open.json" ;;
-  "issue view") exec jq -r .body "$dir/issue-$3.json" ;;
+  "api --allow-escape-sequences") allow=1; path=$3 ;;
+  "issue list") exec jq -r "$(jqarg "$@")" "$dir/open.json" ;;
+  "issue view") exec jq -r "$(jqarg "$@")" "$dir/issue-$3.json" ;;
   "issue edit")
     number=$3
-    while [ $# -gt 0 ]; do [ "$1" = --body-file ] && cp "$2" "$dir/edited-$number.md"; shift; done
+    while [ $# -gt 0 ]; do
+      [ "$1" = --body-file ] && cp "$2" "$dir/edited-$number.md"
+      [ "$1" = --title ] && printf '%s' "$2" > "$dir/title-$number"
+      shift
+    done
     exit 0 ;;
   "issue create")
-    while [ $# -gt 0 ]; do [ "$1" = --body-file ] && cp "$2" "$dir/created.md"; shift; done
+    while [ $# -gt 0 ]; do
+      [ "$1" = --body-file ] && cp "$2" "$dir/created.md"
+      [ "$1" = --title ] && printf '%s' "$2" > "$dir/created-title"
+      shift
+    done
     exit 0 ;;
-  "issue close"|"label create") exit 0 ;;
+  "issue close") echo "$3" >> "$dir/closed"; exit 0 ;;
+  "label create") exit 0 ;;
   api*) path=$2; [ "$3" = --jq ] && filter=$4 ;;
   *) echo "stub gh: unsupported: $*" >&2; exit 2 ;;
 esac
 file="$dir/$(printf '%s' "$path" | tr -c 'A-Za-z0-9' _)"
-if [ -f "$file.txt" ]; then exec cat "$file.txt"; fi
+if [ -f "$file.txt" ]; then
+  if [ -z "$allow" ] && grep -q "$(printf '\\033')" "$file.txt"; then
+    echo "the response contains terminal escape sequences; pass --allow-escape-sequences to output it anyway" >&2
+    exit 1
+  fi
+  exec cat "$file.txt"
+fi
 [ -f "$file.json" ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
 if [ -n "$filter" ]; then exec jq -r "$filter" "$file.json"; fi
 exec cat "$file.json"
@@ -1533,6 +2224,14 @@ const passed = {
   docker: "success",
 };
 const runUrl = (id: number) => `https://github.com/${repository}/actions/runs/${id}`;
+/** The C0 and C1 controls in a text but tab and newline, as code points. */
+const controlsIn = (text: string) =>
+  [...text]
+    .map((character) => character.codePointAt(0)!)
+    .filter(
+      (point) =>
+        (point < 0x20 && point !== 0x09 && point !== 0x0a) || (point >= 0x7f && point <= 0x9f),
+    );
 
 layer(NodeServices.layer, { excludeTestServices: true })("Red matrix issue", (it) => {
   it.effect("a first failure opens the issue with its jobs and scenarios, safe as text", () =>
@@ -1579,6 +2278,57 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red matrix issue", (it
       for (const line of body.split("\n").filter((entry) => entry.startsWith("  - `")))
         expect(line.match(/[`@]/g), line).toEqual(["`", "`"]);
       expect(body).toContain(`<!-- first-red: ${"c".repeat(40)} ${runUrl(50)} -->`);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("a log's links, titles and other terminal controls are gone, not only colors", () =>
+    Effect.gen(function* () {
+      const esc = "\u001b";
+      const result = yield* issueWorld({
+        needs: { ...passed, local: "failure" },
+        runs: [{ id: 30, created: 3, sha: "a".repeat(40) }],
+        failed: [
+          {
+            id: 7003,
+            name: "local (linux, x64)",
+            log: [
+              `2026-11-12T10:00:00.0000000Z ${esc}[41m FAIL ${esc}[49m ${esc}]8;;https://example.com/a${esc}\\e2e/tests/osc.spec.ts${esc}]8;;${esc}\\ > OSC > a link around the file\r`,
+              `2026-11-12T10:00:00.0000000Z  \u009b31m×\u009b39m ${esc}]0;tab title\u0007e2e/tests/osc.spec.ts > OSC > a title set by the log${esc}(B 120ms`,
+            ].join("\n"),
+          },
+        ],
+      });
+      expect(result.exitCode, result.output).toBe(0);
+      const body = result.created!;
+      expect(body).toContain("  - `e2e/tests/osc.spec.ts > OSC > a link around the file`");
+      expect(controlsIn(body)).toEqual([]);
+      expect(body).not.toContain("example.com");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("an OSC whose opening and ending forms differ keeps the text after it", () =>
+    Effect.gen(function* () {
+      const esc = "\u001b";
+      const result = yield* issueWorld({
+        needs: { ...passed, local: "failure" },
+        runs: [{ id: 30, created: 3, sha: "a".repeat(40) }],
+        failed: [
+          {
+            id: 7004,
+            name: "local (linux, x64)",
+            // ESC ] ended by the one-byte ST, and the one-byte OSC ended by ESC \ (review of #5051).
+            log: [
+              `2026-11-12T10:00:00.0000000Z  FAIL  e2e/tests/osc.spec.ts > OSC > before ${esc}]0;title\u009c ordinary after`,
+              `2026-11-12T10:00:00.0000000Z  FAIL  e2e/tests/osc.spec.ts > OSC > first \u009d0;title${esc}\\ kept after`,
+            ].join("\n"),
+          },
+        ],
+      });
+      expect(result.exitCode, result.output).toBe(0);
+      const body = result.created!;
+      expect(body).toContain("  - `e2e/tests/osc.spec.ts > OSC > before  ordinary after`");
+      expect(body).toContain("  - `e2e/tests/osc.spec.ts > OSC > first  kept after`");
+      expect(controlsIn(body)).toEqual([]);
     }).pipe(Effect.scoped),
   );
 
@@ -1710,6 +2460,3732 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red matrix issue", (it
       expect(result.exitCode, result.output).toBe(0);
       expect(result.output).toContain("The pace job ended failure");
       expect(result.calls).toEqual([]);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "every step of the release workflows says whether it publishes, and a new one without it fails",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const directory = yield* fs.makeTempDirectoryScoped({
+          prefix: "executor-publishing-steps-",
+        });
+        const cli = path.resolve("scripts/releases/publishing-steps-check.ts");
+        const artifacts = yield* fs.readFileString(".github/workflows/release-artifacts.yml");
+        /** The check's problems with a release-artifacts.yml of this text. */
+        const problems = (text: string) =>
+          Effect.gen(function* () {
+            const file = path.join(directory, `release-artifacts-${text.length}.yml`);
+            yield* fs.writeFileString(file, text);
+            const result = yield* run(".", "node", [cli, "check", file], {});
+            return result.output.split("\n").filter((line) => line !== "");
+          });
+        const current = yield* run(".", "node", [cli, "check"], {});
+        expect(current.exitCode, current.output).toBe(0);
+        expect(current.output).toBe("");
+        // The review's cases: a step that pushes with docker buildx, and a Docker action with
+        // push: true, in a job that publishes nothing yet. Neither command is guessed at: each
+        // lacks a declaration, and that fails.
+        const anchor = "      - name: Check the tested and published archives are the same bytes\n";
+        expect(artifacts).toContain(anchor);
+        for (const step of [
+          '      - name: Push a preview image\n        run: docker buildx build --push --tag "$IMAGE:preview" .\n',
+          "      - uses: docker/build-push-action@v6\n        with:\n          push: true\n          tags: preview\n",
+          "      - name: Build something\n        run: true\n        env:\n          PUBLISHES: maybe\n",
+        ])
+          expect(yield* problems(artifacts.replace(anchor, step + anchor))).toEqual([
+            expect.stringMatching(
+              /^release-artifacts\.yml: job archives's step \d+ \(.+\) does not say whether it publishes: give it env PUBLISHES "yes" or "no"$/,
+            ),
+          ]);
+        // Declared, it passes, whichever it says.
+        expect(
+          yield* problems(
+            artifacts.replace(
+              anchor,
+              '      - name: Push a preview image\n        run: docker buildx build --push --tag "$IMAGE:preview" .\n        env:\n          PUBLISHES: "yes"\n' +
+                anchor,
+            ),
+          ),
+        ).toEqual([]);
+        // A job named so that its id does not start the name GitHub shows fails too.
+        const renamed = artifacts.replace(
+          "\n  archives:\n",
+          "\n  archives:\n    name: Compare archives\n",
+        );
+        expect(renamed).not.toBe(artifacts);
+        expect(yield* problems(renamed)).toEqual([
+          `release-artifacts.yml: job archives is named "Compare archives", which does not start with its id; a run's job is found by its id at the start of its name`,
+        ]);
+        // How a run names each job, cut short or not, finds it: a matrix job, a named one, a
+        // called one. Failed jobs with no failed step publish nothing; the publish job always does.
+        const classify = (jobs: ReadonlyArray<{ name: string; step?: string }>) =>
+          Effect.gen(function* () {
+            const input = path.join(directory, "jobs.json");
+            yield* fs.writeFileString(
+              input,
+              JSON.stringify(
+                jobs.map(({ name, step }) => ({
+                  name,
+                  conclusion: "failure",
+                  steps: [
+                    { name: "Set up runner", conclusion: "success" },
+                    ...(step === undefined ? [] : [{ name: step, conclusion: "failure" }]),
+                    { name: "Complete runner", conclusion: "success" },
+                  ],
+                })),
+              ),
+            );
+            const result = yield* run(
+              ".",
+              "sh",
+              ["-c", 'node "$0" classify < "$1"', cli, input],
+              {},
+            );
+            expect(result.exitCode, result.output).toBe(0);
+            return JSON.parse(result.output) as ReadonlyArray<string>;
+          });
+        expect(
+          yield* classify([
+            { name: "docker (blacksmith-16vcpu-ubuntu-2404-arm, arm64)" },
+            { name: "collector (linux-x64)", step: "Post Run ./.github/actions/setup" },
+            {
+              name: "cli (win32, x64, true, blacksmith-16vcpu-windows-2025, win, exe, 8, .local/releases/2.0.0-beta.61...",
+            },
+            { name: "bun-runtime / build linux-x64", step: "Build" },
+            { name: "bun-runtime / smoke darwin-arm64" },
+            { name: "releases", step: "Require every job the run needed to pass" },
+          ]),
+        ).toEqual([]);
+        expect(
+          yield* classify([
+            {
+              name: "publish",
+              step: "Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+            },
+          ]),
+        ).toEqual(["publish: Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262"]);
+        expect(
+          yield* classify([
+            { name: "bun-runtime / release", step: "Publish" },
+            {
+              name: "docker (blacksmith-8vcpu-ubuntu-2404, amd64)",
+              step: "Post Push the tested architecture without moving a channel",
+            },
+            { name: "sign (linux-x64)" },
+          ]),
+        ).toEqual([
+          "bun-runtime / release: Publish",
+          "docker (blacksmith-8vcpu-ubuntu-2404, amd64): Post Push the tested architecture without moving a channel",
+          "sign (linux-x64) (a job of no release workflow: what it publishes is unknown)",
+        ]);
+      }).pipe(Effect.scoped),
+  );
+});
+
+/**
+ * A `gh` for `scripts/ci/main-health.ts` that serves a repository from two files in
+ * `$FAKE_GITHUB`: `world.json`, the facts the script reads (finished workflow runs, their jobs and
+ * logs, artifacts, compares), and `state.json`, the issues and their comments, which writes change.
+ * It answers `gh api` as GitHub's REST API does, with `per_page` and `page` on every list (30 a
+ * page unless told) and `--paginate` reading every page, so the script before this change runs
+ * against it too. It refuses a log holding terminal escape sequences unless the call passes
+ * `--allow-escape-sequences`, as gh does.
+ *
+ * Every invocation goes to `calls`, every request (a page of a list is one) to `requests` as
+ * `<method> <path>` (a GraphQL query as `QUERY graphql <what>`; the fake serves no mutation), and
+ * every change to an issue or label to `mutations` as `<what> <issue number or label>`. A request
+ * whose number (counting from 1) is in `faults.json` fails as an outage does, after the pages before
+ * it were printed; `{"short": n}` serves request n's page one item short, and `{"shift": n}` serves
+ * it starting one item early, as a list that moved between two pages would, each with the count
+ * unchanged. `{"edit": n, "ops": [...]}` serves request n's JSON answer with each op's path set to
+ * its value or deleted, as a malformed answer would be; every JSON answer is kept unedited in
+ * `answers/<n>.json`. Each answer holds only the fields Main health reads. The issue list GraphQL
+ * serves says how many issues match; REST's does not.
+ */
+const fakeGitHub = String.raw`#!/usr/bin/env node
+const fs = require("fs");
+const path = require("path");
+const cp = require("child_process");
+const dir = process.env.FAKE_GITHUB;
+const args = process.argv.slice(2);
+const bot = "github-actions[bot]";
+fs.appendFileSync(path.join(dir, "calls"), args.join(" ") + "\n");
+const world = JSON.parse(fs.readFileSync(path.join(dir, "world.json"), "utf8"));
+const statePath = path.join(dir, "state.json");
+const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+const save = () => fs.writeFileSync(statePath, JSON.stringify(state));
+const mutate = (what, number) => fs.appendFileSync(path.join(dir, "mutations"), what + " " + number + "\n");
+let printed = "";
+const fail = (message) => { process.stdout.write(printed); process.stderr.write(message + "\n"); process.exit(1); };
+const faults = JSON.parse(fs.readFileSync(path.join(dir, "faults.json"), "utf8"));
+// The number of the request being answered.
+let current = 0;
+// The fault on this request: "outage", "short", "shift" or undefined.
+const request = (method, target) => {
+  const countPath = path.join(dir, "count");
+  const count = (fs.existsSync(countPath) ? Number(fs.readFileSync(countPath, "utf8")) : 0) + 1;
+  current = count;
+  fs.writeFileSync(countPath, String(count));
+  fs.appendFileSync(path.join(dir, "requests"), method + " " + target + "\n");
+  if (faults.includes(count)) fail("gh: Service Unavailable (HTTP 503)");
+  for (const kind of ["short", "shift"]) if (faults.some((each) => each !== null && each[kind] === count)) return kind;
+  return undefined;
+};
+// One page of ITEMS from OFFSET, PER long, as a fault makes it.
+const pageOf = (items, offset, per, fault) =>
+  fault === "short" ? items.slice(offset, offset + per).slice(0, -1)
+  : fault === "shift" ? items.slice(Math.max(offset - 1, 0), Math.max(offset - 1, 0) + per)
+  : items.slice(offset, offset + per);
+// A JSON answer as served, after the edits a fault {"edit": n, "ops": [...]} makes to request n's
+// answer: each op sets the value at its path, or deletes it. Each answer is kept in answers/<n>.json.
+const edit = (value) => {
+  if (value === null || typeof value !== "object" || Buffer.isBuffer(value)) return value;
+  const answers = path.join(dir, "answers");
+  fs.mkdirSync(answers, { recursive: true });
+  fs.writeFileSync(path.join(answers, current + ".json"), JSON.stringify(value));
+  const edited = JSON.parse(JSON.stringify(value));
+  for (const fault of faults.filter((each) => each !== null && each.edit === current))
+    for (const op of fault.ops) {
+      const parent = op.path.slice(0, -1).reduce((at, key) => at[key], edited);
+      const key = op.path[op.path.length - 1];
+      if (op.delete && Array.isArray(parent)) parent.splice(key, 1);
+      else if (op.delete) delete parent[key];
+      else parent[key] = op.value;
+    }
+  return edited;
+};
+const jq = (filter, value) => {
+  const result = cp.spawnSync("jq", ["-r", filter], { input: JSON.stringify(value), encoding: "utf8" });
+  if (result.status !== 0) fail(result.stderr);
+  return result.stdout;
+};
+const valued = new Set(["-X", "--input", "--jq", "-f", "-F", "--repo", "-R", "--color", "--description", "-H", "--label", "--state", "--json"]);
+const options = {};
+const fields = {};
+const positional = [];
+for (let i = 0; i < args.length; i++) {
+  const arg = args[i];
+  if (valued.has(arg)) {
+    const value = args[++i];
+    if (arg === "-f" || arg === "-F") fields[value.split("=")[0]] = value.slice(value.indexOf("=") + 1);
+    else options[arg] = value;
+  } else if (arg.startsWith("-")) options[arg] = true;
+  else positional.push(arg);
+}
+if (positional[0] === "label") process.exit(0);
+// The lookup Main health's script before main-health.yml took the main-health label made:
+// gh issue list --label LABEL --state open --json number --jq EXPR.
+if (positional[0] === "issue" && positional[1] === "list") {
+  request("GET", "issues?labels=" + options["--label"] + "&state=" + options["--state"]);
+  const found = state.issues
+    .filter((each) => !each.pullRequest && each.state === options["--state"] && each.labels.includes(options["--label"]))
+    .sort((a, b) => b.number - a.number)
+    .map((each) => ({ number: each.number }));
+  process.stdout.write(options["--jq"] === undefined ? JSON.stringify(found) : jq(options["--jq"], found));
+  process.exit(0);
+}
+if (positional[0] !== "api") fail("fake gh: unsupported: " + args.join(" "));
+// The open issues with a label, as GraphQL serves them, 100 a page after a cursor.
+if (positional[1] === "graphql") {
+  const text = fields.query || "";
+  if (/\bmutation\b/.test(text) || !/\bissues\(/.test(text)) fail("fake gh: unsupported GraphQL: " + text);
+  const fault = request("QUERY", "graphql issues" + (fields.after ? " after=" + fields.after : ""));
+  const matching = state.issues
+    .filter((each) => !each.pullRequest && each.state === "open" && each.labels.includes(fields.label))
+    .sort((a, b) => a.number - b.number);
+  const offset = fields.after ? Number(fields.after) : 0;
+  const nodes = pageOf(matching, offset, 100, fault).map((each) => ({
+    number: each.number, title: each.title, body: each.body,
+    author: each.user === bot ? { __typename: "Bot", login: "github-actions" } : { __typename: "User", login: each.user },
+    labels: { totalCount: each.labels.length, nodes: each.labels.map((name) => ({ name })) },
+  }));
+  const end = offset + 100;
+  const value = { data: { repository: { issues: {
+    totalCount: matching.length,
+    pageInfo: { hasNextPage: end < matching.length, endCursor: String(end) },
+    nodes,
+  } } } };
+  const served = edit(value);
+  process.stdout.write(options["--jq"] === undefined ? JSON.stringify(served) : jq(options["--jq"], served));
+  process.exit(0);
+}
+const method = options["-X"] || "GET";
+const input = options["--input"] === undefined ? {} : JSON.parse(fs.readFileSync(options["--input"], "utf8"));
+const target = positional[1].replace(/^repos\/[^/]+\/[^/]+\//, "");
+const url = new URL("http://github.test/" + target);
+const query = url.searchParams;
+const parts = url.pathname.slice(1).split("/");
+const iso = (hours) => new Date(world.now - hours * 3600000).toISOString().replace(/\.\d+/, "");
+// A run world.completeAfter names is in its first attempt, in progress, until it has been read by
+// id (GET actions/runs/ID) that many times, as a run whose last job is running is.
+const pollsPath = (id) => path.join(dir, "polls-" + id);
+const polls = (id) => (fs.existsSync(pollsPath(id)) ? Number(fs.readFileSync(pollsPath(id), "utf8")) : 0);
+const live = (run) => ((world.completeAfter || {})[run.id] > polls(run.id) ? { ...run, status: "in_progress" } : run);
+// A run being re-run is in progress with no conclusion. Its earlier attempts ended as run.attempts
+// lists them, oldest first, or each as run.previous.
+const earlier = (run, attempt) => (run.attempts || [])[attempt - 1] || run.previous;
+const runOf = (given, attempt) => { const run = live(given); return {
+  id: run.id, display_title: run.title, path: ".github/workflows/" + run.workflow,
+  event: run.event, head_branch: run.branch,
+  status: attempt === undefined ? run.status || "completed" : "completed",
+  conclusion: attempt === undefined ? (run.status === undefined ? run.conclusion : null) : earlier(run, attempt),
+  created_at: iso(run.created), head_sha: run.sha, run_attempt: attempt || run.attempt || 1,
+  html_url: "https://github.com/" + process.env.GITHUB_REPOSITORY + "/actions/runs/" + run.id,
+}; };
+const issueOf = (issue) => ({
+  number: issue.number, title: issue.title, body: issue.body, state: issue.state,
+  labels: issue.labels.map((name) => ({ name })), user: { login: issue.user },
+  ...(issue.pullRequest ? { pull_request: {} } : {}),
+});
+const issue = (number) => state.issues.find((each) => each.number === Number(number)) || fail("gh: Not Found (HTTP 404)");
+const comment = (id) => {
+  for (const each of state.issues) {
+    const found = each.comments.find((entry) => entry.id === Number(id));
+    if (found) return { issue: each, comment: found };
+  }
+  fail("gh: Not Found (HTTP 404)");
+};
+// A list GitHub pages: every item, and how one page is wrapped.
+const list = () => {
+  if (method !== "GET") return undefined;
+  if (parts[0] === "issues" && parts.length === 1)
+    return {
+      items: state.issues
+        .filter((each) => each.state === (query.get("state") || "open"))
+        .filter((each) => !query.get("labels") || each.labels.includes(query.get("labels")))
+        .filter((each) => !query.get("creator") || each.user === query.get("creator"))
+        .sort((a, b) => b.number - a.number)
+        .map(issueOf),
+      wrap: (page) => page,
+    };
+  if (parts[0] === "issues" && parts[2] === "comments")
+    return { items: issue(parts[1]).comments.map((each) => ({ id: each.id, body: each.body, user: { login: each.user } })), wrap: (page) => page };
+  if (parts[0] === "actions" && parts[1] === "workflows" && parts[3] === "runs")
+    return {
+      items: world.runs
+        .filter((run) => run.workflow === parts[2])
+        .filter((run) => !query.get("branch") || run.branch === query.get("branch"))
+        .filter((run) => !query.get("event") || run.event === query.get("event"))
+        .filter((run) => !query.get("status") || (run.status || "completed") === query.get("status"))
+        // Runs created at the same time: higher id first, or lower first when world.tieOrder says
+        // "ascending", since GitHub promises no order among them.
+        .sort((a, b) => a.created - b.created || (world.tieOrder === "ascending" ? a.id - b.id : b.id - a.id))
+        .map((run) => runOf(run)),
+      wrap: (page, total) => ({ total_count: total, workflow_runs: page }),
+    };
+  if (parts[0] === "actions" && parts[1] === "runs" && parts[3] === "attempts" && parts[5] === "jobs")
+    return {
+      items: (world.jobs[parts[2] + ":" + parts[4]] || world.jobs[parts[2]] || []).map((job) => ({
+        id: job.id, name: job.name, status: "completed", conclusion: job.conclusion,
+        html_url: "https://github.com/" + process.env.GITHUB_REPOSITORY + "/actions/runs/" + parts[2] + "/job/" + job.id,
+      })),
+      wrap: (page, total) => ({ total_count: total, jobs: page }),
+    };
+  // Served oldest first, so a reader that stops early misses the newest.
+  if (parts[0] === "actions" && parts[1] === "artifacts" && parts.length === 2)
+    return {
+      items: world.artifacts
+        .filter((each) => !query.get("name") || each.name === query.get("name"))
+        .sort((a, b) => a.id - b.id)
+        .map((each) => ({
+          id: each.id, name: each.name, expired: each.expired, created_at: iso(each.created),
+          workflow_run: { id: each.run, repository_id: 1, head_repository_id: each.fork ? 2 : 1, head_branch: each.branch },
+        })),
+      wrap: (page, total) => ({ total_count: total, artifacts: page }),
+    };
+  return undefined;
+};
+// Anything else: a value, bytes, or an error.
+const single = (fault) => {
+  if (parts[0] === "issues") {
+    if (parts.length === 1 && method === "POST") {
+      const number = state.next++;
+      state.issues.push({ number, title: input.title, body: input.body, labels: input.labels, state: "open", user: bot, comments: [] });
+      save();
+      mutate("create", number);
+      return { number };
+    }
+    if (parts[1] === "comments") {
+      const found = comment(parts[2]);
+      if (method === "PATCH") { found.comment.body = input.body; save(); mutate("edit-comment", found.issue.number); return { id: found.comment.id }; }
+      if (method === "DELETE") { found.issue.comments = found.issue.comments.filter((each) => each !== found.comment); save(); mutate("delete-comment", found.issue.number); return ""; }
+    }
+    const found = issue(parts[1]);
+    if (parts.length === 2 && method === "GET") return issueOf(found);
+    if (parts.length === 2 && method === "PATCH") {
+      const change = { ...input, ...fields };
+      if ((change.title !== undefined && change.title !== found.title) || (change.body !== undefined && change.body !== found.body)) mutate("edit", found.number);
+      if (change.state !== undefined && change.state !== found.state) mutate(change.state === "closed" ? "close" : "reopen", found.number);
+      Object.assign(found, change.title === undefined ? {} : { title: change.title }, change.body === undefined ? {} : { body: change.body }, change.state === undefined ? {} : { state: change.state }, change.state_reason === undefined ? {} : { reason: change.state_reason });
+      save();
+      return issueOf(found);
+    }
+    if (parts[2] === "comments" && method === "POST") {
+      const id = state.nextComment++;
+      found.comments.push({ id, body: input.body, user: bot });
+      save();
+      mutate("comment", found.number);
+      return { id };
+    }
+  }
+  if (parts[0] === "labels" && parts.length === 1 && method === "POST") {
+    state.labels.push(fields.name);
+    save();
+    mutate("label", fields.name);
+    return { name: fields.name };
+  }
+  if (method !== "GET") fail("fake gh: unsupported: " + args.join(" "));
+  if (parts[0] === "labels" && parts.length === 2) {
+    if (!state.labels.includes(decodeURIComponent(parts[1]))) fail("gh: Not Found (HTTP 404)");
+    return { name: decodeURIComponent(parts[1]) };
+  }
+  if (parts[0] === "actions" && parts[1] === "runs" && parts.length === 3) {
+    const run = world.runs.find((each) => each.id === Number(parts[2]));
+    if (run === undefined) fail("gh: Not Found (HTTP 404)");
+    const { id, path: file, event, head_branch, status } = runOf(run);
+    fs.writeFileSync(pollsPath(run.id), String(polls(run.id) + 1));
+    return { id, path: file, event, head_branch, status };
+  }
+  if (parts[0] === "actions" && parts[1] === "runs" && parts[3] === "attempts" && parts.length === 5) {
+    const run = world.runs.find((each) => each.id === Number(parts[2]));
+    if (run === undefined || Number(parts[4]) >= (run.attempt || 1)) fail("gh: Not Found (HTTP 404)");
+    const { id, run_attempt, status, conclusion } = runOf(run, Number(parts[4]));
+    return { id, run_attempt, status, conclusion };
+  }
+  if (parts[0] === "actions" && parts[1] === "jobs" && parts[3] === "logs") {
+    const log = world.logs[parts[2]];
+    if (log === undefined || log.status === 404) fail("gh: Not Found (HTTP 404)");
+    if (log.status === 410) fail("gh: Gone (HTTP 410)");
+    // As bytes, so a log that is not valid UTF-8 reaches the script as it is.
+    const text = fs.readFileSync(path.join(dir, log.file));
+    if (!options["--allow-escape-sequences"] && text.includes(0x1b))
+      fail("the response contains terminal escape sequences; pass --allow-escape-sequences to output it anyway");
+    return text;
+  }
+  if (parts[0] === "actions" && parts[1] === "artifacts" && parts[3] === "zip") {
+    const artifact = world.artifacts.find((each) => each.id === Number(parts[2]));
+    if (artifact === undefined) fail("gh: Not Found (HTTP 404)");
+    if (artifact.expired || artifact.gone) fail("gh: Gone (HTTP 410)");
+    const bytes = fs.readFileSync(path.join(dir, artifact.file));
+    if (!options["--allow-escape-sequences"] && bytes.includes(0x1b))
+      fail("the response contains terminal escape sequences; pass --allow-escape-sequences to output it anyway");
+    return bytes;
+  }
+  if (parts[0] === "compare") {
+    const commits = world.compare[parts[1]];
+    if (commits === undefined) fail("gh: Not Found (HTTP 404)");
+    const per = Number(query.get("per_page") || commits.length || 1);
+    const page = Number(query.get("page") || 1);
+    return { total_commits: commits.length, commits: pageOf(commits, (page - 1) * per, per, fault).map((each) => ({ sha: each.sha, commit: { message: each.message } })) };
+  }
+  fail("gh: Not Found (HTTP 404)");
+};
+const render = (given) => {
+  if (Buffer.isBuffer(given) || typeof given === "string") return given;
+  const value = edit(given);
+  return options["--jq"] === undefined ? JSON.stringify(value) : jq(options["--jq"], value);
+};
+const paged = list();
+if (paged === undefined) {
+  const value = single(request(method, target));
+  process.stdout.write(render(value));
+  process.exit(0);
+}
+const per = Math.min(Number(query.get("per_page") || 30), 100);
+let page = Number(query.get("page") || 1);
+for (;;) {
+  query.set("page", String(page));
+  const fault = request("GET", url.pathname.slice(1) + "?" + query.toString());
+  const items = pageOf(paged.items, (page - 1) * per, per, fault);
+  printed += render(paged.wrap(items, paged.items.length));
+  if (!options["--paginate"] || items.length < per) break;
+  page++;
+}
+process.stdout.write(printed);
+`;
+
+const crcTable = Array.from({ length: 256 }, (_, n) => {
+  let c = n;
+  for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+  return c >>> 0;
+});
+const crc32 = (bytes: Uint8Array) => {
+  let c = 0xffffffff;
+  for (const byte of bytes) c = crcTable[(c ^ byte) & 0xff]! ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+};
+/**
+ * A zip archive of one file, stored without compression, as GitHub serves an artifact. Its comment
+ * holds an escape byte, as any zip's bytes can, which gh refuses to print unless told to.
+ */
+const zipOf = (name: string, text: string) => {
+  const data = new TextEncoder().encode(text);
+  const file = new TextEncoder().encode(name);
+  const crc = crc32(data);
+  // 1 January 1980, the first date a zip can hold.
+  const date = (1 << 5) | 1;
+  const local = new DataView(new ArrayBuffer(30));
+  local.setUint32(0, 0x04034b50, true);
+  local.setUint16(4, 20, true);
+  local.setUint16(12, date, true);
+  local.setUint32(14, crc, true);
+  local.setUint32(18, data.length, true);
+  local.setUint32(22, data.length, true);
+  local.setUint16(26, file.length, true);
+  const central = new DataView(new ArrayBuffer(46));
+  central.setUint32(0, 0x02014b50, true);
+  central.setUint16(4, 20, true);
+  central.setUint16(6, 20, true);
+  central.setUint16(14, date, true);
+  central.setUint32(16, crc, true);
+  central.setUint32(20, data.length, true);
+  central.setUint32(24, data.length, true);
+  central.setUint16(28, file.length, true);
+  const end = new DataView(new ArrayBuffer(22));
+  end.setUint32(0, 0x06054b50, true);
+  end.setUint16(8, 1, true);
+  end.setUint16(10, 1, true);
+  end.setUint32(12, 46 + file.length, true);
+  end.setUint32(16, 30 + file.length + data.length, true);
+  const comment = new Uint8Array([0x1b, 0x5b, 0x30, 0x6d]);
+  end.setUint16(20, comment.length, true);
+  const pieces = [local, file, data, central, file, end, comment].map((piece) =>
+    piece instanceof DataView ? new Uint8Array(piece.buffer) : piece,
+  );
+  const out = new Uint8Array(pieces.reduce((size, piece) => size + piece.length, 0));
+  let offset = 0;
+  for (const piece of pieces) {
+    out.set(piece, offset);
+    offset += piece.length;
+  }
+  return out;
+};
+
+/** A finished workflow run, as the fake lists it; `created` is hours before now. */
+interface FakeRun {
+  readonly id: number;
+  readonly workflow: string;
+  readonly branch: string;
+  readonly event: string;
+  readonly title: string;
+  readonly created: number;
+  readonly sha: string;
+  readonly conclusion: string;
+  readonly attempt?: number;
+  /** Set while a later attempt runs: the run then has no conclusion, and `previous` is how the attempt before it ended. */
+  readonly status?: "in_progress" | "queued";
+  readonly previous?: string;
+  /** How each attempt before `attempt` ended, oldest first, when they differ from `previous`. */
+  readonly attempts?: ReadonlyArray<string>;
+}
+type Conclusion = "success" | "failure" | "cancelled" | "skipped" | "timed_out";
+const ciRun = (id: number, created: number, sha: string, conclusion: Conclusion): FakeRun => ({
+  id,
+  workflow: "ci.yml",
+  branch: "main",
+  event: "push",
+  title: "CI",
+  created,
+  sha,
+  conclusion,
+});
+const windowsTitle = "Executor releases (build, cli on win32-x64)";
+const windowsRun = (id: number, created: number, sha: string, conclusion: Conclusion): FakeRun => ({
+  id,
+  workflow: "release-artifacts.yml",
+  branch: "ci/windows-check",
+  event: "workflow_dispatch",
+  title: windowsTitle,
+  created,
+  sha,
+  conclusion,
+});
+
+/** A held-beta decision a Beta tick uploaded, as beta.yml writes it. */
+interface Decision {
+  readonly state: "held" | "clear";
+  readonly reason: string;
+  readonly since: string;
+  readonly run: string;
+}
+interface FakeArtifact {
+  readonly id: number;
+  readonly created: number;
+  readonly decision: Decision | string;
+  readonly name?: string;
+  readonly expired?: boolean;
+  readonly branch?: string;
+  readonly fork?: boolean;
+  /** The workflow that uploaded it, beta.yml by default. */
+  readonly workflow?: string;
+  /** Listed, not expired, but its zip answers HTTP 410, as one that expires between the two does. */
+  readonly gone?: boolean;
+}
+
+/** A failed or passed job of a run, with its log as text, bytes, or GitHub having none. */
+interface FakeJob {
+  readonly id: number;
+  readonly name: string;
+  readonly conclusion?: string;
+  readonly log?: string | Uint8Array | 404 | 410;
+}
+
+/** The facts a run of the script reads. */
+interface Facts {
+  readonly runs?: ReadonlyArray<FakeRun>;
+  /** By run id, or by `<run id>:<attempt>` for one attempt's jobs. */
+  readonly jobs?: Readonly<Record<number | string, ReadonlyArray<FakeJob>>>;
+  /** Beta's decisions; when not given, one current `clear` (`currentClear`), so nothing is held. */
+  readonly artifacts?: ReadonlyArray<FakeArtifact>;
+  readonly compare?: Readonly<
+    Record<string, ReadonlyArray<{ readonly sha: string; readonly message: string }>>
+  >;
+  /** Runs still in their first attempt until read by id this many times, by run id. */
+  readonly completeAfter?: Readonly<Record<number, number>>;
+  /**
+   * `none`: no Windows check has run. Otherwise, when `runs` holds no Windows check, one passed
+   * two days ago (`passedWindows`), so the Windows check is known green.
+   */
+  readonly windows?: "none";
+  /** The order runs created at the same time are listed in: higher id first unless `ascending`. */
+  readonly tieOrder?: "ascending";
+}
+
+/** An issue as the fake gh keeps it; a comment given as text was written by github-actions. */
+interface FakeIssue {
+  readonly number: number;
+  readonly title?: string;
+  readonly body?: string;
+  readonly user?: string;
+  readonly labels?: ReadonlyArray<string>;
+  readonly state?: "open" | "closed";
+  readonly pullRequest?: boolean;
+  readonly comments?: ReadonlyArray<string | { readonly body: string; readonly user: string }>;
+}
+interface KeptIssue {
+  readonly number: number;
+  readonly title: string;
+  readonly body: string;
+  readonly user: string;
+  readonly labels: ReadonlyArray<string>;
+  readonly state: "open" | "closed";
+  readonly reason?: string;
+  readonly comments: ReadonlyArray<{
+    readonly id: number;
+    readonly body: string;
+    readonly user: string;
+  }>;
+}
+
+const mainTitle = "Main is red or a beta release is held";
+const bot = "github-actions[bot]";
+const mainLabel = "main-health";
+const marker = "<!-- main-issue: main-health -->";
+/** The labels every Main health before main-health.yml took `mainLabel` found its issues by. */
+const oldLabels = ["main-red", "windows-check-red"];
+/** The Windows check when a case gives none: passed two days ago. */
+const passedWindows: FakeRun = windowsRun(57, 48, "9".repeat(40), "success");
+/** The env main-health.yml passes. */
+const mainHealthEnv = {
+  LABEL: mainLabel,
+  TITLE: mainTitle,
+  CI_WORKFLOW: "ci.yml",
+  CI_BRANCH: "main",
+  CI_EVENT: "push",
+  WINDOWS_WORKFLOW: "release-artifacts.yml",
+  WINDOWS_BRANCH: "ci/windows-check",
+  WINDOWS_EVENT: "workflow_dispatch",
+  WINDOWS_TITLE: windowsTitle,
+  BETA_WORKFLOW: "beta.yml",
+  BETA_BRANCH: "main",
+  BETA_EVENTS: "push schedule workflow_dispatch workflow_run",
+  BETA_ARTIFACT: "beta-hold",
+  // What the script before this change read as CI's source, which it ran as with no RUN_ID, so it
+  // runs against the same facts.
+  WORKFLOW: "ci.yml",
+  BRANCH: "main",
+  EVENT: "push",
+};
+
+/** A value of a GitHub Actions expression context. */
+type ContextValue = string | number | boolean | null | { readonly [key: string]: ContextValue };
+
+/**
+ * Evaluates a GitHub Actions expression of the forms these workflows use: `||`, `&&`, `!`, `==`,
+ * `!=`, parentheses, single-quoted strings, property paths and the status functions `always()`,
+ * `success()` and `cancelled()`, as GitHub's expression docs define them. `==` ignores case between
+ * strings and compares mixed types as numbers (null and '' are 0), so a missing input equals ''.
+ */
+const evaluate = (
+  expression: string,
+  context: Readonly<Record<string, ContextValue>>,
+  status: { readonly cancelled: boolean; readonly failed: boolean } = {
+    cancelled: false,
+    failed: false,
+  },
+): ContextValue => {
+  const tokens = [
+    ...expression.matchAll(
+      /\s*(\|\||&&|==|!=|!|\(|\)|'(?:[^']|'')*'|[A-Za-z_][\w.-]*\(\)|[A-Za-z_][\w.-]*)/gy,
+    ),
+  ].map((match) => match[1]!);
+  expect(tokens.join("").replace(/\s/g, "")).toBe(expression.replace(/\s/g, ""));
+  let at = 0;
+  const number = (value: ContextValue) =>
+    value === null
+      ? 0
+      : typeof value === "boolean"
+        ? Number(value)
+        : typeof value === "string"
+          ? Number(value.trim() === "" ? 0 : value)
+          : typeof value === "number"
+            ? value
+            : Number.NaN;
+  const equal = (a: ContextValue, b: ContextValue) =>
+    typeof a === "string" && typeof b === "string"
+      ? a.toLowerCase() === b.toLowerCase()
+      : typeof a === typeof b && typeof a !== "object"
+        ? a === b
+        : a === null && b === null
+          ? true
+          : number(a) === number(b);
+  const truthy = (value: ContextValue) =>
+    !(value === false || value === null || value === "" || value === 0 || Number.isNaN(value));
+  const primary = (): ContextValue => {
+    const token = tokens[at++]!;
+    if (token === "(") {
+      const value = or();
+      expect(tokens[at++]).toBe(")");
+      return value;
+    }
+    if (token === "!") return !truthy(primary());
+    if (token.startsWith("'")) return token.slice(1, -1).replaceAll("''", "'");
+    if (token === "always()") return true;
+    if (token === "success()") return !status.cancelled && !status.failed;
+    if (token === "cancelled()") return status.cancelled;
+    if (token === "true" || token === "false") return token === "true";
+    if (token === "null") return null;
+    expect(token).toMatch(/^[A-Za-z_][\w.-]*$/);
+    return token
+      .split(".")
+      .reduce<ContextValue>(
+        (value, key) => (value !== null && typeof value === "object" ? (value[key] ?? null) : null),
+        context as ContextValue,
+      );
+  };
+  const comparison = (): ContextValue => {
+    const left = primary();
+    if (tokens[at] === "==" || tokens[at] === "!=") {
+      const operator = tokens[at++];
+      const same = equal(left, primary());
+      return operator === "==" ? same : !same;
+    }
+    return left;
+  };
+  const and = (): ContextValue => {
+    let value = comparison();
+    while (tokens[at] === "&&") {
+      at++;
+      const right = comparison();
+      value = truthy(value) ? right : value;
+    }
+    return value;
+  };
+  const or = (): ContextValue => {
+    let value = and();
+    while (tokens[at] === "||") {
+      at++;
+      const right = and();
+      value = truthy(value) ? value : right;
+    }
+    return value;
+  };
+  const value = or();
+  expect(at).toBe(tokens.length);
+  return value;
+};
+
+/**
+ * Whether a job or step whose `if` is `condition` runs: GitHub adds `success() &&` to a condition
+ * that calls no status function, and a missing one is `success()`.
+ */
+const admits = (
+  condition: string | undefined,
+  context: Readonly<Record<string, ContextValue>>,
+  status?: { readonly cancelled: boolean; readonly failed: boolean },
+) => {
+  const bare = (condition ?? "success()").trim().replace(/^\$\{\{([\s\S]*)\}\}$/, "$1");
+  const whole = /\b(always|success|failure|cancelled)\(\)/.test(bare)
+    ? bare
+    : `success() && (${bare})`;
+  const value = evaluate(whole, context, status);
+  return !(value === false || value === null || value === "" || value === 0);
+};
+
+/** A workflow file as YAML gives it, with the parts these cases read. */
+interface WorkflowStep {
+  readonly name?: string;
+  readonly if?: string;
+  readonly uses?: string;
+  readonly run?: string;
+  readonly env?: Readonly<Record<string, string>>;
+}
+interface WorkflowJob {
+  readonly if?: string;
+  readonly needs?: string | ReadonlyArray<string>;
+  readonly permissions?: Readonly<Record<string, string>>;
+  readonly concurrency?: Readonly<Record<string, unknown>>;
+  readonly "continue-on-error"?: boolean;
+  readonly "timeout-minutes"?: number;
+  readonly steps: ReadonlyArray<WorkflowStep>;
+}
+interface Workflow {
+  readonly on: Readonly<Record<string, unknown>>;
+  readonly permissions?: unknown;
+  readonly concurrency?: unknown;
+  readonly jobs: Readonly<Record<string, WorkflowJob>>;
+}
+/**
+ * Workflow files as YAML reads them (`scripts/ci/workflow-yaml.ts`, the repository's `yaml`
+ * package): the parsed workflow of each, by path, or the problems that make one not valid YAML.
+ */
+const workflowYaml = (files: ReadonlyArray<string>) =>
+  Effect.gen(function* () {
+    const result = yield* run(".", "node", ["scripts/ci/workflow-yaml.ts", ...files], {});
+    return result.exitCode === 0
+      ? { ok: true as const, workflows: JSON.parse(result.output) as Record<string, Workflow> }
+      : { ok: false as const, problems: result.output };
+  });
+/** One workflow of this checkout, its text and what YAML reads, failing the case if it is not valid. */
+const workflowFile = (file: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const text = yield* fs.readFileString(`.github/workflows/${file}`);
+    const parsed = yield* workflowYaml([`.github/workflows/${file}`]);
+    if (!parsed.ok) expect.fail(parsed.problems);
+    return { text, workflow: parsed.workflows[`.github/workflows/${file}`]! };
+  });
+
+/** What started a run of main-health.yml. */
+type Trigger =
+  | {
+      readonly event: "workflow_run";
+      readonly workflow: "CI" | "Beta";
+      readonly runEvent?: string;
+      readonly conclusion?: string;
+      readonly fork?: boolean;
+    }
+  | { readonly event: "schedule" }
+  | { readonly event: "workflow_dispatch"; readonly inputs?: Readonly<Record<string, string>> };
+
+/** The expression contexts GitHub gives main-health.yml's job for `trigger`. */
+const mainHealthContext = (trigger: Trigger): Readonly<Record<string, ContextValue>> => ({
+  github: {
+    event_name: trigger.event,
+    repository,
+    ref: "refs/heads/main",
+    token: "fake-token",
+    event:
+      trigger.event === "workflow_run"
+        ? {
+            workflow_run: {
+              name: trigger.workflow,
+              event: trigger.runEvent ?? "push",
+              conclusion: trigger.conclusion ?? "success",
+              head_repository: {
+                full_name: trigger.fork === true ? "someone/executor-next" : repository,
+              },
+            },
+          }
+        : {},
+  },
+  // GitHub fills a dispatch's inputs with their defaults; other events have none.
+  inputs: trigger.event === "workflow_dispatch" ? { windows_run: "", ...trigger.inputs } : {},
+});
+
+/** A step's env, its `${{ }}` expressions evaluated in `context`. */
+const stepEnv = (step: WorkflowStep, context: Readonly<Record<string, ContextValue>>) =>
+  Object.fromEntries(
+    Object.entries(step.env ?? {}).map(([key, value]) => [
+      key,
+      String(value).replace(/\$\{\{([\s\S]*?)\}\}/g, (_, expression: string) => {
+        const result = evaluate(expression, context);
+        return result === null ? "" : String(result);
+      }),
+    ]),
+  );
+
+/**
+ * Runs main-health.yml's `issue` job from this checkout for `trigger`, in `runner`'s environment:
+ * the job's `if`, then each `run` step its `if` admits, as `bash -e` does, stopping at the first
+ * that fails. The checkout step is this checkout.
+ */
+const mainHealthJob = (trigger: Trigger, runner: Readonly<Record<string, string>>) =>
+  Effect.gen(function* () {
+    const { workflow } = yield* workflowFile("main-health.yml");
+    const job = workflow.jobs["issue"]!;
+    const context = mainHealthContext(trigger);
+    if (!admits(job.if, context)) return { output: "", exitCode: 0, ran: false };
+    let output = "";
+    for (const step of job.steps) {
+      // The checkout is this checkout, set up already.
+      if (step.uses !== undefined) {
+        expect(step.uses).toMatch(
+          /^actions\/checkout@[0-9a-f]{40}$|^\.\/\.github\/actions\/setup$/,
+        );
+        continue;
+      }
+      if (!admits(step.if, context)) continue;
+      const result = yield* run(".", "bash", ["-e", "-c", step.run!], {
+        ...runner,
+        GITHUB_EVENT_NAME: trigger.event,
+        ...stepEnv(step, context),
+      });
+      output += result.output;
+      if (result.exitCode !== 0) return { output, exitCode: result.exitCode, ran: true };
+    }
+    return { output, exitCode: 0, ran: true };
+  });
+
+/** A change to a JSON answer: the value at `path` set to `value`, or deleted. */
+type Edit =
+  | { readonly path: ReadonlyArray<string | number>; readonly value: unknown }
+  | { readonly path: ReadonlyArray<string | number>; readonly delete: true };
+/**
+ * A request the fake fails (its number), serves one item short or one item early, or answers with
+ * `ops` made to its answer.
+ */
+type Fault =
+  | number
+  | { readonly short: number }
+  | { readonly shift: number }
+  | { readonly edit: number; readonly ops: ReadonlyArray<Edit> };
+
+/**
+ * A repository behind the fake gh holding `issues`, where each `call` runs the script once against
+ * `facts`, failing the requests numbered in `faults`, and returns what it did.
+ */
+const issueRepository = (
+  facts: Facts,
+  issues: ReadonlyArray<FakeIssue> = [],
+  /** The repository's labels; `mainLabel` by default, as once the first issue opened. */
+  labels: ReadonlyArray<string> = [mainLabel, ...oldLabels],
+) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const root = yield* fs.makeTempDirectoryScoped({ prefix: "executor-main-issue-" });
+    const bin = path.join(root, "bin");
+    const github = path.join(root, "github");
+    yield* fs.makeDirectory(bin);
+    yield* fs.makeDirectory(github);
+    yield* fs.writeFileString(path.join(bin, "gh"), fakeGitHub);
+    yield* fs.chmod(path.join(bin, "gh"), 0o755);
+    // A step's waits return at once, and are counted.
+    yield* fs.writeFileString(
+      path.join(bin, "sleep"),
+      '#!/bin/sh\necho "sleep $*" >> "$FAKE_GITHUB/sleeps"\n',
+    );
+    yield* fs.chmod(path.join(bin, "sleep"), 0o755);
+
+    const logs: Record<number, { readonly file?: string; readonly status?: number }> = {};
+    const jobs: Record<
+      string,
+      ReadonlyArray<{ id: number; name: string; conclusion: string }>
+    > = {};
+    for (const [run, list] of Object.entries(facts.jobs ?? {})) {
+      jobs[run] = list.map((job) => ({
+        id: job.id,
+        name: job.name,
+        conclusion: job.conclusion ?? "failure",
+      }));
+      for (const job of list) {
+        if (job.log === 404 || job.log === 410) logs[job.id] = { status: job.log };
+        else if (job.log !== undefined) {
+          yield* fs.writeFile(
+            path.join(github, `log-${job.id}`),
+            typeof job.log === "string" ? new TextEncoder().encode(job.log) : job.log,
+          );
+          logs[job.id] = { file: `log-${job.id}` };
+        }
+      }
+    }
+    const runs = [...(facts.runs ?? [])];
+    if (facts.windows !== "none" && !runs.some((run) => run.workflow === "release-artifacts.yml"))
+      runs.push(passedWindows);
+    const artifacts = [];
+    for (const artifact of facts.artifacts ?? [currentClear]) {
+      const text =
+        typeof artifact.decision === "string"
+          ? artifact.decision
+          : JSON.stringify(artifact.decision);
+      yield* fs.writeFile(
+        path.join(github, `artifact-${artifact.id}.zip`),
+        zipOf("beta-hold.json", text),
+      );
+      const run = 900000 + artifact.id;
+      runs.push({
+        id: run,
+        workflow: artifact.workflow ?? "beta.yml",
+        branch: artifact.branch ?? "main",
+        event: "push",
+        title: "Beta",
+        created: artifact.created,
+        sha: "e".repeat(40),
+        conclusion: "success",
+      });
+      artifacts.push({
+        id: artifact.id,
+        name: artifact.name ?? "beta-hold",
+        created: artifact.created,
+        expired: artifact.expired ?? false,
+        branch: artifact.branch ?? "main",
+        fork: artifact.fork ?? false,
+        gone: artifact.gone ?? false,
+        run,
+        file: `artifact-${artifact.id}.zip`,
+      });
+    }
+    yield* fs.writeFileString(
+      path.join(github, "world.json"),
+      JSON.stringify({
+        now: Date.now(),
+        runs,
+        jobs,
+        logs,
+        artifacts,
+        compare: facts.compare ?? {},
+        completeAfter: facts.completeAfter ?? {},
+        tieOrder: facts.tieOrder ?? "descending",
+      }),
+    );
+    let comment = 1000;
+    const initial: ReadonlyArray<KeptIssue> = issues.map((issue) => ({
+      number: issue.number,
+      title: issue.title ?? mainTitle,
+      body: issue.body ?? "",
+      user: issue.user ?? bot,
+      labels: issue.labels ?? [mainLabel],
+      state: issue.state ?? "open",
+      ...(issue.pullRequest === true ? { pullRequest: true } : {}),
+      comments: (issue.comments ?? []).map((each) => ({
+        id: comment++,
+        ...(typeof each === "string" ? { body: each, user: bot } : each),
+      })),
+    }));
+    yield* fs.writeFileString(
+      path.join(github, "state.json"),
+      JSON.stringify({
+        next: Math.max(0, ...issues.map((issue) => issue.number)) + 1,
+        nextComment: comment,
+        issues: initial,
+        labels,
+      }),
+    );
+    const read = (name: string) =>
+      fs
+        .exists(path.join(github, name))
+        .pipe(
+          Effect.flatMap((exists) =>
+            exists ? fs.readFileString(path.join(github, name)) : Effect.succeed(""),
+          ),
+        );
+    const lines = (text: string) => text.split("\n").filter((line) => line !== "");
+    const script = path.resolve("scripts/ci/main-health.ts");
+    let calls = 0;
+
+    /**
+     * Runs the script once, or with a `trigger`, main-health.yml's own job as GitHub would for that
+     * event: its `if`, then each step its `if` admits, with the env the workflow gives it.
+     */
+    const call = (faults: ReadonlyArray<Fault> = [], trigger?: Trigger) =>
+      Effect.gen(function* () {
+        const temp = path.join(root, `runner-temp-${calls++}`);
+        yield* fs.makeDirectory(temp);
+        for (const name of ["calls", "requests", "mutations", "count", "sleeps", "answers"])
+          yield* fs.remove(path.join(github, name), { force: true, recursive: true });
+        yield* fs.writeFileString(path.join(github, "faults.json"), JSON.stringify(faults));
+        const runner = {
+          PATH: `${bin}:${process.env.PATH ?? ""}`,
+          HOME: process.env.HOME ?? root,
+          FAKE_GITHUB: github,
+          GITHUB_SERVER_URL: "https://github.com",
+          GITHUB_REPOSITORY: repository,
+          GITHUB_STEP_SUMMARY: path.join(temp, "summary.md"),
+          RUNNER_TEMP: temp,
+        };
+        const result =
+          trigger === undefined
+            ? { ...(yield* run(root, "bun", [script], { ...mainHealthEnv, ...runner })), ran: true }
+            : yield* mainHealthJob(trigger, runner);
+        const state = JSON.parse(yield* read("state.json")) as {
+          readonly issues: ReadonlyArray<KeptIssue>;
+          readonly labels: ReadonlyArray<string>;
+        };
+        const issues = state.issues;
+        const open = issues.filter((issue) => issue.state === "open");
+        return {
+          ...result,
+          calls: lines(yield* read("calls")),
+          requests: lines(yield* read("requests")),
+          mutations: lines(yield* read("mutations")),
+          /** The waits a step slept, as `sleep <seconds>`. */
+          sleeps: lines(yield* read("sleeps")),
+          summary: yield* read(path.join(`../${path.basename(temp)}`, "summary.md")),
+          issues,
+          /** The open issues, whoever opened them. */
+          open,
+          /** The open issues this script owns, lowest first. */
+          owned: open
+            .filter(
+              (issue) =>
+                issue.user === bot &&
+                issue.labels.includes(mainLabel) &&
+                issue.body.includes(marker),
+            )
+            .sort((a, b) => a.number - b.number),
+          /** An issue's body. */
+          body: (number: number) => issues.find((each) => each.number === number)?.body,
+          labels: state.labels,
+          /** The JSON answer to request N (counting from 1), as served before any edit. */
+          answer: (number: number) =>
+            read(`answers/${number}.json`).pipe(
+              Effect.map((text) => (text === "" ? undefined : (JSON.parse(text) as unknown))),
+            ),
+        };
+      });
+    /** Runs this repository's fake gh with ARGS, as a script would. */
+    const gh = (args: ReadonlyArray<string>) =>
+      run(root, path.join(bin, "gh"), args, {
+        FAKE_GITHUB: github,
+        GITHUB_REPOSITORY: repository,
+      });
+    return { call, initial, gh };
+  });
+
+/** Runs the script once against `facts` and a repository holding `issues`. */
+const reconcile = (facts: Facts, issues: ReadonlyArray<FakeIssue> = []) =>
+  Effect.gen(function* () {
+    const repository = yield* issueRepository(facts, issues);
+    return yield* repository.call();
+  });
+
+/** A request that reads: a REST GET, or a GraphQL query (the fake serves no mutation). */
+const reads = (request: string) => request.startsWith("GET ") || request.startsWith("QUERY ");
+const writes = (requests: ReadonlyArray<string>) => requests.filter((request) => !reads(request));
+
+/**
+ * The cloud-product job log of CI run 44315383027 on main (18 Nov 2026), cut to the lines that
+ * name its failed scenario, as GitHub serves it: each line timestamped, Vitest's colors as
+ * terminal escape sequences. The red-main issue it opened said no scenario was in its log.
+ */
+const esc = "\u001b";
+const cloudProductLog = [
+  `2026-11-18T13:40:46.6008956Z ${esc}[90mstdout${esc}[2m | e2e/tests/workflow-engine-calls.spec.ts${esc}[2m > ${esc}[22m${esc}[2mWorkflow engine calls${esc}[2m > ${esc}[22m${esc}[2ma run's sleep whose engine call failed is called again, a run whose sleep keeps failing records why for its owner, and neither an app's own failure nor a step whose answer was lost is repeated${esc}[22m${esc}[39m`,
+  `2026-11-18T13:40:49.9745110Z  ${esc}[31m×${esc}[39m ${esc}[30m${esc}[46m cloud ${esc}[49m${esc}[39m e2e/tests/workflow-engine-calls.spec.ts${esc}[2m > ${esc}[22mWorkflow engine calls${esc}[2m > ${esc}[22ma run's sleep whose engine call failed is called again, a run whose sleep keeps failing records why for its owner, and neither an app's own failure nor a step whose answer was lost is repeated${esc}[33m 38902${esc}[2mms${esc}[22m${esc}[39m`,
+  `2026-11-18T13:41:27.0565796Z ${esc}[41m${esc}[1m FAIL ${esc}[22m${esc}[49m ${esc}[30m${esc}[46m cloud ${esc}[49m${esc}[39m e2e/tests/workflow-engine-calls.spec.ts${esc}[2m > ${esc}[22mWorkflow engine calls${esc}[2m > ${esc}[22ma run's sleep whose engine call failed is called again, a run whose sleep keeps failing records why for its owner, and neither an app's own failure nor a step whose answer was lost is repeated`,
+  `2026-11-18T13:41:27.0596047Z ${esc}[31m${esc}[1mAssertionError${esc}[22m: terminatedUntil: {"status":"complete","output":{"slept":true}}${esc}[39m`,
+].join("\n");
+const cloudProductScenario =
+  "cloud  e2e/tests/workflow-engine-calls.spec.ts > Workflow engine calls > a run's sleep whose engine call failed is called again, a run whose sleep keeps failing records why for its owner, and neither an app's own failure nor a step whose answer was lost is repeated";
+
+const sha = (character: string) => character.repeat(40);
+const heldReason =
+  "executor@2.0.0-beta.5 is not on npm, and at least 5 publishing attempts failed in the last day; see `RELEASING.md` @someone";
+const held = (reason = heldReason, run = 700): Decision => ({
+  state: "held",
+  reason,
+  since: "2026-11-18T06:00:00.000Z",
+  run: runUrl(run),
+});
+const clear = (run = 701): Decision => ({
+  state: "clear",
+  reason: "Nothing to publish.",
+  since: "",
+  run: runUrl(run),
+});
+/** Beta's decision when a case gives none: `clear`, an hour ago. */
+const currentClear: FakeArtifact = { id: 9000, created: 1, decision: clear(709) };
+/** CI red in run 60 after green 59, with one failed job naming one scenario. */
+const redCi = {
+  runs: [ciRun(60, 0, sha("c"), "failure"), ciRun(59, 1, sha("a"), "success")],
+  jobs: { 60: [{ id: 95, name: "checks / e2e-local (1/2)", log: cloudProductLog }] },
+  compare: { [`${sha("a")}...${sha("c")}`]: [{ sha: sha("1"), message: "Break main" }] },
+} satisfies Facts;
+const greenCi = { runs: [ciRun(61, 0, sha("d"), "success")] } satisfies Facts;
+const ownedIssue = (number: number, extra: Omit<FakeIssue, "number"> = {}): FakeIssue => ({
+  number,
+  body: `${marker}\nAn earlier run wrote this.`,
+  ...extra,
+});
+/** A source comment as the script before this change kept it. */
+const sourceComment = (source: string, text: string) =>
+  `<!-- main-issue-source: ${source} -->\n${text}`;
+
+/** A source's facts for each health it can have, as the 54-case table builds them. */
+type Health = "bad" | "good" | "unknown";
+const ciFor: Readonly<Record<Health, Facts>> = { bad: redCi, good: greenCi, unknown: {} };
+const windowsFor: Readonly<Record<Health, Facts>> = {
+  bad: {
+    runs: [windowsRun(62, 1, sha("c"), "failure")],
+    jobs: { 62: [{ id: 91, name: "cli (win32, x64)", log: "" }] },
+  },
+  good: { runs: [windowsRun(58, 5, sha("a"), "success")] },
+  unknown: { windows: "none" },
+};
+const betaFor: Readonly<Record<Health, ReadonlyArray<FakeArtifact>>> = {
+  bad: [{ id: 2, created: 2, decision: held() }],
+  good: [{ id: 7, created: 0, decision: clear() }],
+  unknown: [],
+};
+
+/**
+ * The 18 cases of the table with CI `ci`: each Windows and Beta health, with an owned issue open
+ * or not. The expectation is the rule itself, restated here from the facts: anything bad opens the
+ * issue or keeps the open one, everything good closes it, and otherwise an open issue stays open and
+ * is rewritten, and none opens.
+ */
+const healthTable = (ci: Health) =>
+  Effect.gen(function* () {
+    const healths = ["bad", "good", "unknown"] as const;
+    const rows = healths.flatMap((w) =>
+      healths.flatMap((b) => [false, true].map((open) => ({ c: ci, w, b, open }))),
+    );
+    expect(rows).toHaveLength(18);
+    const results = yield* Effect.forEach(
+      rows,
+      (row) =>
+        Effect.gen(function* () {
+          const facts: Facts = {
+            ...ciFor[row.c],
+            ...windowsFor[row.w],
+            runs: [...(ciFor[row.c].runs ?? []), ...(windowsFor[row.w].runs ?? [])],
+            jobs: { ...ciFor[row.c].jobs, ...windowsFor[row.w].jobs },
+            artifacts: betaFor[row.b],
+          };
+          return { ...row, result: yield* reconcile(facts, row.open ? [ownedIssue(1)] : []) };
+        }),
+      { concurrency: 6 },
+    );
+    for (const { c, w, b, open, result } of results) {
+      const row = `CI ${c}, Windows ${w}, beta ${b}, ${open ? "an issue open" : "none open"}\n${result.output}`;
+      expect(result.exitCode, row).toBe(0);
+      const bad = [c, w, b].includes("bad");
+      const good = [c, w, b].every((each) => each === "good");
+      expect(result.mutations, row).toEqual(
+        bad
+          ? open
+            ? ["edit 1"]
+            : ["create 1"]
+          : good
+            ? open
+              ? ["edit 1", "close 1"]
+              : []
+            : open
+              ? ["edit 1"]
+              : [],
+      );
+      expect(
+        result.owned.map((issue) => issue.number),
+        row,
+      ).toEqual(bad || (open && !good) ? [1] : []);
+      // What the issue (or, with none, the run's summary) says of each source.
+      const text = result.body(1) ?? result.summary;
+      const said = { bad: "red", good: "green", unknown: "unknown, no finished run that counts" };
+      expect(text, row).toContain(`- CI on main: ${said[c]}\n`);
+      expect(text, row).toContain(`- The Windows check: ${said[w]}\n`);
+      expect(text, row).toContain(
+        `- The beta release: ${{ bad: "held", good: "not held", unknown: "unknown, no Beta decision in the last six days could be read" }[b]}\n`,
+      );
+      if (!bad && !good)
+        expect(text, row).toMatch(
+          /\nNothing is known to be red or held\. .* cannot be read \(below\), so this issue stays as it was/,
+        );
+      else expect(text, row).not.toContain("Nothing is known to be red or held.");
+    }
+  }).pipe(Effect.scoped);
+
+/** VALUE with EDITS made, as the fake makes them to an answer. */
+const applyEdits = (value: unknown, edits: ReadonlyArray<Edit>) => {
+  const edited = JSON.parse(JSON.stringify(value)) as Record<string | number, unknown>;
+  for (const edit of edits) {
+    const parent = edit.path
+      .slice(0, -1)
+      .reduce<Record<string | number, unknown>>(
+        (at, key) => at[key] as Record<string | number, unknown>,
+        edited,
+      );
+    const key = edit.path.at(-1)!;
+    if ("delete" in edit && Array.isArray(parent)) parent.splice(Number(key), 1);
+    else if ("delete" in edit) delete parent[key];
+    else parent[key] = edit.value;
+  }
+  return edited;
+};
+
+/** What kind of answer a request gets, by the request; undefined for bytes (a log, a zip) and writes. */
+type AnswerKind =
+  | "runs"
+  | "attempt"
+  | "jobs"
+  | "compare"
+  | "artifacts"
+  | "producer"
+  | "issues"
+  | "label";
+const kindOf = (request: string): AnswerKind | undefined =>
+  /^GET actions\/workflows\/[^/]+\/runs\?/.test(request)
+    ? "runs"
+    : /^GET actions\/runs\/\d+\/attempts\/\d+$/.test(request)
+      ? "attempt"
+      : /^GET actions\/runs\/\d+\/attempts\/\d+\/jobs\?/.test(request)
+        ? "jobs"
+        : request.startsWith("GET compare/")
+          ? "compare"
+          : request.startsWith("GET actions/artifacts?")
+            ? "artifacts"
+            : /^GET actions\/runs\/\d+$/.test(request)
+              ? "producer"
+              : request.startsWith("QUERY graphql issues")
+                ? "issues"
+                : request.startsWith("GET labels/")
+                  ? "label"
+                  : undefined;
+/**
+ * The string fields of each answer whose every value is a valid answer: names, titles and text, a
+ * Windows run's title (another title is a run that does not count), an artifact's branch (another
+ * branch is a decision that is not Beta's) and a cursor on the last page. Every other string is a
+ * value GitHub documents or this script expects (a status, an event, a sha, a time, a URL), and
+ * "nonsense" in it is malformed.
+ */
+const freeText: Readonly<Record<AnswerKind, ReadonlyArray<string>>> = {
+  runs: ["display_title"],
+  attempt: [],
+  jobs: ["name"],
+  compare: ["message"],
+  artifacts: ["head_branch"],
+  producer: [],
+  issues: ["title", "body", "login", "name", "endCursor"],
+  label: [],
+};
+
+/** One way to spoil an answer, and what it does. */
+interface Spoiling {
+  readonly what: string;
+  readonly ops: ReadonlyArray<Edit>;
+  /** `same`: an order GitHub does not promise, which must change nothing. Otherwise a failed read. */
+  readonly expect: "fail" | "same";
+}
+
+/**
+ * Every way to spoil ANSWER that this generator knows, each a failed read: every field missing,
+ * every field of another type, every documented or expected string an unknown value, every count
+ * one more, and of every list (its first and last items visited in turn), the list emptied while
+ * its count stays, an item missing, an item twice and two items swapped. A swap is a failed read
+ * for runs, which GitHub lists newest first and which are read only as far as needed; for jobs,
+ * artifacts, issues and labels, whose order GitHub does not promise and which are read whole and
+ * sorted, it must change nothing. Commits are listed as GitHub orders them, oldest first, which
+ * nothing in the answer lets this script check, so they are not swapped.
+ */
+const spoilings = (answer: unknown, kind: AnswerKind): ReadonlyArray<Spoiling> => {
+  const out: Array<Spoiling> = [];
+  const other = (value: unknown) =>
+    typeof value === "string"
+      ? 7
+      : typeof value === "number"
+        ? String(value)
+        : typeof value === "boolean"
+          ? String(value)
+          : value === null
+            ? 7
+            : "x";
+  const visit = (value: unknown, at: ReadonlyArray<string | number>) => {
+    const where = at.join(".") || "the answer";
+    if (Array.isArray(value)) {
+      out.push({
+        what: `${where} empty, its count unchanged`,
+        ops: [{ path: at, value: [] }],
+        expect: "fail",
+      });
+      if (value.length > 0)
+        out.push({
+          what: `${where} without its last item`,
+          ops: [{ path: [...at, value.length - 1], delete: true }],
+          expect: "fail",
+        });
+      out.push({
+        what: `${where} holding its first item twice`,
+        ops: [
+          { path: [...at, value.length > 1 ? value.length - 1 : value.length], value: value[0] },
+        ],
+        expect: "fail",
+      });
+      if (value.length > 1 && at.at(-1) !== "commits")
+        out.push({
+          what: `${where} with its first two items swapped`,
+          ops: [
+            { path: [...at, 0], value: value[1] },
+            { path: [...at, 1], value: value[0] },
+          ],
+          expect: at.at(-1) === "workflow_runs" ? "fail" : "same",
+        });
+      for (const index of new Set([0, value.length - 1]))
+        if (index >= 0 && index < value.length) visit(value[index], [...at, index]);
+      return;
+    }
+    if (value === null || typeof value !== "object") return;
+    for (const [key, child] of Object.entries(value)) {
+      const path = [...at, key];
+      const name = path.join(".");
+      out.push({ what: `${name} missing`, ops: [{ path, delete: true }], expect: "fail" });
+      out.push({
+        what: `${name} of another type`,
+        ops: [{ path, value: other(child) }],
+        expect: "fail",
+      });
+      if (typeof child === "string" && !freeText[kind].includes(key))
+        out.push({
+          what: `${name} an unknown value`,
+          ops: [{ path, value: "nonsense" }],
+          expect: "fail",
+        });
+      if (typeof child === "number" && /^(total_count|total_commits|totalCount)$/.test(key))
+        out.push({ what: `${name} one more`, ops: [{ path, value: child + 1 }], expect: "fail" });
+      visit(child, path);
+    }
+  };
+  visit(answer, []);
+  if (kind === "issues")
+    for (const errors of [[], [{ message: "Something went wrong", type: "INTERNAL" }]])
+      out.push({
+        what: `errors ${JSON.stringify(errors)} beside the data`,
+        ops: [{ path: ["errors"], value: errors }],
+        expect: "fail",
+      });
+  return out;
+};
+
+/**
+ * A world in which every kind of answer Main health reads comes once, each list holding two items:
+ * CI red and being re-run (its earlier attempt read), the Windows check red, each with jobs and
+ * commits since its last green run, two Beta decisions, and two open issues with the label.
+ */
+const everyAnswer: Facts = {
+  runs: [
+    {
+      ...ciRun(60, 0, sha("c"), "failure"),
+      attempt: 2,
+      status: "in_progress",
+      previous: "failure",
+    },
+    ciRun(59, 1, sha("a"), "success"),
+    windowsRun(62, 1, sha("c"), "failure"),
+    windowsRun(58, 5, sha("a"), "success"),
+  ],
+  jobs: {
+    "60:1": [
+      { id: 95, name: "checks / e2e-local (1/2)", log: cloudProductLog },
+      { id: 96, name: "checks / check", conclusion: "success", log: "" },
+    ],
+    62: [
+      { id: 91, name: "cli (win32, x64)", log: "" },
+      { id: 92, name: "metadata", conclusion: "success", log: "" },
+    ],
+  },
+  compare: {
+    [`${sha("a")}...${sha("c")}`]: [
+      { sha: sha("1"), message: "Break main" },
+      { sha: sha("2"), message: "Break it more" },
+    ],
+  },
+  artifacts: [
+    { id: 1, created: 3, decision: clear() },
+    { id: 2, created: 2, decision: held() },
+  ],
+};
+const everyIssue: ReadonlyArray<FakeIssue> = [
+  ownedIssue(1, { labels: [mainLabel, "ci"] }),
+  { number: 2, body: "Not this script's.", labels: [mainLabel, "other"] },
+];
+
+/**
+ * Spoils each answer of KIND in `everyAnswer` every way `spoilings` knows, one run each, and checks
+ * each run: a failed read that writes nothing, or, for an order GitHub does not promise, the same
+ * writes and issues as the unspoilt run.
+ */
+const spoilEach = (
+  kind: AnswerKind,
+  world: Facts = everyAnswer,
+  issues: ReadonlyArray<FakeIssue> = everyIssue,
+) =>
+  Effect.gen(function* () {
+    const first = yield* issueRepository(world, issues);
+    const clean = yield* first.call();
+    expect(clean.exitCode, clean.output).toBe(0);
+    const targets = clean.requests.flatMap((request, index) =>
+      kindOf(request) === kind ? [{ request, at: index + 1 }] : [],
+    );
+    expect(targets.length, kind).toBeGreaterThan(0);
+    const cases: Array<{
+      readonly request: string;
+      readonly at: number;
+      readonly spoiling: Spoiling;
+    }> = [];
+    for (const { request, at } of targets) {
+      const answer = yield* clean.answer(at);
+      expect(answer, request).toBeDefined();
+      for (const spoiling of spoilings(answer, kind)) cases.push({ request, at, spoiling });
+    }
+    const results = yield* Effect.forEach(
+      cases,
+      ({ request, at, spoiling }) =>
+        Effect.gen(function* () {
+          const repository = yield* issueRepository(world, issues);
+          const result = yield* repository.call([{ edit: at, ops: spoiling.ops }]);
+          return { request, spoiling, result, initial: repository.initial };
+        }),
+      { concurrency: 8 },
+    );
+    for (const { request, spoiling, result, initial } of results) {
+      const what = `${request}: ${spoiling.what}\n${result.output}`;
+      if (spoiling.expect === "same") {
+        expect(result.exitCode, what).toBe(0);
+        expect(result.mutations, what).toEqual(clean.mutations);
+        expect(result.issues, what).toEqual(clean.issues);
+      } else {
+        expect(result.exitCode, what).not.toBe(0);
+        expect(result.output, what).toContain("::error::");
+        expect(writes(result.requests), what).toEqual([]);
+        expect(result.issues, what).toEqual(initial);
+      }
+    }
+    return results.length;
+  }).pipe(Effect.scoped);
+
+layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) => {
+  it.effect("a red CI run names the failed scenario its colored log lists, as on 18 Nov", () =>
+    Effect.gen(function* () {
+      const result = yield* reconcile({
+        runs: [ciRun(60, 0, sha("c"), "failure"), ciRun(59, 1, sha("a"), "success")],
+        jobs: {
+          60: [
+            {
+              id: 134840250954,
+              name: "checks / e2e-cloud (cloud-product 2/2)",
+              log: cloudProductLog,
+            },
+            {
+              id: 134844880127,
+              name: "checks / e2e",
+              log: `2026-11-18T13:42:00.0000000Z ${esc}[31mcloud-product: failure${esc}[39m`,
+            },
+            { id: 134844880128, name: "checks / check", conclusion: "success", log: "" },
+          ],
+        },
+        // No Beta decision at all, as before Beta's first upload, and no Windows check yet.
+        artifacts: [],
+        windows: "none",
+        compare: {
+          [`${sha("a")}...${sha("c")}`]: [
+            { sha: sha("1"), message: "Pin the `engine` for @someone\n\nBody text" },
+            { sha: sha("2"), message: "Package the engine's runtime" },
+          ],
+        },
+      });
+      expect(result.exitCode, result.output).toBe(0);
+      expect(
+        result.calls
+          .filter((call) => call.includes("/logs"))
+          .every((call) => call.startsWith("api --allow-escape-sequences ")),
+      ).toBe(true);
+      expect(result.open.map((issue) => [issue.title, issue.user, issue.labels])).toEqual([
+        [mainTitle, bot, [mainLabel]],
+      ]);
+      const body = result.body(result.open[0]!.number)!;
+      expect(body.startsWith(`${marker}\n`)).toBe(true);
+      expect(body).toContain(
+        [
+          "## CI on main",
+          "",
+          "Red. Fix the cause: do not re-run or revert to get it green.",
+          "",
+          `- Latest failure: ${runUrl(60)} on ${sha("c")}`,
+          `- First failure: ${runUrl(60)} on ${sha("c")}`,
+          `- Last green run before it: ${runUrl(59)} on ${sha("a")}. The first failure came from a commit in https://github.com/${repository}/compare/${sha("a")}...${sha("c")}`,
+          "",
+          "Commits since the last green run, oldest first:",
+          "",
+          `- ${"1".repeat(9)} Pin the engine for someone`,
+          `- ${"2".repeat(9)} Package the engine's runtime`,
+          "",
+          "Failed jobs in the latest failure:",
+          "",
+          `- [checks / e2e-cloud (cloud-product 2/2)](${runUrl(60)}/job/134840250954)`,
+          `  - \`${cloudProductScenario}\``,
+          `- [checks / e2e](${runUrl(60)}/job/134844880127)`,
+          "  - No failed scenario in its log; see the job's failed step.",
+        ].join("\n"),
+      );
+      expect(body).not.toContain("checks / check");
+      expect(body).not.toContain("Body text");
+      // Red CI opens it; what is unknown is said, and is not what opened it.
+      expect(body).toContain(
+        "- CI on main: red\n- The Windows check: unknown, no finished run that counts\n",
+      );
+      expect(body).not.toContain("Nothing is known to be red or held.");
+      expect(body).toContain(
+        `## The Windows check\n\nUnknown: no finished run of the Windows check (${windowsTitle} on ci/windows-check) counts yet, so whether it is red cannot be read. Unknown neither opens nor closes this issue.`,
+      );
+      expect(body).toContain(
+        "## The beta release\n\nUnknown: no Beta tick in the last six days left a decision (the beta-hold artifact beta.yml uploads when it decides held or clear, kept for seven days), and none is kept at all. So whether a beta is held cannot be read, and unknown neither opens nor closes this issue.",
+      );
+      // The run's summary shows the same text.
+      expect(result.summary).toBe(`${body}\n`);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "the first failure is the oldest red run since the last green one, read across pages",
+    () =>
+      Effect.gen(function* () {
+        // 230 red runs after a green one, with cancelled and skipped runs among them, which decide
+        // nothing.
+        const runs = [
+          ...Array.from({ length: 230 }, (_, n) => ciRun(1000 - n, n, sha("c"), "failure")),
+          ciRun(700, 230, sha("f"), "cancelled"),
+          ciRun(699, 231, sha("b"), "failure"),
+          ciRun(698, 232, sha("a"), "success"),
+          ciRun(697, 233, sha("9"), "failure"),
+        ];
+        const result = yield* reconcile({
+          runs: [ciRun(1001, 0, sha("d"), "skipped"), ...runs],
+          jobs: { 1000: [{ id: 95, name: "checks / e2e", log: cloudProductLog }] },
+          compare: { [`${sha("a")}...${sha("b")}`]: [] },
+        });
+        expect(result.exitCode, result.output).toBe(0);
+        const body = result.body(result.owned[0]!.number)!;
+        expect(body).toContain(`- Latest failure: ${runUrl(1000)} on ${sha("c")}`);
+        expect(body).toContain(`- First failure: ${runUrl(699)} on ${sha("b")}`);
+        expect(body).toContain(`- Last green run before it: ${runUrl(698)} on ${sha("a")}.`);
+        // Three pages: the green run is on the third.
+        expect(
+          result.requests.filter((request) => request.includes("/workflows/ci.yml/runs")),
+        ).toEqual(
+          [1, 2, 3].map((page) => expect.stringContaining(`event=push&per_page=100&page=${page}`)),
+        );
+        // With no green run in five pages, it says so and names the oldest red run it read.
+        const never = yield* reconcile({
+          runs: Array.from({ length: 600 }, (_, n) => ciRun(2000 - n, n, sha("c"), "failure")),
+          jobs: { 2000: [] },
+        });
+        expect(never.exitCode, never.output).toBe(0);
+        const text = never.body(never.owned[0]!.number)!;
+        expect(text).toContain(`- First failure: ${runUrl(1501)} on ${sha("c")}`);
+        expect(text).toContain("- No earlier green run: 500 finished runs read, none passed.");
+        expect(text).toContain("- No failed job listed; see the run.");
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "a red run being re-run stays red from its previous attempt, and a first attempt still running counts for nothing",
+    () =>
+      Effect.gen(function* () {
+        const rerun: FakeRun = {
+          ...ciRun(60, 0, sha("c"), "failure"),
+          attempt: 2,
+          status: "in_progress",
+          previous: "failure",
+        };
+        const facts: Facts = {
+          runs: [
+            // Pushed after the red run, its first attempt still running.
+            { ...ciRun(62, 0, sha("d"), "failure"), status: "in_progress" },
+            rerun,
+            ciRun(59, 1, sha("a"), "success"),
+          ],
+          // The jobs of the attempt that ended, not of the one running.
+          jobs: {
+            "60:1": [{ id: 95, name: "checks / e2e-local (1/2)", log: cloudProductLog }],
+            "60:2": [{ id: 96, name: "checks / e2e-local (2/2)", log: "" }],
+          },
+          compare: redCi.compare,
+        };
+        const result = yield* reconcile(facts, [ownedIssue(1)]);
+        expect(result.exitCode, result.output).toBe(0);
+        expect(result.owned.map((issue) => issue.number)).toEqual([1]);
+        const body = result.body(1)!;
+        expect(body).toContain(`- Latest failure: ${runUrl(60)} on ${sha("c")}`);
+        expect(body).toContain(`- [checks / e2e-local (1/2)](${runUrl(60)}/job/95)`);
+        expect(body).toContain(cloudProductScenario);
+        expect(body).not.toContain("e2e-local (2/2)");
+        expect(result.requests).toContain("GET actions/runs/60/attempts/1");
+        // A re-run of a green run stays green, and with nothing else to report the issue closes.
+        const green = yield* reconcile(
+          { runs: [{ ...rerun, previous: "success" }, ciRun(59, 1, sha("a"), "failure")] },
+          [ownedIssue(1)],
+        );
+        expect(green.exitCode, green.output).toBe(0);
+        expect(green.owned).toEqual([]);
+        expect(green.body(1)).toContain(`## CI on main\n\nGreen: ${runUrl(60)} on ${sha("c")}.`);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("a log GitHub no longer has says so, and so do commits it cannot compare", () =>
+    Effect.gen(function* () {
+      const gone = yield* reconcile({
+        ...redCi,
+        compare: {},
+        jobs: {
+          60: [
+            { id: 81, name: "checks / e2e-local (1/2)", log: 404 },
+            { id: 82, name: "checks / e2e-local (2/2)", log: 410 },
+          ],
+        },
+      });
+      expect(gone.exitCode, gone.output).toBe(0);
+      const body = gone.body(gone.owned[0]!.number)!;
+      expect(body).toContain(
+        `- [checks / e2e-local (1/2)](${runUrl(60)}/job/81)\n  - GitHub no longer has its log; see the job.`,
+      );
+      expect(body).toContain(
+        `- [checks / e2e-local (2/2)](${runUrl(60)}/job/82)\n  - GitHub no longer has its log; see the job.`,
+      );
+      expect(body).not.toContain("No failed scenario");
+      // A compare GitHub cannot make is said so, not left out.
+      expect(body).toContain(
+        "GitHub cannot compare those two commits (HTTP 404), so they are not listed.",
+      );
+      expect(
+        gone.requests.some((request) => request.startsWith(`GET compare/${sha("a")}...`)),
+      ).toBe(true);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "a log's links, titles and other terminal controls are gone from the issue, not only colors",
+    () =>
+      Effect.gen(function* () {
+        const result = yield* reconcile({
+          runs: [ciRun(60, 0, sha("c"), "failure")],
+          jobs: {
+            60: [
+              {
+                id: 82,
+                name: `checks / e2e ${esc}]0;a title\u0007(1/2)\u0008`,
+                log: [
+                  // A hyperlink (OSC 8, ended by ST) around the file, and a CR from a progress line.
+                  `2026-11-18T13:41:27.0565796Z ${esc}[41m FAIL ${esc}[49m ${esc}]8;;https://example.com/a${esc}\\e2e/tests/osc.spec.ts${esc}]8;;${esc}\\ > OSC > a link around the file\r`,
+                  `2026-11-18T13:41:27.0565796Z ${esc}P1$r0m${esc}\\${esc}(B${esc}=AssertionError: expected 1 to be 2`,
+                ].join("\n"),
+              },
+              {
+                id: 83,
+                name: "checks / e2e (2/2)",
+                // A window title (OSC 0, ended by BEL), a one-byte CSI and a charset designation.
+                log: `2026-11-18T13:41:27.0565796Z  \u009b31m×\u009b39m ${esc}]0;tab title\u0007e2e/tests/osc.spec.ts > OSC > a title set by the log${esc}(B\u0007 120ms`,
+              },
+              {
+                id: 84,
+                name: "checks / e2e (3/3)",
+                // A byte that is not UTF-8 is replaced, and stops nothing.
+                log: new Uint8Array([
+                  ...new TextEncoder().encode(
+                    `2026-11-18T13:41:27.0565796Z ${esc}[31m FAIL ${esc}[39m e2e/tests/osc.spec.ts > OSC > a byte that is not text `,
+                  ),
+                  0xff,
+                  0x0a,
+                ]),
+              },
+              {
+                id: 85,
+                name: "checks / e2e (4/4)",
+                // OSC opened by ESC and ended by the one-byte ST, and opened by the one-byte OSC and
+                // ended by ESC \: the text after each stays (review of #5051).
+                log: [
+                  `2026-11-18T13:41:27.0565796Z  FAIL  e2e/tests/osc.spec.ts > OSC > before ${esc}]0;title\u009c ordinary after`,
+                  `2026-11-18T13:41:27.0565796Z  FAIL  e2e/tests/osc.spec.ts > OSC > first \u009d0;title${esc}\\ kept after`,
+                ].join("\n"),
+              },
+            ],
+          },
+        });
+        expect(result.exitCode, result.output).toBe(0);
+        expect(result.open.length).toBe(1);
+        const body = result.body(result.open[0]!.number)!;
+        expect(body).toContain(
+          `- [checks / e2e (1/2)](${runUrl(60)}/job/82)\n  - \`e2e/tests/osc.spec.ts > OSC > a link around the file\``,
+        );
+        expect(body).toContain(
+          `- [checks / e2e (2/2)](${runUrl(60)}/job/83)\n  - \`e2e/tests/osc.spec.ts > OSC > a title set by the log\``,
+        );
+        expect(body).toContain(
+          `- [checks / e2e (3/3)](${runUrl(60)}/job/84)\n  - \`e2e/tests/osc.spec.ts > OSC > a byte that is not text �\``,
+        );
+        expect(body).toContain(
+          `- [checks / e2e (4/4)](${runUrl(60)}/job/85)\n  - \`e2e/tests/osc.spec.ts > OSC > before  ordinary after\`\n  - \`e2e/tests/osc.spec.ts > OSC > first  kept after\``,
+        );
+        expect(controlsIn(body)).toEqual([]);
+        expect(body).not.toContain("example.com");
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("a red Windows check opens the same issue, from its own runs only", () =>
+    Effect.gen(function* () {
+      const result = yield* reconcile({
+        runs: [
+          ...greenCi.runs,
+          windowsRun(62, 1, sha("c"), "failure"),
+          windowsRun(58, 5, sha("a"), "success"),
+          // Another narrowing from the same branch, and a cancelled check, are no Windows check.
+          {
+            ...windowsRun(63, 0, sha("d"), "success"),
+            title: "Executor releases (build, cli on linux-x64)",
+          },
+          windowsRun(64, 0, sha("d"), "cancelled"),
+          // A narrowed build from another branch is not the paced check.
+          { ...windowsRun(65, 0, sha("d"), "success"), branch: "win-runtime-restart-limits" },
+        ],
+        jobs: {
+          62: [
+            {
+              id: 91,
+              name: "cli (win32, x64)",
+              log: "2026-11-18T14:15:54.1493548Z  FAIL   local  e2e/tests/local-app-runtime-restart.spec.ts > Local app runtime restart > a scenario",
+            },
+          ],
+        },
+        compare: { [`${sha("a")}...${sha("c")}`]: [] },
+      });
+      expect(result.exitCode, result.output).toBe(0);
+      expect(result.open.map((issue) => [issue.number, issue.title, issue.labels])).toEqual([
+        [1, mainTitle, [mainLabel]],
+      ]);
+      const body = result.body(1)!;
+      expect(body).toContain(`## CI on main\n\nGreen: ${runUrl(61)} on ${sha("d")}.`);
+      expect(body).toContain(
+        [
+          "## The Windows check",
+          "",
+          "Red. Fix the cause: do not re-run or revert to get it green.",
+          "",
+          `- Latest failure: ${runUrl(62)} on ${sha("c")}`,
+          `- First failure: ${runUrl(62)} on ${sha("c")}`,
+          `- Last green run before it: ${runUrl(58)} on ${sha("a")}.`,
+        ].join("\n"),
+      );
+      expect(body).toContain(
+        `- [cli (win32, x64)](${runUrl(62)}/job/91)\n  - \`local  e2e/tests/local-app-runtime-restart.spec.ts > Local app runtime restart > a scenario\``,
+      );
+      // Green again, with CI green and nothing held: the issue closes, saying so.
+      const passed = yield* reconcile(
+        {
+          runs: [
+            ...greenCi.runs,
+            windowsRun(66, 0, sha("d"), "success"),
+            windowsRun(62, 1, sha("c"), "failure"),
+          ],
+        },
+        [ownedIssue(1, { body })],
+      );
+      expect(passed.exitCode, passed.output).toBe(0);
+      expect(passed.open).toEqual([]);
+      expect(passed.mutations).toEqual(["edit 1", "close 1"]);
+      expect(passed.issues[0]!.reason).toBe("completed");
+      expect(passed.body(1)).toContain(
+        `## The Windows check\n\nGreen: ${runUrl(66)} on ${sha("d")}.`,
+      );
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "the newest held-beta decision Beta uploaded decides; a clear one closes the issue",
+    () =>
+      Effect.gen(function* () {
+        const heldIssue = yield* reconcile({
+          ...greenCi,
+          artifacts: [
+            { id: 1, created: 30, decision: clear(690) },
+            { id: 2, created: 2, decision: held() },
+            // Newer, but from another branch, from a fork or under another name: none counts. (A
+            // newer one that expired is a failed read: review 3 below.)
+            { id: 4, created: 1, decision: clear(703), branch: "beta-fix" },
+            { id: 5, created: 1, decision: clear(704), fork: true },
+            { id: 6, created: 1, decision: clear(705), name: "beta-hold-copy" },
+          ],
+        });
+        expect(heldIssue.exitCode, heldIssue.output).toBe(0);
+        const body = heldIssue.body(heldIssue.owned[0]!.number)!;
+        expect(body).toContain(
+          [
+            "## The beta release",
+            "",
+            `Held. A beta has been due since 2026-11-18T06:00:00.000Z and is not out. The latest Beta tick that decided, ${runUrl(700)}, held it:`,
+            "",
+            // One code span: its own backticks go, and an @ in it mentions nobody.
+            "> `executor@2.0.0-beta.5 is not on npm, and at least 5 publishing attempts failed in the last day; see RELEASING.md @someone`",
+          ].join("\n"),
+        );
+        expect(heldIssue.body(heldIssue.owned[0]!.number)).toContain(`Green: ${runUrl(61)}`);
+        // A newer tick found the release out: the issue closes.
+        const cleared = yield* reconcile(
+          {
+            ...greenCi,
+            artifacts: [
+              { id: 2, created: 2, decision: held() },
+              { id: 7, created: 0, decision: clear() },
+            ],
+          },
+          [ownedIssue(1, { body })],
+        );
+        expect(cleared.exitCode, cleared.output).toBe(0);
+        expect(cleared.open).toEqual([]);
+        expect(cleared.body(1)).toContain(
+          `## The beta release\n\nNot held: the latest Beta tick that decided, ${runUrl(701)}, found it on npm with nothing holding the next.`,
+        );
+        // A held beta of unknown start says so.
+        const unknown = yield* reconcile({
+          ...greenCi,
+          artifacts: [{ id: 2, created: 2, decision: { ...held(), since: "" } }],
+        });
+        expect(unknown.body(unknown.owned[0]!.number)).toContain(
+          `Held. A beta is due and is not out; when it became due could not be read. The latest Beta tick that decided, ${runUrl(700)}, held it:`,
+        );
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "a held-beta artifact another workflow uploaded, or one not as Beta writes it, writes nothing",
+    () =>
+      Effect.gen(function* () {
+        for (const artifact of [
+          { id: 2, created: 0, decision: held(), workflow: "ci.yml" },
+          { id: 2, created: 0, decision: "not json" },
+          {
+            id: 2,
+            created: 0,
+            decision: JSON.stringify({ state: "maybe", reason: "", since: "", run: "" }),
+          },
+        ]) {
+          const repository = yield* issueRepository({ ...redCi, artifacts: [artifact] }, [
+            ownedIssue(1),
+          ]);
+          const result = yield* repository.call();
+          expect(result.exitCode, result.output).not.toBe(0);
+          expect(writes(result.requests)).toEqual([]);
+          expect(result.issues).toEqual(repository.initial);
+        }
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("CI, the Windows check and a held beta share one issue, and each shows its part", () =>
+    Effect.gen(function* () {
+      const result = yield* reconcile({
+        runs: [...redCi.runs, windowsRun(62, 1, sha("c"), "failure")],
+        jobs: { ...redCi.jobs, 62: [{ id: 91, name: "cli (win32, x64)", log: "" }] },
+        compare: redCi.compare,
+        artifacts: [{ id: 2, created: 2, decision: held() }],
+      });
+      expect(result.exitCode, result.output).toBe(0);
+      expect(result.open.map((issue) => issue.number)).toEqual([1]);
+      const body = result.body(1)!;
+      expect(body).toContain("## CI on main\n\nRed.");
+      expect(body).toContain("## The Windows check\n\nRed.");
+      expect(body).toContain("- No earlier green run: 1 finished runs read, none passed.");
+      expect(body).toContain("## The beta release\n\nHeld.");
+      expect(body).toContain(cloudProductScenario);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "a labelled issue someone else opened, or one without the marker, is never touched",
+    () =>
+      Effect.gen(function* () {
+        const others: ReadonlyArray<FakeIssue> = [
+          { number: 40, user: "someone", body: `${marker}\nCopied.` },
+          { number: 41, body: "ci.yml is red on main." },
+          { number: 42, body: `${marker}\nA pull request.`, pullRequest: true },
+          { number: 43, body: `${marker}\nAnother label.`, labels: ["main-red-old"] },
+        ];
+        const green = yield* reconcile(greenCi, others);
+        expect(green.exitCode, green.output).toBe(0);
+        expect(green.mutations).toEqual([]);
+        expect(green.open.map((issue) => issue.number)).toEqual([40, 41, 42, 43]);
+        // A red run opens an issue of its own rather than writing to any of them.
+        const red = yield* reconcile(redCi, others);
+        expect(red.exitCode, red.output).toBe(0);
+        expect(red.mutations).toEqual(["create 44"]);
+        expect(red.issues.filter((issue) => issue.number !== 44)).toEqual(green.issues);
+      }).pipe(Effect.scoped),
+  );
+
+  // The reproductions of the second review of #5051 (each fails against the script before this
+  // change, run as CI's source with the same facts):
+
+  it.effect(
+    "a read that fails, each in turn, writes nothing, closes nothing and fails the run (review 1)",
+    () =>
+      Effect.gen(function* () {
+        // Review 1: CI green while a held beta keeps the issue open, and the issue holds the
+        // earlier script's comments. Then everything at once: CI and the Windows check red over
+        // three pages of runs with commits to list, many jobs, a held beta and two open issues.
+        const worlds: ReadonlyArray<readonly [Facts, ReadonlyArray<FakeIssue>]> = [
+          [
+            { ...greenCi, artifacts: [{ id: 2, created: 2, decision: held() }] },
+            [
+              ownedIssue(1, {
+                comments: [
+                  sourceComment("ci.yml", "ci.yml is red on main."),
+                  sourceComment("beta-held", "## The beta release is held"),
+                ],
+              }),
+            ],
+          ],
+          [
+            {
+              runs: [
+                // The newest being re-run, so its previous attempt is read too.
+                {
+                  ...ciRun(500, 0, sha("c"), "failure"),
+                  attempt: 2,
+                  status: "in_progress",
+                  previous: "failure",
+                },
+                ...Array.from({ length: 149 }, (_, n) =>
+                  ciRun(499 - n, n + 1, sha("c"), "failure"),
+                ),
+                ciRun(300, 150, sha("a"), "success"),
+                windowsRun(62, 1, sha("c"), "failure"),
+              ],
+              jobs: {
+                "500:1": Array.from({ length: 120 }, (_, n) => ({
+                  id: 5000 + n,
+                  name: `job ${n}`,
+                  conclusion: n % 40 === 0 ? "failure" : "success",
+                  log: cloudProductLog,
+                })),
+                62: [{ id: 91, name: "cli (win32, x64)", log: "" }],
+              },
+              compare: {
+                [`${sha("a")}...${sha("c")}`]: [{ sha: sha("1"), message: "Break main" }],
+              },
+              artifacts: Array.from({ length: 120 }, (_, n) => ({
+                id: n + 1,
+                created: 200 - n,
+                decision: n === 119 ? held() : clear(),
+              })),
+            },
+            [ownedIssue(3), ownedIssue(1, { state: "closed" }), ownedIssue(5)],
+          ],
+        ];
+        for (const [facts, issues] of worlds) {
+          const clean = yield* (yield* issueRepository(facts, issues)).call();
+          expect(clean.exitCode, clean.output).toBe(0);
+          expect(writes(clean.requests).length).toBeGreaterThan(0);
+          // Every read comes before the first write.
+          const firstWrite = clean.requests.findIndex((request) => !reads(request));
+          expect(clean.requests.slice(firstWrite).filter(reads)).toEqual([]);
+          const readAt = clean.requests.flatMap((request, index) =>
+            reads(request) ? [index + 1] : [],
+          );
+          if (facts.runs?.some((run) => run.status !== undefined))
+            expect(clean.requests).toContain("GET actions/runs/500/attempts/1");
+          expect(readAt.length).toBeGreaterThan(5);
+          for (const fault of readAt) {
+            const repository = yield* issueRepository(facts, issues);
+            const failed = yield* repository.call([fault]);
+            const what = `${clean.requests[fault - 1]}\n${failed.output}`;
+            expect(failed.exitCode, what).not.toBe(0);
+            expect(writes(failed.requests), what).toEqual([]);
+            expect(failed.issues, what).toEqual(repository.initial);
+          }
+        }
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "two open issues with stale reports leave nothing open once every source is fine (review 2)",
+    () =>
+      Effect.gen(function* () {
+        // Review 2: #1 held CI's report and #2 a held beta's; CI is green and the beta released.
+        const result = yield* reconcile(
+          { ...greenCi, artifacts: [{ id: 7, created: 0, decision: clear() }] },
+          [
+            ownedIssue(1, { comments: [sourceComment("ci.yml", "ci.yml is red on main.")] }),
+            ownedIssue(2, {
+              comments: [sourceComment("beta-held", "## The beta release is held\n\nold held")],
+            }),
+          ],
+        );
+        expect(result.exitCode, result.output).toBe(0);
+        expect(result.owned).toEqual([]);
+        // Nothing reads the comments an earlier script left.
+        expect(result.requests.filter((request) => request.includes("/comments"))).toEqual([]);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("a newer duplicate's report does not lose to an older kept one (review 2)", () =>
+    Effect.gen(function* () {
+      const result = yield* reconcile(
+        { ...redCi, artifacts: [{ id: 2, created: 1, decision: held("the newer hold") }] },
+        [
+          ownedIssue(1, { comments: [sourceComment("beta-held", "> `the older hold`")] }),
+          ownedIssue(2, { comments: [sourceComment("beta-held", "> `the newer hold`")] }),
+        ],
+      );
+      expect(result.exitCode, result.output).toBe(0);
+      expect(result.owned.map((issue) => issue.number)).toEqual([1]);
+      expect(result.body(1)).toContain("> `the newer hold`");
+      expect(result.body(1)).not.toContain("the older hold");
+      expect(result.issues.find((issue) => issue.number === 2)!.reason).toBe("not_planned");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("a clear the issue did not see still removes the hold it shows (review 3)", () =>
+    Effect.gen(function* () {
+      // Review 3: a clear came while the issue was closed, so the reopened issue still showed the
+      // hold. Here the issue shows a hold, Beta's newest decision is clear and CI is red.
+      const shown = [
+        marker,
+        "## CI on main",
+        "",
+        "Red.",
+        "",
+        "## The beta release",
+        "",
+        `Held. A beta has been due since 2026-11-18T06:00:00.000Z and is not out. The latest Beta tick that decided, ${runUrl(700)}, held it:`,
+      ].join("\n");
+      const result = yield* reconcile(
+        {
+          ...redCi,
+          artifacts: [
+            { id: 2, created: 3, decision: held() },
+            { id: 7, created: 2, decision: clear() },
+          ],
+        },
+        [ownedIssue(1, { body: shown })],
+      );
+      expect(result.exitCode, result.output).toBe(0);
+      expect(result.owned.map((issue) => issue.number)).toEqual([1]);
+      expect(result.body(1)).not.toContain("Held.");
+      expect(result.body(1)).toContain("## CI on main\n\nRed.");
+      expect(result.body(1)).toContain("## The beta release\n\nNot held:");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "a red Windows check and a held beta leave one issue, labelled main-health (review 4)",
+    () =>
+      Effect.gen(function* () {
+        const result = yield* reconcile({
+          runs: [...greenCi.runs, windowsRun(62, 1, sha("c"), "failure")],
+          jobs: { 62: [{ id: 91, name: "cli (win32, x64)", log: "" }] },
+          artifacts: [{ id: 2, created: 0, decision: held() }],
+        });
+        expect(result.exitCode, result.output).toBe(0);
+        expect(result.open.map((issue) => [issue.number, issue.labels])).toEqual([
+          [1, [mainLabel]],
+        ]);
+        expect(result.body(1)).toContain("## The Windows check\n\nRed.");
+        expect(result.body(1)).toContain("## The beta release\n\nHeld.");
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("lists of 250 issues, jobs and artifacts are read to their ends (review 5)", () =>
+    Effect.gen(function* () {
+      // Review 5: the owned issue behind 249 newer unmarked bot issues with the label. The
+      // failed jobs on the third page of 250, and the newest decision last of 250 as served.
+      const unmarked = Array.from({ length: 249 }, (_, n) => ({
+        number: n + 2,
+        body: "Not this script's.",
+      }));
+      const result = yield* reconcile(
+        {
+          runs: redCi.runs,
+          compare: redCi.compare,
+          jobs: {
+            60: Array.from({ length: 250 }, (_, n) => ({
+              id: 7000 + n,
+              name: `job ${n}`,
+              conclusion: n >= 240 ? "failure" : "success",
+              log: n >= 240 ? cloudProductLog : "",
+            })),
+          },
+          artifacts: Array.from({ length: 250 }, (_, n) => ({
+            id: n + 1,
+            created: 250 - n,
+            decision: n === 249 ? held("the newest hold") : clear(),
+          })),
+        },
+        [ownedIssue(1), ...unmarked],
+      );
+      expect(result.exitCode, result.output).toBe(0);
+      expect(result.mutations).toEqual(["edit 1"]);
+      expect(result.owned.map((issue) => issue.number)).toEqual([1]);
+      const body = result.body(1)!;
+      for (let n = 240; n < 250; n++)
+        expect(body).toContain(`- [job ${n}](${runUrl(60)}/job/${7000 + n})`);
+      expect(body).not.toContain("[job 239]");
+      expect(body).toContain("> `the newest hold`");
+      for (const list of ["/jobs?", "artifacts?"])
+        expect(
+          result.requests
+            .filter((request) => request.includes(list))
+            .map((request) => request.replace(/.*&page=/, "")),
+          list,
+        ).toEqual(["1", "2", "3"]);
+      expect(result.requests.filter((request) => request.startsWith("QUERY graphql"))).toEqual([
+        "QUERY graphql issues",
+        "QUERY graphql issues after=100",
+        "QUERY graphql issues after=200",
+      ]);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "the issue depends only on the facts: any earlier state ends the same, and a second run writes nothing",
+    () =>
+      Effect.gen(function* () {
+        const facts: Facts = {
+          ...redCi,
+          runs: [
+            ...redCi.runs,
+            windowsRun(62, 1, sha("c"), "failure"),
+            windowsRun(58, 5, sha("a"), "success"),
+          ],
+          jobs: { ...redCi.jobs, 62: [{ id: 91, name: "cli (win32, x64)", log: cloudProductLog }] },
+          artifacts: [
+            { id: 2, created: 2, decision: held() },
+            { id: 1, created: 9, decision: clear() },
+          ],
+        };
+        const stale = Array.from({ length: 250 }, (_, n) =>
+          sourceComment(n % 2 === 0 ? "ci.yml" : "beta-held", `stale ${n}`),
+        );
+        const earlier: ReadonlyArray<ReadonlyArray<FakeIssue>> = [
+          [],
+          [ownedIssue(4, { title: "Something else", body: `${marker}\nWrong.`, comments: stale })],
+          [
+            ownedIssue(9),
+            ownedIssue(3, { body: `${marker}\nOther.` }),
+            ownedIssue(5, { comments: stale }),
+          ],
+          [
+            ownedIssue(2, { state: "closed" }),
+            { number: 6, user: "someone", body: `${marker}\nCopied.` },
+          ],
+        ];
+        const results = [];
+        for (const issues of earlier) {
+          const repository = yield* issueRepository(facts, issues);
+          const first = yield* repository.call();
+          expect(first.exitCode, first.output).toBe(0);
+          expect(first.owned.length, first.output).toBe(1);
+          expect(first.requests.filter((request) => request.includes("/comments"))).toEqual([]);
+          const second = yield* repository.call();
+          expect(second.exitCode, second.output).toBe(0);
+          expect(second.mutations).toEqual([]);
+          expect(second.owned).toEqual(first.owned);
+          results.push(first.owned.map((issue) => [issue.title, issue.body, issue.labels]));
+        }
+        for (const each of results) expect(each).toEqual(results[0]);
+        // Nothing to report: every owned issue closes, whatever it said.
+        for (const issues of earlier) {
+          const result = yield* reconcile(
+            { ...greenCi, artifacts: [{ id: 7, created: 0, decision: clear() }] },
+            issues,
+          );
+          expect(result.exitCode, result.output).toBe(0);
+          expect(result.owned).toEqual([]);
+        }
+      }).pipe(Effect.scoped),
+  );
+
+  // The reproductions of the third review of #5051 (/tmp/review5051-round3/evidence.md). Each fails
+  // against ea739cd29, the script before this change.
+
+  it.effect(
+    "a run is green only if its latest completed attempt passed, and a cancelled attempt never hides an earlier failure (review 3, 1)",
+    () =>
+      Effect.gen(function* () {
+        // Run 60, newest, in each case; run 59 before it green. "nothing" is run 60 counting for
+        // nothing, so 59 decides. `deciding_attempt` in the script has the same table.
+        const cells: ReadonlyArray<
+          readonly [ReadonlyArray<string>, "running" | string | undefined, string]
+        > = [
+          [["success"], "running", "green 1"],
+          [["success"], "success", "green 2"],
+          [["success"], "failure", "red 2"],
+          [["success"], "cancelled", "nothing"],
+          [["failure"], "running", "red 1"],
+          [["failure"], "success", "green 2"],
+          [["failure"], "failure", "red 2"],
+          // The review's case: the earlier failure stands.
+          [["failure"], "cancelled", "red 1"],
+          [["failure"], "skipped", "red 1"],
+          [["cancelled"], "running", "nothing"],
+          [["cancelled"], "success", "green 2"],
+          [["cancelled"], "failure", "red 2"],
+          [["cancelled"], "cancelled", "nothing"],
+          [[], "running", "nothing"],
+          [[], "cancelled", "nothing"],
+          // Three attempts.
+          [["failure", "cancelled"], "cancelled", "red 1"],
+          [["failure", "cancelled"], "running", "red 1"],
+          [["success", "failure"], "cancelled", "red 2"],
+          [["failure", "success"], "cancelled", "nothing"],
+        ];
+        for (const [before, last, expected] of cells) {
+          const attempt = before.length + 1;
+          const newest: FakeRun = {
+            ...ciRun(60, 0, sha("c"), last === "running" ? "failure" : (last as Conclusion)),
+            attempt,
+            attempts: before,
+            ...(last === "running" ? { status: "in_progress" as const } : {}),
+          };
+          const result = yield* reconcile(
+            {
+              runs: [newest, ciRun(59, 1, sha("a"), "success")],
+              jobs: Object.fromEntries(
+                Array.from({ length: attempt }, (_, n) => [
+                  `60:${n + 1}`,
+                  [{ id: 950 + n, name: `attempt ${n + 1} job`, log: "" }],
+                ]),
+              ),
+              compare: redCi.compare,
+            },
+            [ownedIssue(1)],
+          );
+          const cell = `${[...before, last].join(", ")}: ${expected}\n${result.output}`;
+          expect(result.exitCode, cell).toBe(0);
+          const [state, number] = expected.split(" ");
+          if (state === "red") {
+            expect(
+              result.owned.map((issue) => issue.number),
+              cell,
+            ).toEqual([1]);
+            const body = result.body(1)!;
+            expect(body, cell).toContain(`- Latest failure: ${runUrl(60)} on ${sha("c")}`);
+            for (let n = 1; n <= attempt; n++)
+              if (String(n) === number) expect(body, cell).toContain(`[attempt ${n} job]`);
+              else expect(body, cell).not.toContain(`[attempt ${n} job]`);
+          } else {
+            expect(result.owned, cell).toEqual([]);
+            expect(result.body(1), cell).toContain(
+              `## CI on main\n\nGreen: ${runUrl(state === "green" ? 60 : 59)} on ${sha(state === "green" ? "c" : "a")}.`,
+            );
+          }
+          // Earlier attempts are read only as far as the rule needs, newest first.
+          const attemptReads = result.requests.filter(
+            (request) => request.includes("/attempts/") && !request.includes("/jobs"),
+          );
+          for (const read of attemptReads)
+            expect(read, cell).toMatch(/^GET actions\/runs\/60\/attempts\/[0-9]+$/);
+        }
+        // 500 runs of which none counts yet: what CI says is not known, so nothing is written.
+        // Fewer, read to the end of the list, are a workflow with no finished run that counts: CI
+        // is unknown, which neither closes the open issue nor leaves it saying CI is red.
+        const cancelled = (count: number) =>
+          Array.from({ length: count }, (_, n) => ciRun(3000 - n, n, sha("c"), "cancelled"));
+        const unknown = yield* issueRepository({ runs: cancelled(600) }, [ownedIssue(1)]);
+        const unread = yield* unknown.call();
+        expect(unread.exitCode, unread.output).not.toBe(0);
+        expect(unread.output).toContain("None of the newest 500 runs");
+        expect(writes(unread.requests)).toEqual([]);
+        expect(unread.issues).toEqual(unknown.initial);
+        const none = yield* reconcile({ runs: cancelled(150) }, [ownedIssue(1)]);
+        expect(none.exitCode, none.output).toBe(0);
+        expect(none.owned.map((issue) => issue.number)).toEqual([1]);
+        expect(none.mutations).toEqual(["edit 1"]);
+        expect(none.body(1)).toContain(
+          "## CI on main\n\nUnknown: no finished run of ci.yml on main counts yet, so whether it is red cannot be read.",
+        );
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "a page that holds less than its list's count says, or moved between two reads, fails the run with nothing written (review 3, 2)",
+    () =>
+      Effect.gen(function* () {
+        // The review's case: one held decision, its page served empty with total_count 1.
+        const reviewedWorld = () =>
+          issueRepository({ ...greenCi, artifacts: [{ id: 1, created: 0, decision: held() }] }, [
+            ownedIssue(1, { body: `${marker}\nHeld.` }),
+          ]);
+        const artifactPage = (yield* (yield* reviewedWorld()).call()).requests.findIndex(
+          (request) => request.startsWith("GET actions/artifacts?"),
+        );
+        const reviewed = yield* reviewedWorld();
+        const emptied = yield* reviewed.call([{ short: artifactPage + 1 }]);
+        expect(emptied.exitCode, emptied.output).not.toBe(0);
+        expect(emptied.output).toContain("Page 1 of repos/");
+        expect(writes(emptied.requests)).toEqual([]);
+        expect(emptied.issues).toEqual(reviewed.initial);
+
+        // Every list the script reads, each over two pages: CI's runs (the green run on the
+        // second page), the failed run's jobs, the Windows check's runs, Beta's artifacts, the open
+        // issues (GraphQL) and the compare.
+        const facts: Facts = {
+          runs: [
+            ...Array.from({ length: 120 }, (_, n) => ciRun(500 - n, n, sha("c"), "failure")),
+            ciRun(300, 120, sha("a"), "success"),
+            windowsRun(62, 1, sha("c"), "failure"),
+          ],
+          jobs: {
+            500: Array.from({ length: 110 }, (_, n) => ({
+              id: 5000 + n,
+              name: `job ${n}`,
+              conclusion: n === 105 ? "failure" : "success",
+              log: "",
+            })),
+            62: [{ id: 91, name: "cli (win32, x64)", log: "" }],
+          },
+          compare: {
+            [`${sha("a")}...${sha("c")}`]: [
+              { sha: sha("1"), message: "Break main" },
+              { sha: sha("2"), message: "Break it more" },
+            ],
+          },
+          // The newest an hour ago: a decision stamped in the future is a failed read (review 4).
+          artifacts: Array.from({ length: 110 }, (_, n) => ({
+            id: n + 1,
+            created: 110 - n,
+            decision: n === 109 ? held() : clear(),
+          })),
+        };
+        const issues = [
+          ownedIssue(1),
+          ...Array.from({ length: 100 }, (_, n) => ({ number: n + 2, body: "Not this script's." })),
+        ];
+        const clean = yield* (yield* issueRepository(facts, issues)).call();
+        expect(clean.exitCode, clean.output).toBe(0);
+        const listed = (request: string) =>
+          /^GET (actions\/workflows\/.*\/runs\?|actions\/runs\/.*\/jobs\?|actions\/artifacts\?|compare\/)/.test(
+            request,
+          ) || request.startsWith("QUERY graphql issues");
+        const pages = clean.requests.flatMap((request, index) =>
+          listed(request) ? [{ request, at: index + 1 }] : [],
+        );
+        // Two pages of each list but the compare, which lists its first 50 commits.
+        expect(pages.map(({ request }) => request.replace(/&page=.*|\?.*| after=.*/, ""))).toEqual([
+          "GET actions/workflows/ci.yml/runs",
+          "GET actions/workflows/ci.yml/runs",
+          "GET actions/runs/500/attempts/1/jobs",
+          "GET actions/runs/500/attempts/1/jobs",
+          `GET compare/${sha("a")}...${sha("c")}`,
+          "GET actions/workflows/release-artifacts.yml/runs",
+          "GET actions/runs/62/attempts/1/jobs",
+          "GET actions/artifacts",
+          "GET actions/artifacts",
+          "QUERY graphql issues",
+          "QUERY graphql issues",
+        ]);
+        const faults: ReadonlyArray<Fault> = [
+          ...pages.map(({ at }) => ({ short: at })),
+          // A page served from one item early, as after an item was added before it: the second
+          // page of each list read in pages.
+          ...pages
+            .filter(({ request }, index) => {
+              const base = (each: string) => each.replace(/\?.*| after=.*/, "");
+              return index > 0 && base(pages[index - 1]!.request) === base(request);
+            })
+            .map(({ at }) => ({ shift: at })),
+        ];
+        expect(faults.length).toBe(pages.length + 4);
+        // The count one more on a later page than on the first, as after an item was added
+        // between two reads (review 4): the second page of each list read in pages.
+        const counted: Array<Fault> = [];
+        for (const [index, { request, at }] of pages.entries()) {
+          const base = (each: string) => each.replace(/\?.*| after=.*/, "");
+          if (index === 0 || base(pages[index - 1]!.request) !== base(request)) continue;
+          const answer = (yield* clean.answer(at)) as Record<string, unknown>;
+          const path = request.startsWith("QUERY")
+            ? ["data", "repository", "issues", "totalCount"]
+            : ["total_count"];
+          const count = path.reduce<unknown>(
+            (value, key) => (value as Record<string, unknown>)[key],
+            answer,
+          );
+          counted.push({ edit: at, ops: [{ path, value: (count as number) + 1 }] });
+        }
+        expect(counted.length).toBe(4);
+        for (const fault of [...faults, ...counted]) {
+          const repository = yield* issueRepository(facts, issues);
+          const failed = yield* repository.call([fault]);
+          const what = `${JSON.stringify(fault)} ${clean.requests[Object.values(fault)[0]! - 1]}\n${failed.output}`;
+          expect(failed.exitCode, what).not.toBe(0);
+          expect(failed.output, what).toContain("::error::");
+          expect(writes(failed.requests), what).toEqual([]);
+          expect(failed.issues, what).toEqual(repository.initial);
+        }
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "Beta's newest decision expired, gone, or not exactly one decision is a failed read, and no older one stands in for it (review 3, 3)",
+    () =>
+      Effect.gen(function* () {
+        // An issue open for a held beta, CI green: a run that closed it would be a false green.
+        const shown = ownedIssue(1, { body: `${marker}\n## The beta release\n\nHeld.` });
+        const broken: ReadonlyArray<readonly [string, ReadonlyArray<FakeArtifact>]> = [
+          ["expired, alone", [{ id: 1, created: 0, decision: held(), expired: true }]],
+          [
+            "expired, newer than a clear one",
+            [
+              { id: 2, created: 5, decision: clear() },
+              { id: 1, created: 0, decision: held(), expired: true },
+            ],
+          ],
+          [
+            "listed, its zip gone (HTTP 410)",
+            [{ id: 1, created: 0, decision: held(), gone: true }],
+          ],
+          [
+            "a held and a clear object, one after the other",
+            [{ id: 1, created: 0, decision: JSON.stringify(held()) + JSON.stringify(clear()) }],
+          ],
+          [
+            "text after the object",
+            [{ id: 1, created: 0, decision: `${JSON.stringify(clear())} x` }],
+          ],
+          [
+            "a list holding the decision",
+            [{ id: 1, created: 0, decision: JSON.stringify([clear()]) }],
+          ],
+          ["empty", [{ id: 1, created: 0, decision: "" }]],
+          [
+            "a field more",
+            [{ id: 1, created: 0, decision: JSON.stringify({ ...clear(), extra: true }) }],
+          ],
+          [
+            "a field missing",
+            [
+              {
+                id: 1,
+                created: 0,
+                decision: JSON.stringify({ state: "clear", reason: "", run: runUrl(1) }),
+              },
+            ],
+          ],
+          [
+            "since not a time",
+            [{ id: 1, created: 0, decision: JSON.stringify({ ...held(), since: 5 }) }],
+          ],
+          [
+            "run not a run of this repository",
+            [
+              {
+                id: 1,
+                created: 0,
+                decision: JSON.stringify({ ...clear(), run: "https://example.com/1" }),
+              },
+            ],
+          ],
+        ];
+        for (const [what, artifacts] of broken) {
+          const repository = yield* issueRepository({ ...greenCi, artifacts }, [shown]);
+          const result = yield* repository.call();
+          expect(result.exitCode, `${what}\n${result.output}`).not.toBe(0);
+          expect(writes(result.requests), what).toEqual([]);
+          expect(result.issues, what).toEqual(repository.initial);
+        }
+        // What Beta's own step writes (beta.yml, "Record the held beta decision") is read as one
+        // decision, held and clear, whatever its reason holds.
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const { workflow: beta } = yield* workflowFile("beta.yml");
+        const record = Object.values(beta.jobs)
+          .flatMap((job) => job.steps)
+          .find((step) => step.name === "Record the held beta decision")!;
+        expect(record.run).toBeDefined();
+        const written = (env: Readonly<Record<string, string>>) =>
+          Effect.gen(function* () {
+            const temp = yield* fs.makeTempDirectoryScoped({ prefix: "executor-beta-hold-" });
+            const result = yield* run(".", "bash", ["-e", "-c", record.run!], {
+              ...env,
+              RUNNER_TEMP: temp,
+            });
+            expect(result.exitCode, result.output).toBe(0);
+            return yield* fs.readFileString(path.join(temp, "beta-hold", "beta-hold.json"));
+          });
+        const heldText = yield* written({
+          HELD: "held",
+          HELD_SINCE: "2026-11-18T06:00:00.000Z",
+          HELD_REASON: 'a "quoted" reason\nover two lines, for @someone',
+          HELD_RUN: runUrl(712),
+        });
+        const fromBeta = yield* reconcile({
+          ...greenCi,
+          artifacts: [{ id: 1, created: 0, decision: heldText }],
+        });
+        expect(fromBeta.exitCode, fromBeta.output).toBe(0);
+        expect(fromBeta.body(1)).toContain(
+          `Held. A beta has been due since 2026-11-18T06:00:00.000Z and is not out. The latest Beta tick that decided, ${runUrl(712)}, held it:`,
+        );
+        const clearText = yield* written({
+          HELD: "clear",
+          HELD_SINCE: "",
+          HELD_REASON: "Nothing to publish.",
+          HELD_RUN: runUrl(713),
+        });
+        const clearedByBeta = yield* reconcile(
+          { ...greenCi, artifacts: [{ id: 1, created: 0, decision: clearText }] },
+          [shown],
+        );
+        expect(clearedByBeta.exitCode, clearedByBeta.output).toBe(0);
+        expect(clearedByBeta.owned).toEqual([]);
+        // An older decision that expired does not matter once a newer one is read.
+        const newer = yield* reconcile(
+          {
+            ...greenCi,
+            artifacts: [
+              { id: 1, created: 5, decision: held(), expired: true },
+              { id: 2, created: 0, decision: clear() },
+            ],
+          },
+          [shown],
+        );
+        expect(newer.exitCode, newer.output).toBe(0);
+        expect(newer.owned).toEqual([]);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "with no Beta decision in six days the Beta state is unknown: an open issue says so and stays open, and none opens for it (review 3, 4; review 4)",
+    () =>
+      Effect.gen(function* () {
+        const unknownLine =
+          "- The beta release: unknown, no Beta decision in the last six days could be read";
+        const unknownSection =
+          "## The beta release\n\nUnknown: no Beta tick in the last six days left a decision";
+        // Open for a hold whose decisions are gone: it stays open, saying the state is unknown.
+        for (const artifacts of [
+          [],
+          // Older than six days, though not expired (the review's eight-day-old one), and older
+          // than six days by an hour.
+          [{ id: 1, created: 192, decision: clear() }],
+          [{ id: 1, created: 145, decision: held() }],
+        ] satisfies ReadonlyArray<ReadonlyArray<FakeArtifact>>) {
+          const result = yield* reconcile({ ...greenCi, artifacts }, [
+            ownedIssue(1, { body: `${marker}\n## The beta release\n\nHeld.` }),
+          ]);
+          const what = `${JSON.stringify(artifacts)}\n${result.output}`;
+          expect(result.exitCode, what).toBe(0);
+          expect(
+            result.owned.map((issue) => issue.number),
+            what,
+          ).toEqual([1]);
+          expect(result.body(1), what).toContain(unknownLine);
+          expect(result.body(1), what).toContain(unknownSection);
+          expect(result.body(1), what).not.toContain("Not held");
+        }
+        // With none open it opens none: unknown is not known to be wrong (review 4). The run's
+        // summary still says what it read.
+        const quiet = yield* reconcile({ ...greenCi, artifacts: [] });
+        expect(quiet.exitCode, quiet.output).toBe(0);
+        expect(writes(quiet.requests)).toEqual([]);
+        expect(quiet.issues).toEqual([]);
+        expect(quiet.summary).toContain(unknownLine);
+        // A clear decision five days old still counts, and closes it.
+        const recent = yield* reconcile(
+          { ...greenCi, artifacts: [{ id: 1, created: 120, decision: clear() }] },
+          [ownedIssue(1)],
+        );
+        expect(recent.exitCode, recent.output).toBe(0);
+        expect(recent.owned).toEqual([]);
+        expect(recent.body(1)).toContain("- The beta release: not held");
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "Main health's issue carries a label no earlier Main health finds, and an issue an older one opened is left alone (review 3, 6)",
+    () =>
+      Effect.gen(function* () {
+        // The first issue makes the label it needs: main-health.yml's job, with the label it passes.
+        const first = yield* issueRepository(redCi, [], oldLabels);
+        const opened = yield* first.call([], { event: "schedule" });
+        expect(opened.exitCode, opened.output).toBe(0);
+        // How the Main health before this one found its issue, for CI and for the Windows check
+        // (a3e9bdb7c's scripts/ci/main-issue.sh). It finds nothing, so it can close nothing.
+        for (const label of oldLabels) {
+          const lookup = yield* first.gh([
+            "issue",
+            "list",
+            "--repo",
+            repository,
+            "--label",
+            label,
+            "--state",
+            "open",
+            "--json",
+            "number",
+            "--jq",
+            ".[0].number // empty",
+          ]);
+          expect(lookup.exitCode, lookup.output).toBe(0);
+          expect(lookup.output, label).toBe("");
+        }
+        expect(opened.mutations).toEqual([`label ${mainLabel}`, "create 1"]);
+        // The label's read failing stops the run before the issue opens; only a 404 means none.
+        const labelRead = opened.requests.indexOf(`GET labels/${mainLabel}`);
+        expect(labelRead).toBeGreaterThan(-1);
+        const unlabelled = yield* issueRepository(redCi, [], oldLabels);
+        const refused = yield* unlabelled.call([labelRead + 1], { event: "schedule" });
+        expect(refused.exitCode, refused.output).not.toBe(0);
+        expect(writes(refused.requests)).toEqual([]);
+        expect(refused.issues).toEqual([]);
+        expect(opened.labels).toContain(mainLabel);
+        expect(opened.open.map((issue) => issue.labels)).toEqual([[mainLabel]]);
+        expect(marker).not.toContain("main-red");
+        // An issue an older run opened afterwards (main-red, by github-actions, its body as that
+        // script wrote it) is never this script's: red or green, it is left as it is.
+        const old: FakeIssue = {
+          number: 7,
+          title: "CI is failing on main",
+          labels: ["main-red"],
+          body: `ci.yml is red on main. Fix the cause: do not re-run or revert to get it green. This issue closes when a later run passes.\n<!-- first-red: ${sha("c")} ${runUrl(60)} -->`,
+        };
+        const red = yield* reconcile(redCi, [old]);
+        expect(red.exitCode, red.output).toBe(0);
+        expect(red.mutations).toEqual(["create 8"]);
+        const green = yield* reconcile(greenCi, [old]);
+        expect(green.exitCode, green.output).toBe(0);
+        expect(green.mutations).toEqual([]);
+        expect(green.open.map((issue) => issue.number)).toEqual([7]);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("logs of the first 20 failed jobs are read, and the first 50 commits listed", () =>
+    Effect.gen(function* () {
+      const result = yield* reconcile({
+        runs: redCi.runs,
+        jobs: {
+          60: Array.from({ length: 25 }, (_, n) => ({
+            id: 300 + n,
+            name: `job ${n}`,
+            log: ` FAIL  e2e/tests/a.spec.ts > scenario ${n}`,
+          })),
+        },
+        compare: {
+          [`${sha("a")}...${sha("c")}`]: Array.from({ length: 60 }, (_, n) => ({
+            sha: String(n).padStart(2, "0").repeat(20),
+            message: `Commit ${n}`,
+          })),
+        },
+      });
+      expect(result.exitCode, result.output).toBe(0);
+      const body = result.body(1)!;
+      expect(body).toContain(
+        `- [job 19](${runUrl(60)}/job/319)\n  - \`e2e/tests/a.spec.ts > scenario 19\``,
+      );
+      expect(body).toContain(
+        `- [job 20](${runUrl(60)}/job/320)\n  - More than 20 jobs failed, so its log was not read; see the job.`,
+      );
+      expect(result.requests.filter((request) => request.endsWith("/logs")).length).toBe(20);
+      expect(body).toContain("The first 50 of 60 commits since the last green run, oldest first:");
+      expect(body).toContain("- 494949494 Commit 49");
+      expect(body).not.toContain("Commit 50");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("a body past GitHub's limit is cut at a line, the same way each time", () =>
+    Effect.gen(function* () {
+      const long = "x".repeat(900);
+      const facts: Facts = {
+        runs: [ciRun(60, 0, sha("c"), "failure")],
+        jobs: {
+          60: Array.from({ length: 20 }, (_, n) => ({
+            id: 100 + n,
+            name: `job ${n}`,
+            log: Array.from(
+              { length: 20 },
+              (_, k) => ` FAIL  e2e/tests/a.spec.ts > ${n} ${k} ${long}`,
+            ).join("\n"),
+          })),
+        },
+      };
+      const first = yield* reconcile(facts);
+      const again = yield* reconcile(facts, [ownedIssue(1, { body: `${marker}\nx` })]);
+      expect(first.exitCode, first.output).toBe(0);
+      const body = first.body(1)!;
+      expect(new TextEncoder().encode(body).length).toBeLessThan(61000);
+      expect(
+        body.endsWith("(Cut here: GitHub keeps at most 65,536 characters. See the runs above.)"),
+      ).toBe(true);
+      expect(
+        body
+          .split("\n")
+          .filter((line) => line.startsWith("  - `"))
+          .every((line) => line.endsWith("`")),
+      ).toBe(true);
+      expect(again.body(1)).toBe(body);
+    }).pipe(Effect.scoped),
+  );
+  // The reproductions of the fourth review of #5051 (/tmp/review5051-round4/evidence.md), and the
+  // rule it led to: each source is bad, good or unknown, and unknown never opens or closes the issue.
+
+  for (const ci of ["bad", "good", "unknown"] as const)
+    it.effect(
+      `with CI ${ci}: something bad opens the issue, everything good closes it, and anything else leaves it as it was (review 4, 18 of the 54 cases)`,
+      () => healthTable(ci),
+    );
+
+  it.effect("with a source unknown and nothing bad, no duplicate is closed either (review 4)", () =>
+    Effect.gen(function* () {
+      // No finished CI run at all, the Windows check green and the beta clear: two open issues.
+      const result = yield* reconcile({ artifacts: [{ id: 7, created: 0, decision: clear() }] }, [
+        ownedIssue(1),
+        ownedIssue(2),
+      ]);
+      expect(result.exitCode, result.output).toBe(0);
+      expect(result.mutations).toEqual(["edit 1", "edit 2"]);
+      expect(result.owned.map((issue) => issue.number)).toEqual([1, 2]);
+      expect(result.body(1)).toBe(result.body(2));
+      expect(result.body(1)).toContain(
+        "Nothing is known to be red or held. CI on main cannot be read (below), so this issue stays as it was",
+      );
+      // A second run writes nothing.
+      const again = yield* (yield* issueRepository(
+        { artifacts: [{ id: 7, created: 0, decision: clear() }] },
+        result.issues.map((issue) => ({ ...issue, comments: [] })),
+      )).call();
+      expect(again.mutations).toEqual([]);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "no finished CI run, a decision older than six days or none at all opens nothing and closes nothing (review 4)",
+    () =>
+      Effect.gen(function* () {
+        // ci-never-finished: an issue open, a clear beta, no CI run ever finished. It stays open.
+        const never = yield* reconcile({ artifacts: [{ id: 7, created: 0, decision: clear() }] }, [
+          ownedIssue(1, { body: `${marker}\n## CI on main\n\nRed.` }),
+        ]);
+        expect(never.exitCode, never.output).toBe(0);
+        expect(never.mutations).toEqual(["edit 1"]);
+        expect(never.owned.map((issue) => issue.number)).toEqual([1]);
+        expect(never.body(1)).toContain("- CI on main: unknown, no finished run that counts\n");
+        expect(never.body(1)).not.toContain("Red.");
+        // unknown-first-merge and unknown-after-retention: CI and the Windows check green, no
+        // decision kept or only one older than six days, and no issue. Nothing is written; the
+        // older decision is named.
+        for (const artifacts of [[], [{ id: 1, created: 144.01, decision: clear() }]]) {
+          const quiet = yield* reconcile({ ...greenCi, artifacts });
+          const what = `${JSON.stringify(artifacts)}\n${quiet.output}`;
+          expect(quiet.exitCode, what).toBe(0);
+          expect(writes(quiet.requests), what).toEqual([]);
+          expect(quiet.issues, what).toEqual([]);
+        }
+        const aged = yield* reconcile({
+          ...greenCi,
+          artifacts: [{ id: 1, created: 144.01, decision: held() }],
+        });
+        expect(writes(aged.requests)).toEqual([]);
+        expect(aged.summary).toContain(
+          `/actions/runs/900001, is older than that. So whether a beta is held cannot be read`,
+        );
+        // Inside the window by half a minute it still counts: a hold opens the issue.
+        const inside = yield* reconcile({
+          ...greenCi,
+          artifacts: [{ id: 1, created: 143.99, decision: held() }],
+        });
+        expect(inside.mutations).toEqual(["create 1"]);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "a Beta producer whose event is missing, a number or not Beta's, or a CI run of an unknown status, is a failed read (review 4)",
+    () =>
+      Effect.gen(function* () {
+        // The issue is open for a hold; the newest decision is clear, so a false read closes it.
+        const shown = ownedIssue(1, { body: `${marker}\n## The beta release\n\nHeld.` });
+        const facts: Facts = {
+          ...greenCi,
+          artifacts: [
+            { id: 2, created: 2, decision: held() },
+            { id: 7, created: 0, decision: clear() },
+          ],
+        };
+        const clean = yield* (yield* issueRepository(facts, [shown])).call();
+        expect(clean.exitCode, clean.output).toBe(0);
+        expect(clean.owned).toEqual([]);
+        const producer = clean.requests.indexOf("GET actions/runs/900007") + 1;
+        expect(producer).toBeGreaterThan(0);
+        for (const [what, ops] of [
+          ["event missing", [{ path: ["event"], delete: true }]],
+          ["event a number", [{ path: ["event"], value: 7 }]],
+          ["a pull request's run", [{ path: ["event"], value: "pull_request" }]],
+          ["a run of another branch", [{ path: ["head_branch"], value: "beta-fix" }]],
+          ["a run of another workflow", [{ path: ["path"], value: ".github/workflows/ci.yml" }]],
+        ] as const) {
+          const repository = yield* issueRepository(facts, [shown]);
+          const result = yield* repository.call([{ edit: producer, ops }]);
+          expect(result.exitCode, `${what}\n${result.output}`).not.toBe(0);
+          expect(result.output, what).toContain("::error::");
+          expect(writes(result.requests), what).toEqual([]);
+          expect(result.issues, what).toEqual(repository.initial);
+        }
+        // malformed-ci-status: the newest CI run failed, an older one passed, Beta clear, an issue
+        // open. A status GitHub does not list on the failed run would have left it uncounted.
+        const ciFacts: Facts = {
+          ...redCi,
+          artifacts: [{ id: 7, created: 0, decision: clear() }],
+        };
+        const repository = yield* issueRepository(ciFacts, [ownedIssue(1)]);
+        for (const value of ["nonsense", 7, null]) {
+          const result = yield* repository.call([
+            { edit: 1, ops: [{ path: ["workflow_runs", 0, "status"], value }] },
+          ]);
+          expect(result.exitCode, `${value}\n${result.output}`).not.toBe(0);
+          expect(writes(result.requests)).toEqual([]);
+          expect(result.issues).toEqual(repository.initial);
+        }
+        // A completed run with no conclusion, or a run in progress with one, is no answer either.
+        for (const ops of [
+          [{ path: ["workflow_runs", 0, "conclusion"], value: null }],
+          [{ path: ["workflow_runs", 0, "status"], value: "in_progress" }],
+        ]) {
+          const result = yield* repository.call([{ edit: 1, ops }]);
+          expect(result.exitCode, result.output).not.toBe(0);
+          expect(writes(result.requests)).toEqual([]);
+        }
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "a decision or a run stamped in the future is a failed read; a clock a minute ahead is not (review 4)",
+    () =>
+      Effect.gen(function* () {
+        const shown = ownedIssue(1, { body: `${marker}\n## The beta release\n\nHeld.` });
+        // future-clear: a clear 30 days ahead outranked a current hold and closed the issue.
+        for (const facts of [
+          {
+            ...greenCi,
+            artifacts: [
+              { id: 2, created: 2, decision: held() },
+              { id: 7, created: -720, decision: clear() },
+            ],
+          },
+          { runs: [ciRun(61, -2, sha("d"), "success")] },
+        ] satisfies ReadonlyArray<Facts>) {
+          const repository = yield* issueRepository(facts, [shown]);
+          const result = yield* repository.call();
+          expect(result.exitCode, result.output).not.toBe(0);
+          expect(result.output).toContain("is in the future");
+          expect(writes(result.requests)).toEqual([]);
+          expect(result.issues).toEqual(repository.initial);
+        }
+        const ahead = yield* reconcile(
+          {
+            ...greenCi,
+            artifacts: [
+              { id: 2, created: 2, decision: held() },
+              { id: 7, created: -1 / 60, decision: clear() },
+            ],
+          },
+          [shown],
+        );
+        expect(ahead.exitCode, ahead.output).toBe(0);
+        expect(ahead.owned).toEqual([]);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "runs created at the same time are all read before one of them decides, whatever order a page boundary splits them in (review 5)",
+    () =>
+      Effect.gen(function* () {
+        const shown = ownedIssue(1);
+        /** COUNT cancelled CI runs, ids down from FROM, 36 seconds apart from HOURS ago. */
+        const cancelled = (count: number, from: number, hours: number) =>
+          Array.from({ length: count }, (_, n) =>
+            ciRun(from - n, hours + n / 100, sha("0"), "cancelled"),
+          );
+        /** The pages of CI's runs a run read. */
+        const ciPages = (requests: ReadonlyArray<string>) =>
+          requests
+            .filter((request) => request.includes("/workflows/ci.yml/runs"))
+            .map((request) => Number(/&page=(\d+)$/u.exec(request)![1]));
+        /** The same world with the tie listed higher id first, then lower id first. */
+        const bothOrders = (facts: Facts) =>
+          Effect.forEach(["descending", "ascending"] as const, (order) =>
+            reconcile(order === "ascending" ? { ...facts, tieOrder: order } : facts, [shown]).pipe(
+              Effect.map((result) => ({ order, ...result })),
+            ),
+          );
+
+        // tied-boundary: 99 newer cancelled runs, then a success (200) and a failure (201) created
+        // at the same time. The failure ranks above the success. Listed lower id first, page 1
+        // ended on the success, the reader stopped there, read CI as green and closed the issue.
+        for (const result of yield* bothOrders({
+          runs: [
+            ...cancelled(99, 1000, 0),
+            ciRun(200, 1, sha("a"), "success"),
+            ciRun(201, 1, sha("b"), "failure"),
+          ],
+        })) {
+          expect(result.exitCode, `${result.order}: ${result.output}`).toBe(0);
+          expect(result.output, result.order).toContain(
+            "CI bad, Windows check good, beta good: keep.",
+          );
+          expect(result.mutations, result.order).not.toContain("close 1");
+          expect(
+            result.owned.map((issue) => issue.number),
+            result.order,
+          ).toEqual([1]);
+          const body = result.body(1)!;
+          expect(body, result.order).toContain(`- Latest failure: ${runUrl(201)} on ${sha("b")}`);
+          expect(body, result.order).toContain(
+            `- Last green run before it: ${runUrl(200)} on ${sha("a")}.`,
+          );
+          expect(ciPages(result.requests), result.order).toEqual([1, 2]);
+        }
+
+        // Reversed: the success (201) ranks above the failure (200), so CI is green either way,
+        // and the page after a green run that ends page 1 at its time is read before it decides.
+        for (const result of yield* bothOrders({
+          runs: [
+            ...cancelled(99, 1000, 0),
+            ciRun(200, 1, sha("b"), "failure"),
+            ciRun(201, 1, sha("a"), "success"),
+          ],
+        })) {
+          expect(result.exitCode, `${result.order}: ${result.output}`).toBe(0);
+          expect(result.output, result.order).toContain(
+            "CI good, Windows check good, beta good: close.",
+          );
+          expect(result.mutations, result.order).toContain("close 1");
+          expect(result.owned, result.order).toEqual([]);
+          expect(ciPages(result.requests), result.order).toEqual([1, 2]);
+        }
+
+        // A tie across three pages: the last of the 99 newer runs, then 102 runs at one time (a
+        // success 300, a failure 301 above it, and 100 cancelled), the whole of page 2 among them,
+        // then 100 older green runs. Page 3 is read, and reading stops once a run older than the
+        // tie is listed, so page 4 is not.
+        for (const result of yield* bothOrders({
+          runs: [
+            ...cancelled(99, 1000, 0),
+            ...Array.from({ length: 100 }, (_, n) => ciRun(n + 1, 1, sha("0"), "cancelled")),
+            ciRun(300, 1, sha("a"), "success"),
+            ciRun(301, 1, sha("b"), "failure"),
+            ...Array.from({ length: 100 }, (_, n) =>
+              ciRun(5000 - n, 2 + n / 100, sha("e"), "success"),
+            ),
+          ],
+        })) {
+          expect(result.exitCode, `${result.order}: ${result.output}`).toBe(0);
+          expect(result.output, result.order).toContain(
+            "CI bad, Windows check good, beta good: keep.",
+          );
+          expect(
+            result.owned.map((issue) => issue.number),
+            result.order,
+          ).toEqual([1]);
+          const body = result.body(1)!;
+          expect(body, result.order).toContain(`- Latest failure: ${runUrl(301)} on ${sha("b")}`);
+          expect(body, result.order).toContain(
+            `- Last green run before it: ${runUrl(300)} on ${sha("a")}.`,
+          );
+          expect(ciPages(result.requests), result.order).toEqual([1, 2, 3]);
+        }
+
+        // A tie at the very end of the list: 198 newer cancelled runs, then the success and the
+        // failure, the last two of exactly 200. The list has ended, so no third page is asked for.
+        for (const result of yield* bothOrders({
+          runs: [
+            ...cancelled(198, 1000, 0),
+            ciRun(200, 3, sha("a"), "success"),
+            ciRun(201, 3, sha("b"), "failure"),
+          ],
+        })) {
+          expect(result.exitCode, `${result.order}: ${result.output}`).toBe(0);
+          expect(result.output, result.order).toContain(
+            "CI bad, Windows check good, beta good: keep.",
+          );
+          expect(result.body(1)!, result.order).toContain(
+            `- Latest failure: ${runUrl(201)} on ${sha("b")}`,
+          );
+          expect(ciPages(result.requests), result.order).toEqual([1, 2]);
+        }
+
+        // A tie of cancelled runs only decides nothing: the older green run past it decides, and
+        // with no run past it, CI is unknown and the issue stays open, rewritten.
+        const tie = [
+          ...cancelled(99, 1000, 0),
+          ciRun(200, 1, sha("0"), "cancelled"),
+          ciRun(201, 1, sha("0"), "cancelled"),
+        ];
+        for (const result of yield* bothOrders({
+          runs: [...tie, ciRun(50, 2, sha("a"), "success")],
+        })) {
+          expect(result.exitCode, `${result.order}: ${result.output}`).toBe(0);
+          expect(result.output, result.order).toContain(
+            "CI good, Windows check good, beta good: close.",
+          );
+          expect(result.output, result.order).not.toContain("CI bad");
+          expect(ciPages(result.requests), result.order).toEqual([1, 2]);
+        }
+        for (const result of yield* bothOrders({ runs: tie })) {
+          expect(result.exitCode, `${result.order}: ${result.output}`).toBe(0);
+          expect(result.output, result.order).toContain(
+            "CI unknown, Windows check good, beta good:",
+          );
+          expect(result.mutations, result.order).not.toContain("close 1");
+          expect(
+            result.owned.map((issue) => issue.number),
+            result.order,
+          ).toEqual([1]);
+        }
+
+        // A tie split by the end of the fifth page, the last one read: what ranks first is not
+        // known, so it is a failed read that writes nothing, in either order.
+        for (const order of ["descending", "ascending"] as const) {
+          const repository = yield* issueRepository(
+            {
+              runs: [
+                ...cancelled(499, 10000, 0),
+                ciRun(600, 6, sha("a"), "success"),
+                ciRun(601, 6, sha("b"), "failure"),
+              ],
+              ...(order === "ascending" ? { tieOrder: order } : {}),
+            },
+            [shown],
+          );
+          const result = yield* repository.call();
+          expect(result.exitCode, `${order}: ${result.output}`).not.toBe(0);
+          expect(result.output, order).toContain("continue past the 500 runs read");
+          expect(writes(result.requests), order).toEqual([]);
+          expect(result.issues, order).toEqual(repository.initial);
+          expect(ciPages(result.requests), order).toEqual([1, 2, 3, 4, 5]);
+        }
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "a held beta's since may be up to a minute ahead, for the two runners' clocks, and no further (review 5)",
+    () =>
+      Effect.gen(function* () {
+        const shown = ownedIssue(1, { body: `${marker}\n## The beta release\n\nHeld.` });
+        const second = 1000;
+        // since-one-minute-future was accepted under the five minutes GitHub's stamps get. The
+        // script reads its clock after this one, so the case inside is accepted however late it
+        // starts, and the cases outside stay outside unless it starts a minute late.
+        for (const [ahead, accepted] of [
+          [45 * second, true],
+          [2 * 60 * second, false],
+          [4 * 60 * second, false],
+        ] as const) {
+          const repository = yield* issueRepository(
+            {
+              ...greenCi,
+              artifacts: [
+                {
+                  id: 7,
+                  created: 0,
+                  decision: { ...held(), since: new Date(Date.now() + ahead).toISOString() },
+                },
+              ],
+            },
+            [shown],
+          );
+          const result = yield* repository.call();
+          if (accepted) {
+            expect(result.exitCode, `${ahead}: ${result.output}`).toBe(0);
+            expect(result.output).toContain("CI good, Windows check good, beta bad: keep.");
+            expect(result.owned.map((issue) => issue.number)).toEqual([1]);
+          } else {
+            expect(result.exitCode, `${ahead}: ${result.output}`).not.toBe(0);
+            expect(result.output).toContain("is in the future");
+            expect(writes(result.requests)).toEqual([]);
+            expect(result.issues).toEqual(repository.initial);
+          }
+        }
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "a hold opens the issue, a release run that decides neither leaves it, and the clear after the release closes it, from Beta's own decisions and upload step (review 4)",
+    () =>
+      Effect.gen(function* () {
+        const { decide: tick, released, previous } = yield* world;
+        const { workflow: beta } = yield* workflowFile("beta.yml");
+        const steps = Object.values(beta.jobs).flatMap((job) => job.steps);
+        const record = steps.find((step) => step.name === "Record the held beta decision")!;
+        const upload = steps[steps.indexOf(record) + 1]!;
+        expect(upload.uses).toMatch(/^actions\/upload-artifact@/);
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        /**
+         * One Beta tick: beta-due.ts's outputs, then the record step if its `if` admits them, which
+         * writes the artifact the upload step (run only when the record step succeeded) uploads.
+         */
+        const decisions: Array<FakeArtifact> = [];
+        const run_ = (script: string, env: Readonly<Record<string, string>>) =>
+          run(".", "bash", ["-e", "-c", script], env);
+        const betaTick = (input: Parameters<typeof tick>[0], hoursAgo: number, run: number) =>
+          Effect.gen(function* () {
+            const decided = yield* tick(input);
+            expect(decided.exitCode, decided.output).toBe(0);
+            const context = {
+              github: { server_url: "https://github.com", repository, run_id: run },
+              steps: { due: { outputs: decided.outputs } },
+            };
+            if (!admits(record.if, context)) return { held: decided.outputs.held, uploaded: false };
+            const temp = yield* fs.makeTempDirectoryScoped({ prefix: "executor-beta-hold-" });
+            const recorded = yield* run_(record.run!, {
+              ...stepEnv(record, context),
+              RUNNER_TEMP: temp,
+            });
+            expect(recorded.exitCode, recorded.output).toBe(0);
+            expect(
+              admits(upload.if, {
+                ...context,
+                steps: { ...context.steps, hold: { outcome: "success" } },
+              }),
+            ).toBe(true);
+            decisions.push({
+              id: decisions.length + 1,
+              created: hoursAgo,
+              decision: yield* fs.readFileString(path.join(temp, "beta-hold", "beta-hold.json")),
+            });
+            return { held: decided.outputs.held, uploaded: true };
+          });
+        /** Main health on the decisions uploaded so far, against the issues it left. */
+        let issues: ReadonlyArray<FakeIssue> = [];
+        const health = Effect.gen(function* () {
+          const result = yield* reconcile({ ...greenCi, artifacts: [...decisions] }, issues);
+          expect(result.exitCode, result.output).toBe(0);
+          issues = result.issues.map(({ comments: _comments, reason: _reason, ...issue }) => issue);
+          return result;
+        });
+
+        // Five failed attempts in a day: held at once, uploaded, and the issue opens.
+        const five: ReadonlyArray<ReleaseRun> = [
+          ...Array.from({ length: 5 }, (_, index) => ({
+            id: 40 + index,
+            hoursAgo: 0.5 + index,
+            headSha: released,
+          })),
+          { id: 1, conclusion: "success", publish: "success", hoursAgo: 30, headSha: previous },
+        ];
+        expect(yield* betaTick({ runs: five }, 3, 801)).toEqual({ held: "held", uploaded: true });
+        const opened = yield* health;
+        expect(opened.mutations).toEqual(["create 1"]);
+        expect(opened.body(1)).toContain(`## The beta release\n\nHeld. A beta has been due since `);
+        // Someone dispatches the release by hand; while it runs the tick decides neither and
+        // uploads nothing, so the hold it last recorded stands and the issue stays as it is.
+        const running: ReadonlyArray<ReleaseRun> = [
+          { id: 50, status: "in_progress", hoursAgo: 0.1, headSha: released },
+          ...five,
+        ];
+        expect(yield* betaTick({ runs: running }, 2, 802)).toEqual({ held: "", uploaded: false });
+        const waiting = yield* health;
+        expect(waiting.mutations).toEqual([]);
+        expect(waiting.owned.map((issue) => issue.number)).toEqual([1]);
+        // The release is out: the next tick finds it on npm with nothing pending, decides clear and
+        // uploads it, and the issue closes.
+        expect(yield* betaTick({ published: 0.5 }, 1, 803)).toEqual({
+          held: "clear",
+          uploaded: true,
+        });
+        const closed = yield* health;
+        expect(closed.mutations).toEqual(["edit 1", "close 1"]);
+        expect(closed.body(1)).toContain(
+          `Not held: the latest Beta tick that decided, ${runUrl(803)}`,
+        );
+        // And every later tick of the steady state, waiting six hours or bumping, decides clear and
+        // uploads it, so the clear stays positively known.
+        expect(yield* betaTick({ published: 2 }, 0.5, 804)).toEqual({
+          held: "clear",
+          uploaded: true,
+        });
+        expect(decisions.map((each) => JSON.parse(each.decision as string).state)).toEqual([
+          "held",
+          "clear",
+          "clear",
+        ]);
+        expect((yield* health).mutations).toEqual([]);
+      }).pipe(Effect.scoped),
+  );
+
+  for (const kind of [
+    "runs",
+    "attempt",
+    "jobs",
+    "compare",
+    "artifacts",
+    "producer",
+    "issues",
+  ] as const)
+    it.effect(
+      `every way the generator spoils an answer of kind ${kind} is a failed read that writes nothing (review 4)`,
+      () => spoilEach(kind).pipe(Effect.map((spoilt) => expect(spoilt).toBeGreaterThan(5))),
+    );
+
+  it.effect(
+    "every way the generator spoils the label's answer, read before the first issue opens, writes nothing (review 4)",
+    () =>
+      spoilEach("label", everyAnswer, []).pipe(
+        Effect.map((spoilt) => expect(spoilt).toBeGreaterThan(2)),
+      ),
+  );
+
+  it.effect(
+    "every way the generator spoils Beta's decision is a failed read that writes nothing (review 4)",
+    () =>
+      Effect.gen(function* () {
+        const shown = ownedIssue(1, { body: `${marker}\n## The beta release\n\nHeld.` });
+        const decision = clear();
+        // The reason is text Beta wrote; any string is a reason.
+        const spoilt = [
+          ...spoilings(decision, "attempt").filter(
+            (each) => each.what !== "reason an unknown value",
+          ),
+          {
+            what: "a field more",
+            ops: [{ path: ["extra"], value: true }],
+            expect: "fail" as const,
+          },
+          {
+            what: "since an hour in the future",
+            ops: [{ path: ["since"], value: new Date(Date.now() + hour).toISOString() }],
+            expect: "fail" as const,
+          },
+        ];
+        expect(spoilt.length).toBeGreaterThan(10);
+        const results = yield* Effect.forEach(
+          spoilt,
+          (spoiling) =>
+            Effect.gen(function* () {
+              const repository = yield* issueRepository(
+                {
+                  ...greenCi,
+                  artifacts: [
+                    { id: 2, created: 2, decision: held() },
+                    {
+                      id: 7,
+                      created: 0,
+                      decision: JSON.stringify(applyEdits(decision, spoiling.ops)),
+                    },
+                  ],
+                },
+                [shown],
+              );
+              return { spoiling, result: yield* repository.call(), initial: repository.initial };
+            }),
+          { concurrency: 8 },
+        );
+        for (const { spoiling, result, initial } of results) {
+          const what = `${spoiling.what}\n${result.output}`;
+          expect(result.exitCode, what).not.toBe(0);
+          expect(writes(result.requests), what).toEqual([]);
+          expect(result.issues, what).toEqual(initial);
+        }
+      }).pipe(Effect.scoped),
+  );
+});
+
+layer(NodeServices.layer, { excludeTestServices: true })("Main health triggers", (it) => {
+  /** CI green, the newest Windows check red (run 70), the one before it green (58), no hold. */
+  const windowsRed = (completeAfter?: Readonly<Record<number, number>>): Facts => ({
+    runs: [
+      ...greenCi.runs,
+      windowsRun(70, 0, sha("c"), "failure"),
+      windowsRun(58, 5, sha("a"), "success"),
+    ],
+    jobs: {
+      70: [
+        {
+          id: 91,
+          name: "cli (win32, x64)",
+          log: "2026-11-18T15:20:11.0000000Z  FAIL   local  e2e/tests/local-app-runtime-restart.spec.ts > Local app runtime restart > a scenario",
+        },
+      ],
+    },
+    compare: { [`${sha("a")}...${sha("c")}`]: [{ sha: sha("b"), message: "Change Windows" }] },
+    ...(completeAfter === undefined ? {} : { completeAfter }),
+  });
+  const pollOf = (id: number) => `GET actions/runs/${id}`;
+
+  it.effect(
+    "CI, Beta, the schedule, a person and the Windows check's dispatch all write the same issue",
+    () =>
+      Effect.gen(function* () {
+        const once = (facts: Facts, trigger: Trigger) =>
+          Effect.gen(function* () {
+            const repository = yield* issueRepository(facts);
+            return yield* repository.call([], trigger);
+          });
+        const started: ReadonlyArray<readonly [string, Facts, Trigger]> = [
+          ["CI", windowsRed(), { event: "workflow_run", workflow: "CI" }],
+          ["Beta", windowsRed(), { event: "workflow_run", workflow: "Beta" }],
+          ["the schedule", windowsRed(), { event: "schedule" }],
+          ["a person", windowsRed(), { event: "workflow_dispatch" }],
+          // The Windows check's last job dispatches while its own run is still in progress: the
+          // first two reads of run 70 find it running.
+          [
+            "the Windows check",
+            windowsRed({ 70: 2 }),
+            { event: "workflow_dispatch", inputs: { windows_run: "70" } },
+          ],
+        ];
+        const results = [];
+        for (const [who, facts, trigger] of started) {
+          const result = yield* once(facts, trigger);
+          expect(result.ran, who).toBe(true);
+          expect(result.exitCode, `${who}: ${result.output}`).toBe(0);
+          expect(result.mutations, who).toEqual(["create 1"]);
+          results.push({ who, ...result });
+        }
+        const body = results[0]!.body(1)!;
+        expect(body).toContain(
+          `## The Windows check\n\nRed. Fix the cause: do not re-run or revert to get it green.\n\n- Latest failure: ${runUrl(70)} on ${sha("c")}`,
+        );
+        for (const result of results) {
+          expect(
+            result.open.map((issue) => [issue.number, issue.title]),
+            result.who,
+          ).toEqual([[1, mainTitle]]);
+          expect(result.body(1), result.who).toBe(body);
+        }
+        // Only the dispatch that names a run waits for it: two waits, three reads of it, all
+        // before the script's first read.
+        const dispatched = results[4]!;
+        expect(dispatched.sleeps).toEqual(["sleep 10", "sleep 10"]);
+        expect(dispatched.requests.slice(0, 3)).toEqual([pollOf(70), pollOf(70), pollOf(70)]);
+        expect(dispatched.requests.slice(3)).not.toContain(pollOf(70));
+        for (const result of results.slice(0, 4)) {
+          expect(result.sleeps, result.who).toEqual([]);
+          expect(result.requests, result.who).not.toContain(pollOf(70));
+        }
+        // Without that wait the same moment reads the check before it, green, and opens nothing:
+        // the script alone, at once, against the run still in progress.
+        const unwaited = yield* reconcile(windowsRed({ 70: 2 }));
+        expect(unwaited.exitCode, unwaited.output).toBe(0);
+        expect(unwaited.open).toEqual([]);
+        expect(unwaited.summary).toContain(
+          `## The Windows check\n\nGreen: ${runUrl(58)} on ${sha("a")}.`,
+        );
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "a Windows check that has not ended in five minutes, or a run id that is not one, is a warning, and the issue is written from what is there",
+    () =>
+      Effect.gen(function* () {
+        const late = yield* (yield* issueRepository(windowsRed({ 70: 1000 }))).call([], {
+          event: "workflow_dispatch",
+          inputs: { windows_run: "70" },
+        });
+        expect(late.exitCode, late.output).toBe(0);
+        expect(late.sleeps).toHaveLength(30);
+        expect(late.requests.filter((request) => request === pollOf(70))).toHaveLength(30);
+        expect(late.output).toContain(
+          "::warning::Run 70 had not ended after five minutes, so this run reads the Windows check before it; the next run reads it.",
+        );
+        expect(late.open).toEqual([]);
+        expect(late.summary).toContain(
+          `## The Windows check\n\nGreen: ${runUrl(58)} on ${sha("a")}.`,
+        );
+
+        const odd = yield* (yield* issueRepository(windowsRed())).call([], {
+          event: "workflow_dispatch",
+          inputs: { windows_run: "70; touch owned" },
+        });
+        expect(odd.exitCode, odd.output).toBe(0);
+        expect(odd.output).toContain(
+          "::warning::windows_run is a run id, digits only; reading at once.",
+        );
+        expect(odd.sleeps).toEqual([]);
+        expect(odd.requests).not.toContain(pollOf(70));
+        expect(odd.mutations).toEqual(["create 1"]);
+
+        // A read of the run that fails is a warning too; the script's own reads then decide.
+        const unread = yield* (yield* issueRepository(windowsRed())).call([1], {
+          event: "workflow_dispatch",
+          inputs: { windows_run: "70" },
+        });
+        expect(unread.exitCode, unread.output).toBe(0);
+        expect(unread.output).toContain("::warning::Run 70 could not be read; reading at once.");
+        expect(unread.mutations).toEqual(["create 1"]);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "Main health runs every trigger in one group, reads no trigger in its reconcile, and can start no workflow",
+    () =>
+      Effect.gen(function* () {
+        const { text, workflow } = yield* workflowFile("main-health.yml");
+        expect(Object.keys(workflow.on)).toEqual(["workflow_run", "schedule", "workflow_dispatch"]);
+        expect(workflow.on["workflow_run"]).toEqual({
+          workflows: ["CI", "Beta"],
+          types: ["completed"],
+          branches: ["main"],
+        });
+        expect(workflow.on["workflow_dispatch"]).toEqual({
+          inputs: {
+            windows_run: expect.objectContaining({ required: false, default: "", type: "string" }),
+          },
+        });
+        expect(Object.keys(workflow.jobs)).toEqual(["issue"]);
+        const job = workflow.jobs["issue"]!;
+        // One group for every run, whatever started it: a literal, with no expression in it.
+        expect(workflow.concurrency).toBeUndefined();
+        expect(job.concurrency).toEqual({ group: "main-health", "cancel-in-progress": false });
+        // No token that starts a workflow: not itself, not the Windows check.
+        expect(workflow.permissions).toEqual({});
+        expect(job.permissions).toEqual({ contents: "read", actions: "read", issues: "write" });
+        // Nothing it runs dispatches or calls a workflow (comments aside, which YAML drops).
+        expect(JSON.stringify(workflow)).not.toMatch(
+          /"actions":"write"|gh workflow run|gh run rerun|\/dispatches|workflow_call/,
+        );
+        expect(text).toContain("permissions: {}\n");
+        // Who starts the job: completions on main of this repository's own CI and Beta runs that
+        // ran, the schedule and dispatches.
+        const runsFor = (trigger: Trigger) => admits(job.if, mainHealthContext(trigger));
+        expect(runsFor({ event: "workflow_run", workflow: "CI" })).toBe(true);
+        expect(runsFor({ event: "workflow_run", workflow: "CI", conclusion: "failure" })).toBe(
+          true,
+        );
+        expect(runsFor({ event: "workflow_run", workflow: "Beta" })).toBe(true);
+        expect(runsFor({ event: "schedule" })).toBe(true);
+        expect(runsFor({ event: "workflow_dispatch" })).toBe(true);
+        expect(runsFor({ event: "workflow_dispatch", inputs: { windows_run: "70" } })).toBe(true);
+        expect(runsFor({ event: "workflow_run", workflow: "CI", runEvent: "pull_request" })).toBe(
+          false,
+        );
+        expect(runsFor({ event: "workflow_run", workflow: "CI", fork: true })).toBe(false);
+        expect(runsFor({ event: "workflow_run", workflow: "Beta", conclusion: "skipped" })).toBe(
+          false,
+        );
+        // The reconcile step's env is the same on every trigger: literals and the token only.
+        const reconcileStep = job.steps.find(
+          (step) => step.run === "bun scripts/ci/main-health.ts",
+        )!;
+        // A decision counts only from a run for an event Beta runs on: beta.yml's own triggers.
+        const { workflow: beta } = yield* workflowFile("beta.yml");
+        expect(reconcileStep.env!["BETA_EVENTS"]!.split(" ")).toEqual(Object.keys(beta.on));
+        expect(reconcileStep.if).toBeUndefined();
+        const { WORKFLOW: _w, BRANCH: _b, EVENT: _e, ...env } = mainHealthEnv;
+        expect(reconcileStep.env).toEqual({ GH_TOKEN: "${{ github.token }}", ...env });
+        // Only the wait reads the dispatch's input, and only on a dispatch that names a run.
+        const waits = job.steps.filter((step) => JSON.stringify(step).includes("inputs."));
+        expect(waits.map((step) => step.name)).toEqual([
+          "Wait for the Windows check that started this run to end",
+        ]);
+        expect(job.steps.indexOf(waits[0]!)).toBe(0);
+        expect(admits(waits[0]!.if, mainHealthContext({ event: "workflow_dispatch" }))).toBe(false);
+        expect(admits(waits[0]!.if, mainHealthContext({ event: "schedule" }))).toBe(false);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "the Windows check's last job dispatches Main health on main with actions: write alone, however the check ended",
+    () =>
+      Effect.gen(function* () {
+        const { workflow } = yield* workflowFile("release-artifacts.yml");
+        const job = workflow.jobs["main-health"]!;
+        const others = Object.keys(workflow.jobs).filter((id) => id !== "main-health");
+        // Last: it needs every other job, and none needs it.
+        expect([...(job.needs as ReadonlyArray<string>)].sort()).toEqual([...others].sort());
+        for (const id of others)
+          expect([workflow.jobs[id]!.needs ?? []].flat(), id).not.toContain("main-health");
+        expect(job.permissions).toEqual({ actions: "write" });
+        expect(job["continue-on-error"]).toBe(true);
+        expect(job["timeout-minutes"]).toBe(5);
+        expect(job.steps).toHaveLength(1);
+        const step = job.steps[0]!;
+        expect(step.uses).toBeUndefined();
+        expect(step.if).toBeUndefined();
+        expect(step.env).toEqual({ PUBLISHES: "no", GH_TOKEN: "${{ github.token }}" });
+        // Only in a Windows check (a dispatch on ci/windows-check), and however it ended.
+        const context = (event: string, ref: string) => ({
+          github: { event_name: event, ref, repository },
+        });
+        const windows = context("workflow_dispatch", "refs/heads/ci/windows-check");
+        for (const status of [
+          { cancelled: false, failed: false },
+          { cancelled: false, failed: true },
+          { cancelled: true, failed: true },
+        ])
+          expect(admits(job.if, windows, status), JSON.stringify(status)).toBe(true);
+        expect(admits(job.if, context("repository_dispatch", "refs/heads/main"))).toBe(false);
+        expect(admits(job.if, context("workflow_dispatch", "refs/heads/main"))).toBe(false);
+        expect(admits(job.if, context("workflow_dispatch", "refs/heads/some-branch"))).toBe(false);
+        // The input it passes is the one Main health waits on.
+        const { workflow: health } = yield* workflowFile("main-health.yml");
+        expect(health.on["workflow_dispatch"]).toHaveProperty("inputs.windows_run");
+        expect(step.run).toContain(
+          'gh workflow run main-health.yml -R "$GITHUB_REPOSITORY" --ref main -f windows_run="$GITHUB_RUN_ID"',
+        );
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "every workflow is one valid YAML document, a mis-indented or duplicated key is refused, and the lines that decide who runs Main health are these (review 3, 5)",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const files = (yield* fs.readDirectory(".github/workflows"))
+          .filter((name) => name.endsWith(".yml"))
+          .map((name) => `.github/workflows/${name}`);
+        const all = yield* workflowYaml(files);
+        if (!all.ok) expect.fail(all.problems);
+        expect(Object.keys(all.workflows).sort()).toEqual([...files].sort());
+        // An alias reads as what it names: local-macos-arm64 runs local's steps.
+        const artifacts = all.workflows[".github/workflows/release-artifacts.yml"]!;
+        expect(artifacts.jobs["local-macos-arm64"]!.steps).toEqual(artifacts.jobs["local"]!.steps);
+        expect(artifacts.jobs["local"]!.steps.length).toBeGreaterThan(3);
+        // A flow mapping reads as a mapping.
+        const runtime = all.workflows[".github/workflows/bun-runtime.yml"] as unknown as {
+          readonly jobs: Readonly<
+            Record<
+              string,
+              {
+                readonly strategy?: {
+                  readonly matrix?: {
+                    readonly include?: ReadonlyArray<Readonly<Record<string, string>>>;
+                  };
+                };
+              }
+            >
+          >;
+        };
+        expect(
+          Object.values(runtime.jobs).flatMap((job) => job.strategy?.matrix?.include ?? []),
+        ).toContainEqual(
+          expect.objectContaining({ target: "linux-x64", os: "linux", arch: "x64" }),
+        );
+
+        // The review's mutation: the first line of the wait's run block two spaces deeper, which
+        // GitHub cannot parse. Then a duplicated key, and a tab where indentation belongs.
+        const { text } = yield* workflowFile("main-health.yml");
+        const line = '          if [[ ! "$WINDOWS_RUN" =~ ^[0-9]+$ ]]; then\n';
+        expect(text).toContain(line);
+        const directory = yield* fs.makeTempDirectoryScoped({ prefix: "executor-workflow-yaml-" });
+        for (const [what, broken] of [
+          ["mis-indented block", text.replace(line, `  ${line}`)],
+          [
+            "duplicated key",
+            text.replace(
+              "    timeout-minutes: 10\n",
+              "    timeout-minutes: 10\n    timeout-minutes: 20\n",
+            ),
+          ],
+          ["tab indentation", text.replace("    timeout-minutes: 10\n", "\ttimeout-minutes: 10\n")],
+          ["two documents", `${text}---\nname: Other\n`],
+        ] as const) {
+          expect(broken, what).not.toBe(text);
+          const file = path.join(directory, `${what.replaceAll(" ", "-")}.yml`);
+          yield* fs.writeFileString(file, broken);
+          const result = yield* workflowYaml([file]);
+          expect(result.ok, what).toBe(false);
+        }
+
+        // The exact lines: Main health's triggers, its one concurrency group and its token; the
+        // Windows check's dispatch job's condition, token and continue-on-error.
+        const comments = "(?:\\s*#.*\\n)*";
+        for (const block of [
+          [
+            "on:",
+            "  workflow_run:",
+            "    workflows: [CI, Beta]",
+            "    types: [completed]",
+            "    branches: [main]",
+            "  schedule:",
+            '    - cron: "23 * * * *"',
+            "  workflow_dispatch:",
+            "    inputs:",
+            "      windows_run:",
+          ],
+          ["permissions: {}", "", "jobs:", "  issue:"],
+          [
+            "    concurrency:",
+            "      group: main-health",
+            "      cancel-in-progress: false",
+            "    permissions:",
+            "      contents: read",
+            "      actions: read",
+            "      issues: write",
+            "    steps:",
+          ],
+          ["          LABEL: main-health"],
+        ])
+          expect(text).toMatch(
+            new RegExp(
+              `^${block.map((each) => each.replace(/[[\]{}()*+?.\\^$|]/g, "\\$&")).join(`\\n${comments}`)}\\n`,
+              "m",
+            ),
+          );
+        const { text: release } = yield* workflowFile("release-artifacts.yml");
+        expect(release).toMatch(
+          new RegExp(
+            [
+              "^  main-health:",
+              "    needs:",
+              "[\\s\\S]*?",
+              "    if: always\\(\\) && github\\.event_name == 'workflow_dispatch' && github\\.ref == 'refs/heads/ci/windows-check'",
+              "    runs-on: blacksmith-2vcpu-ubuntu-2404",
+              "    timeout-minutes: 5",
+              "    continue-on-error: true",
+              `${comments}    permissions:`,
+              `${comments}      actions: write`,
+              "    steps:",
+            ]
+              .join("\n")
+              .replace("\n[\\s\\S]*?\n", "\n[\\s\\S]*?\n"),
+            "m",
+          ),
+        );
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("a dispatch that fails is a warning, and the job passes either way", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const { workflow } = yield* workflowFile("release-artifacts.yml");
+      const script = workflow.jobs["main-health"]!.steps[0]!.run!;
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "executor-main-health-dispatch-" });
+      yield* fs.writeFileString(
+        path.join(root, "gh"),
+        '#!/bin/sh\necho "$*" >> "$FAKE/calls"\n[ -f "$FAKE/refuse" ] && { echo "HTTP 403: Resource not accessible by integration" >&2; exit 1; }\nexit 0\n',
+      );
+      yield* fs.chmod(path.join(root, "gh"), 0o755);
+      const dispatch = Effect.gen(function* () {
+        yield* fs.remove(path.join(root, "calls"), { force: true });
+        yield* fs.writeFileString(path.join(root, "summary.md"), "");
+        const result = yield* run(root, "bash", ["-e", "-c", script], {
+          PATH: `${root}:${process.env.PATH ?? ""}`,
+          FAKE: root,
+          GH_TOKEN: "fake-token",
+          GITHUB_REPOSITORY: repository,
+          GITHUB_RUN_ID: "4242",
+          GITHUB_STEP_SUMMARY: path.join(root, "summary.md"),
+        });
+        return {
+          ...result,
+          calls: (yield* fs.readFileString(path.join(root, "calls"))).trim(),
+          summary: yield* fs.readFileString(path.join(root, "summary.md")),
+        };
+      });
+      const sent = yield* dispatch;
+      expect(sent.exitCode, sent.output).toBe(0);
+      expect(sent.calls).toBe(
+        `workflow run main-health.yml -R ${repository} --ref main -f windows_run=4242`,
+      );
+      expect(sent.summary).toBe("Started Main health on main for run 4242.\n");
+      yield* fs.writeFileString(path.join(root, "refuse"), "");
+      const refused = yield* dispatch;
+      expect(refused.exitCode, refused.output).toBe(0);
+      expect(refused.calls).toBe(sent.calls);
+      expect(refused.output).toContain(
+        "::warning::Main health could not be started, so this Windows check reaches the red-main issue at Main health's next run: the next CI or Beta completion on main, or a schedule tick GitHub delivers.",
+      );
+      expect(refused.summary).not.toContain("Started");
     }).pipe(Effect.scoped),
   );
 });

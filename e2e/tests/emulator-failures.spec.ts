@@ -613,6 +613,82 @@ layer(NodeServices.layer, { excludeTestServices: true })("Emulator failures", (i
     }),
   );
 
+  it.effect("a read whose body is cut off by a reset is read again, and a send is not", () =>
+    Effect.gen(function* () {
+      /**
+       * Answers 200 with headers and part of the body, then resets the connection, the first time
+       * each path is requested; answers whole after that. Counts the requests each path received.
+       */
+      const cutting = Effect.acquireRelease(
+        Effect.callback<{
+          readonly origin: string;
+          readonly hits: Map<string, number>;
+          readonly close: () => void;
+        }>((resume) => {
+          const hits = new Map<string, number>();
+          const server = createServer((request, response) => {
+            const key = `${request.method} ${(request.url ?? "").split("?")[0]}`;
+            const seen = hits.get(key) ?? 0;
+            hits.set(key, seen + 1);
+            request.resume();
+            request.on("end", () => {
+              const whole = JSON.stringify({ data: [{ id: "email-1", to: [email] }] });
+              if (seen > 0) {
+                response.writeHead(200, { "content-type": "application/json" }).end(whole);
+                return;
+              }
+              response.writeHead(200, {
+                "content-type": "application/json",
+                "content-length": String(whole.length),
+              });
+              // The headers and half the body reach the client before the reset.
+              response.write(whole.slice(0, whole.length / 2), () =>
+                setTimeout(() => request.socket.resetAndDestroy(), 20),
+              );
+            });
+          });
+          server.listen(0, () => {
+            const { port } = server.address() as AddressInfo;
+            resume(
+              Effect.succeed({
+                origin: `http://localhost:${port}`,
+                hits,
+                close: () => {
+                  server.closeAllConnections();
+                  server.close();
+                },
+              }),
+            );
+          });
+        }),
+        ({ close }) => Effect.sync(close),
+      );
+      const { origin, hits } = yield* cutting;
+      const directory = yield* recordsDirectory;
+      const base = `/resend/cut-${suffix}`;
+      const listed = yield* harnessCall(directory, `${origin}${base}`, "/emails");
+      expect(listed).toEqual({ data: [{ id: "email-1", to: [email] }] });
+      expect(hits.get(`GET ${base}/emails`)).toBe(2);
+      const saved = yield* records(directory);
+      expect(saved).toEqual([
+        expect.objectContaining({ operation: "GET /emails", outcome: "answered", attempts: 2 }),
+      ]);
+      expect((saved[0] as { failures: Array<string> }).failures).toEqual([
+        expect.stringMatching(/^request: reading body of HTTP 200 \(reset\), .* ECONNRESET, /u),
+      ]);
+      expect(leaked(JSON.stringify(saved))).toEqual([]);
+
+      // A send cut off the same way may have been delivered, so it is not sent again.
+      const sent = yield* harnessCall(directory, `${origin}${base}`, "/emails", {
+        to: email,
+      }).pipe(Effect.flip);
+      expect(hits.get(`POST ${base}/emails`)).toBe(1);
+      expect(sent.failure).toMatchObject({ stage: "reading body", status: 200 });
+      expect(sent.earlier).toBeUndefined();
+      expect(yield* records(directory)).toHaveLength(1);
+    }),
+  );
+
   it.effect("a 4xx, an unsafe route and a fault the harness armed are sent once", () =>
     Effect.gen(function* () {
       const answers = (service: string, name: string, route: string, answer: Answer) =>

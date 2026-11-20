@@ -283,14 +283,14 @@ export const makeApps = (
   /**
    * Build source files and read the requirements they declare, as a deploy does before it writes
    * anything; no app, version or source is saved. A deploy's build is retained in the runtime's
-   * build store. A `check` writes nothing at all, and reports a compiler that did not answer with
-   * its own failure rather than as a failed build.
+   * build store; a check (`retain: false`) writes nothing at all. With `unanswered`, a build the
+   * host's compiler or runner did not answer fails with that rather than as a failed build.
    */
   const buildSource = <E = never>(
     owner: OwnerId,
     name: string,
     suppliedFiles: unknown,
-    check?: { readonly unanswered: () => E },
+    options?: { readonly retain?: false; readonly unanswered?: () => E },
   ) =>
     Effect.gen(function* () {
       const files = yield* Schema.decodeUnknownEffect(SourceFiles)(suppliedFiles).pipe(
@@ -322,16 +322,16 @@ export const makeApps = (
         .build({
           files: codeFiles,
           public: split.public.map((file) => servedPath(file.path)),
-          ...(check === undefined ? {} : { retain: false }),
+          ...(options?.retain === false ? { retain: false } : {}),
         })
         .pipe(
           Effect.mapError((error) =>
             Schema.is(BuildMemoryExceeded)(error)
               ? error
-              : check !== undefined &&
+              : options?.unanswered !== undefined &&
                   Schema.is(RuntimeBuildFailed)(error) &&
                   error.unanswered === true
-                ? check.unanswered()
+                ? options.unanswered()
                 : Schema.is(RuntimeProtocolUnsupported)(error)
                   ? new VersionBuildFailed({
                       owner,
@@ -433,11 +433,23 @@ export const makeApps = (
    * `stored` reads the bytes of stored public files that a copy names from another app; an
    * existing app's own stored files are read from its repository.
    */
-  const deploy = (
+  const deploy = <E = never, U = never>(
     input: DeployInput,
     copiedFrom: AppCopyOrigin | null = null,
     stored?: StoredBytes,
     reserved?: AppId,
+    replacing?: {
+      /**
+       * Checked under the app's lock when the deploy reserves its order (`activates` true) and
+       * when it records its version; a failure records nothing.
+       */
+      readonly guard: (
+        app: { readonly id: AppId; readonly activeVersion: VersionId | null },
+        activates: boolean,
+      ) => Effect.Effect<void, E>;
+      /** A build the compiler or runner did not answer fails with this, not as a failed build. */
+      readonly unanswered: (name: string) => U;
+    },
   ) =>
     Effect.gen(function* () {
       // Reserve an order before building. Only successful promotions advance the other counter.
@@ -447,6 +459,7 @@ export const makeApps = (
           : yield* transaction(db, (tx) =>
               Effect.gen(function* () {
                 const current = yield* lockApp(tx, { app: input.app, owner: input.owner });
+                if (replacing !== undefined) yield* replacing.guard(current, true);
                 const deploySequence = current.deploySequence + 1;
                 yield* query(() =>
                   tx.updateMany("apps", {
@@ -476,7 +489,14 @@ export const makeApps = (
           ? input.files
           : yield* sources.read({ code, commit: input.commit });
       const { files, built, entries, requirements, codeFiles, split, invalidSource } =
-        yield* buildSource(input.owner, deployName, suppliedFiles);
+        yield* buildSource(
+          input.owner,
+          deployName,
+          suppliedFiles,
+          replacing === undefined
+            ? undefined
+            : { unanswered: () => replacing.unanswered(deployName) },
+        );
       // The app's database lives in its data facet, keyed by app ID, so a new app's ID is chosen
       // before its migrations run. A failed migration fails the deploy before anything activates.
       const appId = before?.id ?? reserved ?? AppId.make(`app_${yield* crypto.random.uuidV4()}`);
@@ -583,6 +603,8 @@ export const makeApps = (
           if (existing !== undefined) yield* droppedMigrations(tx, existing.code);
           const createdAt = new Date(yield* Clock.currentTimeMillis);
           const promote = existing === undefined || sequence > existing.activatedSequence;
+          if (replacing !== undefined && existing !== undefined)
+            yield* replacing.guard(existing, promote);
           for (const { provider } of entries) {
             // Apps sharing a provider ID can declare different hosts; the row keeps what they share.
             const definition = yield* Schema.decodeUnknownEffect(JsonObject)(provider.shared).pipe(
@@ -710,8 +732,30 @@ export const makeApps = (
   return {
     ...authoring,
     deploy: (input: DeployInput) => deploy(input),
+    // Records nothing unless it activates over the version the caller checked.
+    deployReplacing: (input: Parameters<Executor["apps"]["deployReplacing"]>[0]) =>
+      deploy(
+        { owner: input.owner, app: input.app, files: input.files },
+        null,
+        undefined,
+        undefined,
+        {
+          guard: (app, activates) =>
+            app.activeVersion === input.expectedVersion && activates
+              ? Effect.void
+              : Effect.fail(
+                  new AppVersionChanged({
+                    app: app.id,
+                    expected: input.expectedVersion,
+                    current: app.activeVersion,
+                  }),
+                ),
+          unanswered: (name) => new BuildUnanswered({ owner: input.owner, name }),
+        },
+      ).pipe(Effect.withSpan("sdk.apps.deploy_replacing")),
     build: (input: Parameters<Executor["apps"]["build"]>[0]) =>
       buildSource(input.owner, input.name, input.files, {
+        retain: false,
         unanswered: () => new BuildUnanswered({ owner: input.owner, name: input.name }),
       }).pipe(
         Effect.map(({ requirements }) => ({ requirements })),

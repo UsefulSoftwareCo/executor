@@ -8,6 +8,7 @@
  */
 import {
   compareReleaseVersions,
+  newerRelease,
   releaseChannel,
   ReleaseVersion,
 } from "@executor-js/utils/release-version";
@@ -45,7 +46,6 @@ import {
   type GlobalInstaller,
   installMethod,
   isOneShot,
-  newerRelease,
   npmRegistry,
 } from "./update-notice.ts";
 

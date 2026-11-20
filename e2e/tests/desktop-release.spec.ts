@@ -37,7 +37,12 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { Collector, SpanQuery } from "../support/contracts.ts";
 import { withApps } from "../support/apps-release.ts";
-import { localNpmRegistry } from "../support/npm-registry.ts";
+import {
+  desktopReleasePackagesFile,
+  localNpmRegistry,
+  pinnedNpmRegistry,
+} from "../support/npm-registry.ts";
+import desktopReleasePackages from "../desktop-release-packages.json" with { type: "json" };
 
 it.live("packaged desktop starts without the workspace and retains apps after restart", () =>
   Effect.scoped(
@@ -54,7 +59,13 @@ it.live("packaged desktop starts without the workspace and retains apps after re
       );
       const port = yield* freePort;
       // The desktop server deploys the bundled Executor app, which pins this checkout's apps release.
-      const registry = yield* localNpmRegistry;
+      // The scenario's own app installs these packages, downloaded and checked before the scenario
+      // (`node scripts/e2e-npm-packages.ts --only e2e/desktop-release-packages.json`) and served
+      // from loopback, tarballs included, so its deploy never waits on the public registry.
+      const registry = yield* pinnedNpmRegistry(
+        desktopReleasePackagesFile,
+        desktopReleasePackages.packages,
+      );
       const origin = `http://127.0.0.1:${port}`;
       const mcpUrl = new URL(`${origin}/mcp`);
       // The backend keeps its compile cache in the OS per-user cache directory, pointed here.
@@ -474,6 +485,14 @@ createRoot(root).render(<App />);`,
           ).toBe(false);
         }
       }
+      // Nothing reached the public registry, and the one deploy installed each pinned package once,
+      // its tarball requested from loopback once.
+      const record = yield* registry.record;
+      expect(record.forwards, "requests the registry sent to the public registry").toEqual([]);
+      expect(
+        record.archives,
+        `requests for each pinned archive, each request counted, a repeated one included: ${JSON.stringify(record.archives)}`,
+      ).toEqual(Object.fromEntries(desktopReleasePackages.packages.map((pinned) => [pinned, 1])));
     }),
   ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
 );

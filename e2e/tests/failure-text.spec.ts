@@ -13,6 +13,7 @@ import { Evidence } from "../support/evidence.ts";
 import { Target } from "../support/platform.ts";
 import { scenarios } from "../test-plan.ts";
 import { failureTextCases, planted, shapes, webhookVariable } from "../failure-text/titles.ts";
+import { updateSnapshotsVariable } from "../snapshot-updates.ts";
 
 const Results = Schema.Struct({
   testResults: Schema.Array(
@@ -81,6 +82,69 @@ const plantedValues: ReadonlyArray<readonly [string, string]> = [
   ...Object.entries(planted).filter(([kind]) => kind !== "splitPiece"),
   ...Object.entries(shapes).map(([kind, { value }]) => [kind, value] as const),
 ];
+
+/**
+ * Runs the worker environment scenario in a run of its own, started with `args` and `env` over this
+ * process's environment, and returns the variable names its worker recorded and every text file
+ * the run left, its log included.
+ */
+const nestedWorkerRun = (label: string, args: ReadonlyArray<string>, env: Record<string, string>) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem,
+      path = yield* Path.Path,
+      evidence = yield* Evidence,
+      processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const log = yield* evidence.step(
+      label,
+      processes.string(
+        ChildProcess.make(
+          "node",
+          [
+            "e2e/run.ts",
+            "--target",
+            "self-host",
+            "--workers",
+            "1",
+            "--test-name",
+            scenarios.workerEnvironment.title,
+            ...args,
+          ],
+          { env, extendEnv: true },
+        ),
+        { includeStderr: true },
+      ),
+    );
+    yield* evidence.attach("nested-run.log", "text/plain", log);
+    const directory = /Raw test evidence: (\S+)/u.exec(log)?.[1];
+    if (directory === undefined)
+      return yield* Effect.die("The nested run printed no evidence directory");
+    expect(log).toContain("1 passed");
+    const names: string[] = [];
+    const texts: string[] = [log];
+    const visit = (
+      folder: string,
+    ): Effect.Effect<void, PlatformError.PlatformError | Schema.SchemaError> =>
+      Effect.gen(function* () {
+        for (const name of yield* fs.readDirectory(folder)) {
+          const file = path.join(folder, name);
+          if ((yield* fs.stat(file)).type === "Directory") yield* visit(file);
+          else if (name === "environment.json")
+            names.push(
+              ...(yield* fs
+                .readFileString(file)
+                .pipe(
+                  Effect.flatMap(
+                    Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Array(Schema.String))),
+                  ),
+                )),
+            );
+          if (textFile.test(name)) texts.push(yield* fs.readFileString(file));
+        }
+      });
+    yield* visit(directory);
+    expect(names, "the worker recorded its variables").toContain("EXECUTOR_E2E_RUN");
+    return { names, texts };
+  });
 
 layer(TestLive, { excludeTestServices: true })("Failure text", (it) => {
   it.effect(
@@ -376,68 +440,38 @@ layer(TestLive, { excludeTestServices: true })("Failure text", (it) => {
       withCase(
         context,
         Effect.gen(function* () {
-          const fs = yield* FileSystem.FileSystem,
-            path = yield* Path.Path,
-            evidence = yield* Evidence,
-            processes = yield* ChildProcessSpawner.ChildProcessSpawner;
           // The runner's own environment holds infrastructure-style variables, as a deployed job's does.
-          const log = yield* evidence.step(
+          const { names, texts } = yield* nestedWorkerRun(
             "Run the worker environment scenario with infrastructure variables set",
-            processes.string(
-              ChildProcess.make(
-                "node",
-                [
-                  "e2e/run.ts",
-                  "--target",
-                  "self-host",
-                  "--workers",
-                  "1",
-                  "--test-name",
-                  scenarios.workerEnvironment.title,
-                ],
-                {
-                  env: { ...infrastructure, EXECUTOR_E2E_HOST_SLOTS: "off" },
-                  extendEnv: true,
-                },
-              ),
-              { includeStderr: true },
-            ),
+            [],
+            { ...infrastructure, EXECUTOR_E2E_HOST_SLOTS: "off" },
           );
-          yield* evidence.attach("nested-run.log", "text/plain", log);
-          const directory = /Raw test evidence: (\S+)/u.exec(log)?.[1];
-          if (directory === undefined)
-            return yield* Effect.die("The nested run printed no evidence directory");
-          expect(log).toContain("1 passed");
-          const names: string[] = [];
-          const texts: string[] = [log];
-          const visit = (
-            folder: string,
-          ): Effect.Effect<void, PlatformError.PlatformError | Schema.SchemaError> =>
-            Effect.gen(function* () {
-              for (const name of yield* fs.readDirectory(folder)) {
-                const file = path.join(folder, name);
-                if ((yield* fs.stat(file)).type === "Directory") yield* visit(file);
-                else if (name === "environment.json")
-                  names.push(
-                    ...(yield* fs
-                      .readFileString(file)
-                      .pipe(
-                        Effect.flatMap(
-                          Schema.decodeUnknownEffect(
-                            Schema.fromJsonString(Schema.Array(Schema.String)),
-                          ),
-                        ),
-                      )),
-                  );
-                if (textFile.test(name)) texts.push(yield* fs.readFileString(file));
-              }
-            });
-          yield* visit(directory);
-          expect(names, "the worker recorded its variables").toContain("EXECUTOR_E2E_RUN");
           for (const [name, value] of Object.entries(infrastructure)) {
             expect(names, "the worker's variables").not.toContain(name);
             for (const text of texts) expect(text.includes(value), name).toBe(false);
           }
+          // Without --update-snapshots the worker's Vitest writes no snapshot.
+          expect(names, "the worker's variables").not.toContain(updateSnapshotsVariable);
+        }),
+      ),
+    180_000,
+  );
+
+  // Only the runner's --update-snapshots lets the worker's Vitest write snapshots
+  // (e2e/snapshot-updates.ts); snapshot-updates.spec.ts shows what Vitest then does.
+  it.effect(
+    scenarios.workerSnapshotUpdates.title,
+    (context) =>
+      withCase(
+        context,
+        Effect.gen(function* () {
+          // Outside CI, as on a workstation: in CI the runner refuses the flag.
+          const { names } = yield* nestedWorkerRun(
+            "Run the worker environment scenario with --update-snapshots",
+            ["--update-snapshots"],
+            { CI: "", GITHUB_ACTIONS: "", EXECUTOR_E2E_HOST_SLOTS: "off" },
+          );
+          expect(names, "the worker's variables").toContain(updateSnapshotsVariable);
         }),
       ),
     180_000,

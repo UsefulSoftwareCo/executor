@@ -1,6 +1,6 @@
 /** Portable app protocol. Runtime adapters own processes, sockets and storage bindings. */
 import { RpcTarget, type RpcStub } from "capnweb";
-import { Cause, Effect, Redacted, Schema, Stream } from "effect";
+import { Cause, Config, Effect, Option, Redacted, Schema, Stream } from "effect";
 import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import {
   DeclaredRequirements,
@@ -41,6 +41,20 @@ import { ownsDatabase } from "../contracts/apps.ts";
 import type { EvaluatedCommand } from "@executor-js/app-data/evaluated";
 import { evaluatedDeclarations } from "./evaluated-declarations.ts";
 
+/**
+ * E2E runs only, from `EXECUTOR_TEST_COMPILER_UNAVAILABLE` with `EXECUTOR_ENVIRONMENT=e2e`: calls
+ * to the compiler fail as a lost connection does, before the apps Worker sees them. `all` fails
+ * every build; `retained` only the builds a deploy keeps, so a check build still answers. An empty
+ * value, and any other run, has none.
+ */
+const compilerOutage = Effect.gen(function* () {
+  const environment = yield* Config.option(Config.String("EXECUTOR_ENVIRONMENT"));
+  if (Option.getOrUndefined(environment) !== "e2e") return undefined;
+  const configured = yield* Config.option(Config.String("EXECUTOR_TEST_COMPILER_UNAVAILABLE"));
+  return Option.isNone(configured) || configured.value === ""
+    ? undefined
+    : yield* Schema.decodeUnknownEffect(Schema.Literals(["all", "retained"]))(configured.value);
+}).pipe(Effect.orDie);
 const engineFailure = () => new WorkflowFailure({ reason: "engine", retryable: true });
 const protocolFailure = () => new RuntimeProtocolFailed();
 /**
@@ -193,6 +207,16 @@ export const workerdHostHandler = (options: {
     );
   });
 
+/**
+ * A GET of `path` on the npm registry app builds install from, sent by the apps Worker as builds
+ * reach that registry (`WorkerdAppApi.readRegistry`, over the session builds are compiled in): its
+ * global `fetch`, with no header of the host's and no redirect followed. The answer is the
+ * registry's status and body; 502 when it was not reached.
+ */
+export type RegistryRead = (
+  path: `/${string}`,
+) => Effect.Effect<{ readonly status: number; readonly body: string }, RuntimeProtocolFailed>;
+
 /** Transport lifetime belongs to the host; each RPC scope owns its cancellation. */
 export interface WorkerdTransport {
   /**
@@ -222,6 +246,7 @@ export const connectedWorkerdApps = (blobs: BlobStorage, transport: WorkerdTrans
   Effect.gen(function* () {
     const provideBlobs = Effect.provideService(BlobStore, blobs);
     const rpc = transport.rpc;
+    const outage = yield* compilerOutage;
     const runtime = yield* appRuntime({
       name: "runtime.workerd",
       loadBuild: (build) =>
@@ -264,16 +289,35 @@ export const connectedWorkerdApps = (blobs: BlobStorage, transport: WorkerdTrans
             ),
           );
           // The compiler is the apps Worker's own code; the deployer sees why its call failed.
+          // It answers every build it judged, failed ones included, so a call that failed without
+          // an answer is the host's failure, not the source's.
           const result = yield* rpc((api, signal) =>
             Effect.tryPromise({
-              try: async () => await api.compile(encoded),
+              try: async () =>
+                outage === "all" || (outage === "retained" && retain)
+                  ? await Promise.reject(new Error("Network connection lost."))
+                  : await api.compile(encoded),
               catch: sessionFailure(signal),
             }),
           ).pipe(
-            Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(CompileWorkerResult))),
             Effect.mapError(
               (cause) =>
-                new RuntimeBuildFailed({ stage: "compile", message: describeBuildCause(cause) }),
+                new RuntimeBuildFailed({
+                  stage: "compile",
+                  message: describeBuildCause(cause),
+                  unanswered: true,
+                }),
+            ),
+            Effect.flatMap((reply) =>
+              Schema.decodeUnknownEffect(Schema.fromJsonString(CompileWorkerResult))(reply).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new RuntimeBuildFailed({
+                      stage: "compile",
+                      message: describeBuildCause(cause),
+                    }),
+                ),
+              ),
             ),
           );
           if (!result.ok) return yield* Effect.fail(result.error);
@@ -316,5 +360,9 @@ export const connectedWorkerdApps = (blobs: BlobStorage, transport: WorkerdTrans
       } satisfies WorkflowRuntime,
       /** Evaluated results kept in each app's supervisor, so they outlive this process. */
       declarations: evaluatedDeclarations(transport.evaluated),
+      readRegistry: ((path) =>
+        rpc((api) =>
+          Effect.tryPromise({ try: () => api.readRegistry(path), catch: protocolFailure }),
+        )) satisfies RegistryRead,
     };
   });

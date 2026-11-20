@@ -21,6 +21,15 @@ and the Bun TypeScript entry points (`src/`). It carries:
 - **Local Durable Object bindings.** A local Worker declares only its own
   Durable Object namespaces, not another Worker's bindings whose script name
   is still unresolved during precreate.
+- **Durable Object tags after a precreate.** A new Worker that hosts a Durable
+  Object class is first uploaded as a placeholder that creates the class. A
+  settings read a few seconds later can lag behind that upload and show none of
+  its tags; the reconcile then asked Cloudflare to create the class again, which
+  it refuses ("Cannot apply new-sqlite-class migration to class ... that is
+  already depended on"). One of five fresh test stages failed so on the small
+  `AppOutboundRelay` Worker, which reconciles soon after its placeholder. When
+  the read shows no Durable Object tag, the tags the precreate's output wrote
+  are used.
 - **macOS dev watching.** `Bundle.watch` on macOS rebuilds from one recursive
   `fs.watch` over the module graph's common directory instead of rolldown's
   watcher. Rolldown's FSEvents backend holds a descriptor for each watched

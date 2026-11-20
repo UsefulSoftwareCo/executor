@@ -357,6 +357,22 @@ layer(HostedLive, { excludeTestServices: true })("MCP failure reference", (it) =
           message: workerStopped,
         });
         expect(forgedSearch.response.recovery?.action).toMatch(/^Try again once\. /);
+        // One more attempt is allowed, then unchanged retries stop. The match is unconfirmed and a
+        // later attempt can still pass, so the copy never says a repeat proves the cause, and it
+        // advises a rebuild only for an app built on an older apps version than the host's.
+        expect(forgedSearch.response.recovery?.action).toBe(
+          "Try again once. If it fails the same way, stop retrying it unchanged and investigate. If the app was built on an older apps version than this host’s, rebuild it on this host’s version and deploy it again; if it already runs this host’s version, or still fails, reduce the work the app does to list its tools.",
+        );
+        const limitInstructions = forgedSearch.response.recovery?.instructions ?? "";
+        expect(limitInstructions).toContain("Retry the unchanged request at most once.");
+        expect(limitInstructions).toContain(
+          "stop retrying the unchanged request, even though a later attempt might succeed, and investigate",
+        );
+        expect(limitInstructions).toContain(
+          "Compare the apps version in the app's package.json with framework.release, the version this host runs. If the app's version is older",
+        );
+        for (const claim of ["not transient", "will not help"])
+          expect(limitInstructions + forgedSearch.response.recovery?.action).not.toContain(claim);
         expect(forgedSearch.response.recovery?.instructions).not.toContain(
           "exceeded its CPU time limit.",
         );
@@ -372,6 +388,10 @@ layer(HostedLive, { excludeTestServices: true })("MCP failure reference", (it) =
         ).toBe(true);
         expect(forgedExecute.error.message.endsWith(located("discover", forgedExecute.trace))).toBe(
           true,
+        );
+        // The agent's summary line carries the same recovery.
+        expect(forgedExecute.error.message).toContain(
+          ` Recovery: ${forgedSearch.response.recovery?.action} Retryable (unchanged call): yes.`,
         );
         // The framework's refusal without details is named as the framework's report.
         expect(duplicateSearch.response).toMatchObject({

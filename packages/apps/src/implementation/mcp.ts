@@ -21,6 +21,7 @@ import {
   Clock,
   Deferred,
   Effect,
+  Exit,
   Match,
   Option,
   Predicate,
@@ -47,6 +48,7 @@ import {
   type McpHealthOptions,
 } from "../contracts/mcp.ts";
 import { adaptMcpTools } from "./mcp-tools.ts";
+import { AfterReply } from "../contracts/host.ts";
 import { NetworkRefused } from "../contracts/network.ts";
 import { failOnNetworkRefusal } from "./network.ts";
 import { answeredError, mcpClient, mcpJsonSchemaValidator } from "./mcp-client.ts";
@@ -296,6 +298,7 @@ function withClient<A, E>(
         const rejected = yield* Deferred.make<never, ProviderError | NetworkRefused>();
         const answered = yield* Ref.make<ErrorResponses>(new Map());
         const pending = new Set<Promise<void>>();
+        const afterReply = yield* AfterReply;
         const { client, transport } = yield* Effect.acquireRelease(
           Effect.sync(() => {
             const fetch = transportFetch(connection, telemetry, rejected, answered, kind);
@@ -335,13 +338,15 @@ function withClient<A, E>(
                   : new SSEClientTransport(connection.url, { fetch }),
             };
           }),
-          ({ client, transport }) =>
-            Effect.gen(function* () {
+          ({ client, transport }, exit) => {
+            const settle = Effect.gen(function* () {
               client.removeNotificationHandler("notifications/tools/list_changed");
               // oxlint-disable-next-line executor/authored-code-through-adapter -- Executor's catalog invalidations
               yield* Effect.promise(async () => {
                 await Promise.allSettled(pending);
               });
+            });
+            const end = Effect.gen(function* () {
               if (
                 transport instanceof StreamableHTTPClientTransport &&
                 transport.sessionId !== undefined
@@ -352,12 +357,24 @@ function withClient<A, E>(
                   Effect.ignore,
                 );
               }
+              // `close` aborts the request `terminateSession` sends, so it comes after it.
               // oxlint-disable-next-line executor/authored-code-through-adapter -- MCP SDK
               yield* Effect.tryPromise(() => client.close()).pipe(
                 Effect.timeout(defaultMcpClientLimits.cleanupTimeoutMs),
                 Effect.ignore,
               );
-            }).pipe(owned("upstream", "provider.mcp.close")),
+            });
+            // An answered call's result is already in hand: end its session after the reply, so
+            // the caller does not wait for the server to acknowledge it. Catalog invalidations the
+            // server announced during the call still finish first, so a later call sees them.
+            // Anything else, such as a failed or cancelled call, or discovery, ends its session
+            // before going on.
+            return afterReply !== undefined && mode === "call" && Exit.isSuccess(exit)
+              ? settle.pipe(
+                  Effect.andThen(afterReply(end.pipe(owned("background", "provider.mcp.close")))),
+                )
+              : settle.pipe(Effect.andThen(end), owned("upstream", "provider.mcp.close"));
+          },
         );
         // Hide the SDK getter that conflicts with its own exact-optional Transport type.
         const wire: Omit<StreamableHTTPClientTransport, "sessionId"> | SSEClientTransport =

@@ -1,7 +1,11 @@
 import { hostedAppCapabilities } from "@executor-js/hosted-server/app-management";
 import { executorSelfHostApiDocument } from "../contracts/api.ts";
 import { AppGitOrigins, AppManagementHost } from "@executor-js/app-management";
-import { expireIdleAgentGrants, runStartupDataSteps } from "@executor-js/app-management/data-steps";
+import {
+  expireIdleAgentGrants,
+  runStartupDataSteps,
+  startupCatalogCopyRebuild,
+} from "@executor-js/app-management/data-steps";
 import { SelfHostAuth, selfHostAuth } from "../auth.ts";
 /** Self-host SDK uses the same PGlite connection as Better Auth. */
 import type { HostEgress } from "@executor-js/utils/url-policy";
@@ -49,7 +53,7 @@ import { deliverEvents } from "@executor-js/sdk/scheduling";
 import { markdownRefusals } from "@executor-js/sdk/markdown";
 import { Digest, SecureRandom } from "effect/crypto";
 import { HostedAppRuntime } from "@executor-js/hosted-server/app-ui/contracts";
-import { workerdHostHandler } from "@executor-js/sdk/workerd";
+import { workerdHostHandler, type RegistryRead } from "@executor-js/sdk/workerd";
 import type { AppRuntime, BlobStorage, WorkflowRuntime } from "@executor-js/sdk/core";
 import { Cause, Config, Effect, Layer, Option, Deferred, Schedule, Context, Scope } from "effect";
 import { GroupDatabase } from "@executor-js/hosted-server/groups";
@@ -63,6 +67,8 @@ export interface SelfHostPlatform {
   readonly workflows: WorkflowRuntime;
   /** Evaluated results kept in each app's data supervisor. */
   readonly declarations: DurableDeclarations;
+  /** Reads the npm registry app installs use, as they reach it; the release check's only path. */
+  readonly readRegistry: RegistryRead;
 }
 
 /** Private callback surface for app workflows, exposed only through a service binding. */
@@ -70,6 +76,11 @@ export class SelfHostWorkflowRequests extends Context.Service<
   SelfHostWorkflowRequests,
   Effect.Success<ReturnType<typeof workerdHostHandler>>
 >()("self-host/WorkflowRequests") {}
+
+/** How the release check reads the npm registry: as this host's app installs reach it. */
+export class SelfHostRegistry extends Context.Service<SelfHostRegistry, RegistryRead>()(
+  "self-host/Registry",
+) {}
 
 /** Database initialization finishes before this service is acquired. */
 export const selfHostExecutorServices = <E, R>(
@@ -88,7 +99,10 @@ export const selfHostExecutorServices = <E, R>(
         oauthRedirectUri: Option.getOrUndefined(accountCallback),
       });
       // Only E2E hosts add test client definitions; see `firstPartyOAuthClients`.
+      // A self-host operator's credentials are its own registrations, which Executor's service
+      // approvals do not limit.
       const firstPartyClients = yield* firstPartyOAuthClients({
+        registrations: "operator",
         testDefinitions:
           (yield* Config.String("EXECUTOR_ENVIRONMENT").pipe(Config.withDefault(""))) === "e2e",
       });
@@ -98,9 +112,8 @@ export const selfHostExecutorServices = <E, R>(
       const background = (work: Effect.Effect<void>) =>
         Effect.forkIn(work, server).pipe(Effect.as(true));
       const ready = yield* Deferred.make<Executor>();
-      const { runtime, workflows, declarations, blobs, repositories } = yield* acquire(
-        Deferred.await(ready),
-      );
+      const { runtime, workflows, declarations, blobs, repositories, readRegistry } =
+        yield* acquire(Deferred.await(ready));
       const registry = remoteRegistry(
         yield* Config.String("EXECUTOR_REGISTRY_URL").pipe(
           Config.withDefault(hostedExecutorOrigin),
@@ -153,11 +166,15 @@ export const selfHostExecutorServices = <E, R>(
           allowInsecureCallbacks: egress.policy.allowLoopbackHttp,
         },
       }).pipe(Effect.provide([SecureRandom.layerWebCrypto, Digest.layerWebCrypto]));
-      yield* lifecycle.attach(executor);
+      // Password registration is admitted locally; self-host does not send verification mail.
+      yield* lifecycle.attach(executor, { requireVerifiedEmail: false });
       yield* Deferred.succeed(ready, executor);
       yield* Effect.forkScoped(deliverEvents(executor));
       // The schema is current and nothing serves or builds yet; the caller holds the data lock.
       const auth = yield* selfHostAuth;
+      // Self-host applies at startup without a reviewed report, so the catalog-copy rebuild is
+      // listed only when its operator turns it on.
+      const catalogCopyRebuild = yield* startupCatalogCopyRebuild;
       yield* runStartupDataSteps(
         {
           executor,
@@ -167,6 +184,7 @@ export const selfHostExecutorServices = <E, R>(
           // and its first pass reconciles the sources a redeploy left pending.
           executorAppRedeployed: executorDefaultRedeployed(Effect.void),
           appCopies: hostedAppCopies(executor),
+          ...(catalogCopyRebuild === undefined ? {} : { catalogCopyRebuild }),
         },
         "private_hosted",
       );
@@ -219,6 +237,7 @@ export const selfHostExecutorServices = <E, R>(
       });
       return Layer.mergeAll(
         Layer.succeed(SelfHostWorkflowRequests, workflowRequests),
+        Layer.succeed(SelfHostRegistry, readRegistry),
         Layer.succeed(SelfHostAuth, auth),
         Layer.succeed(ScheduledAuthority, scheduleAuthority),
         Layer.succeed(GroupDatabase, Effect.succeed(groupDatabase)),

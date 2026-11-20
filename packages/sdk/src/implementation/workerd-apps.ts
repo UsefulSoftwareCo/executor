@@ -49,11 +49,41 @@ import type { Executor } from "../contracts/executor.ts";
 import type { DurableDeclarations } from "../contracts/declarations.ts";
 import { runtimeAdapter } from "./runtime.ts";
 
-import { connectedWorkerdApps, TransportClosed, workerdHostHandler } from "./workerd-client.ts";
+import {
+  connectedWorkerdApps,
+  TransportClosed,
+  workerdHostHandler,
+  type RegistryRead,
+} from "./workerd-client.ts";
 import { workerdHostModules } from "./workerd-bundle.ts";
 import { appWorkerIdleSeconds, appWorkerLimit } from "./app-worker-residency.ts";
 import { EngineFaults } from "../contracts/engine-faults.ts";
 
+/**
+ * E2E runs only: delays that make a data supervisor's reset meet other work on purpose. Each is read
+ * from its `EXECUTOR_TEST_SUPERVISOR_*_MS` setting, from 1 to 25,000 ms (workerd resets an object
+ * itself after 30 s of blocked input). Any other run has none.
+ * - `resetDelayMs`: the reset waits this long, its input open, before checking it may reset, so
+ *   a call or a release can be running then.
+ * - `replyDelayMs`: a call's reply waits this long after the call has left the facet, as a reply
+ *   waits for its object's output gate, so a reset can meet a call that already ran.
+ * - `resetHoldMs`: after its checks, the reset holds its input this long before it resets, so a
+ *   request sent then is accepted but cannot start, and the reset meets it.
+ */
+const supervisorFaults = Effect.gen(function* () {
+  const environment = yield* Config.option(Config.String("EXECUTOR_ENVIRONMENT"));
+  if (Option.getOrUndefined(environment) !== "e2e") return null;
+  const delay = (name: string) =>
+    Config.option(
+      Config.schema(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 25_000 })), name),
+    ).pipe(Effect.map(Option.getOrUndefined));
+  const faults = {
+    resetDelayMs: yield* delay("EXECUTOR_TEST_SUPERVISOR_RESET_DELAY_MS"),
+    resetHoldMs: yield* delay("EXECUTOR_TEST_SUPERVISOR_RESET_HOLD_MS"),
+    replyDelayMs: yield* delay("EXECUTOR_TEST_SUPERVISOR_REPLY_DELAY_MS"),
+  };
+  return Object.values(faults).some((value) => value !== undefined) ? faults : null;
+});
 /** E2E runs only: engine call faults for the runtime's workflows; see `engine-faults.ts`. */
 const engineFaults = Effect.gen(function* () {
   const environment = yield* Config.option(Config.String("EXECUTOR_ENVIRONMENT"));
@@ -187,6 +217,7 @@ export const workerdApps = (options: {
     readonly runtime: ReturnType<typeof runtimeAdapter>;
     readonly workflows: WorkflowRuntime;
     readonly declarations: DurableDeclarations;
+    readonly readRegistry: RegistryRead;
   },
   RuntimeBuildFailed | WorkerdMigrationRequired | WorkflowFailure,
   Scope.Scope
@@ -284,6 +315,7 @@ export const workerdApps = (options: {
             Option.getOrNull(yield* appWorkerIdleSeconds),
           ),
           JsonBinding.local("WORKFLOW_ENGINE_FAULTS", yield* engineFaults),
+          JsonBinding.local("SUPERVISOR_FAULTS", yield* supervisorFaults),
           publicEgressBinding,
           JsonBinding.local("SELF_ORIGIN", options.selfOrigin?.origin ?? ""),
           JsonBinding.local("NPM_REGISTRY", options.npmRegistry ?? ""),

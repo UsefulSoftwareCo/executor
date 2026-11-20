@@ -392,6 +392,31 @@ export const authRateLimitSwitchBindings = Effect.gen(function* () {
 });
 
 /**
+ * API Worker props: `REMOVAL_REVOCATION_BUDGET_SWITCH` is true only under `alchemy dev`, as
+ * `AUTH_RATE_LIMIT_SWITCH` is, so every deployed Worker gets `false`; see
+ * `cloudOwnerRevocationBudget`.
+ */
+export const removalRevocationBudgetBindings = Effect.gen(function* () {
+  return { REMOVAL_REVOCATION_BUDGET_SWITCH: (yield* AlchemyContext).dev };
+});
+
+/**
+ * The time organization removal's purge spends revoking OAuth grants
+ * (`ExecutorInputs.ownerRevocationBudget`). Only a local Cloud shortens it, to
+ * `TEST_STAGE_REMOVAL_REVOCATION_BUDGET_MS`, so a scenario can run it out in seconds.
+ * `localRuntime` is the Worker's `REMOVAL_REVOCATION_BUDGET_SWITCH`; every deployed Worker keeps
+ * the SDK's default whatever its configuration says.
+ */
+export const cloudOwnerRevocationBudget = (localRuntime: boolean) =>
+  Effect.gen(function* () {
+    // Read on every stage, so Alchemy binds it into the local Worker; only a local runtime uses it.
+    const configured = yield* Config.Number("TEST_STAGE_REMOVAL_REVOCATION_BUDGET_MS").pipe(
+      Config.option,
+    );
+    return localRuntime ? Option.getOrUndefined(configured) : undefined;
+  });
+
+/**
  * Whether Better Auth's per-address limit applies. Every request a test runner sends comes from
  * one address, so automated environments may turn it off; no deployed stage outside them can:
  *

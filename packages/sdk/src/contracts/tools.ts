@@ -972,6 +972,7 @@ const hostRuntimeFailures: ReadonlySet<RuntimeFailure> = new Set([
   "build",
   "unsupported",
   "managed",
+  "unloading",
 ]);
 const loadingInstructions =
   "This happened while Executor loaded the app's definition, before any tool ran. Do not change the app's accounts to work around it.";
@@ -1014,9 +1015,14 @@ const workerPresentation = (failure: RuntimeFailure | undefined) => {
     case "too-large":
       return {
         description,
+        // One retry can help: a first load can do work the next reuses, such as compiling a large
+        // API definition into the app's cache. The limit is matched from text, and a later attempt
+        // can still pass, so a repeat proves nothing about the cause: the copy stops unchanged
+        // retries and says what to check. The host does not know the app's apps version here, so
+        // rebuilding is advised only for an app on an older one.
         recovery: retryOnce(
-          "reduce the work the app does to list its tools.",
-          "A resource limit matches this failure. Find what the app's factory and tool loaders do while listing, such as fetching or parsing a large API definition or building many tools, and reduce it: expose fewer tools, or keep a large definition in the app's cache.",
+          "stop retrying it unchanged and investigate. If the app was built on an older apps version than this host’s, rebuild it on this host’s version and deploy it again; if it already runs this host’s version, or still fails, reduce the work the app does to list its tools.",
+          "A resource limit matches this failure. A first load can do work the next one reuses, such as compiling a large API definition into the app's cache, so one retry may succeed. If it fails the same way, stop retrying the unchanged request, even though a later attempt might succeed, and investigate what listing the app's tools costs. Compare the apps version in the app's package.json with framework.release, the version this host runs. If the app's version is older, for example a catalog app installed before a framework fix, pin this host's version and deploy the app again: an older apps version can spend far more work listing a large API. If the versions are the same, or the rebuilt app still fails, find what the app's factory and tool loaders do while listing, such as fetching or parsing a large API definition or building many tools, and reduce it: expose fewer tools, or keep a large definition in the app's cache.",
         ),
         retryable: true,
       };
@@ -1059,6 +1065,15 @@ const workerPresentation = (failure: RuntimeFailure | undefined) => {
     case "unsupported":
     case "managed":
       return { description, recovery: rebuild, retryable: false };
+    case "unloading":
+      return {
+        description: `${runtimeFailures.unloading}, so nothing was sent to the app.`,
+        recovery: retryOnce(
+          "report the failure with its reference.",
+          `Executor waited for the app's previous Worker to unload before loading it again, and it did not finish, so nothing was sent to the app. ${reportReference}`,
+        ),
+        retryable: true,
+      };
     default:
       return {
         description,
@@ -1415,9 +1430,10 @@ export const AppProviderFailed = UserFacingError.define({
       Schema.Struct({ id: AccountId, label: Schema.String, provider: Schema.String }),
     ),
     /**
-     * The service refused the account's credentials during a mutation, and Executor has since
-     * renewed them. The mutation was not repeated, because it may have made changes before the
-     * refusal; a later call uses the renewed credentials.
+     * The service refused the account's credentials during a call Executor does not repeat, and
+     * Executor has since renewed them. That is a call that may write, which may have made changes
+     * before the refusal, or a query only its tool declares reads, whose claim the app has not
+     * confirmed. A later call uses the renewed credentials.
      */
     credentialsRenewed: Schema.optional(Schema.Literal(true)),
     /**
@@ -1453,11 +1469,11 @@ export const AppProviderFailed = UserFacingError.define({
         case "unauthorized":
           if (credentialsRenewed === true)
             return {
-              title: "Access renewed; request not repeated",
-              description: `${service} rejected the credentials${target}${context}.${reported} Executor has renewed the account’s access, but did not repeat this call automatically.`,
+              title: "Access restored; call not repeated",
+              description: `${service} rejected the credentials${target}${context}.${reported} Access was restored. This call was not repeated; earlier steps may have changed data. Check the result and retry only if the user chooses.`,
               recovery: {
-                action: "The renewed access is used from now on.",
-                instructions: `Executor renewed the account’s access but did not repeat this call. Renewal does not establish whether an earlier part of the call changed data. ${instructions}`,
+                action: "Check the result and retry only if the user chooses.",
+                instructions: `Access was restored, but this call was not repeated, and earlier steps of it may have changed data. Check what it did before anything else, and retry only if the user chooses. ${instructions}`,
               },
               retryable: false,
             };

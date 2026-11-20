@@ -75,11 +75,13 @@ const stackPosition = /([\w./@-]+):(\d+):(\d+)/g;
 /**
  * The declaration failure of a build compiled with `sourceMap`. A Worker that fails while its
  * modules load reports stack positions in the bundle; each becomes the authored file and position
- * it came from, and the first in a deployed source file is the location.
+ * it came from, and the first in a deployed source file is the location. `unanswered` marks a
+ * call to the runner that failed without a reply, which judged nothing.
  */
 export const declarationFailed = (
   cause: unknown,
   build: { readonly mainModule: string; readonly sourceMap: string; readonly files: SourceFiles },
+  unanswered?: true,
 ) => {
   const described = describeBuildCause(cause);
   let map: TraceMap | undefined;
@@ -103,5 +105,6 @@ export const declarationFailed = (
     message: boundBuildMessage(message),
     ...(location === undefined ? {} : { location }),
     ...(Schema.is(DatabaseFieldReserved)(cause) ? { declaration: cause } : {}),
+    ...(unanswered === undefined ? {} : { unanswered }),
   });
 };

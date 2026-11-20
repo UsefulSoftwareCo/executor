@@ -9,6 +9,7 @@
  * The dashboard Worker bundles the site, so each stage's site is built first, with the
  * environment the stack's `Site` resource gives that stage's deploy.
  */
+import { fileURLToPath } from "node:url";
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Command from "alchemy/Command";
@@ -144,6 +145,11 @@ export const production: Target = {
     SENTRY_ENABLED: "true",
     POSTHOG_ENABLED: "true",
     SENTRY_URL: "https://sentry.io",
+    // A production deploy builds only with Cloud's notes file (src/infrastructure/release-notes.ts).
+    // This build publishes nothing, so it stands in one with no notes: no "What's new" block.
+    EXECUTOR_CLOUD_RELEASE_NOTES_FILE: fileURLToPath(
+      new URL("./no-release-notes.json", import.meta.url),
+    ),
   },
 };
 

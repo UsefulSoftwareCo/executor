@@ -42,6 +42,8 @@ import {
   makeAppWorkerResidency,
   type AppWorkerResidency,
 } from "./app-worker-residency.ts";
+import { isPrivateHostname } from "@executor-js/utils/url-policy";
+import { defaultNpmRegistry } from "@executor-js/utils/release-version";
 import { compileWorkerApp } from "../workerd-build.ts";
 import { assembleWorkerBundle } from "./worker-build-storage.ts";
 import { declarationFailed } from "./worker-source-map.ts";
@@ -70,7 +72,8 @@ import {
   engineFaultCall,
   engineFaultError,
   engineFaultFor,
-  type EngineFault,
+  engineLateFor,
+  type EngineFaultList,
 } from "../contracts/engine-faults.ts";
 import { nativeEngineFailure } from "./native-engine-failure.ts";
 
@@ -141,9 +144,63 @@ interface Environment {
   };
   readonly RUNS: Workflow<{ run: string }>;
   readonly HOST: Fetcher;
+  /** E2E runs only: delays around a supervisor's reset (`workerd-apps.ts`); otherwise null. */
+  readonly SUPERVISOR_FAULTS?: {
+    readonly resetDelayMs?: number;
+    readonly resetHoldMs?: number;
+    readonly replyDelayMs?: number;
+  } | null;
   /** E2E runs only: engine call faults (`engine-faults.ts`); otherwise null. */
-  readonly WORKFLOW_ENGINE_FAULTS?: ReadonlyArray<EngineFault> | null;
+  readonly WORKFLOW_ENGINE_FAULTS?: EngineFaultList | null;
 }
+
+const sleep = (ms: number | undefined) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/**
+ * The reason a data supervisor gives when it resets itself after its facet is unloaded. The
+ * supervisors run in this isolate, and the token is made here on first use (workerd allows no
+ * random values at startup), so no app text can carry it.
+ */
+// oxlint-disable-next-line executor/no-module-level-mutable-state -- one token per isolate; it carries no request data
+let resetToken: string | undefined;
+const supervisorReset = () => (resetToken ??= `Data supervisor reset ${crypto.randomUUID()}`);
+/**
+ * Send one call to an app's data supervisor. workerd fails every request an object has accepted
+ * but not yet started when that object resets, with the reset's reason, and a stub made before the
+ * reset keeps failing. A supervisor resets itself only while it handles nothing, so a call that
+ * fails with exactly that reason had not started; it is sent once more, through a new stub, to the
+ * instance that replaces it. `resent` runs when it is.
+ */
+const toSupervisor = async <A>(
+  env: Environment,
+  app: string,
+  call: (supervisor: DataEntrypoint) => Promise<A>,
+  resent: () => void = () => undefined,
+): Promise<A> => {
+  try {
+    return await call(env.DATA.getByName(app));
+  } catch (cause) {
+    if (!(cause instanceof Error) || cause.message !== supervisorReset()) throw cause;
+    resent();
+    return call(env.DATA.getByName(app));
+  }
+};
+/** A runner's call to an app's data supervisor, and whether it was sent again after a reset. */
+const supervisorCall = <A>(
+  env: Environment,
+  app: string,
+  call: (supervisor: DataEntrypoint) => Promise<A>,
+) =>
+  Effect.suspend(() => {
+    let resent = false;
+    return Effect.tryPromise({
+      try: () =>
+        toSupervisor(env, app, call, () => {
+          resent = true;
+        }),
+      catch: (cause) => cause,
+    }).pipe(Effect.map((value) => ({ value, resent })));
+  });
 
 /** A native sleep: a failure without our marker is the platform's, recorded by class only. */
 const nativeSleep = (work: () => Promise<unknown>) =>
@@ -190,6 +247,28 @@ export class AppOutbound extends WorkerEntrypoint<Environment> {
     });
   }
 }
+/** The installer's name for a destination the host's network policy refuses. */
+class TarballDestinationRefused extends Error {
+  override readonly name = "NetworkRefused";
+}
+/**
+ * How a build reaches anything off its registry's origin when the operator has not allowed
+ * private fetch: tarball URL dependencies, and tarballs or redirects registry metadata sends
+ * elsewhere. They go through the public-only network, as app code's own requests do. This
+ * Worker's global `fetch` uses the `internet` service, which reaches private addresses, and stays
+ * the path to the registry's own origin, so an operator's private registry keeps working. The
+ * installer follows each redirect itself and sends every hop here or to the registry. A private
+ * address named in the URL is refused before sending; one a public name resolves to is refused by
+ * the network, which workerd reports with an error reference only.
+ */
+const publicTarballFetch =
+  (network: HttpService) =>
+  (input: string, init?: RequestInit): Promise<Response> => {
+    const url = URL.parse(input);
+    if (url === null || isPrivateHostname(url.hostname))
+      return Promise.reject(new TarballDestinationRefused());
+    return network.fetch(new Request(url, init));
+  };
 type OutboundLoopback = (options: { readonly props: OutboundProps }) => Fetcher;
 const OutboundExports = Schema.Struct({
   AppOutbound: Schema.declare((value): value is OutboundLoopback => typeof value === "function"),
@@ -241,23 +320,31 @@ const runner = (env: Environment, context: Pick<ExecutionContext, "waitUntil" | 
       }),
     outbound: appOutbound(context),
     credentialKey: credentials(env),
-    data: (app) => {
-      const target = env.DATA.getByName(app);
-      return {
-        invoke: (input, load, elicit, controls) =>
-          Effect.tryPromise({
-            try: () => target.invoke(input, load, elicit, controls),
-            catch: (cause) => cause,
-          }),
-        cancel: (id) =>
-          Effect.tryPromise({ try: () => target.cancel(id), catch: (cause) => cause }),
-        cache: (namespace, command) =>
-          Effect.tryPromise({
-            try: () => target.cache(namespace, command),
-            catch: (cause) => cause,
-          }),
-      };
-    },
+    data: (app) => ({
+      // A resent invocation says so in its reply, for the host's span of the call.
+      invoke: (input, load, elicit, controls) =>
+        Effect.map(
+          supervisorCall(env, app, (supervisor) =>
+            supervisor.invoke(input, load, elicit, controls),
+          ),
+          ({ value, resent }) =>
+            resent && typeof value === "object" && value !== null
+              ? { ...value, resent: true }
+              : value,
+        ),
+      // A cancel is not sent again: its call has ended, and a failed cancel is ignored.
+      cancel: (id) =>
+        Effect.tryPromise({
+          try: () => env.DATA.getByName(app).cancel(id),
+          catch: (cause) => cause,
+        }),
+      // An app's commands outside the data operations run in its Worker and use this cache.
+      cache: (namespace, command) =>
+        Effect.map(
+          supervisorCall(env, app, (supervisor) => supervisor.cache(namespace, command)),
+          ({ value }) => value,
+        ),
+    }),
     waitUntil: (task) => context.waitUntil(task.then(ignore, ignore)),
   });
 const ignore = () => undefined;
@@ -299,6 +386,9 @@ class AppApi extends RpcTarget {
   [Symbol.dispose]() {
     this.#lifetime.abort();
   }
+  readRegistry(path: string): Promise<{ readonly status: number; readonly body: string }> {
+    return readRegistry(this.#env, path);
+  }
   async compile(input: string): Promise<string> {
     return this.#run(
       Effect.gen({ self: this }, function* () {
@@ -307,7 +397,12 @@ class AppApi extends RpcTarget {
         ).pipe(Effect.mapError((cause) => buildFailed("source", cause)));
         const compiled = yield* compileWorkerApp(
           request.files,
-          this.#env.NPM_REGISTRY === "" ? {} : { registry: this.#env.NPM_REGISTRY },
+          {
+            ...(this.#env.NPM_REGISTRY === "" ? {} : { registry: this.#env.NPM_REGISTRY }),
+            ...(this.#env.APPS_PRIVATE_FETCH
+              ? {}
+              : { tarballFetch: publicTarballFetch(this.#env.PUBLIC_FETCH) }),
+          },
           request.public ?? [],
         );
         const { bundle, framework, ui, sourceMap } = compiled;
@@ -390,6 +485,47 @@ class AppApi extends RpcTarget {
 /** Native app data stays in isolated facets and retains its database across code updates. */
 export class AppDataSupervisor extends DurableObject<Environment> {
   readonly #supervisor: Promise<Effect.Success<ReturnType<typeof makeFacetSupervisor>>>;
+  /**
+   * Requests this instance has received, a number that only goes up. The app Worker limit holds
+   * one account selection's facet while its call's reply is on the way, but a call of another
+   * selection of the same app can arrive during that unload, run, and still be waiting on its
+   * reply when the reset fires; the reset would fail that reply after its write and the host would
+   * send it again. So an unload takes this number when it begins, and its reset goes ahead only if
+   * no request has arrived since. Unloads are not counted, so another selection's unload in the
+   * meantime changes nothing an earlier one sees.
+   */
+  #received = 0;
+  /**
+   * Reset this instance once the app Worker limit has unloaded its facet, when it has received no
+   * request since that unload began and holds no page's socket. workerd frees an unloaded facet's Worker, and that
+   * Worker's memory, only when it later drops the object that loaded it. Apps called in quick
+   * succession outrun that, so without the reset a burst of apps with a database runs the process
+   * out of memory. The reset runs after the unload's reply, which the unload sends only once every
+   * call's release has finished. A request that arrives as it resets has not started, and the host
+   * sends it again. The app's storage, its alarm and its revision are kept; its next request
+   * starts a new instance.
+   */
+  #resetWhenIdle(seen: number) {
+    const faults = this.env.SUPERVISOR_FAULTS;
+    setTimeout(async () => {
+      // E2E runs only: wait with the input open, so other work can be running at the checks.
+      if (faults?.resetDelayMs !== undefined) await sleep(faults.resetDelayMs);
+      // A request that arrived since this unload began may be running, or have run and still
+      // await its reply. A call running when the unload began made it answer false.
+      if (this.#received !== seen) return;
+      // A page's change socket would close with the instance.
+      if (this.ctx.getWebSockets().length > 0) return;
+      // E2E runs only: hold the input, so a request sent now is accepted but cannot start. The
+      // reset follows in the same continuation, before any held request can take the input.
+      if (faults?.resetHoldMs !== undefined)
+        await this.ctx.blockConcurrencyWhile(() => sleep(faults.resetHoldMs));
+      try {
+        this.ctx.abort(supervisorReset());
+      } catch {
+        // The reset ends this instance; nothing is waiting on it.
+      }
+    }, 0);
+  }
   constructor(ctx: DurableObjectState, env: Environment) {
     super(ctx, env);
     this.#supervisor = Effect.runPromise(
@@ -408,6 +544,7 @@ export class AppDataSupervisor extends DurableObject<Environment> {
     elicit: Callback | null,
     controls: Callback | null,
   ) {
+    this.#received += 1;
     const result = Effect.runPromise(
       (await this.#supervisor).invoke(input, load, elicit, controls),
     );
@@ -418,24 +555,37 @@ export class AppDataSupervisor extends DurableObject<Environment> {
         () => undefined,
       ),
     );
-    return result;
+    // E2E runs only: hold the reply after the call has left the facet.
+    const delay = this.env.SUPERVISOR_FAULTS?.replyDelayMs;
+    if (delay === undefined) return result;
+    const value = await result;
+    await sleep(delay);
+    return value;
   }
   async cache(namespace: string, command: unknown) {
+    this.#received += 1;
     return Effect.runPromise((await this.#supervisor).cache(namespace, command));
   }
   async evaluated(command: unknown) {
+    this.#received += 1;
     return Effect.runPromise((await this.#supervisor).evaluated(command));
   }
   async cancel(id: string) {
+    this.#received += 1;
     return Effect.runPromise((await this.#supervisor).cancel(id));
   }
   async unload(identity: string) {
-    return Effect.runPromise((await this.#supervisor).unload(identity));
+    const seen = this.#received;
+    const unloaded = await Effect.runPromise((await this.#supervisor).unload(identity));
+    if (unloaded) this.#resetWhenIdle(seen);
+    return unloaded;
   }
   async alarm() {
+    this.#received += 1;
     return Effect.runPromise((await this.#supervisor).recover);
   }
   async fetch(): Promise<Response> {
+    this.#received += 1;
     const pair = new WebSocketPair();
     this.ctx.acceptWebSocket(pair[1]);
     await Effect.runPromise((await this.#supervisor).initial(pair[1]));
@@ -471,7 +621,12 @@ export class AppWorkflows extends WorkflowEntrypoint<Environment, { run: string 
           const native = <A>(work: () => Promise<A>) =>
             Effect.tryPromise({ try: work, catch: decodeWorkflowFailure });
           const faults = this.env.WORKFLOW_ENGINE_FAULTS;
-          const sleepCall = (name: string, work: () => Promise<unknown>) => {
+          const sleepCall = (name: string, call: () => Promise<unknown>) => {
+            const late = engineLateFor(faults, seed.runId, name);
+            const work =
+              late === undefined
+                ? call
+                : () => new Promise((settle) => setTimeout(settle, late)).then(call);
             const fault = engineFaultFor(faults, seed.runId, name);
             return nativeSleep(fault === undefined ? work : () => engineFaultCall(fault, work));
           };
@@ -609,6 +764,29 @@ export class AppWorkflows extends WorkflowEntrypoint<Environment, { run: string 
   }
 }
 
+/**
+ * `path` on the registry builds install from (`NPM_REGISTRY`, or the public registry), read as
+ * builds read it: this Worker's global `fetch`, which the `internet` network serves, with no header
+ * and no redirect followed. The host's release check reads it here, over the session builds are
+ * compiled in, so it reaches the registry exactly as app installs do on every host.
+ */
+const readRegistry = async (
+  env: Environment,
+  path: string,
+): Promise<{ readonly status: number; readonly body: string }> => {
+  if (!path.startsWith("/") || path.startsWith("//")) return { status: 400, body: "" };
+  const registry = (env.NPM_REGISTRY === "" ? defaultNpmRegistry : env.NPM_REGISTRY).replace(
+    /\/+$/u,
+    "",
+  );
+  try {
+    const answer = await fetch(`${registry}${path}`, { redirect: "manual" });
+    return { status: answer.status, body: await answer.text() };
+  } catch {
+    return { status: 502, body: "" };
+  }
+};
+
 /** Only the authenticated Node host can reach administration or create an RPC session. */
 export default {
   async fetch(request: Request, env: Environment, context: ExecutionContext): Promise<Response> {
@@ -618,7 +796,9 @@ export default {
     if (url.pathname === "/rpc")
       return newWorkersRpcResponse(request, new AppApi(env, context), rpcOptions);
     if (url.pathname === "/changes")
-      return env.DATA.getByName(url.searchParams.get("app") ?? "").fetch(request);
+      return toSupervisor(env, url.searchParams.get("app") ?? "", (supervisor) =>
+        supervisor.fetch(request),
+      );
     // Evaluated results the host keeps in the app's supervisor, beside its app cache.
     if (url.pathname === "/evaluated") {
       const command = Schema.decodeUnknownOption(EvaluatedCommandJson)(await request.text());

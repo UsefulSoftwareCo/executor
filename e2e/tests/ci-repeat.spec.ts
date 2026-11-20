@@ -282,11 +282,15 @@ const record = (input: {
     return { name: written.name ?? "", sized: written.sized ?? "", log: result.log, tree };
   }).pipe(Effect.scoped);
 
-/** Runs `check`'s or `e2e`'s report step, as a repeat of run 199 whose jobs are now `now`. */
+/**
+ * Runs `check`'s or `e2e`'s report step, as a repeat of run 199 whose jobs are now `now`. `results`
+ * sets the result of this run's other needed jobs, skipped by default as a repeat skips them.
+ */
 const report = (input: {
   readonly job: "check" | "e2e";
   readonly now: Pick<Recorded, "select" | "check" | "e2e">;
   readonly ownSelect?: string;
+  readonly results?: Readonly<Record<string, string>>;
 }) =>
   Effect.gen(function* () {
     const step =
@@ -307,7 +311,10 @@ const report = (input: {
       needed.map((name) => [
         name,
         {
-          result: name === "select" ? (input.ownSelect ?? "success") : "skipped",
+          result:
+            name === "select"
+              ? (input.ownSelect ?? "success")
+              : (input.results?.[name] ?? "skipped"),
           outputs: name === "select" ? { "repeat-of": "199" } : {},
         },
       ]),
@@ -692,6 +699,59 @@ layer(NodeServices.layer)("CI repeat", (it) => {
     }),
   );
 
+  it.effect(
+    "a repeat's check and e2e fail when any of this run's own jobs they stand for failed or was cancelled",
+    () =>
+      Effect.gen(function* () {
+        // check and e2e run with always(), so a repeat's runs after this run's other jobs whatever
+        // they did. A job a repeat skips may still have run (a re-run of all jobs, or a rule
+        // change), and a failed or cancelled one must fail the required check even when the
+        // repeated run passed.
+        const text = yield* checks;
+        const dependenciesOf = (job: "check" | "e2e") =>
+          jobOf(text, job)
+            .match(/^ {4}needs:\s*\[([^\]]*)\]/m)![1]!
+            .split(",")
+            .map((name) => name.trim())
+            .filter((name) => name.length > 0 && name !== "select");
+        expect(dependenciesOf("check")).toEqual([
+          "static",
+          "site",
+          "apps-package",
+          "tooling",
+          "tooling-cloud",
+          "collector-native",
+        ]);
+        expect(dependenciesOf("e2e")).toEqual([
+          "collector",
+          "e2e-local",
+          "e2e-self-host",
+          "e2e-self-host-scale",
+          "e2e-cloud",
+          "release-docker",
+          "release-local-cli",
+          "release-local-desktop",
+        ]);
+        for (const job of ["check", "e2e"] as const) {
+          const dependencies = dependenciesOf(job);
+          for (const dependency of dependencies)
+            for (const result of ["failure", "cancelled"]) {
+              const run = yield* report({ job, now: {}, results: { [dependency]: result } });
+              expect(run.exitCode, `${job}: ${dependency} ${result}: ${run.log}`).toBe(1);
+              expect(run.log, `${job}: ${dependency} ${result}`).toContain(
+                `${dependency}: ${result}`,
+              );
+            }
+          // Skipped, as a repeat skips them, or passed, each still hands the repeated run's pass on.
+          expect((yield* report({ job, now: {} })).exitCode, job).toBe(0);
+          for (const dependency of dependencies) {
+            const run = yield* report({ job, now: {}, results: { [dependency]: "success" } });
+            expect(run.exitCode, `${job}: ${dependency} success: ${run.log}`).toBe(0);
+          }
+        }
+      }),
+  );
+
   it.effect("a repeat skips the work, and the required checks still run", () =>
     Effect.gen(function* () {
       const text = yield* checks;
@@ -715,11 +775,16 @@ layer(NodeServices.layer)("CI repeat", (it) => {
       // waits for the check of the layer above (worker-sizes.spec.ts).
       const outputs = [...select.matchAll(/^ {6}([a-z-]+): \$\{\{ (.*) \}\}$/gm)];
       expect(outputs.length).toBeGreaterThan(10);
+      // Except `draft`, which names the e2e job: a repeat of a draft's run must not report the
+      // required check, so it names its job as its own select read the pull request.
       for (const [, name, value] of outputs)
         if (value!.includes("steps.select.outputs"))
           expect(value, name).toBe(
-            `steps.repeat.outputs.of == ''${name === "skip" ? " && steps.above.outcome == 'success'" : ""} && steps.select.outputs.${name} || ''`,
+            name === "draft"
+              ? "steps.select.outputs.draft"
+              : `steps.repeat.outputs.of == ''${name === "skip" ? " && steps.above.outcome == 'success'" : ""} && steps.select.outputs.${name} || ''`,
           );
+      expect(outputs.map(([, name]) => name)).toContain("draft");
       // The site job records what its size gate read.
       expect(jobOf(text, "site")).toContain("      - name: Record what the size gate reads\n");
       for (const job of [
@@ -735,10 +800,12 @@ layer(NodeServices.layer)("CI repeat", (it) => {
         expect(jobOf(text, job), job).toMatch(
           /\n {4}if: .*needs\.select\.outputs\.skip != 'true' && needs\.select\.outputs\.repeat-of == ''( && [^\n]*)?\n/,
         );
-      for (const job of ["check", "e2e"])
-        expect(jobOf(text, job), job).toContain(
-          "    if: ${{ always() && needs.select.outputs.skip != 'true' }}\n",
-        );
+      expect(jobOf(text, "check"), "check").toContain(
+        "    if: ${{ always() && needs.select.outputs.skip != 'true' }}\n",
+      );
+      // e2e's name is an expression, which GitHub evaluates only for a job that runs, so it never
+      // skips: on a skip layer it runs and passes only when select succeeded.
+      expect(jobOf(text, "e2e"), "e2e").toContain("    if: ${{ always() }}\n");
     }),
   );
 
