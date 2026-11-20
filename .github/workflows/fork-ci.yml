@@ -131,3 +131,5 @@ jobs:
       - name: MCP search scenarios
         run: |
           bun run e2e:local --test-name 'MCP search resolves namespace-relative dotted paths|A broad MCP tool search returns concise pages'
+      - name: MCP search kept-order scenarios
+        run: bun run e2e:self-host --test-name '^A search being paged keeps its order|^An MCP search without a query pages|^A held kept-order read' --workers 1

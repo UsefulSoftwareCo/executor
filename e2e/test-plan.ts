@@ -8181,6 +8181,36 @@ export const scenarios = plan({
       local: na("Hosted MCP scenario"),
     },
   },
+  mcpSearchKeptOrderEvicted: {
+    fixtures: "actors",
+    file: "mcp-search-kept-order-races.spec.ts",
+    title: "A held kept-order read cannot resurrect an evicted order or skew admission",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Needs the self-host test entry point's SQL hold and monotonic clock."),
+      local: na("Needs the self-host test entry point's SQL hold and monotonic clock."),
+    },
+  },
+  mcpSearchKeptOrderReplaced: {
+    fixtures: "actors",
+    file: "mcp-search-kept-order-races.spec.ts",
+    title: "A held kept-order read cannot overwrite a fresher order",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Needs the self-host test entry point's SQL hold."),
+      local: na("Needs the self-host test entry point's SQL hold."),
+    },
+  },
+  mcpSearchKeptOrderStale: {
+    fixtures: "actors",
+    file: "mcp-search-kept-order-races.spec.ts",
+    title: "A held kept-order read with a stale stamp cannot discard a fresher order",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Needs the self-host test entry point's SQL hold."),
+      local: na("Needs the self-host test entry point's SQL hold."),
+    },
+  },
   mcpSearchStatements: {
     fixtures: "actors",
     file: "mcp-search-statements.spec.ts",

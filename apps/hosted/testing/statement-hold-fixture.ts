@@ -3,12 +3,12 @@
  * personal access token check an MCP tool call makes, until the scenario releases it, so a
  * scenario can change saved state while that check waits. It can instead hold a request just after
  * its check of the caller's access to one app or one account has answered, so a scenario can
- * revoke that access between the check and the write the request makes next. It can instead fail
- * the next read of account rows an MCP tool call makes, as a dropped connection would, so a
- * scenario can see what the call does with a read that failed for storage. PostgreSQL reads take no
- * row locks, so no lock on rows a scenario created can hold them; the test host holds the statement
- * before it reaches the database, or after its reply, instead. Production entry points never
- * provide it.
+ * revoke that access between the check and the write the request makes next. It can hold a kept
+ * search page after SQL answers so a scenario can change the order cache before the read resumes.
+ * It can instead fail the next read of account rows an MCP tool call makes, as a dropped
+ * connection would, to see how the call handles a storage failure. PostgreSQL reads take no row
+ * locks, so no lock on rows a scenario created can hold them; the test host holds the statement
+ * before it reaches the database, or after its reply, instead. Production entry points never provide it.
  */
 import { Deferred, Effect, Layer, Option, Schema, type Tracer } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
@@ -34,6 +34,8 @@ const answeredChecks = {
   "app-access": "left join hosted_app_access p on",
   "account-access": "select p.account_id as account",
 } as const;
+/** The row lookup by ID in a kept-order page, not the ranking statement. */
+const keptOrderPage = "where s.id in (select value from json_array_elements_text(";
 const path = "/api/devtools/statement-hold";
 const Arm = Schema.Union([
   // `toolCall` holds only a check made inside an MCP tool call, not one made by discovery.
@@ -43,6 +45,8 @@ const Arm = Schema.Union([
     after: Schema.Literals(["app-access", "account-access"]),
     id: Schema.NonEmptyString,
   }),
+  // Holds the next kept-order page after SQL answers; only tool search runs that statement.
+  Schema.Struct({ after: Schema.Literal("kept-order") }),
   Schema.Struct({ authentication: Schema.Literal("tool-call") }),
   // Fails the next read of account rows inside a tool call instead of holding it.
   Schema.Struct({ fail: Schema.Literal("tool-call-accounts") }),
@@ -64,8 +68,11 @@ const inToolCall = Effect.map(Effect.currentParentSpan, (span) => {
 interface Hold {
   /** The app whose access check to hold, or the next PAT check inside a tool call. */
   readonly app: string | undefined;
-  /** Hold the next answered check of this kind that binds this ID, instead. */
-  readonly after: { readonly check: keyof typeof answeredChecks; readonly id: string } | undefined;
+  /** Hold the next answered check binding this ID, or the next answered kept-order page. */
+  readonly after:
+    | { readonly check: keyof typeof answeredChecks; readonly id: string }
+    | { readonly check: "kept-order" }
+    | undefined;
   /** Hold the app's check only inside a tool call. */
   readonly toolCall: boolean;
   /** Fail the next read of account rows inside a tool call; nothing is held. */
@@ -97,7 +104,12 @@ export const statementHoldFixture = Effect.gen(function* () {
         if (hold.after !== undefined) {
           const statement: Statement.Statement<unknown> = Reflect.apply(target, self, args);
           const [text, bound] = statement.compile();
-          if (!text.includes(answeredChecks[hold.after.check]) || !bound.includes(hold.after.id))
+          if (hold.after.check === "kept-order") {
+            if (!text.includes(keptOrderPage)) return statement;
+          } else if (
+            !text.includes(answeredChecks[hold.after.check]) ||
+            !bound.includes(hold.after.id)
+          )
             return statement;
           // Disarmed by the first such check to answer, not to be built: one built and never run
           // must not take the hold.
@@ -163,7 +175,12 @@ export const statementHoldFixture = Effect.gen(function* () {
         yield* release;
         armed = current = {
           app: "app" in arm ? arm.app : undefined,
-          after: "after" in arm ? { check: arm.after, id: arm.id } : undefined,
+          after:
+            "id" in arm
+              ? { check: arm.after, id: arm.id }
+              : "after" in arm
+                ? { check: arm.after }
+                : undefined,
           toolCall: "app" in arm && arm.toolCall === true,
           failAccounts: "fail" in arm,
           reached: yield* Deferred.make<void>(),

@@ -147,7 +147,8 @@ const oversizedBytes = 2_000_000;
  * evicted. While every kept search is being paged, a new one is not kept: its pages rank as
  * before, so more concurrent walks than {@link keptOrders} cost what they did before orders were
  * kept, instead of evicting each other. Once 32 searches have each been read within 30 s, or
- * their orders fill {@link keptBytes}, every further walk goes uncached until one of them idles.
+ * orders read within 30 s hold more than `keptBytes - keptOrderBytes`, new walks go uncached
+ * until one of those orders idles.
  * Times are monotonic, so a wall-clock step neither evicts a search in use nor keeps an idle one.
  */
 const keptIdleMillis = 30_000;
@@ -213,8 +214,9 @@ export const makeToolSearchStore = (sql: SqlClient.SqlClient) => {
     orders.delete(key);
     ordersBytes -= kept.order.bytes;
   };
-  /** Mark a kept order read now, as the most recently read. */
+  /** Mark an order read now, unless it was evicted or replaced while its page was read. */
   const touch = (key: string, order: Kept, used: number) => {
+    if (orders.get(key)?.order !== order) return;
     orders.delete(key);
     orders.set(key, { order, used });
   };
@@ -727,7 +729,8 @@ export const makeToolSearchStore = (sql: SqlClient.SqlClient) => {
             yield* Effect.annotateCurrentSpan("executor.search.order", "kept");
             return page;
           }
-          forget(key);
+          // Only discard the order this read found stale, not one admitted while it waited.
+          if (orders.get(key)?.order === remembered) forget(key);
         }
         if (evictable(keptOrderBytes, yield* monotonicMillis) === undefined) {
           // Every kept search is in use: rank this page as before rather than evict one.
