@@ -322,6 +322,8 @@ export const hujsonPolicy = `// Engineers reach CI runners.
   ],
 }
 `;
+/** The same policy as JSON, which the policy file answers unless HuJSON is asked for. */
+export const policyJson = { grants: [{ src: ["group:eng"], dst: ["tag:ci"], ip: ["*"] }] };
 
 /**
  * JSON answers that are not `application/json`, by path: AWS's JSON protocols and a `+json` type
@@ -341,7 +343,8 @@ export const jsonAnswers = {
 
 /**
  * An API whose bodies are JSON or text by media type. Its policy file is shaped like Tailscale's:
- * it takes the policy as JSON, HuJSON or a JSON merge patch, and answers with it as HuJSON. AWS's
+ * it takes the policy as JSON, HuJSON or a JSON merge patch, and answers with it as JSON, or as
+ * HuJSON when its declared Accept header parameter asks for that. AWS's
  * JSON protocols and a glTF scene take and answer JSON under their own types (`jsonAnswers`). It
  * records each request: method, path, Content-Type and body as sent.
  */
@@ -360,9 +363,12 @@ export const mediaTypeUpstream = Effect.gen(function* () {
         HttpRouter.add(
           "GET",
           "/policy",
-          Effect.succeed(
-            HttpServerResponse.text(hujsonPolicy, { contentType: "application/hujson" }),
-          ),
+          Effect.gen(function* () {
+            const request = yield* HttpServerRequest.HttpServerRequest;
+            return request.headers.accept === "application/hujson"
+              ? HttpServerResponse.text(hujsonPolicy, { contentType: "application/hujson" })
+              : yield* HttpServerResponse.json(policyJson);
+          }),
         ),
         HttpRouter.add(
           "POST",
@@ -408,10 +414,20 @@ export const mediaTypeUpstream = Effect.gen(function* () {
       "/policy": {
         get: {
           operationId: "getPolicyFile",
+          parameters: [
+            {
+              name: "Accept",
+              in: "header",
+              schema: { type: "string", enum: ["application/json", "application/hujson"] },
+            },
+          ],
           responses: {
             "200": {
               description: "The policy file",
-              content: { "application/hujson": { schema: { type: "string" } } },
+              content: {
+                "application/json": { schema: object },
+                "application/hujson": { schema: { type: "string" } },
+              },
             },
           },
         },
