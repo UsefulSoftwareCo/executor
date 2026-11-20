@@ -1,6 +1,6 @@
 /** Resolve workflow inputs and platform paths from the release identity before building. */
-import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import { runMain } from "../../e2e/run-main.ts";
 import { Config, Effect, FileSystem } from "effect";
 import {
   desktopAsset,
@@ -15,7 +15,7 @@ import {
 /** The job kinds a build run can be narrowed to (RELEASE_JOBS). */
 const narrowableJobs = ["local", "checks", "cli", "recovery", "docker"] as const;
 
-NodeRuntime.runMain(
+runMain(
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const output = yield* Config.String("GITHUB_OUTPUT");

@@ -29,8 +29,8 @@
  * it was, so the first decision after the pace, a push or the hourly backstop, starts it for every
  * commit since. A failure leaves `windows` unwritten, and the workflow then starts it.
  */
-import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import { runMain } from "./run-main.ts";
 import { Config, Console, Effect, FileSystem, Option, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { mainPushPaths, matchesAny, releaseSources } from "./release-lanes.ts";
@@ -97,7 +97,7 @@ const gh = (args: ReadonlyArray<string>) =>
     return output;
   }).pipe(Effect.scoped);
 
-NodeRuntime.runMain(
+runMain(
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const repository = yield* Config.String("GITHUB_REPOSITORY");
