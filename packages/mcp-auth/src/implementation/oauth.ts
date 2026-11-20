@@ -42,6 +42,7 @@ import {
   Connection,
   ConnectionName,
   ConnectionPolicy,
+  SavedConnectionName,
   connectionGrantPlaceholder,
   connectionGrantPolicy,
 } from "../contracts/connection.ts";
@@ -65,7 +66,7 @@ const ConnectionRecord = Schema.Struct({
   id: ConnectionId,
   userId: Schema.NonEmptyString,
   resource: Schema.NonEmptyString,
-  name: ConnectionName,
+  name: SavedConnectionName,
   policy: Schema.String,
   revoked: Schema.Boolean,
   createdAt: Schema.Date,
