@@ -213,8 +213,9 @@ export const makeToolSearchStore = (sql: SqlClient.SqlClient) => {
     orders.delete(key);
     ordersBytes -= kept.order.bytes;
   };
-  /** Mark a kept order read now, as the most recently read. */
+  /** Mark an order read now, unless it was evicted or replaced while its page was read. */
   const touch = (key: string, order: Kept, used: number) => {
+    if (orders.get(key)?.order !== order) return;
     orders.delete(key);
     orders.set(key, { order, used });
   };
@@ -727,7 +728,8 @@ export const makeToolSearchStore = (sql: SqlClient.SqlClient) => {
             yield* Effect.annotateCurrentSpan("executor.search.order", "kept");
             return page;
           }
-          forget(key);
+          // Only discard the order this read found stale, not one admitted while it waited.
+          if (orders.get(key)?.order === remembered) forget(key);
         }
         if (evictable(keptOrderBytes, yield* monotonicMillis) === undefined) {
           // Every kept search is in use: rank this page as before rather than evict one.
