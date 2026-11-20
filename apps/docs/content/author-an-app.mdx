@@ -26,6 +26,51 @@ app. An unavailable or unsupported package fails the build and leaves the active
 app unchanged. The host protocol is small and shared; early beta releases do not
 promise indefinite support for every past version.
 
+## Check source locally
+
+Before creating or deploying an app, run `executor apps check --files ./hello`.
+It reads the directory locally and checks the manifest, source paths, UTF-8 text,
+and source/public-file limits. It does not contact a host or change the files.
+It requires an exact `dependencies.apps` pin and keeps the version you tested;
+it does not compare that pin with the current host release. A host can still
+refuse a release it does not support.
+
+Use Oxlint for app-authoring conventions. Generate its config from the `apps`
+package:
+
+```js
+import { writeFile } from "node:fs/promises";
+import { appConfig } from "apps/oxlint";
+
+await writeFile(".oxlintrc.json", JSON.stringify(appConfig(), null, 2));
+```
+
+Then run the Oxlint CLI with that config. The rules reject host-only imports,
+global HTTP in app code, legacy account access, missing mutation approval, and a
+root entry that does not default-export `defineApp`. Browser code under `ui/`
+may use browser HTTP, but CommonJS loading through global `require`, global
+`module`, or `node:module`/`module` imports is rejected throughout the app.
+
+Framework calls must keep their identity. Import `defineApp`, `mutation`,
+`query` and `decodeJson` by name from exactly `apps`, in the module that calls
+them. A renamed import such as `import { mutation as write } from "apps"` is
+allowed when the imported function is called directly. The app entry must use
+`export default defineApp(...)` directly; parentheses and TypeScript expression
+wrappers are allowed.
+Import `QueryContext` and `MutationContext` types directly from `apps` in the
+module that uses them. Do not re-export or alias these types through a helper.
+Use ESM imports in helpers and browser code too.
+
+Do not assign these functions to another value, destructure them, pass or return
+them, or re-export them. Default, namespace and dynamic imports of `apps` are
+rejected. Every app source file is checked, including helpers, so a local barrel
+cannot hide a framework function. Ordinary helper modules can use named,
+default, namespace or literal dynamic imports. DTO fields named `mutation` or
+`write` remain valid.
+
+These checks inspect source structure. They do not type-check the app, evaluate
+application code, or prove that a host can build and run it.
+
 `defineApp` declares behavior and does not take a name. Set the package name
 in `package.json`, such as `"name": "@team.executor.community/calendar"` when
 publishing under the organization `team`. The name
