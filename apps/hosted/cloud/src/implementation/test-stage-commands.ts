@@ -235,6 +235,11 @@ const operation = (name: "deploy" | "plan") =>
       telemetry: Flag.Literals("telemetry", ["export", "off"]).pipe(Flag.withDefault("off")),
       noInput: Flag.Boolean("no-input").pipe(Flag.withDefault(false)),
       yes: Flag.Boolean("yes").pipe(Flag.withDefault(false)),
+      // `deploy` only: refuse, rather than evict, a deploy that would replace another test stage.
+      // `plan` has no such flag, as before.
+      ...(name === "deploy"
+        ? { noEvict: Flag.Boolean("no-evict").pipe(Flag.withDefault(false)) }
+        : {}),
     },
     (input) =>
       withStageAdmin((admin) =>
@@ -266,8 +271,16 @@ const operation = (name: "deploy" | "plan") =>
           // A new stage replaces the oldest ones beyond the limit, before it creates resources.
           // An eviction that fails does not stop this deploy, whose author did not cause it, but
           // it is reported where they look: the log, a run annotation and the job summary.
+          const evictions =
+            existing === undefined ? stagesToEvict(yield* admin.list, input.slug) : [];
+          // With `--no-evict`, the same list at the same instant refuses the deploy instead, before
+          // it reserves, builds, deploys or destroys anything.
+          if ("noEvict" in input && input.noEvict === true && evictions.length > 0)
+            return yield* failure(
+              `Deploying ${input.slug} would evict ${evictions.length} test stage${evictions.length === 1 ? "" : "s"} to stay within ${testStageLimit}: ${evictions.map((stage) => `${stage.slug} (${oneLine(stage.owner)})`).join(", ")}. --no-evict refuses it, so nothing was reserved, deployed or destroyed. Destroy test stages you own, then deploy again.`,
+            );
           if (existing === undefined)
-            for (const stage of stagesToEvict(yield* admin.list, input.slug)) {
+            for (const stage of evictions) {
               yield* Console.log(
                 `${name === "deploy" ? "Evicting" : "Deploying will evict"} the oldest test stage, ${stage.slug} (${oneLine(stage.owner)}), to stay within ${testStageLimit}.`,
               );

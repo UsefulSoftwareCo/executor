@@ -1071,6 +1071,138 @@ describe("Removing a test stage by name, with its registry", () => {
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
     180_000,
   );
+
+  /**
+   * `deploy` with `stages` other test stages already leased, pr-2994 the oldest. The build tools
+   * are stubs that leave a mark when they run and then fail, so the deploy stops at its first build
+   * step, after its eviction decision: the mark says whether it got that far. An eviction's own
+   * `alchemy destroy` succeeds. pr-2994's records are
+   * unreadable unless `readable`, so evicting it fails unless they are.
+   */
+  const deployAmong = (
+    stages: number,
+    flags: ReadonlyArray<string>,
+    { readable = false }: { readonly readable?: boolean } = {},
+  ) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const { url, psql } = yield* registry;
+      const world = pr2994World();
+      if (readable)
+        world.state["test-pr-2994"] = {
+          Api: "readable",
+          AppPages: "readable",
+          AuthSecret: "readable",
+        };
+      yield* prepareRegistry(world, url);
+      yield* psql(lease("pr-2994", "neon", "2026-10-01T00:00:00Z", "Owner"));
+      yield* psql(
+        `insert into executor_test_stage_leases (slug, owner, created_at, expires_at, database_provider, retention, background)
+         select 'filler-' || n, 'Filler', '2026-11-01'::timestamptz + n * interval '1 minute', null, 'neon', 'retained', 'active'
+         from generate_series(1, ${stages - 1}) as n`,
+      );
+      const directory = yield* fs.makeTempDirectoryScoped({ prefix: "executor-stage-no-evict-" });
+      const bin = path.join(directory, "bin");
+      const built = path.join(directory, "built");
+      yield* fs.makeDirectory(bin);
+      // An eviction's `alchemy destroy` succeeds; any other call is a build step, which fails.
+      for (const tool of ["bun", "alchemy"]) {
+        yield* fs.writeFileString(
+          path.join(bin, tool),
+          `#!/bin/sh\n${tool === "alchemy" ? 'if [ "$1" = destroy ]; then exit 0; fi\n' : ""}touch '${built}'\nexit 1\n`,
+        );
+        yield* fs.chmod(path.join(bin, tool), 0o755);
+      }
+      const result = yield* cli(
+        world,
+        ["deploy", "new-stage", "--owner", "Deployer", "--no-input", "--yes", ...flags],
+        { registry: url, env: { PATH: `${bin}:${process.env.PATH ?? ""}` } },
+      );
+      return {
+        result,
+        built: yield* fs.exists(built),
+        deletes: deletes(world),
+        leases: (yield* psql("select count(*) from executor_test_stage_leases")).trim(),
+        oldest: (yield* psql(
+          "select count(*) from executor_test_stage_leases where slug = 'pr-2994'",
+        )).trim(),
+      };
+    });
+
+  it.live(
+    "with --no-evict, a deploy that would evict a stage refuses before it reserves, builds or destroys anything, naming the stage",
+    () =>
+      Effect.gen(function* () {
+        const { result, built, deletes, leases, oldest } = yield* deployAmong(80, ["--no-evict"]);
+        expect(result.code).not.toBe(0);
+        expect(result.output).toContain("Deploying new-stage would evict 1 test stage");
+        expect(result.output).toContain("pr-2994 (Owner)");
+        expect(result.output).not.toContain("Evicting the oldest test stage");
+        expect([built, deletes, leases, oldest]).toEqual([false, [], "80", "1"]);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    180_000,
+  );
+
+  it.live(
+    "with --no-evict, a deploy that evicts nothing goes on as before",
+    () =>
+      Effect.gen(function* () {
+        const { result, built, deletes, oldest } = yield* deployAmong(79, ["--no-evict"]);
+        // It reaches the first build step, whose stub fails.
+        expect(result.output).not.toContain("would evict");
+        expect(result.output).not.toContain("Evicting the oldest test stage");
+        expect([built, deletes, oldest]).toEqual([true, [], "1"]);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    180_000,
+  );
+
+  it.live(
+    "without --no-evict, a deploy at the limit tries to evict the oldest stage, as before",
+    () =>
+      Effect.gen(function* () {
+        const { result, built } = yield* deployAmong(80, []);
+        expect(result.output).toContain(
+          "Evicting the oldest test stage, pr-2994 (Owner), to stay within 80.",
+        );
+        expect(result.output).not.toContain("would evict");
+        expect(built).toBe(true);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    180_000,
+  );
+
+  it.live(
+    "without --no-evict, a deploy at the limit removes a readable oldest stage and stays within 80",
+    () =>
+      Effect.gen(function* () {
+        const { result, built, leases, oldest } = yield* deployAmong(80, [], { readable: true });
+        expect(result.output).toContain("Evicted pr-2994.");
+        expect(result.output).not.toContain("Could not evict");
+        expect([built, oldest, leases]).toEqual([true, "0", "80"]);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    180_000,
+  );
+
+  it.live(
+    "plan takes no --no-evict: it is refused as an unknown flag, before anything is read or reserved",
+    () =>
+      Effect.gen(function* () {
+        const { url, psql } = yield* registry;
+        const world = pr2994World();
+        yield* prepareRegistry(world, url);
+        yield* psql(lease("pr-2994"));
+        const result = yield* cli(
+          world,
+          ["plan", "new-stage", "--owner", "Deployer", "--no-input", "--no-evict"],
+          { registry: url },
+        );
+        expect(result.code).not.toBe(0);
+        expect(result.output).toContain("Unrecognized flag: --no-evict in command test-stage plan");
+        expect(deletes(world)).toEqual([]);
+        expect((yield* psql("select count(*) from executor_test_stage_leases")).trim()).toBe("1");
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    180_000,
+  );
 });
 
 /**
