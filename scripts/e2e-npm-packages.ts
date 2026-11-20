@@ -6,6 +6,8 @@
  *
  *   node scripts/e2e-npm-packages.ts           Download missing archives into .local/test-runtime/npm.
  *   node scripts/e2e-npm-packages.ts --update  Resolve `roots` again and rewrite the lock.
+ *   node scripts/e2e-npm-packages.ts --only FILE  Download only the `name@version`s FILE lists
+ *     (`{ "packages": [...] }`), as a release check does before its packaged scenarios.
  *
  * A scenario that declares a new package, or a change to the versions below, needs `--update`:
  * the download refuses a lock whose roots differ from these.
@@ -204,13 +206,24 @@ const download = async () => {
       `${path.relative(".", lockFile)} was resolved from other packages than scripts/e2e-npm-packages.ts names. Run: node scripts/e2e-npm-packages.ts --update`,
     );
   fs.mkdirSync(archives, { recursive: true });
-  const wanted = Object.entries(lock.packages).flatMap(([name, entry]) =>
-    Object.entries(entry.versions).map(([version, locked]) => ({
+  const locked = Object.entries(lock.packages).flatMap(([name, entry]) =>
+    Object.entries(entry.versions).map(([version, pinned]) => ({
+      id: `${name}@${version}`,
       file: path.join(archives, archiveName(name, version)),
-      ...locked,
+      ...pinned,
     })),
   );
-  const keep = new Set(wanted.map(({ file }) => file));
+  const keep = new Set(locked.map(({ file }) => file));
+  // `--only FILE`: just these versions, each of which must be in the lock.
+  const onlyFile = process.argv[process.argv.indexOf("--only") + 1];
+  const only = process.argv.includes("--only")
+    ? (JSON.parse(fs.readFileSync(onlyFile ?? "", "utf8")) as { packages: ReadonlyArray<string> })
+        .packages
+    : undefined;
+  for (const id of only ?? [])
+    if (!locked.some((entry) => entry.id === id))
+      fail(`${id} is not in ${path.relative(".", lockFile)}; add it to roots and run --update.`);
+  const wanted = only === undefined ? locked : locked.filter(({ id }) => only.includes(id));
   for (const name of fs.readdirSync(archives))
     if (!keep.has(path.join(archives, name))) fs.rmSync(path.join(archives, name));
   const missing = wanted.filter(
