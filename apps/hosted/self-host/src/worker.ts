@@ -108,6 +108,15 @@ const configuration = (native: HttpBinding) =>
 /** The product actor's storage key for the release check's last answer. */
 const updateCheckKey = "update-check";
 
+/**
+ * Postgres's default 128 MB buffer pool is allocated in PGlite's WebAssembly memory up front, and
+ * every page of it stays resident whether or not the database fills it. The product's files are
+ * read through the actor's SQLite storage, which the OS page cache holds, so a 16 MB pool keeps
+ * reads fast while the idle server holds about 130 MB less. The local server sets the same pool.
+ * A start parameter, so it applies to an existing database from the next start.
+ */
+const startParams = [...PGlite.defaultStartParams, "-c", "shared_buffers=16MB"];
+
 const prepare = (state: DurableObjectState, env: Environment) =>
   Effect.gen(function* () {
     const fs = yield* prepareProductFilesystem(state.storage, env.LEGACY_DATABASE);
@@ -119,6 +128,7 @@ const prepare = (state: DurableObjectState, env: Environment) =>
           initdbWasmModule,
           fsBundle: new Blob([pgliteData]),
           parsers: { 1082: (value) => value, 1114: (value) => value },
+          startParams,
         });
         await pg.waitReady;
         return pg;
