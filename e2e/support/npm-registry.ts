@@ -13,11 +13,19 @@
  */
 import { createHash } from "node:crypto";
 import { createServer } from "node:http";
-import { Console, Effect, FileSystem, Path, Schema } from "effect";
+import { Console, Effect, FileSystem, Option, Path, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 const upstream = "https://registry.npmjs.org";
+
+/**
+ * Where the forwarding registries record their upstream fetches: one JSON line per fetch, with its
+ * URL, when it started and how long it took, or `waitedMs` for one still waiting when its registry
+ * stopped. Each registry appends its lines when it stops, after printing a summary of the same
+ * fetches to the run's output. The release jobs upload it with their diagnostics.
+ */
+export const registryForwardsLog = ".local/releases/registry-forwards.jsonl";
 /**
  * A synthetic package whose metadata response starts and never finishes, so a build that imports
  * it leaves the compiler without an answer, as a lost compiler isolate does.
@@ -260,28 +268,95 @@ const lockedReply = (staged: Staged) =>
     return replies;
   });
 
-/** Serve the staged `apps` and forward every other request to the public registry unchanged. */
-const forwardingReply = (staged: Staged) =>
+/** How an upstream fetch ended; `ms` is unset while it waits. */
+type Outcome = { ms?: number; status?: number; bytes?: number; error?: string };
+
+/** One upstream fetch of a forwarding registry, as it records it. */
+type Forward = { at: string; url: string; started: number } & Outcome;
+
+/**
+ * Serve the staged `apps` and forward every other request to the public registry unchanged.
+ * `fetches` is where it records each upstream fetch, in the order they started: forwarding only
+ * updates that array, and nothing touches a file until the registry stops.
+ */
+const forwardingReply = (staged: Staged, fetches: Array<Forward> = []) =>
   Effect.gen(function* () {
     const http = yield* HttpClient.HttpClient;
-    const forward = (url: string) =>
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    // When the registry stops: the summary for the job's log, then every fetch in one append, so
+    // the registries of one run add to the same file.
+    yield* Effect.addFinalizer(() =>
       Effect.gen(function* () {
-        const response = yield* http.get(`${upstream}${url}`);
-        return {
-          status: response.status,
-          type: response.headers["content-type"] ?? "application/json",
-          body: new Uint8Array(yield* response.arrayBuffer),
-        } satisfies Reply;
-      }).pipe(
-        Effect.scoped,
-        Effect.catch(() =>
-          Effect.succeed({
-            status: 502,
-            type: "text/plain",
-            body: new Uint8Array(),
-          } satisfies Reply),
-        ),
-      );
+        const now = Date.now();
+        const unfinished = fetches.filter((fetch) => fetch.ms === undefined);
+        yield* Console.log(
+          `Forwarding registry: ${fetches.length - unfinished.length} upstream fetches finished, ${unfinished.length} never finished.`,
+        );
+        const slowest = fetches
+          .filter((fetch) => fetch.ms !== undefined)
+          .sort((a, b) => (b.ms ?? 0) - (a.ms ?? 0))
+          .slice(0, 5);
+        for (const fetch of slowest)
+          yield* Console.log(`  ${fetch.ms} ms ${fetch.error ?? fetch.status} ${fetch.url}`);
+        for (const fetch of unfinished)
+          yield* Console.log(
+            `  NEVER FINISHED: waited ${now - fetch.started} ms when the registry stopped: ${fetch.url}`,
+          );
+        if (fetches.length === 0) return;
+        const lines = fetches
+          .map(({ started, ...fetch }) =>
+            JSON.stringify(fetch.ms === undefined ? { ...fetch, waitedMs: now - started } : fetch),
+          )
+          .join("\n");
+        // Bounded, so a stuck filesystem cannot hold the registry's close; a write that takes longer
+        // goes to the job log as a failed one does.
+        const written = yield* fs
+          .makeDirectory(path.dirname(registryForwardsLog), { recursive: true })
+          .pipe(
+            Effect.andThen(fs.writeFileString(registryForwardsLog, `${lines}\n`, { flag: "a" })),
+            Effect.interruptible,
+            Effect.timeoutOption("2 seconds"),
+            Effect.map(
+              Option.match({
+                onNone: () => "it took longer than 2 seconds",
+                onSome: () => undefined,
+              }),
+            ),
+            Effect.catch((error) => Effect.succeed(error.message)),
+          );
+        if (written !== undefined)
+          yield* Console.error(
+            `Forwarding registry: could not write ${registryForwardsLog} (${written}); its records:\n${lines}`,
+          );
+      }),
+    );
+    const forward = (url: string) =>
+      Effect.suspend(() => {
+        const started = Date.now();
+        const fetch = { at: new Date(started).toISOString(), url: `${upstream}${url}`, started };
+        fetches.push(fetch);
+        const end = (outcome: Omit<Outcome, "ms">) =>
+          Object.assign(fetch, { ms: Date.now() - started, ...outcome });
+        return Effect.gen(function* () {
+          const response = yield* http.get(fetch.url);
+          const body = new Uint8Array(yield* response.arrayBuffer);
+          end({ status: response.status, bytes: body.byteLength });
+          return {
+            status: response.status,
+            type: response.headers["content-type"] ?? "application/json",
+            body,
+          } satisfies Reply;
+        }).pipe(
+          Effect.scoped,
+          Effect.catch((error) =>
+            Effect.sync(() => {
+              end({ error: error._tag });
+              return { status: 502, type: "text/plain", body: new Uint8Array() } satisfies Reply;
+            }),
+          ),
+        );
+      });
     const replies: Replies = (url, base) =>
       Effect.gen(function* () {
         if (url === staged.tarballPath)
@@ -417,6 +492,86 @@ export const lockedNpmRegistry = serveRegistry("127.0.0.1", lockedReply).pipe(Ef
 export const localNpmRegistry = serveRegistry("127.0.0.1", forwardingReply).pipe(
   Effect.map(loopback),
 );
+
+/**
+ * The command that downloads the pinned packages `file` lists (`{ "packages": ["name@version"] }`).
+ * The release workflows run exactly this before the scenarios that need them; a case in
+ * e2e/tests/ci-selection.spec.ts keeps the two the same.
+ */
+export const pinnedDownloadCommand = (file: string) =>
+  `node scripts/e2e-npm-packages.ts --only ${file}`;
+
+/** The list the first desktop release scenario installs from. */
+export const desktopReleasePackagesFile = "e2e/desktop-release-packages.json";
+
+/**
+ * What a pinned registry did for its scenario: each request it sent to the public registry (none
+ * when the scenario's packages are all pinned), and how many requests it had for each pinned
+ * archive, by `name@version`. Each request counts, a repeated one included, whatever it answered.
+ */
+export interface PinnedRegistryRecord {
+  readonly forwards: ReadonlyArray<string>;
+  readonly archives: Readonly<Record<string, number>>;
+}
+
+/**
+ * Start a registry for the scope on loopback that serves the staged `apps` and every package in
+ * `e2e/npm-packages.json` from the archives downloaded beforehand, each checked against its pinned
+ * integrity, with tarball URLs at its own origin; anything else it forwards to the public registry
+ * and records. `required` (`name@version`) are checked when it starts, so a missing or mismatched
+ * archive fails naming the package before the scenario runs, never by reaching the public registry,
+ * and says how to download them: `pinnedDownloadCommand(file)`, where `file` lists them.
+ * `record` reads what it requested and forwarded so far.
+ */
+export const pinnedNpmRegistry = (file: string, required: ReadonlyArray<string>) =>
+  Effect.gen(function* () {
+    const { lock, read } = yield* lockedPackages;
+    for (const pinned of required) {
+      const at = pinned.lastIndexOf("@");
+      yield* read(pinned.slice(0, at), pinned.slice(at + 1)).pipe(
+        Effect.mapError(
+          (error) =>
+            new RegistryFailed({
+              reason: `${pinned} is not ready to serve (${error._tag === "RegistryFailed" ? error.reason : error.message}). Download it before the scenario: ${pinnedDownloadCommand(file)}`,
+            }),
+        ),
+      );
+    }
+    const forwards: Array<Forward> = [];
+    const archives: Record<string, number> = {};
+    const archivePaths = new Map(
+      Object.entries(lock.packages).flatMap(([name, entry]) =>
+        Object.keys(entry.versions).map(
+          (version) => [tarballPath(name, version), `${name}@${version}`] as const,
+        ),
+      ),
+    );
+    const registry = yield* serveRegistry("127.0.0.1", (staged) =>
+      Effect.gen(function* () {
+        const locked = yield* lockedReply(staged);
+        const forwarded = yield* forwardingReply(staged, forwards);
+        const replies: Replies = (url, base) => {
+          const archive = archivePaths.get(url);
+          if (archive !== undefined) archives[archive] = (archives[archive] ?? 0) + 1;
+          const name = decodeURIComponent(url.slice(1));
+          return archive !== undefined ||
+            url === staged.tarballPath ||
+            name === "apps" ||
+            lock.packages[name] !== undefined
+            ? locked(url, base)
+            : forwarded(url, base);
+        };
+        return replies;
+      }),
+    ).pipe(Effect.map(loopback));
+    return {
+      ...registry,
+      record: Effect.sync((): PinnedRegistryRecord => ({
+        forwards: forwards.map((fetch) => fetch.url),
+        archives: { ...archives },
+      })),
+    };
+  });
 
 /** The name released images resolve to the machine running the suite. */
 const gatewayHost = "npm-registry.e2e.internal";

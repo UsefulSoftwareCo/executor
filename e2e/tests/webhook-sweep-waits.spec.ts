@@ -2,11 +2,13 @@
  * What the webhook waits conclude from the sweep's passes, and the deployed preparation's wait for
  * its start-up queue. The waits run their real loop against a simulated product, sweeper and
  * collector, on a clock the case controls: sleeping moves it on at once, so a case about a 60 s
- * bound takes milliseconds and its times are exact.
+ * bound takes milliseconds and its times are exact. Also what the Axiom reader those waits use
+ * on a deployed stage puts into a query, and what it refuses before sending one.
  */
 import { expect, it } from "@effect/vitest";
-import { Cause, Clock, Duration, Effect, Exit } from "effect";
-import { attachedStage, axiomQueryMs } from "../support/axiom.ts";
+import { Cause, Clock, ConfigProvider, Duration, Effect, Exit } from "effect";
+import { HttpClient, HttpClientResponse } from "effect/http";
+import { attachedStage, axiomQueryMs, axiomSpans } from "../support/axiom.ts";
 import { collectorReadMs } from "../support/evidence.ts";
 import {
   deployedPace as deployedSweepPace,
@@ -538,3 +540,76 @@ it("the waits' paces follow the readers, Axiom's delay and its quota, and each t
   expect(sweepPaceFor({ target: "self-host", mode: "managed" }).servers).toBe("shared");
   expect(sweepPaceFor({ target: "local", mode: "managed" }).servers).toBe("shared");
 });
+
+/**
+ * The Axiom reader against a stand-in for Axiom's query API that answers no rows, keeping the APL
+ * of every query it was sent.
+ */
+const axiomReader = Effect.gen(function* () {
+  const sent: Array<string> = [];
+  const client = HttpClient.make((request) =>
+    Effect.sync(() => {
+      const body = request.body;
+      sent.push(
+        body._tag === "Uint8Array"
+          ? (JSON.parse(new TextDecoder().decode(body.body)) as { apl: string }).apl
+          : "",
+      );
+      return HttpClientResponse.fromWeb(
+        request,
+        Response.json({ status: { isPartial: false }, tables: [{ fields: [], columns: [] }] }),
+      );
+    }),
+  );
+  const reader = yield* axiomSpans("test-synthetic").pipe(
+    Effect.provideService(HttpClient.HttpClient, client),
+  );
+  const search = (operation: string, attributes: Readonly<Record<string, string>>) =>
+    reader.search(operation, attributes).pipe(
+      Effect.provide(
+        ConfigProvider.layer(
+          ConfigProvider.fromUnknown({
+            E2E_AXIOM_TOKEN: "synthetic-token",
+            E2E_AXIOM_DATASET: "synthetic-dataset",
+          }),
+        ),
+      ),
+      Effect.exit,
+    );
+  return { sent, search };
+});
+
+it.effect("the Axiom reader quotes a span name with a space and refuses one it cannot quote", () =>
+  Effect.gen(function* () {
+    const { sent, search } = yield* axiomReader;
+    // An HTTP server span's name holds a space; it reaches the query inside its quoted literal.
+    const found = yield* search("http.server POST", {
+      "executor.app.id": "app_synthetic",
+      "http.route": "/:upstream",
+    });
+    expect(Exit.isSuccess(found)).toBe(true);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toContain(
+      "where ['resource.deployment.environment.name'] == 'test-synthetic' and name == 'http.server POST' and tostring(['attributes.custom']['executor.app.id']) == 'app_synthetic' and tostring(['attributes.http.route']) == '/:upstream' |",
+    );
+    // A name that could end or escape its literal, or with whitespace other than single spaces
+    // between terms, is refused before any query is sent; so is an attribute name or value with a
+    // space, which never needs one.
+    sent.length = 0;
+    const refused = [
+      ["http.server POST' or name != '", {}],
+      ["http.server\\ POST", {}],
+      ["http.server\tPOST", {}],
+      ["http.server\nPOST", {}],
+      ["http.server  POST", {}],
+      [" http.server", {}],
+      ["http.server ", {}],
+      ["", {}],
+      ["http.server POST", { "http.route": "/a b" }],
+      ["http.server POST", { "http route": "/:upstream" }],
+    ] as const;
+    for (const [operation, attributes] of refused)
+      expect(Exit.isFailure(yield* search(operation, attributes)), operation).toBe(true);
+    expect(sent).toEqual([]);
+  }),
+);

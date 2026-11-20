@@ -19,6 +19,7 @@ import {
   packagedEngineVariable,
 } from "../packaged-engine.ts";
 import { closureOf } from "../save-path.ts";
+import { desktopReleasePackagesFile, pinnedDownloadCommand } from "../support/npm-registry.ts";
 import {
   matchesPath,
   mcpSearchChanged,
@@ -4750,6 +4751,50 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
       // A build from a branch without notarize still runs.
       expect((yield* targets("build", false, "refs/heads/some-branch")).publish).toBe("false");
     }),
+  );
+
+  it.effect(
+    "the pinned registry names the download command the release workflows run, and the script reads its file",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const command = pinnedDownloadCommand(desktopReleasePackagesFile);
+        // The command a missing archive's error prints is the step both release jobs run, so CI
+        // runs it on every release check: a command the script stopped accepting fails there.
+        for (const file of [
+          ".github/workflows/checks.yml",
+          ".github/workflows/release-artifacts.yml",
+        ]) {
+          const lines = (yield* fs.readFileString(file)).split("\n");
+          const step = lines.findIndex((line) =>
+            line.endsWith("- name: Download the desktop scenario's pinned npm packages"),
+          );
+          expect(step, file).toBeGreaterThan(-1);
+          const run = lines.slice(step + 1).find((line) => /^ {8}run: /.test(line));
+          expect(run?.trim(), file).toBe(`run: ${command}`);
+        }
+        // And the script reads `--only` as that kind of file: one listing a version the lock lacks
+        // is refused by name, before any download, where a file it could not open fails otherwise.
+        const directory = yield* fs.makeTempDirectoryScoped();
+        const list = path.join(directory, "packages.json");
+        yield* fs.writeFileString(list, JSON.stringify({ packages: ["is-number@0.0.0-none"] }));
+        const [program, ...args] = pinnedDownloadCommand(list).split(" ");
+        const handle = yield* (yield* ChildProcessSpawner.ChildProcessSpawner).spawn(
+          ChildProcess.make(program!, args, { stdout: "pipe", stderr: "pipe" }),
+        );
+        const [code, stderr] = yield* Effect.all(
+          [handle.exitCode, handle.stderr.pipe(Stream.decodeText(), Stream.mkString)],
+          { concurrency: "unbounded" },
+        );
+        expect(Number(code)).toBe(1);
+        expect(stderr).toContain("is-number@0.0.0-none is not in e2e/npm-packages.json");
+        // The list the desktop scenario installs from is one the script accepts, all in the lock.
+        const pinned = JSON.parse(yield* fs.readFileString(desktopReleasePackagesFile)) as {
+          packages: ReadonlyArray<string>;
+        };
+        expect(pinned.packages.length).toBeGreaterThan(0);
+      }).pipe(Effect.scoped),
   );
 
   it.effect(

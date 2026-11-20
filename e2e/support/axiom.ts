@@ -108,6 +108,14 @@ const standard = `pack(${recognizedAttributes
  * or escape its literal.
  */
 const Term = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_.:/-]+$/u));
+/**
+ * A span name a search names: a term, or terms joined by single spaces, as an HTTP server span's
+ * `http.server POST`. The name goes only inside its single-quoted literal (`name == '…'`), where a
+ * space is an ordinary character; quotes, backslashes and every other whitespace stay out.
+ */
+const Operation = Schema.String.check(
+  Schema.isPattern(/^[A-Za-z0-9_.:/-]+(?: [A-Za-z0-9_.:/-]+)*$/u),
+);
 /** The column that holds a delivered attribute, see `recognizedAttributes`. */
 const attributeColumn = (name: string) =>
   (recognizedAttributes as ReadonlyArray<string>).includes(name)
@@ -240,9 +248,12 @@ export const axiomSpans = (environment: string | undefined) =>
         traceId?: string | undefined,
         since?: number,
       ) =>
-        Effect.forEach([operation, ...Object.entries(attributes).flat()], (term) =>
-          Schema.decodeUnknownEffect(Term)(term),
-        ).pipe(
+        Schema.decodeUnknownEffect(Operation)(operation).pipe(
+          Effect.andThen(
+            Effect.forEach(Object.entries(attributes).flat(), (term) =>
+              Schema.decodeUnknownEffect(Term)(term),
+            ),
+          ),
           Effect.andThen(
             traceId === undefined
               ? Effect.succeed(undefined)
