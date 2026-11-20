@@ -1,6 +1,18 @@
 /** Deploy isolated previews with explicit database, retention and background policies. */
 import { createHash } from "node:crypto";
-import { Clock, Config, Console, Effect, FileSystem, Option, Path, Result, Schema } from "effect";
+import {
+  Clock,
+  Config,
+  Console,
+  Duration,
+  Effect,
+  FileSystem,
+  Option,
+  Path,
+  Result,
+  Schema,
+  Stream,
+} from "effect";
 import { Argument, Command, Flag } from "effect/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { testStagePrefix } from "../infrastructure/stage.ts";
@@ -21,6 +33,7 @@ import { discoverTestStages } from "./test-stage-discovery.ts";
 import { findOrphanBranches } from "./test-stage-orphans.ts";
 import { branchGone, branchOutcomeMessage, removeStageBranch } from "./test-stage-branch.ts";
 import { awaitStageRollout } from "./test-stage-rollout.ts";
+import { isDeployOutcomeLine, retrySignature } from "./test-stage-deploy-retry.ts";
 import {
   destroyUnreadableStage,
   inventoryCount,
@@ -57,6 +70,57 @@ const runChild = (command: ChildProcess.Command) =>
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const code = Number(yield* spawner.exitCode(command));
     if (code !== 0) return yield* failure(`The child command exited with status ${code}.`);
+  });
+/**
+ * Run a child, passing its output through as it comes, and return its exit status with the lines
+ * of Alchemy's outcome (its failed resources and summary) that a retry is decided on.
+ */
+const runChildReading = (command: ChildProcess.Command) =>
+  Effect.gen(function* () {
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const child = yield* spawner.spawn(command);
+    const pass = <E>(stream: Stream.Stream<Uint8Array, E>, to: NodeJS.WriteStream) =>
+      stream.pipe(
+        Stream.tap((chunk) => Effect.sync(() => to.write(chunk))),
+        Stream.decodeText(),
+        Stream.splitLines,
+        Stream.filter(isDeployOutcomeLine),
+        Stream.runCollect,
+      );
+    const [out, err, code] = yield* Effect.all(
+      [pass(child.stdout, process.stdout), pass(child.stderr, process.stderr), child.exitCode],
+      { concurrency: "unbounded" },
+    );
+    return { code: Number(code), lines: [...out, ...err] };
+  }).pipe(Effect.scoped);
+/**
+ * Deploy a stage this run created. A deploy that fails only with one of `retrySignatures` runs
+ * once more, after a short wait for the Hyperdrive origin. Any other failure, a release guard's
+ * refusal and a second failure stop it as before, with every attempt's output in the log.
+ */
+const deployNewStage = (command: ChildProcess.Command, report: string) =>
+  Effect.gen(function* () {
+    const stopped = (code: number) =>
+      Effect.gen(function* () {
+        const refusal = yield* releaseRefusal(report);
+        return yield* Option.isSome(refusal)
+          ? refusal.value
+          : failure(`The child command exited with status ${code}.`);
+      });
+    const first = yield* runChildReading(command);
+    if (first.code === 0) return;
+    const signature = retrySignature(first.lines);
+    if (signature === undefined || Option.isSome(yield* releaseRefusal(report)))
+      return yield* stopped(first.code);
+    const wait = yield* Config.Duration("TEST_STAGE_DEPLOY_RETRY_WAIT").pipe(
+      Config.withDefault(Duration.seconds(60)),
+    );
+    yield* Console.log(
+      `Retrying the deploy once (${signature.name}): its first attempt failed only because ${signature.description}; waiting ${Duration.format(wait)} first.`,
+    );
+    yield* Effect.sleep(wait);
+    const second = yield* runChildReading(command);
+    if (second.code !== 0) return yield* stopped(second.code);
   });
 /** A release guard's refusal recorded by the Alchemy process, if it stopped the deploy. */
 const releaseRefusal = (report: string) =>
@@ -346,7 +410,7 @@ const operation = (name: "deploy" | "plan") =>
               yield* (yield* FileSystem.FileSystem).makeTempDirectoryScoped(),
               "release-refusal.json",
             );
-            yield* runChild(
+            const alchemy = (output: "inherit" | "pipe") =>
               ChildProcess.make(
                 "alchemy",
                 [name, ...(input.noInput ? ["--no-input"] : []), ...(input.yes ? ["--yes"] : [])],
@@ -354,18 +418,24 @@ const operation = (name: "deploy" | "plan") =>
                   env: { ...env, ...apps, [releaseRefusalReport]: report },
                   extendEnv: true,
                   stdin: "inherit",
-                  stdout: "inherit",
-                  stderr: "inherit",
+                  stdout: output,
+                  stderr: output,
                 },
-              ),
-            ).pipe(
-              Effect.catchTag("TestStageFailed", (failed) =>
-                Effect.gen(function* () {
-                  const refusal = yield* releaseRefusal(report);
-                  return yield* Option.isSome(refusal) ? refusal.value : failed;
-                }),
-              ),
-            );
+              );
+            // Only a stage this run created is retried; a redeploy and a plan run as before. Its
+            // output is read only when it is not a terminal, where Alchemy is non-interactive
+            // already (CI), so reading it changes nothing Alchemy shows or asks.
+            if (name === "deploy" && existing === undefined && process.stdout.isTTY !== true)
+              yield* deployNewStage(alchemy("pipe"), report);
+            else
+              yield* runChild(alchemy("inherit")).pipe(
+                Effect.catchTag("TestStageFailed", (failed) =>
+                  Effect.gen(function* () {
+                    const refusal = yield* releaseRefusal(report);
+                    return yield* Option.isSome(refusal) ? refusal.value : failed;
+                  }),
+                ),
+              );
           }).pipe(Effect.scoped, Effect.timeout(testStageDeployMilliseconds));
           if (name === "deploy") {
             const domain = yield* Config.String("TEST_STAGE_DOMAIN").pipe(
