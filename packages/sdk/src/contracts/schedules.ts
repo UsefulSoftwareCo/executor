@@ -27,11 +27,24 @@ import { OAuthReconnectRequired, OAuthRenewalFailed } from "./oauth.ts";
 import { CredentialsError } from "./shared.ts";
 import { AppProviderFailed, AppEvaluationFailed, ToolInvocation } from "./tools.ts";
 
+/**
+ * Storage cannot hold NUL, so a name or ID that carries one reaches a lookup that fails, which
+ * surfaces as a storage error to retry. Refuse it as a bad request instead. Only NUL: every other
+ * character is a name or ID that is merely not found, and an app may declare it.
+ */
+// oxlint-disable-next-line no-control-regex -- NUL is refused on purpose
+const withoutNul = Schema.isPattern(/^[^\u0000]*$/u);
+/** A schedule's name, as an app declares it, in a route. */
+export const ScheduleName = Schema.NonEmptyString.check(withoutNul);
+/** The subject a request names the copy of; a saved copy's `actor` is read back as it was stored. */
+const ActorInput = Schema.NonEmptyString.check(withoutNul);
 /** Stable configured schedule address, independent of app versions. */
-export const ScheduleId = Schema.NonEmptyString.pipe(Schema.brand("ScheduleId"));
+export const ScheduleId = Schema.NonEmptyString.check(withoutNul).pipe(Schema.brand("ScheduleId"));
 export type ScheduleId = typeof ScheduleId.Type;
 /** One scheduled occurrence or explicit run-now attempt. */
-export const ScheduledRunId = Schema.NonEmptyString.pipe(Schema.brand("ScheduledRunId"));
+export const ScheduledRunId = Schema.NonEmptyString.check(withoutNul).pipe(
+  Schema.brand("ScheduledRunId"),
+);
 export type ScheduledRunId = typeof ScheduledRunId.Type;
 /** Browser review is opt-in. Automatic accepts approval requests, never explicit denials. */
 export const ScheduleApprovalMode = Schema.Literals(["automatic", "browser"]);
@@ -155,9 +168,9 @@ const app = {
 };
 const run = { run: ScheduledRunId, owner: Schema.optional(OwnerId) };
 /** One copy, under its declaration. A copy of another declaration is not found. */
-const copy = { ...app, name: Schema.NonEmptyString, copy: ScheduleId };
+const copy = { ...app, name: ScheduleName, copy: ScheduleId };
 /** The actor's copy of a user declaration, or without an actor an app declaration's schedule. */
-const own = { ...app, name: Schema.NonEmptyString, actor: Schema.optional(Schema.NonEmptyString) };
+const own = { ...app, name: ScheduleName, actor: Schema.optional(ActorInput) };
 /** Runtime identity is supplied by the serving host; owner filters alone do not authorize changes. */
 export const ScheduleInputs = {
   list: Schema.Struct(app),
@@ -168,7 +181,7 @@ export const ScheduleInputs = {
   definitions: Schema.Struct({
     ...app,
     accounts: Schema.optional(AppAccounts),
-    actor: Schema.optional(Schema.NonEmptyString),
+    actor: Schema.optional(ActorInput),
   }),
   /**
    * Configure the actor's copy, adding it when they have none; without an actor, the app
@@ -238,7 +251,7 @@ export const SchedulesGroup = HttpApiGroup.make("schedules")
       query: {
         owner: Schema.optional(OwnerId),
         accounts: AppAccountsQuery,
-        actor: Schema.optional(Schema.NonEmptyString),
+        actor: Schema.optional(ActorInput),
       },
       success: Schema.Array(AppSchedule),
       error: ScheduleErrors,
@@ -246,10 +259,10 @@ export const SchedulesGroup = HttpApiGroup.make("schedules")
   )
   .add(
     HttpApiEndpoint.patch("configure", "/v1/apps/:app/schedules/:name", {
-      params: { app: AppId, name: Schema.NonEmptyString },
+      params: { app: AppId, name: ScheduleName },
       payload: Schema.Struct({
         owner: Schema.optional(OwnerId),
-        actor: Schema.optional(Schema.NonEmptyString),
+        actor: Schema.optional(ActorInput),
         enabled: Schema.Boolean,
         approvalMode: Schema.optional(ScheduleApprovalMode),
       }),
@@ -259,10 +272,10 @@ export const SchedulesGroup = HttpApiGroup.make("schedules")
   )
   .add(
     HttpApiEndpoint.get("copy", "/v1/apps/:app/schedules/:name/copy", {
-      params: { app: AppId, name: Schema.NonEmptyString },
+      params: { app: AppId, name: ScheduleName },
       query: {
         owner: Schema.optional(OwnerId),
-        actor: Schema.optional(Schema.NonEmptyString),
+        actor: Schema.optional(ActorInput),
       },
       success: ScheduleSettings,
       error: ScheduleErrors,
@@ -270,7 +283,7 @@ export const SchedulesGroup = HttpApiGroup.make("schedules")
   )
   .add(
     HttpApiEndpoint.patch("update", "/v1/apps/:app/schedules/:name/copies/:copy", {
-      params: { app: AppId, name: Schema.NonEmptyString, copy: ScheduleId },
+      params: { app: AppId, name: ScheduleName, copy: ScheduleId },
       payload: Schema.Struct({
         owner: Schema.optional(OwnerId),
         enabled: Schema.Boolean,
@@ -282,7 +295,7 @@ export const SchedulesGroup = HttpApiGroup.make("schedules")
   )
   .add(
     HttpApiEndpoint.post("runNow", "/v1/apps/:app/schedules/:name/copies/:copy/run", {
-      params: { app: AppId, name: Schema.NonEmptyString, copy: ScheduleId },
+      params: { app: AppId, name: ScheduleName, copy: ScheduleId },
       payload: Schema.Struct({ owner: Schema.optional(OwnerId) }),
       success: ScheduleSettings,
       error: ScheduleErrors,
@@ -290,7 +303,7 @@ export const SchedulesGroup = HttpApiGroup.make("schedules")
   )
   .add(
     HttpApiEndpoint.delete("remove", "/v1/apps/:app/schedules/:name/copies/:copy", {
-      params: { app: AppId, name: Schema.NonEmptyString, copy: ScheduleId },
+      params: { app: AppId, name: ScheduleName, copy: ScheduleId },
       query: { owner: Schema.optional(OwnerId) },
       success: ScheduleSettings,
       error: ScheduleErrors,

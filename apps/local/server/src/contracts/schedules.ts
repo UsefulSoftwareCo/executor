@@ -11,6 +11,7 @@ import {
   ScheduledRunId,
   ScheduleErrors,
   ScheduleId,
+  ScheduleName,
 } from "@executor-js/sdk/core";
 import {
   BrowserApprovalView,
@@ -19,7 +20,7 @@ import {
 } from "@executor-js/mcp/browser";
 
 const app = { app: AppId };
-const copy = { ...app, name: Schema.NonEmptyString, copy: ScheduleId };
+const copy = { ...app, name: ScheduleName, copy: ScheduleId };
 const prefix = "/dashboard/api";
 /**
  * DashboardAccess is attached by the containing API to avoid a contract import cycle. User schedules
@@ -45,7 +46,7 @@ export const DashboardSchedules = HttpApiGroup.make("schedules")
   )
   .add(
     HttpApiEndpoint.patch("configure", `${prefix}/apps/:app/schedules/:name`, {
-      params: { ...app, name: Schema.NonEmptyString },
+      params: { ...app, name: ScheduleName },
       payload: Schema.Struct({
         enabled: Schema.Boolean,
         approvalMode: Schema.optional(ScheduleApprovalMode),
@@ -61,7 +62,7 @@ export const DashboardSchedules = HttpApiGroup.make("schedules")
   )
   .add(
     HttpApiEndpoint.post("runNow", `${prefix}/apps/:app/schedules/:name/run`, {
-      params: { ...app, name: Schema.NonEmptyString },
+      params: { ...app, name: ScheduleName },
       success: ScheduleSettings,
       error: ScheduleErrors,
     }),
