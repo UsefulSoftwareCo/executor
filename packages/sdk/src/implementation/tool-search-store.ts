@@ -147,7 +147,8 @@ const oversizedBytes = 2_000_000;
  * evicted. While every kept search is being paged, a new one is not kept: its pages rank as
  * before, so more concurrent walks than {@link keptOrders} cost what they did before orders were
  * kept, instead of evicting each other. Once 32 searches have each been read within 30 s, or
- * their orders fill {@link keptBytes}, every further walk goes uncached until one of them idles.
+ * orders read within 30 s hold more than `keptBytes - keptOrderBytes`, new walks go uncached
+ * until one of those orders idles.
  * Times are monotonic, so a wall-clock step neither evicts a search in use nor keeps an idle one.
  */
 const keptIdleMillis = 30_000;
