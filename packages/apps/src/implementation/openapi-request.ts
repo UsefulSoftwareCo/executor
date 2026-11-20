@@ -262,12 +262,11 @@ export function createRequest(config: {
       }
     }
     const security = op.request.security;
-    const keys =
-      security.length === 0
-        ? []
-        : security
-            .map(Object.keys)
-            .find((keys) => keys.every((key) => Object.hasOwn(authorized, key)));
+    const met = security
+      .map(Object.keys)
+      .filter((keys) => keys.every((key) => Object.hasOwn(authorized, key)));
+    // An empty alternative (`{}`) is met by anyone, so the account's own one is preferred over it.
+    const keys = security.length === 0 ? [] : (met.find((keys) => keys.length > 0) ?? met[0]);
     return keys === undefined
       ? undefined
       : Object.fromEntries(keys.map((key) => [key, authorized[key]]));

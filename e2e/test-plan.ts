@@ -3200,6 +3200,17 @@ export const scenarios = plan({
       local: na("Exercises the hosted import and account connection APIs."),
     },
   },
+  openapiOptionalSecurity: {
+    fixtures: "actors",
+    file: "openapi-optional-security.spec.ts",
+    title:
+      "An OpenAPI call with an account sends its credential when the operation also allows none",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a loopback upstream to exercise the shared Worker OpenAPI transport."),
+      local: na("Exercises the hosted import and account connection APIs."),
+    },
+  },
   concurrentOutbound: {
     fixtures: "actors",
     file: "concurrent-outbound.spec.ts",
