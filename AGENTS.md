@@ -168,7 +168,7 @@ A starting run prunes the workspace's `.local/e2e` (`e2e/sdk/run-retention.ts`):
 To keep every run whole while investigating, `touch .local/e2e/keep-all-runs`; remove it when done.
 
 For authenticated testing and bug reproduction, use
-[test accounts](notes/test-accounts.md). The fixture command provisions
+[test accounts](apps/hosted/testing/cli.ts). The fixture command provisions
 synthetic users, organization roles and short-lived sessions for self-host,
 cloud dev and running test stages. On production, agents sign in through real
 email codes to `@agents.executor.engineering` inboxes. Keep session files
