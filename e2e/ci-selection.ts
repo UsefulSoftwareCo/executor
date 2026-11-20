@@ -47,8 +47,8 @@
  * those scenarios did execute, from the reports the jobs saved, so a workflow that stops running
  * one fails on main.
  */
-import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import { runMain } from "./run-main.ts";
 import {
   Clock,
   Config,
@@ -1267,7 +1267,7 @@ const checkNamed = (
     return named;
   });
 
-NodeRuntime.runMain(
+runMain(
   Effect.gen(function* () {
     const [command, ...args] = process.argv.slice(2);
     if (command === "verify") return yield* verify(args[0], args[1]);

@@ -1071,6 +1071,369 @@ describe("Removing a test stage by name, with its registry", () => {
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
     180_000,
   );
+
+  /**
+   * `deploy` with `stages` other test stages already leased, pr-2994 the oldest. The build tools
+   * are stubs that leave a mark when they run and then fail, so the deploy stops at its first build
+   * step, after its eviction decision: the mark says whether it got that far. An eviction's own
+   * `alchemy destroy` succeeds. pr-2994's records are
+   * unreadable unless `readable`, so evicting it fails unless they are.
+   */
+  const deployAmong = (
+    stages: number,
+    flags: ReadonlyArray<string>,
+    { readable = false }: { readonly readable?: boolean } = {},
+  ) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const { url, psql } = yield* registry;
+      const world = pr2994World();
+      if (readable)
+        world.state["test-pr-2994"] = {
+          Api: "readable",
+          AppPages: "readable",
+          AuthSecret: "readable",
+        };
+      yield* prepareRegistry(world, url);
+      yield* psql(lease("pr-2994", "neon", "2026-10-01T00:00:00Z", "Owner"));
+      yield* psql(
+        `insert into executor_test_stage_leases (slug, owner, created_at, expires_at, database_provider, retention, background)
+         select 'filler-' || n, 'Filler', '2026-11-01'::timestamptz + n * interval '1 minute', null, 'neon', 'retained', 'active'
+         from generate_series(1, ${stages - 1}) as n`,
+      );
+      const directory = yield* fs.makeTempDirectoryScoped({ prefix: "executor-stage-no-evict-" });
+      const bin = path.join(directory, "bin");
+      const built = path.join(directory, "built");
+      yield* fs.makeDirectory(bin);
+      // An eviction's `alchemy destroy` succeeds; any other call is a build step, which fails.
+      for (const tool of ["bun", "alchemy"]) {
+        yield* fs.writeFileString(
+          path.join(bin, tool),
+          `#!/bin/sh\n${tool === "alchemy" ? 'if [ "$1" = destroy ]; then exit 0; fi\n' : ""}touch '${built}'\nexit 1\n`,
+        );
+        yield* fs.chmod(path.join(bin, tool), 0o755);
+      }
+      const result = yield* cli(
+        world,
+        ["deploy", "new-stage", "--owner", "Deployer", "--no-input", "--yes", ...flags],
+        { registry: url, env: { PATH: `${bin}:${process.env.PATH ?? ""}` } },
+      );
+      return {
+        result,
+        built: yield* fs.exists(built),
+        deletes: deletes(world),
+        leases: (yield* psql("select count(*) from executor_test_stage_leases")).trim(),
+        oldest: (yield* psql(
+          "select count(*) from executor_test_stage_leases where slug = 'pr-2994'",
+        )).trim(),
+      };
+    });
+
+  it.live(
+    "with --no-evict, a deploy that would evict a stage refuses before it reserves, builds or destroys anything, naming the stage",
+    () =>
+      Effect.gen(function* () {
+        const { result, built, deletes, leases, oldest } = yield* deployAmong(80, ["--no-evict"]);
+        expect(result.code).not.toBe(0);
+        expect(result.output).toContain("Deploying new-stage would evict 1 test stage");
+        expect(result.output).toContain("pr-2994 (Owner)");
+        expect(result.output).not.toContain("Evicting the oldest test stage");
+        expect([built, deletes, leases, oldest]).toEqual([false, [], "80", "1"]);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    180_000,
+  );
+
+  it.live(
+    "with --no-evict, a deploy that evicts nothing goes on as before",
+    () =>
+      Effect.gen(function* () {
+        const { result, built, deletes, oldest } = yield* deployAmong(79, ["--no-evict"]);
+        // It reaches the first build step, whose stub fails.
+        expect(result.output).not.toContain("would evict");
+        expect(result.output).not.toContain("Evicting the oldest test stage");
+        expect([built, deletes, oldest]).toEqual([true, [], "1"]);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    180_000,
+  );
+
+  it.live(
+    "without --no-evict, a deploy at the limit tries to evict the oldest stage, as before",
+    () =>
+      Effect.gen(function* () {
+        const { result, built } = yield* deployAmong(80, []);
+        expect(result.output).toContain(
+          "Evicting the oldest test stage, pr-2994 (Owner), to stay within 80.",
+        );
+        expect(result.output).not.toContain("would evict");
+        expect(built).toBe(true);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    180_000,
+  );
+
+  it.live(
+    "without --no-evict, a deploy at the limit removes a readable oldest stage and stays within 80",
+    () =>
+      Effect.gen(function* () {
+        const { result, built, leases, oldest } = yield* deployAmong(80, [], { readable: true });
+        expect(result.output).toContain("Evicted pr-2994.");
+        expect(result.output).not.toContain("Could not evict");
+        expect([built, oldest, leases]).toEqual([true, "0", "80"]);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    180_000,
+  );
+
+  it.live(
+    "plan takes no --no-evict: it is refused as an unknown flag, before anything is read or reserved",
+    () =>
+      Effect.gen(function* () {
+        const { url, psql } = yield* registry;
+        const world = pr2994World();
+        yield* prepareRegistry(world, url);
+        yield* psql(lease("pr-2994"));
+        const result = yield* cli(
+          world,
+          ["plan", "new-stage", "--owner", "Deployer", "--no-input", "--no-evict"],
+          { registry: url },
+        );
+        expect(result.code).not.toBe(0);
+        expect(result.output).toContain("Unrecognized flag: --no-evict in command test-stage plan");
+        expect(deletes(world)).toEqual([]);
+        expect((yield* psql("select count(*) from executor_test_stage_leases")).trim()).toBe("1");
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    180_000,
+  );
+});
+
+/**
+ * A new stage's `alchemy deploy` that fails only because its Hyperdrive config could not reach the
+ * new database yet is run once more (`test-stage-deploy-retry.ts`). The build tools are stubs that succeed; `alchemy`
+ * prints each attempt's recorded output and exits with its status, and counts its runs; `/health`
+ * on the stage's hosts answers `ok` in the CLI process, so a deploy that succeeds finishes.
+ */
+describe("Retrying a new stage's deploy", () => {
+  const colour = (text: string) => `\u001b[31m${text}\u001b[39m`;
+  const line = (text: string) => `[01:48:25.603] INFO (#1): ${text}`;
+  /** The Durable Object tag race, which the Alchemy patch handles and the retry does not. */
+  const durableObjectTags = [
+    line(
+      "[AppDataSupervisor] fail — Cannot apply new-sqlite-class migration to class 'AppDataSupervisor' that is already depended on by existing Durable Objects. [code: 10074] (15.2s)",
+    ),
+    line(
+      "[AppOutboundRelay] fail — Cannot apply new-sqlite-class migration to class 'AppOutboundRelay' that is already depended on by existing Durable Objects. [code: 10074] (15.2s)",
+    ),
+    line(""),
+    line("Failed: 44 succeeded, 2 failed (2m 41s)"),
+  ].join("\n");
+  /** As run 44655804399 printed it, with Alchemy's colours on the config's own line. */
+  const hyperdriveOrigin = (took: string) =>
+    [
+      line("[DatabaseConnection] creating"),
+      line(
+        "[McpServer] fail — BadRequest: Network connection to the provided database timed out. (158.0s)",
+      ),
+      line(
+        "[AppDomains] fail — BadRequest: Network connection to the provided database timed out.",
+      ),
+      line(
+        "[Api] fail — BadRequest: Network connection to the provided database timed out. (158.0s)",
+      ),
+      line(
+        `[DatabaseConnection] ${colour("fail")} — ${colour("BadRequest: Network connection to the provided database timed out.")} (${took})`,
+      ),
+      line(""),
+      line(`${colour("Failed:")} 41 succeeded, 4 failed (158.6s)`),
+    ].join("\n");
+  const succeeded = [
+    line("[Api] updated (20.1s)"),
+    line(""),
+    line("Done: 46 succeeded (31.0s)"),
+  ].join("\n");
+  interface Attempt {
+    readonly output: string;
+    readonly code: number;
+  }
+  /** Deploy `slug` with `alchemy` answering `attempts` in turn; a further run exits 99. */
+  const deployAttempts = (url: string, slug: string, attempts: ReadonlyArray<Attempt>) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const directory = yield* fs.makeTempDirectoryScoped({ prefix: "executor-stage-retry-" });
+      const bin = path.join(directory, "bin");
+      const runs = path.join(directory, "runs");
+      yield* fs.makeDirectory(bin);
+      // The packed apps' version names the directory the CLI writes under `.local/stage-apps`.
+      const version = `0.0.0-deploy-retry-${randomBytes(4).toString("hex")}`;
+      const stageApps = path.resolve(".local/stage-apps");
+      yield* Effect.addFinalizer(() =>
+        fs.readDirectory(stageApps).pipe(
+          Effect.flatMap((entries) =>
+            Effect.forEach(
+              entries.filter((entry) => entry.startsWith(`apps-${version}-`)),
+              (entry) => fs.remove(path.join(stageApps, entry), { recursive: true }),
+              { discard: true },
+            ),
+          ),
+          Effect.ignore,
+        ),
+      );
+      for (const [index, attempt] of attempts.entries()) {
+        yield* fs.writeFileString(path.join(directory, `attempt-${index + 1}.out`), attempt.output);
+        yield* fs.writeFileString(
+          path.join(directory, `attempt-${index + 1}.code`),
+          `${attempt.code}`,
+        );
+      }
+      const tools = {
+        bun: "#!/bin/sh\nexit 0\n",
+        tar: `#!/bin/sh\nwhile [ $# -gt 0 ]; do if [ "$1" = -C ]; then out="$2"; fi; shift; done\nmkdir -p "$out/package"\nprintf '%s' '{"version":"${version}"}' > "$out/package/package.json"\n`,
+        alchemy: `#!/bin/sh\nn=$(( $(cat '${runs}' 2>/dev/null || echo 0) + 1 ))\necho $n > '${runs}'\ncat '${directory}/attempt-'$n.out 2>/dev/null\necho 'Cloudflare Worker startup summary: 0 upload attempts.' >&2\nexit $(cat '${directory}/attempt-'$n.code 2>/dev/null || echo 99)\n`,
+      };
+      for (const [tool, script] of Object.entries(tools)) {
+        yield* fs.writeFileString(path.join(bin, tool), script);
+        yield* fs.chmod(path.join(bin, tool), 0o755);
+      }
+      const health = path.join(directory, "health.mjs");
+      yield* fs.writeFileString(
+        health,
+        `const real = globalThis.fetch;
+globalThis.fetch = (input, init) => {
+  const url = new URL(input instanceof Request ? input.url : String(input));
+  const host = url.hostname === "${slug}.executor.engineering" || url.hostname.endsWith(".${slug}.executor.engineering");
+  return url.pathname === "/health" && host
+    ? Promise.resolve(Response.json({ status: "ok" }))
+    : real(input, init);
+};
+`,
+      );
+      const result = yield* cli(
+        pr2994World(),
+        ["deploy", slug, "--owner", "Deployer", "--no-input", "--yes"],
+        {
+          registry: url,
+          env: {
+            PATH: `${bin}:${process.env.PATH ?? ""}`,
+            NODE_OPTIONS: `--import=${health}`,
+            TEST_STAGE_DEPLOY_RETRY_WAIT: "10 millis",
+          },
+        },
+      );
+      const ran = yield* fs.readFileString(runs).pipe(Effect.orElseSucceed(() => "0"));
+      return {
+        result,
+        runs: Number(ran.trim()),
+        retries: result.output.split("Retrying the deploy once").length - 1,
+      };
+    }).pipe(Effect.scoped);
+
+  it.live(
+    "a new stage whose Hyperdrive config cannot reach its new database yet waits, then deploys once more",
+    () =>
+      Effect.gen(function* () {
+        const { url } = yield* registry;
+        const { result, runs, retries } = yield* deployAttempts(url, "retry-hyperdrive", [
+          { output: hyperdriveOrigin("12.8s"), code: 1 },
+          { output: succeeded, code: 0 },
+        ]);
+        expect(result.code, result.output).toBe(0);
+        expect([runs, retries]).toEqual([2, 1]);
+        expect(result.output).toContain(
+          "Retrying the deploy once (hyperdrive-origin): its first attempt failed only because Hyperdrive config DatabaseConnection could not reach the new database's pooled origin; waiting 10ms first.",
+        );
+        expect(result.output).toContain("Ready: https://retry-hyperdrive.executor.engineering");
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    180_000,
+  );
+
+  it.live(
+    "a retried deploy that fails again stops after its second attempt, with both attempts' output",
+    () =>
+      Effect.gen(function* () {
+        const { url } = yield* registry;
+        const { result, runs, retries } = yield* deployAttempts(url, "retry-twice", [
+          { output: hyperdriveOrigin("12.8s"), code: 1 },
+          { output: hyperdriveOrigin("9.7s"), code: 1 },
+        ]);
+        expect(result.code).not.toBe(0);
+        expect([runs, retries]).toEqual([2, 1]);
+        for (const took of ["12.8s", "9.7s"])
+          expect(result.output).toContain(
+            `BadRequest: Network connection to the provided database timed out.\u001b[39m (${took})`,
+          );
+        expect(result.output).toContain("The child command exited with status 1.");
+        expect(result.output).not.toContain("Ready:");
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    180_000,
+  );
+
+  it.live(
+    "a deploy that fails otherwise, with the Durable Object tag race, or with the signature beside another failure, is not retried",
+    () =>
+      Effect.gen(function* () {
+        const { url } = yield* registry;
+        const unrelated = [
+          line("[AuthSecret] fail — Unauthorized: Authentication error [code: 10000] (0.4s)"),
+          line("Failed: 50 succeeded, 1 failed (40.0s)"),
+        ].join("\n");
+        const mixed = [
+          line(
+            "[DatabaseConnection] fail — BadRequest: Network connection to the provided database timed out. (12.8s)",
+          ),
+          line("[Edge] fail — Unauthorized: Authentication error [code: 10000] (0.4s)"),
+          line("Failed: 49 succeeded, 2 failed (40.0s)"),
+        ].join("\n");
+        // A signature in a failed resource's message, but a summary that counts another failure.
+        const uncounted = [
+          line(
+            "[DatabaseConnection] fail — BadRequest: Network connection to the provided database timed out. (12.8s)",
+          ),
+          line("Failed: 49 succeeded, 2 failed (40.0s)"),
+        ].join("\n");
+        // A signature's text with no summary: Alchemy stopped before or outside its apply.
+        const unfinished = line(
+          "[DatabaseConnection] fail — BadRequest: Network connection to the provided database timed out. (12.8s)",
+        );
+        for (const [slug, output] of [
+          ["retry-unrelated", unrelated],
+          // The Alchemy patch on main handles this race; the retry does not.
+          ["retry-durable-object", durableObjectTags],
+          ["retry-mixed", mixed],
+          ["retry-uncounted", uncounted],
+          ["retry-unfinished", unfinished],
+          ["retry-silent", ""],
+        ] as const) {
+          const { result, runs, retries } = yield* deployAttempts(url, slug, [
+            { output, code: 1 },
+            { output: succeeded, code: 0 },
+          ]);
+          expect(result.code, slug).not.toBe(0);
+          expect([slug, runs, retries]).toEqual([slug, 1, 0]);
+          expect(result.output).toContain("The child command exited with status 1.");
+        }
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    180_000,
+  );
+
+  it.live(
+    "a redeploy of an existing stage whose Hyperdrive config cannot reach its database is not retried",
+    () =>
+      Effect.gen(function* () {
+        const { url, psql } = yield* registry;
+        yield* prepareRegistry(pr2994World(), url);
+        yield* psql(lease("retry-existing"));
+        const { result, runs, retries } = yield* deployAttempts(url, "retry-existing", [
+          { output: hyperdriveOrigin("12.8s"), code: 1 },
+          { output: succeeded, code: 0 },
+        ]);
+        expect(result.code).not.toBe(0);
+        expect([runs, retries]).toEqual([1, 0]);
+        expect(result.output).toContain(
+          "[DatabaseConnection] \u001b[31mfail\u001b[39m — \u001b[31mBadRequest: Network connection to the provided database timed out.",
+        );
+        expect(result.output).toContain("The child command exited with status 1.");
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    180_000,
+  );
 });
 
 /**
