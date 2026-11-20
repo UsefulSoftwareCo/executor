@@ -16,6 +16,7 @@ import { devAppName, freePort } from "../../../scripts/dev-host.ts";
 import { developmentSettings, developmentSignIn } from "./development.ts";
 import { accessCheckFixture } from "./access-check-fixture.ts";
 import { statementHoldFixture } from "./statement-hold-fixture.ts";
+import { monotonicClockFixture } from "./monotonic-clock-fixture.ts";
 import { storageFaultFixture } from "./storage-fault-fixture.ts";
 import { apiDocumentFixture } from "./api-document-fixture.ts";
 
@@ -54,6 +55,7 @@ const command = Command.make("test-self-host", {
       const target = yield* developmentSettings;
       const directory = yield* Config.NonEmptyString("EXECUTOR_DATA_DIR");
       const storageFault = yield* storageFaultFixture;
+      const monotonic = yield* monotonicClockFixture;
       const server = Layer.unwrap(
         Effect.gen(function* () {
           const development = yield* developmentSignIn(target, organization);
@@ -63,6 +65,7 @@ const command = Command.make("test-self-host", {
             HttpRouter.add("GET", "/api/devtools", development.status),
             HttpRouter.add("POST", "/api/devtools/operator", development.signIn),
             statementHold.routes,
+            monotonic.routes,
             storageFault.routes,
             yield* apiDocumentFixture,
             product,
@@ -88,6 +91,7 @@ const command = Command.make("test-self-host", {
       yield* Console.log(`Starting local test server at ${target.origin}/login`);
       // Fibers inherit the reference, so every statement the server runs reaches the fault.
       return yield* Layer.launch(server).pipe(
+        Effect.provide(monotonic.clock),
         Effect.provideService(Statement.CurrentTransformer, storageFault.transformer),
       );
     }).pipe(Effect.provideServiceEffect(ConfigProvider.ConfigProvider, testServerConfiguration)),
