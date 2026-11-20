@@ -45,6 +45,7 @@ const Arm = Schema.Union([
     after: Schema.Literals(["app-access", "account-access"]),
     id: Schema.NonEmptyString,
   }),
+  // Holds the next kept-order page after SQL answers; only tool search runs that statement.
   Schema.Struct({ after: Schema.Literal("kept-order") }),
   Schema.Struct({ authentication: Schema.Literal("tool-call") }),
   // Fails the next read of account rows inside a tool call instead of holding it.

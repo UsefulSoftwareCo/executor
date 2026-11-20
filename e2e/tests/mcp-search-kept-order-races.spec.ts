@@ -266,10 +266,12 @@ layer(HostedLive, { excludeTestServices: true })("MCP kept-order races", (it) =>
       context,
       Effect.gen(function* () {
         const { page, keep, holdPage, replaceListing } = yield* raceFixture;
-        yield* keep("Fill the cache with B", heavyQuery(1));
-        yield* keep("Fill the cache with C", heavyQuery(2));
+        const b = yield* keep("Fill the cache with B", heavyQuery(1));
+        const c = yield* keep("Fill the cache with C", heavyQuery(2));
         const next = yield* keep("Keep O1", heavyQuery(0));
         const old = yield* page("Read O1", next);
+        expect((yield* page("Refresh retained order B", b)).orders).toEqual(["kept"]);
+        expect((yield* page("Refresh retained order C", c)).orders).toEqual(["kept"]);
         yield* replaceListing;
         // O1's read has a stale stamp. A second miss drops O1 and admits O2. The three
         // active orders now leave less than 2 MB free, so the held miss must rank without
