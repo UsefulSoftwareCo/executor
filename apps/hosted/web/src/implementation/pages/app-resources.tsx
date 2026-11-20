@@ -5,15 +5,19 @@ import { AppWorkflows } from "@executor-js/ui/dashboard/app-workflows";
 import { AppWebhooks, WebhookSourceConfigurations } from "@executor-js/ui/dashboard/webhooks";
 import { Button } from "@executor-js/ui/components/button";
 import { workflowBindings, webhookBindings } from "../../contracts/resources.ts";
+import { versionSourceAtom } from "../../contracts/apps.ts";
 import { HostedFailure } from "../components/dashboard-bindings.tsx";
 import { useOrganizationRoute } from "../components/organization.tsx";
 /** Workflow definitions and starts use the app's linked accounts; run history is the app's. */
 export function AppResources({
   app,
   view,
+  canReadSource = false,
 }: {
   readonly app: App;
   readonly view: "workflows" | "webhooks";
+  /** People who may open the app's Source tab also see its workflows drawn from that source. */
+  readonly canReadSource?: boolean;
 }) {
   const { organization, slug } = useOrganizationRoute();
   if (view === "workflows") {
@@ -22,11 +26,15 @@ export function AppResources({
       app: app.id,
       version: app.activeVersion ?? undefined,
     });
+    const source =
+      canReadSource && app.activeVersion !== null
+        ? versionSourceAtom({ organization, app: app.id, version: app.activeVersion })
+        : undefined;
     return (
       <AppWorkflows
         key={String(app.activeVersion)}
         app={app}
-        bindings={bindings}
+        bindings={{ ...bindings, source }}
         start={(definition, onStarted) => (
           <WorkflowStart
             key={definition.name}
