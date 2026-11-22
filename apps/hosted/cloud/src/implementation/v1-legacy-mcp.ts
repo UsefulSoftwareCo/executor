@@ -29,6 +29,7 @@ import {
   legacyMcpResourceMetadataUrl,
   legacyMcpTarget,
   requestedMcpAddress,
+  namedApprovalMode,
   type LegacyMcpPath,
   type ResourceOrigins,
 } from "@executor-js/mcp-auth";
@@ -225,7 +226,9 @@ export const legacyMcp = <E, R>(
     const resolved = yield* lookup(withSql, resolvePath(path));
     if (Option.isNone(resolved)) return mcpNotFound;
     const organization = resolved.value.organization;
-    const query = address.mode === "model" ? "" : `?elicitation_mode=${address.mode}`;
+    // Forward the mode only when the legacy URL spells one out, so a key there keeps its default.
+    const named = namedApprovalMode(url);
+    const query = named === undefined ? "" : `?elicitation_mode=${named}`;
     const target = Option.match(organization, {
       onNone: () => `/mcp${query}`,
       onSome: (found) => `/org/${encodeURIComponent(found.v2)}/mcp${query}`,

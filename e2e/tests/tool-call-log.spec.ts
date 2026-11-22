@@ -905,10 +905,12 @@ catch { return "refused"; }`,
           reference: declinedId,
         });
 
-        // An MCP call that pauses for approval and is resumed is one row too.
+        // An MCP call that pauses for approval and is resumed is one row too. Model mode, named
+        // in the URL: a key at the plain URL accepts approvals at once.
         const key = yield* apiKey(actors.owner, `Approvals ${randomUUID().slice(0, 6)}`);
         const client = yield* mcp.connect(key.key, "approvals", {
           organization: actors.organization.id,
+          mode: "model",
         });
         const paused = yield* Schema.decodeUnknownEffect(Pending)(
           yield* mcpTool(client, "Call a tool that needs approval", "call", {

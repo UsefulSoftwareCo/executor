@@ -660,7 +660,9 @@ export const mcpBearerAccess = (
       });
     }
     const key = yield* patAccess(sql, token, request, unknownKeys);
-    const mode = request.mode ?? "model";
+    // A key has no grant record: it serves the mode its URL names, and automatic at the plain URL,
+    // as a new sign-in there preselects.
+    const mode = request.mode ?? "automatic";
     return McpAccess.make({
       userId: key.userId,
       clientId: `pat:${key.id}`,

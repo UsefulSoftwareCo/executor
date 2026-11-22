@@ -87,7 +87,8 @@ export default defineApp({}, async () => ({  tools: router({
   const app = yield* body(App, deployed);
   appId = app.id;
   const code = (tool: string) => `return await tools[${JSON.stringify(app.slug)}].${tool}({})`;
-  const ownerClient = yield* mcp.connect(owner.key, "pat-model", { organization });
+  // Model mode, named in the URL: a token at the plain URL accepts approvals at once.
+  const ownerClient = yield* mcp.connect(owner.key, "pat-model", { organization, mode: "model" });
   return {
     api,
     actors,
@@ -119,6 +120,7 @@ layer(HostedLive, { excludeTestServices: true })("PAT MCP", (it) => {
           evidence,
           organization,
           anonymous,
+          owner,
           other,
           member,
           headers,
@@ -206,6 +208,19 @@ layer(HostedLive, { excludeTestServices: true })("PAT MCP", (it) => {
         );
         expect(
           (yield* Schema.decodeUnknownEffect(Completed)(call.structuredContent)).execution,
+        ).toEqual({ ok: true, value: { receipt } });
+        // A token has no grant record: at the plain URL it serves automatic mode, as a sign-in
+        // there preselects, so an approval-gated tool runs without pausing.
+        const plain = yield* mcp.connect(owner.key, "pat-plain", { organization });
+        const automatic = yield* plain.use(
+          "A PAT at the plain URL accepts approvals at once",
+          (client, signal) =>
+            client.callTool({ name: "execute", arguments: { code: code("approved") } }, undefined, {
+              signal,
+            }),
+        );
+        expect(
+          (yield* Schema.decodeUnknownEffect(Completed)(automatic.structuredContent)).execution,
         ).toEqual({ ok: true, value: { receipt } });
         const native = yield* mcp.connect(other.key, "pat-native", {
           organization: actors.organization.slug,
@@ -335,7 +350,7 @@ layer(HostedLive, { excludeTestServices: true })("PAT MCP", (it) => {
           ownerClient,
         } = yield* patFixture;
         const paused = yield* ownerClient.use(
-          "Tool approvals still pause PAT execution",
+          "Tool approvals pause PAT execution in model mode",
           (client, signal) =>
             client.callTool({ name: "execute", arguments: { code: code("approved") } }, undefined, {
               signal,
@@ -348,7 +363,10 @@ layer(HostedLive, { excludeTestServices: true })("PAT MCP", (it) => {
         expect(pending.requestId).toMatch(
           yield* wholeStringInputPattern(listed.tools, "resume", "requestId"),
         );
-        const otherClient = yield* mcp.connect(other.key, "pat-other", { organization });
+        const otherClient = yield* mcp.connect(other.key, "pat-other", {
+          organization,
+          mode: "model",
+        });
         const wrong = yield* otherClient.use(
           "A different PAT cannot resume this continuation",
           (client, signal) =>
@@ -481,13 +499,10 @@ layer(HostedLive, { excludeTestServices: true })("PAT MCP", (it) => {
           label: string,
           key: typeof owner.key,
           name: string,
-          mode?: "model" | "browser",
+          mode: "model" | "browser" = "model",
         ) =>
           Effect.gen(function* () {
-            const session = yield* mcp.connect(key, name, {
-              organization,
-              ...(mode === undefined ? {} : { mode }),
-            });
+            const session = yield* mcp.connect(key, name, { organization, mode });
             const result = yield* session.use(label, (client, signal) =>
               client.callTool(
                 {

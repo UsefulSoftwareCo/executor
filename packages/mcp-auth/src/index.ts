@@ -6,6 +6,7 @@ export {
   McpAddress,
   GrantTarget,
   requestedMcpAddress,
+  namedApprovalMode,
   mcpResource,
   mcpOAuthResources,
   type OriginList,

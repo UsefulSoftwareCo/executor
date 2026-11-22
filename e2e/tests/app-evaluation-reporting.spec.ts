@@ -388,8 +388,10 @@ export default defineApp({}, async () => ({ tools: router({
             .request(actors.owner, "POST", "/api/auth/api-key/delete", { keyId: issued.id })
             .pipe(Effect.orDie),
         );
+        // Model mode, named in the URL, so an approval pauses for a resume.
         const client = yield* mcp.connect(issued.key, "app-evaluation-reporting", {
           organization: actors.organization.id,
+          mode: "model",
         });
         const executed = yield* client.use(
           "Call a tool of the session-losing app",

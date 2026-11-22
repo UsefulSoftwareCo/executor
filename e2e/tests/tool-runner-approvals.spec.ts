@@ -264,9 +264,11 @@ layer(HostedLive, { excludeTestServices: true })("Hosted tool runner approvals",
             .pipe(Effect.orDie),
         );
 
-        // The owner's own MCP program pauses. Its request is answered only by MCP resume.
+        // The owner's own MCP program pauses in model mode, which its URL names. Its request is
+        // answered only by MCP resume.
         const client = yield* mcp.connect(token.key, "dashboard-refusal", {
           organization: actors.organization.id,
+          mode: "model",
         });
         const paused = yield* client.use("Pause an approval-gated MCP call", (client, signal) =>
           client.callTool(

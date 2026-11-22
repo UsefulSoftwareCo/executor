@@ -193,7 +193,7 @@ which the grant then keeps. The sign-in page preselects `automatic` for the plai
 | Mode        | URL                               | Where you answer                                                                                                                                                                 |
 | ----------- | --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `automatic` | `/mcp?elicitation_mode=automatic` | Nowhere. Executor approves tool calls at once; your agent's own permission prompt for `call` or `execute` is the check. A question a running tool asks still reaches the agent, as in `model` mode. |
-| `model`     | `/mcp`                            | The agent shows you the request and calls `resume` with your answer.                                                                                                             |
+| `model`     | `/mcp?elicitation_mode=model`     | The agent shows you the request and calls `resume` with your answer.                                                                                                             |
 | `native`    | `/mcp?elicitation_mode=native`    | Your MCP client's own prompt. The `call` or `execute` request stays open and continues. There is no `resume`. `call` approvals are the client's confirmation of the call itself. |
 | `browser`   | `/mcp?elicitation_mode=browser`   | A signed-in page in your browser. The result carries an `approvalUrl`; the agent calls `resume({ requestId })` to collect your answer.                                            |
 
@@ -202,7 +202,8 @@ one to use when you do not want the agent to be the one holding the question.
 
 The mode is part of the grant, not the URL. Changing the query string after
 signing in does not change the mode. A personal access token has no grant, so it
-takes its mode from the URL on each request: `model` at the plain `/mcp` URL.
+takes its mode from the URL on each request: `automatic` at the plain `/mcp` URL,
+and the named mode with `elicitation_mode`.
 
 ## From a shell
 

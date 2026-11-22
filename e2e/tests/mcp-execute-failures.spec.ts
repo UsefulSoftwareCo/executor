@@ -980,8 +980,10 @@ const otherGrant = (name: string, member = false) =>
     yield* Effect.addFinalizer(() =>
       api.request(actor, "POST", "/api/auth/api-key/delete", { keyId: key.id }).pipe(Effect.orDie),
     );
+    // Model mode, named in the URL: a key at the plain URL accepts approvals at once.
     return yield* mcp.connect(key.key, name.toLowerCase().replaceAll(" ", "-"), {
       organization: actors.organization.id,
+      mode: "model",
     });
   });
 
@@ -1011,8 +1013,10 @@ const hostedAppFiles = (
         yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`);
       }).pipe(Effect.orDie),
     );
+    // Model mode, named in the URL: these scenarios read the pause an approval returns.
     const client = yield* mcp.connect(key.key, name.toLowerCase().replaceAll(" ", "-"), {
       organization: actors.organization.id,
+      mode: "model",
     });
     return {
       client,
@@ -1334,6 +1338,7 @@ layer(HostedLive, { excludeTestServices: true })("Hosted MCP execute failures", 
         const client = yield* mcp.connect(key.key, "unconfirmed-context", {
           organization: organization.id,
           origin,
+          mode: "model",
         });
         const call = `return await tools[${JSON.stringify(app.slug)}].approved({});`;
         /**

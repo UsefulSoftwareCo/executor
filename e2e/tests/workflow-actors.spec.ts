@@ -85,8 +85,10 @@ layer(HostedLive, { excludeTestServices: true })("Workflow actors", (it) => {
             expect(issued.status).toBe(200);
             const key = yield* body(Token, issued);
             keys.push({ actor, id: key.id });
+            // Model mode, named in the URL, so approvals pause for a resume.
             const client = yield* mcp.connect(key.key, `workflow-actors-${label}`, {
               organization,
+              mode: "model",
             });
             const tool = (name: string, input: Schema.Json) =>
               `return await tools[${JSON.stringify(app.slug)}].${name}(${JSON.stringify(input)});`;

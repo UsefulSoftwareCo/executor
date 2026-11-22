@@ -126,7 +126,8 @@ layer(HostedLive, { excludeTestServices: true })("MCP direct calls", (it) => {
       Effect.gen(function* () {
         const mcp = yield* McpClient;
         const { key, app, organization } = yield* fixture;
-        const client = yield* mcp.connect(key.key, "direct-calls", { organization });
+        // Model mode, named in the URL, so the approval below pauses for a resume.
+        const client = yield* mcp.connect(key.key, "direct-calls", { organization, mode: "model" });
         const tool = (label: string, name: string, args: Record<string, unknown>) =>
           callTool(client, label, name, args);
 
