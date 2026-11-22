@@ -253,9 +253,10 @@ const unguardedSaves = (files: ReadonlyArray<File>) =>
 /**
  * The caches the workflows that publish, deploy or push to `main` may restore, each saved only by
  * runs on `main`'s ref: Bun's package cache (`.github/actions/setup`), the browsers' apt packages
- * (`.github/actions/e2e-tools`) and the oldest Node the launcher supports.
+ * and Playwright's browser builds (`.github/actions/e2e-tools`), and the oldest Node the launcher
+ * supports.
  */
-const trustedCaches = ["bun-package", "e2e-apt", "oldest-node"];
+const trustedCaches = ["bun-package", "e2e-apt", "e2e-browsers", "oldest-node"];
 const trustedWorkflows: Record<string, ReadonlyArray<string>> = {
   ".github/workflows/release-artifacts.yml": trustedCaches,
   ".github/workflows/beta.yml": trustedCaches,
@@ -275,6 +276,11 @@ const namedCaches: ReadonlyArray<{ name: string; file?: string; key: string }> =
     name: "e2e-apt",
     file: ".github/actions/e2e-tools/action.yml",
     key: "${{ steps.apt-cache.outputs.prefix }}",
+  },
+  {
+    name: "e2e-browsers",
+    file: ".github/actions/e2e-tools/action.yml",
+    key: "${{ steps.browser-cache.outputs.key }}",
   },
   { name: "oldest-node", key: "oldest-node-" },
 ];
