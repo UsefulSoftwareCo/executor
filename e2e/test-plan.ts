@@ -1407,6 +1407,18 @@ export const scenarios = plan({
       local: na("Hosted app API fixture; Node adapter exercised by self-host"),
     },
   },
+  localAppCacheRefresh: {
+    file: "local-app-cache-refresh.spec.ts",
+    title:
+      "a stale app cache read's background refresh stores its value in a local app with a database, as in one without",
+    targets: {
+      local: scheduled,
+      "self-host": na(
+        "Uses the local agent API; self-host runs apps through the same worker bridge.",
+      ),
+      cloud: na("Uses the local agent API; Cloud runs apps through the same worker bridge."),
+    },
+  },
   toolsIndexCache: {
     fixtures: "actors",
     file: "tools-index-cache.spec.ts",
