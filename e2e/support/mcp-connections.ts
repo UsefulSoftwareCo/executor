@@ -59,6 +59,15 @@ const Tokens = Schema.Struct({
   access_token: Schema.NonEmptyString,
   refresh_token: Schema.NonEmptyString,
 });
+/** The access and refresh tokens a token response issues, held as secrets. */
+export const issuedTokens = (response: unknown) =>
+  Schema.decodeUnknownEffect(Tokens)(response).pipe(
+    Effect.map((issued) => ({
+      accessToken: secret(issued.access_token),
+      refreshToken: secret(issued.refresh_token),
+    })),
+  );
+export type IssuedTokens = Effect.Success<ReturnType<typeof issuedTokens>>;
 const Grants = Schema.Array(
   Schema.Struct({ clientId: Schema.String, grant: Schema.Struct({ id: Schema.String }) }),
 );
@@ -132,6 +141,7 @@ export const consentTo = (
         clientId,
         consentResources: undefined,
         tokens: Effect.die("The authorization request was refused"),
+        credentials: Effect.die("The authorization request was refused"),
       };
     const consentPage = next;
     const consented = yield* api.request(
@@ -142,7 +152,7 @@ export const consentTo = (
       headers,
     );
     /** Exchange the approved code; only an accepted consent has one. */
-    const tokens = Effect.gen(function* () {
+    const exchange = Effect.gen(function* () {
       const { url } = yield* body(Schema.Struct({ url: Schema.String }), consented);
       const code = new URL(url).searchParams.get("code");
       expect(code).not.toBeNull();
@@ -164,15 +174,19 @@ export const consentTo = (
           return yield* response.json;
         }),
       );
-      return secret((yield* Schema.decodeUnknownEffect(Tokens)(exchanged)).access_token);
+      return yield* issuedTokens(exchanged);
     });
+    // A code is single-use, so the exchange runs once however often either field is read.
+    const credentials = yield* Effect.cached(exchange);
     return {
       status: consented.status,
       refused: null,
       clientId,
       /** The resources the consent page was asked to approve. */
       consentResources: consentPage.searchParams.getAll("resource"),
-      tokens,
+      tokens: Effect.map(credentials, (issued) => issued.accessToken),
+      /** Both tokens, for a grant that asked for `offline_access`. */
+      credentials,
     };
   });
 

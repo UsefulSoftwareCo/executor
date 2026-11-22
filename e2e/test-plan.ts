@@ -8228,6 +8228,32 @@ export const scenarios = plan({
       cloud: na("Hosted consent is covered by mcpOAuthWithoutResource."),
     },
   },
+  localMcpOfflineGrantLifetime: {
+    file: "local-mcp-connections.spec.ts",
+    title: "Local offline MCP grants keep working after their approving session expires",
+    targets: {
+      local: scheduled,
+      "self-host": na(
+        "Consent here is approved by Local's paired operator; the refresh grant is shared.",
+      ),
+      cloud: na("Advances the wall clock of a runner-owned Local process."),
+    },
+  },
+  localMcpExpiredSessionGrant: {
+    legacyStorage: true,
+    file: "local-mcp-connections.spec.ts",
+    title:
+      "Local offline MCP grants whose approving session already expired refresh again after upgrade",
+    targets: {
+      local: scheduled,
+      "self-host": na(
+        "Consent here is approved by Local's paired operator; the refresh grant is shared.",
+      ),
+      cloud: na(
+        "Legacy rows need a runner-owned database; Cloud cases share one Worker and database.",
+      ),
+    },
+  },
   bearerAuthRefusals: {
     fixtures: "actors",
     file: "bearer-auth-refusals.spec.ts",

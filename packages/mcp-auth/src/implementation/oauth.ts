@@ -569,10 +569,11 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
   /**
    * Grants that still hold a token Better Auth would accept: an unexpired, unrevoked access
    * token, or an unexpired, unrevoked refresh token that can mint one. Rotated refresh tokens are
-   * revoked and only replay their successor, so they never count. Tokens name the approving
-   * browser session while it exists and are refused once it expires. Signing out deletes it:
-   * Better Auth revokes its access tokens and detaches its `offline_access` refresh tokens,
-   * which then keep working.
+   * revoked and only replay their successor, so they never count. Access tokens name the
+   * approving browser session while it exists and are refused once it expires. A refresh
+   * token outlives that session: refreshing after it ends issues tokens without it. Signing
+   * out deletes it: Better Auth revokes its access tokens and detaches its `offline_access`
+   * refresh tokens, which then keep working.
    */
   const usableGrants = (ctx: GenericEndpointContext, ids: readonly GrantId[]) =>
     Effect.gen(function* () {
@@ -594,7 +595,8 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
             ],
           }),
         ).pipe(Effect.flatMap((rows) => parse(Live, rows)));
-      const tokens = [...(yield* live("oauthAccessToken")), ...(yield* live("oauthRefreshToken"))];
+      const tokens = yield* live("oauthAccessToken");
+      const refreshable = (yield* live("oauthRefreshToken")).map((token) => token.referenceId);
       const sessionIds = [
         ...new Set(tokens.flatMap((token) => (token.sessionId == null ? [] : [token.sessionId]))),
       ];
@@ -615,11 +617,12 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
               ),
             );
       const liveSessions = new Set(sessions.map((session) => session.id));
-      return new Set(
-        tokens.flatMap((token) =>
+      return new Set([
+        ...refreshable,
+        ...tokens.flatMap((token) =>
           token.sessionId == null || liveSessions.has(token.sessionId) ? [token.referenceId] : [],
         ),
-      );
+      ]);
     });
   /**
    * Why each grant is or is not idle since `since`. A grant receives tokens only by exchanging a

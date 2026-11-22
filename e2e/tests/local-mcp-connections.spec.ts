@@ -1,6 +1,7 @@
 /** The paired local operator's scoped connection limits a real OAuth client and revokes it. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Exit, Redacted, Schema } from "effect";
+import { HttpClient, HttpClientRequest } from "effect/http";
 import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
 import { Api, body, type Session } from "../support/api.ts";
@@ -15,14 +16,18 @@ import {
   Execution,
   clientGrantId,
   consentTo,
+  issuedTokens,
   readWriteAppFiles,
   revokeClientGrants,
+  type IssuedTokens,
 } from "../support/mcp-connections.ts";
 import { Target } from "../support/platform.ts";
 import { connectLocalAccount } from "../support/app-accounts.ts";
 import { linkLocal, localLinks } from "../support/local-links.ts";
 import { appsManifest } from "../support/apps-release.ts";
 import { siteless } from "../support/failure-site.ts";
+import { serverControl } from "../support/server-control.ts";
+import { legacyStorage } from "../support/legacy-storage.ts";
 
 /**
  * MCP clients print a refused request's body after their own prefix, such as "Error POSTing to
@@ -93,7 +98,101 @@ export default defineApp({}, async () => ({
   appsManifest,
 ];
 
+/** A client the paired operator authorized with `offline_access` on a new scoped connection. */
+const offlineGrant = Effect.gen(function* () {
+  const api = yield* Api,
+    target = yield* Target,
+    http = yield* HttpClient.HttpClient,
+    mcp = yield* McpClient;
+  const operator = yield* pairLocalOperator;
+  const created = yield* api.request(operator, "POST", "/dashboard/api/mcp/connections", {
+    id: randomUUID(),
+    name: "Offline connection",
+    apps: [],
+  });
+  expect(created.status).toBe(200);
+  const connection = yield* body(ConnectionView, created);
+  const resource = `${connection.url}&elicitation_mode=native`;
+  const consent = yield* consentTo(operator, resource);
+  expect(consent.status).toBe(200);
+  return {
+    original: yield* consent.credentials,
+    /** Refresh the grant and return its new tokens; a refused refresh fails the case. */
+    refresh: (current: IssuedTokens) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const response = yield* http.execute(
+            HttpClientRequest.post(`${target.metadata.origin}/api/auth/oauth2/token`).pipe(
+              HttpClientRequest.bodyUrlParams({
+                grant_type: "refresh_token",
+                client_id: consent.clientId,
+                refresh_token: Redacted.value(current.refreshToken),
+                resource,
+              }),
+            ),
+          );
+          expect(response.status).toBe(200);
+          return yield* issuedTokens(yield* response.json);
+        }),
+      ).pipe(Effect.timeout("30 seconds")),
+    /** Tool names an MCP session lists with these tokens; fails when the token is refused. */
+    listTools: (current: IssuedTokens, name: string) =>
+      mcp.connect(current.accessToken, name, { connection: connection.id, mode: "native" }).pipe(
+        Effect.flatMap((client) =>
+          client.use(`${name} lists tools`, (session) => session.listTools()),
+        ),
+        Effect.map((listed) => listed.tools.map((tool) => tool.name)),
+      ),
+  };
+});
+
 layer(TestLive, { excludeTestServices: true })("Local scoped MCP connections", (it) => {
+  it.effect(scenarios.localMcpOfflineGrantLifetime.title, (context) =>
+    withCase(
+      context,
+      Effect.gen(function* () {
+        const grant = yield* offlineGrant,
+          evidence = yield* Evidence;
+        const before = yield* grant.listTools(grant.original, "before-eight-days");
+        expect(before.length).toBeGreaterThan(0);
+        // Better Auth's default session lasts seven days. A refresh after it expires must
+        // issue tokens that do not name it.
+        yield* serverControl("clock/advance", 200, { milliseconds: 8 * 24 * 3600_000 });
+        const renewed = yield* evidence.step(
+          "An offline grant refreshes after its approving session expired",
+          grant.refresh(grant.original),
+        );
+        expect(yield* grant.listTools(renewed, "after-eight-days")).toEqual(before);
+        // The rotated refresh token still refreshes.
+        const again = yield* grant.refresh(renewed);
+        expect(yield* grant.listTools(again, "after-second-refresh")).toEqual(before);
+      }).pipe(Effect.provide(McpClient.layer)),
+    ),
+  );
+  it.effect(scenarios.localMcpExpiredSessionGrant.title, (context) =>
+    withCase(
+      context,
+      Effect.gen(function* () {
+        const grant = yield* offlineGrant;
+        const before = yield* grant.listTools(grant.original, "before-upgrade");
+        // Earlier versions refused every token that named an expired approving session, and
+        // refreshing copied that session to the new tokens.
+        const [expired] = yield* legacyStorage(
+          [
+            {
+              sql: `UPDATE "session" SET "expiresAt" = now() - interval '1 minute'
+                WHERE id IN (SELECT "sessionId" FROM "oauthAccessToken") RETURNING id`,
+            },
+          ],
+          "mcp-auth",
+        );
+        expect(expired).toHaveLength(1);
+        yield* serverControl("start");
+        const renewed = yield* grant.refresh(grant.original);
+        expect(yield* grant.listTools(renewed, "refreshed-after-upgrade")).toEqual(before);
+      }).pipe(Effect.provide(McpClient.layer)),
+    ),
+  );
   it.effect(scenarios.localScopedConnections.title, (context) =>
     withCase(
       context,
