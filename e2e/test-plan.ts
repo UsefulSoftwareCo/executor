@@ -8228,6 +8228,16 @@ export const scenarios = plan({
       cloud: na("Hosted consent is covered by mcpOAuthWithoutResource."),
     },
   },
+  localMcpOfflineGrantOutlivesSession: {
+    file: "local-mcp-connections.spec.ts",
+    title:
+      "Local MCP clients with offline access keep working after the session that approved them expires",
+    targets: {
+      local: scheduled,
+      "self-host": na("Hosted's own scenario is mcpOfflineGrantOutlivesSession."),
+      cloud: na("Hosted's own scenario is mcpOfflineGrantOutlivesSession."),
+    },
+  },
   bearerAuthRefusals: {
     fixtures: "actors",
     file: "bearer-auth-refusals.spec.ts",
@@ -11933,6 +11943,19 @@ export const scenarios = plan({
       "self-host": scheduled,
       cloud: na("Advances the wall clock of a runner-owned product process."),
       local: na("This scenario tests hosted organization consent, which Local does not have."),
+    },
+  },
+  mcpOfflineGrantOutlivesSession: {
+    fixtures: "actors",
+    file: "mcp-oauth-refresh.spec.ts",
+    title:
+      "An MCP client with offline access keeps working after the browser session that approved it expires",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Advances the wall clock of a runner-owned product process; bearerAuthRefusals covers Cloud's stored states.",
+      ),
+      local: na("Local's own scenario is localMcpOfflineGrantOutlivesSession."),
     },
   },
   mcpProtocol: {

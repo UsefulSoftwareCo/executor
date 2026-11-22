@@ -1,6 +1,6 @@
 /** Scoped connection fixtures through public product routes and the standard OAuth endpoints. */
 import { expect } from "@effect/vitest";
-import { Effect, Schema } from "effect";
+import { Effect, Redacted, Schema } from "effect";
 import { secret } from "./failure-text.ts";
 import { HttpClient, HttpClientRequest } from "effect/http";
 import { createHash, randomBytes } from "node:crypto";
@@ -132,6 +132,7 @@ export const consentTo = (
         clientId,
         consentResources: undefined,
         tokens: Effect.die("The authorization request was refused"),
+        tokenPair: Effect.die("The authorization request was refused"),
       };
     const consentPage = next;
     const consented = yield* api.request(
@@ -141,8 +142,8 @@ export const consentTo = (
       { accept: true, oauth_query: consentPage.search.slice(1) },
       headers,
     );
-    /** Exchange the approved code; only an accepted consent has one. */
-    const tokens = Effect.gen(function* () {
+    /** Exchange the approved code; only an accepted consent has one, used once. */
+    const exchange = Effect.gen(function* () {
       const { url } = yield* body(Schema.Struct({ url: Schema.String }), consented);
       const code = new URL(url).searchParams.get("code");
       expect(code).not.toBeNull();
@@ -164,7 +165,7 @@ export const consentTo = (
           return yield* response.json;
         }),
       );
-      return secret((yield* Schema.decodeUnknownEffect(Tokens)(exchanged)).access_token);
+      return yield* Schema.decodeUnknownEffect(Tokens)(exchanged);
     });
     return {
       status: consented.status,
@@ -172,8 +173,42 @@ export const consentTo = (
       clientId,
       /** The resources the consent page was asked to approve. */
       consentResources: consentPage.searchParams.getAll("resource"),
-      tokens,
+      /** The access token the approved code exchanges for. */
+      tokens: Effect.map(exchange, (exchanged) => secret(exchanged.access_token)),
+      /** The access and refresh tokens the approved code exchanges for. */
+      tokenPair: Effect.map(exchange, tokenPair),
     };
+  });
+
+const tokenPair = (tokens: typeof Tokens.Type) => ({
+  access: secret(tokens.access_token),
+  refresh: secret(tokens.refresh_token),
+});
+
+/**
+ * Refresh a public client's grant at the browser origin's token endpoint: the status, and the new
+ * tokens when it succeeds.
+ */
+export const refreshGrant = (clientId: string, refresh: Redacted.Redacted<string>) =>
+  Effect.gen(function* () {
+    const target = yield* Target,
+      http = yield* HttpClient.HttpClient;
+    return yield* Effect.scoped(
+      Effect.gen(function* () {
+        const response = yield* http.execute(
+          HttpClientRequest.post(`${targetHosts(target).browser}/api/auth/oauth2/token`).pipe(
+            HttpClientRequest.bodyUrlParams({
+              grant_type: "refresh_token",
+              client_id: clientId,
+              refresh_token: Redacted.value(refresh),
+            }),
+          ),
+        );
+        if (response.status !== 200) return { status: response.status, tokens: undefined };
+        const tokens = yield* Schema.decodeUnknownEffect(Tokens)(yield* response.json);
+        return { status: response.status, tokens: tokenPair(tokens) };
+      }),
+    );
   });
 
 /** The ID of the grant this session issued to a client, read from the public grants list. */

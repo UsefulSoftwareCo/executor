@@ -132,6 +132,10 @@ layer(HostedLive, { excludeTestServices: true })("Bearer authentication refusals
               params: [`{${owned.grants.join(",")}}`],
             },
             {
+              sql: `delete from "oauthRefreshToken" where "referenceId" = any($1::text[])`,
+              params: [`{${owned.grants.join(",")}}`],
+            },
+            {
               sql: `delete from "oauthConsent" where "referenceId" = any($1::text[])`,
               params: [`{${owned.grants.join(",")}}`],
             },
@@ -451,6 +455,158 @@ layer(HostedLive, { excludeTestServices: true })("Bearer authentication refusals
               const { token, path } = yield* create;
               yield* expectStatus(name, yield* status(path, token), expected);
             }
+          }),
+        );
+
+        yield* evidence.step(
+          "A token refreshed after its approving session ended names no session and is refused only for its own reasons",
+          Effect.gen(function* () {
+            /** The case's change, on a token that names no session, as such a refresh issues. */
+            const withoutSession =
+              (
+                change: (ids: {
+                  readonly token: string;
+                  readonly grant: string;
+                }) => ReadonlyArray<Statement>,
+              ) =>
+              (ids: {
+                readonly token: string;
+                readonly grant: string;
+                readonly connection: string;
+              }) => [...tokenUpdate(`"sessionId" = null`)(ids), ...change(ids)];
+            const cases: ReadonlyArray<
+              readonly [
+                string,
+                Effect.Effect<{ token: string; path: string }>,
+                ReadonlyArray<number>,
+              ]
+            > = [
+              ["no session", oauthCase(withoutSession(() => [])).pipe(Effect.orDie), accepted],
+              [
+                "no session, expired one second ago",
+                oauthCase(
+                  withoutSession(tokenUpdate(`"expiresAt" = now() - interval '1 second'`)),
+                ).pipe(Effect.orDie),
+                unauthorized,
+              ],
+              [
+                "no session, revoked",
+                oauthCase(withoutSession(tokenUpdate(`revoked = now()`))).pipe(Effect.orDie),
+                unauthorized,
+              ],
+              [
+                "no session, client disabled",
+                oauthCase(
+                  withoutSession((ids) => [
+                    {
+                      sql: `update "oauthClient" set disabled = true where "clientId" =
+                        (select "clientId" from "mcpGrant" where id = $1)`,
+                      params: [ids.grant],
+                    },
+                  ]),
+                  { client: true },
+                ).pipe(Effect.orDie),
+                unauthorized,
+              ],
+              [
+                "no session, grant revoked",
+                oauthCase(withoutSession(grantUpdate(`revoked = true`))).pipe(Effect.orDie),
+                unauthorized,
+              ],
+              [
+                "no session, grant in an organization without membership",
+                oauthCase(withoutSession(grantUpdate(`resource = $2`, notMember))).pipe(
+                  Effect.orDie,
+                ),
+                forbidden,
+              ],
+            ];
+            for (const [name, create, expected] of cases) {
+              const { token, path } = yield* create;
+              yield* expectStatus(name, yield* status(path, token), expected);
+            }
+          }),
+        );
+
+        yield* evidence.step(
+          "A client whose last refresh named an expired session recovers on its next refresh",
+          Effect.gen(function* () {
+            /**
+             * A copy of the grant whose approving session has expired, holding an access token
+             * and an unrevoked refresh token that both name it, with the refresh token's scopes.
+             */
+            const expiredGrant = (scopes: ReadonlyArray<string>) =>
+              Effect.gen(function* () {
+                const refresh = unique("synthetic-refresh-");
+                const created = yield* oauthCase(
+                  (ids) => [
+                    {
+                      sql: `update session set "expiresAt" = now() - interval '1 second' where id =
+                        (select "sessionId" from "oauthAccessToken" where token = $1)`,
+                      params: [ids.token],
+                    },
+                    {
+                      sql: `insert into "oauthRefreshToken" select (jsonb_populate_record(
+                          null::"oauthRefreshToken", to_jsonb(r) || jsonb_build_object(
+                            'id', $2::text, 'token', $3::text, 'referenceId', $4::text,
+                            'scopes', $5::jsonb, 'sessionId',
+                            (select "sessionId" from "oauthAccessToken" where token = $1)))).*
+                        from "oauthRefreshToken" r where r."referenceId" = $6 and r.revoked is null`,
+                      params: [
+                        ids.token,
+                        unique("refresh-row-"),
+                        hashed(refresh),
+                        ids.grant,
+                        JSON.stringify(scopes),
+                        source.grant,
+                      ],
+                    },
+                  ],
+                  { session: true },
+                ).pipe(Effect.orDie);
+                const tokens = Redacted.value(mcpGrant.tokens);
+                return {
+                  ...created,
+                  grant: {
+                    ...mcpGrant,
+                    tokens: Redacted.make({
+                      ...tokens,
+                      access_token: created.token,
+                      refresh_token: refresh,
+                    }),
+                  },
+                };
+              });
+            const broken = yield* expiredGrant(["mcp", "offline_access"]);
+            yield* expectStatus(
+              "access token naming the expired session",
+              yield* status(broken.path, broken.token),
+              unauthorized,
+            );
+            let current = broken.grant;
+            for (const attempt of ["first refresh", "second refresh"]) {
+              const refreshed = yield* oauth.refresh(current).pipe(Effect.option);
+              yield* expectStatus(
+                `${attempt} after the session expired`,
+                refreshed._tag === "Some" ? 200 : 400,
+                accepted,
+              );
+              if (refreshed._tag === "None") break;
+              current = refreshed.value;
+              yield* expectStatus(
+                `access token from the ${attempt} after the session expired`,
+                yield* status(broken.path, Redacted.value(current.tokens).access_token),
+                accepted,
+              );
+            }
+            // A refresh token without offline access stays bound to its session, as sign-out
+            // would revoke it.
+            const narrowed = yield* expiredGrant(["mcp"]);
+            yield* expectStatus(
+              "refresh token without offline access after its session expired",
+              yield* oauth.refreshStatus(narrowed.grant),
+              [400],
+            );
           }),
         );
 
