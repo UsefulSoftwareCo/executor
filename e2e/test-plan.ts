@@ -3128,6 +3128,16 @@ export const scenarios = plan({
       local: na("Exercises the hosted import and account connection APIs."),
     },
   },
+  openapiQueryStyles: {
+    fixtures: "actors",
+    file: "openapi-query-styles.spec.ts",
+    title: "Imported OpenAPI query parameters reach the upstream as OpenAPI serializes each style",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a loopback upstream to exercise the shared Worker OpenAPI transport."),
+      local: na("Exercises the hosted import and account connection APIs."),
+    },
+  },
   concurrentOutbound: {
     fixtures: "actors",
     file: "concurrent-outbound.spec.ts",
@@ -3160,6 +3170,16 @@ export const scenarios = plan({
       ),
       cloud: { status: "scheduled", runtime: "attached" },
       local: na("Local lets app code reach private addresses by design."),
+    },
+  },
+  appFetchQuery: {
+    fixtures: "actors",
+    file: "app-fetch-query.spec.ts",
+    title: "An app's fetch sends its query to the upstream exactly as written",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a loopback upstream to exercise the shared outbound network."),
+      local: na("Exercises the hosted app deploy, account check and tool call APIs."),
     },
   },
   appFetchUserAgent: {

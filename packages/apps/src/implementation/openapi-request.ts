@@ -360,6 +360,8 @@ export function createRequest(config: {
             const pathname = prepared.url.replace(/^[^:]+:\/\/[^/]*/, "").split(/[?#]/)[0] ?? "";
             if (pathname.split("/").some((segment) => /^(?:\.|%2e){1,2}$/i.test(segment)))
               throw new Error("This path value would change the request path");
+            if (prepared.url.includes("#"))
+              throw new Error("A query value contains #, which would end the query");
             const url = new URL(prepared.url);
             if (fixedQuery !== "" || querystrings.length > 0)
               url.search = [fixedQuery, url.search.slice(1), ...querystrings]
@@ -382,14 +384,21 @@ export function createRequest(config: {
         });
         const client = yield* HttpClient.HttpClient;
         const request = yield* Effect.try({
-          try: () =>
-            HttpClientRequest.fromWeb(
-              new Request(prepared.url, {
+          try: () => {
+            const url = new URL(prepared.url);
+            const query = url.search.replace(
+              /%(?![0-9A-Fa-f]{2})|[[\]{}|^`\\]/g,
+              (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`,
+            );
+            url.search = "";
+            return HttpClientRequest.fromWeb(
+              new Request(url, {
                 method: prepared.method,
                 headers: prepared.headers,
                 ...(prepared.body === undefined ? {} : { body: prepared.body }),
               }),
-            ),
+            ).pipe(HttpClientRequest.setUrl(url.href + query));
+          },
           catch: () => new OpenapiError({ reason: "invalid_input", operation }),
         });
         const response = yield* HttpClient.withScope(client).execute(request);
