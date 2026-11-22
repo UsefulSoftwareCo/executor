@@ -213,8 +213,10 @@ layer(HostedLive, { excludeTestServices: true })("Cloud tool call batch", (it) =
               .pipe(Effect.ignore),
           );
 
+          // Model mode, named in the URL, so an approval below pauses for a second request.
           const client = yield* mcp.connect(pat.key, "cloud-batch", {
             organization: actors.organization.id,
+            mode: "model",
           });
           const tool = (name: string) => `tools[${JSON.stringify(app.slug)}].${name}`;
           /** Run `code` in one execute; return its result. */

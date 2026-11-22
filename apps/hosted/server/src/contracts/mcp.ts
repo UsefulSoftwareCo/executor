@@ -176,6 +176,10 @@ export class McpAuthentication extends Context.Service<
     readonly resourceOrigins: ResourceOrigins;
     /** The authorization server's exact issuer identifier, which discovery names. */
     readonly issuer: string;
+    /**
+     * `mode` is the approval mode the MCP URL spells out (`namedApprovalMode`), undefined for a URL
+     * without one. Only a credential without a grant record reads it.
+     */
     readonly authenticate: (
       headers: Headers,
       mode?: ApprovalMode,

@@ -133,7 +133,7 @@ export const recordedTarget = (
 };
 
 /**
- * Missing URL mode retains the original model-mode default. A connection is optional;
+ * Missing URL mode names model mode, the plain URL's OAuth resource. A connection is optional;
  * duplicates and malformed values of either parameter are invalid.
  */
 export const requestedMcpAddress = (url: URL): McpAddress | undefined => {
@@ -146,6 +146,13 @@ export const requestedMcpAddress = (url: URL): McpAddress | undefined => {
   const connection = connections[0];
   return Schema.is(ConnectionId)(connection) ? { mode, connection } : undefined;
 };
+/**
+ * The approval mode an MCP URL spells out, or undefined when it has no `elicitation_mode`, so
+ * `?elicitation_mode=model` and the plain URL can be told apart. A personal access token, which
+ * has no grant record, takes this mode, and `automatic` when the URL names none.
+ */
+export const namedApprovalMode = (url: URL): ApprovalMode | undefined =>
+  url.searchParams.has("elicitation_mode") ? requestedMcpAddress(url)?.mode : undefined;
 const mcpQuery = (address: McpAddress) => {
   const query = new URLSearchParams();
   if (address.connection !== undefined) query.set("connection", address.connection);

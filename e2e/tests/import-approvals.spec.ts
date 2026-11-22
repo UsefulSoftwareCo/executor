@@ -122,7 +122,11 @@ layer(HostedLive, { excludeTestServices: true })("Imported approvals", (it) => {
                 .request(actors.owner, "POST", "/api/auth/api-key/delete", { keyId: token.id })
                 .pipe(Effect.orDie),
             );
-            const client = yield* mcp.connect(token.key, "import-approvals", { organization });
+            // Model mode, named in the URL, so the imported tool's approval pauses for a resume.
+            const client = yield* mcp.connect(token.key, "import-approvals", {
+              organization,
+              mode: "model",
+            });
             const request = (name: "execute" | "resume", args: Record<string, unknown>) =>
               client.use(`MCP ${name}`, (client, signal) =>
                 client.callTool({ name, arguments: args }, undefined, { signal }),

@@ -1071,8 +1071,10 @@ return out;`,
           yield* Effect.addFinalizer(() =>
             api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
           );
+          // Model mode, named in the URL, so the approvals below wait to be resumed.
           const client = yield* mcp.connect(key.key, "parallel-calls", {
             organization: actors.organization.id,
+            mode: "model",
           });
           const tool = (name: string) => `tools[${JSON.stringify(app.slug)}].${name}`;
           const call = (label: string, name: string, args: Record<string, unknown>) =>

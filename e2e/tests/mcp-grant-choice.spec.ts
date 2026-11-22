@@ -422,6 +422,22 @@ layer(HostedLive, { excludeTestServices: true })("MCP grant choice at sign-in", 
           access: { kind: "all" },
           mode: "native",
         });
+        // A URL without a mode gives a token automatic mode, as a sign-in there preselects; a URL
+        // that names model mode keeps it.
+        const patPlain = yield* whoami(key.key, "", named);
+        expect(patPlain.status, JSON.stringify(patPlain.body)).toBe(200);
+        expect(patPlain.body).toEqual({
+          organization: expectedOrganization,
+          access: { kind: "all" },
+          mode: "automatic",
+        });
+        const patModel = yield* whoami(key.key, "?elicitation_mode=model", named);
+        expect(patModel.status, JSON.stringify(patModel.body)).toBe(200);
+        expect(patModel.body).toEqual({
+          organization: expectedOrganization,
+          access: { kind: "all" },
+          mode: "model",
+        });
         const patConnection = yield* whoami(key.key, "?connection=another-connection", named);
         expect(patConnection.status).toBe(403);
         expect(patConnection.body).toMatchObject({ error: { data: { code: "GrantForbidden" } } });

@@ -240,7 +240,11 @@ layer(HostedLive, { excludeTestServices: true })("MCP organization spans", (it) 
             );
 
           const key = yield* createKey("Organization spans");
-          const client = yield* mcp.connect(key.key, "organization-spans", { organization });
+          // Model mode, named in the URL, so the approval below pauses for a resume.
+          const client = yield* mcp.connect(key.key, "organization-spans", {
+            organization,
+            mode: "model",
+          });
 
           yield* evidence.step(
             "Each MCP operation span and the catalog reads under it name the organization and the caller",

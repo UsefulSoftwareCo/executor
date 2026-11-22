@@ -38,6 +38,8 @@ const signedId =
   /^([0-9a-f]{64})\.([A-Za-z0-9_-]{43})\.([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
 const sessionNotFound = "Session not found";
 const native = "?elicitation_mode=native";
+/** These keys' sessions name model mode, so a call that needs approval pauses for a resume. */
+const model = "?elicitation_mode=model";
 /**
  * workerd evicts an object some time after its last request once nothing holds it (Cloudflare:
  * 70–140 s). The session's database window holds it for 120 s after its last call. The step after
@@ -134,7 +136,7 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session restore", (i
               Effect.gen(function* () {
                 const traceId = randomBytes(16).toString("hex");
                 const request = HttpClientRequest.post(
-                  `${target.metadata.origin}/mcp${input.query ?? ""}`,
+                  `${target.metadata.origin}/mcp${input.query ?? model}`,
                 ).pipe(
                   HttpClientRequest.setHeaders({
                     accept: "application/json, text/event-stream",
@@ -168,7 +170,7 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session restore", (i
               }),
             ).pipe(Effect.provideService(HttpClient.TracerPropagationEnabled, false));
 
-          const open = (credential: Redacted.Redacted<string>, label: string, query = "") =>
+          const open = (credential: Redacted.Redacted<string>, label: string, query = model) =>
             Effect.gen(function* () {
               const answer = yield* post({
                 credential,
@@ -196,8 +198,11 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session restore", (i
               expect(initialized.status).toBe(202);
               return session;
             });
-          const initialize = (credential: Redacted.Redacted<string>, label: string, query = "") =>
-            evidence.step(`Initialize a session (${label})`, open(credential, label, query));
+          const initialize = (
+            credential: Redacted.Redacted<string>,
+            label: string,
+            query = model,
+          ) => evidence.step(`Initialize a session (${label})`, open(credential, label, query));
           const listTools = (
             credential: Redacted.Redacted<string>,
             session: string,

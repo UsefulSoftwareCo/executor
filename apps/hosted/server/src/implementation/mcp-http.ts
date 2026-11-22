@@ -12,6 +12,7 @@ import {
   GrantForbidden,
   McpWhoami,
   requestedMcpAddress,
+  namedApprovalMode,
   mcpResource,
   mcpResourceMetadataUrl,
   requestResourceOrigin,
@@ -249,10 +250,12 @@ export const dispatchHostedMcp = <E, R>(
     // organization and the users they affect counted.
     const caller = callerSpanAttributes(access.access.organization, access.userId);
     yield* Effect.annotateCurrentSpan(caller);
+    // The recheck reads the mode this URL spells out, as the request's own authentication did.
+    const named = namedApprovalMode(new URL(request.url, authentication.origin));
     const current = Effect.annotateCurrentSpan(caller).pipe(
       Effect.andThen(
         authentication
-          .authenticate(headers, address.mode, access.access.organization)
+          .authenticate(headers, named, access.access.organization)
           // A recheck is for this organization and user from its start, so one refused or failed
           // before its statement answers still names them.
           .pipe(Effect.annotateSpans(caller)),
@@ -507,8 +510,13 @@ export const authenticatedMcp = <E, R>(
     if (address === undefined) return invalidAddress;
     // The request's tool calls recheck the same token; they reuse its hash (see BearerHashes).
     const hashes = new Map<string, string>();
+    // Only the mode the URL spells out: a credential without a grant record defaults on its own.
     const access = yield* Effect.result(
-      auth.authenticate(new Headers(request.headers), address.mode, requestedMcpOrganization(url)),
+      auth.authenticate(
+        new Headers(request.headers),
+        namedApprovalMode(url),
+        requestedMcpOrganization(url),
+      ),
     ).pipe(Effect.provideService(BearerHashes, hashes));
     if (Result.isSuccess(access))
       return yield* handle(access.success, address).pipe(

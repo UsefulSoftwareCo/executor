@@ -316,7 +316,7 @@ const approvalOptions: readonly (ConsentOption & { readonly value: ApprovalMode 
 /**
  * The approval mode a sign-in page preselects for what the request's resource names. The plain MCP
  * URL names model mode, the default before automatic mode existed; on the page it now preselects
- * automatic. Credentials without a grant record keep taking model mode from that URL.
+ * automatic, as a personal access token at that URL serves.
  */
 export const preselectedApprovalMode = (named: ApprovalMode): ApprovalMode =>
   named === "model" ? "automatic" : named;
