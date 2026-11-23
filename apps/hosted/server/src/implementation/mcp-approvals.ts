@@ -94,12 +94,12 @@ export const hostedMcpApproval = (
 ) =>
   Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
-    // A model-mode grant's page answers only its own programs' requests that require a person;
-    // the model-mode address cannot reach a browser-mode session.
+    // A caller-mode grant's page answers only its own programs' requests that require a person,
+    // and only when the address names that grant's mode; it cannot reach a browser-mode session.
     const permitted =
-      address.mode === "model"
-        ? access.grant.target.kind === "mcp" && access.grant.target.mode === "model"
-        : permitsBrowserApproval(access.grant);
+      address.mode === undefined
+        ? permitsBrowserApproval(access.grant)
+        : access.grant.target.kind === "mcp" && access.grant.target.mode === address.mode;
     if (!permitted) return HttpServerResponse.empty({ status: 403 });
     const caller = mcpSessionKey(access);
     const view = yield* approvals.get(caller, address);

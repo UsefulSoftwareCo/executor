@@ -20,12 +20,15 @@ export {
 
 /** Session routing is public metadata, never an authentication credential. */
 export const BrowserSessionId = Schema.NonEmptyString.check(Schema.isMaxLength(512));
+/** Caller-owned MCP approval modes whose person-only requests link to the browser approval page. */
+export const BrowserApprovalMode = Schema.Literals(["model", "automatic"]);
+export type BrowserApprovalMode = typeof BrowserApprovalMode.Type;
 /** Product-neutral address within the authenticated host's MCP session partition. */
 export const BrowserApprovalAddress = Schema.Struct({
   requestId: InteractionId,
   sessionId: BrowserSessionId,
-  /** A model-mode request that requires a person; its program is the caller's, not a session's. */
-  mode: Schema.optionalKey(Schema.Literal("model")),
+  /** A request that requires a person; its program is the caller's, not a browser session's. */
+  mode: Schema.optionalKey(BrowserApprovalMode),
 });
 export type BrowserApprovalAddress = typeof BrowserApprovalAddress.Type;
 /** Only a live pending view contains private invocation data and form fields. */

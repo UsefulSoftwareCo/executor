@@ -216,13 +216,15 @@ export const makeMcp = (options: McpOptions) =>
         const describe = (input: Parameters<typeof describeCatalog>[1]) =>
           describeCatalog(options.backend, input).pipe(withOperationSpan("mcp.describe"));
         /**
-         * In model mode, a request only a person may approve carries the browser page they approve
-         * it on. The agent shows it and resumes; the person's answer is used, never the agent's.
+         * In model or automatic mode, a request only a person may approve carries the browser page
+         * they approve it on. The agent shows it and resumes; the person's answer is used, never
+         * the agent's.
          */
+        const approvalMode = mode === "automatic" ? "automatic" : "model";
         const personLink = (result: McpExecutionResult): Effect.Effect<McpExecutionResult> =>
           result.status === "approval-required" && result.human === true && delivery !== undefined
             ? delivery
-                .url({ sessionId: "model", requestId: result.requestId, mode: "model" })
+                .url({ sessionId: approvalMode, requestId: result.requestId, mode: approvalMode })
                 .pipe(Effect.map((approvalUrl) => ({ ...result, approvalUrl })))
             : Effect.succeed(result);
         const toolkit =
@@ -455,12 +457,12 @@ export const makeMcp = (options: McpOptions) =>
         ),
       );
     }).pipe(Effect.map(withSseHeartbeat));
-    // A model-mode address names the caller's model programs, which only a person-required
-    // request links to; any other address names one browser-mode session.
+    // A caller-mode address names the caller's model or automatic programs, which only a
+    // person-required request links to; any other address names one browser-mode session.
     const addressed = (product: string, address: BrowserApprovalAddress) =>
-      address.mode === "model"
-        ? callerIdentity(product, "model")
-        : browserIdentity(product, address.sessionId);
+      address.mode === undefined
+        ? browserIdentity(product, address.sessionId)
+        : callerIdentity(product, address.mode);
     const approvals: BrowserApprovals = {
       get: (product, address) =>
         executions.browserView(addressed(product, address), address.requestId),
