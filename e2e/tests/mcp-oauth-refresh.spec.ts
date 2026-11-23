@@ -1,15 +1,20 @@
 /** MCP clients often run several instances that share one stored OAuth grant. */
 import { expect, layer } from "@effect/vitest";
-import { Effect, Layer, Redacted } from "effect";
+import { Effect, Layer, Redacted, Schema } from "effect";
+import { HttpClient, HttpClientRequest } from "effect/http";
 import { scenarios } from "../test-plan.ts";
-import { Actors } from "../support/actors.ts";
-import { Api } from "../support/api.ts";
+import { Actors, freshOwnerSession, password } from "../support/actors.ts";
+import { Api, body } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Evidence } from "../support/evidence.ts";
-import { McpOAuth } from "../support/mcp-oauth.ts";
+import { McpOAuth, type Grant } from "../support/mcp-oauth.ts";
 import { McpClient } from "../support/mcp-client.ts";
 import { serverControl } from "../support/server-control.ts";
+
+const minute = 60_000;
+const day = 24 * 60 * minute;
+const Agents = Schema.Array(Schema.Struct({ id: Schema.String }));
 
 layer(HostedLive, { excludeTestServices: true })("MCP OAuth refresh", (it) => {
   it.effect(scenarios.mcpStaleRefresh.title, (context) =>
@@ -128,6 +133,259 @@ layer(HostedLive, { excludeTestServices: true })("MCP OAuth refresh", (it) => {
             expect(yield* oauth.refreshStatus(stored)).toBe(400);
             expect(yield* oauth.refreshStatus(current)).toBe(400);
           }),
+        );
+      }).pipe(Effect.provide(McpOAuth.layer)),
+    ),
+  );
+  it.effect(scenarios.mcpOfflineGrantOutlivesSession.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const api = yield* Api,
+          actors = yield* Actors,
+          browser = yield* Browser,
+          evidence = yield* Evidence,
+          oauth = yield* McpOAuth,
+          http = yield* HttpClient.HttpClient;
+        const advance = (milliseconds: number) =>
+          Effect.gen(function* () {
+            yield* serverControl("stop");
+            yield* serverControl("clock/advance", 200, { milliseconds });
+            yield* serverControl("start");
+          });
+        /** The status of an MCP `initialize` with the grant's access token; a stream is not read. */
+        const mcpStatus = (grant: Grant) =>
+          Effect.scoped(
+            Effect.gen(function* () {
+              const response = yield* http.execute(
+                HttpClientRequest.post(grant.resource).pipe(
+                  HttpClientRequest.bodyJsonUnsafe({
+                    jsonrpc: "2.0",
+                    id: 1,
+                    method: "initialize",
+                    params: {
+                      protocolVersion: "2025-06-18",
+                      capabilities: {},
+                      clientInfo: { name: "Offline grant", version: "1.0.0" },
+                    },
+                  }),
+                  HttpClientRequest.setHeaders({
+                    authorization: `Bearer ${Redacted.value(grant.tokens).access_token}`,
+                    accept: "application/json, text/event-stream",
+                  }),
+                ),
+              );
+              return response.status;
+            }),
+          ).pipe(Effect.timeout("30 seconds"), Effect.orDie);
+        const agentsPath = `/api/organizations/${actors.organization.id}/mcp-agents`;
+
+        // This browser session approves every grant below and is never used again, so it expires
+        // seven days after this sign-in. Refreshing a grant does not extend it.
+        const approving = yield* freshOwnerSession;
+        yield* browser.login(approving);
+        const idle = yield* evidence.step(
+          "Authorize an agent that stays idle",
+          oauth.authorizeNamed("Idle agent"),
+        );
+        let daily = yield* evidence.step(
+          "Authorize an agent that refreshes every day",
+          oauth.authorizeNamed("Daily agent"),
+        );
+        const revoked = yield* evidence.step(
+          "Authorize an agent that is revoked later",
+          oauth.authorizeNamed("Revoked agent"),
+        );
+        // A refresh that asks for fewer scopes gets a refresh token without offline access, which
+        // stays bound to the approving session as one sign-out would revoke.
+        const narrowed = yield* evidence.step(
+          "Authorize an agent and narrow its refresh token to the mcp scope",
+          Effect.flatMap(oauth.authorizeNamed("Narrowed agent"), (grant) =>
+            oauth.refresh(grant, undefined, "mcp"),
+          ),
+        );
+        for (let elapsed = 1; elapsed <= 6; elapsed++) {
+          yield* advance(day);
+          daily = yield* evidence.step(
+            `The daily agent refreshes on day ${elapsed}`,
+            oauth.refresh(daily),
+          );
+        }
+        // Half an hour before the session expires, the daily agent refreshes once more. That access
+        // token names the session, which is still live.
+        yield* advance(day - 30 * minute);
+        daily = yield* evidence.step(
+          "The daily agent refreshes half an hour before the session expires",
+          oauth.refresh(daily),
+        );
+        expect(yield* mcpStatus(daily)).toBe(200);
+        const beforeExpiry = daily;
+        yield* advance(40 * minute);
+
+        const outcomes: Array<{
+          readonly name: string;
+          readonly observed: unknown;
+          readonly expected: unknown;
+        }> = [];
+        // Every check runs before the assertion, so a failure lists the whole table.
+        const record = (name: string, observed: unknown, expected: unknown) =>
+          Effect.sync(() => {
+            outcomes.push({ name, observed, expected });
+          });
+        /** Refresh, record the refresh status and the refreshed token's MCP status. */
+        const refreshAndCall = (name: string, grant: Grant) =>
+          Effect.gen(function* () {
+            const refreshed = yield* oauth.refresh(grant).pipe(Effect.option);
+            yield* record(`${name}: refresh`, refreshed._tag === "Some" ? 200 : "refused", 200);
+            if (refreshed._tag === "None") return grant;
+            yield* record(
+              `${name}: MCP with the refreshed token`,
+              yield* mcpStatus(refreshed.value),
+              200,
+            );
+            return refreshed.value;
+          });
+
+        // The fixture owner's own session, which the OAuth driver and these dashboard calls read
+        // with, expired as well; signing it in again leaves the approving session alone.
+        const signIn = yield* api.request(actors.owner, "POST", "/api/auth/sign-in/email", {
+          email: "owner@example.test",
+          password,
+        });
+        expect(signIn.status).toBe(200);
+        const owner = actors.owner;
+        const listedAgents = api.request(owner, "GET", agentsPath).pipe(
+          Effect.flatMap((response) => body(Agents, response)),
+          Effect.map((listed) => new Set(listed.map((agent) => agent.id))),
+        );
+        yield* evidence.step(
+          "Before it refreshes, the idle agent is listed through its refresh token alone",
+          Effect.gen(function* () {
+            // Its only access token expired days ago; its refresh token names the expired session.
+            yield* record(
+              "idle agent: listed before it refreshes",
+              (yield* listedAgents).has(idle.grantId),
+              true,
+            );
+          }),
+        );
+        const idleAfter = yield* evidence.step(
+          "Ten minutes after the session expired, the idle agent refreshes and calls MCP",
+          Effect.gen(function* () {
+            return yield* refreshAndCall("idle agent", idle);
+          }),
+        );
+        // The refresh token the second refresh after expiry rotated, kept to replay later.
+        const replayable = yield* evidence.step(
+          "The daily agent's last token named the expired session; it refreshes and keeps working",
+          Effect.gen(function* () {
+            // The control: this unexpired access token names the session, which has now expired.
+            yield* record(
+              "daily agent: MCP with the token issued before the session expired",
+              yield* mcpStatus(beforeExpiry),
+              401,
+            );
+            daily = yield* refreshAndCall("daily agent", daily);
+            const rotated = daily;
+            // A token minted after the session expired carries on refreshing.
+            daily = yield* refreshAndCall("daily agent, second refresh after expiry", daily);
+            return rotated;
+          }),
+        );
+        yield* evidence.step(
+          "The narrowed refresh token, without offline access, ended with the session",
+          Effect.gen(function* () {
+            yield* record("narrowed agent: refresh", yield* oauth.refreshStatus(narrowed), 400);
+          }),
+        );
+        const revokedAfter = yield* evidence.step(
+          "The agent to be revoked still works after the session expired",
+          Effect.gen(function* () {
+            return yield* refreshAndCall("revoked agent, before revocation", revoked);
+          }),
+        );
+        yield* evidence.step(
+          "Connected agents lists the agents that can still refresh",
+          Effect.gen(function* () {
+            const ids = yield* listedAgents;
+            for (const [name, grant, expected] of [
+              ["idle agent", idle, true],
+              ["daily agent", daily, true],
+              ["revoked agent", revoked, true],
+              ["narrowed agent", narrowed, false],
+            ] as const)
+              yield* record(
+                `${name}: listed in connected agents`,
+                ids.has(grant.grantId),
+                expected,
+              );
+          }),
+        );
+        yield* evidence.step(
+          "Revoking an agent from the dashboard ends it",
+          Effect.gen(function* () {
+            const response = yield* api.request(
+              owner,
+              "POST",
+              `${agentsPath}/${revoked.grantId}/revoke`,
+            );
+            yield* record("revoked agent: revoke", response.status, 200);
+            yield* record(
+              "revoked agent: MCP after revocation",
+              yield* mcpStatus(revokedAfter),
+              401,
+            );
+            yield* record(
+              "revoked agent: refresh after revocation",
+              yield* oauth.refreshStatus(revokedAfter),
+              400,
+            );
+          }),
+        );
+        yield* evidence.step(
+          "An agent approved by a session that then signs out keeps working",
+          Effect.gen(function* () {
+            const signingOut = yield* freshOwnerSession;
+            yield* browser.login(signingOut);
+            const agent = yield* oauth.authorizeNamed("Signed-out agent");
+            const signedOut = yield* api.request(signingOut, "POST", "/api/auth/sign-out", {});
+            yield* record("signed-out agent: sign-out", signedOut.status, 200);
+            yield* refreshAndCall("signed-out agent", agent);
+          }),
+        );
+
+        // A token without a session still ends by its own expiry, an hour after it was issued.
+        yield* advance(61 * minute);
+        yield* evidence.step(
+          "An access token issued after the session expired ends after its hour",
+          Effect.gen(function* () {
+            yield* record(
+              "idle agent: MCP an hour after its refresh",
+              yield* mcpStatus(idleAfter),
+              401,
+            );
+            yield* refreshAndCall("idle agent, an hour later", idleAfter);
+          }),
+        );
+        // More than a day after its rotation, replaying a rotated token ends every copy.
+        yield* advance(25 * 60 * minute);
+        yield* evidence.step(
+          "Replaying a rotated token more than a day later still ends the grant",
+          Effect.gen(function* () {
+            yield* record(
+              "daily agent: replayed rotated token",
+              yield* oauth.refreshStatus(replayable),
+              400,
+            );
+            yield* record(
+              "daily agent: current token after the replay",
+              yield* oauth.refreshStatus(daily),
+              400,
+            );
+          }),
+        );
+        expect(outcomes.map(({ name, observed }) => [name, observed])).toEqual(
+          outcomes.map(({ name, expected }) => [name, expected]),
         );
       }).pipe(Effect.provide(McpOAuth.layer)),
     ),

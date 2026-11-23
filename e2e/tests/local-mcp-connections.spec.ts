@@ -1,6 +1,7 @@
 /** The paired local operator's scoped connection limits a real OAuth client and revokes it. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Exit, Redacted, Schema } from "effect";
+import { HttpClient, HttpClientRequest } from "effect/http";
 import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
 import { Api, body, type Session } from "../support/api.ts";
@@ -16,8 +17,10 @@ import {
   clientGrantId,
   consentTo,
   readWriteAppFiles,
+  refreshGrant,
   revokeClientGrants,
 } from "../support/mcp-connections.ts";
+import { serverControl } from "../support/server-control.ts";
 import { Target } from "../support/platform.ts";
 import { connectLocalAccount } from "../support/app-accounts.ts";
 import { linkLocal, localLinks } from "../support/local-links.ts";
@@ -862,6 +865,144 @@ layer(TestLive, { excludeTestServices: true })("Local scoped MCP connections", (
           ),
         ).toBe("unavailable");
       }).pipe(Effect.provide(McpClient.layer)),
+    ),
+  );
+  it.effect(scenarios.localMcpOfflineGrantOutlivesSession.title, (context) =>
+    withCase(
+      context,
+      Effect.gen(function* () {
+        const api = yield* Api,
+          target = yield* Target,
+          evidence = yield* Evidence,
+          http = yield* HttpClient.HttpClient;
+        const minute = 60_000;
+        const advance = (milliseconds: number) =>
+          Effect.gen(function* () {
+            yield* serverControl("stop");
+            yield* serverControl("clock/advance", 200, { milliseconds });
+            yield* serverControl("start");
+          });
+        /** The status of an MCP `initialize` with this access token; a stream is not read. */
+        const mcpStatus = (access: Redacted.Redacted<string>) =>
+          Effect.scoped(
+            Effect.gen(function* () {
+              const response = yield* http.execute(
+                HttpClientRequest.post(`${target.metadata.origin}/mcp`).pipe(
+                  HttpClientRequest.bodyJsonUnsafe({
+                    jsonrpc: "2.0",
+                    id: 1,
+                    method: "initialize",
+                    params: {
+                      protocolVersion: "2025-06-18",
+                      capabilities: {},
+                      clientInfo: { name: "Offline grant", version: "1.0.0" },
+                    },
+                  }),
+                  HttpClientRequest.setHeaders({
+                    authorization: `Bearer ${Redacted.value(access)}`,
+                    accept: "application/json, text/event-stream",
+                  }),
+                ),
+              );
+              return response.status;
+            }),
+          ).pipe(Effect.timeout("30 seconds"), Effect.orDie);
+        // The dashboard pairing also lasts seven days, so cleanup pairs again.
+        const clients: string[] = [];
+        yield* Effect.addFinalizer(() =>
+          Effect.gen(function* () {
+            const operator = yield* pairLocalOperator;
+            const listed = yield* body(
+              Schema.Array(
+                Schema.Struct({
+                  clientId: Schema.String,
+                  grant: Schema.Struct({ id: Schema.String }),
+                }),
+              ),
+              yield* api.request(operator, "GET", "/api/auth/mcp/grants"),
+            );
+            for (const grant of listed.filter((grant) => clients.includes(grant.clientId)))
+              yield* api.request(operator, "POST", "/api/auth/mcp/grants/revoke", {
+                id: grant.grant.id,
+              });
+          }).pipe(Effect.orDie),
+        );
+        // Local approves every grant with its one internal session, which lasts seven days and is
+        // extended only by approving in the browser, never by MCP use or refresh.
+        const operator = yield* pairLocalOperator;
+        const approve = Effect.gen(function* () {
+          const consent = yield* consentTo(operator, undefined);
+          clients.push(consent.clientId);
+          expect(consent.status).toBe(200);
+          return { clientId: consent.clientId, ...(yield* consent.tokenPair) };
+        });
+        const idle = yield* evidence.step("Approve a client that stays idle", approve);
+        const refreshing = yield* evidence.step("Approve a client that refreshes", approve);
+        // Half an hour before the session expires, the refreshing client refreshes. That access
+        // token names the session, which is still live.
+        yield* advance(7 * 24 * 60 * minute - 30 * minute);
+        const beforeExpiry = yield* evidence.step(
+          "The refreshing client refreshes half an hour before the session expires",
+          refreshGrant(refreshing.clientId, refreshing.refresh),
+        );
+        expect(beforeExpiry.status).toBe(200);
+        if (beforeExpiry.tokens === undefined)
+          return yield* Effect.die("The refresh issued no tokens");
+        expect(yield* mcpStatus(beforeExpiry.tokens.access)).toBe(200);
+        yield* advance(40 * minute);
+
+        const outcomes: Array<{
+          readonly name: string;
+          readonly observed: unknown;
+          readonly expected: unknown;
+        }> = [];
+        const record = (name: string, observed: unknown, expected: unknown) =>
+          Effect.sync(() => {
+            outcomes.push({ name, observed, expected });
+          });
+        const refreshAndCall = (
+          name: string,
+          clientId: string,
+          refresh: Redacted.Redacted<string>,
+        ) =>
+          Effect.gen(function* () {
+            const refreshed = yield* refreshGrant(clientId, refresh);
+            yield* record(`${name}: refresh`, refreshed.status, 200);
+            if (refreshed.tokens === undefined) return refresh;
+            yield* record(
+              `${name}: MCP with the refreshed token`,
+              yield* mcpStatus(refreshed.tokens.access),
+              200,
+            );
+            return refreshed.tokens.refresh;
+          });
+        yield* evidence.step(
+          "Ten minutes after the session expired, both clients refresh and call MCP",
+          Effect.gen(function* () {
+            yield* refreshAndCall("idle client", idle.clientId, idle.refresh);
+            // The control: this unexpired access token names the session, which has now expired.
+            yield* record(
+              "refreshing client: MCP with the token issued before the session expired",
+              yield* mcpStatus(beforeExpiry.tokens.access),
+              401,
+            );
+            const next = yield* refreshAndCall(
+              "refreshing client",
+              refreshing.clientId,
+              beforeExpiry.tokens.refresh,
+            );
+            // A token minted after the session expired carries on refreshing.
+            yield* refreshAndCall(
+              "refreshing client, second refresh after expiry",
+              refreshing.clientId,
+              next,
+            );
+          }),
+        );
+        expect(outcomes.map(({ name, observed }) => [name, observed])).toEqual(
+          outcomes.map(({ name, expected }) => [name, expected]),
+        );
+      }),
     ),
   );
 });

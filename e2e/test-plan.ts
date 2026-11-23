@@ -1407,6 +1407,18 @@ export const scenarios = plan({
       local: na("Hosted app API fixture; Node adapter exercised by self-host"),
     },
   },
+  localAppCacheRefresh: {
+    file: "local-app-cache-refresh.spec.ts",
+    title:
+      "a stale app cache read's background refresh stores its value in a local app with a database, as in one without",
+    targets: {
+      local: scheduled,
+      "self-host": na(
+        "Uses the local agent API; self-host runs apps through the same worker bridge.",
+      ),
+      cloud: na("Uses the local agent API; Cloud runs apps through the same worker bridge."),
+    },
+  },
   toolsIndexCache: {
     fixtures: "actors",
     file: "tools-index-cache.spec.ts",
@@ -8228,6 +8240,16 @@ export const scenarios = plan({
       cloud: na("Hosted consent is covered by mcpOAuthWithoutResource."),
     },
   },
+  localMcpOfflineGrantOutlivesSession: {
+    file: "local-mcp-connections.spec.ts",
+    title:
+      "Local MCP clients with offline access keep working after the session that approved them expires",
+    targets: {
+      local: scheduled,
+      "self-host": na("Hosted's own scenario is mcpOfflineGrantOutlivesSession."),
+      cloud: na("Hosted's own scenario is mcpOfflineGrantOutlivesSession."),
+    },
+  },
   bearerAuthRefusals: {
     fixtures: "actors",
     file: "bearer-auth-refusals.spec.ts",
@@ -11933,6 +11955,19 @@ export const scenarios = plan({
       "self-host": scheduled,
       cloud: na("Advances the wall clock of a runner-owned product process."),
       local: na("This scenario tests hosted organization consent, which Local does not have."),
+    },
+  },
+  mcpOfflineGrantOutlivesSession: {
+    fixtures: "actors",
+    file: "mcp-oauth-refresh.spec.ts",
+    title:
+      "An MCP client with offline access keeps working after the browser session that approved it expires",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Advances the wall clock of a runner-owned product process; bearerAuthRefusals covers Cloud's stored states.",
+      ),
+      local: na("Local's own scenario is localMcpOfflineGrantOutlivesSession."),
     },
   },
   mcpProtocol: {

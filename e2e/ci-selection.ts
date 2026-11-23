@@ -696,6 +696,14 @@ const patchGuards: Readonly<Record<string, ReadonlyArray<string>>> = {
     "self-host-sso.spec.ts",
     "cloud-auth-rate-limit.spec.ts",
   ],
+  // Its patch backports the refresh grant's handling of an ended session: an offline_access
+  // grant's refreshed tokens name no session, and a refresh token without offline_access ends
+  // with its session. These scenarios refresh after the approving session expired.
+  "@better-auth/oauth-provider": [
+    "mcp-oauth-refresh.spec.ts",
+    "local-mcp-connections.spec.ts",
+    "bearer-auth-refusals.spec.ts",
+  ],
   "@opencode-ai/codemode": [
     "mcp-catalog.spec.ts",
     "mcp-execute-concurrency.spec.ts",

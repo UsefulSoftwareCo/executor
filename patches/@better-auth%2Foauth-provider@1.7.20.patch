@@ -1,5 +1,5 @@
 diff --git a/dist/authorize-D1IhxxSO.mjs b/dist/authorize-D1IhxxSO.mjs
-index e8ed5d4..6a7e1cb 100644
+index e8ed5d4..04f518c 100644
 --- a/dist/authorize-D1IhxxSO.mjs
 +++ b/dist/authorize-D1IhxxSO.mjs
 @@ -1016,6 +1016,8 @@ async function getResource(ctx, opts, identifier) {
@@ -47,6 +47,15 @@ index e8ed5d4..6a7e1cb 100644
  		sub: resolvedSub,
  		aud: client.clientId,
  		nonce,
+@@ -1723,7 +1727,7 @@ async function createRefreshToken(ctx, opts, user, referenceId, authorizationCod
+ 	const iat = payload.iat ?? Math.floor(Date.now() / 1e3);
+ 	const exp = payload?.exp ?? iat + (opts.refreshTokenExpiresIn ?? 2592e3);
+ 	const token = opts.generateRefreshToken ? await opts.generateRefreshToken() : generateRandomString(32, "A-Z", "a-z");
+-	const sessionId = payload?.sid;
++	const sessionId = originalRefresh?.sessionId ?? payload?.sid;
+ 	const newRow = {
+ 		token: await storeToken(opts.storeTokens, token, "refresh_token"),
+ 		clientId: client.clientId,
 @@ -1765,10 +1769,13 @@ async function createRefreshToken(ctx, opts, user, referenceId, authorizationCod
  		}],
  		increment: {},
@@ -65,7 +74,7 @@ index e8ed5d4..6a7e1cb 100644
  	return {
  		id: (await ctx.context.adapter.create({
  			model: "oauthRefreshToken",
-@@ -2280,6 +2287,17 @@ async function handleClientCredentialsGrant(ctx, opts) {
+@@ -2280,6 +2287,28 @@ async function handleClientCredentialsGrant(ctx, opts) {
  * Refresh tokens will only allow the same or lesser scopes as the initial authorize request.
  * To add scopes, you must restart the authorize process again.
  */
@@ -80,10 +89,21 @@ index e8ed5d4..6a7e1cb 100644
 +		ctx.context.logger.error("oauth-provider: onRefreshRejected failed");
 +	}
 +}
++async function findActiveSessionId(ctx, sessionId) {
++	if (!sessionId) return void 0;
++	const session = await ctx.context.adapter.findOne({
++		model: "session",
++		where: [{
++			field: "id",
++			value: sessionId
++		}]
++	});
++	return session && session.expiresAt >= /* @__PURE__ */ new Date() ? sessionId : void 0;
++}
  async function handleRefreshTokenGrant(ctx, opts) {
  	const credentials = await extractClientCredentials(ctx, opts, `${ctx.context.baseURL}/oauth2/token`);
  	const { clientId: client_id, clientSecret: client_secret, preVerified, authMethod } = destructureCredentials(credentials);
-@@ -2305,18 +2323,27 @@ async function handleRefreshTokenGrant(ctx, opts) {
+@@ -2305,18 +2334,27 @@ async function handleRefreshTokenGrant(ctx, opts) {
  			value: await getStoredToken(opts.storeTokens, decodedRefresh.token, "refresh_token")
  		}]
  	});
@@ -123,7 +143,7 @@ index e8ed5d4..6a7e1cb 100644
  	if (resources && refreshToken.resources && !resources.every((v) => refreshToken.resources?.includes(v))) throw new APIError("BAD_REQUEST", {
  		error_description: "requested resource invalid",
  		error: "invalid_target"
-@@ -2340,12 +2367,21 @@ async function handleRefreshTokenGrant(ctx, opts) {
+@@ -2340,12 +2378,21 @@ async function handleRefreshTokenGrant(ctx, opts) {
  				resources: resources ?? refreshToken.resources
  			}));
  			if (replay) return replayRefreshTokenRotationResponse(ctx, replay);
@@ -145,7 +165,28 @@ index e8ed5d4..6a7e1cb 100644
  		throw new APIError("BAD_REQUEST", {
  			error_description: "invalid refresh token",
  			error: "invalid_grant"
-@@ -2430,7 +2466,7 @@ async function validateJwtAccessToken(ctx, opts, token, clientId) {
+@@ -2357,6 +2404,11 @@ async function handleRefreshTokenGrant(ctx, opts) {
+ 		error: "invalid_request"
+ 	});
+ 	const authTime = refreshToken.authTime != null ? normalizeTimestampValue(refreshToken.authTime) : void 0;
++	const sessionId = await findActiveSessionId(ctx, refreshToken.sessionId);
++	if (refreshToken.sessionId && !sessionId && !(requestedScopes ?? scopes)?.includes("offline_access")) throw new APIError("BAD_REQUEST", {
++		error_description: "invalid refresh token",
++		error: "invalid_grant"
++	});
+ 	return createUserTokens(ctx, opts, {
+ 		client,
+ 		scopes: requestedScopes ?? scopes,
+@@ -2364,7 +2416,7 @@ async function handleRefreshTokenGrant(ctx, opts) {
+ 		grantType: "refresh_token",
+ 		referenceId: refreshToken.referenceId,
+ 		authorizationCodeId: refreshToken.authorizationCodeId,
+-		sessionId: refreshToken.sessionId,
++		sessionId,
+ 		refreshToken,
+ 		resources: resources ?? refreshToken.resources,
+ 		authTime,
+@@ -2430,7 +2482,7 @@ async function validateJwtAccessToken(ctx, opts, token, clientId) {
  	const jwtPlugin = getJwtPlugin(ctx.context);
  	const jwtPluginOptions = jwtPlugin.options;
  	const userInfoAud = `${ctx.context.baseURL ?? ""}/oauth2/userinfo`;
@@ -154,7 +195,7 @@ index e8ed5d4..6a7e1cb 100644
  	let jwtPayload;
  	try {
  		const jwksFetch = jwtPluginOptions?.jwks?.remoteUrl ? jwtPluginOptions.jwks.remoteUrl : async () => {
-@@ -2552,7 +2588,7 @@ async function validateOpaqueAccessToken(ctx, opts, token, clientId) {
+@@ -2552,7 +2604,7 @@ async function validateOpaqueAccessToken(ctx, opts, token, clientId) {
  		payload: {
  			...accessTokenClaims,
  			active: true,
@@ -163,7 +204,13 @@ index e8ed5d4..6a7e1cb 100644
  			aud: toAudienceClaim(audienceClaim),
  			client_id: accessToken.clientId,
  			azp: accessToken.clientId,
-@@ -2603,7 +2639,7 @@ async function validateRefreshToken(ctx, opts, token, clientId) {
+@@ -2598,12 +2650,13 @@ async function validateRefreshToken(ctx, opts, token, clientId) {
+ 		});
+ 		if (!session || session.expiresAt < /* @__PURE__ */ new Date()) sessionId = void 0;
+ 	}
++	if (refreshToken.sessionId && !sessionId && !refreshToken.scopes?.includes("offline_access")) return { active: false };
+ 	let user = void 0;
+ 	if (refreshToken.userId) user = await ctx.context.internalAdapter.findUserById(refreshToken?.userId) ?? void 0;
  	return {
  		active: true,
  		client_id: clientId,
@@ -172,7 +219,7 @@ index e8ed5d4..6a7e1cb 100644
  		sub: user?.id,
  		sid: sessionId,
  		exp: Math.floor(new Date(refreshToken.expiresAt).getTime() / 1e3),
-@@ -3256,7 +3292,7 @@ function authServerMetadata(ctx, opts, overrides) {
+@@ -3256,7 +3309,7 @@ function authServerMetadata(ctx, opts, overrides) {
  	const backchannelSupported = !overrides?.jwt_disabled;
  	return {
  		scopes_supported: overrides?.scopes_supported,
@@ -181,7 +228,7 @@ index e8ed5d4..6a7e1cb 100644
  		authorization_endpoint: `${baseURL}/oauth2/authorize`,
  		token_endpoint: `${baseURL}/oauth2/token`,
  		jwks_uri: overrides?.jwt_disabled ? void 0 : opts?.jwks?.remoteUrl ?? `${baseURL}${opts?.jwks?.jwksPath ?? "/jwks"}`,
-@@ -3309,6 +3345,7 @@ function buildAuthServerMetadata(ctx, opts) {
+@@ -3309,6 +3362,7 @@ function buildAuthServerMetadata(ctx, opts) {
  		jwtPluginOptions,
  		clientDiscoveries,
  		authMetadata: authServerMetadata(ctx, jwtPluginOptions, {
@@ -189,7 +236,7 @@ index e8ed5d4..6a7e1cb 100644
  			scopes_supported: opts.advertisedMetadata?.scopes_supported ?? opts.scopes,
  			dynamic_client_registration_supported: opts.allowDynamicClientRegistration,
  			public_client_supported: publicClientSupported,
-@@ -6180,7 +6217,7 @@ async function revokeJwtAccessToken(ctx, opts, token) {
+@@ -6180,7 +6234,7 @@ async function revokeJwtAccessToken(ctx, opts, token) {
  			jwksFetch,
  			jwksCacheKey: jwtPlugin
  		});
@@ -198,7 +245,7 @@ index e8ed5d4..6a7e1cb 100644
  	} catch (error) {
  		if (error instanceof errors.JWTExpired || error instanceof errors.JWTInvalid) return null;
  		if (error instanceof TypeError || isInvalidJwtError(error)) throw new APIError$1("BAD_REQUEST", {
-@@ -6968,7 +7005,7 @@ const oauthProvider = (options) => {
+@@ -6968,7 +7022,7 @@ const oauthProvider = (options) => {
  	const handleIssuerMetadataRequest = async (request, ctx) => {
  		const requestPathname = new URL(request.url).pathname;
  		const requestPath = ctx.options.advanced?.skipTrailingSlashes ? requestPathname.replace(/\/+$/, "") || "/" : requestPathname;
@@ -207,7 +254,7 @@ index e8ed5d4..6a7e1cb 100644
  		let issuerPath = "/";
  		try {
  			issuerPath = new URL(issuer).pathname.replace(/\/$/, "") || "";
-@@ -8128,7 +8165,8 @@ function validateIssuerUrl(issuer) {
+@@ -8128,7 +8182,8 @@ function validateIssuerUrl(issuer) {
  */
  function getIssuer(ctx, opts) {
  	let issuer;
@@ -217,7 +264,7 @@ index e8ed5d4..6a7e1cb 100644
  	else try {
  		issuer = getJwtPlugin(ctx.context).options?.jwt?.issuer ?? ctx.context.baseURL;
  	} catch {
-@@ -8545,3 +8583,4 @@ async function signParams(ctx, opts, flags) {
+@@ -8545,3 +8600,4 @@ async function signParams(ctx, opts, flags) {
  }
  //#endregion
  export { extractRepeatedResourceFromForm as _, registerClientMetadataDocument as a, oauthClientMetadataSchema as b, isForbiddenCimdClientMetadataField as c, metadataResponse as d, oauthAuthorizationServerMetadata as f, getOAuthProviderApi as g, oidcServerMetadata as h, oauthProvider as i, validatePublicClientJwks as l, oauthProviderOpenIdConfigMetadata as m, DEFAULT_OAUTH_SCOPES as n, client_assertion_exports as o, oauthProviderAuthServerMetadata as p, getOAuthProviderState as r, consumeClientAssertion as s, getIssuer as t, authServerMetadata as u, resolveResourcePolicy as v, ResourceUriSchema as y };

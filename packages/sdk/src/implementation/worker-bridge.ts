@@ -185,8 +185,11 @@ export class ExecutorAppData extends DurableObject {
   #caches = new Map();
   fetch(request) { return bridge.fetch(request, { STORAGE: this.#storage }); }
   async invoke(id, body, headers, elicitation, workflows, cache) {
-    const session = cache == null ? undefined : bridge.cacheSession?.(cache);
-    if (session) this.#caches.set(id, session);
+    // The runtime disposes a stub passed to a call when the call returns, and a stale read's
+    // refresh outlives the call: keep a duplicate until the call's session is over.
+    const callback = cache == null || bridge.cacheSession == null ? null : cache.dup();
+    const session = callback == null ? undefined : bridge.cacheSession(callback);
+    if (session) this.#caches.set(id, { session, callback });
     const controller = new AbortController();
     this.#calls.set(id, controller);
     try {
@@ -198,6 +201,7 @@ export class ExecutorAppData extends DurableObject {
       return dispatched(clock, started, await response.json());
     } finally { this.#calls.delete(id); }
   }
-  async finish(id) { try { await this.#caches.get(id)?.drain(); } finally { this.#caches.delete(id); collect(); } }
-  async cancel(id) { this.#calls.get(id)?.abort(); await this.#caches.get(id)?.cancel(); this.#caches.delete(id); collect(); }
+  async finish(id) { const entry = this.#caches.get(id); try { await entry?.session.drain(); } finally { this.#release(id, entry); } }
+  async cancel(id) { this.#calls.get(id)?.abort(); const entry = this.#caches.get(id); try { await entry?.session.cancel(); } finally { this.#release(id, entry); } }
+  #release(id, entry) { entry?.callback[Symbol.dispose](); this.#caches.delete(id); collect(); }
 }`;

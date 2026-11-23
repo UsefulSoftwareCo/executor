@@ -357,13 +357,14 @@ const make = Effect.gen(function* () {
       Effect.timeout("30 seconds"),
       Effect.mapError(() => new OAuthFailed({ operation: "token exchange", status: 0 })),
     );
-  const refreshResponse = (grant: Grant, tokenOrigin?: string) =>
+  const refreshResponse = (grant: Grant, tokenOrigin?: string, scope?: string) =>
     exchange(
       {
         grant_type: "refresh_token",
         client_id: grant.clientId,
         refresh_token: reveal(grant.tokens).refresh_token,
         resource: grant.resource,
+        ...(scope === undefined ? {} : { scope }),
       },
       tokenOrigin,
     );
@@ -674,11 +675,12 @@ const make = Effect.gen(function* () {
       ),
     /**
      * Refresh at the token endpoint on `tokenOrigin`, by default the browser origin's: another
-     * origin's is where a client that discovered the endpoints elsewhere keeps sending it.
+     * origin's is where a client that discovered the endpoints elsewhere keeps sending it. A
+     * `scope` asks for fewer scopes than the grant holds.
      */
-    refresh: (grant: Grant, tokenOrigin?: string) =>
+    refresh: (grant: Grant, tokenOrigin?: string, scope?: string) =>
       Effect.gen(function* () {
-        const response = yield* refreshResponse(grant, tokenOrigin);
+        const response = yield* refreshResponse(grant, tokenOrigin, scope);
         yield* ok("refresh grant", response.status);
         const tokens = yield* body(Tokens, response).pipe(
           Effect.map(secret),
