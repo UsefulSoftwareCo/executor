@@ -5,7 +5,7 @@
  */
 import { Browser } from "../support/browser.ts";
 import { expect, layer } from "@effect/vitest";
-import { Effect, Exit, Schema } from "effect";
+import { Effect, Exit, Redacted, Schema } from "effect";
 import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
 import { Api, body, type Session } from "../support/api.ts";
@@ -14,6 +14,9 @@ import { McpClient } from "../support/mcp-client.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
 import { appsManifest } from "../support/apps-release.ts";
+import { consentTo, revokeClientGrants } from "../support/mcp-connections.ts";
+import { Target } from "../support/platform.ts";
+import { targetHosts } from "../support/role-hosts.ts";
 
 const source = `import { defineApp, mutation, query, workflow, object, string, json, router } from "apps";
 import { always, human } from "apps/operations/approval";
@@ -90,8 +93,70 @@ const deployCallerApp = Effect.gen(function* () {
   return { app, path };
 });
 
+const ApprovalView = Schema.Union([
+  Schema.Struct({
+    status: Schema.Literal("pending"),
+    request: Schema.Struct({
+      status: Schema.Literal("approval-required"),
+      invocation: Schema.Struct({ tool: Schema.String }),
+    }),
+  }),
+  Schema.Struct({ status: Schema.Literal("answered") }),
+  Schema.Struct({ status: Schema.Literal("unavailable") }),
+]);
+const ApprovalAck = Schema.Struct({ status: Schema.Literals(["answered", "unavailable"]) });
+
+const approvalPath = (requestId: string, params: URLSearchParams) =>
+  `/api/mcp/approvals/${encodeURIComponent(requestId)}?${params.toString()}`;
+
+const withMode = (base: URLSearchParams, mode: string | null) => {
+  const next = new URLSearchParams(base);
+  if (mode === null) next.delete("mode");
+  else next.set("mode", mode);
+  return next;
+};
+
+const mcpRunner = (
+  client: Effect.Success<ReturnType<McpClient["Service"]["connect"]>>,
+  slug: string,
+  mode?: "model" | "browser" | "automatic",
+) => {
+  const tool = (name: string, input: Schema.Json) =>
+    `return await tools[${JSON.stringify(slug)}].${name}(${JSON.stringify(input)});`;
+  const execute = (step: string, name: string, input: Schema.Json = {}) =>
+    client.use(step, (client, signal) =>
+      client.callTool({ name: "execute", arguments: { code: tool(name, input) } }, undefined, {
+        signal,
+      }),
+    );
+  const resume = (step: string, requestId: string) =>
+    client.use(step, (client, signal) =>
+      client.callTool(
+        {
+          name: "resume",
+          arguments:
+            mode === "browser" ? { requestId } : { requestId, response: { action: "accept" } },
+        },
+        undefined,
+        { signal },
+      ),
+    );
+  const completed = <A>(schema: Schema.Codec<A>, result: unknown) =>
+    Schema.decodeUnknownEffect(Schema.Struct({ structuredContent: Completed }))(result).pipe(
+      Effect.flatMap((done) =>
+        Schema.decodeUnknownEffect(schema)(done.structuredContent.execution.value),
+      ),
+    );
+  return { execute, resume, completed };
+};
+
 /** One user's MCP client over a personal access token, deleted when the scenario ends. */
-const mcpUser = (actor: Session, label: string, slug: string) =>
+const mcpUser = (
+  actor: Session,
+  label: string,
+  slug: string,
+  mode?: "model" | "browser" | "automatic",
+) =>
   Effect.gen(function* () {
     const api = yield* Api,
       actors = yield* Actors,
@@ -107,30 +172,15 @@ const mcpUser = (actor: Session, label: string, slug: string) =>
     yield* Effect.addFinalizer(() => Effect.ignore(revoke));
     const client = yield* mcp.connect(key.key, `caller-identity-${label}`, {
       organization: actors.organization.id,
+      ...(mode === undefined ? {} : { mode }),
     });
-    const tool = (name: string, input: Schema.Json) =>
-      `return await tools[${JSON.stringify(slug)}].${name}(${JSON.stringify(input)});`;
-    const execute = (step: string, name: string, input: Schema.Json = {}) =>
-      client.use(step, (client, signal) =>
-        client.callTool({ name: "execute", arguments: { code: tool(name, input) } }, undefined, {
-          signal,
-        }),
-      );
-    const resume = (step: string, requestId: string) =>
-      client.use(step, (client, signal) =>
-        client.callTool(
-          { name: "resume", arguments: { requestId, response: { action: "accept" } } },
-          undefined,
-          { signal },
-        ),
-      );
-    const completed = <A>(schema: Schema.Codec<A>, result: unknown) =>
-      Schema.decodeUnknownEffect(Schema.Struct({ structuredContent: Completed }))(result).pipe(
-        Effect.flatMap((done) =>
-          Schema.decodeUnknownEffect(schema)(done.structuredContent.execution.value),
-        ),
-      );
-    return { actor, execute, resume, completed, revoke, keyId: key.id, secret: key.key };
+    return {
+      actor,
+      ...mcpRunner(client, slug, mode),
+      revoke,
+      keyId: key.id,
+      secret: key.key,
+    };
   });
 
 layer(HostedLive, { excludeTestServices: true })("Caller identity", (it) => {
@@ -269,7 +319,7 @@ layer(HostedLive, { excludeTestServices: true })("Caller identity", (it) => {
       Effect.gen(function* () {
         const actors = yield* Actors;
         const { app } = yield* deployCallerApp;
-        const alice = yield* mcpUser(actors.member, "person", app.slug);
+        const alice = yield* mcpUser(actors.member, "person", app.slug, "model");
         const asked = yield* Schema.decodeUnknownEffect(Pending)(
           (yield* alice.execute("agent asks", "personal", { note: "needs a person" }))
             .structuredContent,
@@ -287,6 +337,8 @@ layer(HostedLive, { excludeTestServices: true })("Caller identity", (it) => {
         const page = new URL(asked.approvalUrl!);
         // A link names its grant only by an opaque reference: no grant ID, API key ID or JSON.
         expect([...page.searchParams.keys()].sort()).toEqual(["grant", "mode", "sessionId"]);
+        expect(page.searchParams.get("mode")).toBe("model");
+        expect(page.searchParams.get("sessionId")).toBe("model");
         expect(asked.approvalUrl).not.toContain("grantId");
         expect(asked.approvalUrl).not.toContain("pat:");
         expect(asked.approvalUrl).not.toContain(alice.keyId);
@@ -317,6 +369,259 @@ layer(HostedLive, { excludeTestServices: true })("Caller identity", (it) => {
         });
         // No part of the caller, the approver or the approval link carries the key's secret.
         expect(JSON.stringify([asked, refused, done])).not.toContain(alice.secret);
+      }).pipe(Effect.provide(McpClient.layer)),
+    ),
+  );
+
+  it.effect(scenarios.personApprovalAutomatic.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const api = yield* Api,
+          actors = yield* Actors,
+          mcp = yield* McpClient,
+          target = yield* Target;
+        const { app } = yield* deployCallerApp;
+        const clients: string[] = [];
+        yield* revokeClientGrants(actors.owner, () => clients);
+        const plain = `${targetHosts(target).mcp}/mcp`;
+        const consent = yield* consentTo(actors.owner, plain, {
+          "x-executor-organization": actors.organization.id,
+          "x-executor-grant-settings": JSON.stringify({ mode: "automatic" }),
+        });
+        clients.push(consent.clientId);
+        expect(consent.status).toBe(200);
+        const token = yield* consent.tokens;
+        const autoClient = yield* mcp.connect(token, "caller-identity-automatic");
+        const auto = mcpRunner(autoClient, app.slug, "automatic");
+
+        // 1. Automatic mode auto-accepts always() with client approval.
+        const reviewed = yield* auto.completed(
+          Identity,
+          yield* auto.execute("automatic client runs always() tool", "reviewed", { note: "auto" }),
+        );
+        expect(reviewed.caller).toMatchObject({
+          kind: "agent",
+          channel: "mcp",
+          email: "owner@example.test",
+          organizationId: actors.organization.id,
+        });
+        expect(reviewed.approvedBy).toMatchObject({
+          kind: "agent",
+          method: "client",
+          channel: "mcp",
+          subject: reviewed.caller.subject,
+        });
+
+        // 2. human() still pauses and returns an approval link naming mode=automatic.
+        const asked = yield* Schema.decodeUnknownEffect(Pending)(
+          (yield* auto.execute("automatic client runs human() tool", "personal", {
+            note: "needs owner",
+          })).structuredContent,
+        );
+        expect(asked.human).toBe(true);
+        expect(asked.approvalUrl).toBeDefined();
+        const page = new URL(asked.approvalUrl!);
+        expect([...page.searchParams.keys()].sort()).toEqual(["grant", "mode", "sessionId"]);
+        expect(page.searchParams.get("mode")).toBe("automatic");
+        expect(page.searchParams.get("sessionId")).toBe("automatic");
+        expect(asked.approvalUrl).not.toContain("grantId");
+        expect(asked.approvalUrl).not.toContain("pat:");
+        expect(decodeURIComponent(asked.approvalUrl!)).not.toContain("{");
+
+        // 3. The agent's own acceptance never answers a human() request.
+        const refused = yield* Schema.decodeUnknownEffect(Pending)(
+          (yield* auto.resume("automatic agent tries to self-approve", asked.requestId))
+            .structuredContent,
+        );
+        expect(refused.requestId).toBe(asked.requestId);
+        expect(refused.human).toBe(true);
+        expect(refused.approvalUrl).toBeDefined();
+        expect(new URL(refused.approvalUrl!).searchParams.get("mode")).toBe("automatic");
+
+        // 4. Owner reads the approval page API for the automatic link.
+        const ownLink = approvalPath(asked.requestId, page.searchParams);
+        const ownerView = yield* api.request(actors.owner, "GET", ownLink);
+        expect(ownerView.status, JSON.stringify(ownerView.body)).toBe(200);
+        const pending = yield* body(ApprovalView, ownerView);
+        expect(pending).toMatchObject({
+          status: "pending",
+          request: { status: "approval-required", invocation: { tool: "personal" } },
+        });
+
+        // 5. Other members of the same org are refused on GET and POST; request stays pending.
+        for (const other of [actors.member, actors.admin]) {
+          expect((yield* api.request(other, "GET", ownLink)).status).toBe(403);
+          expect(
+            (yield* api.request(other, "POST", ownLink, { response: { action: "accept" } })).status,
+          ).toBe(403);
+        }
+        const stillPending = yield* api.request(actors.owner, "GET", ownLink);
+        expect(stillPending.status).toBe(200);
+        expect((yield* body(ApprovalView, stillPending)).status).toBe("pending");
+
+        // 6. Owner hand-editing mode on the automatic link is refused (K4, K6).
+        for (const edited of ["model", null] as const) {
+          const path = approvalPath(asked.requestId, withMode(page.searchParams, edited));
+          expect((yield* api.request(actors.owner, "GET", path)).status).toBe(403);
+          expect(
+            (yield* api.request(actors.owner, "POST", path, { response: { action: "accept" } }))
+              .status,
+          ).toBe(403);
+        }
+        for (const invalid of ["browser", "native", "bogus"]) {
+          const path = approvalPath(asked.requestId, withMode(page.searchParams, invalid));
+          expect((yield* api.request(actors.owner, "GET", path)).status).toBe(400);
+        }
+
+        // 7. Model and browser foils owned by the same user cannot cross modes or grants.
+        const modelFoil = yield* mcpUser(actors.owner, "model-foil", app.slug, "model");
+        const browserFoil = yield* mcpUser(actors.owner, "browser-foil", app.slug, "browser");
+        const modelAsked = yield* Schema.decodeUnknownEffect(Pending)(
+          (yield* modelFoil.execute("model foil asks", "personal", { note: "model" }))
+            .structuredContent,
+        );
+        expect(modelAsked.human).toBe(true);
+        const modelPage = new URL(modelAsked.approvalUrl!);
+        expect(modelPage.searchParams.get("mode")).toBe("model");
+
+        const browserAsked = yield* Schema.decodeUnknownEffect(Pending)(
+          (yield* browserFoil.execute("browser foil asks", "personal", { note: "browser" }))
+            .structuredContent,
+        );
+        expect(browserAsked.human).toBe(true);
+        const browserPage = new URL(browserAsked.approvalUrl!);
+        expect(browserPage.searchParams.get("mode")).toBeNull();
+
+        // Model and browser links re-pointed at the automatic run's id.
+        for (const [params, mode, expectedStatus] of [
+          [modelPage.searchParams, "automatic", 403],
+          [browserPage.searchParams, "automatic", 403],
+          [browserPage.searchParams, "model", 403],
+        ] as const) {
+          const path = approvalPath(asked.requestId, withMode(params, mode));
+          expect((yield* api.request(actors.owner, "GET", path)).status).toBe(expectedStatus);
+          expect(
+            (yield* api.request(actors.owner, "POST", path, { response: { action: "accept" } }))
+              .status,
+          ).toBe(expectedStatus);
+        }
+        const crossGrantModel = yield* api.request(
+          actors.owner,
+          "GET",
+          approvalPath(asked.requestId, withMode(modelPage.searchParams, "model")),
+        );
+        expect(crossGrantModel.status).toBe(200);
+        expect(yield* body(ApprovalView, crossGrantModel)).toEqual({ status: "unavailable" });
+
+        // Hand-edited modes on the model and browser foils' own request IDs (every direction).
+        for (const [id, params, mode] of [
+          [modelAsked.requestId, modelPage.searchParams, "automatic"],
+          [modelAsked.requestId, modelPage.searchParams, null],
+          [browserAsked.requestId, browserPage.searchParams, "automatic"],
+          [browserAsked.requestId, browserPage.searchParams, "model"],
+        ] as const) {
+          const path = approvalPath(id, withMode(params, mode));
+          expect((yield* api.request(actors.owner, "GET", path)).status).toBe(403);
+          expect(
+            (yield* api.request(actors.owner, "POST", path, { response: { action: "accept" } }))
+              .status,
+          ).toBe(403);
+        }
+
+        // 8. Automatic grant reference pointed at the browser foil's request and session.
+        const autoOnBrowserNoMode = new URLSearchParams({
+          grant: page.searchParams.get("grant")!,
+          sessionId: browserPage.searchParams.get("sessionId")!,
+        });
+        expect(
+          (yield* api.request(
+            actors.owner,
+            "GET",
+            approvalPath(browserAsked.requestId, autoOnBrowserNoMode),
+          )).status,
+        ).toBe(403);
+        const autoOnBrowserWithAuto = new URLSearchParams(autoOnBrowserNoMode);
+        autoOnBrowserWithAuto.set("mode", "automatic");
+        const crossGrantAuto = yield* api.request(
+          actors.owner,
+          "GET",
+          approvalPath(browserAsked.requestId, autoOnBrowserWithAuto),
+        );
+        expect(crossGrantAuto.status).toBe(200);
+        expect(yield* body(ApprovalView, crossGrantAuto)).toEqual({ status: "unavailable" });
+
+        // 9. Model and browser foils still approve and complete through their own links (K2, K3).
+        const modelOwnPath = approvalPath(modelAsked.requestId, modelPage.searchParams);
+        expect((yield* api.request(actors.owner, "GET", modelOwnPath)).status).toBe(200);
+        const modelAnswer = yield* api.request(actors.owner, "POST", modelOwnPath, {
+          response: { action: "accept" },
+        });
+        expect(modelAnswer.status).toBe(200);
+        expect(yield* body(ApprovalAck, modelAnswer)).toEqual({ status: "answered" });
+        const modelDone = yield* modelFoil.completed(
+          Identity,
+          yield* modelFoil.resume("model foil collects", modelAsked.requestId),
+        );
+        expect(modelDone.approvedBy).toMatchObject({
+          kind: "human",
+          method: "browser",
+          channel: "ui",
+          email: "owner@example.test",
+          subject: modelDone.caller.subject,
+        });
+
+        const browserOwnPath = approvalPath(browserAsked.requestId, browserPage.searchParams);
+        expect((yield* api.request(actors.owner, "GET", browserOwnPath)).status).toBe(200);
+        const browserAnswer = yield* api.request(actors.owner, "POST", browserOwnPath, {
+          response: { action: "accept" },
+        });
+        expect(browserAnswer.status).toBe(200);
+        expect(yield* body(ApprovalAck, browserAnswer)).toEqual({ status: "answered" });
+        const browserDone = yield* browserFoil.completed(
+          Identity,
+          yield* browserFoil.resume("browser foil collects", browserAsked.requestId),
+        );
+        expect(browserDone.approvedBy).toMatchObject({
+          kind: "human",
+          method: "browser",
+          channel: "ui",
+          email: "owner@example.test",
+          subject: browserDone.caller.subject,
+        });
+
+        // 10. Owner opens the automatic approval link in a real browser and clicks Approve.
+        const browser = yield* Browser;
+        yield* browser.login(actors.owner);
+        yield* browser.use("owner opens the automatic approval link", (tab) =>
+          tab.goto(`${page.pathname}${page.search}`),
+        );
+        yield* browser.use("owner approves on the page", (tab) =>
+          tab.getByRole("button", { name: "Approve", exact: true }).click(),
+        );
+        yield* browser.use("the page confirms the answer", (tab) =>
+          tab.getByText("You can return to your agent.").waitFor(),
+        );
+
+        // 11. Automatic agent resumes and receives the human approval.
+        const done = yield* auto.completed(
+          Identity,
+          yield* auto.resume("automatic agent collects", asked.requestId),
+        );
+        expect(done.caller).toMatchObject({
+          kind: "agent",
+          channel: "mcp",
+          email: "owner@example.test",
+          organizationId: actors.organization.id,
+        });
+        expect(done.approvedBy).toMatchObject({
+          kind: "human",
+          method: "browser",
+          channel: "ui",
+          email: "owner@example.test",
+          subject: done.caller.subject,
+        });
+        expect(JSON.stringify([asked, refused, done])).not.toContain(Redacted.value(token));
       }).pipe(Effect.provide(McpClient.layer)),
     ),
   );

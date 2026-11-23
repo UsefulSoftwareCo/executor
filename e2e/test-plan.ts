@@ -10196,6 +10196,19 @@ export const scenarios = plan({
       local: na("This scenario uses hosted memberships, API keys and the browser approval page."),
     },
   },
+  personApprovalAutomatic: {
+    fixtures: "actors",
+    file: "caller-identity.spec.ts",
+    title:
+      "the owner of an automatic-mode grant approves a tool that requires a person on its approval page, and no other account, grant or mode reaches the request",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na(
+        "This scenario uses hosted memberships, OAuth grants and the browser approval page.",
+      ),
+    },
+  },
   sharedRuntime: {
     fixtures: "actors",
     file: "shared-runtime.spec.ts",
