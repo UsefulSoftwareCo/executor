@@ -144,6 +144,7 @@
     "e2e:lost-connections-lifecycle": "vitest run --config e2e/lost-connections-lifecycle.config.ts",
     "e2e:test-stage-branch": "vitest run --config e2e/test-stage-branch.config.ts",
     "e2e:test-stage-orphans": "vitest run --config e2e/test-stage-orphans.config.ts",
+    "e2e:test-stage-domain-cleanup": "vitest run --config e2e/test-stage-domain-cleanup.config.ts",
     "e2e:typecheck-runner": "vitest run --config e2e/typecheck-runner.config.ts",
     "e2e:prepare-cache": "vitest run --config e2e/prepare-cache.config.ts",
     "e2e:run-retention": "vitest run --config e2e/run-retention.config.ts",

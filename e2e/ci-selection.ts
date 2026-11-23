@@ -874,6 +874,7 @@ const suiteConfigs: Record<string, () => Promise<unknown>> = {
   "standalone-lockdown.config.ts": () => import("./standalone-lockdown.config.ts"),
   "subrequest-depth.config.ts": () => import("./subrequest-depth.config.ts"),
   "test-stage-branch.config.ts": () => import("./test-stage-branch.config.ts"),
+  "test-stage-domain-cleanup.config.ts": () => import("./test-stage-domain-cleanup.config.ts"),
   "test-stage-orphans.config.ts": () => import("./test-stage-orphans.config.ts"),
   "test-stage-unreadable.config.ts": () => import("./test-stage-unreadable.config.ts"),
   "typecheck-runner.config.ts": () => import("./typecheck-runner.config.ts"),

@@ -40,7 +40,7 @@
     },
     "apps/cli": {
       "name": "executor",
-      "version": "2.0.0-beta.69",
+      "version": "2.0.0-beta.70",
     },
     "apps/docs": {
       "name": "@executor-js/docs",
