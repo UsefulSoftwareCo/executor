@@ -570,6 +570,7 @@ const HeadRuns = Schema.fromJsonString(
 
 const RunArtifacts = Schema.fromJsonString(
   Schema.Struct({
+    total_count: Schema.Number,
     artifacts: Schema.Array(Schema.Struct({ id: Schema.Number, name: Schema.String })),
   }),
 );
@@ -702,10 +703,18 @@ const look = (
         // Every run on the head is read, since any one with a fitting record passes; the ten newest
         // cover a stack's duplicates and re-runs.
         for (const run of runs.slice(0, 10)) {
-          const { artifacts } = yield* read(
-            RunArtifacts,
-            `repos/${repository}/actions/runs/${run.id}/artifacts?per_page=100`,
-          );
+          // Every page: a run re-run a few times holds more than the 100 a page lists, newest
+          // first, and its select's record, uploaded first, then falls past the first page (#5407's
+          // run held 138 on 24 Nov 2026, its record on page 2).
+          const artifacts: Array<(typeof RunArtifacts.Type)["artifacts"][number]> = [];
+          for (let page = 1; ; page += 1) {
+            const listed = yield* read(
+              RunArtifacts,
+              `repos/${repository}/actions/runs/${run.id}/artifacts?per_page=100&page=${page}`,
+            );
+            artifacts.push(...listed.artifacts);
+            if (listed.artifacts.length === 0 || artifacts.length >= listed.total_count) break;
+          }
           // Its own record: a re-run that chose differently uploads a second one, and the newest
           // is what the run's latest attempt chose.
           const newest = artifacts
