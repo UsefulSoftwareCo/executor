@@ -2,6 +2,9 @@
  * The official MCP client over stdio, starting a command as MCP clients such as Claude Code do.
  * The scope closes the client, which ends the command's standard input.
  */
+import { Client as LatestClient, ProtocolError } from "@modelcontextprotocol/client";
+import { SkillsClient } from "@modelcontextprotocol/client/ext/skills";
+import { StdioClientTransport as LatestStdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { ElicitRequestSchema, type ElicitResult } from "@modelcontextprotocol/sdk/types.js";
@@ -77,5 +80,59 @@ export const stdioMcp = (input: {
           try: () => client.callTool({ name, arguments: input }),
           catch: failed,
         }).pipe(Effect.map((result) => result.structuredContent)),
+    };
+  });
+
+/**
+ * Start `command` with `env` only and connect to it with the official MCP SDK 2 client pinned to
+ * the stateless 2026-07-28, as Claude Code connects: `server/discover` instead of `initialize`, and
+ * the revision claimed in every request. Closed with the caller's scope.
+ */
+export const stdioMcpStateless = (input: {
+  readonly command: string;
+  readonly args: ReadonlyArray<string>;
+  readonly env: Record<string, string>;
+}) =>
+  Effect.gen(function* () {
+    const client = yield* Effect.acquireRelease(
+      Effect.tryPromise({
+        try: () => {
+          const client = new LatestClient(
+            { name: "executor-e2e-stdio-stateless", version: "1" },
+            { versionNegotiation: { mode: { pin: "2026-07-28" } } },
+          );
+          const transport = new LatestStdioClientTransport({
+            command: input.command,
+            args: [...input.args],
+            env: input.env,
+            stderr: "ignore",
+          });
+          return client.connect(transport).then(() => client);
+        },
+        catch: failed,
+      }),
+      (client) => Effect.promise(() => client.close()),
+    );
+    const skills = new SkillsClient(client);
+    return {
+      revision: client.getNegotiatedProtocolVersion(),
+      instructions: client.getInstructions(),
+      capabilities: client.getServerCapabilities(),
+      /** Run one request with the client or its skills extension. */
+      use: <A>(action: (client: LatestClient, skills: SkillsClient) => Promise<A>) =>
+        Effect.tryPromise({ try: () => action(client, skills), catch: failed }),
+      /** The JSON-RPC error code the server refuses a request with; any other outcome fails. */
+      refusal: (action: (client: LatestClient) => Promise<unknown>) =>
+        Effect.tryPromise({
+          try: () => action(client),
+          catch: (cause) => cause,
+        }).pipe(
+          Effect.flatMap(() => Effect.fail(failed("The request succeeded"))),
+          Effect.catch((cause) =>
+            cause instanceof ProtocolError
+              ? Effect.succeed(cause.code)
+              : Effect.fail(failed(cause)),
+          ),
+        ),
     };
   });

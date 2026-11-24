@@ -3,7 +3,17 @@
  * SDK owns the Streamable HTTP protocol; this adapter supplies each request's bearer, refuses
  * redirects so credentials never follow them, and turns the SDK's failures into the CLI's typed
  * errors. Response bodies and credentials never enter an error.
+ *
+ * The relay forwards whatever revision its client speaks, so its upstream is MCP SDK 2's transport,
+ * which knows 2026-07-28: it derives that revision's routing headers from each request's own
+ * `_meta` claim and leaves a message without one as SDK 1 sends it.
  */
+import {
+  InsufficientScopeError,
+  SdkError,
+  SdkHttpError,
+  StreamableHTTPClientTransport as RelayUpstreamTransport,
+} from "@modelcontextprotocol/client";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import {
   StreamableHTTPClientTransport,
@@ -12,6 +22,7 @@ import {
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type { FetchLike } from "@modelcontextprotocol/sdk/shared/transport.js";
 import {
+  type JSONRPCErrorResponse,
   type JSONRPCMessage,
   type JSONRPCRequest,
   McpError,
@@ -62,6 +73,18 @@ const authorizedFetch =
   };
 
 /**
+ * The host's HTTP status in a failure either SDK's Streamable HTTP transport raised: the tool
+ * commands' (MCP SDK 1) or the relay's (MCP SDK 2).
+ */
+const httpStatus = (error: unknown) => {
+  if (error instanceof StreamableHTTPError) return error.code;
+  if (error instanceof SdkHttpError) return error.status;
+  // SDK 2 raises this, not an HTTP error, for a 403 that names the scope it is missing.
+  if (error instanceof InsufficientScopeError) return 403;
+  return undefined;
+};
+
+/**
  * The CLI's error for a failure the SDK raised: an unresolved credential first, then the host's
  * HTTP status, then a JSON-RPC error the endpoint answered, and otherwise no answer at all.
  */
@@ -71,12 +94,13 @@ const toolFailure =
     const credential = failures.find((failure) => failure !== undefined);
     if (credential !== undefined) return credential;
     const path = URL.parse(target.url)?.pathname ?? "/mcp";
-    if (error instanceof StreamableHTTPError && error.code !== undefined && error.code > 0) {
-      if (error.code === 401) return new ToolsSignInRequired({ host: target.host });
-      if (error.code === 403) return new AppClientError({ reason: "forbidden" });
-      return new HostRequestFailed({ reason: "status", method: "POST", path, status: error.code });
+    const status = httpStatus(error);
+    if (status !== undefined && status > 0) {
+      if (status === 401) return new ToolsSignInRequired({ host: target.host });
+      if (status === 403) return new AppClientError({ reason: "forbidden" });
+      return new HostRequestFailed({ reason: "status", method: "POST", path, status });
     }
-    if (error instanceof StreamableHTTPError)
+    if (error instanceof StreamableHTTPError || error instanceof SdkError)
       return new HostRequestFailed({ reason: "response", method: "POST", path });
     if (error instanceof McpError)
       return new ToolCallRefused({
@@ -217,7 +241,10 @@ export const whoami = <E>(target: ToolsTarget<E>) =>
     );
   });
 
-/** Appended to the host's own instructions in the relay's `initialize` result. */
+/**
+ * Appended to the host's own instructions in the relay's `initialize` result, and in its
+ * `server/discover` result for a client on 2026-07-28, which has no `initialize`.
+ */
 export const relayInstructions =
   "The `executor` CLI is available in this shell and reaches these same tools: `executor search`, `describe`, `call`, `execute`, `resume` and `skills`. For a large result, prefer `executor call` or `executor execute` with its output redirected to a file, for example `executor execute --file program.js > result.json`, then read only the parts you need.";
 
@@ -225,6 +252,45 @@ const InitializeResult = Schema.Struct({
   protocolVersion: Schema.String,
   instructions: Schema.optional(Schema.String),
 });
+const DiscoverResult = Schema.Struct({ instructions: Schema.optional(Schema.String) });
+
+/** The host's instructions with the relay's after them. */
+const withRelayInstructions = (instructions: string | undefined) =>
+  instructions === undefined || instructions === ""
+    ? relayInstructions
+    : `${instructions}\n\n${relayInstructions}`;
+
+/**
+ * A message on 2026-07-28: it claims its revision in its own `_meta`, which SDK 2's transport
+ * derives a request's routing headers from, and has no session to be delivered on.
+ */
+const Stateless = Schema.Struct({
+  params: Schema.Struct({
+    _meta: Schema.Struct({ "io.modelcontextprotocol/protocolVersion": Schema.String }),
+  }),
+});
+/** The client cancelling one of its requests. */
+const Cancellation = Schema.Struct({
+  method: Schema.Literal("notifications/cancelled"),
+  params: Schema.Struct({ requestId: Schema.Union([Schema.String, Schema.Number]) }),
+});
+const decodeJsonBody = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
+
+/**
+ * The JSON-RPC error the host answered request `id` with in the body of an HTTP error, such as
+ * 404 for a method it does not serve. SDK 2 passes such an answer on itself for 400 only. A 401
+ * or 403 keeps the relay's own advice about the CLI's sign-in.
+ */
+const hostAnswer = (error: unknown, id: string | number) => {
+  if (!(error instanceof SdkHttpError) || error.status === 401 || error.status === 403)
+    return Option.none();
+  const text = error.data["text"];
+  return (typeof text === "string" ? decodeJsonBody(text) : Option.none()).pipe(
+    Option.filter(
+      (body): body is JSONRPCErrorResponse => isJSONRPCErrorResponse(body) && body.id === id,
+    ),
+  );
+};
 
 /** What a stdio client is told when the relay could not deliver its request. */
 const relayRefusal = (failure: unknown) => {
@@ -239,8 +305,7 @@ const relayRefusal = (failure: unknown) => {
 };
 
 /** Whether the host answered that it does not know the request's MCP session. */
-const sessionForgotten = (error: unknown) =>
-  error instanceof StreamableHTTPError && error.code === 404;
+const sessionForgotten = (error: unknown) => error instanceof SdkHttpError && error.status === 404;
 
 /**
  * How long the relay waits for the host to answer the `initialize` it sends to replace a forgotten
@@ -268,7 +333,7 @@ export const relay = <E>(target: ToolsTarget<E>) =>
     const report = (message: string) => Effect.runForkWith(services)(Console.error(message));
     const failures: Array<unknown> = [];
     const open = () =>
-      new StreamableHTTPClientTransport(new URL(target.url), {
+      new RelayUpstreamTransport(new URL(target.url), {
         fetch: authorizedFetch(target, failures),
       });
     /** The transport of the host session in use; replaced when the host forgets it. */
@@ -279,8 +344,11 @@ export const relay = <E>(target: ToolsTarget<E>) =>
       (transport) => Effect.promise(() => transport.close()),
     );
     yield* Effect.callback<void>((resume) => {
-      /** Requests whose answer is an `initialize` result, which carries the instructions. */
-      const initializing = new Set<string | number>();
+      /**
+       * Requests whose answer carries the host's instructions: an `initialize` result, or a
+       * `server/discover` result on 2026-07-28.
+       */
+      const instructing = new Map<string | number, "initialize" | "server/discover">();
       /** The client's own `initialize`, which a replacement session repeats. */
       let initialize: JSONRPCRequest | undefined;
       /** Answers to the relay's own `initialize` requests, by their IDs. */
@@ -288,8 +356,10 @@ export const relay = <E>(target: ToolsTarget<E>) =>
       let reinitializations = 0;
       /** The replacement session being opened, which every request that hit 404 waits for. */
       let reopening: Promise<void> | undefined;
+      /** The client's 2026-07-28 requests the host has not answered yet, each one's HTTP request. */
+      const stateless = new Map<string | number, AbortController>();
 
-      const wire = (transport: StreamableHTTPClientTransport) => {
+      const wire = (transport: RelayUpstreamTransport) => {
         transport.onmessage = (message) => {
           if (
             (isJSONRPCResultResponse(message) || isJSONRPCErrorResponse(message)) &&
@@ -298,23 +368,39 @@ export const relay = <E>(target: ToolsTarget<E>) =>
             const answer = reinitializing.get(message.id);
             if (answer !== undefined) return answer(message);
           }
+          if (isJSONRPCErrorResponse(message) && message.id !== undefined) {
+            instructing.delete(message.id);
+            stateless.delete(message.id);
+          }
+          if (isJSONRPCResultResponse(message)) stateless.delete(message.id);
           let forwarded: JSONRPCMessage = message;
-          if (isJSONRPCResultResponse(message) && initializing.delete(message.id)) {
-            const initialized = Schema.decodeUnknownOption(InitializeResult)(message.result);
-            if (Option.isSome(initialized)) {
-              transport.setProtocolVersion(initialized.value.protocolVersion);
-              const instructions = initialized.value.instructions;
+          const answered = isJSONRPCResultResponse(message)
+            ? instructing.get(message.id)
+            : undefined;
+          if (isJSONRPCResultResponse(message) && answered !== undefined) {
+            instructing.delete(message.id);
+            // Only `initialize` fixes the session's revision; 2026-07-28 claims it in each request.
+            const instructions =
+              answered === "initialize"
+                ? Option.map(
+                    Schema.decodeUnknownOption(InitializeResult)(message.result),
+                    (initialized) => {
+                      transport.setProtocolVersion(initialized.protocolVersion);
+                      return initialized.instructions;
+                    },
+                  )
+                : Option.map(
+                    Schema.decodeUnknownOption(DiscoverResult)(message.result),
+                    (discovered) => discovered.instructions,
+                  );
+            if (Option.isSome(instructions))
               forwarded = {
                 ...message,
                 result: {
                   ...message.result,
-                  instructions:
-                    instructions === undefined || instructions === ""
-                      ? relayInstructions
-                      : `${instructions}\n\n${relayInstructions}`,
+                  instructions: withRelayInstructions(instructions.value),
                 },
               };
-            }
           }
           downstream.send(forwarded).catch(() => resume(Effect.void));
         };
@@ -329,7 +415,7 @@ export const relay = <E>(target: ToolsTarget<E>) =>
       };
 
       /** Open a session in place of `lost`, with the client's `initialize`, unless one already is. */
-      const reopen = (lost: StreamableHTTPClientTransport, original: JSONRPCRequest) => {
+      const reopen = (lost: RelayUpstreamTransport, original: JSONRPCRequest) => {
         if (upstream !== lost) return Promise.resolve();
         reopening ??= (async () => {
           const fresh = open();
@@ -373,10 +459,13 @@ export const relay = <E>(target: ToolsTarget<E>) =>
        * Send `message` on the current session. A request the host refuses because it forgot the
        * session is sent again, once, on a new one.
        */
-      const forward = async (message: JSONRPCMessage) => {
+      const forward = async (message: JSONRPCMessage, cancelled?: AbortSignal) => {
         const via = upstream;
         try {
-          await via.send(message);
+          await via.send(
+            message,
+            cancelled === undefined ? undefined : { requestSignal: cancelled },
+          );
         } catch (error) {
           const original = initialize;
           if (
@@ -395,11 +484,29 @@ export const relay = <E>(target: ToolsTarget<E>) =>
 
       wire(upstream);
       downstream.onmessage = (message) => {
-        if (isJSONRPCRequest(message) && message.method === "initialize") {
-          initializing.add(message.id);
-          initialize = message;
+        if (
+          isJSONRPCRequest(message) &&
+          (message.method === "initialize" || message.method === "server/discover")
+        )
+          instructing.set(message.id, message.method);
+        if (isJSONRPCRequest(message) && message.method === "initialize") initialize = message;
+        if (Schema.is(Cancellation)(message)) {
+          // 2026-07-28 cancels a request by closing its HTTP request, as SDK 2's own client does.
+          const cancelled = stateless.get(message.params.requestId);
+          stateless.delete(message.params.requestId);
+          cancelled?.abort();
+          // A request on a session is cancelled by the notification, which the session delivers.
+          // One on 2026-07-28 that is no longer in flight was answered already.
+          if (cancelled !== undefined || Schema.is(Stateless)(message)) return;
         }
-        forward(message).catch((error: unknown) => {
+        const request =
+          isJSONRPCRequest(message) && Schema.is(Stateless)(message)
+            ? new AbortController()
+            : undefined;
+        if (request !== undefined && isJSONRPCRequest(message)) stateless.set(message.id, request);
+        forward(message, request?.signal).catch((error: unknown) => {
+          // A cancelled request is answered by nobody, as the client expects.
+          if (request?.signal.aborted === true) return;
           const refusal =
             error instanceof ReinitializeFailed
               ? `Executor no longer knows this MCP session, and opening a new one failed: ${error.message}`
@@ -408,12 +515,18 @@ export const relay = <E>(target: ToolsTarget<E>) =>
             report(`executor mcp: ${refusal}`);
             return;
           }
-          initializing.delete(message.id);
-          return downstream.send({
+          stateless.delete(message.id);
+          instructing.delete(message.id);
+          const refused: JSONRPCErrorResponse = {
             jsonrpc: "2.0",
             id: message.id,
             error: { code: -32603, message: refusal },
-          });
+          };
+          return downstream.send(
+            request === undefined
+              ? refused
+              : Option.getOrElse(hostAnswer(error, message.id), () => refused),
+          );
         });
       };
       downstream.onerror = () => resume(Effect.void);

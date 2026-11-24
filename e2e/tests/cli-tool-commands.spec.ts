@@ -4,7 +4,7 @@
  * standard input, and a call that pauses for approval prints its request and resumes.
  */
 import { expect, layer } from "@effect/vitest";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { Config, Effect, FileSystem, Option, Path, Redacted, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { scenarios } from "../test-plan.ts";
@@ -17,7 +17,7 @@ import { localEntryCommand } from "../support/local-entry.ts";
 import { pairLocalOperator } from "../support/mcp-consent.ts";
 import { Target } from "../support/platform.ts";
 import { serverControl } from "../support/server-control.ts";
-import { stdioMcp } from "../support/stdio-mcp.ts";
+import { stdioMcp, stdioMcpStateless } from "../support/stdio-mcp.ts";
 
 // A 1x1 PNG, and the head and tail of a PDF, as tools return them.
 const png =
@@ -436,6 +436,72 @@ layer(TestLive, { excludeTestServices: true })("CLI tool commands", (it) => {
           }),
         );
         expect(resumed.execution.value).toMatchObject({ ok: true, value: { reviewed: receipt } });
+      }),
+    ),
+  );
+
+  it.effect(scenarios.localCliMcpRelayStateless.title, (context) =>
+    withCase(
+      context,
+      Effect.gen(function* () {
+        const cli = yield* localCli;
+        const evidence = yield* Evidence;
+        const command = localEntryCommand(cli.entry, ["mcp", "--host", cli.origin]);
+        const client = yield* stdioMcpStateless({
+          command: command.command,
+          args: command.args,
+          env: cli.env,
+        });
+
+        // The client stays on 2026-07-28: the relay's server/discover reached the host.
+        expect(client.revision).toBe("2026-07-28");
+        expect(client.capabilities?.extensions?.["io.modelcontextprotocol/skills"]).toEqual({
+          directoryRead: true,
+        });
+        // The host's own instructions, then the CLI's note about itself, as on initialize.
+        expect(client.instructions).toContain("## What Executor is");
+        expect(client.instructions).toContain("The `executor` CLI is available in this shell");
+
+        const tools = yield* client.use((mcp) => mcp.listTools());
+        expect(tools.tools.map((tool) => tool.name)).toEqual(
+          expect.arrayContaining(["skills", "search", "describe", "call", "execute", "resume"]),
+        );
+        const executed = yield* client.use((mcp) =>
+          mcp.callTool({
+            name: "execute",
+            arguments: { code: "return [6 * 7, 'stateless'].join(':')" },
+          }),
+        );
+        expect(
+          Schema.decodeUnknownSync(Completed)(executed.structuredContent).execution.value,
+        ).toBe("42:stateless");
+
+        // A method the host does not serve is refused with the host's own error, not the relay's.
+        expect(yield* client.refusal((mcp) => mcp.request({ method: "prompts/list" }))).toBe(
+          -32601,
+        );
+
+        // skills/list, skills/get and a skill file's resources/read, its bytes as listed.
+        const listing = yield* client.use((_, skills) => skills.list());
+        yield* evidence.json("stateless-skills-listing.json", listing);
+        const entry = listing.skills.find(
+          (skill) => skill.uri === "skill://executor/executor/SKILL.md",
+        );
+        if (entry === undefined)
+          return yield* Effect.die(
+            `The Executor app's entry skill was not listed: ${JSON.stringify(listing.skills.map((skill) => skill.uri))}`,
+          );
+        const got = yield* client.use((_, skills) => skills.get(entry.uri));
+        expect(got.skill).toEqual(entry);
+        const listed = entry.resources === "dynamic" ? [] : entry.resources;
+        const document = listed.find((resource) => resource.uri === entry.uri);
+        expect(document, JSON.stringify(listed)).toBeDefined();
+        const file = yield* client.use((_, skills) => skills.read(entry, entry.uri));
+        expect(file.verified).toBe(true);
+        expect(file.bytes.byteLength).toBe(document?.size);
+        expect(`sha256:${createHash("sha256").update(file.bytes).digest("hex")}`).toBe(
+          document?.digest,
+        );
       }),
     ),
   );

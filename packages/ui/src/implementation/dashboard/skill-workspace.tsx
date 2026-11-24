@@ -45,6 +45,7 @@ export function SkillWorkspace<E>({
   catalog,
   editing,
   Failure,
+  status,
   onCommitted,
 }: {
   readonly app: App;
@@ -52,6 +53,8 @@ export function SkillWorkspace<E>({
   readonly catalog?: AppSkillBundle;
   readonly editing: SkillEditing<E>;
   readonly Failure: ComponentType<FailureProps<E>>;
+  /** The last save's deploy, shown in every file's toolbar so it never moves the page. */
+  readonly status: ReactNode;
   readonly onCommitted: (result: Committed) => void;
 }) {
   const [selection, setSelection] = useState<Selection>();
@@ -108,7 +111,10 @@ export function SkillWorkspace<E>({
         </span>
         {file !== undefined && <SkillSize contents={[file.content]} className="shrink-0" />}
       </div>
-      <div className="ml-auto flex items-center gap-1">{actions}</div>
+      <div className="ml-auto flex items-center gap-1">
+        {status}
+        {actions}
+      </div>
     </div>
   );
   return (

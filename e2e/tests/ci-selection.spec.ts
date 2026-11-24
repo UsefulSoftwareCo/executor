@@ -293,7 +293,7 @@ const select = (input: {
 
 /**
  * A temporary copy of what the selector reads, for a case that changes it: the top-level e2e/*.ts
- * files, an empty e2e/tests/, package.json and the workflows, with the checkout's node_modules
+ * and e2e/*.json files (the split reads e2e/scenario-times.json), an empty e2e/tests/, package.json and the workflows, with the checkout's node_modules
  * linked in. The selector resolves its imports and files from its own location, so it reads only
  * the copy, and the case writes `files` there. The checkout is never written, so a killed or
  * concurrent run leaves it unchanged. The tree is removed when the case's scope closes.
@@ -305,7 +305,7 @@ const fixture = (files: Readonly<Record<string, string>> = {}) =>
     const root = yield* fs.makeTempDirectoryScoped({ prefix: "executor-ci-selection-root-" });
     yield* fs.makeDirectory(path.join(root, "e2e", "tests"), { recursive: true });
     for (const name of yield* fs.readDirectory("e2e"))
-      if (name.endsWith(".ts"))
+      if (name.endsWith(".ts") || name.endsWith(".json"))
         yield* fs.copyFile(path.join("e2e", name), path.join(root, "e2e", name));
     yield* fs.copyFile("package.json", path.join(root, "package.json"));
     yield* fs.copy(path.join(".github", "workflows"), path.join(root, ".github", "workflows"));
@@ -457,6 +457,14 @@ const startedBy = {
     "self-host-catalog",
     "cloud-runners",
     "release-local",
+  ],
+  // The run's one e2e:prepare build, for every job below that runs scenarios on source.
+  "e2e-build": [
+    "local-shards",
+    "self-host-shards",
+    "self-host-inventory",
+    "self-host-catalog",
+    "cloud-runners",
   ],
   "e2e-local": ["local-shards"],
   "e2e-self-host": ["self-host-shards"],
@@ -900,6 +908,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         );
         for (const job of ["local", "self-host", "cloud"])
           expect(readyProduct.outputs[job], job).toBe(push.outputs[job]);
+        expect(readyProduct.summary).not.toContain("A draft does not need `all`");
         expect(readyProduct.keys.selection).not.toBe(draft.keys.selection);
 
         // Ready, notes, agent documents and spec files keep the block's selection.
@@ -3494,6 +3503,11 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
       for (const job of [...jobs, ...runnerOutputs]) expect(all.outputs[job], job).not.toBe("");
       expect(all.outputs.full).toBe("true");
       expect(all.summary).toContain("Full suite: changes the lockfile");
+      // A draft that says `all` is told the ready run covers it, and still runs the full suite.
+      expect(all.outputs.draft).toBe("true");
+      expect(all.summary).toContain(
+        "A draft does not need `all`: marking the pull request ready runs the full suite unless everything it changes is in e2e/narrowing.ts, and that run gates the merge. Name the spec files for this change instead; until then every push to this draft runs the full suite.",
+      );
       expect(bareAll.exitCode).toBe(1);
       expect(skip.exitCode).toBe(0);
       expect(skip.outputs).toEqual({ skip: "true", draft: "true", gate: "draft" });
@@ -5053,6 +5067,46 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
       expect(passed.exitCode).toBe(1);
       expect(passed.log).not.toContain("The E2E jobs that wait for its build fail with it");
     }),
+  );
+  it.effect(
+    "the e2e check names a failed e2e-build job as the cause of the jobs that unpack it",
+    () =>
+      Effect.gen(function* () {
+        const outputs = { "self-host-shards": "1/1" };
+        const results = Object.fromEntries(
+          e2eJobs.map((job) => [job, chosen(outputs, job) ? "success" : "skipped"]),
+        ) as Record<E2eJob, string>;
+        expect(e2eJobs.filter((job) => chosen(outputs, job))).toEqual([
+          "collector",
+          "e2e-build",
+          "e2e-self-host",
+        ]);
+        for (const result of ["failure", "cancelled"]) {
+          const failed = yield* gate(
+            { result: "success", outputs },
+            { ...results, "e2e-build": result, "e2e-self-host": "failure" },
+          );
+          expect(failed.exitCode, result).toBe(1);
+          expect(failed.log, result).toContain(
+            `::error::e2e-build: ${result}. The E2E jobs that unpack its build of this commit fail with it; rerun that job first.`,
+          );
+          expect(failed.log, result).toContain(`::error::e2e-build: selected, but ${result}`);
+        }
+        // Skipped while a job that unpacks it was selected fails too, and a build that passed is
+        // never named as a cause.
+        const skipped = yield* gate(
+          { result: "success", outputs },
+          { ...results, "e2e-build": "skipped" },
+        );
+        expect(skipped.exitCode).toBe(1);
+        expect(skipped.log).toContain("::error::e2e-build: selected, but skipped");
+        const passed = yield* gate(
+          { result: "success", outputs },
+          { ...results, "e2e-self-host": "failure" },
+        );
+        expect(passed.exitCode).toBe(1);
+        expect(passed.log).not.toContain("unpack its build");
+      }),
   );
   it.effect(
     "the e2e check fails when either release-local job of a selected lane fails, is cancelled or is skipped",

@@ -443,6 +443,11 @@ export const runSuite = ({
                           ...(process.env.TMPDIR === undefined
                             ? {}
                             : { TMPDIR: process.env.TMPDIR }),
+                          // The CA of emulators.dev when CI serves it on the runner (scripts/ci/emulators.sh): the
+                          // processes trust it and still verify every certificate.
+                          ...(process.env.NODE_EXTRA_CA_CERTS === undefined
+                            ? {}
+                            : { NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS }),
                           ...(Option.isSome(packagedEntry)
                             ? { EXECUTOR_E2E_LOCAL_ENTRY: packagedEntry.value }
                             : {}),

@@ -47,7 +47,7 @@ export const notChecked = [
   "the skip check of a layer whose block says skip (that the layer above's CI run was computed on this layer, scripts/ci/worker-baseline.ts above)",
   "site: the site build, its links, and the Cloud Workers' upload and start-up size budgets",
   "apps-package: the packed apps package and its scenarios",
-  "tooling and tooling-cloud: the tooling suites and their scenarios",
+  "tooling, tooling-release and tooling-cloud: the tooling suites and their scenarios",
   "self-host-native, collector-native and collector: native tests and the collector build",
   "every E2E scenario and release lane the selection names (local, self-host, scale, Cloud, Docker, CLI, desktop)",
   "line coverage, and the aggregate check and e2e jobs that judge every job's result",

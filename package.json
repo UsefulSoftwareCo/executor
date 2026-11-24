@@ -132,6 +132,8 @@
     "e2e:cli-startup-imports": "vitest run --config e2e/cli-startup-imports.config.ts",
     "e2e:process-output-exit": "vitest run --config e2e/process-output-exit.config.ts",
     "e2e:fixture-start": "vitest run --config e2e/fixture-start.config.ts",
+    "e2e:emulators-server": "vitest run --config e2e/emulators-server.config.ts",
+    "e2e:scenario-parts": "vitest run --config e2e/scenario-parts.config.ts",
     "e2e:release-archives": "vitest run --config e2e/release-archives.config.ts",
     "e2e:conflict-markers": "vitest run --config e2e/conflict-markers.config.ts",
     "e2e:coverage-unreadable": "vitest run --config e2e/coverage-unreadable.config.ts",

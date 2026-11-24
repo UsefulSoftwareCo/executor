@@ -41,7 +41,7 @@
     },
     "apps/cli": {
       "name": "executor",
-      "version": "2.0.0-beta.72",
+      "version": "2.0.0-beta.73",
     },
     "apps/docs": {
       "name": "@executor-js/docs",
@@ -437,6 +437,7 @@
         "@executor-js/mcp-auth": "workspace:*",
         "@executor-js/sdk": "workspace:*",
         "@executor-js/utils": "workspace:*",
+        "@modelcontextprotocol/client": "2.4.0",
         "@modelcontextprotocol/sdk": "1.32.1",
         "@napi-rs/keyring": "2.1.0",
         "effect": "4.1.4",

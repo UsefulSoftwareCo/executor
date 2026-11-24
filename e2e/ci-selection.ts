@@ -74,7 +74,7 @@ import { broadChanges } from "./narrowing.ts";
 import { selectionKey, workerGrowthKey } from "./ci-key.ts";
 import { mcpSearchChanged, mcpSearchTitles } from "./mcp-search-guard.ts";
 import { Target } from "./report-model.ts";
-import { exactly, split } from "./scenario-parts.ts";
+import { exactly, split, splitByCount } from "./scenario-parts.ts";
 import { platformSignatures } from "./platform-signatures.ts";
 import {
   connectionLatencyLevels,
@@ -803,7 +803,14 @@ interface Suite {
 }
 
 /** The jobs of checks.yml that run on every pull request whose layer does not skip. */
-const everyRunJobs = ["static", "site", "apps-package", "tooling", "tooling-cloud"];
+const everyRunJobs = [
+  "static",
+  "site",
+  "apps-package",
+  "tooling",
+  "tooling-release",
+  "tooling-cloud",
+];
 
 const PackageScripts = Schema.Struct({ scripts: Schema.Record(Schema.String, Schema.String) });
 /**
@@ -844,7 +851,9 @@ const suiteConfigs: Record<string, () => Promise<unknown>> = {
   "desktop-release.config.ts": () => import("./desktop-release.config.ts"),
   "desktop-update.config.ts": () => import("./desktop-update.config.ts"),
   "emulator-failures.config.ts": () => import("./emulator-failures.config.ts"),
+  "emulators-server.config.ts": () => import("./emulators-server.config.ts"),
   "fixture-start.config.ts": () => import("./fixture-start.config.ts"),
+  "scenario-parts.config.ts": () => import("./scenario-parts.config.ts"),
   "export-public.config.ts": () => import("./export-public.config.ts"),
   "docker-release.config.ts": () => import("./docker-release.config.ts"),
   "installer.config.ts": () => import("./installer.config.ts"),
@@ -1815,7 +1824,7 @@ runMain(
         !("shards" in definition) || titles.length === 0
           ? []
           : files === undefined
-            ? split(titles, definition.shards).map(exactly)
+            ? split(titles, definition.shards, definition.target).map(exactly)
             : [selected];
       // A ready pull request's new scenarios, again on runners of their own (`repeats`).
       const changedTitles =
@@ -1836,7 +1845,7 @@ runMain(
       // The patterns the job's step runs, each on a local Cloud of its own.
       const localClouds =
         job === deployedOnlyJob && titles.length > localCloudScenarios
-          ? split(titles, Math.ceil(titles.length / localCloudScenarios)).map(exactly)
+          ? splitByCount(titles, Math.ceil(titles.length / localCloudScenarios)).map(exactly)
           : [selected];
       return {
         job,
@@ -1920,7 +1929,11 @@ runMain(
       "",
       files === undefined
         ? named !== undefined && "all" in named
-          ? `Full suite: ${named.all}`
+          ? `Full suite: ${named.all}${
+              draft === true
+                ? "\n\nA draft does not need `all`: marking the pull request ready runs the full suite unless everything it changes is in e2e/narrowing.ts, and that run gates the merge. Name the spec files for this change instead; until then every push to this draft runs the full suite."
+                : ""
+            }`
           : "Full suite: this run is not for a pull request."
         : files.size === 0
           ? "No E2E scenarios: the pull request selects none and changes no spec file these jobs run."

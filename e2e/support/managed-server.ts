@@ -216,6 +216,11 @@ export const startManagedServer = (
       EXECUTOR_TEST_CLOCK_OFFSET_MS: "0",
       EXECUTOR_TEST_CLOCK_CONTROL: "stdin",
       EXECUTOR_ANALYTICS_TEST_PORT: String(analyticsPort),
+      // The CA of emulators.dev when CI serves it on the runner (scripts/ci/emulators.sh): the
+      // product trusts it and still verifies every certificate. A scenario's own CA replaces it.
+      ...(process.env.NODE_EXTRA_CA_CERTS === undefined
+        ? {}
+        : { NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS }),
       ...environment,
     };
     // Ask the product alone to stop, as the self-host image's supervisor does, so its own shutdown

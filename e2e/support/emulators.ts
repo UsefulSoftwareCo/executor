@@ -387,6 +387,10 @@ export const repeatability = (
       return ["/_emulate/ledger", "/_emulate/faults", "/_emulate/manifest"].includes(route)
         ? "repeat"
         : "once";
+    // Clearing one fault by its id answers 200 whether or not it was still armed, and emulate
+    // never reuses a fault id on an instance, so a late copy can only remove that same fault.
+    // Clearing every fault is not repeated: a late copy would clear faults armed after it.
+    if (method === "DELETE" && clearsOneFault(route)) return "repeat";
     if (method !== "POST") return "once";
     if (["/_emulate/instances", "/_emulate/credentials", "/_emulate/reset"].includes(route))
       return "repeat";
@@ -476,6 +480,15 @@ const recordRetry = (record: EmulatorRetry) =>
  * are sent once (see `emulatorRequest`).
  */
 const armedFaults = new Set<string>();
+/**
+ * Whether `route` clears one armed fault by an id emulate issued (`fault_<n>`): any other last
+ * segment, such as `.`, can normalize to the route that clears every fault.
+ */
+const clearsOneFault = (route: string) => /^\/_emulate\/faults\/fault_\d+$/u.test(route);
+/** Control-plane calls a retry cannot turn against a fault armed on the same emulator. */
+const armedSafe = (method: string, route: string) =>
+  route.startsWith("/_emulate/") &&
+  (method === "GET" || (method === "DELETE" && clearsOneFault(route)));
 
 /**
  * Calls only an external emulator. Failures never carry a provider URL, credential, response
@@ -566,8 +579,12 @@ export const emulatorRequest = (
       repeat === "once" ||
       (repeat === "read back" && applied === undefined) ||
       // A fault the harness armed here may still be waiting, delayed, for the product's call: a
-      // retried harness call could meet it before its marked answer arrives and consume it.
-      armedFaults.has(origin)
+      // retried harness call to a provider route could meet it before its marked answer arrives
+      // and consume it, and a late copy of a reset, seed or bulk clear could undo what was armed
+      // or written after it. Faults never match the control plane (`/_emulate/...`, emulate's
+      // createFaultMiddleware) and the product never calls it, so the calls that only read it,
+      // and clearing one fault by its id, keep the policy.
+      (armedFaults.has(origin) && !armedSafe(method, route ?? ""))
     )
       return track(yield* attempt(deadline));
     const started = yield* Clock.currentTimeMillis;

@@ -227,6 +227,11 @@ export const startCloudEnvironment = (input: {
       ...(process.env.TMPDIR === undefined ? {} : { TMPDIR: process.env.TMPDIR }),
       // CI prevents Alchemy from inspecting personal profiles; its home is empty for every run.
       CI: "true",
+      // The CA of emulators.dev when CI serves it on the runner (scripts/ci/emulators.sh): Alchemy
+      // and miniflare's workerd trust it and still verify every certificate.
+      ...(process.env.NODE_EXTRA_CA_CERTS === undefined
+        ? {}
+        : { NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS }),
       ALCHEMY_HOME: `${directory}/alchemy-home`,
       NODE_ENV: "development",
       VITE_UI_OBSERVE: input.observeUI ? "1" : "0",

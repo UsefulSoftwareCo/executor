@@ -440,7 +440,7 @@ change's lines would pass that, it and every later change are left out and
 counted, with a warning. Neither stops the release, because a commit message on
 main cannot be changed.
 
-`e2e/tests/release-notes-render.spec.ts` (CI's tooling job, with the job's
+`e2e/tests/release-notes-render.spec.ts` (CI's tooling-release job, with the job's
 token) sends a corpus of accepted notes, as the script writes them, to GitHub's
 Markdown API and checks that each comes back as its text alone, inside nothing
 but the notes' headings, list and paragraph. It also renders the refused corpus

@@ -812,6 +812,63 @@ layer(NodeServices.layer, { excludeTestServices: true })("Emulator failures", (i
       expect(hits.get(read)).toBe(1 + 3);
     }),
   );
+
+  it.effect(
+    "clearing one armed fault by its id is sent again when the emulator does not answer; provider routes, resets, seeds and clearing every fault stay sent once",
+    () =>
+      Effect.gen(function* () {
+        const base = `/autumn/clear-${suffix}`;
+        const clear = `DELETE ${base}/_emulate/faults/fault_1`;
+        const read = `POST ${base}/v1/customers.get`;
+        const { origin, hits } = yield* scripted({
+          [`POST ${base}/_emulate/faults`]: [json(200, { fault: { id: "fault_1" } })],
+          // The control plane is never faulted; this is the emulator itself failing to answer.
+          [clear]: [workerError(0), json(200, { ok: true, removed: true })],
+          [read]: [workerError(0)],
+          [`DELETE ${base}/_emulate/faults`]: [workerError(0)],
+          [`DELETE ${base}/_emulate/faults/`]: [workerError(0)],
+          [`POST ${base}/_emulate/reset`]: [workerError(0)],
+          [`POST ${base}/_emulate/seed`]: [workerError(0)],
+        });
+        const directory = yield* recordsDirectory;
+        const call = (path: string, payload?: unknown, verb?: "DELETE") =>
+          emulatorRequest(`${origin}${base}`, path, payload, token, verb).pipe(
+            Effect.provideService(EmulatorRetryRecords, { directory }),
+            Effect.provideService(EmulatorRetryPolicy, fastPolicy),
+            Effect.provide(FetchHttpClient.layer),
+          );
+        yield* call("/_emulate/faults", {
+          match: { method: "POST", pathPattern: "/v1/customers.get" },
+          response: { status: 200, body: {} },
+          delayMs: 12_000,
+        });
+        expect(yield* call("/_emulate/faults/fault_1", undefined, "DELETE")).toEqual({
+          ok: true,
+          removed: true,
+        });
+        expect(hits.get(clear)).toBe(2);
+        expect(yield* records(directory)).toMatchObject([
+          { operation: "DELETE /_emulate/faults/fault_1", outcome: "answered", attempts: 2 },
+        ]);
+        // A provider route of the same emulator may still meet a delayed fault: sent once.
+        const once = yield* call("/v1/customers.get", { customer_id: "c" }).pipe(Effect.flip);
+        expect(hits.get(read)).toBe(1);
+        expect(once.earlier).toBeUndefined();
+        // A late copy of these could undo a fault armed after them: each is sent once while a
+        // fault is armed, even when the emulator does not answer.
+        for (const [path, verb, payload, sent = path] of [
+          ["/_emulate/faults", "DELETE", undefined],
+          // Not an id emulate issues: the URL normalizes to the route that clears every fault.
+          ["/_emulate/faults/.", "DELETE", undefined, "/_emulate/faults/"],
+          ["/_emulate/reset", undefined, {}],
+          ["/_emulate/seed", undefined, { plans: [] }],
+        ] as const) {
+          const failed = yield* call(path, payload, verb).pipe(Effect.flip);
+          expect(hits.get(`${verb ?? "POST"} ${base}${sent}`), path).toBe(1);
+          expect(failed.earlier, path).toBeUndefined();
+        }
+      }),
+  );
 });
 
 // The shipped retry policy, on the test clock: its 30 s of attempts run in well under a second.

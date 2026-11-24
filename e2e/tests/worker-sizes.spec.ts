@@ -572,7 +572,11 @@ if (args[0] === "pr" && args[1] === "list") {
   const run = pathArg.replace(/^.*\\/runs\\//, "").replace(/\\/.*$/, "");
   const reads = calls("/runs/" + run + "/artifacts");
   const listed = [].concat((answers.records || {})[run] || []).filter((record) => reads > (record.after || 0));
-  reply({ artifacts: [...listed.map((record, index) => ({ id: record.id || Number(run) * 10 + index, name: record.name })), ...((answers.otherArtifacts || {})[run] || [])] });
+  // As GitHub lists them: newest first (the records, uploaded by select, are the oldest), 100 a
+  // page, with the run's count.
+  const page = Number((pathArg.match(/[?&]page=(\\d+)/) || [])[1] || 1);
+  const all = [...((answers.otherArtifacts || {})[run] || []), ...listed.map((record, index) => ({ id: record.id || Number(run) * 10 + index, name: record.name }))];
+  reply({ total_count: all.length, artifacts: all.slice((page - 1) * 100, page * 100) });
 } else if (args[0] === "api" && /\\/actions\\/runs\\/\\d+\\/jobs/.test(pathArg)) {
   const run = pathArg.replace(/^.*\\/runs\\//, "").replace(/\\/.*$/, "");
   const select = (answers.selectJobs || {})[run] || { status: "in_progress" };
@@ -1694,6 +1698,21 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
           },
         });
         expect(others.decision).toBe("would pass");
+        // A run re-run a few times lists more artifacts than a page holds, newest first, so its
+        // select's record falls past the first page (#5407's run held 138 on 24 Nov 2026).
+        const paged = yield* verdict({
+          otherArtifacts: {
+            "600": Array.from({ length: 120 }, (_, index) => ({
+              id: 9100 + index,
+              name: `e2e-self-host-resources-evidence-${index}-attempt-4`,
+            })),
+          },
+        });
+        expect(paged.decision).toBe("would pass");
+        expect(paged.calls.filter((call) => call.includes("/runs/600/artifacts"))).toEqual([
+          expect.stringContaining("page=1"),
+          expect.stringContaining("page=2"),
+        ]);
         // A fork's pull request above runs the fork's code, which could write any record.
         expect(
           (yield* verdict({

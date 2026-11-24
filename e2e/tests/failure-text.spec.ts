@@ -68,9 +68,12 @@ const forms = (value: string) => [
   Buffer.from(value).toString("base64").replace(/=+$/u, ""),
   Buffer.from(value).toString("base64url"),
 ];
-/** The names the runner passes the worker (`runSuite` in e2e/sdk/suite.ts), and Vitest's own. */
+/**
+ * The names the runner passes the worker (`runSuite` in e2e/sdk/suite.ts), and Vitest's own.
+ * NODE_EXTRA_CA_CERTS is the path of the CA of emulators.dev when CI serves it on the runner.
+ */
 const workerVariable =
-  /^(?:PATH|HOME|TMPDIR|MCP_CACHE_FIXTURE_ORIGIN|E2E_[A-Z0-9_]+|EXECUTOR_E2E_[A-Z0-9_]+|VITEST[A-Z0-9_]*|FORCE_TTY|NODE_ENV|TEST|PROD|DEV|MODE|BASE_URL|SSR)$/u;
+  /^(?:PATH|HOME|TMPDIR|NODE_EXTRA_CA_CERTS|MCP_CACHE_FIXTURE_ORIGIN|E2E_[A-Z0-9_]+|EXECUTOR_E2E_[A-Z0-9_]+|VITEST[A-Z0-9_]*|FORCE_TTY|NODE_ENV|TEST|PROD|DEV|MODE|BASE_URL|SSR)$/u;
 /** Synthetic values in the runner's own environment, named as a deployed job's tokens are. */
 const infrastructure = {
   CLOUDFLARE_API_TOKEN: "inf1-planted-cloudflare-token",

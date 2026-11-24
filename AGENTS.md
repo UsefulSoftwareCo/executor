@@ -183,7 +183,7 @@ open stack layer's (each on a checkout of its local head, so a spec file it name
 own tree, and a `skip` with no open layer above fails), bun.lock, the apps version bump, the host
 protocols and the Release-note lines of the squashed commit. It does not check, and says so at the
 end of every run: a `skip` layer's check that the layer above's CI run was computed on it, `site`
-(the build, links and Worker size budgets), `apps-package`, `tooling`, the native and collector
+(the build, links and Worker size budgets), `apps-package`, the tooling jobs, the native and collector
 jobs, any E2E scenario or release lane, and line coverage. It needs the network (origin, and `gh`
 signed in, with gh-stack for a stack) and fails with a message saying so when it cannot reach them.
 
@@ -368,7 +368,10 @@ it, such as `all: changes the lockfile`; `all` without a reason fails the `selec
 A lockfile change that only updates a workspace package's own `version`, as `bun install`
 writes after a version bump, installs nothing different: write `none` for it.
 A change to shared code such as the runtime, storage, auth or the MCP server is not
-by itself a reason: list the spec files for the features whose behavior it changes. [`e2e/ci-selection.ts`](e2e/ci-selection.ts) turns the block
+by itself a reason: list the spec files for the features whose behavior it changes.
+A draft never needs `all`: marking a pull request ready runs the full suite unless
+everything it changes is in `e2e/narrowing.ts`, and that run gates the merge. Name the
+spec files for the change on the draft; `all` there runs the full suite on every push. [`e2e/ci-selection.ts`](e2e/ci-selection.ts) turns the block
 into each job's scenario list; the run summary shows it.
 
 In a stack, write `skip` in each lower layer's block, such as a code PR under its
@@ -530,8 +533,9 @@ scenarios on Linux instead of moving them to a Mac.
   its upload budget or a pull request adds more than 50 KB to one without an
   allowance (see "Adding to a Cloud Worker's upload"); the job summary shows each
   Worker's size, its change from `main` and the packages and files that grew. `apps-package` checks the apps npm
-  tarball, and `tooling` checks the dependency patches and the scripts that run CI,
-  releases, the public export and deploys. `tooling-cloud` runs the checks that start a
+  tarball, and `tooling` checks the dependency patches and the scripts that run CI and
+  deploys. `tooling-release` checks the tooling of releases, packaging, the public export
+  and local builds. `tooling-cloud` runs the checks that start a
   browser or a database or read recorded Cloud APIs: test stages, the patched Playwright,
   emulator and request failures, PostHog and the deployed origin. Put a new static check
   in the job it fits, keeping each under the E2E jobs' usual time, or in a new job that

@@ -270,11 +270,89 @@ layer(HostedLive, { excludeTestServices: true })("Skill editor", (it) => {
             .fill("Search and cite team messages."),
         );
         yield* browser.checkpoint("Edited skill");
+        // Saving moves nothing. The save's deploy is held to see it in progress, then failed to see
+        // the failure, then retried: the toolbar and its divider, the Save button, the description
+        // and the skill's text stay where they were before the save throughout.
+        const settings = (page: Page) =>
+          page.getByRole("button", { name: "Editor settings", exact: true });
+        // The Save button is the toolbar's last; while it spins, its name is the spinner's.
+        const saveButton = (page: Page) =>
+          settings(page).locator("xpath=..").getByRole("button").last();
+        const layout = (page: Page) =>
+          Promise.all(
+            [
+              settings(page).locator("xpath=../.."),
+              saveButton(page),
+              page.getByRole("textbox", { name: "Description", exact: true }),
+              page.getByRole("heading", { name: "Search messages", exact: true }),
+            ].map((element) => element.boundingBox()),
+          );
+        const deploys = `**${path}/deploy`;
+        let heldDeploy: Route | undefined;
+        yield* page("Hold the save's deploy", (page) =>
+          page.route(deploys, (route) => {
+            if (route.request().method() !== "POST" || heldDeploy !== undefined)
+              return route.fallback();
+            heldDeploy = route;
+          }),
+        );
+        yield* Effect.addFinalizer(() =>
+          Effect.ignore(page("Release the held deploy", (page) => page.unroute(deploys))),
+        );
+        const beforeSave = yield* page("Measure the page before saving", layout);
+        expect(beforeSave).not.toContain(null);
         yield* page("Save the skill", (page) =>
           page.getByRole("button", { name: "Save", exact: true }).click(),
         );
         yield* page("Saving clears the draft", (page) =>
           page.getByRole("button", { name: "Discard", exact: true }).waitFor({ state: "hidden" }),
+        );
+        const deploy = yield* until("The save's deploy has not arrived", () => heldDeploy);
+        expect(
+          yield* page("Measure the page while deploying", layout),
+          "saving moved the page while it deployed",
+        ).toEqual(beforeSave);
+        // The Save button's spinner shows the deploy; only screen readers hear it.
+        expect(
+          yield* page("The save shows its deploy in place", (page) =>
+            Promise.all([
+              saveButton(page).getAttribute("data-loading"),
+              page.getByRole("status").filter({ hasText: "Saved. Deploying…" }).textContent(),
+              page
+                .getByText("Saved. Deploying…", { exact: true })
+                .evaluate((element) => element.getBoundingClientRect().width),
+            ]),
+          ),
+        ).toEqual(["", "Saved. Deploying…", 1]);
+        yield* browser.checkpoint("Deploying the save");
+        // A status no endpoint declares is an unexpected failure.
+        yield* page("Fail the deploy", () =>
+          deploy.fulfill({ status: 599, contentType: "text/plain", body: "undeclared" }),
+        );
+        const deployFailure = (page: Page) => page.getByRole("dialog", { name: "Deploy failed" });
+        yield* page("The failed deploy opens its details", (page) =>
+          deployFailure(page)
+            .getByText("Unable to complete this request", { exact: true })
+            .waitFor(),
+        );
+        expect(
+          yield* page("Measure the page after the deploy failed", layout),
+          "a failed deploy moved the page",
+        ).toEqual(beforeSave);
+        expect(
+          yield* page("The failure says the save is not live", (page) =>
+            Promise.all([
+              page.getByRole("status").getByRole("button", { name: "Not deployed" }).count(),
+              deployFailure(page)
+                .getByText("Saved, but not deployed. Retry to make your changes live.")
+                .count(),
+              saveButton(page).getAttribute("data-loading"),
+            ]),
+          ),
+        ).toEqual([1, 1, null]);
+        yield* browser.checkpoint("Failed deploy");
+        yield* page("Retry the deploy", (page) =>
+          deployFailure(page).getByRole("button", { name: "Retry deploy", exact: true }).click(),
         );
 
         // Only the edited description and the new paragraph change; other bytes stay as written.
@@ -298,9 +376,22 @@ layer(HostedLive, { excludeTestServices: true })("Skill editor", (it) => {
           Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 80 }),
         );
         expect(skillFile(running)).toBe(edited);
-        yield* page("The deploy status clears", (page) =>
-          page.getByRole("status").filter({ hasText: "Saved" }).waitFor({ state: "hidden" }),
+        yield* page("The deploy is announced as live", (page) =>
+          page.getByRole("status").getByText("Saved and deployed.", { exact: true }).waitFor(),
         );
+        expect(
+          yield* page("The save is back at rest", (page) =>
+            Promise.all([
+              saveButton(page).getAttribute("data-loading"),
+              page.getByRole("button", { name: "Not deployed" }).count(),
+              deployFailure(page).count(),
+            ]),
+          ),
+        ).toEqual([null, 0, 0]);
+        expect(
+          yield* page("Measure the page once deployed", layout),
+          "the deploy finishing moved the page",
+        ).toEqual(beforeSave);
         yield* browser.checkpoint("Saved and deployed");
 
         // Someone else changes the same file while a draft is open; the draft must survive.
