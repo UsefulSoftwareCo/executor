@@ -293,7 +293,7 @@ const select = (input: {
 
 /**
  * A temporary copy of what the selector reads, for a case that changes it: the top-level e2e/*.ts
- * files, an empty e2e/tests/, package.json and the workflows, with the checkout's node_modules
+ * and e2e/*.json files (the split reads e2e/scenario-times.json), an empty e2e/tests/, package.json and the workflows, with the checkout's node_modules
  * linked in. The selector resolves its imports and files from its own location, so it reads only
  * the copy, and the case writes `files` there. The checkout is never written, so a killed or
  * concurrent run leaves it unchanged. The tree is removed when the case's scope closes.
@@ -305,7 +305,7 @@ const fixture = (files: Readonly<Record<string, string>> = {}) =>
     const root = yield* fs.makeTempDirectoryScoped({ prefix: "executor-ci-selection-root-" });
     yield* fs.makeDirectory(path.join(root, "e2e", "tests"), { recursive: true });
     for (const name of yield* fs.readDirectory("e2e"))
-      if (name.endsWith(".ts"))
+      if (name.endsWith(".ts") || name.endsWith(".json"))
         yield* fs.copyFile(path.join("e2e", name), path.join(root, "e2e", name));
     yield* fs.copyFile("package.json", path.join(root, "package.json"));
     yield* fs.copy(path.join(".github", "workflows"), path.join(root, ".github", "workflows"));

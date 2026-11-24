@@ -39,7 +39,7 @@ const partPattern = (target: "local" | "self-host", name: string, part: string) 
           scenario.targets[target].status === "scheduled" && selected.test(scenario.title),
       )
       .map((scenario) => scenario.title);
-    const parts = split(titles, count!);
+    const parts = split(titles, count!, target);
     if (index! > count! || parts.length !== count)
       return yield* Effect.die(
         new Error(`--part ${part}: the selected scenarios split into ${parts.length} parts.`),

@@ -74,7 +74,7 @@ import { broadChanges } from "./narrowing.ts";
 import { selectionKey, workerGrowthKey } from "./ci-key.ts";
 import { mcpSearchChanged, mcpSearchTitles } from "./mcp-search-guard.ts";
 import { Target } from "./report-model.ts";
-import { exactly, split } from "./scenario-parts.ts";
+import { exactly, split, splitByCount } from "./scenario-parts.ts";
 import { platformSignatures } from "./platform-signatures.ts";
 import {
   connectionLatencyLevels,
@@ -853,6 +853,7 @@ const suiteConfigs: Record<string, () => Promise<unknown>> = {
   "emulator-failures.config.ts": () => import("./emulator-failures.config.ts"),
   "emulators-server.config.ts": () => import("./emulators-server.config.ts"),
   "fixture-start.config.ts": () => import("./fixture-start.config.ts"),
+  "scenario-parts.config.ts": () => import("./scenario-parts.config.ts"),
   "export-public.config.ts": () => import("./export-public.config.ts"),
   "docker-release.config.ts": () => import("./docker-release.config.ts"),
   "installer.config.ts": () => import("./installer.config.ts"),
@@ -1823,7 +1824,7 @@ runMain(
         !("shards" in definition) || titles.length === 0
           ? []
           : files === undefined
-            ? split(titles, definition.shards).map(exactly)
+            ? split(titles, definition.shards, definition.target).map(exactly)
             : [selected];
       // A ready pull request's new scenarios, again on runners of their own (`repeats`).
       const changedTitles =
@@ -1844,7 +1845,7 @@ runMain(
       // The patterns the job's step runs, each on a local Cloud of its own.
       const localClouds =
         job === deployedOnlyJob && titles.length > localCloudScenarios
-          ? split(titles, Math.ceil(titles.length / localCloudScenarios)).map(exactly)
+          ? splitByCount(titles, Math.ceil(titles.length / localCloudScenarios)).map(exactly)
           : [selected];
       return {
         job,
