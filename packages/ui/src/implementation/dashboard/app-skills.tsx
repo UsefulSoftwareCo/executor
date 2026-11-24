@@ -23,7 +23,8 @@ import { Button } from "../components/button.tsx";
 import { SkillContent } from "./skill-content.tsx";
 import { SkillSize } from "./skill-size.tsx";
 import {
-  SkillVersion,
+  SkillDeploy,
+  SkillDeployStatus,
   SkillFileEditor,
   type Committed,
   type SkillEditing,
@@ -60,14 +61,13 @@ export function AppSkills<E>({
   return (
     <section aria-label="App skills" className="flex min-h-0 flex-1 flex-col overflow-hidden">
       {committed !== undefined && editing !== undefined && (
-        <SkillVersion
+        <SkillDeploy
           key={committed.commit}
           app={app}
           commit={committed.commit}
           deployNow={committed.deploy}
           onStarted={() => setCommitted({ ...committed, deploy: false })}
           editing={editing}
-          Failure={Failure}
         />
       )}
       {editable ? (
@@ -83,6 +83,18 @@ export function AppSkills<E>({
               bindings={bindings}
               editing={editing}
               Failure={Failure}
+              status={
+                committed !== undefined && (
+                  <SkillDeployStatus
+                    key={committed.commit}
+                    app={app}
+                    commit={committed.commit}
+                    deployNow={committed.deploy}
+                    editing={editing}
+                    Failure={Failure}
+                  />
+                )
+              }
               onCommitted={setCommitted}
             />
           )}
@@ -116,6 +128,7 @@ function EditableSkills<E>({
   bindings,
   editing,
   Failure,
+  status,
   onCommitted,
 }: {
   readonly app: App;
@@ -123,6 +136,7 @@ function EditableSkills<E>({
   readonly bindings: SkillBindings<E>;
   readonly editing: SkillEditing<E>;
   readonly Failure: ComponentType<FailureProps<E>>;
+  readonly status: ReactNode;
   readonly onCommitted: (result: Committed) => void;
 }) {
   const { result, data, refresh } = useQuery<AppSkillBundle | undefined, E>(
@@ -153,6 +167,7 @@ function EditableSkills<E>({
         {...(catalog === undefined ? {} : { catalog })}
         editing={editing}
         Failure={Failure}
+        status={status}
         onCommitted={onCommitted}
       />
     </>

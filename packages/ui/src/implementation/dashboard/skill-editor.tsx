@@ -1,6 +1,6 @@
 /** Edit a skill file in place from working source and save it as a Git commit. */
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
-import { Settings05Icon } from "@hugeicons/core-free-icons";
+import { AlertCircleIcon, Settings05Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { App } from "@executor-js/sdk";
 import { Exit, type Cause } from "effect";
@@ -9,6 +9,7 @@ import {
   lazy,
   Suspense,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type ComponentType,
@@ -23,6 +24,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "../components/dropdown-menu.tsx";
+import { Popover, PopoverContent, PopoverTrigger } from "../components/popover.tsx";
 import { Textarea } from "../components/textarea.tsx";
 import { useHydrated } from "../hooks/hydrated.ts";
 import {
@@ -265,9 +267,10 @@ export function SkillFileEditor<E>({
               Discard
             </Button>
           )}
+          {/* Spins until the saved commit is deployed; see `SkillDeployStatus`. */}
           <Button
             size="sm"
-            loading={saving}
+            loading={saving || version.waiting}
             disabled={!dirty || saving || version.waiting || (instructions && !description.trim())}
             onClick={save}
           >
@@ -347,14 +350,16 @@ export function SkillFileEditor<E>({
   );
 }
 
-/** Deploy a commit made by the editor; the committed source is safe even if this fails. */
-export function SkillVersion<E>({
+/**
+ * Deploy a commit made by the editor; the committed source is safe even if this fails. It renders
+ * nothing: `SkillDeployStatus` shows the deploy in the editor's toolbar, so saving moves nothing.
+ */
+export function SkillDeploy<E>({
   app,
   commit,
   deployNow,
   onStarted,
   editing,
-  Failure,
 }: {
   readonly app: App;
   readonly commit: string;
@@ -363,34 +368,84 @@ export function SkillVersion<E>({
   /** The owner clears its request so a remount never deploys twice. */
   readonly onStarted: () => void;
   readonly editing: SkillEditing<E>;
+}) {
+  const deploy = useAtomSet(editing.atoms.deploy(app.id), { mode: "promise" });
+  const started = useRef(false);
+  // Before paint, so the Save button's spinner runs on from the commit into the deploy.
+  useLayoutEffect(() => {
+    if (!deployNow || started.current) return;
+    started.current = true;
+    onStarted();
+    void deploy({ commit, onApp: editing.onApp }).catch(() => {});
+  });
+  return null;
+}
+
+/**
+ * The deploy of a commit made by the editor, inside the toolbar. The Save button's spinner shows
+ * the deploy in progress, so only screen readers hear it start and finish. A deploy that did not
+ * happen shows a compact control whose popover holds the failure and Retry, opened when it fails.
+ */
+export function SkillDeployStatus<E>({
+  app,
+  commit,
+  deployNow,
+  editing,
+  Failure,
+}: {
+  readonly app: App;
+  readonly commit: string;
+  readonly deployNow: boolean;
+  readonly editing: SkillEditing<E>;
   readonly Failure: ComponentType<FailureProps<E>>;
 }) {
   const state = useAtomValue(editing.atoms.deploy(app.id));
   const deploy = useAtomSet(editing.atoms.deploy(app.id), { mode: "promise" });
-  const run = () => void deploy({ commit, onApp: editing.onApp }).catch(() => {});
-  const started = useRef(false);
-  useEffect(() => {
-    if (!deployNow || started.current) return;
-    started.current = true;
-    onStarted();
-    run();
-  });
+  const failure = !state.waiting && AsyncResult.isFailure(state) ? state.cause : undefined;
+  // A new failure opens the popover; opening another file remounts this closed and does not reopen it.
+  const [seen, setSeen] = useState(failure);
+  const [open, setOpen] = useState(false);
+  if (failure !== seen) {
+    setSeen(failure);
+    if (failure !== undefined) setOpen(true);
+  }
   // The deploy atom is shared with the Source view; only a deploy of this commit counts.
   const deployed = AsyncResult.isSuccess(state) && state.value.version.sourceCommit === commit;
-  if (deployed) return null;
+  const deploying = state.waiting || deployNow;
   return (
-    <div role="status" className="flex flex-wrap items-center gap-3 border-b px-5 py-3 text-xs">
-      <span className="text-muted-foreground">
-        {state.waiting || deployNow
-          ? "Saved. Deploying…"
-          : "Saved, but not deployed. Retry to make your changes live."}
-      </span>
-      {!state.waiting && !deployed && (
-        <Button size="xs" variant="outline" onClick={run}>
-          Retry deploy
-        </Button>
+    <span role="status" className="inline-flex items-center">
+      {deployed ? (
+        <span className="sr-only">Saved and deployed.</span>
+      ) : deploying ? (
+        <span className="sr-only">Saved. Deploying…</span>
+      ) : (
+        <Popover open={open} onOpenChange={setOpen}>
+          <PopoverTrigger asChild>
+            <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive">
+              <HugeiconsIcon icon={AlertCircleIcon} strokeWidth={2} aria-hidden />
+              Not deployed
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent
+            aria-label="Deploy failed"
+            className="flex w-80 flex-col items-start gap-3 text-xs"
+            onOpenAutoFocus={(event) => event.preventDefault()}
+          >
+            <p>Saved, but not deployed. Retry to make your changes live.</p>
+            {failure !== undefined && <Failure cause={failure} layout="compact" />}
+            <Button
+              size="xs"
+              variant="outline"
+              onClick={() => {
+                setOpen(false);
+                void deploy({ commit, onApp: editing.onApp }).catch(() => {});
+              }}
+            >
+              Retry deploy
+            </Button>
+          </PopoverContent>
+        </Popover>
       )}
-      {!state.waiting && AsyncResult.isFailure(state) && <Failure cause={state.cause} />}
-    </div>
+    </span>
   );
 }
