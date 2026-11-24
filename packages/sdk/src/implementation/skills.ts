@@ -165,10 +165,10 @@ export const makeSkills = (
       };
     });
   return {
-    bundle: (input: typeof AppSkillInputs.list.Type) =>
+    bundle: (input: typeof AppSkillInputs.list.Type, options?: CatalogReadOptions) =>
       Schema.decodeUnknownEffect(AppSkillInputs.list)(input).pipe(
         Effect.mapError(() => new RequestInvalid()),
-        Effect.flatMap(snapshot),
+        Effect.flatMap((input) => snapshot(input, options)),
         Effect.withSpan("sdk.skills.bundle"),
       ),
     list: (input: typeof AppSkillInputs.list.Type, options?: CatalogReadOptions) =>

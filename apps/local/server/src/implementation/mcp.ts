@@ -54,6 +54,7 @@ const grantedBackend = (sql: SqlClient.SqlClient, executor: Executor, principal:
       }),
     unsubscribeEvent: ({ key }) => executor.events.unsubscribe({ ...key, principal }),
     listSkills: (input, options) => executor.skills.list(input, options),
+    bundleSkills: (input, options) => executor.skills.bundle(input, options),
     readSkill: (input) => executor.skills.read(input),
     authorizeElicitation: () => Effect.void,
     listApps: (input = {}) => executor.apps.list(input),
@@ -123,6 +124,10 @@ export const localMcpBackend = <G extends Error>(
     ...restricted,
     listSkills: (input, options) =>
       resolved(input, true).pipe(Effect.flatMap((input) => restricted.listSkills(input, options))),
+    bundleSkills: (input, options) =>
+      resolved(input, true).pipe(
+        Effect.flatMap((input) => restricted.bundleSkills(input, options)),
+      ),
     readSkill: (input) =>
       resolved(input, true).pipe(Effect.flatMap((input) => restricted.readSkill(input))),
     listTools: (input, options) =>
@@ -148,6 +153,7 @@ export const localMcp = (
     const RequestBackend = Context.Reference<McpBackend<Error>>("local/McpBackend", {
       defaultValue: () => ({
         listSkills: () => Effect.fail(new LocalMcpUnauthorized()),
+        bundleSkills: () => Effect.fail(new LocalMcpUnauthorized()),
         readSkill: () => Effect.fail(new LocalMcpUnauthorized()),
         listApps: () => Effect.fail(new LocalMcpUnauthorized()),
         listAccounts: () => Effect.fail(new LocalMcpUnauthorized()),
@@ -192,6 +198,8 @@ export const localMcp = (
       backend: {
         listSkills: (input, options) =>
           Effect.flatMap(RequestBackend, (b) => b.listSkills(input, options)),
+        bundleSkills: (input, options) =>
+          Effect.flatMap(RequestBackend, (b) => b.bundleSkills(input, options)),
         readSkill: (input) => Effect.flatMap(RequestBackend, (b) => b.readSkill(input)),
         listApps: (input) => Effect.flatMap(RequestBackend, (b) => b.listApps(input)),
         listAccounts: (input) => Effect.flatMap(RequestBackend, (b) => b.listAccounts(input)),

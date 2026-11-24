@@ -521,7 +521,7 @@ index bff6370f579aee3b70b79e70ef319c149501007f..8ebdfcca6a9573c10605ca656a85932a
  //# sourceMappingURL=McpSchema.js.map
 \ No newline at end of file
 diff --git a/dist/ai/McpServer.d.ts b/dist/ai/McpServer.d.ts
-index 0d27695a965ebb5bb573fc7636e66ea9eb877177..4181db28a6cd1c994b450ae0a3bd8f62d8b7e198 100644
+index 0d27695a965ebb5bb573fc7636e66ea9eb877177..214d612a9b7dba07fcc5cbcbf7af3c39f322d3cd 100644
 --- a/dist/ai/McpServer.d.ts
 +++ b/dist/ai/McpServer.d.ts
 @@ -610,8 +610,8 @@ export interface CacheHints {
@@ -663,8 +663,65 @@ index 0d27695a965ebb5bb573fc7636e66ea9eb877177..4181db28a6cd1c994b450ae0a3bd8f62
  /**
   * Utility type that validates a completion-handler record against the allowed
   * parameter keys.
+@@ -1231,6 +1331,56 @@ export declare const registerSkill: (options: SkillOptions) => Effect.Effect<voi
+  * @since 4.1.1
+  */
+ export declare const skill: (options: SkillOptions) => Layer.Layer<never, Cause.IllegalArgumentError, McpServer>;
++/**
++ * Skills a server reads on each request, as the caller, for
++ * {@link skillCatalog}.
++ *
++ * **Details**
++ *
++ * `list` returns every skill the caller is served, each as {@link skill} takes
++ * it. `get` returns the skill whose `SKILL.md` is at `uri`, or `undefined` when
++ * the caller is served none there, without listing the others. `read` returns
++ * the file at `uri` of a skill the caller is served, or `undefined` when there
++ * is none; it should be the bytes `list` and `get` describe. A skill's
++ * `annotations` are not used.
++ *
++ * @stability unstable
++ * @category models
++ * @since 4.1.4
++ */
++export interface SkillCatalog<R = never> {
++    readonly list: Effect.Effect<ReadonlyArray<SkillOptions>, never, R>
++    readonly get: (uri: string) => Effect.Effect<SkillOptions | undefined, never, R>
++    readonly read: (uri: string) => Effect.Effect<SkillFile | undefined, McpSchema.InternalError, R>
++}
++/**
++ * Creates a layer that serves skills the server reads on each request, as the
++ * caller, under the MCP Skills extension (SEP-2640), beside the skills
++ * registered with {@link skill}.
++ *
++ * **Details**
++ *
++ * `list` runs on `skills/list` and `resources/directory/read`, `get` on a
++ * `skills/get` no registered skill answers, and `read` on a `resources/read` no
++ * registered resource or resource template answers. Each runs with the
++ * request's `McpRequestContext`, as events handlers do, so it can read the
++ * caller. MCP middleware does not run for them.
++ *
++ * Each skill `list` or `get` returns is checked as {@link skill} checks it, and
++ * its manifest is computed from its bytes for that request; nothing is kept
++ * between requests. A skill that breaks the extension's rules, or whose
++ * directory is or overlaps a registered or an earlier listed skill's, is left
++ * out with a warning, so one skill cannot fail the listing.
++ *
++ * With a catalog the server declares the Skills extension and the `resources`
++ * capability. Catalog files are not listed by `resources/list`. A server has
++ * one catalog; registering another replaces it.
++ *
++ * @stability unstable
++ * @category layers
++ * @since 4.1.4
++ */
++export declare const skillCatalog: <R>(catalog: SkillCatalog<R>) => Layer.Layer<never, never, McpServer | Exclude<R, McpRequestContext>>;
+ /**
+  * Registers an MCP prompt from an Effect program.
+  *
 diff --git a/dist/ai/McpServer.js b/dist/ai/McpServer.js
-index d675c7feba0f00b8d573427d154608e3dc0ccfe5..c225d835202ee99c6c9ee5ade72b726755b9c054 100644
+index d675c7feba0f00b8d573427d154608e3dc0ccfe5..f5ec2ed77fb5595e3b6044c4715c62279eda660b 100644
 --- a/dist/ai/McpServer.js
 +++ b/dist/ai/McpServer.js
 @@ -894,39 +894,17 @@ const requestSpanOptions = (method, request, options) => {
@@ -932,11 +989,191 @@ index d675c7feba0f00b8d573427d154608e3dc0ccfe5..c225d835202ee99c6c9ee5ade72b7267
  // Leave defects and interruption to makeInvoke; convert only expected failures.
  const handlerFailureToInternalError = cause => Cause.hasDies(cause) || Cause.hasInterrupts(cause) ? Effect.failCause(cause) : Effect.fail(new InternalError({
    message: Cause.prettyErrors(cause)[0].message
+@@ -2518,6 +2565,50 @@ export const registerSkill = /*#__PURE__*/Effect.fnUntraced(function* (options)
+  * @since 4.1.1
+  */
+ export const skill = options => Layer.effectDiscard(registerSkill(options));
++/**
++ * Creates a layer that serves skills the server reads on each request, as the
++ * caller, under the MCP Skills extension (SEP-2640), beside the skills
++ * registered with {@link skill}.
++ *
++ * **Details**
++ *
++ * `list` runs on `skills/list` and `resources/directory/read`, `get` on a
++ * `skills/get` no registered skill answers, and `read` on a `resources/read` no
++ * registered resource or resource template answers. Each runs with the
++ * request's `McpRequestContext`, as events handlers do, so it can read the
++ * caller. MCP middleware does not run for them.
++ *
++ * Each skill `list` or `get` returns is checked as {@link skill} checks it, and
++ * its manifest is computed from its bytes for that request; nothing is kept
++ * between requests. A skill that breaks the extension's rules, or whose
++ * directory is or overlaps a registered or an earlier listed skill's, is left
++ * out with a warning, so one skill cannot fail the listing.
++ *
++ * With a catalog the server declares the Skills extension and the `resources`
++ * capability. Catalog files are not listed by `resources/list`. A server has
++ * one catalog; registering another replaces it.
++ *
++ * @stability unstable
++ * @category layers
++ * @since 4.1.4
++ */
++export const skillCatalog = catalog => Layer.effectDiscard(Effect.gen(function* () {
++  const server = yield* McpServer;
++  const services = omitRequestServices(yield* Effect.context());
++  const run = (effect, invocation) => provideInvocationContext(effect, invocation).pipe(Effect.provideContext(services));
++  const check = options => McpSkills.makeStaticSkill({
++    uri: options.uri,
++    files: Object.entries(options.files).map(([path, file]) => toSkillSourceFile(path, file))
++  }).pipe(Effect.provide(Digest.layerWebCrypto), Effect.map(skill => ({
++    entry: skill.entry,
++    directory: uri => skill.directories.get(uri)
++  })), Effect.catch(error => Effect.as(Effect.logWarning(`Left out an MCP skill: ${error.message}`), undefined)));
++  yield* internalState.get(server).core.skills.registerCatalog({
++    list: invocation => run(catalog.list, invocation).pipe(Effect.flatMap(skills => Effect.forEach(skills, check)), Effect.map(Arr.filter(Predicate.isNotUndefined))),
++    get: (uri, invocation) => run(catalog.get(uri), invocation).pipe(Effect.flatMap(skill => skill === undefined ? Effect.undefined : check(skill))),
++    read: (uri, invocation) => run(catalog.read(uri), invocation).pipe(Effect.map(file => file === undefined ? undefined : McpSkills.readResult(uri, toSkillSourceFile(uri, file))))
++  });
++}));
+ /**
+  * Registers an MCP prompt from an Effect program.
+  *
 diff --git a/dist/ai/internal/mcpCore.js b/dist/ai/internal/mcpCore.js
-index 4c416a837fd627e48c53d7b10fb73198484c40f3..7c382def63b60997c0db184b8b2159cfd9046789 100644
+index 4c416a837fd627e48c53d7b10fb73198484c40f3..1c1efe73d2a6a2f06a361d75c4948a40bc4ae59b 100644
 --- a/dist/ai/internal/mcpCore.js
 +++ b/dist/ai/internal/mcpCore.js
-@@ -234,11 +234,19 @@ export const make = /*#__PURE__*/Effect.sync(() => {
+@@ -81,6 +81,8 @@ const skillsOverlap = (a, b) => {
+   const rootB = b.slice(0, -"/SKILL.md".length);
+   return rootA === rootB || rootA.startsWith(`${rootB}/`) || rootB.startsWith(`${rootA}/`);
+ };
++// Whether `uri` lies inside the directory of the skill whose `SKILL.md` is at `skill`.
++const insideSkill = (skill, uri) => uri.startsWith(skill.slice(0, -"SKILL.md".length));
+ /**
+  * @internal
+  */
+@@ -91,6 +93,7 @@ export const make = /*#__PURE__*/Effect.sync(() => {
+   const promptRegistrations = new Map();
+   const skillRegistrations = new Map();
+   const skillFiles = new Set();
++  let skillCatalog;
+   const completionRegistrations = new Map();
+   const filterList = (registrations, invocation) => Effect.map(Effect.filter(Arr.filter(registrations, entry => entry.isVisible(invocation.protocol)), entry => entry.visible === undefined ? Effect.succeed(true) : entry.visible(invocation)), entries => entries.map(entry => entry.descriptor));
+   const tools = {
+@@ -143,6 +146,11 @@ export const make = /*#__PURE__*/Effect.sync(() => {
+           return yield* template.read(uri, params, invocation);
+         }
+       }
++      // A file inside a registered skill's directory is that skill's alone, served or not.
++      if (skillCatalog !== undefined && !Array.from(skillRegistrations.keys()).some(skill => insideSkill(skill, uri))) {
++        const result = yield* skillCatalog.read(uri, invocation);
++        if (result !== undefined) return result;
++      }
+       return yield* new ResourceNotFound({
+         uri
+       });
+@@ -184,6 +192,39 @@ export const make = /*#__PURE__*/Effect.sync(() => {
+       };
+     })
+   };
++  // A registered skill, or an earlier listed one, shadows a listed skill whose
++  // directory is or overlaps its own, so each URI has one owner.
++  const catalogSkills = invocation => skillCatalog === undefined ? Effect.succeed([]) : Effect.map(skillCatalog.list(invocation), listed => {
++    const claimed = Array.from(skillRegistrations.keys());
++    const served = [];
++    for (const skill of listed) {
++      if (claimed.some(other => skillsOverlap(skill.entry.uri, other))) continue;
++      claimed.push(skill.entry.uri);
++      served.push(skill);
++    }
++    return served;
++  });
++  // The catalog skill whose directory holds `uri`, asked by the URI of each enclosing `SKILL.md`
++  // from the outermost in, passing over any that overlaps a registered skill. A directory a
++  // registered skill holds is that skill's alone.
++  const catalogSkillOwning = Effect.fnUntraced(function* (uri, invocation) {
++    const catalog = skillCatalog;
++    const schemeEnd = uri.indexOf("://");
++    if (catalog === undefined || schemeEnd <= 0) return undefined;
++    const scheme = uri.slice(0, schemeEnd + 3);
++    const segments = uri.slice(scheme.length).split("/");
++    const registered = Array.from(skillRegistrations.keys());
++    if (registered.some(skill => uri === skill.slice(0, -"/SKILL.md".length) || insideSkill(skill, uri))) {
++      return undefined;
++    }
++    for (let depth = 1; depth <= segments.length; depth++) {
++      const candidate = `${scheme}${segments.slice(0, depth).join("/")}/SKILL.md`;
++      if (registered.some(other => skillsOverlap(candidate, other))) continue;
++      const skill = yield* catalog.get(candidate, invocation);
++      if (skill !== undefined && skill.entry.uri === candidate) return skill;
++    }
++    return undefined;
++  });
+   const skills = {
+     register: registration => Effect.suspend(() => {
+       const {
+@@ -204,17 +245,34 @@ export const make = /*#__PURE__*/Effect.sync(() => {
+       for (const file of files) skillFiles.add(file);
+       return Effect.void;
+     }),
++    registerCatalog: catalog => Effect.sync(() => {
++      skillCatalog = catalog;
++    }),
+     ownsFile: uri => skillFiles.has(uri),
+-    list: invocation => filterList(Array.from(skillRegistrations.values(), registration => ({
+-      descriptor: registration.entry,
+-      isVisible: registration.isVisible,
+-      visible: registration.visible
+-    })), invocation),
++    list: Effect.fnUntraced(function* (invocation) {
++      const registered = yield* filterList(Array.from(skillRegistrations.values(), registration => ({
++        descriptor: registration.entry,
++        isVisible: registration.isVisible,
++        visible: registration.visible
++      })), invocation);
++      if (skillCatalog === undefined) return registered;
++      return [...registered, ...(yield* catalogSkills(invocation)).map(skill => skill.entry)];
++    }),
+     get: (uri, invocation) => Effect.suspend(() => {
+       const registration = skillRegistrations.get(uri);
+-      return registration !== undefined && registration.isVisible(invocation.protocol) ? registration.get(invocation) : Effect.fail(new SkillNotFound({
++      if (registration !== undefined && registration.isVisible(invocation.protocol)) {
++        return registration.get(invocation);
++      }
++      const catalog = skillCatalog;
++      // A registered skill owns its directory, visible or not.
++      if (catalog === undefined || Array.from(skillRegistrations.keys()).some(other => skillsOverlap(uri, other))) {
++        return Effect.fail(new SkillNotFound({
++          uri
++        }));
++      }
++      return Effect.flatMap(catalog.get(uri, invocation), skill => skill !== undefined && skill.entry.uri === uri ? Effect.succeed(skill.entry) : Effect.fail(new SkillNotFound({
+         uri
+-      }));
++      })));
+     }),
+     readDirectory: Effect.fnUntraced(function* (uri, invocation) {
+       const children = new Map();
+@@ -226,6 +284,17 @@ export const make = /*#__PURE__*/Effect.sync(() => {
+         found = true;
+         for (const child of own) children.set(child.uri, child);
+       }
++      // A directory inside a catalog skill is found by URI, as `skills/get` finds a skill, so it
++      // does not depend on what a listing left out. Only a directory above every skill, such as a
++      // namespace prefix, is read from the listing.
++      const owner = yield* catalogSkillOwning(uri, invocation);
++      const listed = owner !== undefined ? [owner] : yield* catalogSkills(invocation);
++      for (const skill of listed) {
++        const own = skill.directory(uri);
++        if (own === undefined) continue;
++        found = true;
++        for (const child of own) children.set(child.uri, child);
++      }
+       if (!found) {
+         return yield* new DirectoryNotFound({
+           uri
+@@ -234,11 +303,19 @@ export const make = /*#__PURE__*/Effect.sync(() => {
        return Array.from(children.values()).sort((a, b) => a.uri < b.uri ? -1 : a.uri > b.uri ? 1 : 0);
      })
    };
@@ -949,15 +1186,16 @@ index 4c416a837fd627e48c53d7b10fb73198484c40f3..7c382def63b60997c0db184b8b2159cf
 +  };
    const registrationPresence = Effect.sync(() => ({
      tools: registrations.size > 0,
-     resources: resourceRegistrations.length > 0 || resourceTemplateRegistrations.length > 0,
+-    resources: resourceRegistrations.length > 0 || resourceTemplateRegistrations.length > 0,
++    resources: resourceRegistrations.length > 0 || resourceTemplateRegistrations.length > 0 || skillCatalog !== undefined,
      prompts: promptRegistrations.size > 0,
 -    skills: skillRegistrations.size > 0
-+    skills: skillRegistrations.size > 0,
++    skills: skillRegistrations.size > 0 || skillCatalog !== undefined,
 +    events: eventsHandler !== undefined
    }));
    return {
      tools,
-@@ -246,6 +254,7 @@ export const make = /*#__PURE__*/Effect.sync(() => {
+@@ -246,6 +323,7 @@ export const make = /*#__PURE__*/Effect.sync(() => {
      prompts,
      completions,
      skills,
@@ -1395,6 +1633,38 @@ index 9d4be684f731bae339b3f9c9b52d80c1c4a1d0e9..7d6d1139fcb7776b50149062defda72c
  /**
   * @internal
   */
+diff --git a/dist/ai/internal/mcpSkills.js b/dist/ai/internal/mcpSkills.js
+index 82b5709f21f9ad21a100c7d6e19f197c358bcee9..e1ebdf96b3a212e60c59857612cec897988e2809 100644
+--- a/dist/ai/internal/mcpSkills.js
++++ b/dist/ai/internal/mcpSkills.js
+@@ -225,6 +225,27 @@ const decodeText = (mimeType, content) => {
+   }
+ };
+ const isSafeRelativePath = path => path !== "" && !path.includes("\\") && path.split("/").every(segment => segment !== "" && segment !== "." && segment !== "..");
++/**
++ * The `resources/read` result for a skill file at `uri`: text when the file is
++ * textual and valid UTF-8, otherwise a blob of its bytes.
++ *
++ * @internal
++ */
++export const readResult = (uri, file) => {
++  const mimeType = file.mimeType ?? mimeTypeFor(uri);
++  const text = decodeText(mimeType, file.content);
++  return {
++    contents: [text === undefined ? {
++      uri,
++      mimeType,
++      blob: file.content
++    } : {
++      uri,
++      mimeType,
++      text
++    }]
++  };
++};
+ // The Agent Skills `name` rule: lowercase letters, digits and single hyphens,
+ // neither leading nor trailing, at most 64 characters.
+ const isSkillName = name => name.length <= 64 && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name);
 diff --git a/dist/ai/internal/mcpStatefulRuntime.js b/dist/ai/internal/mcpStatefulRuntime.js
 index 8dc76b8517b220a92f6f719e7acf40d9c8d3fdca..2207ee22701902da9807c27bff12a8f8f39b6851 100644
 --- a/dist/ai/internal/mcpStatefulRuntime.js
@@ -2005,7 +2275,7 @@ index ba6c8308c32c069d47aee10daf8361a244c4d9e6..49e207340576873874653ce5ecc88efe
 + */
 +export type UnsubscribeEventParams = typeof UnsubscribeEventParams.Type
 diff --git a/src/ai/McpServer.ts b/src/ai/McpServer.ts
-index b544b6f138b5550bc4fbb465f879d1d04e6443c2..80f4371ec8f69f4c1e0e2f402fa14d4c7a4ad2ae 100644
+index b544b6f138b5550bc4fbb465f879d1d04e6443c2..1582c4f65fea118e78cee73965ab4145198a8605 100644
 --- a/src/ai/McpServer.ts
 +++ b/src/ai/McpServer.ts
 @@ -1533,36 +1533,17 @@ const requestSpanOptions = (
@@ -2223,7 +2493,12 @@ index b544b6f138b5550bc4fbb465f879d1d04e6443c2..80f4371ec8f69f4c1e0e2f402fa14d4c
 +          return admission.isSubscription || response.body._tag === "Stream" || hasMultipleMessages
 +            ? toServerSentEvents(response, admission.isSubscription)
 +            : response
-+        }
+         }
+-        // Only fully cancelled request POSTs may return an empty SSE response.
+-        // https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#sending-messages-to-the-server
+-        return httpPostResponses.get(request)?.expected === 0
+-          ? Effect.succeed(HttpServerResponse.stream(Stream.empty, { contentType: "text/event-stream" }))
+-          : Effect.die(new Error("MCP request ended without writing its response"))
 +        const answered = admission.acknowledge
 +          ? Effect.catchCause(
 +            Effect.map(httpEffect, toResponse),
@@ -2244,12 +2519,7 @@ index b544b6f138b5550bc4fbb465f879d1d04e6443c2..80f4371ec8f69f4c1e0e2f402fa14d4c
 +          // that ends without opening it gives the place back.
 +          const release = admission.release
 +          return release === undefined ? restore(answered) : Effect.ensuring(restore(answered), Effect.sync(release))
-         }
--        // Only fully cancelled request POSTs may return an empty SSE response.
--        // https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#sending-messages-to-the-server
--        return httpPostResponses.get(request)?.expected === 0
--          ? Effect.succeed(HttpServerResponse.stream(Stream.empty, { contentType: "text/event-stream" }))
--          : Effect.die(new Error("MCP request ended without writing its response"))
++        }
 +        // Executor: the session is kept until this request's response has been sent, so a reply,
 +        // cancellation or answer that belongs to it can still reach it when newer sessions pass the
 +        // bound. The hold belongs to the request's scope, which closes once the response has been
@@ -2394,11 +2664,147 @@ index b544b6f138b5550bc4fbb465f879d1d04e6443c2..80f4371ec8f69f4c1e0e2f402fa14d4c
  /**
   * Utility type that validates a completion-handler record against the allowed
   * parameter keys.
+@@ -4011,6 +4173,92 @@ export const registerSkill: (options: SkillOptions) => Effect.Effect<void, Cause
+ export const skill = (options: SkillOptions): Layer.Layer<never, Cause.IllegalArgumentError, McpServer> =>
+   Layer.effectDiscard(registerSkill(options))
+ 
++/**
++ * Skills a server reads on each request, as the caller, for
++ * {@link skillCatalog}.
++ *
++ * **Details**
++ *
++ * `list` returns every skill the caller is served, each as {@link skill} takes
++ * it. `get` returns the skill whose `SKILL.md` is at `uri`, or `undefined` when
++ * the caller is served none there, without listing the others. `read` returns
++ * the file at `uri` of a skill the caller is served, or `undefined` when there
++ * is none; it should be the bytes `list` and `get` describe. A skill's
++ * `annotations` are not used.
++ *
++ * @stability unstable
++ * @category models
++ * @since 4.1.4
++ */
++export interface SkillCatalog<R = never> {
++  readonly list: Effect.Effect<ReadonlyArray<SkillOptions>, never, R>
++  readonly get: (uri: string) => Effect.Effect<SkillOptions | undefined, never, R>
++  readonly read: (uri: string) => Effect.Effect<SkillFile | undefined, McpSchema.InternalError, R>
++}
++
++/**
++ * Creates a layer that serves skills the server reads on each request, as the
++ * caller, under the MCP Skills extension (SEP-2640), beside the skills
++ * registered with {@link skill}.
++ *
++ * **Details**
++ *
++ * `list` runs on `skills/list` and `resources/directory/read`, `get` on a
++ * `skills/get` no registered skill answers, and `read` on a `resources/read` no
++ * registered resource or resource template answers. Each runs with the
++ * request's `McpRequestContext`, as events handlers do, so it can read the
++ * caller. MCP middleware does not run for them.
++ *
++ * Each skill `list` or `get` returns is checked as {@link skill} checks it, and
++ * its manifest is computed from its bytes for that request; nothing is kept
++ * between requests. A skill that breaks the extension's rules, or whose
++ * directory is or overlaps a registered or an earlier listed skill's, is left
++ * out with a warning, so one skill cannot fail the listing.
++ *
++ * With a catalog the server declares the Skills extension and the `resources`
++ * capability. Catalog files are not listed by `resources/list`. A server has
++ * one catalog; registering another replaces it.
++ *
++ * @stability unstable
++ * @category layers
++ * @since 4.1.4
++ */
++export const skillCatalog = <R>(
++  catalog: SkillCatalog<R>
++): Layer.Layer<never, never, McpServer | Exclude<R, McpRequestContext>> =>
++  Layer.effectDiscard(Effect.gen(function*() {
++    const server = yield* McpServer
++    const services = omitRequestServices(yield* Effect.context<Exclude<R, McpRequestContext>>())
++    const run = <A, E>(effect: Effect.Effect<A, E, R>, invocation: McpCore.McpInvocation): Effect.Effect<A, E> =>
++      provideInvocationContext(effect, invocation).pipe(
++        Effect.provideContext(services as Context.Context<Exclude<R, McpRequestContext>>)
++      )
++    const check = (options: SkillOptions): Effect.Effect<McpCore.CatalogSkill | undefined> =>
++      McpSkills.makeStaticSkill({
++        uri: options.uri,
++        files: Object.entries(options.files).map(([path, file]) => toSkillSourceFile(path, file))
++      }).pipe(
++        Effect.provide(Digest.layerWebCrypto),
++        Effect.map((skill) => ({ entry: skill.entry, directory: (uri: string) => skill.directories.get(uri) })),
++        Effect.catch((error) => Effect.as(Effect.logWarning(`Left out an MCP skill: ${error.message}`), undefined))
++      )
++    yield* internalState.get(server)!.core.skills.registerCatalog({
++      list: (invocation) =>
++        run(catalog.list, invocation).pipe(
++          Effect.flatMap((skills) => Effect.forEach(skills, check)),
++          Effect.map(Arr.filter(Predicate.isNotUndefined))
++        ),
++      get: (uri, invocation) =>
++        run(catalog.get(uri), invocation).pipe(
++          Effect.flatMap((skill) => skill === undefined ? Effect.undefined : check(skill))
++        ),
++      read: (uri, invocation) =>
++        run(catalog.read(uri), invocation).pipe(
++          Effect.map((file) => file === undefined ? undefined : McpSkills.readResult(uri, toSkillSourceFile(uri, file)))
++        )
++    })
++  }))
++
+ /**
+  * Registers an MCP prompt from an Effect program.
+  *
 diff --git a/src/ai/internal/mcpCore.ts b/src/ai/internal/mcpCore.ts
-index 643982d6121f953016735b150011c88142119050..9c1d1c460fea9e2ac085b94fd08e459586e3c5cd 100644
+index 643982d6121f953016735b150011c88142119050..044324b7cf4318e2896e1a10d82026ee28d77d5a 100644
 --- a/src/ai/internal/mcpCore.ts
 +++ b/src/ai/internal/mcpCore.ts
-@@ -498,6 +498,35 @@ export type ServerNotification = Data.TaggedEnum<{
+@@ -330,6 +330,33 @@ export interface SkillRegistration {
+   readonly directory: (uri: string) => ReadonlyArray<DirectoryChild> | undefined
+ }
+ 
++/**
++ * A skill a catalog serves on one request, checked, with its manifest.
++ *
++ * @internal
++ */
++export interface CatalogSkill {
++  readonly entry: Skill
++  // `undefined` when this skill has no directory at `uri`.
++  readonly directory: (uri: string) => ReadonlyArray<DirectoryChild> | undefined
++}
++
++/**
++ * Skills a server reads on each request, as the caller, beside the skills
++ * registered when it is built. `get` answers one `SKILL.md` URI without
++ * listing, and `read` one file, or `undefined` when the caller is served none.
++ *
++ * @internal
++ */
++export interface SkillCatalogRegistration {
++  readonly list: (invocation: McpInvocation) => Effect.Effect<ReadonlyArray<CatalogSkill>>
++  readonly get: (uri: string, invocation: McpInvocation) => Effect.Effect<CatalogSkill | undefined>
++  readonly read: (
++    uri: string,
++    invocation: McpInvocation
++  ) => Effect.Effect<McpSchema.ReadResourceResult | undefined, McpSchema.InternalError>
++}
++
+ /**
+  * @internal
+  */
+@@ -337,6 +364,8 @@ export interface Skills {
+   // Fails when the skill's directory overlaps another skill's, or one of its
+   // files is already registered as a resource.
+   readonly register: (registration: SkillRegistration) => Effect.Effect<void, Cause.IllegalArgumentError>
++  // A server has one catalog; registering another replaces it.
++  readonly registerCatalog: (catalog: SkillCatalogRegistration) => Effect.Effect<void>
+   // Whether `uri` is a file of a registered skill, which only that skill may serve.
+   readonly ownsFile: (uri: string) => boolean
+   readonly list: (invocation: McpInvocation) => Effect.Effect<ReadonlyArray<Skill>, RequestRejected>
+@@ -498,6 +527,35 @@ export type ServerNotification = Data.TaggedEnum<{
   */
  export const ServerNotification = Data.taggedEnum<ServerNotification>()
  
@@ -2434,7 +2840,7 @@ index 643982d6121f953016735b150011c88142119050..9c1d1c460fea9e2ac085b94fd08e4595
  /**
   * @internal
   */
-@@ -507,11 +536,13 @@ export interface McpCore {
+@@ -507,11 +565,13 @@ export interface McpCore {
    readonly prompts: Prompts
    readonly completions: Completions
    readonly skills: Skills
@@ -2448,7 +2854,146 @@ index 643982d6121f953016735b150011c88142119050..9c1d1c460fea9e2ac085b94fd08e4595
    }>
  }
  
-@@ -717,12 +748,22 @@ export const make: Effect.Effect<McpCore> = Effect.sync(() => {
+@@ -530,6 +590,9 @@ const skillsOverlap = (a: string, b: string): boolean => {
+   return rootA === rootB || rootA.startsWith(`${rootB}/`) || rootB.startsWith(`${rootA}/`)
+ }
+ 
++// Whether `uri` lies inside the directory of the skill whose `SKILL.md` is at `skill`.
++const insideSkill = (skill: string, uri: string): boolean => uri.startsWith(skill.slice(0, -"SKILL.md".length))
++
+ /**
+  * @internal
+  */
+@@ -540,6 +603,7 @@ export const make: Effect.Effect<McpCore> = Effect.sync(() => {
+   const promptRegistrations = new Map<string, PromptRegistration>()
+   const skillRegistrations = new Map<string, SkillRegistration>()
+   const skillFiles = new Set<string>()
++  let skillCatalog: SkillCatalogRegistration | undefined
+   const completionRegistrations = new Map<
+     string,
+     (
+@@ -620,6 +684,11 @@ export const make: Effect.Effect<McpCore> = Effect.sync(() => {
+           return yield* template.read(uri, params, invocation)
+         }
+       }
++      // A file inside a registered skill's directory is that skill's alone, served or not.
++      if (skillCatalog !== undefined && !Array.from(skillRegistrations.keys()).some((skill) => insideSkill(skill, uri))) {
++        const result = yield* skillCatalog.read(uri, invocation)
++        if (result !== undefined) return result
++      }
+       return yield* new ResourceNotFound({ uri })
+     })
+   }
+@@ -662,6 +731,42 @@ export const make: Effect.Effect<McpCore> = Effect.sync(() => {
+     })
+   }
+ 
++  // A registered skill, or an earlier listed one, shadows a listed skill whose
++  // directory is or overlaps its own, so each URI has one owner.
++  const catalogSkills = (invocation: McpInvocation) =>
++    skillCatalog === undefined ? Effect.succeed([]) : Effect.map(skillCatalog.list(invocation), (listed) => {
++      const claimed = Array.from(skillRegistrations.keys())
++      const served: Array<CatalogSkill> = []
++      for (const skill of listed) {
++        if (claimed.some((other) => skillsOverlap(skill.entry.uri, other))) continue
++        claimed.push(skill.entry.uri)
++        served.push(skill)
++      }
++      return served
++    })
++
++  // The catalog skill whose directory holds `uri`, asked by the URI of each enclosing `SKILL.md`
++  // from the outermost in, passing over any that overlaps a registered skill. A directory a
++  // registered skill holds is that skill's alone.
++  const catalogSkillOwning = Effect.fnUntraced(function*(uri: string, invocation: McpInvocation) {
++    const catalog = skillCatalog
++    const schemeEnd = uri.indexOf("://")
++    if (catalog === undefined || schemeEnd <= 0) return undefined
++    const scheme = uri.slice(0, schemeEnd + 3)
++    const segments = uri.slice(scheme.length).split("/")
++    const registered = Array.from(skillRegistrations.keys())
++    if (registered.some((skill) => uri === skill.slice(0, -"/SKILL.md".length) || insideSkill(skill, uri))) {
++      return undefined
++    }
++    for (let depth = 1; depth <= segments.length; depth++) {
++      const candidate = `${scheme}${segments.slice(0, depth).join("/")}/SKILL.md`
++      if (registered.some((other) => skillsOverlap(candidate, other))) continue
++      const skill = yield* catalog.get(candidate, invocation)
++      if (skill !== undefined && skill.entry.uri === candidate) return skill
++    }
++    return undefined
++  })
++
+   const skills: Skills = {
+     register: (registration) =>
+       Effect.suspend(() => {
+@@ -680,22 +785,41 @@ export const make: Effect.Effect<McpCore> = Effect.sync(() => {
+         for (const file of files) skillFiles.add(file)
+         return Effect.void
+       }),
++    registerCatalog: (catalog) =>
++      Effect.sync(() => {
++        skillCatalog = catalog
++      }),
+     ownsFile: (uri) => skillFiles.has(uri),
+-    list: (invocation) =>
+-      filterList(
++    list: Effect.fnUntraced(function*(invocation) {
++      const registered = yield* filterList(
+         Array.from(skillRegistrations.values(), (registration) => ({
+           descriptor: registration.entry,
+           isVisible: registration.isVisible,
+           visible: registration.visible
+         })),
+         invocation
+-      ),
++      )
++      if (skillCatalog === undefined) return registered
++      return [...registered, ...(yield* catalogSkills(invocation)).map((skill) => skill.entry)]
++    }),
+     get: (uri, invocation) =>
+       Effect.suspend(() => {
+         const registration = skillRegistrations.get(uri)
+-        return registration !== undefined && registration.isVisible(invocation.protocol)
+-          ? registration.get(invocation)
+-          : Effect.fail(new SkillNotFound({ uri }))
++        if (registration !== undefined && registration.isVisible(invocation.protocol)) {
++          return registration.get(invocation)
++        }
++        const catalog = skillCatalog
++        // A registered skill owns its directory, visible or not.
++        if (catalog === undefined || Array.from(skillRegistrations.keys()).some((other) => skillsOverlap(uri, other))) {
++          return Effect.fail(new SkillNotFound({ uri }))
++        }
++        return Effect.flatMap(
++          catalog.get(uri, invocation),
++          (skill) =>
++            skill !== undefined && skill.entry.uri === uri
++              ? Effect.succeed(skill.entry)
++              : Effect.fail(new SkillNotFound({ uri }))
++        )
+       }),
+     readDirectory: Effect.fnUntraced(function*(uri, invocation) {
+       const children = new Map<string, DirectoryChild>()
+@@ -710,6 +834,17 @@ export const make: Effect.Effect<McpCore> = Effect.sync(() => {
+         found = true
+         for (const child of own) children.set(child.uri, child)
+       }
++      // A directory inside a catalog skill is found by URI, as `skills/get` finds a skill, so it
++      // does not depend on what a listing left out. Only a directory above every skill, such as a
++      // namespace prefix, is read from the listing.
++      const owner = yield* catalogSkillOwning(uri, invocation)
++      const listed = owner !== undefined ? [owner] : yield* catalogSkills(invocation)
++      for (const skill of listed) {
++        const own = skill.directory(uri)
++        if (own === undefined) continue
++        found = true
++        for (const child of own) children.set(child.uri, child)
++      }
+       if (!found) {
+         return yield* new DirectoryNotFound({ uri })
+       }
+@@ -717,12 +852,23 @@ export const make: Effect.Effect<McpCore> = Effect.sync(() => {
      })
    }
  
@@ -2463,10 +3008,12 @@ index 643982d6121f953016735b150011c88142119050..9c1d1c460fea9e2ac085b94fd08e4595
 +
    const registrationPresence = Effect.sync(() => ({
      tools: registrations.size > 0,
-     resources: resourceRegistrations.length > 0 || resourceTemplateRegistrations.length > 0,
+-    resources: resourceRegistrations.length > 0 || resourceTemplateRegistrations.length > 0,
++    resources: resourceRegistrations.length > 0 || resourceTemplateRegistrations.length > 0 ||
++      skillCatalog !== undefined,
      prompts: promptRegistrations.size > 0,
 -    skills: skillRegistrations.size > 0
-+    skills: skillRegistrations.size > 0,
++    skills: skillRegistrations.size > 0 || skillCatalog !== undefined,
 +    events: eventsHandler !== undefined
    }))
  
@@ -3011,6 +3558,29 @@ index 866afa476803a6f7a3ab5674dea53ab613b6d61e..2ebad31fe424f9ad16029aff7e5aa256
  ) {}
  
  /**
+diff --git a/src/ai/internal/mcpSkills.ts b/src/ai/internal/mcpSkills.ts
+index f928cf286e18ed11e946e82f5613948f2cb0cd77..a878e8f8e0ab79daaa7fb241e0446741579fa216 100644
+--- a/src/ai/internal/mcpSkills.ts
++++ b/src/ai/internal/mcpSkills.ts
+@@ -285,6 +285,18 @@ const isSafeRelativePath = (path: string): boolean =>
+   !path.includes("\\") &&
+   path.split("/").every((segment) => segment !== "" && segment !== "." && segment !== "..")
+ 
++/**
++ * The `resources/read` result for a skill file at `uri`: text when the file is
++ * textual and valid UTF-8, otherwise a blob of its bytes.
++ *
++ * @internal
++ */
++export const readResult = (uri: string, file: SourceFile) => {
++  const mimeType = file.mimeType ?? mimeTypeFor(uri)
++  const text = decodeText(mimeType, file.content)
++  return { contents: [text === undefined ? { uri, mimeType, blob: file.content } : { uri, mimeType, text }] }
++}
++
+ // The Agent Skills `name` rule: lowercase letters, digits and single hyphens,
+ // neither leading nor trailing, at most 64 characters.
+ const isSkillName = (name: string): boolean => name.length <= 64 && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name)
 diff --git a/src/ai/internal/mcpStatefulRuntime.ts b/src/ai/internal/mcpStatefulRuntime.ts
 index 3ab8dd2b3dd2d945394f7342a51b25fc479dfc15..9664d458e2bdd5cd2498fc5394e59cb32d2002a7 100644
 --- a/src/ai/internal/mcpStatefulRuntime.ts

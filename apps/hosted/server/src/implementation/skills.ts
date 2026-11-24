@@ -29,6 +29,15 @@ export const listAppSkills = (
     const { owner, executor, accounts } = yield* skillAccounts(input);
     return yield* executor.skills.list({ ...input, owner, accounts }, options);
   });
+/** Every file of the app's skills using the caller's accounts. */
+export const bundleAppSkills = (
+  input: Omit<typeof AppSkillInputs.list.Type, "owner">,
+  options?: CatalogReadOptions,
+) =>
+  Effect.gen(function* () {
+    const { owner, executor, accounts } = yield* skillAccounts(input);
+    return yield* executor.skills.bundle({ ...input, owner, accounts }, options);
+  });
 /** Historical reads still require current access to the configured app and its code lineage. */
 export const readAppSkill = (input: Omit<typeof AppSkillInputs.read.Type, "owner">) =>
   Effect.gen(function* () {
@@ -38,12 +47,7 @@ export const readAppSkill = (input: Omit<typeof AppSkillInputs.read.Type, "owner
 /** Both hosted products mount these shared authenticated handlers. */
 export const hostedSkillHandlers = HttpApiBuilder.group(HostedApi, "skills", (handlers) =>
   handlers
-    .handle("bundle", ({ params, query }) =>
-      Effect.gen(function* () {
-        const { owner, executor, accounts } = yield* skillAccounts({ app: params.app, ...query });
-        return yield* executor.skills.bundle({ app: params.app, ...query, owner, accounts });
-      }),
-    )
+    .handle("bundle", ({ params, query }) => bundleAppSkills({ app: params.app, ...query }))
     .handle("list", ({ params, query }) => listAppSkills({ app: params.app, ...query }))
     // The Executor app's skills.read tool reads here, not through the MCP skills tool. The
     // dashboard only lists skills and loads bundles, so those routes record no skill.

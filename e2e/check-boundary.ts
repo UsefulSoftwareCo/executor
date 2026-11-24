@@ -16,6 +16,8 @@ const allowed = new Set([
   "@modelcontextprotocol/sdk/client/streamableHttp.js",
   "@modelcontextprotocol/sdk/client/stdio.js",
   "@modelcontextprotocol/sdk/validation/cfworker",
+  "@modelcontextprotocol/client",
+  "@modelcontextprotocol/client/ext/skills",
   "vitest",
   "vitest/config",
   "vitest/node",

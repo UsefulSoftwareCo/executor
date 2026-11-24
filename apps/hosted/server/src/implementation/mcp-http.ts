@@ -96,6 +96,7 @@ const requestCaller = Effect.flatMap(RequestCaller, (caller) =>
 const RequestBackend = Context.Reference<McpBackend<RequestError>>("hosted/McpRequestBackend", {
   defaultValue: () => ({
     listSkills: unavailable,
+    bundleSkills: unavailable,
     readSkill: unavailable,
     listApps: unavailable,
     listAccounts: unavailable,
@@ -125,6 +126,8 @@ const RequestApprovalUrl = Context.Reference<
 const requestBackend: McpBackend<RequestError> = {
   listSkills: (input, options) =>
     Effect.flatMap(RequestBackend, (backend) => backend.listSkills(input, options)),
+  bundleSkills: (input, options) =>
+    Effect.flatMap(RequestBackend, (backend) => backend.bundleSkills(input, options)),
   readSkill: (input) => Effect.flatMap(RequestBackend, (backend) => backend.readSkill(input)),
   authorizeElicitation: (input) =>
     Effect.flatMap(RequestBackend, (backend) => backend.authorizeElicitation(input)),
@@ -403,6 +406,8 @@ export const dispatchHostedMcp = <E, R>(
       ...backend,
       listSkills: (input, options) =>
         current.pipe(Effect.flatMap((fresh) => fresh.listSkills(input, options))),
+      bundleSkills: (input, options) =>
+        current.pipe(Effect.flatMap((fresh) => fresh.bundleSkills(input, options))),
       readSkill: (input) => current.pipe(Effect.flatMap((fresh) => fresh.readSkill(input))),
 
       authorizeElicitation: (input) =>

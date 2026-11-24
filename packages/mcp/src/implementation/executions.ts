@@ -527,6 +527,8 @@ export const makeExecutions = (
         });
       return {
         listSkills: (input, options) => exchange((backend) => backend.listSkills(input, options)),
+        bundleSkills: (input, options) =>
+          exchange((backend) => backend.bundleSkills(input, options)),
         readSkill: (input) => exchange((backend) => backend.readSkill(input)),
         listApps: (input) => exchange((backend) => backend.listApps(input)),
         listAccounts: (input) => exchange((backend) => backend.listAccounts(input)),

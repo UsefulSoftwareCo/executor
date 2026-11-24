@@ -431,7 +431,7 @@ type FlatExecutor = {
           ? WithListOptions<Method<E>, ToolListOptions>
           : Method<E>
       : HttpApiGroup.Identifier<G> extends "skills"
-        ? HttpApiEndpoint.Identifier<E> extends "list"
+        ? HttpApiEndpoint.Identifier<E> extends "list" | "bundle"
           ? WithListOptions<Method<E>, CatalogReadOptions>
           : Method<E>
         : Method<E>;

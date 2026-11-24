@@ -27,6 +27,7 @@ import { makeExecutions } from "./executions.ts";
 import { executeNative } from "./native-elicitation.ts";
 import { callTools, describeCatalog, executeProgram, searchCatalog } from "./execute.ts";
 import { decodeSkillsInput, skills } from "./skills.ts";
+import { skillCatalog } from "./skill-catalog.ts";
 import { eventsHandler } from "./events.ts";
 import { withOperationSpan } from "./telemetry.ts";
 
@@ -334,6 +335,7 @@ export const makeMcp = (options: McpOptions) =>
         return yield* Layer.mergeAll(
           toolkit,
           McpServer.events(eventsHandler(options.backend)),
+          McpServer.skillCatalog(skillCatalog(options.backend)),
         ).pipe(
           Layer.provide(
             McpServer.layerHttp({

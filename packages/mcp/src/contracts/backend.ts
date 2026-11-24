@@ -12,6 +12,7 @@ import type {
   ToolListOptions,
   CatalogReadOptions,
   ElicitationFailed,
+  AppSkillBundle,
   AppSkillCatalog,
   AppSkillDocument,
   AppId,
@@ -60,6 +61,11 @@ export interface McpBackend<E extends Error> {
     input: Parameters<Executor["skills"]["list"]>[0],
     options?: CatalogReadOptions,
   ) => Effect.Effect<AppSkillCatalog, E>;
+  /** Every file of an app's skills, authorized as `listSkills` is. */
+  readonly bundleSkills: (
+    input: Parameters<Executor["skills"]["bundle"]>[0],
+    options?: CatalogReadOptions,
+  ) => Effect.Effect<AppSkillBundle, E>;
   /** Reauthorize each document/reference read, including previous versions. */
   readonly readSkill: (
     input: Parameters<Executor["skills"]["read"]>[0],

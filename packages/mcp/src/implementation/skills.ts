@@ -57,7 +57,7 @@ type ListedApp = Pick<App, "id" | "name" | "slug" | "activeVersion">;
  * The accounts one app's skills are read with: the caller's linked accounts, as a tool call uses
  * them. Skill text may depend on the account.
  */
-const skillAccounts = <E extends Error>(
+export const skillAccounts = <E extends Error>(
   backend: McpBackend<E>,
   app: ListedApp,
   version: ListedApp["activeVersion"],
