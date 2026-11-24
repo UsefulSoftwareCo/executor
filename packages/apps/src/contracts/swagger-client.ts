@@ -11,6 +11,7 @@ declare module "swagger-client" {
       parameters?: Readonly<Record<string, unknown>>;
       requestBody?: unknown;
       requestContentType?: string;
+      responseContentType?: string;
       securities?: { authorized: Readonly<Record<string, unknown>> };
     }): unknown;
     resolve(options: {
