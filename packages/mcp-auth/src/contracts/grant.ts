@@ -8,8 +8,14 @@ import { AppPermission } from "@executor-js/authorization";
 export { AppPermission } from "@executor-js/authorization";
 import { Schema } from "effect";
 
-/** Stable authorization identity shared by access tokens, refresh tokens, and continuations. */
-export const GrantId = Schema.NonEmptyString.pipe(Schema.brand("McpGrantId"));
+/**
+ * Stable authorization identity shared by access tokens, refresh tokens, and continuations. It
+ * reaches storage as a path parameter, and storage cannot hold a control character such as NUL,
+ * so one is refused as a bad request instead of failing the lookup.
+ */
+export const GrantId = Schema.NonEmptyString.check(Schema.isPattern(/^[^\p{Cc}]*$/u)).pipe(
+  Schema.brand("McpGrantId"),
+);
 export type GrantId = typeof GrantId.Type;
 /** Scope selects ordinary apps. All apps includes any Executor app the caller may use. */
 export const GrantPolicy = Schema.Union([
