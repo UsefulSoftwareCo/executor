@@ -900,6 +900,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         );
         for (const job of ["local", "self-host", "cloud"])
           expect(readyProduct.outputs[job], job).toBe(push.outputs[job]);
+        expect(readyProduct.summary).not.toContain("A draft does not need `all`");
         expect(readyProduct.keys.selection).not.toBe(draft.keys.selection);
 
         // Ready, notes, agent documents and spec files keep the block's selection.
@@ -3494,6 +3495,11 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
       for (const job of [...jobs, ...runnerOutputs]) expect(all.outputs[job], job).not.toBe("");
       expect(all.outputs.full).toBe("true");
       expect(all.summary).toContain("Full suite: changes the lockfile");
+      // A draft that says `all` is told the ready run covers it, and still runs the full suite.
+      expect(all.outputs.draft).toBe("true");
+      expect(all.summary).toContain(
+        "A draft does not need `all`: marking the pull request ready runs the full suite unless everything it changes is in e2e/narrowing.ts, and that run gates the merge. Name the spec files for this change instead; until then every push to this draft runs the full suite.",
+      );
       expect(bareAll.exitCode).toBe(1);
       expect(skip.exitCode).toBe(0);
       expect(skip.outputs).toEqual({ skip: "true", draft: "true", gate: "draft" });

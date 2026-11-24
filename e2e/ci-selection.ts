@@ -1927,7 +1927,11 @@ runMain(
       "",
       files === undefined
         ? named !== undefined && "all" in named
-          ? `Full suite: ${named.all}`
+          ? `Full suite: ${named.all}${
+              draft === true
+                ? "\n\nA draft does not need `all`: marking the pull request ready runs the full suite unless everything it changes is in e2e/narrowing.ts, and that run gates the merge. Name the spec files for this change instead; until then every push to this draft runs the full suite."
+                : ""
+            }`
           : "Full suite: this run is not for a pull request."
         : files.size === 0
           ? "No E2E scenarios: the pull request selects none and changes no spec file these jobs run."

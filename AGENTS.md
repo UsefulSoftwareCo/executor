@@ -368,7 +368,10 @@ it, such as `all: changes the lockfile`; `all` without a reason fails the `selec
 A lockfile change that only updates a workspace package's own `version`, as `bun install`
 writes after a version bump, installs nothing different: write `none` for it.
 A change to shared code such as the runtime, storage, auth or the MCP server is not
-by itself a reason: list the spec files for the features whose behavior it changes. [`e2e/ci-selection.ts`](e2e/ci-selection.ts) turns the block
+by itself a reason: list the spec files for the features whose behavior it changes.
+A draft never needs `all`: marking a pull request ready runs the full suite unless
+everything it changes is in `e2e/narrowing.ts`, and that run gates the merge. Name the
+spec files for the change on the draft; `all` there runs the full suite on every push. [`e2e/ci-selection.ts`](e2e/ci-selection.ts) turns the block
 into each job's scenario list; the run summary shows it.
 
 In a stack, write `skip` in each lower layer's block, such as a code PR under its
