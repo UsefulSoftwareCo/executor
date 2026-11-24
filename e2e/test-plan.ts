@@ -2192,6 +2192,16 @@ export const scenarios = plan({
       "self-host": na("Runs the CLI against the managed local server with its API key."),
     },
   },
+  localCliMcpRelayStateless: {
+    file: "cli-tool-commands.spec.ts",
+    title:
+      "executor mcp carries a 2026-07-28 MCP client over stdio through discovery, tools and a call, and the skills it lists, gets and reads",
+    targets: {
+      local: scheduled,
+      cloud: na("Runs the CLI against the managed local server with its API key."),
+      "self-host": na("Runs the CLI against the managed local server with its API key."),
+    },
+  },
   cliToolsLogin: {
     fixtures: "actors",
     file: "cli-sign-in.spec.ts",
