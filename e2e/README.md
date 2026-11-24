@@ -660,7 +660,7 @@ how much is free and the floor. Set `EXECUTOR_DISK_FLOOR_GB` to change the floor
 it off. In CI the floor applies only when that variable is set: runners start with about 14 GB
 free on a fresh disk.
 
-Every CI e2e job, passed or failed, also uploads `<job>-resources-evidence-<index>-attempt-<N>`, and the `tooling` and `tooling-cloud` jobs `tooling-resources-evidence-attempt-<N>` and `tooling-cloud-resources-evidence-attempt-<N>`: the runner's load, CPU (busy, iowait, steal, cores busy), memory and busiest command names every 5 s in `samples.ndjson`, with totals in `summary.json` (`scripts/ci/resource-sampler.ts`; read with `ci-evidence.ts --file summary.json --artifact <name>`).
+Every CI e2e job, passed or failed, also uploads `<job>-resources-evidence-<index>-attempt-<N>`, and the `tooling`, `tooling-release` and `tooling-cloud` jobs `tooling-resources-evidence-attempt-<N>`, `tooling-release-resources-evidence-attempt-<N>` and `tooling-cloud-resources-evidence-attempt-<N>`: the runner's load, CPU (busy, iowait, steal, cores busy), memory and busiest command names every 5 s in `samples.ndjson`, with totals in `summary.json` (`scripts/ci/resource-sampler.ts`; read with `ci-evidence.ts --file summary.json --artifact <name>`).
 
 When evidence needs review, render the retained run, then serve the report on
 loopback. Rendering needs Playwright Chromium installed, plus ffmpeg and ffprobe

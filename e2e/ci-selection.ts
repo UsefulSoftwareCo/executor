@@ -803,7 +803,14 @@ interface Suite {
 }
 
 /** The jobs of checks.yml that run on every pull request whose layer does not skip. */
-const everyRunJobs = ["static", "site", "apps-package", "tooling", "tooling-cloud"];
+const everyRunJobs = [
+  "static",
+  "site",
+  "apps-package",
+  "tooling",
+  "tooling-release",
+  "tooling-cloud",
+];
 
 const PackageScripts = Schema.Struct({ scripts: Schema.Record(Schema.String, Schema.String) });
 /**

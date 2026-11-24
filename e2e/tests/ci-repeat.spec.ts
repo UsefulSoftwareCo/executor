@@ -719,6 +719,7 @@ layer(NodeServices.layer)("CI repeat", (it) => {
           "site",
           "apps-package",
           "tooling",
+          "tooling-release",
           "tooling-cloud",
           "collector-native",
         ]);
@@ -792,6 +793,7 @@ layer(NodeServices.layer)("CI repeat", (it) => {
         "site",
         "apps-package",
         "tooling",
+        "tooling-release",
         "tooling-cloud",
         "collector-native",
         "self-host-native",
@@ -820,10 +822,18 @@ layer(NodeServices.layer)("CI repeat", (it) => {
           "site",
           "apps-package",
           "tooling",
+          "tooling-release",
           "tooling-cloud",
           "collector-native",
         ];
-        expect(job).toContain(`    needs: [${needs.join(", ")}]\n`);
+        // Every job it stands for, in order, however the formatter wraps the list.
+        expect(
+          job
+            .match(/^ {4}needs:\s*\[([^\]]*)\]/m)![1]!
+            .split(",")
+            .map((name) => name.trim())
+            .filter((name) => name.length > 0),
+        ).toEqual(needs);
         const script = scriptOf(job, "Require every static check to pass");
         const { bin } = yield* stub({});
         const run = (results: Record<string, string>, collector: string | null = "true") =>
@@ -851,7 +861,7 @@ layer(NodeServices.layer)("CI repeat", (it) => {
         expect((yield* run({})).exitCode).toBe(0);
         // A job that failed, was cancelled, or was skipped by mistake fails the check. Select says
         // a collector input changed here, so collector-native's skip is a mistake too.
-        for (const name of ["tooling", "tooling-cloud", "collector-native"])
+        for (const name of ["tooling", "tooling-release", "tooling-cloud", "collector-native"])
           for (const result of ["failure", "cancelled", "skipped"]) {
             const failed = yield* run({ [name]: result });
             expect(failed.exitCode, `${name} ${result}`).toBe(1);

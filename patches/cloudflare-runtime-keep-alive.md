@@ -63,7 +63,7 @@ before this patch).
 one on a single kept-alive connection and expects the next to be answered on
 it; `patchGuards` in `e2e/ci-selection.ts` runs it whenever this patch
 changes. `cloud-proxy-keep-alive.spec.ts` (`bun run e2e:cloud-proxy-keep-alive`,
-in CI's `tooling` job) runs the patched proxy under Node and Bun in front of a
+in CI's `tooling-release` job) runs the patched proxy under Node and Bun in front of a
 fake workerd: an early answer to a 32 MB upload that workerd stops reading, and
 an answer the proxy cannot frame while it holds the next request. After
 editing `src/core/proxy/KeepAlive.ts`, rebuild `dist/core/node/proxy/KeepAlive.mjs`
