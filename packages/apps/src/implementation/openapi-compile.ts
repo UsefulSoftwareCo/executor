@@ -352,6 +352,27 @@ const fixedMethods = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"
 const fixedMethods32 = [...fixedMethods, "QUERY"] as const;
 const isImportedMethod = Schema.is(OpenapiOperation.fields.method);
 
+const placeholdersOf = (text: string) =>
+  [...text.matchAll(/\{([^{}]+)\}/g)].map(([, name]) => name);
+
+const unfilledForms = (route: string, names: readonly string[]) => {
+  const segments = route.split("/");
+  const regexGroup = segments.some((segment) => {
+    const literal = segment.replace(/\{[^{}]+\}/g, "");
+    return literal.includes("\\") || /^\(.*[+*?|].*\)$/.test(literal);
+  });
+  return names.filter(
+    (name) =>
+      regexGroup || segments.some((segment) => segment === `:${name}` || segment === `*${name}`),
+  );
+};
+
+const pathRoute = (path: string) => {
+  const [declared = path] = path.split("#");
+  const at = declared.indexOf("?");
+  return at === -1 ? declared : declared.slice(0, at);
+};
+
 /**
  * A path prefix inserted between every operation's server and its path, such as
  * `/projects/{project}`. Each `{name}` becomes a required string path parameter of every
@@ -686,6 +707,36 @@ export const compileOpenApiDocument = (
                 at: undefined,
               });
           }
+          if (/[{}]/.test(pathRoute(path).replace(/\{[^{}]+\}/g, "")))
+            fail(
+              "operation_path",
+              `The path ${JSON.stringify(path)} has an unclosed or stray brace, so no request can fill it.`,
+            );
+          const placeholders = placeholdersOf(pathRoute(path));
+          const [beforeFragment = path] = path.split("#");
+          const usedPathParameters = new Set([...prefix, ...placeholdersOf(beforeFragment)]);
+          const unusedPathParameters = [...parameters.keys()]
+            .filter((key) => key.startsWith("path:"))
+            .map((key) => key.slice("path:".length))
+            .filter((parameter) => !usedPathParameters.has(parameter));
+          for (const name of placeholders) {
+            if (name !== undefined && !parameters.has(`path:${name}`)) {
+              fail(
+                "operation_path",
+                `The path uses {${name}}, but the operation declares no path parameter named ${name}.${
+                  unusedPathParameters.length === 0
+                    ? ""
+                    : ` Declared path parameters the path does not use: ${unusedPathParameters.join(", ")}.`
+                }`,
+              );
+            }
+          }
+          const unfilled = unfilledForms(pathRoute(path), unusedPathParameters);
+          if (unfilled.length > 0)
+            fail(
+              "operation_path",
+              `The path ${JSON.stringify(path)} declares ${unfilled.join(", ")} in a form that is never filled (:name, *name or a pattern such as (\\d+)). Write {name}.`,
+            );
           const groups = new Map<
             string,
             { properties: Record<string, (api: ApiSchema) => Json>; required: string[] }
@@ -724,7 +775,7 @@ export const compileOpenApiDocument = (
           const bodyVariants: Array<(api: ApiSchema) => JsonObject> = [];
           let retainedBody: GeneratedOperation["request"]["requestBody"];
           const bodyAt = declaredAt(document, resolved.requestBody, `${at}/requestBody`);
-          const request =
+          let request =
             operation.requestBody === undefined
               ? undefined
               : decodeDefinition(
@@ -733,6 +784,20 @@ export const compileOpenApiDocument = (
                   bodyAt,
                   "request body",
                 );
+          let bodyDroppedForGetHead = false;
+          if (
+            request !== undefined &&
+            (method === "GET" || method === "HEAD") &&
+            Object.keys(request.content).length > 0
+          ) {
+            if (request.required)
+              fail(
+                "request_body",
+                "A GET or HEAD request cannot carry a body, and this operation requires one.",
+              );
+            request = undefined;
+            bodyDroppedForGetHead = true;
+          }
           if (request !== undefined && Object.keys(request.content).length > 0) {
             const rawContent = record(document.resolve(record(resolved.requestBody)).content);
             const retainedContent: Record<string, (typeof RequestBody.Type.content)[string]> = {};
@@ -854,7 +919,17 @@ export const compileOpenApiDocument = (
               ...(operation.operationId === undefined
                 ? {}
                 : { operationId: operation.operationId }),
-              description: operation.summary ?? operation.description ?? name,
+              description: [
+                operation.summary ?? operation.description ?? name,
+                ...(bodyDroppedForGetHead
+                  ? ["Its optional request body is left out: GET and HEAD cannot carry a body."]
+                  : []),
+                ...(unusedPathParameters.length > 0
+                  ? [
+                      `Its path does not hold ${unusedPathParameters.join(", ")}, so any value given is not sent.`,
+                    ]
+                  : []),
+              ].join("\n"),
               method,
               path: `${options.pathPrefix ?? ""}${path}`,
               baseUrl,

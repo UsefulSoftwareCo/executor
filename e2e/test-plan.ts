@@ -3106,6 +3106,17 @@ export const scenarios = plan({
       cloud: na("Cloud runs the same step from its Worker's cron in the Cloud scenario."),
     },
   },
+  openapiImportDiagnostics: {
+    fixtures: "actors",
+    file: "openapi-import-diagnostics.spec.ts",
+    title:
+      "OpenAPI import reports a misnamed path parameter, a :name placeholder and a required GET body, drops an optional body, and keeps an operation with a path parameter its path does not hold",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a loopback upstream to exercise the shared Worker OpenAPI transport."),
+      local: na("Exercises the hosted import and account connection APIs."),
+    },
+  },
   appPackageMetadata: {
     fixtures: "actors",
     file: "app-package-metadata.spec.ts",
