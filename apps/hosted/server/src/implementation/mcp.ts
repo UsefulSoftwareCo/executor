@@ -52,7 +52,7 @@ import type { ToolCallCaller } from "../contracts/tool-call-log.ts";
 import { loggedToolCall, loggedToolResume, recordCallDetails } from "./tool-call-log.ts";
 import { patGrantOf } from "./mcp-oauth.ts";
 import { listTools, searchableTools, searchTools } from "./tools.ts";
-import { listAppSkills, readAppSkill } from "./skills.ts";
+import { bundleAppSkills, listAppSkills, readAppSkill } from "./skills.ts";
 
 /**
  * The client that sent this request, as it describes itself. Protocol 2026-07-28 has no
@@ -350,6 +350,8 @@ export const hostedMcpBackend = Effect.gen(function* () {
       }).pipe((work) => observe("unsubscribeEvent", work)),
     listSkills: (input, options) =>
       observe("listSkills", grantRefusal(listAppSkills(input, options)), "read"),
+    bundleSkills: (input, options) =>
+      observe("bundleSkills", grantRefusal(bundleAppSkills(input, options)), "read"),
     readSkill: (input) => observe("readSkill", grantRefusal(readAppSkill(input)), "read"),
     authorizeElicitation: (input) =>
       Effect.gen(function* () {

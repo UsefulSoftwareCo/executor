@@ -12001,6 +12001,51 @@ export const scenarios = plan({
       local: na("This scenario tests hosted organization consent, which Local does not have."),
     },
   },
+  mcpSkillsExtension: {
+    managementApps: ["owner"],
+    fixtures: "actors",
+    file: "mcp-skills-extension.spec.ts",
+    title:
+      "MCP clients list and read every skill of the apps a member can see through the Skills extension, and never another member's private app's or one their grant excludes",
+    targets: {
+      "self-host": scheduled,
+      cloud: managedCloud,
+      local: na("Local has one operator; localMcpSkillsExtension covers its connections."),
+    },
+  },
+  mcpSkillsExtensionExecutorEdits: {
+    managementApps: ["owner"],
+    fixtures: "actors",
+    file: "mcp-skills-extension.spec.ts",
+    title: "The Skills extension serves the skills of an organization's own edited Executor app",
+    targets: {
+      "self-host": scheduled,
+      cloud: managedCloud,
+      local: na("Local's Executor app is the host's; it has no organization of its own."),
+    },
+  },
+  mcpSkillsExtensionStalledLoad: {
+    managementApps: ["owner"],
+    fixtures: "actors",
+    file: "mcp-skills-extension.spec.ts",
+    title:
+      "Repeated Skills extension listings by two members ask an app whose skill source never answers once, and share nothing between them",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Its app fetches a loopback service, which only self-host lets app code reach."),
+      local: na("Its app fetches a loopback service, which only self-host lets app code reach."),
+    },
+  },
+  localMcpSkillsExtension: {
+    file: "mcp-skills-extension.spec.ts",
+    title:
+      "Local MCP serves every app's skills through the Skills extension, and a scoped connection only its app's",
+    targets: {
+      local: scheduled,
+      "self-host": na("Hosted members are covered by mcpSkillsExtension."),
+      cloud: na("Hosted members are covered by mcpSkillsExtension."),
+    },
+  },
   organizationRemoval: {
     fixtures: "actors",
     file: "organization-removal.spec.ts",
