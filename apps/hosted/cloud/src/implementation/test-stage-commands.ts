@@ -30,6 +30,7 @@ import {
 import { ReleaseRefusal, releaseRefusalReport } from "../contracts/release-guard.ts";
 import { withStageAdmin } from "./test-stage-inventory.ts";
 import { discoverTestStages } from "./test-stage-discovery.ts";
+import { accountLimits, accountUsage, capacityCheck } from "./test-stage-capacity.ts";
 import { findOrphanBranches } from "./test-stage-orphans.ts";
 import { branchGone, branchOutcomeMessage, removeStageBranch } from "./test-stage-branch.ts";
 import { awaitStageRollout } from "./test-stage-rollout.ts";
@@ -343,27 +344,53 @@ const operation = (name: "deploy" | "plan") =>
             return yield* failure(
               `Deploying ${input.slug} would evict ${evictions.length} test stage${evictions.length === 1 ? "" : "s"} to stay within ${testStageLimit}: ${evictions.map((stage) => `${stage.slug} (${oneLine(stage.owner)})`).join(", ")}. --no-evict refuses it, so nothing was reserved, deployed or destroyed. Destroy test stages you own, then deploy again.`,
             );
+          // A new stage adds Workers and Durable Object classes, both account quotas. One past a
+          // configured quota is refused here rather than failing part way through Alchemy's apply;
+          // past only Cloudflare's documented figure, it warns and goes on. The stages it evicts are
+          // counted as freed, and checked again below with only the evictions that succeeded.
+          const usage = existing === undefined ? yield* accountUsage : undefined;
+          const limits = yield* accountLimits;
+          const capacity =
+            usage === undefined
+              ? undefined
+              : capacityCheck(
+                  usage,
+                  limits,
+                  input.slug,
+                  evictions.map((stage) => stage.slug),
+                );
+          if (capacity?.refusal !== undefined) return yield* failure(capacity.refusal);
+          if (capacity?.warning !== undefined) yield* Console.error(capacity.warning);
+          const evicted: string[] = [];
           if (existing === undefined)
             for (const stage of evictions) {
               yield* Console.log(
                 `${name === "deploy" ? "Evicting" : "Deploying will evict"} the oldest test stage, ${stage.slug} (${oneLine(stage.owner)}), to stay within ${testStageLimit}.`,
               );
               if (name !== "deploy") continue;
-              const evicted = yield* destroy(stage.slug, {
+              const outcome = yield* destroy(stage.slug, {
                 automatic: false,
                 expectedOwner: Option.none(),
                 byName: false,
               }).pipe(Effect.result);
-              if (Result.isSuccess(evicted)) yield* Console.log(`Evicted ${stage.slug}.`);
-              else
+              if (Result.isSuccess(outcome)) {
+                evicted.push(stage.slug);
+                yield* Console.log(`Evicted ${stage.slug}.`);
+              } else
                 yield* reportEvictionFailure(
                   stage,
-                  Schema.is(TestStageFailed)(evicted.failure)
-                    ? evicted.failure.message
+                  Schema.is(TestStageFailed)(outcome.failure)
+                    ? outcome.failure.message
                     : "its teardown failed",
                   (yield* admin.list).length + 1,
                 );
             }
+          if (name === "deploy" && usage !== undefined && evicted.length < evictions.length) {
+            const again = capacityCheck(usage, limits, input.slug, evicted, true);
+            if (again.refusal !== undefined) return yield* failure(again.refusal);
+            if (again.warning !== undefined && capacity?.warning === undefined)
+              yield* Console.error(again.warning);
+          }
           const lease =
             name === "deploy"
               ? yield* admin.reserve(metadata)

@@ -3,8 +3,11 @@ import * as Cloudflare from "alchemy/Cloudflare";
 import * as Command from "alchemy/Command";
 import * as Provider from "alchemy/Provider";
 import { Stage } from "alchemy/Stage";
-import { Config, Effect, Schema } from "effect";
+import { StackContext } from "alchemy/StackContext";
+import { State } from "alchemy/State/State";
+import { Config, Console, Effect, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
+import { appDomainControlSecretId } from "./app-domain-control.ts";
 import { AppDomainLifecycle, AppDomainLifecycleProvider } from "./app-domain-lifecycle.ts";
 
 /** Only Alchemy's exact empty precreate script can have no runtime-owned team DNS. */
@@ -18,7 +21,12 @@ class PlaceholderCheckFailed extends Schema.TaggedError<PlaceholderCheckFailed>(
   {},
 ) {}
 
-/** Failed first deployments leave an empty Worker stub with no reachable drain endpoint. */
+/**
+ * Failed first deployments leave an empty Worker stub with no reachable drain endpoint. A teardown
+ * that stopped after deleting the stage's Workers and its control secret leaves only this record,
+ * whose drain can never be answered: with the API Worker gone (404) and no secret recorded, it is
+ * forgotten instead of failing every scheduled cleanup.
+ */
 export const TestStageDomainCleanup = () =>
   Provider.effect(
     AppDomainLifecycle,
@@ -29,23 +37,31 @@ export const TestStageDomainCleanup = () =>
         delete: (input: Parameters<typeof native.delete>[0]) =>
           Effect.gen(function* () {
             const stage = yield* Stage;
-            if (stage.startsWith("test-") && input.olds.deployment === undefined) {
-              const account = yield* Config.NonEmptyString("CLOUDFLARE_ACCOUNT_ID");
-              const token = yield* Config.Redacted("CLOUDFLARE_API_TOKEN");
-              const http = yield* HttpClient.HttpClient;
-              const response = yield* http.execute(
+            if (!stage.startsWith("test-")) return yield* native.delete(input);
+            const account = yield* Config.NonEmptyString("CLOUDFLARE_ACCOUNT_ID");
+            const token = yield* Config.Redacted("CLOUDFLARE_API_TOKEN");
+            // A recorded copy of the API can stand in for it (`test-stage-domain-cleanup.spec.ts`).
+            const api = yield* Config.String("TEST_STAGE_CLOUDFLARE_API").pipe(
+              Config.withDefault("https://api.cloudflare.com"),
+            );
+            const http = yield* HttpClient.HttpClient;
+            const content = http
+              .execute(
                 HttpClientRequest.get(
-                  `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(account)}/workers/scripts/${encodeURIComponent(input.olds.workerName)}/content/v2`,
+                  `${api}/client/v4/accounts/${encodeURIComponent(account)}/workers/scripts/${encodeURIComponent(input.olds.workerName)}/content/v2`,
                 ).pipe(HttpClientRequest.bearerToken(token)),
-              );
+              )
+              .pipe(Effect.mapError(() => new PlaceholderCheckFailed()));
+            if (input.olds.deployment === undefined) {
+              const response = yield* content;
               if (response.status === 404) return;
               if (response.status !== 200) return yield* new PlaceholderCheckFailed();
               const contentType = response.headers["content-type"];
               if (contentType === undefined) return yield* new PlaceholderCheckFailed();
-              const content = yield* response.text;
+              const text = yield* response.text;
               const form = yield* Effect.tryPromise({
                 try: () =>
-                  new Response(content, { headers: { "content-type": contentType } }).formData(),
+                  new Response(text, { headers: { "content-type": contentType } }).formData(),
                 catch: () => new PlaceholderCheckFailed(),
               });
               const files: Array<string | File> = [];
@@ -57,6 +73,20 @@ export const TestStageDomainCleanup = () =>
                   catch: () => new PlaceholderCheckFailed(),
                 });
                 if (isAlchemyWorkerPlaceholder(script)) return;
+              }
+            } else {
+              const state = yield* yield* State;
+              const stack = yield* StackContext;
+              const secret = yield* state.get({
+                stack: stack.name,
+                stage,
+                fqn: appDomainControlSecretId,
+              });
+              if (secret === undefined && (yield* content).status === 404) {
+                yield* Console.log(
+                  `${stage}: its API Worker ${input.olds.workerName} is gone and no app domain control secret is recorded, so nothing can answer a drain. Forgetting its app domain lifecycle record.`,
+                );
+                return;
               }
             }
             // Any uploaded application, including one whose state commit failed,

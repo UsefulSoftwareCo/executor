@@ -73,6 +73,10 @@ interface World {
   faults: Fault[];
   /** The PlanetScale test database's branches: whether production, and what a delete answers. */
   planetscale?: Record<string, { production: boolean; deleteStatus: number }>;
+  /** The account's Durable Object namespaces, by the Worker that exports each class. */
+  namespaces?: Array<{ script: string }>;
+  /** How many more namespaces the listing's `total_count` claims than it returns. */
+  namespacesUnlisted?: number;
   /** Pages of the bucket listing, by name, when the listing is paginated. */
   bucketPages?: ReadonlyArray<ReadonlyArray<string>>;
   /** Listing results that report more pages than they return. */
@@ -316,6 +320,20 @@ const answer = (world: World, method: string, url: URL, body: string, authorizat
     const name = decodeURIComponent(match[1]!);
     world.workers = world.workers.filter((worker) => worker.id !== name);
     return gone;
+  }
+  if (path === `${cf}/workers/durable_objects/namespaces` && method === "GET") {
+    // As Cloudflare answers: `total_count` and no page count. It gives at most 300 a page here,
+    // fewer than the CLI asks for, so the account's namespaces take two pages.
+    const all = world.namespaces ?? [];
+    const page = Number(url.searchParams.get("page") ?? "1");
+    const per = Math.min(Number(url.searchParams.get("per_page") ?? "20"), 300);
+    const results = all.slice((page - 1) * per, page * per);
+    return ok(results, {
+      page,
+      per_page: per,
+      count: results.length,
+      total_count: all.length + (world.namespacesUnlisted ?? 0),
+    });
   }
   if (path === "/client/v4/zones") return ok(world.zones, { page: 1, total_pages: 1 });
   if ((match = /^\/client\/v4\/zones\/([^/]+)\/workers\/routes(?:\/([^/]+))?$/u.exec(path))) {
@@ -1082,13 +1100,33 @@ describe("Removing a test stage by name, with its registry", () => {
   const deployAmong = (
     stages: number,
     flags: ReadonlyArray<string>,
-    { readable = false }: { readonly readable?: boolean } = {},
+    {
+      readable = false,
+      namespaces = [],
+      namespacesUnlisted = 0,
+      workers = 0,
+      env = {},
+    }: {
+      readonly readable?: boolean;
+      readonly namespaces?: Array<{ script: string }>;
+      readonly namespacesUnlisted?: number;
+      /** More production Workers, which no test stage owns, beside the world's 7. */
+      readonly workers?: number;
+      readonly env?: Record<string, string>;
+    } = {},
   ) =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const { url, psql } = yield* registry;
       const world = pr2994World();
+      world.namespaces = namespaces;
+      world.namespacesUnlisted = namespacesUnlisted;
+      for (let index = 0; index < workers; index += 1)
+        world.workers.push({
+          id: `executor-next-hosted-worker${index}-v2-ffffffffffffffff`,
+          tags: tags("v2", `Worker${index}`),
+        });
       if (readable)
         world.state["test-pr-2994"] = {
           Api: "readable",
@@ -1117,7 +1155,7 @@ describe("Removing a test stage by name, with its registry", () => {
       const result = yield* cli(
         world,
         ["deploy", "new-stage", "--owner", "Deployer", "--no-input", "--yes", ...flags],
-        { registry: url, env: { PATH: `${bin}:${process.env.PATH ?? ""}` } },
+        { registry: url, env: { PATH: `${bin}:${process.env.PATH ?? ""}`, ...env } },
       );
       return {
         result,
@@ -1179,6 +1217,212 @@ describe("Removing a test stage by name, with its registry", () => {
         expect(result.output).toContain("Evicted pr-2994.");
         expect(result.output).not.toContain("Could not evict");
         expect([built, oldest, leases]).toEqual([true, "0", "80"]);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    180_000,
+  );
+
+  /**
+   * The account's Durable Object namespaces: `stage` of them exported by pr-2994's API Worker, and
+   * `others` by production's, which no test stage owns.
+   */
+  const namespaces = (stage: number, others: number) => [
+    ...Array.from({ length: stage }, () => ({ script: pr2994.api })),
+    ...Array.from({ length: others }, () => ({
+      script: "executor-next-hosted-api-v2-dddddddddddddddd",
+    })),
+  ];
+
+  const classLimit = "TEST_STAGE_DURABLE_OBJECT_CLASS_LIMIT";
+  const workerLimit = "TEST_STAGE_WORKER_LIMIT";
+  /** 497 namespaces over two pages; a stage holds up to 8, so a new one would make 505. */
+  const pastClasses =
+    "Deploying new-stage brings the account to about 505 Durable Object namespaces (497 now, up to 8 for a test stage), past Cloudflare's documented limit of 500 Durable Object classes per Workers Paid account. This account's real limit is unknown and may have been raised, so the deploy goes on; if it is lower, the deploy fails part way through. Set TEST_STAGE_DURABLE_OBJECT_CLASS_LIMIT to the account's limit to refuse such a deploy instead.";
+
+  it.live(
+    "past Cloudflare's documented class quota with no limit configured, a new stage warns once and deploys",
+    () =>
+      Effect.gen(function* () {
+        const { result, built } = yield* deployAmong(10, [], { namespaces: namespaces(8, 489) });
+        expect(result.output).toContain(pastClasses);
+        expect(result.output.split(pastClasses).length - 1).toBe(1);
+        expect(result.output).not.toContain("Workers per Workers Paid account");
+        expect(built).toBe(true);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    180_000,
+  );
+
+  it.live(
+    "past a configured class limit, a new stage is refused before it evicts, reserves or builds anything",
+    () =>
+      Effect.gen(function* () {
+        const { result, built, deletes, leases } = yield* deployAmong(10, [], {
+          namespaces: namespaces(8, 489),
+          env: { [classLimit]: "500" },
+        });
+        expect(result.code).not.toBe(0);
+        expect(result.output).toContain(
+          "Deploying new-stage would bring the account to about 505 Durable Object namespaces (497 now, up to 8 for a test stage), over the TEST_STAGE_DURABLE_OBJECT_CLASS_LIMIT limit of 500 Durable Object classes. Nothing was evicted, reserved, deployed or destroyed. Destroy test stages you own, or redeploy one instead of a new slug.",
+        );
+        expect(result.output).not.toContain("past Cloudflare's documented limit");
+        expect([built, deletes, leases]).toEqual([false, [], "10"]);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    180_000,
+  );
+
+  it.live(
+    "past Cloudflare's documented Workers quota with no limit configured, a new stage warns and deploys",
+    () =>
+      Effect.gen(function* () {
+        // The world's 7 Workers and 492 more make 499; pr-2994 has 2, so a new stage would make 501.
+        const { result, built } = yield* deployAmong(10, [], { workers: 492 });
+        expect(result.output).toContain(
+          "Deploying new-stage brings the account to about 501 Workers (499 now, up to 2 for a test stage), past Cloudflare's documented limit of 500 Workers per Workers Paid account. This account's real limit is unknown and may have been raised, so the deploy goes on; if it is lower, the deploy fails part way through. Set TEST_STAGE_WORKER_LIMIT to the account's limit to refuse such a deploy instead.",
+        );
+        expect(result.output).not.toContain("Durable Object namespaces");
+        expect(built).toBe(true);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    180_000,
+  );
+
+  it.live(
+    "past a configured Workers limit, a new stage is refused, and one message names every limit it passes",
+    () =>
+      Effect.gen(function* () {
+        const workersOnly = yield* deployAmong(10, [], {
+          workers: 492,
+          env: { [workerLimit]: "500" },
+        });
+        expect(workersOnly.result.code).not.toBe(0);
+        expect(workersOnly.result.output).toContain(
+          "Deploying new-stage would bring the account to about 501 Workers (499 now, up to 2 for a test stage), over the TEST_STAGE_WORKER_LIMIT limit of 500 Workers. Nothing was evicted, reserved, deployed or destroyed.",
+        );
+        expect([workersOnly.built, workersOnly.leases]).toEqual([false, "10"]);
+        const both = yield* deployAmong(10, [], {
+          namespaces: namespaces(8, 489),
+          workers: 492,
+          env: { [classLimit]: "500", [workerLimit]: "500" },
+        });
+        expect(both.result.output).toContain(
+          "Deploying new-stage would bring the account to about 505 Durable Object namespaces (497 now, up to 8 for a test stage), over the TEST_STAGE_DURABLE_OBJECT_CLASS_LIMIT limit of 500 Durable Object classes; and to about 501 Workers (499 now, up to 2 for a test stage), over the TEST_STAGE_WORKER_LIMIT limit of 500 Workers.",
+        );
+        expect(both.built).toBe(false);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    180_000,
+  );
+
+  it.live(
+    "a new stage within the documented quotas, or within configured limits above them, deploys without a word",
+    () =>
+      Effect.gen(function* () {
+        const fits = yield* deployAmong(10, [], { namespaces: namespaces(8, 484), workers: 491 });
+        expect(fits.result.output).not.toContain("Durable Object namespaces");
+        expect(fits.result.output).not.toContain("Workers (");
+        expect(fits.built).toBe(true);
+        const raised = yield* deployAmong(10, [], {
+          namespaces: namespaces(8, 489),
+          workers: 492,
+          env: { [classLimit]: "505", [workerLimit]: "1000" },
+        });
+        expect(raised.result.output).not.toContain("Durable Object namespaces");
+        expect(raised.result.output).not.toContain("Workers (");
+        expect(raised.built).toBe(true);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    180_000,
+  );
+
+  it.live(
+    "the namespaces of a stage the deploy evicts count as freed",
+    () =>
+      Effect.gen(function* () {
+        // pr-2994's 8 go with it, so the new stage brings the account back to 497.
+        const { result, built, oldest } = yield* deployAmong(80, [], {
+          readable: true,
+          namespaces: namespaces(8, 489),
+          env: { [classLimit]: "500" },
+        });
+        expect(result.output).not.toContain("Durable Object namespaces");
+        expect(result.output).toContain("Evicted pr-2994.");
+        expect([built, oldest]).toEqual([true, "0"]);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    180_000,
+  );
+
+  it.live(
+    "a stage whose eviction fails frees nothing: past a configured limit the deploy stops before it reserves or builds",
+    () =>
+      Effect.gen(function* () {
+        // pr-2994's records are unreadable, so its eviction fails and its 8 stay: 505 would pass 500.
+        const { result, built, leases, oldest } = yield* deployAmong(80, [], {
+          namespaces: namespaces(8, 489),
+          env: { [classLimit]: "500" },
+        });
+        expect(result.code).not.toBe(0);
+        expect(result.output).toContain("Could not evict pr-2994");
+        expect(result.output).toContain(
+          "Deploying new-stage would bring the account to about 505 Durable Object namespaces (497 now, up to 8 for a test stage), over the TEST_STAGE_DURABLE_OBJECT_CLASS_LIMIT limit of 500 Durable Object classes. An eviction failed, so this deploy stopped; nothing was reserved or deployed.",
+        );
+        expect([built, leases, oldest]).toEqual([false, "80", "1"]);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    180_000,
+  );
+
+  it.live(
+    "a stage whose eviction fails frees nothing: with no limit configured the deploy warns and goes on",
+    () =>
+      Effect.gen(function* () {
+        // Before the eviction pr-2994's 8 count as freed, so nothing warns; once it fails, 505 does.
+        const { result, built } = yield* deployAmong(80, [], { namespaces: namespaces(8, 489) });
+        expect(result.output).toContain("Could not evict pr-2994");
+        expect(result.output).toContain(pastClasses);
+        expect(
+          result.output.indexOf(pastClasses) > result.output.indexOf("Could not evict pr-2994"),
+        ).toBe(true);
+        expect(built).toBe(true);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    180_000,
+  );
+
+  it.live(
+    "a namespace listing that ends before the total it states is not taken as the count",
+    () =>
+      Effect.gen(function* () {
+        // 300 fit and 300 more are claimed but never listed: counting 300 would wave it through.
+        const { result, built, leases } = yield* deployAmong(10, [], {
+          namespaces: namespaces(8, 292),
+          namespacesUnlisted: 300,
+        });
+        expect(result.code).not.toBe(0);
+        expect(result.output).toContain(
+          "Could not count the account's Workers and Durable Object namespaces, so a new test stage was not started.",
+        );
+        expect([built, leases]).toEqual([false, "10"]);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    180_000,
+  );
+
+  it.live(
+    "a new stage is not started when the namespaces cannot be counted",
+    () =>
+      Effect.gen(function* () {
+        const { url, psql } = yield* registry;
+        const world = pr2994World();
+        world.faults.push({
+          method: "GET",
+          path: /\/workers\/durable_objects\/namespaces/u,
+          status: 403,
+        });
+        yield* prepareRegistry(world, url);
+        const result = yield* cli(
+          world,
+          ["deploy", "new-stage", "--owner", "Deployer", "--no-input", "--yes"],
+          { registry: url },
+        );
+        expect(result.code).not.toBe(0);
+        expect(result.output).toContain(
+          "Could not count the account's Workers and Durable Object namespaces, so a new test stage was not started.",
+        );
+        expect(deletes(world)).toEqual([]);
+        expect((yield* psql("select count(*) from executor_test_stage_leases")).trim()).toBe("0");
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
     180_000,
   );
