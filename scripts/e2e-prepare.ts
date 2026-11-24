@@ -14,6 +14,10 @@
  * `--no-cache` build every step without reading or writing it.
  *
  * `--skip <step>` neither runs a step nor reads or changes its outputs: something else provides them.
+ *
+ * `--outputs` builds nothing and prints, one per line, the outputs of the steps a run with the same
+ * `--skip`s would build. CI's `e2e-build` job packs exactly these after one build, and the E2E jobs
+ * unpack them instead of building the same commit again (checks.yml).
  * CI skips `collector:build` and then fetches the run's one collector build into
  * `packages/telemetry/dist/collector` (checks.yml), so its jobs need no Rust toolchain; a job whose
  * fetch fails stops before any scenario starts.
@@ -142,12 +146,13 @@ process.env.EXECUTOR_DASHBOARD_SOURCEMAP = "hidden";
 const keep = 20;
 
 const useCache = !process.env.CI && !process.argv.includes("--no-cache");
+const listOutputs = process.argv.includes("--outputs");
 const skipped = new Set<string>();
 for (let index = 2; index < process.argv.length; index++) {
   const arg = process.argv[index];
-  if (arg === "--no-cache") continue;
+  if (arg === "--no-cache" || arg === "--outputs") continue;
   if (arg !== "--skip") {
-    console.error(`Unknown argument ${arg}. Options: --no-cache, --skip <step>.`);
+    console.error(`Unknown argument ${arg}. Options: --no-cache, --outputs, --skip <step>.`);
     process.exit(2);
   }
   const name = process.argv[++index] ?? "";
@@ -158,6 +163,11 @@ for (let index = 2; index < process.argv.length; index++) {
     process.exit(2);
   }
   skipped.add(name);
+}
+if (listOutputs) {
+  for (const step of steps)
+    if (!skipped.has(step.name)) for (const output of step.outputs) console.log(output);
+  process.exit(0);
 }
 const cacheRoot =
   process.env.EXECUTOR_E2E_CACHE ?? path.join(os.homedir(), ".cache", "executor-e2e-prepare");

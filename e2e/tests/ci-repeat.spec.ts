@@ -725,6 +725,7 @@ layer(NodeServices.layer)("CI repeat", (it) => {
         ]);
         expect(dependenciesOf("e2e")).toEqual([
           "collector",
+          "e2e-build",
           "e2e-local",
           "e2e-self-host",
           "e2e-self-host-scale",

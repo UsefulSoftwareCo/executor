@@ -458,6 +458,14 @@ const startedBy = {
     "cloud-runners",
     "release-local",
   ],
+  // The run's one e2e:prepare build, for every job below that runs scenarios on source.
+  "e2e-build": [
+    "local-shards",
+    "self-host-shards",
+    "self-host-inventory",
+    "self-host-catalog",
+    "cloud-runners",
+  ],
   "e2e-local": ["local-shards"],
   "e2e-self-host": ["self-host-shards"],
   "e2e-self-host-scale": ["self-host-inventory", "self-host-catalog"],
@@ -5059,6 +5067,46 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
       expect(passed.exitCode).toBe(1);
       expect(passed.log).not.toContain("The E2E jobs that wait for its build fail with it");
     }),
+  );
+  it.effect(
+    "the e2e check names a failed e2e-build job as the cause of the jobs that unpack it",
+    () =>
+      Effect.gen(function* () {
+        const outputs = { "self-host-shards": "1/1" };
+        const results = Object.fromEntries(
+          e2eJobs.map((job) => [job, chosen(outputs, job) ? "success" : "skipped"]),
+        ) as Record<E2eJob, string>;
+        expect(e2eJobs.filter((job) => chosen(outputs, job))).toEqual([
+          "collector",
+          "e2e-build",
+          "e2e-self-host",
+        ]);
+        for (const result of ["failure", "cancelled"]) {
+          const failed = yield* gate(
+            { result: "success", outputs },
+            { ...results, "e2e-build": result, "e2e-self-host": "failure" },
+          );
+          expect(failed.exitCode, result).toBe(1);
+          expect(failed.log, result).toContain(
+            `::error::e2e-build: ${result}. The E2E jobs that unpack its build of this commit fail with it; rerun that job first.`,
+          );
+          expect(failed.log, result).toContain(`::error::e2e-build: selected, but ${result}`);
+        }
+        // Skipped while a job that unpacks it was selected fails too, and a build that passed is
+        // never named as a cause.
+        const skipped = yield* gate(
+          { result: "success", outputs },
+          { ...results, "e2e-build": "skipped" },
+        );
+        expect(skipped.exitCode).toBe(1);
+        expect(skipped.log).toContain("::error::e2e-build: selected, but skipped");
+        const passed = yield* gate(
+          { result: "success", outputs },
+          { ...results, "e2e-self-host": "failure" },
+        );
+        expect(passed.exitCode).toBe(1);
+        expect(passed.log).not.toContain("unpack its build");
+      }),
   );
   it.effect(
     "the e2e check fails when either release-local job of a selected lane fails, is cancelled or is skipped",
