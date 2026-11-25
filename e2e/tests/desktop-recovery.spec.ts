@@ -474,7 +474,7 @@ it.live(scenarios.desktopLocalChoice.title, () =>
       );
 
       const cliOnly = yield* desktopHome({ keys: "file" });
-      const begun = yield* cliOnly.cli.run(["service", "start"]);
+      const begun = yield* cliOnly.cli.run(["service", "start"], {}, { installed: true });
       expect(begun.code, begun.stderr).toBe(0);
       const fromCli = yield* cliOnly.nextServer([]);
       const electron = yield* launchDesktop({ cwd: cliOnly.home, env: cliOnly.env, welcome: true });

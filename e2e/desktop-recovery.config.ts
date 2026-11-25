@@ -2,6 +2,7 @@ import { defineConfig } from "vitest/config";
 import { snapshotUpdate } from "./snapshot-updates.ts";
 import { scenarios } from "./test-plan.ts";
 import { exactly } from "./scenario-parts.ts";
+import { recoveryFiles, skippedOn } from "./recovery-suite.ts";
 
 const parts = [
   [
@@ -43,7 +44,7 @@ const parts = [
   ],
 ] as const satisfies ReadonlyArray<ReadonlyArray<keyof typeof scenarios>>;
 
-const files: ReadonlyArray<string> = ["desktop-recovery.spec.ts", "desktop-apps.spec.ts"];
+const files = recoveryFiles;
 const listed = parts.flat() as ReadonlyArray<keyof typeof scenarios>;
 const unlisted = Object.entries(scenarios)
   .filter(([key, scenario]) => files.includes(scenario.file) && !listed.includes(key as never))
@@ -73,7 +74,13 @@ export default defineConfig({
     fileParallelism: false,
     ...(selected === undefined
       ? {}
-      : { testNamePattern: exactly(selected.map((key) => scenarios[key].title)) }),
+      : {
+          testNamePattern: exactly(
+            selected
+              .filter((key) => !skippedOn(key, process.platform))
+              .map((key) => scenarios[key].title),
+          ),
+        }),
     globalSetup: ["e2e/desktop-close-durations.ts"],
   },
 });

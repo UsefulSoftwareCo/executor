@@ -826,6 +826,24 @@ export const clickNotification = (electron: ElectronApplication, index: number) 
     }, index),
   );
 
+export const closeShownNotification = (
+  electron: ElectronApplication,
+  index: number,
+  reason: "timedOut" | "userCanceled",
+) =>
+  driver(`close shown notification ${index + 1} (${reason})`, () =>
+    electron.evaluate(
+      (_, [index, reason]) => {
+        const shown = (
+          Reflect.get(globalThis, "executorE2ENotifications") as Array<Electron.Notification>
+        )[index];
+        if (shown === undefined) throw new Error(`No notification ${index + 1} was shown`);
+        shown.emit("close", { reason });
+      },
+      [index, reason] as const,
+    ),
+  );
+
 export const dialogParents = (electron: ElectronApplication, title: string) =>
   driver(`read the parents of ${title} dialogs`, () =>
     electron.evaluate(
@@ -1006,6 +1024,14 @@ export const desktopCli = (options: {
     const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
     const packaged = yield* Config.String("EXECUTOR_E2E_DESKTOP_EXECUTABLE").pipe(Config.option);
     const sourceCli = ["node", path.resolve("apps/local/server/src/bin.ts")] as const;
+    const installed = Effect.gen(function* () {
+      const entry = yield* Config.NonEmptyString("EXECUTOR_E2E_LOCAL_ENTRY").pipe(Config.option);
+      if (Option.isNone(entry))
+        return yield* Effect.fail(
+          new Error("A packaged desktop run needs EXECUTOR_E2E_LOCAL_ENTRY for the installed CLI"),
+        );
+      return [entry.value] as const;
+    });
     const staged = Effect.gen(function* () {
       const profile = options.env.EXECUTOR_DESKTOP_PROFILE_DIR;
       if (profile === undefined) return yield* Effect.fail(new Error("No desktop profile is set"));
@@ -1026,12 +1052,16 @@ export const desktopCli = (options: {
       run: (
         args: ReadonlyArray<string>,
         overrides: Readonly<Record<string, string | undefined>> = {},
-        from: { readonly source?: boolean } = {},
+        from: { readonly source?: boolean; readonly installed?: boolean } = {},
       ) =>
         Effect.scoped(
           Effect.gen(function* () {
             const [command, ...prefix] =
-              Option.isNone(packaged) || from.source === true ? sourceCli : yield* staged;
+              Option.isNone(packaged) || from.source === true
+                ? sourceCli
+                : from.installed === true
+                  ? yield* installed
+                  : yield* staged;
             const env = Object.fromEntries(
               Object.entries({ ...options.env, ...overrides }).flatMap(([name, value]) =>
                 value === undefined ? [] : [[name, value] as const],

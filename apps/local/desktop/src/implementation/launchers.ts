@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { homedir } from "node:os";
 import { app, shell } from "electron";
 import { Effect, FileSystem, Option, Path, Schema } from "effect";
 import { appLink } from "../contracts/installed-apps.ts";
@@ -53,7 +54,7 @@ export const developmentArguments = () => (app.isPackaged ? [] : [app.getAppPath
 export const macLauncherDirectory = () =>
   Effect.gen(function* () {
     const path = yield* Path.Path;
-    return path.join(app.getPath("home"), "Applications", "Executor Apps");
+    return path.join(homedir(), "Applications", "Executor Apps");
   });
 
 export const windowsLauncherDirectory = () =>

@@ -235,6 +235,7 @@ const clamp = (value: number, minimum: number, maximum: number) =>
 const background = () => (nativeTheme.shouldUseDarkColors ? "#0a0a0a" : "#ffffff");
 const maximumIconCharacters = 256 * 1024;
 const rendererReloads = 3;
+const notificationsKept = 20;
 const rendererReloadWindowMillis = 60_000;
 const gestureMillis = 5_000;
 const gestureInputs: ReadonlySet<string> = new Set([
@@ -661,6 +662,7 @@ export const makeInstalledApps = (options: {
       if (window !== undefined && !window.isDestroyed() && window.isVisible())
         saveBounds(current, window);
       clearShortcuts(current);
+      dismissNotifications(current);
       current.tray?.destroy();
       current.tray = undefined;
       current.badge = null;
@@ -1498,7 +1500,26 @@ export const makeInstalledApps = (options: {
     const openLogged = (target: AppTarget) =>
       openApp(target).pipe(Effect.catchCause((cause) => couldNotOpen(target, cause)));
 
-    const notifications = new Map<string, { readonly shown: Notification; readonly tag: string }>();
+    const notifications = new Map<
+      string,
+      {
+        readonly app: string;
+        readonly shown: Notification;
+        readonly tag: string;
+        readonly tell: (type: NotificationEvent) => void;
+      }
+    >();
+    const dismissNotification = (key: string) => {
+      const entry = notifications.get(key);
+      if (entry === undefined) return;
+      notifications.delete(key);
+      entry.shown.close();
+      entry.tell("close");
+    };
+    const dismissNotifications = (current: Running) => {
+      for (const [key, entry] of notifications)
+        if (entry.app === current.key) dismissNotification(key);
+    };
     const showNotification = (
       current: Running,
       page: WebContents,
@@ -1515,7 +1536,7 @@ export const makeInstalledApps = (options: {
       const key = `${current.key} ${request.id}`;
       if (request.tag !== "")
         for (const [other, entry] of notifications)
-          if (other.startsWith(`${current.key} `) && entry.tag === request.tag) entry.shown.close();
+          if (entry.app === current.key && entry.tag === request.tag) dismissNotification(other);
       const shown = new Notification({
         id: request.id,
         title: request.title,
@@ -1529,17 +1550,24 @@ export const makeInstalledApps = (options: {
       const tell = (type: NotificationEvent) => {
         if (!page.isDestroyed()) page.send(desktopChannels.appNotification, request.id, type);
       };
+      const held = () => notifications.get(key)?.shown === shown;
       const forget = () => {
-        if (notifications.get(key)?.shown === shown) notifications.delete(key);
+        if (held()) notifications.delete(key);
       };
-      notifications.set(key, { shown, tag: request.tag });
+      notifications.set(key, { app: current.key, shown, tag: request.tag, tell });
+      const kept = [...notifications].filter(([, entry]) => entry.app === current.key);
+      for (const [other] of kept.slice(0, Math.max(0, kept.length - notificationsKept)))
+        dismissNotification(other);
       shown.on("show", () => tell("show"));
       shown.on("click", () => {
+        if (!held()) return;
+        forget();
         tell("click");
         if (live(current) && granted(current, "notifications"))
           showAt(current, request.path ?? undefined);
       });
-      shown.on("close", () => {
+      shown.on("close", (event) => {
+        if (!held() || event.reason === "timedOut") return;
         forget();
         tell("close");
       });
@@ -1715,7 +1743,12 @@ export const makeInstalledApps = (options: {
       ),
     );
 
-    const applyPermission = (server: string, app: string, name: DesktopPermission) =>
+    const applyPermission = (
+      server: string,
+      app: string,
+      name: DesktopPermission,
+      revoked = false,
+    ) =>
       Effect.gen(function* () {
         if (name === "startAtLogin") yield* syncLoginItem;
         const current = running.get(keyOf(server, app));
@@ -1736,11 +1769,13 @@ export const makeInstalledApps = (options: {
             case "microphone":
             case "camera":
             case "systemAudio":
-              for (const window of windowsOf(current)) window.webContents.reload();
+              if (revoked) for (const window of windowsOf(current)) window.webContents.reload();
+              break;
+            case "notifications":
+              dismissNotifications(current);
               break;
             case "startAtLogin":
             case "clipboardRead":
-            case "notifications":
               break;
           }
         if (live(current)) refreshMenus(current);
@@ -1755,8 +1790,9 @@ export const makeInstalledApps = (options: {
       Effect.gen(function* () {
         const record = yield* store.get(server, app);
         if (Option.isNone(record)) return yield* new DesktopUnavailable();
+        const wasGranted = record.value.permissions[name] === "granted";
         yield* writeDecision(server, app, name, setting);
-        yield* applyPermission(server, app, name);
+        yield* applyPermission(server, app, name, wasGranted && setting !== "granted");
       });
 
     const confirmGrant = (
@@ -2070,7 +2106,7 @@ export const makeInstalledApps = (options: {
               return null;
             }
             case "closeNotification":
-              notifications.get(`${current.key} ${call.id}`)?.shown.close();
+              dismissNotification(`${current.key} ${call.id}`);
               return null;
             case "prepareCapture": {
               for (const name of call.names) {

@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import { app } from "electron";
 import { Effect, FileSystem, Path } from "effect";
 import { developmentArguments } from "./launchers.ts";
@@ -13,7 +14,7 @@ const desktopEntryArgument = (value: string) =>
 
 const linuxEntry = Effect.gen(function* () {
   const path = yield* Path.Path;
-  const config = process.env.XDG_CONFIG_HOME ?? path.join(app.getPath("home"), ".config");
+  const config = process.env.XDG_CONFIG_HOME ?? path.join(homedir(), ".config");
   const name = app
     .getName()
     .toLowerCase()

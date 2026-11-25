@@ -14,6 +14,7 @@ import {
   answeredDialogs,
   dashboardReady,
   clickNotification,
+  closeShownNotification,
   dialogParents,
   clickMenuBarItem,
   desktopCli,
@@ -760,6 +761,40 @@ it.live(scenarios.desktopAppPermissions.title, () =>
             (window) => window.path === "/notes/3" && window.search === "?from=notification",
           ),
       );
+      yield* driver("show a notification that keeps its events across a page change", () =>
+        page.evaluate(() => {
+          sessionStorage.setItem("executorE2ELater", "");
+          const notification = new Notification("Later", { data: { path: "/notes/5" } });
+          for (const type of ["show", "click", "close"])
+            notification.addEventListener(type, () =>
+              sessionStorage.setItem(
+                "executorE2ELater",
+                `${sessionStorage.getItem("executorE2ELater") ?? ""}${type} `,
+              ),
+            );
+        }),
+      );
+      const later = (yield* eventually(
+        "the desktop showed it",
+        shownNotifications(electron),
+        (shown) => shown.some((entry) => entry.title === "Later"),
+      )).findIndex((entry) => entry.title === "Later");
+      yield* closeShownNotification(electron, later, "timedOut");
+      yield* clickNotification(electron, later);
+      yield* eventually(
+        "a click after the notification timed out into the notification center opens its path",
+        nativeWindows(electron, app),
+        (windows) => windows.some((window) => window.path === "/notes/5"),
+      );
+      expect(
+        yield* eventually(
+          "the page heard the click and no close",
+          driver("read the notification's events", () =>
+            page.evaluate(() => sessionStorage.getItem("executorE2ELater") ?? ""),
+          ).pipe(Effect.orElseSucceed(() => "")),
+          (events) => events.includes("click"),
+        ),
+      ).toBe("show click ");
       yield* driver("return the app to its first page", () =>
         page
           .goto(new URL("/", page.url()).href)
@@ -1947,9 +1982,13 @@ it.live(scenarios.desktopAppOpenAtPath.title, (context) =>
       yield* driver("the app opens at the path", () =>
         page.getByRole("heading", { name: "Installed app" }).waitFor({ timeout: 60_000 }),
       );
-      expect(yield* nativeWindows(electron, app)).toMatchObject([
-        { path: "/notes/42", search: "?tab=edit", visible: true },
-      ]);
+      expect(
+        yield* eventually(
+          "the window shows once its first frame is ready",
+          nativeWindows(electron, app),
+          (windows) => windows.every((window) => window.visible),
+        ),
+      ).toMatchObject([{ path: "/notes/42", search: "?tab=edit", visible: true }]);
       expect(yield* globals(page, "the page at the path has the app bridge")).toEqual({
         app: "object",
         host: "undefined",
@@ -2213,7 +2252,15 @@ it.live(scenarios.desktopAppStartAtLogin.title, () =>
             })
           : driver("read Executor's login item", () =>
               electron.evaluate(({ app }) =>
-                app.getLoginItemSettings().openAtLogin ? ["on"] : [],
+                (process.platform === "win32"
+                  ? app.getLoginItemSettings({
+                      path: process.execPath,
+                      args: [...(app.isPackaged ? [] : [app.getAppPath()]), "--executor-login"],
+                    })
+                  : app.getLoginItemSettings()
+                ).openAtLogin
+                  ? ["on"]
+                  : [],
               ),
             );
       const app = yield* Effect.scoped(

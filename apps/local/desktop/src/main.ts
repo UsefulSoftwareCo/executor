@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, session, shell } from "electron";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -165,7 +166,7 @@ const dataDirectories = Effect.gen(function* () {
   const shared = Option.isSome(chosen)
     ? chosen.value
     : app.isPackaged
-      ? path.join(app.getPath("home"), ".executor", "v2", "cli")
+      ? path.join(homedir(), ".executor", "v2", "cli")
       : yield* Config.String("EXECUTOR_DATA_DIR").pipe(
           Config.withDefault(path.join(root, ".local/dev/local")),
         );
