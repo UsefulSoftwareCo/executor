@@ -7,6 +7,25 @@ export const notDeployInputs: ReadonlyArray<{ readonly path: RegExp; readonly ho
   },
   { path: /^[^/]+\.md$/, holds: "the repository's own documents" },
   {
+    path: /^scripts\/ci\//,
+    holds:
+      "CI's own scripts, which only CI workflows run: no deploy step, import or build traced on 2026-11-24 opens them",
+  },
+  {
+    path: /^scripts\/(pr-check|e2e-prepare)\.ts$/,
+    holds:
+      "the pre-push check and the E2E build, which only the root `pr:check` and `e2e:prepare` scripts run and no deploy step runs",
+  },
+  {
+    path: /^patches\/[^/]+\.md$/,
+    holds:
+      "notes on each dependency patch: bun applies only the `.patch` files the root manifest names",
+  },
+  {
+    path: /^\.github\/pull_request_template\.md$/,
+    holds: "the pull request template, which only GitHub's web form reads",
+  },
+  {
     path: /^apps\/hosted\/testing\//,
     holds:
       "the test accounts, test server and Cloud devtools, which only a development stage's `Command.Dev` runs",

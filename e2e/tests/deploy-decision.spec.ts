@@ -346,27 +346,30 @@ const decide = (input: {
   }).pipe(Effect.scoped);
 
 layer(NodeServices.layer)("Deploy decision", (it) => {
-  it.effect("a push that changes only tests, notes, documents or other workflows skips", () =>
-    Effect.gen(function* () {
-      const run = yield* decide({
-        history: [],
-        change: {
-          "e2e/tests/example.spec.ts": "export const changed = 1;\n",
-          "notes/ci.md": "Changed note.\n",
-          "README.md": "Changed readme.\n",
-          ".github/workflows/checks.yml": "name: Changed checks\n",
-          "e2e/support/helper.ts": "export const helper = 1;\n",
-        },
-      });
-      expect(run.exitCode).toBe(0);
-      expect(run.deploy).toBe("false");
-      expect(run.base).toBe(run.first);
-      expect(run.summary).toContain(
-        "**Skipped:** every change since the last deploy lies in paths no deploy reads",
-      );
-      expect(run.summary).toContain(`Base: \`${run.first}\``);
-      expect(run.summary).toContain("None of the 5 changed files is a deploy input");
-    }),
+  it.effect(
+    "a push that changes only tests, notes, documents, CI scripts or other workflows skips",
+    () =>
+      Effect.gen(function* () {
+        const run = yield* decide({
+          history: [],
+          change: {
+            "e2e/tests/example.spec.ts": "export const changed = 1;\n",
+            "notes/ci.md": "Changed note.\n",
+            "README.md": "Changed readme.\n",
+            ".github/workflows/checks.yml": "name: Changed checks\n",
+            "e2e/support/helper.ts": "export const helper = 1;\n",
+            "scripts/ci/tool.ts": "export const changed = 1;\n",
+          },
+        });
+        expect(run.exitCode).toBe(0);
+        expect(run.deploy).toBe("false");
+        expect(run.base).toBe(run.first);
+        expect(run.summary).toContain(
+          "**Skipped:** every change since the last deploy lies in paths no deploy reads",
+        );
+        expect(run.summary).toContain(`Base: \`${run.first}\``);
+        expect(run.summary).toContain("None of the 6 changed files is a deploy input");
+      }),
   );
 
   it.effect("a change to anything else deploys, and names the files", () =>
@@ -391,7 +394,6 @@ layer(NodeServices.layer)("Deploy decision", (it) => {
         },
         "another package": { "packages/other/src/other.ts": "export const other = 2;\n" },
         "another application": { "apps/local/src/local.ts": "export const local = 2;\n" },
-        "a CI script": { "scripts/ci/tool.ts": "export const changed = 1;\n" },
         "a release note": { ".changeset/change.md": "Synthetic release note.\n" },
         "a package manifest under a listed path": {
           "e2e/tools/package.json": JSON.stringify({ name: "tools" }),
@@ -420,6 +422,148 @@ layer(NodeServices.layer)("Deploy decision", (it) => {
         expect(run.summary).not.toContain("`notes/ci.md`");
       }
     }),
+  );
+
+  it.effect(
+    "the pushes to main of 24 Nov 2026 skip when they change only CI and deploy when they change the product",
+    () =>
+      Effect.gen(function* () {
+        const changed = (paths: ReadonlyArray<string>) =>
+          Object.fromEntries(paths.map((file) => [file, `changed ${file}\n`]));
+        const emulatorsScript = {
+          "e2e:emulators-server": "vitest run --config e2e/emulators-server.config.ts",
+        };
+        const partsScript = {
+          "e2e:scenario-parts": "vitest run --config e2e/scenario-parts.config.ts",
+        };
+        const pushes: ReadonlyArray<{
+          readonly push: string;
+          readonly change: Record<string, string>;
+          readonly inputs: ReadonlyArray<string>;
+        }> = [
+          {
+            push: "6fa9d03b9, the tooling split",
+            change: changed([
+              ".github/workflows/checks.yml",
+              "AGENTS.md",
+              "RELEASING.md",
+              "e2e/README.md",
+              "e2e/ci-selection.ts",
+              "e2e/tests/ci-repeat.spec.ts",
+              "patches/cloudflare-runtime-keep-alive.md",
+              "scripts/pr-check.ts",
+            ]),
+            inputs: [],
+          },
+          {
+            push: "7112e7e68, the emulator control retry",
+            change: changed(["e2e/support/emulators.ts", "e2e/tests/emulator-failures.spec.ts"]),
+            inputs: [],
+          },
+          {
+            push: "d8d37a0aa, the skip check paging",
+            change: changed([
+              "e2e/support/emulators.ts",
+              "e2e/tests/emulator-failures.spec.ts",
+              "e2e/tests/worker-sizes.spec.ts",
+              "scripts/ci/worker-baseline.ts",
+            ]),
+            inputs: [],
+          },
+          {
+            push: "5aac4cd4d, the draft guidance",
+            change: changed([
+              ".github/pull_request_template.md",
+              "AGENTS.md",
+              "e2e/ci-selection.ts",
+              "e2e/tests/ci-selection.spec.ts",
+            ]),
+            inputs: [],
+          },
+          {
+            push: "d926ee9ef, the in-job emulator",
+            change: {
+              ...changed([
+                ".github/workflows/checks.yml",
+                "e2e/ci-selection.ts",
+                "e2e/emulate.json",
+                "e2e/emulators-server.config.ts",
+                "e2e/sdk/suite.ts",
+                "e2e/support/cloud-environment.ts",
+                "e2e/support/managed-server.ts",
+                "e2e/tests/ci-repeat.spec.ts",
+                "e2e/tests/ci-selection.spec.ts",
+                "e2e/tests/emulators-server.spec.ts",
+                "e2e/tests/failure-text.spec.ts",
+                "scripts/ci/e2e-build-job.ts",
+                "scripts/ci/emulators-server.ts",
+                "scripts/ci/emulators.sh",
+                "scripts/e2e-prepare.ts",
+              ]),
+              "package.json": rootManifest({ scripts: emulatorsScript }),
+            },
+            inputs: [],
+          },
+          {
+            push: "851363913, the weighted split",
+            change: {
+              ...changed([
+                ".github/workflows/checks.yml",
+                "e2e/ci-selection.ts",
+                "e2e/run.ts",
+                "e2e/scenario-parts.config.ts",
+                "e2e/scenario-parts.ts",
+                "e2e/scenario-times.json",
+                "e2e/tests/ci-selection.spec.ts",
+                "e2e/tests/scenario-parts.spec.ts",
+                "scripts/ci/scenario-times.ts",
+              ]),
+              "package.json": rootManifest({ scripts: partsScript }),
+            },
+            inputs: [],
+          },
+          {
+            push: "a2c8e1bd7, the CLI's stdio relay",
+            change: changed([
+              "bun.lock",
+              "e2e/check-boundary.ts",
+              "e2e/support/stdio-mcp.ts",
+              "e2e/test-plan.ts",
+              "e2e/tests/cli-tool-commands.spec.ts",
+              "packages/app-management/package.json",
+              "packages/app-management/src/implementation/tools-client.ts",
+            ]),
+            inputs: [
+              "bun.lock",
+              "packages/app-management/package.json",
+              "packages/app-management/src/implementation/tools-client.ts",
+            ],
+          },
+        ];
+        const runs = yield* Effect.forEach(
+          pushes,
+          ({ change }) => decide({ history: [], change }),
+          {
+            concurrency: "unbounded",
+          },
+        );
+        for (const [index, run] of runs.entries()) {
+          const { push, inputs } = pushes[index]!;
+          expect(run.exitCode, push).toBe(0);
+          expect(run.deploy, push).toBe(inputs.length === 0 ? "false" : "true");
+          for (const input of inputs) expect(run.summary, push).toContain(`- \`${input}\``);
+        }
+        const mixed = yield* decide({
+          history: [],
+          change: {
+            ...pushes[4]!.change,
+            "apps/hosted/cloud/src/main.ts": "export const main = 3;\n",
+          },
+        });
+        expect(mixed.deploy, "a product file beside the largest CI-only push deploys").toBe("true");
+        expect(mixed.summary).toContain("- `apps/hosted/cloud/src/main.ts`");
+        expect(mixed.summary).not.toContain("- `scripts/ci/emulators.sh`");
+      }),
   );
 
   it.effect("the base is the last commit deployed, not the one before the push", () =>
