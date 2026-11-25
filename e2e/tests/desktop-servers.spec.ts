@@ -267,22 +267,55 @@ const eventually = <A, E, R>(
     ),
   );
 
+const shown = (electron: ElectronApplication, page: Page) =>
+  driver("check whether the window is shown", () =>
+    electron
+      .browserWindow(page)
+      .then((window) => window.evaluate((current) => current.isVisible()))
+      .catch(() => false),
+  );
+
 const windowWhere = (
   electron: ElectronApplication,
   label: string,
   matches: (url: URL) => boolean,
 ) =>
   retrying(
-    Effect.suspend(() => {
-      const found = electron.windows().find((page) => {
-        if (page.isClosed()) return false;
+    Effect.gen(function* () {
+      for (const page of electron.windows()) {
+        if (page.isClosed()) continue;
         const url = URL.parse(page.url());
-        return url !== null && matches(url);
-      });
-      return found === undefined
-        ? Effect.fail(new Error(`No window shows ${label}`))
-        : Effect.succeed(found);
+        if (url !== null && matches(url) && (yield* shown(electron, page))) return page;
+      }
+      return yield* Effect.fail(new Error(`No shown window shows ${label}`));
     }),
+  );
+
+const contentsId = (electron: ElectronApplication, page: Page) =>
+  driver("read the window's web contents", () =>
+    electron
+      .browserWindow(page)
+      .then((window) => window.evaluate((current) => current.webContents.id)),
+  );
+
+const markPage = (page: Page) =>
+  driver("mark the loaded page", () =>
+    page.evaluate(() => {
+      Object.assign(window, { executorE2EKept: true });
+    }),
+  );
+
+const stillMarked = (page: Page) =>
+  driver("read whether the page kept its mark", () =>
+    page.evaluate(() => Reflect.get(window, "executorE2EKept") === true),
+  );
+
+const shownWindows = (electron: ElectronApplication) =>
+  driver("count the shown windows", () =>
+    electron.evaluate(
+      ({ BrowserWindow }) =>
+        BrowserWindow.getAllWindows().filter((window) => window.isVisible()).length,
+    ),
   );
 
 const appWindow = (
@@ -535,8 +568,19 @@ const windowsAt = (electron: ElectronApplication, origin: string) =>
     electron.evaluate(({ BrowserWindow }, origin) => {
       return BrowserWindow.getAllWindows()
         .filter((window) => URL.parse(window.webContents.getURL())?.origin === origin)
-        .map((window) => window.getTitle());
+        .map((window) => ({
+          title: window.getTitle(),
+          path: URL.parse(window.webContents.getURL())?.pathname ?? "",
+          visible: window.isVisible(),
+          contents: window.webContents.id,
+        }))
+        .toSorted((left, right) => left.title.localeCompare(right.title));
     }, origin),
+  );
+
+const titlesAt = (electron: ElectronApplication, origin: string) =>
+  windowsAt(electron, origin).pipe(
+    Effect.map((windows) => windows.map(({ title, visible }) => ({ title, visible }))),
   );
 
 const readJsonFile = <A>(schema: Schema.Decoder<A, never>, file: string) =>
@@ -893,7 +937,9 @@ it.live(scenarios.desktopFirstRun.title, () =>
         "This computer · local · local · signed-in",
       ]);
       expect(both.local).toBe(true);
-      expect(yield* windowsAt(electron, server.origin)).toEqual([]);
+      expect(yield* titlesAt(electron, server.origin)).toEqual([
+        { title: `Executor — ${server.team}`, visible: false },
+      ]);
     }),
   ).pipe(Effect.provide(services)),
 );
@@ -937,6 +983,7 @@ const fakeCloud = (teams: ReadonlyArray<FakeTeam>) =>
       revoked: new Set<string>(),
       origin: "",
       apps: "",
+      held: undefined as Array<import("node:http").ServerResponse> | undefined,
     };
     const serverId = `cloud-${randomBytes(16).toString("hex")}`;
     const teamOf = (id: string | undefined) => teams.find((team) => team.id === id);
@@ -1044,6 +1091,10 @@ const fakeCloud = (teams: ReadonlyArray<FakeTeam>) =>
               200,
               sessionOf(request) === undefined ? null : { user: { id: "user_owner" } },
             );
+          case "GET /asset.png":
+            if (state.held === undefined) return response.writeHead(204).end();
+            state.held.push(response);
+            return;
         }
         const page = /^\/org\/([^/]+)/u.exec(url.pathname);
         if (request.method === "GET" && page !== null) {
@@ -1051,7 +1102,7 @@ const fakeCloud = (teams: ReadonlyArray<FakeTeam>) =>
           return response
             .writeHead(200, { "content-type": "text/html; charset=utf-8" })
             .end(
-              `<!doctype html><html><head><title>Executor</title></head><body><h1>Apps · ${team?.name ?? ""}</h1></body></html>`,
+              `<!doctype html><html><head><title>Executor</title></head><body><h1>Apps · ${team?.name ?? ""}</h1><img src="/asset.png" alt=""></body></html>`,
             );
         }
         const details = /^\/api\/organizations\/([^/]+)\/apps\/([^/]+)\/ui$/u.exec(url.pathname);
@@ -1100,6 +1151,14 @@ const fakeCloud = (teams: ReadonlyArray<FakeTeam>) =>
         state.choose = team;
       },
       revoke: (team: string) => state.revoked.add(team),
+      holdAssets: () => {
+        state.held = [];
+      },
+      releaseAssets: () => {
+        const held = state.held ?? [];
+        state.held = undefined;
+        for (const response of held) response.writeHead(204).end();
+      },
       moveApps: () => {
         state.apps = `http://localhost:${pagesPort}`;
         return state.apps;
@@ -1205,6 +1264,7 @@ it.live(scenarios.desktopAccounts.title, () =>
           const electron = yield* launchDesktop({ cwd: home.home, env: home.env });
           home.seen.push(yield* nextServer(home.data, []));
           const local = yield* localDashboard(electron, home.origin);
+          const localContents = yield* contentsId(electron, local);
           yield* recordExternalOpens(electron);
           yield* answerDialogs(electron, { "Install Skyline": 0, "Install Atlas": 0 });
           yield* eventually(
@@ -1228,6 +1288,7 @@ it.live(scenarios.desktopAccounts.title, () =>
           cloud.choose(acmeTeam.id);
           expect(yield* cloud.consent(yield* authorizationAt(electron, 1))).toBe(200);
           const acme = yield* dashboardFor(electron, "acme");
+          const acmeContents = yield* contentsId(electron, acme);
           expect(yield* bridgeServer(acme)).toBe(acmeKey);
           expect(
             yield* host(acme, "install the first team's app", "install", "app_skyline"),
@@ -1289,23 +1350,38 @@ it.live(scenarios.desktopAccounts.title, () =>
           ).toEqual([labKey, acmeKey, northwindKey]);
           expect(new Set(stored.accounts.map((record) => record.partition)).size).toBe(3);
 
+          const warmed = yield* eventually(
+            "signing in to the second team opened its dashboard out of sight",
+            windowsAt(electron, cloud.origin),
+            (windows) =>
+              windows.some((window) => window.path === "/org/northwind" && !window.visible),
+          );
+          yield* markPage(acme);
           yield* switchAccount(electron, acme, "switch to the second team", northwindKey);
           const northwind = yield* dashboardFor(electron, "northwind");
           expect(yield* bridgeServer(northwind)).toBe(northwindKey);
-          yield* eventually(
-            "switching closed the other team's window",
-            windowsAt(electron, cloud.origin),
-            (windows) => windows.length === 1,
+          expect(yield* contentsId(electron, northwind)).toBe(
+            warmed.find((window) => window.path === "/org/northwind")?.contents,
           );
+          expect(yield* titlesAt(electron, cloud.origin)).toEqual([
+            { title: "Executor — Acme", visible: false },
+            { title: "Executor — Northwind", visible: true },
+          ]);
           const localAccount =
             (yield* accountsOf(electron, northwind)).accounts.find(
               (account) => account.kind === "local",
             )?.id ?? "";
           yield* switchAccount(electron, northwind, "switch to this computer", localAccount);
           const localAgain = yield* localDashboard(electron, home.origin);
-          expect(yield* windowsAt(electron, cloud.origin)).toEqual([]);
+          expect(yield* contentsId(electron, localAgain)).toBe(localContents);
+          expect(yield* titlesAt(electron, cloud.origin)).toEqual([
+            { title: "Executor — Acme", visible: false },
+            { title: "Executor — Northwind", visible: false },
+          ]);
           yield* switchAccount(electron, localAgain, "switch to the first team", acmeKey);
           const acmeAgain = yield* dashboardFor(electron, "acme");
+          expect(yield* contentsId(electron, acmeAgain)).toBe(acmeContents);
+          expect(yield* stillMarked(acmeAgain)).toBe(true);
 
           yield* addAccount(
             electron,
@@ -1354,18 +1430,30 @@ it.live(scenarios.desktopAccounts.title, () =>
         }),
       );
 
+      cloud.holdAssets();
       const relaunched = yield* launchDesktop({ cwd: home.home, env: home.env });
       const reopened = yield* dashboardFor(relaunched, "northwind");
-      expect(yield* bridgeServer(reopened)).toBe(northwindKey);
       expect(
-        yield* driver("the last used team opens first, alone", () =>
-          Promise.resolve(relaunched.windows().filter((page) => !page.isClosed()).length),
+        yield* driver("the team's dashboard shows before its page finishes loading", () =>
+          reopened.evaluate(() => document.readyState),
         ),
-      ).toBe(1);
+      ).toBe("interactive");
+      cloud.releaseAssets();
+      expect(yield* bridgeServer(reopened)).toBe(northwindKey);
+      expect(yield* shownWindows(relaunched)).toBe(1);
       yield* answerDialogs(relaunched, {});
 
+      const warmedAfterLaunch = yield* eventually(
+        "launching opened the other team's dashboard out of sight",
+        windowsAt(relaunched, cloud.origin),
+        (windows) => windows.some((window) => window.path === "/org/acme" && !window.visible),
+      );
       yield* switchAccount(relaunched, reopened, "switch to the first team to sign out", acmeKey);
-      yield* signOutCurrent(relaunched, yield* dashboardFor(relaunched, "acme"), acmeTeam.name);
+      const acmeAfterLaunch = yield* dashboardFor(relaunched, "acme");
+      expect(yield* contentsId(relaunched, acmeAfterLaunch)).toBe(
+        warmedAfterLaunch.find((window) => window.path === "/org/acme")?.contents,
+      );
+      yield* signOutCurrent(relaunched, acmeAfterLaunch, acmeTeam.name);
       const localNow = yield* localDashboard(relaunched, home.origin);
       const afterSignOut = yield* readJsonFile(
         StoredServers,
@@ -1997,6 +2085,9 @@ it.live(scenarios.desktopHostedServers.title, () =>
       );
       yield* switchAccount(electron, dashboard, "switch to this computer", localServer);
       local = yield* localDashboard(electron, home.origin);
+      expect(yield* titlesAt(electron, server.origin)).toEqual([
+        { title: `Executor — ${server.team}`, visible: false },
+      ]);
       expect(
         yield* host(local, "the local bridge cannot see the hosted app", "installed", hosted.app),
       ).toEqual({ ok: true, value: null });
@@ -2006,6 +2097,19 @@ it.live(scenarios.desktopHostedServers.title, () =>
             session.fromPartition(name).clearStorageData({ storages: ["cookies"] }),
           partition,
         ),
+      );
+      yield* driver("reload the team's kept dashboard", () =>
+        electron.evaluate(({ BrowserWindow }, origin) => {
+          for (const window of BrowserWindow.getAllWindows())
+            if (URL.parse(window.webContents.getURL())?.origin === origin)
+              window.webContents.reload();
+        }, server.origin),
+      );
+      yield* eventually(
+        "the kept dashboard lands on sign-in once its session ends",
+        windowsAt(electron, server.origin),
+        (windows) =>
+          windows.length === 1 && windows[0]?.path === "/login" && windows[0]?.visible === false,
       );
       const switching = yield* openMenu(electron, local);
       yield* driver("switch to the team and open both apps at the same moment", () =>
@@ -2028,7 +2132,9 @@ it.live(scenarios.desktopHostedServers.title, () =>
         "the second hosted app opens signed in",
         "Second app",
       );
-      expect(yield* windowsAt(electron, server.origin)).toEqual([`Executor — ${server.team}`]);
+      expect(yield* titlesAt(electron, server.origin)).toEqual([
+        { title: `Executor — ${server.team}`, visible: true },
+      ]);
       const linkCookies = yield* driver("read the binding cookies the desktop set", () =>
         electron.evaluate(
           () =>

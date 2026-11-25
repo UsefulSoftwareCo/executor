@@ -874,15 +874,24 @@ export const makeHostedServers = (options: {
       return existing === undefined || existing.isDestroyed() ? undefined : existing;
     };
 
-    const openDashboard = (key: string, bounds: Rectangle | undefined) =>
+    const keptDashboard = (key: string) => {
+      const kept = shownDashboard(key);
+      if (kept === undefined || kept.isVisible() || !landedOnLogin(kept)) return kept;
+      dashboards.delete(key);
+      kept.destroy();
+      return undefined;
+    };
+
+    type Shown = Deferred.Deferred<BrowserWindow, SignInAgain | DesktopUnavailable>;
+    const showing = new Map<string, Shown>();
+
+    const openDashboard = (key: string, bounds: Rectangle | undefined, shown: Shown) =>
       Effect.gen(function* () {
-        const existing = shownDashboard(key);
-        if (existing !== undefined) return existing;
         const record = records.get(key);
         if (record === undefined || record.state !== "signed-in") return yield* new SignInAgain();
         return yield* linkLock(key)(
           Effect.gen(function* () {
-            const again = shownDashboard(key);
+            const again = keptDashboard(key);
             if (again !== undefined) return again;
             const home = `/org/${record.organizationSlug}`;
             const signed = yield* dashboardSession(record);
@@ -892,6 +901,10 @@ export const makeHostedServers = (options: {
               : yield* sessionLink(record, home);
             yield* stillLive(record);
             const window = dashboardWindow(record, bounds);
+            window.once("ready-to-show", () => {
+              if (!window.isDestroyed() && live(record) && !landedOnLogin(window))
+                Deferred.doneUnsafe(shown, Effect.succeed(window));
+            });
             yield* Effect.tryPromise(() =>
               window.loadURL(target, signed ? {} : { extraHeaders: linkRequestHeaders }),
             ).pipe(Effect.ignore);
@@ -914,27 +927,35 @@ export const makeHostedServers = (options: {
       });
 
     const openDashboardOnce = (key: string, bounds: Rectangle | undefined) =>
-      Effect.callback<BrowserWindow, SignInAgain | DesktopUnavailable>((resume) => {
+      Effect.suspend(() => {
+        const pending = showing.get(key);
+        if (pending !== undefined) return Deferred.await(pending);
+        const kept = keptDashboard(key);
+        if (kept !== undefined) return Effect.succeed(kept);
+        const shown: Shown = Deferred.makeUnsafe();
+        showing.set(key, shown);
         openIn(
           key,
-          openDashboard(key, bounds).pipe(
-            Effect.matchCauseEffect({
-              onSuccess: (window) => Effect.sync(() => resume(Effect.succeed(window))),
-              onFailure: (cause) =>
-                Effect.sync(() =>
-                  resume(
-                    Effect.fail(
-                      Option.getOrElse(
-                        Option.filter(Cause.findErrorOption(cause), Schema.is(SignInAgain)),
-                        () => new DesktopUnavailable(),
+          openDashboard(key, bounds, shown).pipe(
+            Effect.onExit((exit) =>
+              Effect.sync(() => {
+                if (showing.get(key) === shown) showing.delete(key);
+                Deferred.doneUnsafe(
+                  shown,
+                  Exit.isSuccess(exit)
+                    ? Effect.succeed(exit.value)
+                    : Effect.fail(
+                        Option.getOrElse(
+                          Option.filter(Cause.findErrorOption(exit.cause), Schema.is(SignInAgain)),
+                          () => new DesktopUnavailable(),
+                        ),
                       ),
-                    ),
-                  ),
-                ),
-            }),
+                );
+              }),
+            ),
           ),
-          { onlyIfMissing: true },
         );
+        return Deferred.await(shown);
       });
 
     const revokeToken = (endpoint: string | null, token: string, clientId: string) =>

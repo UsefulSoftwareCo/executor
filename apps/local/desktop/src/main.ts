@@ -118,6 +118,10 @@ const newWindow = (browserSession: Electron.Session) =>
     },
   });
 
+// external: Electron destroys a closing window's page, and fails its pending load, before the window reports isDestroyed().
+const windowGone = (window: BrowserWindow) =>
+  window.isDestroyed() || window.webContents.isDestroyed();
+
 const FailedLoad = Schema.Struct({ url: Schema.String });
 const LoadError = Schema.Struct({ code: Schema.String, errno: Schema.Number });
 type LoadError = typeof LoadError.Type;
@@ -245,8 +249,10 @@ const desktop = Effect.gen(function* () {
   let localRunning = preferences.local || localData;
   const hostedFirst = preferences.lastUsed !== null && preferences.lastUsed !== "local";
   let early: BrowserWindow | undefined = localRunning ? newWindow(browserSession) : undefined;
+  const painted = new WeakSet<BrowserWindow>();
   const opening = early;
   opening?.once("ready-to-show", () => {
+    painted.add(opening);
     if (!opening.isDestroyed() && !hostedFirst && !atLogin) opening.show();
   });
   const stay = (event: Electron.Event) => event.preventDefault();
@@ -348,6 +354,7 @@ const desktop = Effect.gen(function* () {
         running: () => localRunning,
         start: () => startLocal(),
         window: () => localWindow(),
+        painted: (window) => painted.has(window),
         open: (bounds) => openLocal(bounds),
       },
     });
@@ -395,6 +402,7 @@ const desktop = Effect.gen(function* () {
         let view: View = { kind: "starting" };
         let everReady = false;
         let window: BrowserWindow | undefined;
+        const activeWindow = () => (accounts.isActive("local") ? window : undefined);
         const origin = () => (view.kind === "ready" ? view.origin : undefined);
         installedApps.attachSession(browserSession, origin);
         const viewUrl = () => {
@@ -423,7 +431,7 @@ const desktop = Effect.gen(function* () {
               try: () => loading,
               catch: Schema.decodeUnknownOption(LoadError),
             }).pipe(Effect.timeoutOption(dashboardLoadTimeout), Effect.result);
-            const replaced = () => current.isDestroyed() || generation !== loads;
+            const replaced = () => windowGone(current) || generation !== loads;
             if (replaced()) return;
             if (Result.isSuccess(outcome) && Option.isSome(outcome.success)) {
               dashboardFailures = 0;
@@ -467,7 +475,7 @@ const desktop = Effect.gen(function* () {
             return;
           }
           void loading.catch((error: unknown) => {
-            if (current.isDestroyed() || generation !== loads) return;
+            if (windowGone(current) || generation !== loads) return;
             if (Schema.is(FailedLoad)(error) && error.url !== url) return;
             failed("window");
           });
@@ -531,7 +539,7 @@ const desktop = Effect.gen(function* () {
                 defaultId: 1,
                 cancelId: 1,
               };
-              const parent = window;
+              const parent = activeWindow();
               const answer = yield* Effect.promise(() =>
                 parent === undefined || parent.isDestroyed()
                   ? dialog.showMessageBox(box)
@@ -619,8 +627,7 @@ const desktop = Effect.gen(function* () {
                       Effect.logWarning("Desktop window could not load an OAuth return"),
                     ),
                   );
-                  current.show();
-                  current.focus();
+                  accounts.showLocal();
                 }),
               onRecovery: showRecovery,
             });
@@ -670,7 +677,7 @@ const desktop = Effect.gen(function* () {
                 backups,
                 appVersion: app.getVersion(),
                 whileMoving: log.value.whileMoving,
-                window: () => window,
+                window: activeWindow,
               })
             : undefined;
 
@@ -745,6 +752,7 @@ const desktop = Effect.gen(function* () {
           if (process.argv.includes("--devtools"))
             current.webContents.openDevTools({ mode: "detach" });
           current.once("ready-to-show", () => {
+            painted.add(current);
             if (
               !current.isDestroyed() &&
               accounts.isActive("local") &&
@@ -858,7 +866,7 @@ const desktop = Effect.gen(function* () {
                     const current = origin();
                     return current === undefined ? undefined : Number(new URL(current).port);
                   },
-                  parent: () => window,
+                  parent: activeWindow,
                   restart: () => run(connection.whileStopped(Effect.void).pipe(Effect.ignore)),
                 });
                 const rotate = connection
