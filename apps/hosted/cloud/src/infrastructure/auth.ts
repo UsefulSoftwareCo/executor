@@ -131,7 +131,10 @@ export const cloudAuth = (send: SendAuthEmail) =>
         onRefreshRejected: observation.refreshRejected,
         onGrantCreated: (grant) =>
           runCallback(
-            recordUsage("agent_connected", { grant_kind: grant.kind }, grant.organization).pipe(
+            (grant.kind === "desktop"
+              ? Effect.void
+              : recordUsage("agent_connected", { grant_kind: grant.kind }, grant.organization)
+            ).pipe(
               Effect.provideService(CurrentUserId, grant.userId),
               Effect.provideService(CurrentUsage, {
                 source: "dashboard",
@@ -262,8 +265,14 @@ export const cloudAuth = (send: SendAuthEmail) =>
       Effect.gen(function* () {
         return BearerAuthentication.of({
           ...origins,
-          authenticate: (headers, organization) =>
-            withSql(apiBearerAccess(origins, { headers, organization }, v1Keys)).pipe(
+          authenticate: (headers, organization, options) =>
+            withSql(
+              apiBearerAccess(
+                origins,
+                { headers, organization, desktop: options?.desktop },
+                v1Keys,
+              ),
+            ).pipe(
               Effect.tap(({ access, userId }) =>
                 Effect.annotateCurrentSpan(callerSpanAttributes(access.organization, userId)),
               ),

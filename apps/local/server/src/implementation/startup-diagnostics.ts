@@ -1,11 +1,32 @@
 import { Cause, Effect, Option, Schema } from "effect";
 import { StartupCode, StartupFailed } from "../contracts/startup.ts";
+import { executorAppOwner } from "./owners.ts";
 
 const Diagnostic = Schema.Struct({
   code: Schema.optional(Schema.String),
   reason: Schema.optional(Schema.Unknown),
   cause: Schema.optional(Schema.Unknown),
 });
+const BuiltInBuildFailure = Schema.Union([
+  Schema.Struct({
+    _tag: Schema.Literal("VersionBuildFailed"),
+    owner: Schema.Literal(executorAppOwner),
+    message: Schema.String,
+  }),
+  Schema.Struct({
+    _tag: Schema.Literal("RuntimeBuildFailed"),
+    stage: Schema.Literal("dependencies"),
+    message: Schema.String,
+  }),
+]);
+const detailFrom = (error: unknown, depth = 0): string | undefined => {
+  if (depth > 3) return undefined;
+  const build = Schema.decodeUnknownOption(BuiltInBuildFailure)(error);
+  if (Option.isSome(build)) return build.value.message;
+  const parsed = Schema.decodeUnknownOption(Diagnostic)(error);
+  if (Option.isNone(parsed)) return undefined;
+  return detailFrom(parsed.value.cause, depth + 1) ?? detailFrom(parsed.value.reason, depth + 1);
+};
 const codeFrom = (error: unknown, depth = 0): typeof StartupCode.Type | undefined => {
   if (depth > 3) return undefined;
   const parsed = Schema.decodeUnknownOption(Diagnostic)(error);
@@ -26,6 +47,13 @@ export const startupPhase =
           );
         const error = Cause.squash(cause);
         if (Schema.is(StartupFailed)(error)) return Effect.fail(error);
-        return Effect.fail(new StartupFailed({ stage, code: codeFrom(error) }));
+        const detail = detailFrom(error);
+        return Effect.fail(
+          new StartupFailed({
+            stage,
+            code: codeFrom(error),
+            ...(detail === undefined ? {} : { buildFailure: detail }),
+          }),
+        );
       }),
     );

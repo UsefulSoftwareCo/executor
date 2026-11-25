@@ -17,7 +17,7 @@ export async function resolveLauncher() {
   const electronMetadata = JSON.parse(
     await readFile(new URL("../node_modules/electron/package.json", import.meta.url), "utf8"),
   );
-  const revision = `${electronMetadata.version}:4:${root}`;
+  const revision = `${electronMetadata.version}:5:${root}`;
   let previous;
   try {
     previous = await readFile(join(runtime, "revision"), "utf8");
@@ -32,11 +32,15 @@ export async function resolveLauncher() {
       verbatimSymlinks: true,
     });
     const plist = join(bundle, "Contents/Info.plist");
+    const usage = JSON.parse(
+      await readFile(new URL("../assets/mac-usage-descriptions.json", import.meta.url), "utf8"),
+    );
     for (const [key, value] of Object.entries({
       CFBundleName: "Executor Dev",
       CFBundleDisplayName: "Executor Dev",
       CFBundleIdentifier: `com.usefulsoftware.executor.dev.${createHash("sha256").update(root).digest("hex").slice(0, 12)}`,
       CFBundleExecutable: "Executor Launcher",
+      ...usage,
     })) {
       execFileSync("/usr/bin/plutil", ["-replace", key, "-string", value, plist]);
     }

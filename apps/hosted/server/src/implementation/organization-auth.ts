@@ -1,6 +1,7 @@
 import type { AuthContext } from "@better-auth/core";
 import type { BetterAuthPlugin } from "better-auth";
 import { APIError, createAuthMiddleware, getSessionFromCtx } from "better-auth/api";
+import { runAuth, sessionGrantResource } from "@executor-js/mcp-auth/oauth";
 import { Option, Schema } from "effect";
 import {
   OrganizationDetailsUpdate,
@@ -73,6 +74,53 @@ const SentInvitation = Schema.Struct({
   inviterId: Schema.NonEmptyString,
 });
 
+type HookContext = Parameters<Parameters<typeof createAuthMiddleware>[0]>[0];
+
+const pinnedOrganization = async (context: HookContext) => {
+  const session = await getSessionFromCtx(context);
+  if (session === null) return undefined;
+  return Option.getOrUndefined(
+    await runAuth(sessionGrantResource(context.context.adapter, session.session.id)),
+  );
+};
+
+const PinTarget = Schema.Struct({ organizationId: Schema.String });
+const ListedOrganization = Schema.Struct({ id: Schema.String });
+const outsidePin = () =>
+  new APIError("FORBIDDEN", {
+    message:
+      "This window is signed in to one organization from the Executor desktop app, so it can't open or change another.",
+  });
+
+const refuseOutsidePin = async (context: HookContext, pinned: string) => {
+  switch (context.path) {
+    case "/organization/list":
+      return;
+    case "/organization/create":
+    case "/organization/accept-invitation":
+      throw outsidePin();
+    case "/organization/cancel-invitation": {
+      const invitation = Schema.decodeUnknownOption(Invitation)(context.body);
+      const row = Option.isNone(invitation)
+        ? null
+        : await context.context.adapter.findOne({
+            model: "invitation",
+            where: [{ field: "id", value: invitation.value.invitationId }],
+            select: ["organizationId"],
+          });
+      const target = Schema.decodeUnknownOption(JoinedMember)(row);
+      if (Option.isNone(target) || target.value.organizationId !== pinned) throw outsidePin();
+      return;
+    }
+    default: {
+      const target = Option.orElse(Schema.decodeUnknownOption(PinTarget)(context.query), () =>
+        Schema.decodeUnknownOption(PinTarget)(context.body),
+      );
+      if (Option.isNone(target) || target.value.organizationId !== pinned) throw outsidePin();
+    }
+  }
+};
+
 export const explicitOrganizationAuth = {
   id: "executor-explicit-organization",
   hooks: {
@@ -81,6 +129,8 @@ export const explicitOrganizationAuth = {
         matcher: (context) =>
           context.request !== undefined && context.path?.startsWith("/organization/") === true,
         handler: createAuthMiddleware(async (context) => {
+          const pinned = await pinnedOrganization(context);
+          if (pinned !== undefined) await refuseOutsidePin(context, pinned);
           const require = <A>(schema: Schema.Decoder<A>, input: unknown, strict = false) => {
             if (
               Option.isNone(
@@ -202,6 +252,25 @@ export const explicitOrganizationAuth = {
       },
     ],
     after: [
+      {
+        matcher: (context) => context.path === "/organization/list",
+        handler: createAuthMiddleware(async (context) => {
+          const pinned = await pinnedOrganization(context);
+          if (pinned === undefined) return;
+          const listed = Schema.decodeUnknownOption(Schema.Array(Schema.Unknown))(
+            context.context.returned,
+          );
+          if (Option.isNone(listed)) return;
+          return context.json(
+            listed.value.filter((entry) =>
+              Option.exists(
+                Schema.decodeUnknownOption(ListedOrganization)(entry),
+                (organization) => organization.id === pinned,
+              ),
+            ),
+          );
+        }),
+      },
       {
         matcher: (context) => context.path === "/organization/invite-member",
         handler: createAuthMiddleware(async (context) => {

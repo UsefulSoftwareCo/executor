@@ -1834,7 +1834,7 @@ export const scenarios = plan({
   desktopDashboardRetry: {
     file: "desktop-recovery.spec.ts",
     title:
-      "desktop loads a dashboard that failed to load again with a fresh pairing link, shows the dashboard's own recovery page, without reset, with the failure after three failures in a row, and pairs the window again from that page",
+      "desktop loads a dashboard that failed to load again in the session it signed in itself, without a pairing link, shows the dashboard's own recovery page, without reset, with the failure after three failures in a row, and loads the window signed in again from that page",
     targets: {
       local: {
         status: "not-run",
@@ -1870,6 +1870,342 @@ export const scenarios = plan({
       },
       cloud: na("Desktop clipboard permission"),
       "self-host": na("Desktop clipboard permission"),
+    },
+  },
+  desktopInstalledApps: {
+    file: "desktop-apps.spec.ts",
+    title:
+      "desktop installs a local app as its own app after one confirmation, writes its launcher, opens it signed in from its executor:// link with only the app bridge, follows a rename, and removes the app with its launcher",
+    targets: {
+      local: {
+        status: "not-run",
+        reason:
+          "Runs against the packaged desktop in the release workflow with desktop-recovery.config.ts.",
+      },
+      cloud: na("Installed desktop apps"),
+      "self-host": na("Installed desktop apps"),
+    },
+  },
+  desktopHostedServers: {
+    file: "desktop-servers.spec.ts",
+    title:
+      "desktop signs in to a self-hosted team through browser consent past forged callbacks, opens its dashboard and two apps at once with one bound session link, installs and opens its app beside a local one in a separate session, asks to sign in again and closes every window on the server when it revokes the desktop, and forgets the team on removal",
+    targets: {
+      "self-host": {
+        status: "not-run",
+        reason:
+          "Starts its own self-hosted server beside the desktop under Xvfb, so it runs in the desktop-servers job of checks.yml with desktop-servers.config.ts, not in the self-host suite.",
+      },
+      cloud: na("Hosted desktop sign-in runs against a self-hosted server"),
+      local: na("The desktop pairs with its local server"),
+    },
+  },
+  desktopServerDiscovery: {
+    file: "desktop-servers.spec.ts",
+    title:
+      "desktop refuses a server whose sign-in discovery names another or a plain-text address in the welcome window's self-hosted form, asks before signing in over plain http off this computer, and warns when no credential store keeps the sign-in",
+    targets: {
+      "self-host": {
+        status: "not-run",
+        reason:
+          "Starts its own self-hosted server beside the desktop under Xvfb, so it runs in the desktop-servers job of checks.yml with desktop-servers.config.ts, not in the self-host suite.",
+      },
+      cloud: na("Hosted desktop sign-in runs against a self-hosted server"),
+      local: na("The desktop pairs with its local server"),
+    },
+  },
+  desktopFirstRun: {
+    file: "desktop-servers.spec.ts",
+    title:
+      "desktop's first run shows the welcome window without starting a local server, waits for browser sign-in with a way to open the page again or cancel back to the welcome window, explains a declined sign-in, opens the team's dashboard after sign-in, and starts the local server only once Run locally is chosen from the account menu",
+    targets: {
+      "self-host": {
+        status: "not-run",
+        reason:
+          "Starts its own self-hosted server beside the desktop under Xvfb, so it runs in the desktop-servers job of checks.yml with desktop-servers.config.ts, not in the self-host suite.",
+      },
+      cloud: na("Hosted desktop sign-in runs against a self-hosted server"),
+      local: na("The desktop pairs with its local server"),
+    },
+  },
+  desktopAccounts: {
+    file: "desktop-servers.spec.ts",
+    title:
+      "desktop accounts hold two teams of one Cloud-shaped server beside this computer in the desktop's own account menu, with an install link for the other team asking to sign in to it while the first stays signed in, switch between teams and this computer from that menu and reopen the last used team on launch, show an unreachable server that Retry finds again and a sign-in waiting for the browser that Cancel ends, sign out of the current team after a desktop confirmation keeping installed apps that then ask to sign in again, and remove another team with its apps and data from a right-click",
+    targets: {
+      "self-host": {
+        status: "not-run",
+        reason:
+          "Starts its own self-hosted server beside the desktop under Xvfb, so it runs in the desktop-servers job of checks.yml with desktop-servers.config.ts, not in the self-host suite.",
+      },
+      cloud: na("Hosted desktop sign-in runs against a self-hosted server"),
+      local: na("The desktop pairs with its local server"),
+    },
+  },
+  desktopForgedServer: {
+    file: "desktop-servers.spec.ts",
+    title:
+      "a server that claims a held account's server ID from another address, or claims Executor Cloud away from it, can't sign in or install into that account, an installed app that opens from a new address loses the permissions it had, and a dashboard grants a permission only through the desktop's own prompt",
+    targets: {
+      "self-host": {
+        status: "not-run",
+        reason:
+          "Starts its own Cloud-shaped and forged servers beside the desktop under Xvfb, so it runs in the desktop-servers job of checks.yml with desktop-servers.config.ts, not in the self-host suite.",
+      },
+      cloud: na("Hosted desktop sign-in runs against a self-hosted server"),
+      local: na("The desktop pairs with its local server"),
+    },
+  },
+  desktopHostedInstallLink: {
+    file: "desktop-servers.spec.ts",
+    title:
+      "an executor://install link on a desktop with only its local server asks to sign in to the app's server, installs after browser sign-in and the install dialog, opens an installed app at once, asks a signed-out team to sign in again and installs once it has, and explains an app that is not available",
+    targets: {
+      "self-host": {
+        status: "not-run",
+        reason:
+          "Starts its own self-hosted server beside the desktop; runs with desktop-servers.config.ts.",
+      },
+      cloud: na("Hosted desktop sign-in runs against a self-hosted server"),
+      local: na("The desktop pairs with its local server"),
+    },
+  },
+  desktopAppPermissions: {
+    file: "desktop-apps.spec.ts",
+    title:
+      "installed desktop app asks once for each capability and keeps the answer until changed, and runs its menu-bar item and popover, shortcuts, floating window and notifications only when allowed",
+    targets: {
+      local: {
+        status: "not-run",
+        reason:
+          "Runs against the packaged desktop in the release workflow with desktop-recovery.config.ts.",
+      },
+      cloud: na("Installed desktop apps"),
+      "self-host": na("Installed desktop apps"),
+    },
+  },
+  desktopAppColdStart: {
+    file: "desktop-apps.spec.ts",
+    title:
+      "installed desktop app opens signed in from its executor:// link when Executor was closed, and removing it leaves launcher files Executor did not write",
+    targets: {
+      local: {
+        status: "not-run",
+        reason:
+          "Runs against the packaged desktop in the release workflow with desktop-recovery.config.ts.",
+      },
+      cloud: na("Installed desktop apps"),
+      "self-host": na("Installed desktop apps"),
+    },
+  },
+  desktopInstallLink: {
+    file: "desktop-apps.spec.ts",
+    title:
+      "an executor://install link from a browser dashboard installs a local app only through the desktop's install dialog, ignores a repeat while it waits, and refuses malformed links and servers that are not this computer's Executor",
+    targets: {
+      local: {
+        status: "not-run",
+        reason:
+          "Runs against the packaged desktop in the release workflow with desktop-recovery.config.ts.",
+      },
+      cloud: na("Installed desktop apps"),
+      "self-host": na("Installed desktop apps"),
+    },
+  },
+  desktopLocalChoice: {
+    file: "desktop-recovery.spec.ts",
+    title:
+      "desktop with no local data shows the welcome window and starts the local server only when Run locally is chosen, keeps that choice on the next launch, and a data directory that holds the CLI's data opens without the welcome window",
+    targets: {
+      local: {
+        status: "not-run",
+        reason:
+          "Runs against the packaged desktop in the release workflow with desktop-recovery.config.ts.",
+      },
+      cloud: na("The desktop chooses whether to run its local server"),
+      "self-host": na("The desktop chooses whether to run its local server"),
+    },
+  },
+  desktopResetFailedStart: {
+    file: "desktop-recovery.spec.ts",
+    title:
+      "desktop whose local server cannot build its built-in app names why on the recovery page, and a reset that starts no better says so with the same cause instead of claiming it runs",
+    targets: {
+      local: {
+        status: "not-run",
+        reason:
+          "Runs against the packaged desktop in the release workflow with desktop-recovery.config.ts.",
+      },
+      cloud: na("Desktop data reset"),
+      "self-host": na("Desktop data reset"),
+    },
+  },
+  desktopLocalLinks: {
+    file: "desktop-recovery.spec.ts",
+    title:
+      "an executor://app link for an app on this computer's Executor, or an install link from it, on a desktop that never chose to run locally shows the welcome window saying so and starts no server until Run locally is chosen",
+    targets: {
+      local: {
+        status: "not-run",
+        reason:
+          "Runs against the packaged desktop in the release workflow with desktop-recovery.config.ts.",
+      },
+      cloud: na("The desktop chooses whether to run its local server"),
+      "self-host": na("The desktop chooses whether to run its local server"),
+    },
+  },
+  desktopAppStates: {
+    file: "desktop-apps.spec.ts",
+    title:
+      "an installed app whose server is stopped opens a page that names it unreachable and opens the app on Retry once the server runs again, and an app removed from its server opens a page that says so and uninstalls it",
+    targets: {
+      local: {
+        status: "not-run",
+        reason:
+          "Runs against the packaged desktop in the release workflow with desktop-recovery.config.ts.",
+      },
+      cloud: na("Installed desktop apps"),
+      "self-host": na("Installed desktop apps"),
+    },
+  },
+  desktopInstallLinkColdStart: {
+    file: "desktop-apps.spec.ts",
+    title:
+      "an executor://install link that starts Executor waits for its local server, then shows the install dialog and opens the installed app",
+    targets: {
+      local: {
+        status: "not-run",
+        reason:
+          "Runs against the packaged desktop in the release workflow with desktop-recovery.config.ts.",
+      },
+      cloud: na("Installed desktop apps"),
+      "self-host": na("Installed desktop apps"),
+    },
+  },
+  desktopAppRevocation: {
+    file: "desktop-apps.spec.ts",
+    title:
+      "installed desktop app keeps a newer revocation or removal over a late permission answer, so the answer never grants a shortcut, a menu-bar item or a reinstalled app's permission",
+    targets: {
+      local: {
+        status: "not-run",
+        reason:
+          "Runs against the packaged desktop in the release workflow with desktop-recovery.config.ts.",
+      },
+      cloud: na("Installed desktop apps"),
+      "self-host": na("Installed desktop apps"),
+    },
+  },
+  desktopAppLifecycle: {
+    file: "desktop-apps.spec.ts",
+    title:
+      "installed desktop app drops its shortcuts and floating after a renderer crash, ends after repeated crashes, and closes with its server then reopens signed in to the same server",
+    targets: {
+      local: {
+        status: "not-run",
+        reason:
+          "Runs against the packaged desktop in the release workflow with desktop-recovery.config.ts.",
+      },
+      cloud: na("Installed desktop apps"),
+      "self-host": na("Installed desktop apps"),
+    },
+  },
+  desktopAppIsolation: {
+    file: "desktop-apps.spec.ts",
+    title:
+      "installed desktop apps keep their bridge and permissions to themselves: a second app, a foreign iframe and a navigated-away page get nothing, a scripted notification click does nothing, and only a click sends a page to the system browser",
+    targets: {
+      local: {
+        status: "not-run",
+        reason:
+          "Runs against the packaged desktop in the release workflow with desktop-recovery.config.ts.",
+      },
+      cloud: na("Installed desktop apps"),
+      "self-host": na("Installed desktop apps"),
+    },
+  },
+  desktopAppWindows: {
+    file: "desktop-apps.spec.ts",
+    title:
+      "installed desktop app hides, shows, focuses and toggles the window its page is in, opens other windows at its own paths with the bridge and closes them with the app, and shows its badge count",
+    targets: {
+      local: {
+        status: "not-run",
+        reason:
+          "Runs against the packaged desktop in the release workflow with desktop-recovery.config.ts.",
+      },
+      cloud: na("Installed desktop apps"),
+      "self-host": na("Installed desktop apps"),
+    },
+  },
+  desktopAppOpenAtPath: {
+    file: "desktop-apps.spec.ts",
+    title:
+      "an executor://app link with a path opens the installed app at that path, moves a running app's window there, and refuses a link with a fragment",
+    targets: {
+      local: {
+        status: "not-run",
+        reason:
+          "Runs against the packaged desktop in the release workflow with desktop-recovery.config.ts.",
+      },
+      cloud: na("Installed desktop apps"),
+      "self-host": na("Installed desktop apps"),
+    },
+  },
+  desktopAppCapture: {
+    file: "desktop-apps.spec.ts",
+    title:
+      "installed desktop app records from the microphone and camera and reads the clipboard only after the person allows each, loses them when revoked, and hears system audio only where the computer can capture it",
+    targets: {
+      local: {
+        status: "not-run",
+        reason:
+          "Runs against the packaged desktop in the release workflow with desktop-recovery.config.ts.",
+      },
+      cloud: na("Installed desktop apps"),
+      "self-host": na("Installed desktop apps"),
+    },
+  },
+  desktopAppStartAtLogin: {
+    file: "desktop-apps.spec.ts",
+    title:
+      "installed desktop app asks to start at login, writes Executor's login item, opens hidden without the dashboard when Executor starts at login, and removing the permission removes the login item",
+    targets: {
+      local: {
+        status: "not-run",
+        reason:
+          "Runs against the packaged desktop in the release workflow with desktop-recovery.config.ts.",
+      },
+      cloud: na("Installed desktop apps"),
+      "self-host": na("Installed desktop apps"),
+    },
+  },
+  desktopAppDownloads: {
+    file: "desktop-apps.spec.ts",
+    title:
+      "installed desktop app windows and popovers ask where to save a link or blob download, save it there, and a cancelled save writes nothing",
+    targets: {
+      local: {
+        status: "not-run",
+        reason:
+          "Runs against the packaged desktop in the release workflow with desktop-recovery.config.ts.",
+      },
+      cloud: na("Installed desktop apps"),
+      "self-host": na("Installed desktop apps"),
+    },
+  },
+  desktopAppStoreUnreadable: {
+    file: "desktop-apps.spec.ts",
+    title:
+      "desktop leaves an installed-apps file it cannot read untouched and refuses to install or open apps until it is fixed",
+    targets: {
+      local: {
+        status: "not-run",
+        reason:
+          "Runs against the packaged desktop in the release workflow with desktop-recovery.config.ts.",
+      },
+      cloud: na("Installed desktop apps"),
+      "self-host": na("Installed desktop apps"),
     },
   },
   desktopUpdate: {
@@ -2341,7 +2677,8 @@ export const scenarios = plan({
   },
   localStartupObservability: {
     file: "local-startup-observability.spec.ts",
-    title: "local startup failures retain their resource phase and safe system code",
+    title:
+      "local startup failures retain their resource phase and safe system code, and a built-in app that cannot be built names why in the log and the server's output",
     targets: {
       local: scheduled,
       cloud: na("Local process startup"),
@@ -7626,6 +7963,126 @@ export const scenarios = plan({
       "self-host": scheduled,
       cloud: managedCloud,
       local: na("This scenario uses hosted MCP; the runtime and collector are shared with Local."),
+    },
+  },
+  appDesktopPages: {
+    fixtures: "actors",
+    file: "app-desktop-pages.spec.ts",
+    appOrigin: true,
+    title:
+      "an app's menu-bar page and icon build beside its main page, are served after app sign-in, are reported by its location and fail the deploy when invalid, including an icon that is not well-formed XML or declares a DOCTYPE, scripts, embedded content, event handlers or links outside itself",
+    targets: {
+      "self-host": scheduled,
+      cloud: sourceStorageCloud,
+      local: na("Local reports and serves the same pages through its own scenario."),
+    },
+  },
+  serverIdentity: {
+    file: "server-identity.spec.ts",
+    title:
+      "every Executor server answers /.well-known/executor with only its stable server ID, its kind and the origins of its dashboard, API and sign-in, the same from its deployment origin, and a local server answers only the host names it serves, uncached",
+    targets: { local: scheduled, "self-host": scheduled, cloud: scheduled },
+  },
+  desktopSignIn: {
+    fixtures: "actors",
+    file: "desktop-sign-in.spec.ts",
+    managementApps: ["owner"],
+    title:
+      "a desktop OAuth token reads app locations, which hold only an app's address, name, icon and menu-bar page, and mints one-use session links that sign in the desktop's own browser, and nothing else, not even the app's full record, until revoking it signs those browsers out",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("The desktop pairs with local through /auth/pair."),
+    },
+  },
+  desktopSessionLinkBinding: {
+    fixtures: "actors",
+    file: "desktop-sign-in.spec.ts",
+    title:
+      "a desktop session link signs in only a browser holding its binding cookie, and any other attempt burns it",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("The desktop pairs with local through /auth/pair."),
+    },
+  },
+  desktopSessionPinned: {
+    fixtures: "actors",
+    file: "desktop-sign-in.spec.ts",
+    title:
+      "a browser session a desktop session link signs in reaches only the organization the desktop was consented to: another of the person's organizations is refused, the organization list holds only that one and it can't create another, while the person's own session still reaches both",
+    targets: {
+      cloud: scheduled,
+      "self-host": na("Self-host holds one organization, so there is no other to refuse."),
+      local: na("The desktop pairs with local through /auth/pair."),
+    },
+  },
+  desktopGrantBoundaries: {
+    fixtures: "actors",
+    file: "desktop-sign-in.spec.ts",
+    managementApps: ["owner"],
+    title:
+      "only loopback IP clients get desktop sign-in, only desktop tokens mint session links, and removal from the organization stops minting",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("The desktop pairs with local through /auth/pair."),
+    },
+  },
+  desktopSessionLinkExpiry: {
+    fixtures: "actors",
+    file: "desktop-sign-in.spec.ts",
+    serverEnvironment: { EXECUTOR_DESKTOP_SESSION_LINK_SECONDS: "2" },
+    title: "an expired desktop session link signs no one in",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Cloud's stage keeps the 60-second link lifetime; self-host shortens it to wait it out.",
+      ),
+      local: na("The desktop pairs with local through /auth/pair."),
+    },
+  },
+  appDesktopClient: {
+    fixtures: "actors",
+    file: "app-desktop-client.spec.ts",
+    appOrigin: true,
+    title:
+      "an app UI's desktop API reports itself unavailable in a browser tab and maps an installed window's bridge calls, shortcut presses and failures",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("The desktop API runs only in the app's browser bundle; self-host serves it."),
+      local: na("The desktop API runs only in the app's browser bundle; self-host serves it."),
+    },
+  },
+  appDesktopInstall: {
+    fixtures: "actors",
+    file: "app-desktop-install.spec.ts",
+    appOrigin: true,
+    title:
+      "the hosted app page shows the app's own icon, installs, opens and uninstalls an app and sets its desktop permissions through the desktop bridge, keeps them current and manageable without a page, shows only its own desktop account and opens the desktop's own account menu from it, and in a browser offers to open it in the desktop app or download it for this computer, or on a phone or tablet says the desktop app is for Mac and Windows",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local shows the same shared view through localAppDesktopInstall."),
+    },
+  },
+  localAppDesktopInstall: {
+    file: "local-app-desktop-install.spec.ts",
+    title:
+      "the local app page shows the app's own icon, installs, opens and uninstalls an app and sets its desktop permissions through the desktop bridge, keeps them current and manageable without a page, shows only its own desktop account and opens the desktop's own account menu from it, and in a browser offers to open it in the desktop app or download it for this computer, or on a phone or tablet says the desktop app is for Mac and Windows",
+    targets: {
+      local: scheduled,
+      "self-host": na("Hosted app pages are checked by appDesktopInstall."),
+      cloud: na("Hosted app pages are checked by appDesktopInstall."),
+    },
+  },
+  localAppDesktopPages: {
+    file: "local-app-desktop-pages.spec.ts",
+    title: "local app details report the menu-bar page and icon, and the app origin serves both",
+    targets: {
+      local: scheduled,
+      "self-host": na("Hosted desktop pages are checked by appDesktopPages."),
+      cloud: na("Hosted desktop pages are checked by appDesktopPages."),
     },
   },
   appDomainStatus: {

@@ -332,9 +332,11 @@ export function McpConsentTargetRows({
       <McpConsentRow label="Access">
         {target.kind === "api"
           ? "Executor API"
-          : target.connection === undefined
-            ? "All apps"
-            : "One of your connections"}
+          : target.kind === "desktop"
+            ? "Your Executor account"
+            : target.connection === undefined
+              ? "All apps"
+              : "One of your connections"}
       </McpConsentRow>
       {target.kind === "mcp" && (
         <McpConsentApprovals mode={mode ?? target.mode} onMode={onMode} disabled={disabled} />
@@ -490,6 +492,9 @@ export function McpConsentSummary({
     </div>
   );
 }
+
+export const desktopSignInNote =
+  "This signs the Executor desktop app in to your Executor account. Revoking this sign-in signs the desktop app out, including the windows it opened.";
 
 export function McpConsentDestination({ origin }: { readonly origin: string }) {
   return (

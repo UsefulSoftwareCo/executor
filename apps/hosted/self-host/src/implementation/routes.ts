@@ -33,13 +33,25 @@ import {
   mcpAuthorizationServer,
   apiChallenge,
   apiProtectedResource,
+  desktopProtectedResource,
   lazyHostedApiDocument,
   ProductAnalytics,
 } from "@executor-js/hosted-server";
 import { recordRequestRejections, requestTiming } from "@executor-js/telemetry/http";
 import { appAddresses, hostedAppUi } from "@executor-js/hosted-server/app-ui";
 import { appSignInCallbackPath } from "apps/ui/auth";
-import { AppUiApi } from "apps/ui/contracts";
+import {
+  AppUiApi,
+  appIconRoute,
+  appMenuBarRoute,
+  executorServerIdentityPath,
+} from "apps/ui/contracts";
+import {
+  sameOrigins,
+  serverIdentity,
+  publicIdentityCache,
+  serverIdentityResponse,
+} from "@executor-js/utils/server-identity";
 import { HttpApiBuilder } from "effect/http-api";
 import { appUiBaseUrl } from "../contracts/config.ts";
 import { catalogFeedSetting } from "@executor-js/catalog/contracts";
@@ -75,6 +87,10 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
       options.updateCheckStore,
     );
     const auth = yield* SelfHostAuth.pipe(Effect.provide(executorServices));
+    const serverId = yield* serverIdentity(
+      "self-host",
+      yield* Config.NonEmptyString("EXECUTOR_INSTALL_ID"),
+    );
     const analytics = yield* selfHostAnalytics;
     const observed = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
       analytics === undefined
@@ -165,6 +181,11 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
         HttpRouter.provideRequest(executorServices),
       ),
       HttpRouter.add("*", "/api/auth/*", auth.handler),
+      HttpRouter.add(
+        "GET",
+        executorServerIdentityPath,
+        serverIdentityResponse(serverId, sameOrigins(auth.origin), publicIdentityCache),
+      ),
       HttpRouter.add("GET", "/api/self-host/update", selfHostUpdateStatus(update)).pipe(
         HttpRouter.provideRequest(auth.identity),
       ),
@@ -187,6 +208,11 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
       Layer.mergeAll(
         HttpRouter.add("GET", "/api", apiChallenge),
         HttpRouter.add("GET", "/.well-known/oauth-protected-resource/api", apiProtectedResource),
+        HttpRouter.add(
+          "GET",
+          "/.well-known/oauth-protected-resource/api/desktop",
+          desktopProtectedResource,
+        ),
       ).pipe(HttpRouter.provideRequest(auth.apiIdentity)),
       HttpRouter.add("GET", "/app-auth", appUi.signIn(dashboard)).pipe(
         HttpRouter.provideRequest(auth.appSessions),
@@ -205,6 +231,8 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
       HttpRouter.add("GET", appSignInCallbackPath, appUi.callback),
       HttpRouter.add("GET", "/_executor/assets/:version/*", appUi.asset),
       HttpRouter.add("GET", "/_executor/version", appUi.versions),
+      HttpRouter.add("GET", appMenuBarRoute, appUi.menuBar),
+      HttpRouter.add("GET", appIconRoute, appUi.icon),
       HttpRouter.add("POST", "/_executor/api/telemetry/traces", appUi.telemetry("traces")),
       HttpRouter.add("POST", "/_executor/api/telemetry/logs", appUi.telemetry("logs")),
       HttpRouter.add("GET", "/_executor/*", notFound),

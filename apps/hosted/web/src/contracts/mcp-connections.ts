@@ -124,7 +124,12 @@ const agentIn = (
         AsyncResult.all(lists.map((atom) => get(atom))),
         (current): Option.Option<ConnectedAgent> =>
           Option.fromNullishOr(
-            current.flat().find((agent) => agent.access.kind !== "api" && matches(agent)),
+            current
+              .flat()
+              .find(
+                (agent) =>
+                  agent.access.kind !== "api" && agent.access.kind !== "desktop" && matches(agent),
+              ),
           ),
       ),
     (refresh) => {

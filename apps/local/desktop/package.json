@@ -12,6 +12,7 @@
     "@effect/platform-node": "4.1.4",
     "@executor-js/local-server": "workspace:*",
     "@executor-js/telemetry": "workspace:*",
+    "@hugeicons/core-free-icons": "4.3.3",
     "effect": "4.1.4",
     "electron-updater": "6.6.8",
     "fflate": "0.8.3",

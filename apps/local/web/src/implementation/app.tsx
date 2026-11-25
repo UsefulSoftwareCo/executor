@@ -21,6 +21,7 @@ import { Button } from "@executor-js/ui/components/button";
 import { Failure } from "./components/common.tsx";
 import { LocalDashboard } from "./dashboard-bindings.tsx";
 import { DashboardShell } from "@executor-js/ui/dashboard/shell";
+import { DesktopAccountMenu } from "@executor-js/ui/dashboard/desktop-accounts";
 import { publicDocsBaseUrl } from "@executor-js/ui/contracts/documentation";
 import { documentBuild } from "@executor-js/dashboard-start/document-build";
 import { NameAccountDialog } from "./pages/name-account-dialog.tsx";
@@ -189,11 +190,14 @@ function Dashboard() {
         </>
       }
       footer={
-        <div className="sidebar-build flex items-center justify-between gap-1.5 py-0 px-[10px] max-[740px]:p-0">
-          <span className="sidebar-version text-[10px] opacity-75 max-[740px]:hidden">
-            {buildLabel(documentBuild())}
-          </span>
-        </div>
+        <>
+          <DesktopAccountMenu fallback={null} />
+          <div className="sidebar-build flex items-center justify-between gap-1.5 py-0 px-[10px] max-[740px]:p-0">
+            <span className="sidebar-version text-[10px] opacity-75 max-[740px]:hidden">
+              {buildLabel(documentBuild())}
+            </span>
+          </div>
+        </>
       }
     >
       {AsyncResult.isFailure(result) && (
