@@ -381,7 +381,8 @@ export const makeAccounts = (options: {
       switch (outcome.kind) {
         case "signed-in":
           welcomeMessage = undefined;
-          if (switchAfter) return fork(switchTo(outcome.account));
+          if (switchAfter || activeId() === undefined || activeId() === localAccount)
+            return fork(switchTo(outcome.account));
           return closeWelcome();
         case "cancelled":
           if (hasDashboard) return closeWelcome();
@@ -797,10 +798,12 @@ export const makeAccounts = (options: {
           finish: (chosen) => {
             if (done) return;
             done = true;
-            parent.webContents.off("before-input-event", escapeFrom);
-            parent.webContents.off("before-mouse-event", clickedBeside);
-            parent.off("move", followParent);
-            parent.off("resize", followParent);
+            if (!parent.isDestroyed()) {
+              parent.webContents.off("before-input-event", escapeFrom);
+              parent.webContents.off("before-mouse-event", clickedBeside);
+              parent.off("move", followParent);
+              parent.off("resize", followParent);
+            }
             if (menu === open) menu = undefined;
             if (!window.isDestroyed()) window.destroy();
             resume(Effect.succeed(chosen));
@@ -826,7 +829,8 @@ export const makeAccounts = (options: {
         window.on("blur", () =>
           setImmediate(() => {
             if (done || window.isDestroyed()) return;
-            if (BrowserWindow.getFocusedWindow() !== parent) return open.finish(null);
+            if (parent.isDestroyed() || BrowserWindow.getFocusedWindow() !== parent)
+              return open.finish(null);
             window.focus();
             window.webContents.focus();
           }),
