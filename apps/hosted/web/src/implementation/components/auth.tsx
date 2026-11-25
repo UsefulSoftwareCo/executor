@@ -4,7 +4,7 @@ import { AsyncResult } from "effect/reactivity";
 import { MemberAvatar } from "./member-avatar.tsx";
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
 // oxlint-disable-next-line no-restricted-imports -- AuthBoundary renders it only away from /login, and its own navigation there unmounts it
-import { Link, Navigate, useLocation, useNavigate } from "@tanstack/react-router";
+import { Link, Navigate, useLocation } from "@tanstack/react-router";
 import { Cause, Exit, Option, Schema } from "effect";
 import { OrganizationResume } from "../../contracts/navigation.ts";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -12,7 +12,6 @@ import { Logout01Icon, Settings05Icon, UnfoldMoreIcon } from "@hugeicons/core-fr
 import { useEffect, useState, type ReactNode } from "react";
 import { AuthFailed, sessionAtom, signOutAtom } from "../../contracts/auth.ts";
 import { Button } from "@executor-js/ui/components/button";
-import { DesktopAccountMenu } from "@executor-js/ui/dashboard/desktop-accounts";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -106,7 +105,6 @@ export function SessionMenu({
   const signOut = useAtomSet(signOutAtom, { mode: "promiseExit" });
   const state = useAtomValue(signOutAtom);
   const [error, setError] = useState<string | null>(null);
-  const navigate = useNavigate();
   if (Option.isNone(session) || session.value === null) return null;
   const name = session.value.user.name.trim();
   const email = session.value.user.email;
@@ -146,15 +144,7 @@ export function SessionMenu({
         {error && <p role="alert">{error}</p>}
       </div>
     );
-  const settings = (
-    <DropdownMenuItem asChild className="min-h-9 cursor-pointer p-2 text-[13px]">
-      <Link to="/account/profile" search={{ organization }}>
-        <HugeiconsIcon icon={Settings05Icon} strokeWidth={2} size={16} aria-hidden />
-        Account settings
-      </Link>
-    </DropdownMenuItem>
-  );
-  const browserMenu = (
+  return (
     <div className="session-menu [&_p]:text-destructive [&_p]:text-[13px] flex flex-wrap items-center gap-2 [padding:10px_4px_0] text-[12px] [&_>_p]:basis-[100%]">
       <DropdownMenu>
         <DropdownMenuTrigger
@@ -189,7 +179,12 @@ export function SessionMenu({
             </div>
           </DropdownMenuLabel>
           <DropdownMenuSeparator />
-          {settings}
+          <DropdownMenuItem asChild className="min-h-9 cursor-pointer p-2 text-[13px]">
+            <Link to="/account/profile" search={{ organization }}>
+              <HugeiconsIcon icon={Settings05Icon} strokeWidth={2} size={16} aria-hidden />
+              Account settings
+            </Link>
+          </DropdownMenuItem>
           <DropdownMenuItem className="min-h-9 cursor-pointer p-2 text-[13px]" onSelect={leave}>
             <HugeiconsIcon icon={Logout01Icon} strokeWidth={2} size={16} aria-hidden />
             Sign out
@@ -198,13 +193,5 @@ export function SessionMenu({
       </DropdownMenu>
       {error && <p role="alert">{error}</p>}
     </div>
-  );
-  return (
-    <DesktopAccountMenu
-      fallback={browserMenu}
-      person={{ name, email }}
-      avatar={avatar}
-      onSettings={() => void navigate({ to: "/account/profile", search: { organization } })}
-    />
   );
 }

@@ -95,7 +95,6 @@ export interface ApiAccess {
   readonly grant?: {
     readonly id: GrantId;
   };
-  readonly desktop?: true;
 }
 
 export class BearerAuthentication extends Context.Service<
@@ -107,7 +106,6 @@ export class BearerAuthentication extends Context.Service<
     readonly authenticate: (
       headers: Headers,
       organization?: OrganizationReference,
-      options?: { readonly desktop: boolean },
     ) => Effect.Effect<ApiAccess, Unauthorized | OrganizationForbidden | AuthenticationUnavailable>;
   }
 >()("hosted/BearerAuthentication") {}

@@ -9,7 +9,7 @@ import {
   observeProductOperation,
   traceProductRead,
 } from "../contracts/product-analytics.ts";
-import { RequiredAction, CurrentPolicy, DesktopReadable } from "../contracts/authorization.ts";
+import { RequiredAction, CurrentPolicy } from "../contracts/authorization.ts";
 import {
   fullAuthority,
   permitsAction,
@@ -37,8 +37,7 @@ import {
   refusedAs,
 } from "./auth-telemetry.ts";
 import { APIError } from "better-auth/api";
-import { ErrorReporter, Effect, Layer, Option, Schema } from "effect";
-import { sessionGrantResource } from "@executor-js/mcp-auth/oauth";
+import { ErrorReporter, Effect, Layer, Schema } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 import type { OwnerId } from "@executor-js/sdk/core";
 import { HostedApi } from "../contracts/api.ts";
@@ -66,44 +65,7 @@ import {
   publishingScope,
 } from "../contracts/organization.ts";
 
-export const sessionPin = (
-  adapter: Pick<AuthContext["adapter"], "findOne">,
-  principal: Principal,
-) =>
-  sessionGrantResource(adapter, principal.sessionId).pipe(
-    Effect.mapError((error) =>
-      error.status === "UNAUTHORIZED"
-        ? new OrganizationForbidden()
-        : new AuthenticationUnavailable(),
-    ),
-  );
-
-const pinnedTo = (
-  adapter: Pick<AuthContext["adapter"], "findOne">,
-  principal: Principal,
-  organization: OrganizationId,
-) =>
-  sessionPin(adapter, principal).pipe(
-    Effect.flatMap((pinned) =>
-      Option.isSome(pinned) && pinned.value !== organization
-        ? Effect.fail(new OrganizationForbidden())
-        : Effect.void,
-    ),
-  );
-
 export const lookupMembership = (
-  adapter: Pick<AuthContext["adapter"], "findOne">,
-  principal: Principal,
-  organization: OrganizationId,
-) =>
-  Effect.zipWith(
-    pinnedTo(adapter, principal, organization),
-    memberRole(adapter, principal, organization),
-    (_, member) => member,
-    { concurrent: true },
-  );
-
-const memberRole = (
   adapter: Pick<AuthContext["adapter"], "findOne">,
   principal: Principal,
   organization: OrganizationId,
@@ -153,7 +115,6 @@ export const withOrganizationRequest = <E, R>(
     namespace: Effect.Effect<string, AuthenticationUnavailable | OrganizationForbidden>,
   ) => Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
   action?: import("@executor-js/authorization").Action,
-  desktop = false,
 ) =>
   Effect.gen(function* () {
     const auth = yield* SessionAuthentication;
@@ -170,10 +131,10 @@ export const withOrganizationRequest = <E, R>(
     if (headers.has("authorization")) {
       if (request.headers.origin !== undefined && request.headers.origin !== auth.origin)
         return yield* refuse("origin_mismatch", new Forbidden());
-      const grant = yield* api.authenticate(headers, reference, { desktop });
+      const grant = yield* api.authenticate(headers, reference);
       yield* recordCaller(grant.access.organization, grant.userId);
       yield* refuseRemoved(grant.access.organization);
-      if (grant.desktop !== true && !permitsAction(grant.policy, action))
+      if (!permitsAction(grant.policy, action))
         return yield* refuse("insufficient_scope", new OrganizationForbidden());
       if (params.app !== undefined) {
         const app = yield* Schema.decodeUnknownEffect(AppId)(params.app).pipe(
@@ -261,7 +222,6 @@ export const requireOrganizationLive = Layer.effect(
               }));
         },
         Context.getOrUndefined(endpoint.annotations, RequiredAction),
-        Context.get(endpoint.annotations, DesktopReadable),
       ).pipe(
         Effect.provideService(SessionAuthentication, auth),
         Effect.provideService(BearerAuthentication, api),

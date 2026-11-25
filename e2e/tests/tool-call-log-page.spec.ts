@@ -240,7 +240,7 @@ layer(HostedLive, { excludeTestServices: true })("Tool call log page", (it) => {
             const image = calls(page)
               .getByRole("button", { name: new RegExp(escaped(seeded.member.name), "u") })
               .first()
-              .locator('img[data-slot="avatar-image"]');
+              .locator("img");
             return image.waitFor().then(() => image.getAttribute("src"));
           }),
         ).toBe(picture);

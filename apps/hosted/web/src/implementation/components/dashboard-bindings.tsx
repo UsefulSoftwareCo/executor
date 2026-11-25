@@ -1,10 +1,10 @@
-import { type App, AppProviderFailed } from "@executor-js/sdk";
+import { AppProviderFailed } from "@executor-js/sdk";
 import { Cause, Option, Schema } from "effect";
 import { ProviderErrorNotice } from "@executor-js/ui/dashboard/provider-error-notice";
 import { CompactFailure, ErrorNotice } from "@executor-js/ui/dashboard/error-notice";
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
 import { ConnectionFailed, hasConnectionFailure } from "@executor-js/utils/connection-failure";
-import { useCallback, type ReactNode } from "react";
+import type { ReactNode } from "react";
 import { Link } from "@tanstack/react-router";
 import { DashboardProvider } from "@executor-js/ui/dashboard/context";
 import type {
@@ -110,21 +110,8 @@ export function HostedFailure({ cause, retry, retrying, layout }: FailureProps<H
   );
 }
 export function HostedDashboard({ children }: { readonly children: ReactNode }) {
-  const { id } = useOrganizationRoute();
-  const appIconUrl = useCallback(
-    (app: App) =>
-      id === undefined
-        ? undefined
-        : `/api/organizations/${encodeURIComponent(id)}/apps/${encodeURIComponent(app.id)}/icon?version=${encodeURIComponent(app.activeVersion ?? "")}`,
-    [id],
-  );
   return (
-    <DashboardProvider
-      catalogIcons={catalogIcons}
-      AppLink={AppLink}
-      AccountLink={AccountLink}
-      appIconUrl={appIconUrl}
-    >
+    <DashboardProvider catalogIcons={catalogIcons} AppLink={AppLink} AccountLink={AccountLink}>
       {children}
     </DashboardProvider>
   );

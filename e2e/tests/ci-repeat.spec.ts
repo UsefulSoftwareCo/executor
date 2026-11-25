@@ -647,7 +647,6 @@ layer(NodeServices.layer)("CI repeat", (it) => {
           "release-docker",
           "release-local-cli",
           "release-local-desktop",
-          "e2e-desktop-servers",
         ]);
         for (const job of ["check", "e2e"] as const) {
           const dependencies = dependenciesOf(job);

@@ -46,14 +46,12 @@ export class StartupFailed extends Schema.TaggedError<StartupFailed>()("StartupF
   code: Schema.optional(StartupCode),
   database: Schema.optional(LocalDatabaseName),
   step: Schema.optional(Schema.Literals(["clear", "create", "set aside", "move into place"])),
-  buildFailure: Schema.optional(Schema.String),
 }) {
   get message() {
     const code = this.code === undefined ? "" : ` (${this.code})`;
-    const detail = this.buildFailure === undefined ? "" : `: ${this.buildFailure}`;
     return this.stage === "database" && this.step !== undefined
       ? `Local startup could not ${creationSteps[this.step]} the database ${this.database ?? "it opens"}${code}`
-      : `Local startup failed at ${this.stage}${code}${detail}`;
+      : `Local startup failed at ${this.stage}${code}`;
   }
 }
 export const executorCommand = Command.make("executor", {

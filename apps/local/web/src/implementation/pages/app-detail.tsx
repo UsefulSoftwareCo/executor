@@ -43,7 +43,6 @@ import { RenameApp } from "@executor-js/ui/dashboard/rename-app";
 import { CopyApp } from "@executor-js/ui/dashboard/copy-app";
 import { AppSettings } from "@executor-js/ui/dashboard/app-settings";
 import { AppDetailLayout } from "@executor-js/ui/dashboard/app-detail";
-import { DesktopAppActions, DesktopAppSection } from "@executor-js/ui/dashboard/desktop-app";
 import { AppTools } from "./app-tools.tsx";
 import { AppSource, AppVersions } from "./app-source.tsx";
 import {
@@ -136,31 +135,14 @@ export function AppDetailPage({
         </Link>
       }
       actions={
-        Option.isSome(query.data) && (
-          <DesktopAppActions
-            app={id}
-            handoff={{ name: query.data.value.app.name }}
-            ui={
-              query.data.value.uiUrl === null
-                ? { status: "unavailable", reason: "This app's active version has no page." }
-                : {
-                    status: "ready",
-                    browserOpen: (
-                      <Button variant="outline" asChild>
-                        <a href={query.data.value.uiUrl} target="_blank" rel="noopener noreferrer">
-                          Open app{" "}
-                          <HugeiconsIcon
-                            icon={ArrowUpRight01Icon}
-                            strokeWidth={2}
-                            aria-hidden
-                            size={14}
-                          />
-                        </a>
-                      </Button>
-                    ),
-                  }
-            }
-          />
+        Option.isSome(query.data) &&
+        query.data.value.uiUrl !== null && (
+          <Button variant="outline" asChild>
+            <a href={query.data.value.uiUrl} target="_blank" rel="noopener noreferrer">
+              Open app{" "}
+              <HugeiconsIcon icon={ArrowUpRight01Icon} strokeWidth={2} aria-hidden size={14} />
+            </a>
+          </Button>
         )
       }
     >
@@ -206,9 +188,7 @@ export function AppDetailPage({
                     !current.canDelete &&
                     "This app is managed by Executor and cannot be renamed or deleted."
                   }
-                >
-                  <DesktopAppSection app={current.app.id} uiReady={current.uiUrl !== null} />
-                </AppSettings>
+                />
               );
             if (tab === "versions") return <AppVersions data={current} />;
             return <AppSource data={current} view={tab === "history" ? "history" : "source"} />;

@@ -16,7 +16,6 @@ import { ServiceFailed, serviceLockFile } from "../../../server/src/contracts/se
 import { lockDataDirectory } from "../../../server/src/implementation/service-files.ts";
 import { BackupManifest, ResetFailed } from "../contracts/desktop.ts";
 import type { Connection } from "./connection.ts";
-import { recoveryTitle } from "./recovery.ts";
 import { whileHeld } from "./runtime.ts";
 
 const Collector = Schema.Struct({
@@ -159,8 +158,6 @@ export const backupData = (options: {
     return backup;
   });
 
-const startBound = "3 minutes";
-
 const failureDetail: Record<(typeof ResetFailed.Type)["stage"], string> = {
   stop: "Executor's background server or its telemetry collector did not stop in time.",
   lock: "Another Executor process is using the data directory. Quit it and try again.",
@@ -228,31 +225,11 @@ export const makeResetAction = (options: {
         return;
       }
       const backup = result.success;
-      const started = yield* options.connection.started.pipe(Effect.timeoutOption(startBound));
-      const kept = `If you need anything from before the reset, it is here:\n\n${backup}`;
-      const outcome = Option.match(started, {
-        onNone: () => ({
-          type: "info" as const,
-          message: "Your previous data has been backed up.",
-          detail: `${kept}\n\nExecutor is still starting with fresh data.`,
-        }),
-        onSome: (settled) =>
-          settled.kind === "ready"
-            ? {
-                type: "info" as const,
-                message: "Your previous data has been backed up.",
-                detail: `${kept}\n\nExecutor is now running with fresh data.`,
-              }
-            : {
-                type: "warning" as const,
-                message:
-                  "Your previous data has been backed up, but Executor could not start with fresh data.",
-                detail: `${kept}\n\n${recoveryTitle(settled.recovery)}${"detail" in settled.recovery ? `: ${settled.recovery.detail}` : "."}`,
-              },
-      });
       const announced = yield* messageBox({
-        ...outcome,
+        type: "info",
         title: "Executor data reset",
+        message: "Your previous data has been backed up.",
+        detail: `If you need anything from before the reset, it is here:\n\n${backup}\n\nExecutor is now running with fresh data.`,
         buttons: ["Show in folder", "OK"],
         defaultId: 1,
         cancelId: 1,

@@ -141,11 +141,7 @@ export {
   mcpWhoami,
 } from "./implementation/mcp-http.ts";
 
-export {
-  apiChallenge,
-  apiProtectedResource,
-  desktopProtectedResource,
-} from "./implementation/api-oauth.ts";
+export { apiChallenge, apiProtectedResource } from "./implementation/api-oauth.ts";
 
 export { browserTelemetry } from "./implementation/telemetry.ts";
 

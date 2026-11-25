@@ -1,5 +1,5 @@
 import { isToolSelectionSubset } from "@executor-js/authorization";
-import type { AuthContext, BetterAuthPlugin, GenericEndpointContext } from "@better-auth/core";
+import type { BetterAuthPlugin, GenericEndpointContext } from "@better-auth/core";
 import { defineRequestState } from "@better-auth/core/context";
 import {
   oauthProvider,
@@ -28,7 +28,6 @@ import {
   GrantSettings,
   GrantTarget,
   defaultResource,
-  grantScope,
   grantSettingsHeader,
   grantTarget,
   mcpOAuthResources,
@@ -119,11 +118,6 @@ const loopback = (value: string) => {
   }
 };
 
-const desktopLoopback = (value: string) => {
-  const url = URL.parse(value);
-  return url !== null && url.protocol === "http:" && ["127.0.0.1", "[::1]"].includes(url.hostname);
-};
-
 const redirectIdentity = (value: string) => {
   if (!loopback(value)) return value;
   const url = new URL(value);
@@ -137,7 +131,7 @@ export type RefreshRejection = Parameters<
 export interface CreatedGrant {
   readonly userId: string;
   readonly clientId: string;
-  readonly kind: GrantTarget["kind"];
+  readonly kind: "mcp" | "api";
   readonly organization: string;
 }
 const resolveBinding = (
@@ -220,39 +214,6 @@ const GrantPage = Schema.Struct({
   grants: Schema.Array(Schema.Struct({ id: GrantId, userId: Schema.NonEmptyString })),
 });
 const grantBatch = 200;
-const grantSessionPrefix = "executor-grant-session:v1:";
-const grantSessionBatch = 100;
-const GrantSessionRecords = Schema.Array(Schema.Struct({ identifier: Schema.String }));
-const GrantSessionRecord = Schema.Struct({ value: GrantId });
-const BoundGrant = Schema.Struct({ resource: Schema.NonEmptyString, revoked: Schema.Boolean });
-
-export const sessionGrantResource = (
-  adapter: Pick<AuthContext["adapter"], "findOne">,
-  session: string,
-) =>
-  Effect.gen(function* () {
-    const bound = yield* authCall(() =>
-      adapter.findOne({
-        model: "verification",
-        where: [{ field: "identifier", value: `${grantSessionPrefix}${session}` }],
-      }),
-    );
-    if (bound === null) return Option.none<string>();
-    const record = yield* Schema.decodeUnknownEffect(GrantSessionRecord)(bound).pipe(
-      Effect.mapError(() => new APIError("SERVICE_UNAVAILABLE")),
-    );
-    const grant = yield* authCall(() =>
-      adapter.findOne({ model: "mcpGrant", where: [{ field: "id", value: record.value }] }),
-    );
-    if (grant === null) return yield* Effect.fail(new APIError("UNAUTHORIZED"));
-    const row = yield* Schema.decodeUnknownEffect(BoundGrant)(grant).pipe(
-      Effect.mapError(() => new APIError("SERVICE_UNAVAILABLE")),
-    );
-    if (row.revoked) return yield* Effect.fail(new APIError("UNAUTHORIZED"));
-    return Option.some(row.resource);
-  });
-const SessionToken = Schema.Struct({ token: Schema.String });
-const SlidSession = Schema.Struct({ id: Schema.String, expiresAt: Schema.Date });
 export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
   const { origin, resourceOrigins } = settings;
   const options = {
@@ -449,7 +410,7 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
             message: "Browser approval needs a grant whose approval mode is browser.",
           }),
         );
-  const access = (context: GenericEndpointContext, kind: GrantTarget["kind"]) =>
+  const access = (context: GenericEndpointContext, kind: "mcp" | "api") =>
     Effect.gen(function* () {
       const token = context.headers?.get("authorization")?.match(/^Bearer ([^\s]+)$/i)?.[1];
       if (token === undefined) return yield* Effect.fail(new APIError("UNAUTHORIZED"));
@@ -469,57 +430,11 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
         audiences.length !== 1 ||
         audiences[0] !== resource ||
         consented.kind !== kind ||
-        !claims.scope.split(" ").includes(grantScope(kind))
+        !claims.scope.split(" ").includes(kind === "api" ? "executor" : "mcp")
       )
         return yield* Effect.fail(new APIError("UNAUTHORIZED"));
       yield* settings.checkResource(context, row.userId, row.resource);
       return yield* project(context, row, target);
-    });
-  const grantSessions = (ctx: GenericEndpointContext, id: GrantId) =>
-    authCall(() =>
-      ctx.context.adapter.findMany({
-        model: "verification",
-        where: [
-          { field: "identifier", operator: "starts_with", value: grantSessionPrefix },
-          { field: "value", value: id },
-        ],
-        limit: grantSessionBatch,
-      }),
-    ).pipe(Effect.flatMap((rows) => parse(GrantSessionRecords, rows)));
-  const endSessions = (ctx: GenericEndpointContext, id: GrantId): Effect.Effect<void, APIError> =>
-    Effect.gen(function* () {
-      const records = yield* grantSessions(ctx, id);
-      if (records.length === 0) return;
-      const sessions = yield* authCall(() =>
-        ctx.context.adapter.findMany({
-          model: "session",
-          where: [
-            {
-              field: "id",
-              operator: "in",
-              value: records.map((record) => record.identifier.slice(grantSessionPrefix.length)),
-            },
-          ],
-          limit: grantSessionBatch,
-        }),
-      ).pipe(Effect.flatMap((rows) => parse(Schema.Array(SessionToken), rows)));
-      if (sessions.length > 0)
-        yield* authCall(() =>
-          ctx.context.internalAdapter.deleteSessions(sessions.map((session) => session.token)),
-        );
-      yield* authCall(() =>
-        ctx.context.adapter.deleteMany({
-          model: "verification",
-          where: [
-            {
-              field: "identifier",
-              operator: "in",
-              value: records.map((record) => record.identifier),
-            },
-          ],
-        }),
-      );
-      if (records.length === grantSessionBatch) yield* endSessions(ctx, id);
     });
   const revoke = (ctx: GenericEndpointContext, id: GrantId) =>
     Effect.gen(function* () {
@@ -534,34 +449,6 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
         yield* authCall(() =>
           ctx.context.adapter.deleteMany({ model, where: [{ field: "referenceId", value: id }] }),
         );
-      yield* endSessions(ctx, id);
-    });
-  const bindSession = (
-    ctx: GenericEndpointContext,
-    id: GrantId,
-    session: { readonly id: string; readonly expiresAt: Date },
-  ) =>
-    Effect.gen(function* () {
-      const now = new Date(yield* Clock.currentTimeMillis);
-      yield* authCall(() =>
-        ctx.context.adapter.create({
-          model: "verification",
-          data: {
-            identifier: `${grantSessionPrefix}${session.id}`,
-            value: id,
-            expiresAt: session.expiresAt,
-            createdAt: now,
-            updatedAt: now,
-          },
-        }),
-      );
-      yield* get(ctx, id).pipe(
-        Effect.catchIf(
-          (error) => error.status === "UNAUTHORIZED",
-          () =>
-            endSessions(ctx, id).pipe(Effect.andThen(Effect.fail(new APIError("UNAUTHORIZED")))),
-        ),
-      );
     });
   const revokeConnection = (ctx: GenericEndpointContext, row: typeof ConnectionRecord.Type) =>
     Effect.gen(function* () {
@@ -782,7 +669,7 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
         if (Option.isNone(consent)) return outcome("unreadable");
         const target = recordedTarget(row, consent.value.target);
         if (target === undefined) return outcome("unreadable");
-        if (target.kind !== "mcp") return outcome("api");
+        if (target.kind === "api") return outcome("api");
         if (!apply) return outcome("missing");
         const changed = yield* authCall(() =>
           ctx.context.adapter.update({
@@ -1015,8 +902,8 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
                   )
                 : undefined;
             const access: ConnectedAgentAccess =
-              target.kind !== "mcp"
-                ? { kind: target.kind }
+              target.kind === "api"
+                ? { kind: "api" }
                 : connection !== undefined
                   ? { kind: "connection", connection: connection.id, name: connection.name }
                   : policy?.kind === "tools"
@@ -1057,27 +944,6 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
             b.connectedAt.localeCompare(a.connectedAt),
         );
     });
-  const requireNativeClient = (ctx: GenericEndpointContext, clientId: string) =>
-    authCall(() =>
-      ctx.context.adapter.findOne({
-        model: "oauthClient",
-        where: [{ field: "clientId", value: clientId }],
-      }),
-    ).pipe(
-      Effect.flatMap((row) =>
-        parse(Schema.Struct({ redirectUris: Schema.Array(Schema.String) }), row),
-      ),
-      Effect.flatMap(({ redirectUris }) =>
-        redirectUris.length > 0 && redirectUris.every(desktopLoopback)
-          ? Effect.void
-          : Effect.fail(
-              new APIError("BAD_REQUEST", {
-                message:
-                  "Only an app on this computer can sign in to the Executor desktop. Every redirect it registers must be http://127.0.0.1 or http://[::1].",
-              }),
-            ),
-      ),
-    );
   const lookupBrowser = (ctx: GenericEndpointContext) =>
     Effect.gen(function* () {
       const userId = yield* browser(ctx);
@@ -1103,9 +969,8 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
         );
       const policyHeader = ctx.headers?.get("x-executor-grant") ?? undefined;
       const settingsHeader = ctx.headers?.get(grantSettingsHeader) ?? undefined;
-      if (named.kind !== "mcp" && settingsHeader !== undefined)
+      if (named.kind === "api" && settingsHeader !== undefined)
         return yield* Effect.fail(new APIError("BAD_REQUEST"));
-      if (named.kind === "desktop") yield* requireNativeClient(ctx, clientId);
       const chosen =
         settingsHeader === undefined
           ? {}
@@ -1133,7 +998,7 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
           new APIError("BAD_REQUEST", { message: "This URL names its own toolkit." }),
         );
       const connectionId =
-        named.kind !== "mcp"
+        named.kind === "api"
           ? undefined
           : bound?.connection !== undefined
             ? bound.connection
@@ -1156,7 +1021,7 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
       if (connection !== undefined && policyHeader !== undefined)
         return yield* Effect.fail(new APIError("BAD_REQUEST"));
       const target: GrantTarget =
-        named.kind !== "mcp"
+        named.kind === "api"
           ? named
           : connection === undefined
             ? { kind: "mcp", mode: chosen.mode ?? named.mode }
@@ -1191,7 +1056,12 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
       const observe = settings.onGrantCreated;
       if (observe !== undefined)
         yield* Effect.tryPromise(() =>
-          observe({ userId, clientId, kind: target.kind, organization }),
+          observe({
+            userId,
+            clientId,
+            kind: target.kind === "mcp" ? "mcp" : "api",
+            organization,
+          }),
         ).pipe(
           Effect.catchCause((cause) => Effect.logWarning("Agent grant was not observed", cause)),
         );
@@ -1205,10 +1075,7 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
   const device = deviceAuthorizationPlugin({
     origin,
     provider: options,
-    accepts: (resource) => {
-      const target = grantTarget(resourceOrigins, [resource]);
-      return target !== undefined && target.kind !== "desktop";
-    },
+    accepts: (resource) => grantTarget(resourceOrigins, [resource]) !== undefined,
     session: browserSession,
     approve: (ctx, request) =>
       Effect.gen(function* () {
@@ -1234,42 +1101,6 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
   });
   const plugin = {
     id: "executor-grants",
-    init: (context: AuthContext) => ({
-      options: {
-        databaseHooks: {
-          session: {
-            update: {
-              after: (row: unknown) =>
-                runAuth(
-                  Effect.gen(function* () {
-                    const session = Schema.decodeUnknownOption(SlidSession)(row);
-                    if (Option.isNone(session)) return;
-                    yield* authCall(() =>
-                      context.adapter.updateMany({
-                        model: "verification",
-                        where: [
-                          {
-                            field: "identifier",
-                            value: `${grantSessionPrefix}${session.value.id}`,
-                          },
-                        ],
-                        update: { expiresAt: session.value.expiresAt },
-                      }),
-                    );
-                  }).pipe(
-                    Effect.catchCause((cause) =>
-                      Effect.logError(
-                        "A session a grant signed in kept its old expiry; revoking the grant may leave it signed in after that expiry",
-                        cause,
-                      ),
-                    ),
-                  ),
-                ),
-            },
-          },
-        },
-      },
-    }),
     schema: {
       mcpGrant: {
         fields: {
@@ -1762,7 +1593,6 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
         catch: () => new OAuthResourceProvisioningFailed(),
       }),
     authenticate: access,
-    bindSession,
     lookupBrowser,
   };
 };

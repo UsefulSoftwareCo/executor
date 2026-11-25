@@ -13,9 +13,8 @@ import {
 import { AppReturnPath, AppSignInCode, AppSignInId } from "apps/ui/auth/contracts";
 import { UiFailed, UiForbidden, UiUnauthorized } from "apps/ui/contracts";
 import { Context, type Effect, Schema } from "effect";
-import { HttpApi, HttpApiEndpoint, HttpApiGroup, HttpApiSchema, OpenApi } from "effect/http-api";
+import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
 import { Principal } from "./auth.ts";
-import { DesktopReadable } from "./authorization.ts";
 import {
   OrganizationForbidden,
   OrganizationId,
@@ -66,19 +65,7 @@ export const AppUiUnavailable = ApiError.define({
 });
 export type AppUiUnavailable = typeof AppUiUnavailable.Type;
 export const AppUiLocation = Schema.Union([
-  Schema.Struct({
-    status: Schema.Literal("ready"),
-    url: HttpUrl,
-    name: Schema.String.annotate({ description: "The app's name, for a window or launcher." }),
-    icon: Schema.Boolean.annotate({
-      description:
-        "Whether the active version has ui/icon.svg, served at <url>/_executor/icon.svg.",
-    }),
-    menuBar: Schema.Boolean.annotate({
-      description:
-        "Whether the active version has ui/menubar.html, a desktop menu-bar page served at <url>/_executor/menubar.",
-    }),
-  }),
+  Schema.Struct({ status: Schema.Literal("ready"), url: HttpUrl }),
   Schema.Struct({
     status: Schema.Literal("unavailable"),
     url: Schema.Null,
@@ -168,48 +155,26 @@ export class HostedAppRuntime extends Context.Service<HostedAppRuntime, Pick<Run
   "hosted/AppRuntime",
 ) {}
 
-export const HostedAppUi = HttpApiGroup.make("appUi")
-  .add(
-    HttpApiEndpoint.get("location", "/api/organizations/:organization/apps/:app/ui", {
-      params: { organization: OrganizationReference, app: AppId },
-      success: AppUiLocation,
-      error: [
-        OrganizationForbidden,
-        StorageError,
-        AppNotFound,
-        AppNotDeployed,
-        VersionNotFound,
-        AppUiAddressInvalid,
-        AppUiUnavailable,
-      ],
-    })
-      .annotate(
-        OpenApi.Description,
-        "Get the canonical private app URL. Fails with AppNotDeployed until the app's first deploy. Returns null when the deployed app has no UI or the host has no app domain. Open the returned URL in a browser to sign in; no separate publish step is needed.",
-      )
-      .annotate(DesktopReadable, true)
-      .middleware(RequireOrganization),
-  )
-  .add(
-    HttpApiEndpoint.get("icon", "/api/organizations/:organization/apps/:app/icon", {
-      params: { organization: OrganizationReference, app: AppId },
-      success: Schema.Uint8Array.pipe(HttpApiSchema.asUint8Array()),
-      error: [
-        OrganizationForbidden,
-        StorageError,
-        AppNotFound,
-        AppNotDeployed,
-        VersionNotFound,
-        AppUiAddressInvalid,
-        AppUiUnavailable,
-      ],
-    })
-      .annotate(
-        OpenApi.Description,
-        "Get the active version's ui/icon.svg for an app the caller can use, for dashboards. Answers 404 when the app has no deployed icon.",
-      )
-      .middleware(RequireOrganization),
-  );
+export const HostedAppUi = HttpApiGroup.make("appUi").add(
+  HttpApiEndpoint.get("location", "/api/organizations/:organization/apps/:app/ui", {
+    params: { organization: OrganizationReference, app: AppId },
+    success: AppUiLocation,
+    error: [
+      OrganizationForbidden,
+      StorageError,
+      AppNotFound,
+      AppNotDeployed,
+      VersionNotFound,
+      AppUiAddressInvalid,
+      AppUiUnavailable,
+    ],
+  })
+    .annotate(
+      OpenApi.Description,
+      "Get the canonical private app URL. Fails with AppNotDeployed until the app's first deploy. Returns null when the deployed app has no UI or the host has no app domain. Open the returned URL in a browser to sign in; no separate publish step is needed.",
+    )
+    .middleware(RequireOrganization),
+);
 export const HostedAppUiApi = HttpApi.make("executor-hosted")
   .add(HostedAppUi)
   .middleware(RequestRejection);

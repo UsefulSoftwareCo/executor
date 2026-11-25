@@ -7,7 +7,6 @@ import { desktopUpdateFeed, desktopUpdateFile, nativePlatform, release } from ".
 import { developerIdMac, unsignedMac } from "./macos-signing.ts";
 import { installNodeRuntime } from "./node-runtime.ts";
 import { smokePackagedCollector } from "./standalone.ts";
-import macUsageDescriptions from "../../apps/local/desktop/assets/mac-usage-descriptions.json" with { type: "json" };
 import {
   DesktopRuntimeBuild,
   desktopRuntimeBuildFile,
@@ -83,13 +82,7 @@ const build = Effect.gen(function* () {
     }),
   );
   yield* run("node", ["apps/local/desktop/scripts/build.mjs", "--release"], root);
-  for (const entry of [
-    "main.cjs",
-    "starter.cjs",
-    "preload-host.cjs",
-    "preload-app.cjs",
-    "preload-menu.cjs",
-  ]) {
+  for (const entry of ["main.cjs", "starter.cjs"]) {
     yield* fs.copyFile(path.join(root, "apps/local/desktop/dist", entry), path.join(stage, entry));
     const bundled = yield* fs.readFileString(path.join(stage, entry));
     for (const development of developmentOnly)
@@ -127,38 +120,20 @@ const build = Effect.gen(function* () {
     electronVersion: electron.devDependencies.electron,
     asar: true,
     npmRebuild: false,
-    files: [
-      "main.cjs",
-      "starter.cjs",
-      "preload-host.cjs",
-      "preload-app.cjs",
-      "preload-menu.cjs",
-      "package.json",
-    ],
-    protocols: [{ name: "Executor apps", schemes: ["executor"] }],
+    files: ["main.cjs", "starter.cjs", "package.json"],
     extraResources: [
       { from: runtime, to: "runtime" },
       { from: path.join(runtime, "node_modules"), to: "runtime/node_modules" },
-      ...(process.platform === "darwin"
-        ? [
-            {
-              from: path.join(root, "apps/local/desktop/dist/launcher-stub"),
-              to: "launcher-stub",
-            },
-          ]
-        : []),
     ],
     directories: { output: artifacts },
     artifactName: `${release.desktop.artifactPrefix}-` + "${version}-${os}-${arch}.${ext}",
     mac: {
       category: "public.app-category.developer-tools",
       target: ["dmg", "zip"],
-      extendInfo: macUsageDescriptions,
       ...signing.mac,
     },
     dmg: { sign: signing.signDiskImages, writeUpdateInfo: false },
     win: { target: ["nsis"] },
-    nsis: { include: path.join(root, "scripts/releases/desktop-uninstall.nsh") },
     linux: {
       executableName: release.desktop.executableName,
       category: "Development",

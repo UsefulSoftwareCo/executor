@@ -12,7 +12,6 @@ export const ConnectedAgentAccess = Schema.Union([
     name: ConnectionName,
   }),
   Schema.Struct({ kind: Schema.Literal("api") }),
-  Schema.Struct({ kind: Schema.Literal("desktop") }),
 ]);
 export type ConnectedAgentAccess = typeof ConnectedAgentAccess.Type;
 

@@ -1,5 +1,0 @@
-{
-  "NSMicrophoneUsageDescription": "Apps you install in Executor use the microphone only after you allow each one.",
-  "NSCameraUsageDescription": "Apps you install in Executor use the camera only after you allow each one.",
-  "NSAudioCaptureUsageDescription": "Apps you install in Executor hear audio playing on this computer only after you allow each one."
-}

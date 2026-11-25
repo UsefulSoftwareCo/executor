@@ -406,8 +406,6 @@ export const DashboardApp = Schema.Struct({
   versions: Schema.Array(VersionSummary),
   canDelete: Schema.Boolean,
   uiUrl: Schema.NullOr(HttpUrl),
-  uiIcon: Schema.Boolean,
-  uiMenuBar: Schema.Boolean,
 });
 export type DashboardApp = typeof DashboardApp.Type;
 
@@ -508,13 +506,6 @@ const dashboardApi = HttpApi.make("local-dashboard").add(
       HttpApiEndpoint.get("app", "/dashboard/api/apps/:app", {
         params: { app: AppId },
         success: DashboardApp,
-        error: [StorageError, AppNotFound],
-      }),
-    )
-    .add(
-      HttpApiEndpoint.get("appIcon", "/dashboard/api/apps/:app/icon", {
-        params: { app: AppId },
-        success: Schema.Uint8Array.pipe(HttpApiSchema.asUint8Array()),
         error: [StorageError, AppNotFound],
       }),
     )

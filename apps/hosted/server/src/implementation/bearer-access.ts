@@ -1,16 +1,11 @@
 import { defaultKeyHasher } from "@better-auth/api-key";
-import {
-  fullAuthority,
-  selectedAuthority,
-  type AuthorizationPolicy,
-} from "@executor-js/authorization";
+import { fullAuthority, type AuthorizationPolicy } from "@executor-js/authorization";
 import {
   ApprovalMode,
   ConnectionId,
   GrantId,
   GrantPolicy,
   grantAuthorization,
-  grantScope,
   grantTarget,
   recordedTarget,
   McpWhoami,
@@ -48,7 +43,6 @@ const forbidden = (reason: McpForbiddenReason, failure: AuthFailureReason) =>
 export interface BearerRequest {
   readonly headers: Headers;
   readonly organization?: OrganizationReference | undefined;
-  readonly desktop?: boolean | undefined;
 }
 
 export interface ApiBearerAccess {
@@ -58,10 +52,7 @@ export interface ApiBearerAccess {
   readonly policy: AuthorizationPolicy;
   readonly key?: { readonly id: typeof ApiKeyId.Type };
   readonly grant?: { readonly id: GrantId };
-  readonly desktop?: true;
 }
-
-const desktopAuthority = selectedAuthority(["discover"], { kind: "all" });
 
 const bearer = (headers: Headers) => headers.get("authorization")?.match(/^Bearer ([^\s]+)$/i)?.[1];
 
@@ -237,7 +228,7 @@ const loadOAuth = (
 const oauthAccess = (
   sql: SqlClient.SqlClient,
   { origin, resourceOrigins }: HostedOAuthOrigins,
-  accepted: readonly GrantTarget["kind"][],
+  kind: "mcp" | "api",
   token: string,
   request: BearerRequest,
 ) =>
@@ -303,11 +294,7 @@ const oauthAccess = (
     const consented = row.consentResources === null ? [] : (strings(row.consentResources) ?? []);
     const audience: GrantTarget | undefined = grantTarget(resourceOrigins, consented);
     if (audience === undefined) return yield* unauthorized("wrong_resource");
-    if (
-      audiences.length !== 1 ||
-      audiences[0] !== consented[0] ||
-      !accepted.includes(audience.kind)
-    )
+    if (audiences.length !== 1 || audiences[0] !== consented[0] || audience.kind !== kind)
       return yield* unauthorized("wrong_resource");
     const record = {
       mode: yield* Schema.decodeUnknownEffect(Schema.NullOr(ApprovalMode))(row.grantMode).pipe(
@@ -319,7 +306,7 @@ const oauthAccess = (
     };
     const target = recordedTarget(record, audience);
     if (target === undefined) return yield* unauthorized("wrong_resource");
-    if (!scopes.includes(grantScope(audience.kind)))
+    if (!scopes.includes(kind === "api" ? "executor" : "mcp"))
       return yield* unauthorized("insufficient_scope");
     const organization = yield* Schema.decodeUnknownEffect(OrganizationId)(row.grantResource).pipe(
       Effect.mapError(() => forbidden("membership", "not_member")),
@@ -352,7 +339,6 @@ const oauthAccess = (
     if (requested !== undefined && requested !== organization)
       return yield* forbidden("organization_mismatch", "organization_mismatch");
     return {
-      kind: audience.kind,
       userId: row.subject,
       clientId: row.tokenClient,
       grant: { id: grantId, policy, target },
@@ -534,7 +520,7 @@ export const mcpBearerAccess = (
     const token = bearer(request.headers);
     if (token === undefined) return yield* noBearer(request.headers);
     if (!isApiKey(token)) {
-      const grant = yield* oauthAccess(sql, origins, ["mcp"], token, request);
+      const grant = yield* oauthAccess(sql, origins, "mcp", token, request);
       return McpAccess.make({
         userId: grant.userId,
         clientId: grant.clientId,
@@ -625,20 +611,12 @@ export const apiBearerAccess = (
             organizationSlug: key.organizationSlug,
           })),
         )
-      : yield* oauthAccess(
-          sql,
-          origins,
-          request.desktop === true ? ["api", "desktop"] : ["api"],
-          token,
-          request,
-        ).pipe(
+      : yield* oauthAccess(sql, origins, "api", token, request).pipe(
           Effect.map((grant) => ({
             userId: grant.userId,
             grant: { id: grant.grant.id },
             access: grant.access,
-            ...(grant.kind === "desktop"
-              ? { policy: desktopAuthority, desktop: true as const }
-              : { policy: grantAuthorization(grant.grant.policy) }),
+            policy: grantAuthorization(grant.grant.policy),
             organizationSlug: grant.organizationSlug,
           })),
         );

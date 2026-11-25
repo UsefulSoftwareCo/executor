@@ -69,7 +69,6 @@ import {
 import { type OrganizationPageReads, useOrganizationRoute } from "../components/organization.tsx";
 import { AppTools } from "./app-tools.tsx";
 import { AppSource, AppVersions } from "./app-source.tsx";
-import { AppDesktopSettings } from "./app-sign-in.tsx";
 
 export const appDetailPageReads: OrganizationPageReads = (organization, params) =>
   Option.match(Schema.decodeUnknownOption(AppId)(params.appId), {
@@ -281,7 +280,6 @@ export function AppDetailPage({
                   <section className="rounded-lg border p-5">
                     <AppAccessSettings app={current.id} />
                   </section>
-                  {canUse && <AppDesktopSettings app={current} />}
                 </AppSettings>
               );
             if (

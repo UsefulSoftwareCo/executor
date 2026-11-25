@@ -117,7 +117,6 @@ const labels: Record<RecoveryAction, string> = {
 };
 
 export const recoveryActions = (recovery: DesktopRecovery) => page(recovery).actions;
-export const recoveryTitle = (recovery: DesktopRecovery) => page(recovery).title;
 
 const escape = (value: string) =>
   value.replace(

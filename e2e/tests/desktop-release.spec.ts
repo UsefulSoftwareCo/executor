@@ -28,12 +28,8 @@ import {
   desktopEvents,
   eventsNamed,
   requestBrowserPairing,
-  choseRunLocally,
-  localWindow,
-  runLocally,
   runnerSession,
   stopBackgroundServers,
-  welcomeWindow,
 } from "../support/desktop.ts";
 import { captureOutput, closeDesktop, closeLimit, quitBound } from "../support/desktop-quit.ts";
 import { authorizeBrowserMcp } from "../support/mcp-oauth.ts";
@@ -158,14 +154,7 @@ it.live("packaged desktop starts without the workspace and retains apps after re
                   ).pipe(Effect.andThen(saveLogs))
                 : Effect.void,
             );
-            if (first) {
-              const welcome = yield* welcomeWindow(electron);
-              yield* driver("capture the first-run welcome window", () =>
-                welcome.screenshot({ path: ".local/releases/desktop-welcome.png" }),
-              );
-              yield* runLocally(electron);
-            }
-            const page = yield* localWindow(electron);
+            const page = yield* driver("desktop window", () => electron.firstWindow());
             yield* driver("desktop opens while its server starts", () =>
               page.getByRole("heading", { name: "Starting Executor", exact: true }).waitFor(),
             );
@@ -505,7 +494,6 @@ it.live(
         yield* fs.makeDirectory(data, { recursive: true });
         yield* fs.makeDirectory(downloads);
         yield* fs.writeFileString(path.join(data, "service.json"), JSON.stringify({ port }));
-        yield* choseRunLocally(path.join(directory, "profile"));
         const env = {
           ...runnerSession(),
           PATH: runtimePath,
@@ -667,7 +655,6 @@ const quitScenarioHome = Effect.gen(function* () {
     EXECUTOR_DESKTOP_PROFILE_DIR: path.join(directory, "profile"),
     EXECUTOR_NPM_REGISTRY: registry.url,
   };
-  yield* choseRunLocally(path.join(directory, "profile"));
   yield* Effect.addFinalizer(() => stopBackgroundServers(data, () => []));
   return { executablePath, directory, data, env };
 });

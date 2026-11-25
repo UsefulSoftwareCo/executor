@@ -4,17 +4,7 @@ import { scenarios } from "./test-plan.ts";
 import { exactly } from "./scenario-parts.ts";
 
 const parts = [
-  [
-    "desktopStarterDeadline",
-    "desktopInstalledApps",
-    "desktopAppPermissions",
-    "desktopAppColdStart",
-    "desktopAppRevocation",
-    "desktopAppIsolation",
-    "desktopAppWindows",
-    "desktopLocalChoice",
-    "desktopAppStates",
-  ],
+  ["desktopStarterDeadline"],
   [
     "desktopMigrationReplaced",
     "desktopMigrationMoved",
@@ -22,11 +12,6 @@ const parts = [
     "desktopReset",
     "desktopSlowStop",
     "desktopClipboard",
-    "desktopAppLifecycle",
-    "desktopInstallLink",
-    "desktopAppOpenAtPath",
-    "desktopAppCapture",
-    "desktopLocalLinks",
   ],
   [
     "desktopMigrationReplacedClosed",
@@ -35,24 +20,19 @@ const parts = [
     "desktopSharedService",
     "desktopResetWithheld",
     "desktopLateLoadFailure",
-    "desktopAppStoreUnreadable",
-    "desktopInstallLinkColdStart",
-    "desktopAppStartAtLogin",
-    "desktopResetFailedStart",
-    "desktopAppDownloads",
   ],
 ] as const satisfies ReadonlyArray<ReadonlyArray<keyof typeof scenarios>>;
 
-const files: ReadonlyArray<string> = ["desktop-recovery.spec.ts", "desktop-apps.spec.ts"];
+const file = "desktop-recovery.spec.ts";
 const listed = parts.flat() as ReadonlyArray<keyof typeof scenarios>;
 const unlisted = Object.entries(scenarios)
-  .filter(([key, scenario]) => files.includes(scenario.file) && !listed.includes(key as never))
+  .filter(([key, scenario]) => scenario.file === file && !listed.includes(key as never))
   .map(([key]) => key);
-const elsewhere = listed.filter((key) => !files.includes(scenarios[key].file));
+const elsewhere = listed.filter((key) => scenarios[key].file !== file);
 const twice = listed.filter((key, index) => listed.indexOf(key) !== index);
 if (unlisted.length + elsewhere.length + twice.length > 0)
   throw new Error(
-    `Each ${files.join(" and ")} scenario belongs to exactly one part in e2e/desktop-recovery.config.ts. Not in a part: ${unlisted.join(", ") || "none"}; not in ${files.join(" or ")}: ${elsewhere.join(", ") || "none"}; in two parts: ${twice.join(", ") || "none"}.`,
+    `Each ${file} scenario belongs to exactly one part in e2e/desktop-recovery.config.ts. Not in a part: ${unlisted.join(", ") || "none"}; not in ${file}: ${elsewhere.join(", ") || "none"}; in two parts: ${twice.join(", ") || "none"}.`,
   );
 
 const part = process.env.EXECUTOR_E2E_DESKTOP_PART;
@@ -68,7 +48,7 @@ if (part !== undefined && selected === undefined)
 export default defineConfig({
   test: {
     update: snapshotUpdate(),
-    include: files.map((file) => `e2e/tests/${file}`),
+    include: ["e2e/tests/desktop-recovery.spec.ts"],
     testTimeout: 180_000,
     fileParallelism: false,
     ...(selected === undefined

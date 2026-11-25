@@ -15,8 +15,7 @@
     "./release-version": "./src/release-version.ts",
     "./release-notes": "./src/release-notes.ts",
     "./legacy-keys": "./src/legacy-keys.ts",
-    "./schema-definitions": "./src/schema-definitions.ts",
-    "./server-identity": "./src/server-identity.ts"
+    "./schema-definitions": "./src/schema-definitions.ts"
   },
   "dependencies": {
     "@effect/platform-node": "4.1.4",

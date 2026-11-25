@@ -18,11 +18,5 @@
          framework's signing chain. -->
     <key>com.apple.security.cs.disable-library-validation</key>
     <true/>
-    <!-- The hardened runtime denies the microphone and camera without these, even to
-         an installed app the person allowed in Executor's own prompt. -->
-    <key>com.apple.security.device.audio-input</key>
-    <true/>
-    <key>com.apple.security.device.camera</key>
-    <true/>
 </dict>
 </plist>

@@ -30,8 +30,6 @@ export {
   McpWhoami,
   mcpWhoamiPath,
   recordedTarget,
-  grantScope,
-  desktopResource,
 } from "./contracts/grant.ts";
 export {
   grantAuthorization,

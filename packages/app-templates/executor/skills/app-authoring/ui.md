@@ -30,10 +30,8 @@ return await tools.executor.appUi.location({
 ```
 
 The response is
-`{ status: "ready", url: "https://<app-slug>.<org-slug>.executor.website", name, icon, menuBar }`
-on Executor Cloud. Self-host uses its configured app domain. `name` is the
-app's name for a window or launcher; `icon` and `menuBar` say whether the active
-version has `ui/icon.svg` and `ui/menubar.html` (see Desktop app below). Use the returned
+`{ status: "ready", url: "https://<app-slug>.<org-slug>.executor.website" }`
+on Executor Cloud. Self-host uses its configured app domain. Use the returned
 URL rather than constructing one. Before the first deploy it fails with
 `AppNotDeployed`. `status: "unavailable"` has `url: null` and a `reason`:
 `"no_ui"` when the active version has no UI, as for tool-only apps, or
@@ -67,7 +65,7 @@ links, `#` fragments and history URLs resolve against the page itself. Each
 activation automatically reloads open pages. SSR, React Server Components and
 public sharing are not part of this version.
 
-`ui/index.html` is the app's main page. Build further screens as React routes:
+An app has one page, `ui/index.html`. Build further screens as React routes:
 any path without a dot serves that page. App responses send
 `Content-Security-Policy: frame-ancestors 'none'`, so no page can be framed,
 not even in an `<iframe>` on the app's own origin.
@@ -82,149 +80,6 @@ served as it is, not compiled. A compiled file may not take the path of a
 public file. Public files support byte ranges and revalidate against their
 content, so media seeks and unchanged files are cheap. Each version serves
 its own files; activating an older version serves its files again.
-
-## Desktop app
-
-People can install an app with a UI as its own app in the Executor desktop app,
-from the app's page in the desktop's dashboard, for local and hosted servers.
-It opens `ui/index.html` in its own window. The files and calls below take
-effect only when the app is installed there; in a browser tab they change
-nothing.
-
-`ui/icon.svg` is the app's icon for its window, launcher and menu bar. It must be
-one well-formed XML `<svg xmlns="http://www.w3.org/2000/svg">` element of at most
-64 KiB, with no DOCTYPE, `<script>`, `<foreignObject>`, `on*` event attribute or
-link outside the icon (an `href` or `xlink:href` other than `#id`), or the deploy
-fails. The app's origin serves it at `/_executor/icon.svg`.
-
-`ui/menubar.html` adds a menu-bar page, which the desktop shows in a popover from
-the app's menu-bar icon. It is its own small entry, built like `ui/index.html`
-with its own module script such as `ui/menubar.tsx`. Share code with the main
-page by importing the same modules; keep the entry small, since it opens on every
-click. The app's origin serves it at `/_executor/menubar` after the usual
-sign-in. To size the popover, add
-`<meta name="executor:menubar" content="width=320, height=360">` to its `<head>`.
-Executor draws nothing inside the popover.
-
-`desktop` from `apps/client` reaches the desktop app:
-
-```tsx
-import { desktop, DesktopPermissionDenied, ShortcutTaken } from "apps/client";
-import { useDesktopShortcut } from "apps/react";
-
-export function SearchShortcut({ onOpen }: { onOpen: () => void }) {
-  const failure = useDesktopShortcut("CommandOrControl+Shift+K", onOpen);
-  if (failure instanceof ShortcutTaken) return <p>Another app uses {failure.accelerator}.</p>;
-  if (failure instanceof DesktopPermissionDenied) return <p>Shortcuts are off for this app.</p>;
-  return null;
-}
-
-export async function showUnread(count: number) {
-  if (!desktop.available) return;
-  try {
-    await desktop.menuBar.setTitle(`${count} unread`);
-    await desktop.window.setFloating(count > 0);
-  } catch (error) {
-    if (!(error instanceof DesktopPermissionDenied)) throw error;
-  }
-}
-```
-
-A window a global shortcut summons, which hides when the person clicks away:
-
-```tsx
-import { desktop } from "apps/client";
-import { useDesktopShortcut, useDesktopWindowEvent } from "apps/react";
-
-export function Summon() {
-  useDesktopShortcut("CommandOrControl+Shift+Space", () => void desktop.window.toggle());
-  useDesktopWindowEvent("blur", () => void desktop.window.hide());
-  return null;
-}
-```
-
-Call hooks such as `useDesktopShortcut` only inside a component. Guard
-imperative calls with `desktop.available` in code that also runs in a browser
-tab, and expect `DesktopPermissionDenied` whenever the person declines.
-
-- `desktop.available` is `true` only in an installed app window or its menu-bar
-  popover.
-- `desktop.permission(name)` resolves `"granted"`, `"denied"`, `"prompt"` or
-  `"unavailable"` without asking. `desktop.requestPermission(name)` asks now if
-  the person has not answered and resolves their choice; use it for
-  `"startAtLogin"`, which nothing else asks for. Names: `"menuBar"`,
-  `"shortcuts"`, `"floating"`, `"startAtLogin"`, `"microphone"`, `"camera"`,
-  `"systemAudio"`, `"clipboardRead"`, `"notifications"` (`desktopPermissions`).
-  `useDesktopPermission(name)` from `apps/react` reads one and reads it again
-  whenever the window gains focus.
-- `desktop.menuBar.setTitle(text)` shows plain text of at most 24 characters
-  (`desktopMenuBarTitleMaxLength`) in the menu bar; `null` restores the app's
-  name.
-- `desktop.shortcuts.register(accelerator, handler)` holds a global shortcut in
-  Electron accelerator syntax and resolves a function that removes it. The
-  shortcut stays held until that function resolves; if it rejects, call it
-  again.
-  `useDesktopShortcut(accelerator, handler)` from `apps/react` holds one while
-  the component is mounted, does nothing outside the desktop, and returns why
-  registering failed, or `undefined`.
-- `desktop.window.show()`, `hide()`, `focus()` and `toggle()` act on the window
-  the page is in. `focus()` shows it and brings it in front of other apps, as a
-  shortcut that summons the app needs; `toggle()` hides a visible, focused
-  window and focuses it otherwise. A hidden window's page keeps running.
-- `desktop.window.onBlur(handler)` and `onFocus(handler)` return a function
-  that stops listening; `useDesktopWindowEvent("blur", handler)` from
-  `apps/react` does the same while mounted. Hide a summoned window when the
-  person clicks away with
-  `useDesktopWindowEvent("blur", () => void desktop.window.hide())`.
-- `desktop.window.open(path, { width?, height?, floating? })` opens another
-  window of the app at a path on its own origin, such as `"/compose?to=ada"`,
-  or focuses the one already showing that path. It has `desktop` too, with the
-  same permissions, and closes when the app quits. An app has at most 8 others
-  open (`desktopMaximumWindows`); `floating` needs the `floating` permission.
-- `desktop.window.setFloating(on)` keeps the app's window above other windows.
-- `desktop.badge.set(count)` shows a whole number up to 99999 on the app's
-  icon; `null` or 0 removes it, and `useDesktopBadge(count)` from `apps/react`
-  shows it while mounted. On Windows the count is on the app's own taskbar
-  button. On macOS and Linux installed apps share Executor's Dock or launcher
-  icon, which shows the sum of every app's count. It needs no permission.
-- `desktop.audio.system()` resolves an audio-only `MediaStream` of everything
-  playing on the computer, such as the other people in a call, after the
-  `systemAudio` permission. Stop its tracks when done. It works on Windows and
-  macOS 13 or later; elsewhere `systemAudio` is `"unavailable"` and the call
-  rejects with `DesktopUnavailable`. On macOS it rejects with
-  `SystemAudioBlocked` until the person turns Executor on in System Settings ›
-  Privacy & Security › Screen & System Audio Recording; the desktop has already
-  offered to open that page.
-
-Each capability is off until the app first uses it. The desktop then asks the
-person once and keeps the answer for the app, across versions, until they change
-it in the tray menu, the app window's menu or the Desktop section of the app's
-Settings page. Failures reject with classes to check with `instanceof`:
-`DesktopUnavailable` outside an installed window, `DesktopPermissionDenied` when
-the person declined, `ShortcutTaken` when another program holds the keys,
-`DesktopInvalidInput` for input such as a title that is too long, and
-`SystemAudioBlocked` as above. Outside the desktop `permission` and
-`requestPermission` resolve `"unavailable"` and every other call rejects with
-`DesktopUnavailable`, so check `desktop.available` in code that also runs in a
-browser tab.
-
-Standard web APIs need the matching permission in the desktop and behave as in
-a browser tab elsewhere:
-
-- `navigator.mediaDevices.getUserMedia({ audio: true })` needs `microphone`,
-  and `{ video: true }` needs `camera`. On macOS the system asks once more, for
-  Executor. Revoking either reloads the app's windows, which ends any recording.
-- `navigator.clipboard.readText()` needs `clipboardRead`; writing needs nothing.
-- `new Notification(title, { body, data: { path } })` needs `notifications`.
-  When the person clicks it, the desktop focuses the app's window and, with
-  `data.path`, opens that path on the app's origin.
-- `<a download>` and blob downloads ask where to save, starting in Downloads,
-  as a browser does. `showSaveFilePicker()` needs no permission.
-
-`startAtLogin` opens the app without a window each time the person logs in, so
-it can hold shortcuts or a menu-bar item. A link
-`executor://app/<server>/<app>/<path>?<query>` opens the installed app at that
-path.
 
 ## Hook result
 

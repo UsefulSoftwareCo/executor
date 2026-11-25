@@ -42,7 +42,6 @@
     "micromark-extension-gfm": "3.0.0",
     "oauth4webapi": "3.8.8",
     "parse5": "8.0.0",
-    "saxes": "6.0.0",
     "tailwindcss": "4.3.3",
     "tailwindcss-iso": "1.0.7",
     "ws": "8.21.0"

@@ -142,7 +142,6 @@ export interface DashboardBindings {
   readonly catalogIcons: Atom.Atom<CatalogIcons>;
   readonly AppLink: ComponentType<AppLinkProps>;
   readonly AccountLink: ComponentType<AccountLinkProps>;
-  readonly appIconUrl?: ((app: App) => string | undefined) | undefined;
 }
 
 export const accountNeedsSignIn = (account: AccountSummary, now = Date.now()) =>

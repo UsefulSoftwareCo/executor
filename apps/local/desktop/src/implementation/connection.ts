@@ -1,7 +1,6 @@
 import * as NodeHttpClient from "@effect/platform-node/NodeHttpClient";
 import {
   Clock,
-  Deferred,
   Duration,
   Effect,
   Fiber,
@@ -98,10 +97,6 @@ const windowPairing = (service: RunningService, origin: string) =>
 const desktopReturns = (service: RunningService) =>
   HttpApiClient.make(DesktopReturnApi, asService(service));
 
-export type StartOutcome =
-  | { readonly kind: "ready" }
-  | { readonly kind: "recovery"; readonly recovery: DesktopRecovery };
-
 export const makeConnection = (options: {
   readonly directory: string;
   readonly runtime: ServiceRuntime;
@@ -120,9 +115,6 @@ export const makeConnection = (options: {
     const lock = yield* Semaphore.make(1);
     const following = yield* Ref.make(Option.none<Fiber.Fiber<void>>());
     const current = yield* Ref.make(Option.none<RunningService>());
-    const outcome = yield* Ref.make(yield* Deferred.make<StartOutcome>());
-    const settle = (value: StartOutcome) =>
-      Effect.flatMap(Ref.get(outcome), (deferred) => Deferred.succeed(deferred, value));
     const replaced = yield* Ref.make(false);
 
     const lost = (service: RunningService) =>
@@ -211,7 +203,6 @@ export const makeConnection = (options: {
         const pairing = yield* windowPairing(service, origin);
         yield* Ref.set(current, Option.some(service));
         yield* options.onReady({ service, origin, pairing });
-        yield* settle({ kind: "ready" });
         const loss = yield* Effect.raceFirst(lost(service), returns(service)).pipe(
           Effect.ensuring(Ref.set(current, Option.none())),
         );
@@ -241,17 +232,13 @@ export const makeConnection = (options: {
                 ...("detail" in recovery ? { detail: recovery.detail } : {}),
               }),
             );
-            yield* settle({ kind: "recovery", recovery });
             return yield* options.onRecovery(recovery);
           }
           yield* Effect.logWarning("Could not pair with the background Executor", outcome.failure);
         }
         const now = yield* Clock.currentTimeMillis;
         losses = [...losses.filter((at) => now - at < Duration.toMillis(lossWindow)), now];
-        if (losses.length >= lossLimit) {
-          yield* settle({ kind: "recovery", recovery: { stage: "crash-loop" } });
-          return yield* options.onRecovery({ stage: "crash-loop" });
-        }
+        if (losses.length >= lossLimit) return yield* options.onRecovery({ stage: "crash-loop" });
         yield* Effect.sleep(reconnectDelay);
       }
     }).pipe(Effect.provideContext(services));
@@ -262,13 +249,11 @@ export const makeConnection = (options: {
     });
     const begin = Effect.gen(function* () {
       yield* halt;
-      yield* Ref.set(outcome, yield* Deferred.make<StartOutcome>());
       yield* Ref.set(following, Option.some(yield* Effect.forkIn(follow, scope)));
     });
 
     return {
       start: lock.withPermit(begin),
-      started: Effect.flatMap(Ref.get(outcome), Deferred.await),
       current: Ref.get(current),
       pairWindow: Effect.gen(function* () {
         const service = yield* Ref.get(current);

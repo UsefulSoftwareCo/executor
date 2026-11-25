@@ -3,7 +3,7 @@ import { previewActivity } from "./infrastructure/preview-activity.ts";
 import { previewLifetime } from "./infrastructure/test-stage-expiry.ts";
 import { appSessionCookie, hostedAppUi, appAddresses } from "@executor-js/hosted-server/app-ui";
 import { appPrivateHeaders, appSignInCallbackPath } from "apps/ui/auth";
-import { AppUiApi, appIconRoute, appMenuBarRoute } from "apps/ui/contracts";
+import { AppUiApi } from "apps/ui/contracts";
 import { AlchemyContext } from "alchemy/AlchemyContext";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { Config, Effect, Layer, Option } from "effect";
@@ -86,8 +86,6 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
       HttpRouter.add("GET", appSignInCallbackPath, appUi.callback),
       HttpRouter.add("GET", "/_executor/assets/:version/*", appUi.asset),
       HttpRouter.add("GET", "/_executor/version", appUi.versions),
-      HttpRouter.add("GET", appMenuBarRoute, appUi.menuBar),
-      HttpRouter.add("GET", appIconRoute, appUi.icon),
       HttpRouter.add("POST", "/_executor/api/telemetry/traces", appUi.telemetry("traces")),
       HttpRouter.add("POST", "/_executor/api/telemetry/logs", appUi.telemetry("logs")),
       HttpRouter.add("GET", "*", appUi.page),

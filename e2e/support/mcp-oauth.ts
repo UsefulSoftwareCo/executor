@@ -358,7 +358,7 @@ const make = Effect.gen(function* () {
       Effect.mapError(() => new OAuthFailed({ operation: "resource discovery", status: 0 })),
     );
   const authorizeClient = <E = never, R = never>(
-    kind: "mcp" | "api" | "desktop",
+    kind: "mcp" | "api",
     connection?: string,
     resourceParameter: "sent" | "omitted" = "sent",
     client: ClientOptions = e2eClient,
@@ -367,10 +367,9 @@ const make = Effect.gen(function* () {
   ) =>
     Effect.gen(function* () {
       const query = connection === undefined ? "" : `?connection=${encodeURIComponent(connection)}`;
-      const resourcePath = kind === "desktop" ? "api/desktop" : kind;
-      const resourceUrl = `${resourceOrigin}/${resourcePath}${query}`;
+      const resourceUrl = `${resourceOrigin}/${kind}${query}`;
       yield* browser.omitNetworkTrace;
-      const discoveryPath = `/.well-known/oauth-protected-resource/${resourcePath}${query}`;
+      const discoveryPath = `/.well-known/oauth-protected-resource/${kind}${query}`;
       const resource = yield* discoverAt(resourceOrigin, discoveryPath);
       yield* ok("resource discovery", resource.status);
       const metadata = yield* body(
@@ -447,7 +446,7 @@ const make = Effect.gen(function* () {
           });
         }).pipe(Effect.orDie),
       );
-      const scope = `${kind === "api" ? "executor" : kind}${client.offlineAccess ? " offline_access" : ""}`;
+      const scope = `${kind === "mcp" ? "mcp" : "executor"}${client.offlineAccess ? " offline_access" : ""}`;
       const resourceField: Record<string, string> =
         resourceParameter === "sent" ? { resource: resourceUrl } : {};
       const authorization = new URL(endpoints.authorization_endpoint);
@@ -492,13 +491,7 @@ const make = Effect.gen(function* () {
           yield* browser.use("Consent states the requested access", (page) =>
             consentValue(page, "Access"),
           ),
-        ).toBe(
-          kind === "api"
-            ? "Executor API"
-            : kind === "desktop"
-              ? "Your Executor account"
-              : "All apps",
-        );
+        ).toBe(kind === "api" ? "Executor API" : "All apps");
       } else {
         const listed = yield* api.request(
           actors.owner,
@@ -591,7 +584,7 @@ const make = Effect.gen(function* () {
       ),
     );
   const authorize = <E = never, R = never>(
-    kind: "mcp" | "api" | "desktop",
+    kind: "mcp" | "api",
     connection?: string,
     resourceParameter: "sent" | "omitted" = "sent",
     client: ClientOptions = e2eClient,
@@ -608,10 +601,6 @@ const make = Effect.gen(function* () {
   return {
     authorize: authorize("mcp"),
     authorizeApi: authorize("api"),
-    authorizeDesktop: authorize("desktop", undefined, "sent", {
-      name: "Executor desktop",
-      offlineAccess: true,
-    }),
     authorizeWithoutResource: authorize("mcp", undefined, "omitted"),
     authorizeConnection: (connection: string) => authorize("mcp", connection),
     authorizeReviewing: <E, R>(review: Effect.Effect<void, E, R>, connection?: string) =>

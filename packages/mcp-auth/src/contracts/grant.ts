@@ -27,12 +27,8 @@ export type McpAddress = typeof McpAddress.Type;
 export const GrantTarget = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("mcp"), ...McpAddress.fields }),
   Schema.Struct({ kind: Schema.Literal("api") }),
-  Schema.Struct({ kind: Schema.Literal("desktop") }),
 ]);
 export type GrantTarget = typeof GrantTarget.Type;
-export const grantScope = (kind: GrantTarget["kind"]) =>
-  kind === "mcp" ? "mcp" : kind === "api" ? "executor" : "desktop";
-export const desktopResource = (resourceOrigin: string) => `${resourceOrigin}/api/desktop`;
 export const Grant = Schema.Struct({ id: GrantId, policy: GrantPolicy, target: GrantTarget });
 export type Grant = typeof Grant.Type;
 
@@ -80,7 +76,7 @@ export const recordedTarget = (
 ): GrantTarget | undefined => {
   const connection = record.connection ?? undefined;
   const mode = record.mode ?? undefined;
-  if (consented.kind !== "mcp")
+  if (consented.kind === "api")
     return mode === undefined && connection === undefined ? consented : undefined;
   if (mode === undefined) return connection === consented.connection ? consented : undefined;
   return connection === undefined ? { kind: "mcp", mode } : { kind: "mcp", mode, connection };
@@ -131,11 +127,10 @@ export const mcpOAuthResources = (mcpOrigins: OriginList, connection?: Connectio
 /**
  * RFC 8707 makes `resource` optional. A request that names none is for the plain MCP URL
  * that discovery advertises, in its original model mode: no approval mode or connection is
- * implied. API and desktop authority are never a default; a request for the `executor` or
- * `desktop` scope has none.
+ * implied. API authority is never a default; a request for the `executor` scope has none.
  */
 export const defaultResource = (mcpOrigin: string, scope: string | undefined) =>
-  scope?.split(" ").some((item) => item === "executor" || item === "desktop") === true
+  scope?.split(" ").includes("executor") === true
     ? undefined
     : mcpResource(mcpOrigin, { mode: "model" });
 export const grantTarget = (
@@ -148,8 +143,6 @@ export const grantTarget = (
   const url = URL.parse(resource);
   if (url === null) return undefined;
   if (origins.api.includes(url.origin) && resource === `${url.origin}/api`) return { kind: "api" };
-  if (origins.api.includes(url.origin) && resource === desktopResource(url.origin))
-    return { kind: "desktop" };
   const legacy = legacyMcpTarget(origins, resource);
   if (legacy !== undefined) return { kind: "mcp", mode: legacy.mode };
   if (!origins.mcp.includes(url.origin) || url.pathname !== "/mcp") return undefined;

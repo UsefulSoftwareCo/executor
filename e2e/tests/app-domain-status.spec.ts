@@ -49,9 +49,7 @@ layer(HostedLive, { excludeTestServices: true })("App domain readiness", (it) =>
                 json:
                   status === "too_long"
                     ? { _tag: "AppUiAddressInvalid", reason: "too_long" }
-                    : status === "ready"
-                      ? { status, url, name: "Domain status", icon: false, menuBar: false }
-                      : { status, url: null },
+                    : { status, url: status === "ready" ? url : null },
               });
             },
           ),

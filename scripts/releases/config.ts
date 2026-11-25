@@ -5,7 +5,6 @@ import {
   type ReleaseChannel,
 } from "@executor-js/utils/release-version";
 import manifest from "../../apps/cli/package.json" with { type: "json" };
-import { desktopDownloadTargets } from "../../packages/ui/src/contracts/desktop-download.ts";
 
 export {
   compareReleaseVersions,
@@ -115,16 +114,6 @@ export const desktopAssetSuffix = (target: Platform): string => {
   const arch = target.extension === "AppImage" && target.arch === "x64" ? "x86_64" : target.arch;
   return `-${target.desktopOs}-${arch}.${target.extension}`;
 };
-
-const unlisted = platforms.filter(
-  (target, index) =>
-    desktopDownloadTargets[index]?.os !== `${target.desktopOs}-${target.arch}` ||
-    desktopDownloadTargets[index]?.asset !== desktopAssetSuffix(target),
-);
-if (unlisted.length > 0 || desktopDownloadTargets.length !== platforms.length)
-  throw new Error(
-    "desktopDownloadTargets in packages/ui/src/contracts/desktop-download.ts must list each desktop platform's installer in the order of platforms.",
-  );
 
 export const desktopAsset = (target: Platform): string =>
   `${release.desktop.artifactPrefix}-${release.version}${desktopAssetSuffix(target)}`;

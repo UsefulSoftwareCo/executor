@@ -3,14 +3,8 @@ import { CurrentTelemetryConfig } from "@executor-js/telemetry";
 import { Effect, Option, Schema, Stream } from "effect";
 import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import {
-  appUiDocuments,
-  appUiIcon,
-  AppUiPagesManifest,
-  appUiPagesAsset,
-  type AppUiPages,
   UiContext,
   UiFailed,
-  type AppUiDocument,
   UiForbidden,
   type AppUiAsset,
   type AppUiRange,
@@ -43,7 +37,7 @@ export const appFile = <E, R>(options: {
     );
     const path = Option.getOrUndefined(assetPath(pathname.slice(1)));
     const file =
-      pathname === "/" || path === undefined || hostOwned(path)
+      pathname === "/" || path === undefined || path === "index.html"
         ? undefined
         : yield* options.asset(path);
     if (file !== undefined && "body" in file)
@@ -66,8 +60,6 @@ export const appFile = <E, R>(options: {
  */
 export const appDocument = <E, R>(options: {
   readonly version: string;
-  /** Which of the app's pages to render; the main page when absent. */
-  readonly document?: AppUiDocument | undefined;
   /** The account IDs the page runs with, by requirement. */
   readonly accountIds?: Readonly<Record<string, readonly string[]>> | undefined;
   readonly accounts?: UiAccountNotice | undefined;
@@ -81,15 +73,12 @@ export const appDocument = <E, R>(options: {
         contentType: "text/html",
         headers: appPrivateHeaders,
       });
-    const document = yield* options.asset(appUiDocuments[options.document ?? "main"].asset);
+    const document = yield* options.asset("index.html");
     if (document === undefined || !("body" in document))
-      return HttpServerResponse.text(
-        options.document === "menuBar" ? "This app has no menu-bar page." : "This app has no UI.",
-        {
-          status: 404,
-          headers: appPrivateHeaders,
-        },
-      );
+      return HttpServerResponse.text("This app has no UI.", {
+        status: 404,
+        headers: appPrivateHeaders,
+      });
     const context = JSON.stringify(
       Schema.encodeSync(UiContext)({ version: options.version, accounts: options.accountIds }),
     ).replaceAll("<", "\\u003c");
@@ -138,54 +127,6 @@ export const storedAppFile = <E1, E2>(
   };
 };
 
-/** Retained files only the host serves, through their own routes: the pages and the icon. */
-const hostOwned = (path: string) => path === "index.html" || path.startsWith("_executor/");
-
-/**
- * The app's icon. The response forbids scripts and outside loads, so opening the URL shows only
- * the drawing; desktops render it as an image, which runs nothing either.
- */
-export const appIcon = (asset: AppUiAsset | undefined, build: string) =>
-  Effect.gen(function* () {
-    if (asset === undefined)
-      return HttpServerResponse.empty({ status: 404, headers: appPrivateHeaders });
-    const headers = {
-      ...appPrivateHeaders,
-      "content-security-policy":
-        "default-src 'none'; style-src 'unsafe-inline'; form-action 'none'; frame-ancestors 'none'",
-    };
-    if (!("body" in asset)) return yield* storedFile(asset, "private, no-cache", headers);
-    const request = yield* HttpServerRequest.HttpServerRequest;
-    const etag = `W/"${encodeURIComponent(build)}/${encodeURIComponent(appUiIcon.asset)}"`;
-    const cached = { ...headers, "cache-control": "private, no-cache", vary: "Cookie", etag };
-    return etagMatches(request.headers["if-none-match"], etag)
-      ? HttpServerResponse.empty({ status: 304, headers: cached })
-      : HttpServerResponse.uint8Array(asset.body, {
-          contentType: "image/svg+xml",
-          headers: cached,
-        });
-  });
-
-/**
- * What a version's retained UI has, from its pages manifest, or from its main page for a build
- * that predates the manifest.
- */
-export const appUiPages = <E, R>(
-  asset: (path: string) => Effect.Effect<AppUiAsset | undefined, E, R>,
-): Effect.Effect<AppUiPages, E | UiFailed, R> =>
-  Effect.gen(function* () {
-    const manifest = yield* asset(appUiPagesAsset);
-    if (manifest !== undefined) {
-      if (!("body" in manifest)) return yield* new UiFailed({ reason: "unavailable" });
-      const pages = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(AppUiPagesManifest))(
-        new TextDecoder().decode(manifest.body),
-      ).pipe(Effect.mapError(() => new UiFailed({ reason: "unavailable" })));
-      return { main: true, ...pages };
-    }
-    const main = yield* asset(appUiDocuments.main.asset);
-    return { main: main !== undefined, menuBar: false, icon: false };
-  });
-
 /** The file a URL path names: each segment percent-decoded, or none when one does not decode. */
 export const assetPath = (path: string) =>
   Option.liftThrowable(() => path.split("/").map(decodeURIComponent).join("/"))();
@@ -230,16 +171,12 @@ const requestedRange = (
  * Stream a stored file. Its ETag names its exact bytes, so a conditional request needs no read.
  * Single byte ranges are served for media seeking and resumed downloads.
  */
-const storedFile = (
-  file: AppUiStoredFile,
-  cacheControl: string,
-  base: Readonly<Record<string, string>> = appPrivateHeaders,
-) =>
+const storedFile = (file: AppUiStoredFile, cacheControl: string) =>
   Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
     const etag = `"${file.etag}"`;
     const headers = {
-      ...base,
+      ...appPrivateHeaders,
       "cache-control": cacheControl,
       vary: "Cookie",
       etag,
@@ -281,7 +218,7 @@ const storedFile = (
  */
 export const appAsset = (asset: AppUiAsset | undefined, build: string, path: string) =>
   Effect.gen(function* () {
-    if (asset === undefined || hostOwned(path))
+    if (asset === undefined || path === "index.html")
       return HttpServerResponse.empty({ status: 404, headers: appPrivateHeaders });
     const immutable = "private, max-age=31536000, immutable";
     if (!("body" in asset)) return yield* storedFile(asset, immutable);

@@ -170,9 +170,6 @@ const hasData = (directory: string) =>
     names.some((name) => name === "installation.json" || isDatabase(name)),
   );
 
-export const holdsData = (directory: string) =>
-  hasData(directory).pipe(Effect.orElseSucceed(() => true));
-
 type Entry =
   | { readonly kind: "directory"; readonly path: string; readonly mode: number }
   | { readonly kind: "file"; readonly path: string; readonly mode: number; readonly size: bigint }
