@@ -20,6 +20,10 @@ const steps: ReadonlyArray<readonly [name: string, command: string]> = [
   ["Executor skill texts", "node packages/app-templates/scripts/executor-intro.ts --check"],
   ["no tests outside e2e", "node scripts/check-no-unit-tests.ts"],
   ["storage versions", "node packages/sdk/scripts/check-storage-versions.ts"],
+  [
+    "a cut build read holds up no later load",
+    "node apps/hosted/cloud/scripts/check-build-read-holder.ts",
+  ],
   ["local data steps", "node scripts/check-local-data-steps.ts"],
   ["e2e boundary", "node e2e/check-boundary.ts"],
 ];
