@@ -383,7 +383,7 @@ const checkBranch = (
     }
     if (notes.length > 0)
       yield* Console.log(
-        'Who a note is for is the writer\'s call: see "Who a note is for" in RELEASING.md.',
+        'Who a note is for is the writer\'s call: see "Release notes" in RELEASING.md.',
       );
     if (problems.length > 0)
       return yield* new ReleaseNotesFailed({

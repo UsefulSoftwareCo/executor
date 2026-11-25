@@ -1872,11 +1872,14 @@ layer(NodeServices.layer, { excludeTestServices: true })("Release notes", (it) =
             `  Shown to: Cloud, CLI and desktop, Self-host, the products this change reaches ${reached}.`,
             `  If the users of one of them would not notice it, ${change}`,
             `  Hash: ${hash("The skills page loads faster.")}`,
-            'Who a note is for is the writer\'s call: see "Who a note is for" in RELEASING.md.',
+            'Who a note is for is the writer\'s call: see "Release notes" in RELEASING.md.',
             "",
           ].join("\n"),
         );
         expect(hash(desktop)).toBe("e393b4780407fa27");
+        const section = /see "([^"]+)" in RELEASING\.md/u.exec(checked.stdout)?.[1];
+        expect(section).toBeDefined();
+        expect((yield* fs.readFileString("RELEASING.md")).split("\n")).toContain(`## ${section}`);
 
         const toolBase = yield* git(repos.main, "rev-parse", "HEAD");
         yield* write("scripts/tool.ts", "tool, again\n");
