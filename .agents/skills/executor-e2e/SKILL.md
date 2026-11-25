@@ -1,104 +1,30 @@
 ---
 name: executor-e2e
-description: Add and run focused end-to-end coverage for Executor application features, bug fixes, and behavior-preserving refactors. Use the existing real-server suite and evidence reports. Documentation and cosmetic-only edits do not need new scenarios.
+description: Add and run focused end-to-end coverage for Executor application features, bug fixes, and behavior-preserving refactors. Documentation and cosmetic-only edits do not need new scenarios.
 ---
 
-# Verify the feature through the product
+# Verify through E2E
 
-Read [the suite guide](../../../e2e/README.md) and the nearest relevant scenario
-before writing a test. Follow the project's [engineering guidance](../../../notes/coding-style.md).
-Keep verification proportional to the requested change; respect explicit prototype
-or discussion-only limits.
+Read [e2e/README.md](../../../e2e/README.md) and the nearest scenario before writing a test. Follow [coding style](../../../notes/coding-style.md). All tests live in `e2e/` — unit tests are banned everywhere else.
 
-The only tests in this repository live in `e2e/`. Unit tests are banned; never
-add a test file or `test/` directory anywhere else. Write or extend an E2E
-scenario instead.
+## What to prove
 
-## Choose what the test must prove
+- Trace the changed behavior to a real user journey or public API caller and add/extend the smallest scenario that proves it.
+- For async UI, assert behavior across loading, failure, retry, and navigation transitions — and verify drafts/selections/dialogs survive refresh errors.
+- Prove a new assertion fails against the unfixed code (or a temporary violation) before reporting it green.
 
-Trace the changed behavior to a real user journey or public API caller. Identify
-the observable outcome before editing the implementation. Add or extend the
-smallest scenario that proves it; reuse existing coverage when it already does.
+## Boundary & conventions
 
-For asynchronous UI, exercise a user interaction across the loading, failure,
-retry, or navigation transitions relevant to the change. Assert the required
-behavior at those checkpoints. A final screenshot or successful request alone
-does not prove the intermediate behavior. Choose the journey from the actual
-callers of the changed code, not merely a nearby page that is easy to test.
+- Scenarios live in `e2e/tests/` and must be registered in `e2e/test-plan.ts`.
+- Use `@effect/vitest` (`layer`, `it.effect`) and injected services in `e2e/support/`. Never import product implementations, replace internal services, use Playwright's test runner, or wrap whole tests in `Effect.promise`.
+- Wait on observable events (never arbitrary sleeps); release request holds in Effect scopes.
+- Run only managed local targets with isolated ports/data; never run against shared stages or production.
 
-When the affected view owns a draft, selection, or open dialog, carry that state
-through the relevant transition and assert it survives. Keep intentional resets
-when the user changes resources. See [the refresh scenarios](../../../e2e/tests/query-refresh.spec.ts)
-and [local live-read scenarios](../../../e2e/tests/local-query-state.spec.ts) for
-examples through actual product surfaces.
+## Run & report
 
-Check that the new assertion can reject the behavior it is meant to prevent.
-For a bug fix, run it against the unfixed code. For a feature or refactor, use a
-small, temporary violation of the selected requirement when practical. Restore
-the intended implementation, rebuild affected assets, and rerun the scenario.
-Record the failing assertion; a setup error or unrelated timeout is not proof.
-
-Review coverage separately from implementation: compare the required behavior
-with the assertions that actually ran. If a transition cannot be reached, keep
-that gap explicit. Replacing it with an easier state does not verify the original
-requirement, even when the narrower test passes.
-
-## Use the existing boundary
-
-Scenarios live in `e2e/tests/`; register new scenarios and their target applicability
-in `e2e/test-plan.ts`. Use `@effect/vitest` and the existing injected services in
-`e2e/support/`. Keep browser SDK calls inside `Browser.use` or focused adapters.
-Do not add a second runner, import application implementations, replace internal
-services, or weaken the boundary checker.
-
-Use real servers, synthetic actors, and public HTTP, MCP, or browser interactions.
-Control slow or failed requests at the external boundary when the scenario needs
-them. Wait for observable events instead of arbitrary sleeps. Effect scopes must
-release request holds and clean up resources, including on assertion failure.
-Confirm that an intercepted request actually arrived before asserting its pending
-state. Hosted reads can change from a URL slug to a verified organization ID;
-the [query transition helper](../../../e2e/support/query-transition.ts) accepts both paths.
-
-Use a managed local target for ordinary development. Shared environments,
-deployments, and production data are not test fixtures. Each working area owns
-its ports, test data, and subprocesses; do not stop another worker's services.
-
-## Execute and retain evidence
-
-Build the assets the scenario serves. For self-host and local targets, run
-`bun run e2e:prepare` after application changes. Run the relevant named scenario,
-for example `bun run e2e:self-host --test-name '<scenario name>'`. Follow the suite
-guide for Cloud and other prerequisites; run only the targets the change needs.
-
-`bun run e2e:check` and `bun run check` validate test code but do not execute the
-browser journeys. Inspect the run's actual scenario count and outcome so a
-filtered-out test cannot be reported as passing.
-
-For loading or layout changes, use the existing [storyboard workflow](../../../notes/ui-state-exploration.md)
-and review relevant captured states. Screenshots explain the result; assertions
-make behavioral regressions fail automatically.
-
-Report the commands and scenario that ran, the outcome, the saved evidence path,
-and any behavior or target left unverified. Diagnose failures within the task's
-scope; do not skip cases, loosen assertions, or call a blocked run a pass.
-A later run in the same workspace prunes run folders under `.local/e2e` (after three days;
-sooner for passed runs past the newest five, or past 3 GB), so copy evidence you must keep
-outside any `.local/e2e`.
-
-## Select the scenarios CI runs
-
-A pull request runs only the E2E spec files its description selects in a fenced
-`e2e` block; `main` runs everything. Follow [the CI section](../../../AGENTS.md#choosing-a-prs-e2e-scenarios)
-of AGENTS.md. List every spec file that exercises the changed code's callers, not
-only the one you edited. Use `none` only when no scenario can observe the change.
-Use `all` only for the harness, toolchain, lockfile or workflows, and write the
-reason after it (`all: changes the lockfile`).
-
-## Remove tests that do not earn their cost
-
-Tests are not sacred. Every scenario costs CI time and can fail for reasons
-unrelated to a change. When a scenario no longer proves behavior a user or
-public API caller depends on, or another scenario already proves it, delete it
-and its `test-plan.ts` entry. Record what it covered and why that coverage is
-not needed. A flaky scenario that still guards real behavior is fixed, not
-deleted: find the race in the product or in the scenario's waits.
+- Build served assets first (`bun run e2e:prepare` for local/self-host), then run only named scenarios:
+  `bun run e2e:self-host --test-name '<scenario name>'`
+- Inspect the actual executed scenario count so a zero-match filter is never reported green.
+- Report commands run, scenario outcomes, evidence path (`.local/e2e` prunes older runs), and anything unverified.
+- Select all caller spec files in the PR's fenced ` ```e2e ` block (see [AGENTS.md](../../../AGENTS.md#prs-releases--workflow)).
+- Delete obsolete scenarios (with their `test-plan.ts` entry) when they no longer guard real behavior. Fix flakes — never skip, retry, or pad deadlines.
