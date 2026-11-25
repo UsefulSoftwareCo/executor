@@ -130,6 +130,7 @@ const main = Effect.gen(function* () {
   const configured = yield* Semaphore.make(1);
   let auth: ReturnType<typeof testAccountAuth> | undefined;
   let pool: Pool | undefined;
+  let configuredSetup: string | undefined;
   const owned = new Map<
     string,
     {
@@ -171,6 +172,15 @@ const main = Effect.gen(function* () {
     Effect.gen(function* () {
       const request = yield* HttpServerRequest.HttpServerRequest;
       const input = yield* request.json.pipe(Effect.flatMap(Schema.decodeUnknownEffect(Setup)));
+      const setup = JSON.stringify([
+        input.origin,
+        input.stage,
+        Redacted.value(input.database),
+        Redacted.value(input.secret),
+        input.databaseName,
+        input.databaseUsername,
+      ]);
+      if (pool !== undefined && configuredSetup === setup) return { ready: true };
       if (pool !== undefined || input.origin !== origin)
         return yield* new TestAccountFailed({ stage: "configuration" });
       const url = new URL(Redacted.value(input.database));
@@ -205,6 +215,7 @@ const main = Effect.gen(function* () {
         database,
         cookiePrefix: cloudSessionCookiePrefix(origin),
       });
+      configuredSetup = setup;
       return { ready: true };
     }),
   );
