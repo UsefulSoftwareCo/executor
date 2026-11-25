@@ -11941,6 +11941,18 @@ export const scenarios = plan({
       local: na("Its app fetches a loopback service, which only self-host lets app code reach."),
     },
   },
+  mcpSkillsExtensionLoadsTogether: {
+    managementApps: ["owner"],
+    fixtures: "actors",
+    file: "mcp-skills-extension.spec.ts",
+    title:
+      "A Skills extension listing waits once for all its apps, and the loads still waiting for their turn finish after it and are served by a later listing",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Its apps fetch a loopback service, which only self-host lets app code reach."),
+      local: na("Its apps fetch a loopback service, which only self-host lets app code reach."),
+    },
+  },
   localMcpSkillsExtension: {
     file: "mcp-skills-extension.spec.ts",
     title:

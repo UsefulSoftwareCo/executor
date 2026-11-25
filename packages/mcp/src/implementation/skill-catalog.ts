@@ -1,4 +1,4 @@
-import { Clock, Effect, Fiber, Option, Schema } from "effect";
+import { Clock, Effect, Fiber, Option, Schema, Semaphore } from "effect";
 import { McpSchema, type McpServer } from "effect/ai";
 import {
   AccountRequired,
@@ -15,8 +15,9 @@ import { skillAccounts } from "./skills.ts";
 
 const scheme = "skill://";
 
-export const skillListingAppMillis = 5_000;
+export const skillListingMillis = 5_000;
 const skillLoadMillis = 60_000;
+const listingLoads = defaultMcpRuntimeLimits.discoveryConcurrency;
 
 type ListedApp = Pick<App, "id" | "name" | "slug" | "activeVersion">;
 type Skill = AppSkillBundle["skills"][number];
@@ -72,33 +73,39 @@ export const skillCatalog = <E extends Error>(backend: McpBackend<E>): McpServer
         ),
       ),
     );
-  const listingLoad = (app: ListedApp) => {
+  const listingLoad = (app: ListedApp, turns: Semaphore.Semaphore) => {
     const key = JSON.stringify([app.id, app.activeVersion]);
-    const load = bundle(app, { refreshStale: false }).pipe(
-      Effect.map(({ skills }) => skills.map((skill) => toOptions(app, skill))),
-      Effect.timeoutOption(skillLoadMillis),
-      Effect.map((listed) => (listed._tag === "Some" ? listed.value : [])),
+    const claim = Effect.flatMap(Clock.currentTimeMillis, (now) =>
+      Effect.sync(() => {
+        const running = loading.get(key);
+        if (running !== undefined && now < running.until) return undefined;
+        const mark = { until: now + skillLoadMillis };
+        loading.set(key, mark);
+        return mark;
+      }),
     );
-    return Effect.flatMap(Clock.currentTimeMillis, (now) =>
-      Effect.withFiber((parent) =>
-        Effect.sync(() => {
-          const running = loading.get(key);
-          if (running !== undefined && now < running.until) return undefined;
-          const mark = { until: now + skillLoadMillis };
-          loading.set(key, mark);
-          const clear = () => {
-            if (loading.get(key) === mark) loading.delete(key);
-          };
-          try {
-            const started = Effect.runForkWith(parent.context)(load);
-            started.addObserver(clear);
-            return started;
-          } catch (cause) {
-            clear();
-            throw cause;
-          }
-        }),
-      ),
+    const load = turns
+      .withPermits(1)(
+        Effect.acquireUseRelease(
+          claim,
+          (mark) =>
+            mark === undefined
+              ? Effect.succeed([])
+              : bundle(app, { refreshStale: false }).pipe(
+                  Effect.map(({ skills }) => skills.map((skill) => toOptions(app, skill))),
+                ),
+          (mark) =>
+            Effect.sync(() => {
+              if (mark !== undefined && loading.get(key) === mark) loading.delete(key);
+            }),
+        ),
+      )
+      .pipe(
+        Effect.timeoutOption(skillLoadMillis),
+        Effect.map((listed) => (listed._tag === "Some" ? listed.value : [])),
+      );
+    return Effect.withFiber((parent) =>
+      Effect.sync(() => Effect.runForkWith(parent.context)(load)),
     );
   };
   const appBySlug = (slug: string) =>
@@ -116,20 +123,21 @@ export const skillCatalog = <E extends Error>(backend: McpBackend<E>): McpServer
   return {
     list: apps.pipe(
       Effect.flatMap((apps) =>
+        Effect.flatMap(Semaphore.make(listingLoads), (turns) =>
+          Effect.forEach(apps, (app) => listingLoad(app, turns)),
+        ),
+      ),
+      Effect.flatMap((loads) =>
         Effect.forEach(
-          apps,
-          (app) =>
-            listingLoad(app).pipe(
-              Effect.flatMap((load) =>
-                load === undefined
-                  ? Effect.succeed(Option.none())
-                  : Fiber.join(load).pipe(Effect.timeoutOption(skillListingAppMillis)),
-              ),
+          loads,
+          (load) =>
+            Fiber.join(load).pipe(
+              Effect.timeoutOption(skillListingMillis),
               Effect.map((listed) => (listed._tag === "Some" ? listed.value : [])),
               Effect.catchIf(Schema.is(AccountRequired), () => Effect.succeed([])),
               Effect.catch((error) => leftOut(error).pipe(Effect.as([]))),
             ),
-          { concurrency: defaultMcpRuntimeLimits.discoveryConcurrency },
+          { concurrency: "unbounded" },
         ),
       ),
       Effect.map((listed) => listed.flat()),

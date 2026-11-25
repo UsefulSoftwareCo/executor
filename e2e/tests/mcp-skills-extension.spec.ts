@@ -10,7 +10,7 @@ import { Browser } from "../support/browser.ts";
 import { appsManifest } from "../support/apps-release.ts";
 import { HostedLive, TestLive, withCase, withHostedCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
-import { Evidence } from "../support/evidence.ts";
+import { Evidence, Telemetry, type DeliveredSpan } from "../support/evidence.ts";
 import { McpClient } from "../support/mcp-client.ts";
 import { McpOAuth } from "../support/mcp-oauth.ts";
 import { ConnectionView, consentTo, revokeClientGrants } from "../support/mcp-connections.ts";
@@ -587,7 +587,190 @@ const holdingUpstream = Effect.gen(function* () {
   return { origin: `http://127.0.0.1:${port}`, arrivals: Effect.sync(() => arrivals) };
 });
 
+const gatedUpstream = Effect.gen(function* () {
+  let held: ServerResponse[] | undefined;
+  let counting = false;
+  let arrivals = 0;
+  const answer = (response: ServerResponse) => response.writeHead(200).end("open");
+  const server = createServer((request, response) => {
+    if (request.url !== "/gate") {
+      response.writeHead(404).end();
+      return;
+    }
+    if (counting) arrivals += 1;
+    if (held === undefined) return answer(response);
+    held.push(response);
+  });
+  const port = yield* Effect.acquireRelease(
+    Effect.callback<number>((resume) => {
+      server.listen(0, "127.0.0.1", () => {
+        const address = server.address();
+        resume(
+          typeof address === "object" && address !== null
+            ? Effect.succeed(address.port)
+            : Effect.die("The gated upstream needs a TCP listener"),
+        );
+      });
+    }),
+    () =>
+      Effect.callback<void>((resume) => {
+        for (const response of held ?? []) response.destroy();
+        server.closeAllConnections();
+        server.close(() => resume(Effect.void));
+      }),
+  );
+  return {
+    origin: `http://127.0.0.1:${port}`,
+    hold: Effect.sync(() => {
+      held = [];
+      counting = true;
+    }),
+    open: Effect.sync(() => {
+      for (const response of held ?? []) answer(response);
+      held = undefined;
+    }),
+    arrivals: Effect.sync(() => arrivals),
+  };
+});
+const gatedApps = 10;
+
 layer(HostedLive, { excludeTestServices: true })("MCP Skills extension loads", (it) => {
+  it.effect(scenarios.mcpSkillsExtensionLoadsTogether.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const api = yield* Api,
+          actors = yield* Actors,
+          evidence = yield* Evidence,
+          telemetry = yield* Telemetry,
+          skillsClients = yield* McpSkillsClient;
+        const organization = actors.organization.id,
+          prefix = `/api/organizations/${organization}`;
+        const upstream = yield* gatedUpstream;
+        const run = randomUUID().slice(0, 8);
+        const deploy = (name: string, loader: string) =>
+          Effect.gen(function* () {
+            const response = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+              name: `${name} ${run}`,
+              files: loaderAppFiles(loader),
+            });
+            expect(response.status, JSON.stringify(response.body)).toBe(200);
+            const app = yield* body(App, response);
+            yield* Effect.addFinalizer(() =>
+              api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
+            );
+            return app;
+          });
+        const gated = yield* Effect.forEach(
+          Array.from({ length: gatedApps }, (_, index) => index),
+          (index) =>
+            deploy(
+              `Gated skills ${index}`,
+              `await (await ctx.fetch(${JSON.stringify(`${upstream.origin}/gate`)}, { signal: ctx.signal })).text();
+return [{ name: "gated-${index}", description: "Synthetic gated instructions.", files: [{ path: "SKILL.md", content: ${JSON.stringify(skillMd(`gated-${index}`, "Synthetic gated instructions.", "Gated."))} }] }];`,
+            ),
+          { concurrency: 4 },
+        );
+        yield* Effect.forEach(
+          gated,
+          (app) =>
+            api
+              .request(actors.owner, "GET", `${prefix}/apps/${app.id}/skill-bundle`)
+              .pipe(
+                Effect.tap((response) =>
+                  Effect.sync(() =>
+                    expect(response.status, JSON.stringify(response.body)).toBe(200),
+                  ),
+                ),
+              ),
+          { concurrency: 4 },
+        );
+        const created = yield* api.request(actors.owner, "POST", "/api/auth/api-key/create", {
+          name: "MCP skills extension loads",
+        });
+        expect(created.status).toBe(200);
+        const token = yield* body(Token, created);
+        yield* Effect.addFinalizer(() =>
+          api
+            .request(actors.owner, "POST", "/api/auth/api-key/delete", { keyId: token.id })
+            .pipe(Effect.orDie),
+        );
+        const client = yield* skillsClients.connect(token.key, "loads-together", {
+          revision: "2026-07-28",
+          organization,
+        });
+
+        yield* upstream.hold;
+        let listings = 1;
+        const listing = yield* client.use("List while the gate holds every load", (skills) =>
+          skills.list(),
+        );
+        yield* evidence.json("gated-listing.json", listing);
+        const started = yield* upstream.arrivals;
+        expect(started).toBeGreaterThanOrEqual(2);
+        expect(started).toBeLessThan(gatedApps);
+        const listed = uris(listing.skills);
+        const gatedGuides = gated.map(
+          (app, index) => `skill://${app.slug}/gated-${index}/SKILL.md`,
+        );
+        expect(listed.filter((uri) => gatedGuides.includes(uri))).toEqual([]);
+
+        yield* upstream.open;
+        expect(
+          yield* upstream.arrivals.pipe(
+            Effect.repeat({
+              schedule: Schedule.spaced("100 millis"),
+              until: (count) => count >= gatedApps,
+            }),
+            Effect.timeout("30 seconds"),
+          ),
+        ).toBe(gatedApps);
+        const later = yield* client
+          .use("List again until every gated app is served", (skills) => skills.list())
+          .pipe(
+            Effect.tap(() => Effect.sync(() => (listings += 1))),
+            Effect.repeat({
+              schedule: Schedule.spaced("500 millis"),
+              until: (listing) => gatedGuides.every((uri) => uris(listing.skills).includes(uri)),
+            }),
+            Effect.timeout("30 seconds"),
+          );
+        expect(uris(later.skills)).toEqual(expect.arrayContaining(gatedGuides));
+
+        const first = yield* telemetry.search("mcp.skills.extension.list", { organization }).pipe(
+          Effect.repeat({
+            schedule: Schedule.spaced("250 millis"),
+            until: (found) => found.data.length >= listings,
+          }),
+          Effect.map(
+            (found) =>
+              found.data.toSorted((a, b) => a.span.startTime.localeCompare(b.span.startTime))[0],
+          ),
+          Effect.timeout("30 seconds"),
+        );
+        const loaded = (spans: ReadonlyArray<DeliveredSpan>) => {
+          const children = new Map<string, Array<DeliveredSpan>>();
+          for (const span of spans)
+            if (span.parentSpanId !== null)
+              children.set(span.parentSpanId, [...(children.get(span.parentSpanId) ?? []), span]);
+          const below = (span: DeliveredSpan): Array<DeliveredSpan> =>
+            (children.get(span.spanId) ?? []).flatMap((child) => [child, ...below(child)]);
+          const listing = spans.find((span) => span.spanId === first!.span.spanId);
+          return new Set(
+            (listing === undefined ? [] : below(listing))
+              .filter((span) => span.operationName === "sdk.skills.bundle" && span.status === "ok")
+              .flatMap((bundle) => below(bundle).map((span) => span.tags["executor.app.id"])),
+          );
+        };
+        const spans = yield* telemetry.settled(first!.traceId, (spans) =>
+          gated.every((app) => loaded(spans).has(app.id)),
+        );
+        yield* evidence.json("gated-listing-spans.json", spans);
+        expect(gated.filter((app) => !loaded(spans).has(app.id))).toEqual([]);
+      }).pipe(Effect.provide(McpSkillsClient.layer)),
+    ),
+  );
+
   it.effect(scenarios.mcpSkillsExtensionStalledLoad.title, (context) =>
     withHostedCase(
       context,
