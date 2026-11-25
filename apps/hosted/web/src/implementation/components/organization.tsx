@@ -344,10 +344,9 @@ export function OrganizationBoundary({
       document.removeEventListener("visibilitychange", remember);
     };
   }, [access, session]);
-  const routeId = target ?? (AsyncResult.isSuccess(access) ? access.value.organization : undefined);
   const organization =
-    AsyncResult.isSuccess(organizations) && routeId !== undefined
-      ? organizations.value.find((item) => item.id === routeId)
+    AsyncResult.isSuccess(organizations) && target !== undefined
+      ? organizations.value.find((item) => item.id === target)
       : undefined;
   const canonicalSlug = organization?.slug;
   useEffect(() => {
@@ -405,7 +404,7 @@ export function OrganizationBoundary({
         organization: reference,
         slug,
         role: checked?.role,
-        id: routeId,
+        id: target,
         name: organization?.name,
         unavailable,
         released,
