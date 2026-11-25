@@ -90,6 +90,9 @@ const failure = (error: UiUnauthorized | UiForbidden | UiFailed) =>
     Schema.is(UiUnauthorized)(error) ? 401 : Schema.is(UiForbidden)(error) ? 403 : 422,
   );
 
+export const appSessionCookie = (origin: string) =>
+  `${new URL(origin).protocol === "https:" ? "__Host-" : ""}executor_app`;
+
 export const hostedAppUi = <R = never>(
   addresses: ReturnType<typeof appAddresses>,
   domainStatus: (
@@ -158,7 +161,7 @@ export const hostedAppUi = <R = never>(
       ),
     );
   const secure = (origin: string) => new URL(origin).protocol === "https:";
-  const sessionCookie = (origin: string) => `${secure(origin) ? "__Host-" : ""}executor_app`;
+  const sessionCookie = appSessionCookie;
   const attemptCookie = (origin: string, request: string) =>
     `${secure(origin) ? "__Host-" : ""}executor_app_attempt_${request}`;
   const cookieOptions = (origin: string) => ({

@@ -4,6 +4,7 @@ import {
   dispatchProvisioning,
   provisionTeamNow,
 } from "./infrastructure/provisioning.ts";
+import { previewActivity } from "./infrastructure/preview-activity.ts";
 import { previewLifetime } from "./infrastructure/test-stage-expiry.ts";
 import { ExecutorCloudApi, executorCloudApiDocument } from "./contracts/api.ts";
 import { hostedAppUi, appAddresses } from "@executor-js/hosted-server/app-ui";
@@ -226,6 +227,7 @@ export default Api.make(
   }),
   Effect.gen(function* () {
     const lifetime = yield* previewLifetime;
+    const activity = yield* previewActivity;
     const analytics = yield* cloudAnalytics;
     const reportErrors = yield* cloudSentry;
     const errorTunnel = yield* cloudErrorTunnel;
@@ -708,6 +710,11 @@ export default Api.make(
         recordClientNetwork,
         recordUnclassifiedRefusals,
         withHostPipeline,
+        activity.http(
+          (request) =>
+            request.headers.authorization !== undefined ||
+            hasSessionCookie(new Headers(request.headers), auth.cookiePrefix),
+        ),
         lifetime.http,
         servedRequest,
       ),

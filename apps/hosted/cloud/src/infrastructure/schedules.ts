@@ -4,6 +4,7 @@ import { makeScheduleDispatch } from "../implementation/schedule-dispatch.ts";
 import { cloudSentry } from "../implementation/error-reporting.ts";
 import { cloudAnalytics, recordBackgroundUsage } from "../implementation/product-analytics.ts";
 import { ScheduleObservation } from "@executor-js/sdk/scheduling";
+import { previewActivity } from "./preview-activity.ts";
 import { previewLifetime } from "./test-stage-expiry.ts";
 import { EventCleanup } from "./event-cleanup.ts";
 import { WebhookSourceHost } from "@executor-js/sdk/core";
@@ -48,6 +49,7 @@ const makePlacedScheduleCoordinator = Effect.gen(function* () {
   const resources = yield* cloudProduct(yield* appDataSupervisors, yield* cloudArtifactsTokensLive);
   const objectDatabase = yield* cloudObjectDatabase(cloudDirectDatabaseConnection);
   const retired = yield* ScheduleCoordinator;
+  const activity = yield* previewActivity;
   return Effect.gen(function* () {
     const state = yield* Cloudflare.DurableObjectState;
     const lifetime = yield* previewLifetime;
@@ -248,6 +250,7 @@ const makePlacedScheduleCoordinator = Effect.gen(function* () {
       alarm: () =>
         Effect.gen(function* () {
           if (yield* lifetime.isBackgroundStopped) return yield* stop;
+          if (yield* activity.isIdle) return yield* stop;
           yield* Effect.acquireRelease(
             Effect.sync(() => {
               alarmEvents += 1;

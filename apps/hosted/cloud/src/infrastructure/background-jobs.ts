@@ -6,6 +6,7 @@ import { Cause, Effect, Exit, Option, Redacted, Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { timingSafeEqual } from "node:crypto";
 import { JobOutcome, jobFailedWith, type JobError } from "../contracts/job-outcome.ts";
+import { previewActivity } from "./preview-activity.ts";
 import { previewLifetime } from "./test-stage-expiry.ts";
 
 export const BackgroundJob = Schema.Literals([
@@ -93,6 +94,7 @@ export const cloudBackgroundJobs = Effect.gen(function* () {
   const environment = yield* Cloudflare.WorkerEnvironment;
   const secret = yield* (yield* Random("BackgroundJobSecret")).text;
   const lifetime = yield* previewLifetime;
+  const activity = yield* previewActivity;
   const authorization = Effect.map(secret, (value) => `Bearer ${Redacted.value(value)}`);
 
   const request = (job: BackgroundJob) =>
@@ -147,7 +149,11 @@ export const cloudBackgroundJobs = Effect.gen(function* () {
             return HttpServerResponse.empty({ status: 404 });
           const { job } = yield* HttpRouter.schemaPathParams(Schema.Struct({ job: BackgroundJob }));
           yield* recordRoute(`/api/internal/jobs/${job}`);
-          if (yield* lifetime.isBackgroundStopped) return HttpServerResponse.empty({ status: 204 });
+          if (
+            (yield* lifetime.isBackgroundStopped) ||
+            (job !== "site-assets" && (yield* activity.isIdle))
+          )
+            return HttpServerResponse.empty({ status: 204 });
           const ran = yield* Effect.exit(run(job));
           return HttpServerResponse.empty({
             status: Exit.isSuccess(ran) ? 204 : 500,

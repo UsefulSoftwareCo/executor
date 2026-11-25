@@ -1,6 +1,7 @@
 import { recordUnclassifiedRefusals, requestServices } from "@executor-js/hosted-server";
+import { previewActivity } from "./infrastructure/preview-activity.ts";
 import { previewLifetime } from "./infrastructure/test-stage-expiry.ts";
-import { hostedAppUi, appAddresses } from "@executor-js/hosted-server/app-ui";
+import { appSessionCookie, hostedAppUi, appAddresses } from "@executor-js/hosted-server/app-ui";
 import { appPrivateHeaders, appSignInCallbackPath } from "apps/ui/auth";
 import { AppUiApi } from "apps/ui/contracts";
 import { AlchemyContext } from "alchemy/AlchemyContext";
@@ -106,6 +107,7 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
       Effect.provideService(Layer.CurrentMemoMap, yield* Layer.makeMemoMap),
     );
     const lifetime = yield* previewLifetime;
+    const activity = yield* previewActivity;
     return {
       fetch: handle.pipe(
         Effect.catchIf(
@@ -125,6 +127,9 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
         requestTiming,
         recordClientNetwork,
         recordUnclassifiedRefusals,
+        activity.http(
+          (request) => base !== undefined && Object.hasOwn(request.cookies, appSessionCookie(base)),
+        ),
         lifetime.http,
         servedRequest,
       ),

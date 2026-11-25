@@ -22,6 +22,7 @@ import { AppDomainController } from "./infrastructure/app-domain-controller-work
 import { AppDomainCoordinator, AppDomainDrainFailed, Team } from "./infrastructure/app-domains.ts";
 import { appDomainControllerToken, sharedAppDomainZone } from "./infrastructure/app-domain-zone.ts";
 import { cloudDatabaseConnection } from "./infrastructure/database.ts";
+import { previewActivity, PreviewActivityLive } from "./infrastructure/preview-activity.ts";
 import { previewLifetime } from "./infrastructure/test-stage-expiry.ts";
 import {
   cloudObservability,
@@ -83,6 +84,7 @@ const makeAppDomainCoordinator = Effect.gen(function* () {
   );
   const connection = yield* cloudDatabaseConnection;
   const lifetime = yield* previewLifetime;
+  const activity = yield* previewActivity;
   const withDatabase = <A, E, R>(use: Effect.Effect<A, E, R | SqlClient.SqlClient>) =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -229,7 +231,7 @@ const makeAppDomainCoordinator = Effect.gen(function* () {
         ),
       alarm: () =>
         Effect.gen(function* () {
-          if (yield* lifetime.isBackgroundStopped) {
+          if ((yield* lifetime.isBackgroundStopped) || (yield* activity.isIdle)) {
             yield* state.storage.deleteAlarm();
             return;
           }
@@ -256,5 +258,7 @@ export default AppDomainController.make(
       env: yield* telemetryBindings,
     };
   }),
-  Effect.succeed({}).pipe(Effect.provide(Layer.mergeAll(AppDomainCoordinatorLive, cloudTelemetry))),
+  Effect.succeed({}).pipe(
+    Effect.provide(Layer.mergeAll(AppDomainCoordinatorLive, PreviewActivityLive, cloudTelemetry)),
+  ),
 );
