@@ -5,7 +5,11 @@ import {
   type ReleaseChannel,
 } from "@executor-js/utils/release-version";
 import manifest from "../../apps/cli/package.json" with { type: "json" };
-import { desktopDownloadTargets } from "../../packages/ui/src/contracts/desktop-download.ts";
+import {
+  desktopDownloadTargets,
+  desktopReleaseRepository,
+  desktopReleaseSource,
+} from "../../packages/ui/src/contracts/desktop-download.ts";
 
 export {
   compareReleaseVersions,
@@ -66,7 +70,7 @@ export type Platform = (typeof platforms)[number];
 
 const version = Schema.decodeUnknownSync(ReleaseVersion)(manifest.version);
 const channel = releaseChannel(version);
-const repository = "UsefulSoftwareCo/executor";
+const repository = desktopReleaseRepository;
 const tag = `executor@${version}`;
 const nodeEngine = Schema.decodeUnknownSync(
   Schema.String.check(Schema.isPattern(/^>=\d+\.\d+\.\d+$/u)),
@@ -130,9 +134,8 @@ export const desktopAsset = (target: Platform): string =>
   `${release.desktop.artifactPrefix}-${release.version}${desktopAssetSuffix(target)}`;
 
 export const desktopDownloads = {
-  releasesApi: `https://api.github.com/repos/${repository}/releases?per_page=100`,
+  ...desktopReleaseSource(version.split(".")[0] ?? ""),
   releasesPage: `https://github.com/${repository}/releases`,
-  tagPrefix: `executor@${version.split(".")[0]}.`,
   stableOnly: channel === "latest",
 } as const;
 

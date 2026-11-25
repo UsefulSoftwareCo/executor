@@ -148,6 +148,14 @@ export const detectDesktopOs = async (): Promise<DesktopDownloadOs | null> => {
   return null;
 };
 
+export const desktopReleaseRepository = "UsefulSoftwareCo/executor";
+
+export const desktopReleaseSource = (major: string): DesktopReleaseSource => ({
+  releasesApi: `https://api.github.com/repos/${desktopReleaseRepository}/releases?per_page=100`,
+  tagPrefix: `executor@${major}.`,
+  stableOnly: false,
+});
+
 export const desktopDownloadTargets: ReadonlyArray<DesktopDownloadTarget> = [
   { os: "mac-arm64", asset: "-mac-arm64.dmg", label: "Download for Mac" },
   { os: "mac-x64", asset: "-mac-x64.dmg", label: "Download for Mac (Intel)" },

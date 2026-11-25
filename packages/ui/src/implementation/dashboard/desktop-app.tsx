@@ -11,8 +11,16 @@ import {
   type DesktopPermission,
   type DesktopPermissionState,
 } from "apps/ui/contracts";
-import { desktopDownloadTargets, handheldDevice } from "../../contracts/desktop-download.ts";
-import { DesktopDownload } from "./desktop-download.tsx";
+import {
+  desktopDownloadTargets,
+  desktopReleaseSource,
+  handheldDevice,
+} from "../../contracts/desktop-download.ts";
+import {
+  DesktopDownload,
+  dashboardDownloadOther,
+  dashboardDownloadOtherList,
+} from "./desktop-download.tsx";
 import {
   currentDesktopHost,
   desktopDownloadPage,
@@ -30,12 +38,12 @@ import {
   type DesktopPermissionChoice,
 } from "../../contracts/desktop.ts";
 import { Button } from "../components/button.tsx";
+import { cn } from "../lib/utils.ts";
 import { Skeleton } from "../components/skeleton.tsx";
 import {
   Dialog,
   DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "../components/dialog.tsx";
@@ -135,7 +143,7 @@ function BrowserInstallDialog({
     ...(handoff.team === undefined ? {} : { team: handoff.team }),
   });
   return (
-    <DialogContent className="gap-5 sm:max-w-md">
+    <DialogContent className="gap-5 sm:max-w-lg">
       <DialogHeader className="pr-8">
         <DialogTitle className="leading-snug">Install {handoff.name} as a desktop app</DialogTitle>
         <DialogDescription>
@@ -153,27 +161,37 @@ function BrowserInstallDialog({
         </p>
       )}
       {!handheld && (
-        <DialogFooter className="items-center sm:justify-between">
-          <DesktopDownload targets={dialogTargets} fallback={desktopDownloadPage} />
+        <div className="flex items-start justify-between gap-4">
+          <DesktopDownload
+            targets={dialogTargets}
+            fallback={desktopDownloadPage}
+            source={desktopReleaseSource("2")}
+            className="shrink-0 flex-col items-start gap-3 whitespace-nowrap"
+            otherClassName={cn(dashboardDownloadOther, "self-start")}
+            otherListClassName={cn(dashboardDownloadOtherList, "left-0 translate-x-0")}
+          />
           {supported && link !== undefined && (
-            <Button asChild>
-              <a href={link}>Open in Executor</a>
-            </Button>
+            <div className="flex shrink-0 flex-col items-end gap-3 whitespace-nowrap">
+              <Button
+                asChild
+                className="h-auto border border-transparent px-[1.25rem] py-[0.7rem] text-[14.5px]"
+              >
+                <a href={link}>Open in Executor</a>
+              </Button>
+              <p className="text-[13px] text-muted-foreground">
+                Nothing opened?{" "}
+                <a
+                  className="underline underline-offset-2 hover:text-foreground"
+                  href={desktopDownloadPage}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  Update Executor
+                </a>
+              </p>
+            </div>
           )}
-        </DialogFooter>
-      )}
-      {supported && link !== undefined && (
-        <p className="text-xs text-muted-foreground">
-          Nothing opened?{" "}
-          <a
-            className="underline underline-offset-2 hover:text-foreground"
-            href={desktopDownloadPage}
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Update Executor
-          </a>
-        </p>
+        </div>
       )}
     </DialogContent>
   );
