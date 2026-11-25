@@ -1,6 +1,5 @@
 import { openThroughBrowser } from "../support/in-app-navigation.ts";
 import { connectionsPath, linkAccountResponse } from "../support/app-accounts.ts";
-/** Members keep a stable app overview and discover restricted actions without gaining authority. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -100,7 +99,6 @@ layer(HostedLive, { excludeTestServices: true })("Member controls", (it) => {
               audience: { kind: "everyone" },
             })).status,
           ).toBe(200);
-          // The owner's account is the owner's alone: the member cannot link it.
           const foreignLink = yield* linkAccountResponse(
             actors.member,
             `${prefix}/apps/${app.id}`,
@@ -346,7 +344,6 @@ layer(HostedLive, { excludeTestServices: true })("Member controls", (it) => {
                 ),
               ).toBe(true);
             }
-            // Another member's account never reaches the member's account list, even by link.
             yield* browser.use("Open the owner's account by link", (page) =>
               page.goto(`/org/${actors.organization.slug}/accounts?account=${account.id}`),
             );
@@ -398,7 +395,6 @@ layer(HostedLive, { excludeTestServices: true })("Member controls", (it) => {
             (yield* api.request(actors.member, "DELETE", `${prefix}/accounts/${account.id}`))
               .status,
           ).toBe(403);
-          // Enabled manager controls still navigate and preserve their existing interactions.
           yield* browser.login(actors.owner);
           yield* browser.use("Owner opens the same app", (page) =>
             page.goto(`${url}?view=overview`),

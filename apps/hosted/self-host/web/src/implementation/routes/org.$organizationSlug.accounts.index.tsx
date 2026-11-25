@@ -2,7 +2,6 @@ import { parseAccountsSearch } from "@executor-js/hosted-web/contracts/navigatio
 import { createFileRoute } from "@tanstack/react-router";
 import { AccountsPage, accountsPageReads } from "@executor-js/hosted-web/pages/accounts";
 
-/** Hosted account inventory. */
 export const Route = createFileRoute("/org/$organizationSlug/accounts/")({
   validateSearch: parseAccountsSearch,
   staticData: { organizationReads: accountsPageReads },

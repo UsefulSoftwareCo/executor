@@ -1,7 +1,3 @@
-/**
- * Staple Apple's ticket to one app or disk image (macos-staple.ts):
- * `node scripts/releases/staple.ts <path>`. `@electron/notarize`'s patched `stapleApp` runs it.
- */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect } from "effect";

@@ -1,4 +1,3 @@
-/** Discover live framework contracts and follow the pinned authoring topics through MCP. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Layer, Schema } from "effect";
 import { scenarios } from "../test-plan.ts";
@@ -67,7 +66,6 @@ const Described = Schema.Struct({
   examples: Schema.Array(Schema.Struct({ id: Schema.String })),
   matches: Schema.Array(Schema.Struct({ symbol: Schema.String })),
 });
-/** Symbols an agent reported as describing without content. */
 const reported = [
   "apps/mcp.mcpRouter",
   "apps.accountRouter",
@@ -83,8 +81,6 @@ layer(HostedLive, { excludeTestServices: true })("Framework discovery", (it) => 
         const actors = yield* Actors,
           evidence = yield* Evidence;
         const { client, execute, queries } = yield* frameworkSession;
-        // These public reads share no results. Start them together while keeping
-        // each real MCP request and its live catalog evaluation.
         const [discovered, imported, current, found, entry, guide] = yield* Effect.all(
           [
             execute(`const found = await tools.search({query: "framework", limit: 20});
@@ -135,7 +131,6 @@ return { found, described: await tools.search.describe({ paths: found.items.map(
           { concurrency: 6 },
         );
         yield* evidence.json("framework-tool-discovery.json", discovered);
-        // Search lists the framework tools concisely; describe returns their output types.
         const tools = yield* Schema.decodeUnknownEffect(
           Schema.Struct({
             found: Schema.Struct({
@@ -160,8 +155,6 @@ return { found, described: await tools.search.describe({ paths: found.items.map(
         expect(found.items.map((item) => item.symbol)).toContain(
           "AppMutation.withOptimisticUpdate",
         );
-        // Misshaped input names the failing path, the unexpected key and the keys it accepts there,
-        // the way agents misread these signatures. A tool without inputs still accepts {}.
         const rejected = (label: string, code: string) =>
           client
             .use(label, (client, signal) =>
@@ -219,8 +212,6 @@ return { found, described: await tools.search.describe({ paths: found.items.map(
           [describe("apps/react.useAppQuery"), describe("AppMutation.withOptimisticUpdate")],
           { concurrency: 2 },
         );
-        // Agents often pass an unqualified name; a unique suffix resolves, otherwise the
-        // result names the closest symbols instead of failing without guidance.
         const lookup = (symbol: string) =>
           execute(
             `return await ${queries}.framework.describe(${JSON.stringify({ query: { symbol, ...found.reference } })});`,
@@ -243,13 +234,9 @@ return { found, described: await tools.search.describe({ paths: found.items.map(
         expect(hook.entry.signatures.join(" ")).toContain("data: A | undefined");
         expect(hook.entry.signatures.join(" ")).toContain("pending: boolean");
         expect(update.entry.signatures.join(" ")).toContain("OptimisticUpdate<Input>");
-        // Agents start at the short entry skill, which names the deeper skills to read.
         const intro = yield* Schema.decodeUnknownEffect(Document)(entry.structuredContent);
         expect(intro.content).toContain("`code-mode`");
         expect(intro.content).toContain("`app-authoring`");
-        // The intro only points at media; the code-mode skill it names holds the detail. Pinned
-        // to what it must say (how to see images and hear audio a tool returns), not one wording:
-        // the list may grow, as it did with files.
         expect(intro.content).toMatch(/see images\b[^.]*\bhear audio\b/);
         const codeMode = yield* client.use("Follow the intro to media guidance", (client, signal) =>
           client.callTool(
@@ -260,8 +247,6 @@ return { found, described: await tools.search.describe({ paths: found.items.map(
         );
         const media = (yield* Schema.decodeUnknownEffect(Document)(codeMode.structuredContent))
           .content;
-        // A section of its own on media, and an example that returns a tool's bytes from
-        // `execute` as a block the client receives, not as base64 text.
         expect(media).toMatch(/^## See images\b.*\bhear audio\b/m);
         expect(media).toMatch(/return \{\s*type: "(?:image|audio|resource)"/);
         const router = yield* Schema.decodeUnknownEffect(Document)(guide.structuredContent);
@@ -303,7 +288,6 @@ return { found, described: await tools.search.describe({ paths: found.items.map(
           actors = yield* Actors,
           evidence = yield* Evidence;
         const { client, execute, queries } = yield* frameworkSession;
-        // An empty search pages through the whole reference, as an agent browsing it would.
         const listing = yield* execute(`
           const symbols = [];
           let page = await ${queries}.framework.search({ query: {} });
@@ -314,14 +298,11 @@ return { found, described: await tools.search.describe({ paths: found.items.map(
           }
           return { reference: page.reference, symbols };
         `).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Listing)));
-        // The reported call, made as the agent made it: the symbol goes inside query.
         const answered = yield* execute(`
           const reference = ${JSON.stringify(listing.reference)};
           return await Promise.all(${JSON.stringify(reported)}.map((symbol) =>
             ${queries}.framework.describe({ query: { symbol, ...reference } })));
         `).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(Described))));
-        // Every symbol through the endpoint that MCP tool forwards to; one MCP call each would
-        // spend most of the scenario's deadline on tool dispatch.
         const described = yield* Effect.forEach(
           listing.symbols,
           (symbol) =>
@@ -338,7 +319,6 @@ return { found, described: await tools.search.describe({ paths: found.items.map(
           { concurrency: 8 },
         );
         const exported = yield* appsPackageExports;
-        // Every linked skill document opens through the same skills tool an agent uses.
         const documents = [
           ...new Set(described.flatMap(({ entry }) => (entry === undefined ? [] : [entry.docs]))),
         ];
@@ -382,7 +362,6 @@ return { found, described: await tools.search.describe({ paths: found.items.map(
             ...((callable ? entry.signatures.length > 0 : entry.definition !== undefined)
               ? []
               : [`${symbol}: no ${callable ? "signature" : "definition"}`]),
-            // Module exports carry JSDoc; some methods reached through context do not.
             ...(/^apps[./]/.test(symbol) && entry.summary === "" ? [`${symbol}: no summary`] : []),
             ...(same(
               types.map((type) => type.symbol),
@@ -401,7 +380,6 @@ return { found, described: await tools.search.describe({ paths: found.items.map(
         });
         expect(problems).toEqual([]);
         expect(opened.map(({ content }) => content.length > 0)).toEqual(documents.map(() => true));
-        // The reference covers every export of each module it documents, as the package declares them.
         const modules = new Map<string, string[]>();
         for (const symbol of listing.symbols.filter((symbol) => /^apps[./]/.test(symbol))) {
           const module = symbol.slice(0, symbol.lastIndexOf("."));
@@ -428,14 +406,11 @@ return { found, described: await tools.search.describe({ paths: found.items.map(
         expect(answered[0]?.types.map((type) => type.symbol)).toContain(
           "apps/mcp.McpCatalogOptions",
         );
-        // A schema an options type names is described even though its module does not export it.
         expect(
           described
             .find((item) => item.symbol === "apps/openapi.OpenapiToolsOptions")
             ?.types.map((type) => type.symbol),
         ).toContain("OpenapiParameterDefaults");
-        // AppOperation names the native Approval, which returns an Effect. The public apps.Approval
-        // shares its spelling but returns a value or a Promise, so each links to its own declaration.
         const operationApprovals = described
           .find((item) => item.symbol === "AppOperation")
           ?.types.filter((type) => /(^|\.)Approval(@|$)/.test(type.symbol));
@@ -457,7 +432,6 @@ return { found, described: await tools.search.describe({ paths: found.items.map(
             .find((item) => item.symbol === "apps.Approval")
             ?.types.map((type) => type.symbol),
         ).toContain("Approval@apps/src/contracts/approval.ts");
-        // A callable's links come from the signature TypeScript prints, not from source text.
         expect(
           described.find((item) => item.symbol === "apps.query")?.types.map((type) => type.symbol),
         ).toContain("apps.QueryContext");

@@ -27,11 +27,6 @@ import {
   Unauthorized,
 } from "../contracts/auth.ts";
 
-/**
- * Connected-account OAuth uses the configured relay URL, or this host's callback. It is returned
- * serialized, the form the SDK parses it to and sends as `redirect_uri`, so setup screens and the
- * client metadata document list that exact string, whatever form the operator configured.
- */
 export const accountOAuthRedirectUri = (
   auth: Pick<typeof SessionAuthentication.Service, "origin" | "oauthRedirectUri">,
 ) =>
@@ -39,7 +34,6 @@ export const accountOAuthRedirectUri = (
     new URL(auth.oauthRedirectUri ?? new URL("/api/oauth/callback", auth.origin).href).href,
   );
 
-/** Explicit host configuration. Missing or weak signing secrets fail startup/deploy. */
 export const authSettings = Config.all({
   url: Config.String("BETTER_AUTH_URL"),
   secret: Config.Redacted("BETTER_AUTH_SECRET"),
@@ -70,15 +64,9 @@ export const authSettings = Config.all({
   ),
 );
 
-/**
- * Shared session and protocol defaults; each host supplies its sign-in policy and its
- * organization plugin, so no host builds an organization plugin it then discards.
- */
 export const authOptions = (
   settings: Pick<Effect.Success<typeof authSettings>, "url" | "oauthRedirectUri"> & {
-    /** The origins of MCP and API OAuth resources; `url` stays the browser origin. */
     readonly resourceOrigins: ResourceOrigins;
-    /** The authorization server's issuer; `${url}/api/auth` where one origin serves everything. */
     readonly issuer: string;
   },
   ipAddressHeaders: string[],
@@ -104,28 +92,19 @@ export const authOptions = (
       }),
     ],
     hooks: { before: apiKeyManagement },
-    // Session age gates nothing: the account Security page lists sessions however long ago this
-    // browser signed in. Better Auth's user deletion stays disabled: Cloud's `DELETE /api/user`
-    // also removes the product records a user owns.
     session: { cookieCache: { enabled: false }, freshAge: 0 },
     rateLimit: {
       enabled: true,
       storage: "database",
-      // Every dashboard page reads the session, and organization pages the membership list, on
-      // the server with the visitor's address. These reads require a valid session cookie and
-      // change nothing; a per-address limit on them would make whole pages unavailable to people
-      // sharing an address. Sign-in, sign-up and other credential routes keep their limits.
       customRules: { "/get-session": false, "/organization/list": false },
     },
     advanced: {
       cookiePrefix: "executor-hosted",
       ipAddress: { ipAddressHeaders },
-      // Read a session and its user in one statement instead of one query each.
       database: { joins: true },
     },
   }) satisfies BetterAuthOptions;
 
-/** Project only identity fields; never expose Better Auth tokens as product identity. */
 export const sessionPrincipal = (
   session: {
     readonly user: { readonly id: string; readonly name: string };
@@ -143,7 +122,6 @@ export const sessionPrincipal = (
           : {}),
       }).pipe(Effect.mapError(() => new AuthenticationUnavailable()));
 
-/** Authenticate each request and reject foreign-origin cookie writes. */
 export const requireBrowserSessionLive = Layer.effect(
   RequireBrowserSession,
   Effect.gen(function* () {
@@ -151,7 +129,6 @@ export const requireBrowserSessionLive = Layer.effect(
     return (response, { endpoint, group }) =>
       Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest;
-        // Browser-only endpoints never fall back from a presented grant to a cookie.
         if (request.headers.authorization !== undefined)
           return yield* refuse("bearer_not_allowed", new Unauthorized());
         if (

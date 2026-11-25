@@ -1,9 +1,3 @@
-/**
- * A test stage's edge: it plays v1's edge on `executor.sh` for `edge.<slug>.<test domain>`. It
- * forwards exactly the requests v1 forwards to the marketing Worker through a service binding, keeping
- * the original URL, and answers every other path as v1 would own it. It forwards; it never
- * redirects, because clients check that issuer metadata comes from the issuer's own origin.
- */
 import * as Cloudflare from "alchemy/Cloudflare";
 import { Effect, Option, Schema } from "effect";
 import { HttpServerRequest, HttpServerResponse } from "effect/http";
@@ -16,7 +10,6 @@ import { Edge } from "./infrastructure/edge-worker.ts";
 import { workerBuild } from "./infrastructure/worker-build.ts";
 import { platformObservability } from "./infrastructure/telemetry.ts";
 
-/** The stage's telemetry paths (`site-telemetry.ts`), which v1 lists for production. */
 const SiteTelemetry = Schema.fromJsonString(
   Schema.Struct({
     analyticsProxy: Schema.NullOr(Schema.String),
@@ -24,7 +17,6 @@ const SiteTelemetry = Schema.fromJsonString(
   }),
 );
 
-/** The service binding's runtime shape: a plain fetch, as v1's binding to v2 uses. */
 interface ServiceBinding {
   readonly fetch: (request: Request) => Promise<Response>;
 }
@@ -41,18 +33,15 @@ export default Edge.make(
         (yield* postHogBindings).analyticsProxy,
         (yield* sentryBindings).errorTunnel,
       ),
-      // Its route is the switch's (`executor-sh.ts`), which points it here unless switched.
       ...(yield* platformObservability),
     };
   }),
   Effect.gen(function* () {
-    // Use the same unplaced public-site entry as production's v1 edge.
     yield* Cloudflare.Workers.bindWorker(Marketing);
     return {
       fetch: Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest;
         const environment = yield* Cloudflare.WorkerEnvironment;
-        // SAFETY: the Worker's `env` prop above binds EXECUTOR_SITE_TELEMETRY; it is decoded here.
         const telemetry = yield* Schema.decodeUnknownEffect(SiteTelemetry)(
           (environment as unknown as Record<string, unknown>).EXECUTOR_SITE_TELEMETRY,
         ).pipe(Effect.orDie);
@@ -65,7 +54,6 @@ export default Edge.make(
             status: 404,
             headers: { "cache-control": "no-store" },
           });
-        // SAFETY: `bindWorker(Marketing)` above registers this service binding.
         const binding = (environment as unknown as Record<string, ServiceBinding | undefined>)[
           Marketing.LogicalId
         ];

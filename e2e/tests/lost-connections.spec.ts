@@ -1,40 +1,3 @@
-/**
- * Stage requests on connections of their own (`support/lost-connections.ts`), against a local
- * stand-in stage. The stand-in for 16 November's resets answers the first request on a connection,
- * kept alive, and resets the connection when a second request arrives on it: a request sent down a
- * used connection crosses the close, as #1082's 16 lost requests did (all on reused connections,
- * 12 of them written 1-5 ms after the previous response). Whether a request is lost is decided by
- * that fact, not by a timer.
- *
- * - Under load, GETs and POSTs from eight concurrent callers, over plain connections and over TLS:
- *   `fetch` as it was (`main`'s client, keep-alive) loses requests, POSTs among them; with each
- *   stage request on its own connection none is lost, and the stand-in counts every request
- *   arriving exactly once: nothing is sent twice. Over TLS the reset is the TCP connection's,
- *   under the TLS session, as an edge's would be.
- * - Each entry point installs the wrapper before anything can read `fetch`: a request made through
- *   Effect's client first does not leave the requests after it on a shared connection.
- * - A streamed response still arrives whole.
- * - A stand-in that resets brand-new connections: the request fails, and the failure and the record
- *   say "new connection", a different fault. A reset after a response began says so.
- * - A TLS alert in the handshake (#1088's preparation): its code, `ERR_SSL_SSL/TLS_ALERT_HANDSHAKE_FAILURE`,
- *   holds a slash. The request is recorded as never written, and its failure says TLS.
- * - A burst of refused or reset new connections, then a stage that answers, plain (the listener is
- *   closed, then opened again) and over TLS (each new connection is reset in its handshake), the
- *   shape of #1089's losses: `main`'s client fails; with the wrapper a GET and a POST are each sent
- *   again on a new connection, 1 and then 2 s later, and answered on the third attempt, each
- *   arriving at the stand-in exactly once. The record counts the repeats and the wait, and the job
- *   summary says a job passed only after them.
- * - A connection that opens, takes the whole request and dies is never sent again, plain or TLS.
- * - The repeats stop at the scenario's bound, when the caller gives up, and for a body that cannot
- *   be sent twice; the failure and the failed scenario's note say for how long the request was
- *   unsent. A failure that is not the connection's (a certificate for another name) is not repeated.
- * - A second copy of the module in one process does not wrap `fetch` again, so no wrapper can read a
- *   written request as never written.
- * - Each stage request a scenario sends is kept for its `stage-requests.json`: method, path with ids
- *   shortened, status or failure, times, trace id and connection, never its query, headers or
- *   cookies; at most `stageRequestLimit` rows, the oldest dropped and counted.
- * - The job summary counts each lost request with its time, and an unreadable count is never zero.
- */
 import { expect, layer } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, FileSystem, Stream } from "effect";
@@ -60,17 +23,9 @@ import {
 } from "../support/lost-connections.ts";
 import { CallFailed, readResponse, requestFailureText } from "../support/request-failure.ts";
 
-// `main`'s client: Node's fetch before the wrapper is installed, keep-alive on.
 const unwrapped = globalThis.fetch;
 installLostConnections();
 
-/**
- * - `reset-on-reuse`: answer a connection's first request, kept alive; reset it when another
- *   request arrives on it.
- * - `reset-new`: reset every connection at its first request.
- * - `partial-then-reset`: write the first bytes of a status line, then reset.
- * - `stream`: answer with a body in three chunks over 60 ms; reset the connection if it is used again.
- */
 type Mode = "reset-on-reuse" | "reset-new" | "partial-then-reset" | "stream";
 
 interface TlsMaterial {
@@ -80,9 +35,7 @@ interface TlsMaterial {
 
 interface Stage {
   readonly origin: string;
-  /** Requests the stand-in received, by `METHOD /path`. */
   readonly received: Map<string, number>;
-  /** How many times each request id arrived. */
   readonly arrivals: Map<string, number>;
 }
 
@@ -96,18 +49,15 @@ const stage = (mode: Mode, material?: TlsMaterial) =>
       const arrivals = new Map<string, number>();
       const sockets = new Set<Socket>();
       const server: Server = createServer((raw) => {
-        // Over TLS the reset is the TCP connection's, under the TLS session, as an edge's would be.
         const socket: Socket =
           material === undefined ? raw : new TLSSocket(raw, { isServer: true, ...material });
         sockets.add(raw);
         raw.on("error", () => undefined);
         let buffered = "";
-        // Set once a request was answered: another request on this connection crosses its close.
         let used = false;
         socket.on("data", (chunk) => {
           buffered += chunk.toString("latin1");
           for (;;) {
-            // A request is whole when its headers end and its declared body has arrived.
             const end = buffered.indexOf("\r\n\r\n");
             if (end === -1) return;
             const head = buffered.slice(0, end);
@@ -165,14 +115,12 @@ const stage = (mode: Mode, material?: TlsMaterial) =>
     ({ close }) => Effect.sync(close),
   );
 
-/** Send a request through Effect's fetch client and read it; the result, success or failure. */
 const send = (
   method: "GET" | "POST",
   url: string,
   options: {
     readonly body?: unknown;
     readonly main?: boolean;
-    /** Send a streamed body, which `fetch` cannot be given twice. */
     readonly stream?: boolean;
   } = {},
 ) =>
@@ -194,10 +142,6 @@ const send = (
       : (self) => self,
   );
 
-/**
- * Eight callers, each sending 25 requests one after another, GETs and POSTs in turn, so a caller's
- * next request follows its previous response at once, as a scenario's do.
- */
 const load = (origin: string, main: boolean) =>
   Effect.forEach(
     Array.from({ length: 8 }, (_, caller) => caller),
@@ -223,7 +167,6 @@ const failureOf = (result: Effect.Success<ReturnType<typeof send>>) => {
   return requestFailureText((failure as CallFailed).failure);
 };
 
-/** A certificate for 127.0.0.1, trusted for the case only, the new connections included. */
 const trustedCertificate = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -301,8 +244,6 @@ layer(NodeServices.layer)("Stage requests on connections of their own", (it) => 
   it.effect("every entry point installs the wrapper before anything can read fetch", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
-      // The first two imports of each entry point that makes outbound calls, and of every setup
-      // file of the Vitest config the targets run under, are the connect time-out, then this.
       const firstTwo = (text: string) =>
         [...text.matchAll(/^import (?:[^;]*? from )?"([^"]+)";/gm)]
           .slice(0, 2)
@@ -342,7 +283,6 @@ layer(NodeServices.layer)("Stage requests on connections of their own", (it) => 
     () =>
       Effect.gen(function* () {
         const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
-        // A plain keep-alive server that counts the connections stage requests arrive on.
         const counted = yield* Effect.acquireRelease(
           Effect.callback<{
             readonly origin: string;
@@ -379,12 +319,6 @@ layer(NodeServices.layer)("Stage requests on connections of their own", (it) => 
           }),
           ({ close }) => Effect.sync(close),
         );
-        /**
-         * A process that, like the deployed suite, makes a request through Effect's client before
-         * the stage is named (its `/health` check), then names the stage and sends ten requests.
-         * `early` imports the wrappers as the entry points do; otherwise it installs the wrapper
-         * after the first request, as the preparation used to.
-         */
         const child = (early: boolean) =>
           Effect.gen(function* () {
             const code = [
@@ -420,10 +354,7 @@ layer(NodeServices.layer)("Stage requests on connections of their own", (it) => 
             expect(Number(exit)).toBe(0);
             return counted.connections.size;
           }).pipe(Effect.scoped);
-        // Installed first: ten stage requests, ten connections.
         expect(yield* child(true)).toBe(10);
-        // Installed after the first request, as the deployed suite's preparation did: the ten
-        // share Node's keep-alive pool. This is the gap the entry points' import closes.
         expect(yield* child(false)).toBeLessThan(10);
       }),
   );
@@ -463,8 +394,6 @@ layer(NodeServices.layer)("Stage requests on connections of their own", (it) => 
 
   it.effect("a TLS alert in the handshake is recorded as a request never written", () =>
     Effect.gen(function* () {
-      // Answers the client's hello with a fatal handshake_failure alert, as an edge without a
-      // certificate for the name does: record type 21, TLS 1.2, length 2, fatal (2), alert 40.
       const { origin } = yield* Effect.acquireRelease(
         Effect.callback<{ readonly origin: string; readonly server: Server }>((resume) => {
           const server = createServer((socket) => {
@@ -479,7 +408,6 @@ layer(NodeServices.layer)("Stage requests on connections of their own", (it) => 
         }),
         ({ server }) => Effect.sync(() => server.close()),
       );
-      // A scenario bound half a second away: no repeat can start before it.
       configureLostConnections({
         origins: [origin],
         scenario: () => expect.getState().currentTestName,
@@ -537,12 +465,6 @@ layer(NodeServices.layer)("Stage requests on connections of their own", (it) => 
   );
 });
 
-/**
- * A stage that refuses or resets every new connection for its first `burstMs`, and then answers,
- * closing each connection after its response. Plain: its listener is closed, so a connect is
- * refused, and opened again on the same port. TLS: each new connection is reset at the client's
- * hello, in the handshake. `take-and-die` instead reads each whole request and then resets.
- */
 const burstStage = (
   transport: "plain" | "TLS",
   burstMs: number,
@@ -633,7 +555,6 @@ layer(NodeServices.layer)("Stage requests of which nothing was written", (it) =>
         `${transport}: a ${method} never written is sent again after 1 and 2 s and answered once`,
         () =>
           Effect.gen(function* () {
-            // Refused or reset for 1.5 s: the attempts at 0 and 1 s fail, the one at 3 s is answered.
             const { origin, received, arrivals } = yield* burstStage(
               transport,
               1_500,
@@ -644,7 +565,6 @@ layer(NodeServices.layer)("Stage requests of which nothing was written", (it) =>
               ...(method === "POST" && { body: { synthetic: true } }),
             });
             expect(result._tag).toBe("Success");
-            // Exactly once: one arrival, under the one attempt id that reached the stand-in.
             expect(received.get(`${method} ${path}`)).toBe(1);
             expect([...arrivals.values()]).toEqual([1]);
             const [kept] = lostRequestsOf(expect.getState().currentTestName!);
@@ -685,7 +605,6 @@ layer(NodeServices.layer)("Stage requests of which nothing was written", (it) =>
   it.effect("the repeats stop at the scenario's bound, and the failure says how long", () =>
     Effect.gen(function* () {
       const { origin, received } = yield* burstStage("plain", Number.POSITIVE_INFINITY);
-      // The bound is 2.5 s away: the repeat after 1 s starts, the one 2 s later would cross it.
       const bound = Date.now() + 2_500;
       configureLostConnections({
         origins: [origin],
@@ -714,8 +633,6 @@ layer(NodeServices.layer)("Stage requests of which nothing was written", (it) =>
   it.effect("the repeats stop when the caller gives up, and a stream body is not sent twice", () =>
     Effect.gen(function* () {
       const { origin } = yield* burstStage("plain", Number.POSITIVE_INFINITY);
-      // The caller's own bound, a real 1.5 s (the case's clock is a test one), interrupts the request
-      // and so aborts the wait before the second repeat.
       const http = yield* HttpClient.HttpClient.pipe(Effect.provide(FetchHttpClient.layer));
       const timedOut = yield* http.get(`${origin}/api/organizations/org/resources`).pipe(
         Effect.raceFirst(
@@ -726,7 +643,6 @@ layer(NodeServices.layer)("Stage requests of which nothing was written", (it) =>
         Effect.result,
       );
       expect(timedOut._tag).toBe("Failure");
-      // The abort reaches the wait on the next turn of the event loop.
       yield* Effect.callback<void>((resume) => {
         setTimeout(() => resume(Effect.void), 100);
       });
@@ -744,7 +660,6 @@ layer(NodeServices.layer)("Stage requests of which nothing was written", (it) =>
 
   it.effect("a certificate that does not verify is not repeated", () =>
     Effect.gen(function* () {
-      // The certificate names 127.0.0.1; asked for localhost, the handshake fails verification.
       const { origin, received } = yield* burstStage("TLS", 0, yield* trustedCertificate);
       const named = origin.replace("127.0.0.1", "localhost");
       configureLostConnections({
@@ -767,7 +682,6 @@ layer(NodeServices.layer)("Stage requests of which nothing was written", (it) =>
 
   it.effect("a second copy of the module does not wrap fetch again", () =>
     Effect.gen(function* () {
-      // A process that loads the module twice, under two module ids, and installs both copies.
       const module = new URL("../support/lost-connections.ts", import.meta.url).href;
       const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
       const output = yield* processes.string(
@@ -827,7 +741,6 @@ layer(NodeServices.layer)("Each scenario's stage requests", (it) => {
     () =>
       Effect.gen(function* () {
         const name = expect.getState().currentTestName!;
-        // Effect's client puts each request in a trace of its own: the id the stage receives.
         const traceId = expect.stringMatching(/^[0-9a-f]{32}$/u);
         const answered = yield* stage("reset-on-reuse");
         const http = yield* HttpClient.HttpClient.pipe(Effect.provide(FetchHttpClient.layer));
@@ -881,7 +794,6 @@ layer(NodeServices.layer)("Each scenario's stage requests", (it) => {
       const { origin } = yield* stage("reset-on-reuse");
       const http = yield* HttpClient.HttpClient.pipe(Effect.provide(FetchHttpClient.layer));
       const extra = 3;
-      // One after another, so the oldest rows are the first paths.
       for (let index = 0; index < stageRequestLimit + extra; index++)
         expect((yield* http.get(`${origin}/n${index}`)).status).toBe(200);
       const { rows, dropped } = stageRequestsOf(name);

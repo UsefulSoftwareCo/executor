@@ -14,7 +14,6 @@ const UiContextFields = Schema.Struct({
     Schema.Record(Schema.NonEmptyString, Schema.Array(Schema.NonEmptyString)),
   ),
 });
-// Pages built with framework releases before versions were named read and send `deployment`.
 export const UiContext = UiContextFields.pipe(withLegacyKeys({ version: "deployment" }));
 /** A problem with one of the page's accounts, from stored state. Labels are the owner's own names. */
 export type UiAccountProblem =

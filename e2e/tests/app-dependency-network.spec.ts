@@ -1,10 +1,3 @@
-/**
- * An app build reaches its registry's own origin over the host's network, and everything else, a
- * dependency declared by tarball URL or a tarball or redirect the registry sends elsewhere, over
- * the network app code uses: on self-host, public addresses only unless the operator sets
- * `EXECUTOR_APPS_ALLOW_PRIVATE_FETCH`. A failed install names the declared package and an HTTP
- * status or a fixed reason, never a dependency's name or anything a server sent.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Layer, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -30,7 +23,6 @@ const BuildFailed = Schema.Struct({
 });
 const Organizations = Schema.NonEmptyArray(Schema.Struct({ id: Schema.String }));
 
-/** An app whose one tool returns `returned`, computed from what it imports from its dependency. */
 const files = (name: string, version: string, imported = "{ value }", returned = "value") => [
   {
     path: "package.json",
@@ -44,7 +36,6 @@ export default defineApp({}, { tools: router({ value: query({ input: object({}) 
   },
 ];
 
-/** Deploy and call apps as `owner` in the organization at `prefix`. */
 const appsOf = (api: typeof Api.Service, owner: Session, prefix: string) => {
   const deploy = (name: string, version: string, imported?: string, returned?: string) =>
     Effect.gen(function* () {
@@ -60,7 +51,6 @@ const appsOf = (api: typeof Api.Service, owner: Session, prefix: string) => {
       }
       return deployed;
     });
-  /** Deploy, then return what the app's tool returns. */
   const installed = (name: string, version: string, imported?: string, returned?: string) =>
     Effect.gen(function* () {
       const deployed = yield* deploy(name, version, imported, returned);
@@ -74,7 +64,6 @@ const appsOf = (api: typeof Api.Service, owner: Session, prefix: string) => {
       expect(called.status, JSON.stringify(called.body)).toBe(200);
       return called.body;
     });
-  /** Deploy, expect the build to fail, and return its message. */
   const failed = (name: string, version: string) =>
     Effect.gen(function* () {
       const deployed = yield* deploy(name, version);
@@ -97,8 +86,6 @@ layer(HostedLive, { excludeTestServices: true })("App dependency network", (it) 
     withHostedCase(
       context,
       Effect.gen(function* () {
-        // The archives listen on loopback. `apps` itself still installs from the suite's
-        // registry, which also listens on loopback: the registry's origin is not restricted.
         const packages = yield* appPackageFixture;
         const { failed } = yield* suiteApps;
         expect(yield* failed("direct-fixture", packages.direct)).toContain(
@@ -113,7 +100,6 @@ layer(HostedLive, { excludeTestServices: true })("App dependency network", (it) 
     withHostedCase(
       context,
       Effect.gen(function* () {
-        // npm's own archive host is public; nothing else in the suite is.
         const { installed } = yield* suiteApps;
         expect(
           yield* installed(
@@ -133,13 +119,11 @@ layer(HostedLive, { excludeTestServices: true })("App dependency network", (it) 
       Effect.gen(function* () {
         const packages = yield* appPackageFixture;
         const { installed, failed } = yield* suiteApps;
-        // The archive and the one it depends on, both on loopback, install.
         expect(yield* installed("direct-fixture", packages.direct)).toBe("transitive-package");
         expect(yield* packages.requests).toEqual({
           "/direct-fixture.tgz": 1,
           "/transitive-fixture.tgz": 1,
         });
-        // A missing archive fails the build with its status, not the server's reason or body.
         const message = yield* failed("missing-fixture", packages.unused);
         expect(message).toContain(
           `Installing missing-fixture@${packages.unused} failed: Failed to install missing-fixture: the tarball download answered HTTP 404`,
@@ -187,16 +171,13 @@ layer(TestLive, { excludeTestServices: true })("App dependency registry", (it) =
         );
         const failure = (name: string) => `Installing ${name}@1.0.0 failed: Failed to install`;
 
-        // The registry's own origin is private and still serves `apps` and its packages.
         expect(yield* installed("registry-fixture", "1.0.0")).toBe("registry-package");
-        // A tarball its metadata names on another private origin, and one its redirect lands on.
         expect(yield* failed("offsite-fixture", "1.0.0")).toContain(
           `${failure("offsite-fixture")} offsite-fixture: ${refused}`,
         );
         expect(yield* failed("redirected-fixture", "1.0.0")).toContain(
           `${failure("redirected-fixture")} redirected-fixture: ${refused}`,
         );
-        // A tarball URL dependency on another private origin, beneath a package that installs.
         expect(yield* failed("nested-fixture", "1.0.0")).toContain(
           `${failure("nested-fixture")} a dependency of nested-fixture: ${refused}`,
         );
@@ -205,8 +186,6 @@ layer(TestLive, { excludeTestServices: true })("App dependency registry", (it) =
         expect(requests["/nested-fixture/-/nested-fixture-1.0.0.tgz"]).toBe(1);
         expect(yield* registry.offsite).toEqual({});
 
-        // Failures name a fixed reason, never what the registry sent. The registry's own URL is
-        // written as the build's failure text writes URLs, with its path.
         const messages = [
           [
             "malformed-fixture",

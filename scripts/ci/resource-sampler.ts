@@ -1,17 +1,3 @@
-/**
- * Samples the runner every 5 s for the life of an e2e job, so a slow run can be told apart from a
- * busy one: load averages, CPU busy, iowait and steal shares, how many cores were busy, memory
- * used and available, and the busiest processes by command name.
- *
- *   node scripts/ci/resource-sampler.ts start <dir>   starts a detached sampler, returns at once
- *   node scripts/ci/resource-sampler.ts stop <dir>    stops it; it writes summary.json first
- *
- * `<dir>/samples.ndjson` gets one line per sample; `<dir>/summary.json` the job's totals. A process
- * is named only by its kernel command name (`/proc/<pid>/comm`, at most 15 characters), never by
- * its arguments or environment, which can hold secrets; a name outside the plain shape is `other`.
- * Reading /proc every 5 s costs a few milliseconds. It never fails the job: without Linux /proc
- * it records nothing, and every error is swallowed.
- */
 import { spawn } from "node:child_process";
 import {
   appendFileSync,
@@ -39,22 +25,15 @@ interface Sample {
   readonly t: string;
   readonly load: readonly [number, number, number];
   readonly cores: number;
-  /** Share of all cores busy (user, system, irq, softirq, steal counted as not idle). */
   readonly busy: number;
   readonly iowait: number;
   readonly steal: number;
-  /** Cores more than half busy over the interval. */
   readonly coresBusy: number;
   readonly memTotalMb: number;
   readonly memAvailableMb: number;
   readonly memUsedMb: number;
   readonly swapUsedMb: number;
-  /**
-   * Resident MB of managed local Cloud's AppData runtime, the workerd process that serves every
-   * app supervisor of the run; absent when there is none.
-   */
   readonly appdataRssMb?: number;
-  /** Busiest command names: share of one core over the interval, process count, resident MB. */
   readonly top: ReadonlyArray<{
     readonly name: string;
     readonly cpu: number;
@@ -91,7 +70,6 @@ const cpuTicks = (): Map<string, CpuTicks> => {
   return ticks;
 };
 
-/** CPU ticks and resident pages of each process, by pid, with its command name. */
 const processTicks = () => {
   const ticks = new Map<
     string,
@@ -106,13 +84,11 @@ const processTicks = () => {
   for (const pid of entries) {
     const stat = read(`/proc/${pid}/stat`);
     if (stat === undefined) continue;
-    // The command name is in parentheses and may itself hold spaces or parentheses.
     const open = stat.indexOf("(");
     const close = stat.lastIndexOf(")");
     if (open < 0 || close < open) continue;
     const comm = stat.slice(open + 1, close);
     const fields = stat.slice(close + 2).split(" ");
-    // After the name: state is field 3, utime 14, stime 15, rss 24 (1-based, `man 5 proc`).
     const cpu = Number(fields[11]) + Number(fields[12]);
     const rss = Number(fields[21]);
     if (!Number.isFinite(cpu)) continue;
@@ -125,10 +101,6 @@ const processTicks = () => {
   return ticks;
 };
 
-/**
- * Whether a workerd process is local Cloud's AppData runtime: it has its app supervisors' storage
- * open (`.alchemy/local/<stage>-appdata-<hash>-AppDataSupervisor/…`). Each process is asked once.
- */
 const appdata = new Map<string, boolean>();
 const isAppData = (pid: string) => {
   const known = appdata.get(pid);
@@ -141,14 +113,11 @@ const isAppData = (pid: string) => {
           found = true;
           break;
         }
-      } catch {
-        // Closed while read.
-      }
+      } catch {}
     }
   } catch {
     return false;
   }
-  // A runtime that has not yet opened a supervisor is asked again next time.
   if (found) appdata.set(pid, true);
   return found;
 };
@@ -262,9 +231,7 @@ const sample = (directory: string) => {
       cpu = nextCpu;
       processes = nextProcesses;
       last = now;
-    } catch {
-      // A sample that cannot be read is skipped; the job goes on.
-    }
+    } catch {}
   };
 
   const summarise = () => {
@@ -335,10 +302,6 @@ const sample = (directory: string) => {
             1,
           ),
         },
-        /**
-         * Local Cloud's AppData runtime at its largest, and how many AppData processes the job had:
-         * one per local Cloud it started, and one more for each that replaced one that died.
-         */
         appdata:
           appdataPeak.pids.size === 0
             ? null
@@ -357,9 +320,7 @@ const sample = (directory: string) => {
           })),
       };
       writeFileSync(join(directory, "summary.json"), `${JSON.stringify(summary, null, 2)}\n`);
-    } catch {
-      // No summary; the samples remain.
-    }
+    } catch {}
   };
 
   const timer = setInterval(tick, intervalMs);
@@ -376,7 +337,6 @@ const sample = (directory: string) => {
 const [command, directory] = process.argv.slice(2);
 try {
   if (directory === undefined || !existsSync("/proc/stat")) {
-    // Not Linux, or no directory: record nothing.
   } else if (command === "start") {
     mkdirSync(directory, { recursive: true });
     const child = spawn(process.execPath, [process.argv[1]!, "run", directory], {
@@ -392,17 +352,13 @@ try {
     if (Number.isInteger(pid) && pid > 0) {
       try {
         process.kill(pid, "SIGTERM");
-      } catch {
-        // Already gone.
-      }
-      // Wait up to 5 s for the summary, then leave.
+      } catch {}
       const deadline = Date.now() + 5_000;
       const wait = () => {
         if (existsSync(join(directory, "summary.json"))) return report();
         if (Date.now() > deadline) return;
         setTimeout(wait, 100);
       };
-      // The job log says how large local Cloud's AppData runtime grew, passed or failed.
       const report = () => {
         const summary = JSON.parse(read(join(directory, "summary.json")) ?? "{}") as {
           appdata?: { peakRssMb: number; peakAt: string; pids: number } | null;
@@ -419,6 +375,4 @@ try {
       wait();
     }
   }
-} catch {
-  // Never fail the job.
-}
+} catch {}

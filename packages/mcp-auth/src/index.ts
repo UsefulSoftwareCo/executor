@@ -1,4 +1,3 @@
-/** Shared grant contracts and enforcement for product hosts. */
 export {
   GrantId,
   ApprovalMode,

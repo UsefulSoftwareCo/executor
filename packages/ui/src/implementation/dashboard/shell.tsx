@@ -10,7 +10,6 @@ import {
 import { Dialog, DialogContent, DialogTitle, DialogTrigger } from "../components/dialog.tsx";
 import { useMediaQuery } from "../hooks/media-query.ts";
 
-/** The public issue tracker, shared by the Feedback link and the support channels. */
 export const issuesUrl = "https://github.com/UsefulSoftwareCo/executor/issues";
 
 const resources = (docsUrl: string) =>
@@ -24,21 +23,14 @@ const resources = (docsUrl: string) =>
     },
   ] as const;
 
-/** Between the phone layout and a wide screen the rail starts collapsed and can be toggled. */
 const mediumViewport = "(min-width: 741px) and (max-width: 1000px)";
 
-/** Sidebar nav link styles, shared by the desktop rail and the phone menu sheet. */
 const navigationClass =
   "[&_nav]:grid [&_nav]:gap-0.5 [&_nav_a]:flex [&_nav_a]:items-center [&_nav_a]:py-[6px] [&_nav_a]:px-[8px] [&_nav_a]:gap-2 [&_nav_a]:rounded-[6px] [&_nav_a]:text-[13px] [&_nav_a]:font-medium [&_nav_a]:text-muted-foreground [&_nav_a.active]:bg-accent [&_nav_a.active]:text-foreground [&_nav_a:hover]:bg-accent [&_nav_a:hover]:text-foreground [&_nav_a_>_span]:ml-auto [&_nav_a_>_span]:text-muted-foreground [&_nav_a_>_span]:font-mono [&_nav_a_>_span]:text-[11px] [&_nav_a_>_span]:font-normal";
 
-/**
- * Icon-only rail. Labels stay in the DOM for assistive technology, so they are
- * collapsed with a zero font size rather than removed; icons keep their own size.
- */
 const collapsedClass =
   "[&_.sidebar-header]:justify-center [&_.wordmark]:hidden [&_nav_a]:justify-center [&_nav_a]:gap-0! [&_nav_a]:px-0! [&_nav_a]:h-9 [&_nav_a]:text-[0px]! [&_nav_a_>_span]:hidden [&_.sidebar-resource-links]:items-center [&_.sidebar-resource-links]:px-0 [&_.sidebar-resource-links_a]:w-full [&_.sidebar-resource-links_a]:justify-center [&_.sidebar-resource-links_a]:min-h-8 [&_.sidebar-resource-links_a_>_span]:hidden [&_.sidebar-resource-links_button]:w-full [&_.sidebar-resource-links_button]:justify-center [&_.sidebar-resource-links_button]:min-h-8 [&_.sidebar-resource-links_button_>_span]:hidden [&_.hosted-identity]:px-0 [&_.organization-trigger]:justify-center [&_.organization-trigger]:px-0 [&_.organization-name]:hidden [&_.organization-chevron]:hidden [&_.session-menu]:justify-center [&_.session-menu]:px-0 [&_.session-name]:hidden [&_.sidebar-version]:hidden";
 
-/** Links and the optional support trigger share one compact style. */
 function ResourceLinks({
   docsUrl,
   support,
@@ -59,12 +51,6 @@ function ResourceLinks({
   );
 }
 
-/**
- * The dashboard layout: a sidebar rail on wide screens, which collapses to an
- * icon rail on medium ones, where it can be toggled either way. On phones the rail
- * becomes a floating Menu pill that opens the same navigation, resource links and
- * footer in a bottom sheet, so page content starts at the top of the screen.
- */
 export function DashboardShell({
   docsUrl,
   brand,
@@ -77,27 +63,12 @@ export function DashboardShell({
   footer,
   children,
 }: {
-  /** The owning product chooses same-origin or public documentation. */
   readonly docsUrl: string;
   readonly brand: ReactNode;
   readonly navigation: ReactNode;
-  /** A full-width notice above the navigation and page content. */
   readonly banner?: ReactNode;
-  /** A product-owned way to reach the team, shown with the resource links. */
   readonly support?: ReactNode;
-  /**
-   * A small product-owned block, such as an update's `SidebarNews`, shown above the footer's
-   * divider in place of the resource links and `support`, which come back when it goes. The icon
-   * rail leaves it out, shows `noticeMark` in its place and keeps the links. Pass nothing when
-   * there is none.
-   */
   readonly notice?: ReactNode;
-  /**
-   * The notice's mark in the icon rail, which has no room for the notice itself: one small icon,
-   * named by `label` for a tooltip and assistive technology, that expands the rail to the notice.
-   * `dot` adds a dot to it, for a notice that waits on the user, such as an update ready to
-   * install. Pass it only with a `notice`.
-   */
   readonly noticeMark?:
     | {
         readonly label: string;
@@ -105,10 +76,6 @@ export function DashboardShell({
         readonly dot: boolean;
       }
     | undefined;
-  /**
-   * A product's news, such as Cloud's what's new, in the same place as `notice` but with the
-   * resource links kept under it. A `notice` takes its place while there is one.
-   */
   readonly news?: ReactNode;
   readonly footer?: ReactNode;
   readonly children: ReactNode;
@@ -117,7 +84,6 @@ export function DashboardShell({
   const medium = useMediaQuery(mediumViewport);
   const [mediumCollapsed, setMediumCollapsed] = useState(true);
   const collapsed = medium && mediumCollapsed;
-  /** The block above the footer: the notice, which takes the links' place, or else the news. */
   const block = notice ? notice : news ? news : null;
   const links = (sheet: boolean) =>
     notice && (sheet || !collapsed) ? null : <ResourceLinks docsUrl={docsUrl} support={support} />;
@@ -212,7 +178,6 @@ export function DashboardShell({
           showCloseButton={false}
           className={`shell-menu sidebar top-auto bottom-0 left-0 translate-x-0 translate-y-0 w-full max-w-none sm:max-w-none gap-0 rounded-b-none rounded-t-[14px] border-b-0 p-[8px_8px_max(12px,_env(safe-area-inset-bottom))] max-h-[85dvh] overflow-y-auto data-[state=open]:slide-in-from-bottom-4 data-[state=closed]:slide-out-to-bottom-4 data-[state=open]:zoom-in-100 data-[state=closed]:zoom-out-100 [&_nav_a]:min-h-11 [&_nav_a]:text-[14px] [&_nav_a]:px-[10px] ${navigationClass}`}
           onClickCapture={(event) => {
-            // Following a link closes the sheet; the route change happens as usual.
             if ((event.target as Element).closest("a")) setMenuOpen(false);
           }}
         >

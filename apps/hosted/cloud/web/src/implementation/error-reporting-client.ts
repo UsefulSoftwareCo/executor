@@ -9,11 +9,6 @@ import { budgetedFetch, pageFetch } from "@executor-js/telemetry/keepalive";
 import { documentBuild } from "@executor-js/dashboard-start/document-build";
 import { Schema, Option } from "effect";
 
-/**
- * OAuth codes, MCP authorization parameters and invitation tokens all travel in
- * the query string or fragment of a first-visit URL. Nothing carrying one may
- * reach Sentry, from a request URL or from a navigation, fetch or xhr breadcrumb.
- */
 export const strippedUrl = (value: string): string => {
   const url = URL.parse(value, "https://executor.invalid");
   if (url === null) return value;
@@ -22,7 +17,6 @@ export const strippedUrl = (value: string): string => {
   return url.origin === "https://executor.invalid" ? url.pathname : url.href;
 };
 
-/** Breadcrumb URLs live in `data`; the SDK records them as relative paths with a query. */
 export const strippedBreadcrumb = <A extends { data?: Record<string, unknown> | undefined }>(
   crumb: A,
 ): A => {
@@ -35,10 +29,6 @@ export const strippedBreadcrumb = <A extends { data?: Record<string, unknown> | 
   return crumb;
 };
 
-/**
- * Which of the SDK's envelopes a request carries, so a resent one is recorded under a fixed name:
- * an error report carries an event item, a session update does not.
- */
 const envelopeSender = (body: BodyInit | null | undefined) => {
   const text =
     typeof body === "string"
@@ -49,7 +39,6 @@ const envelopeSender = (body: BodyInit | null | undefined) => {
   return /\n\{"type":"event"/.test(text) ? "error-reports" : "error-sessions";
 };
 
-/** Call once at the browser composition root; unconfigured local builds remain disabled. */
 export const startErrorReporting = () => {
   const dsn: unknown = import.meta.env.VITE_SENTRY_DSN;
   if (typeof dsn !== "string" || dsn.length === 0) return;
@@ -59,7 +48,6 @@ export const startErrorReporting = () => {
   window.addEventListener("executor:operation-failed", (event) => {
     if (!(event instanceof CustomEvent)) return;
     const value = Schema.decodeUnknownOption(BrowserOperationFailure)(event.detail);
-    // Every failure is captured at this one call site, so group by kind rather than by stack.
     if (Option.isSome(value))
       Sentry.captureException(new Error(value.value.error_type), {
         fingerprint: [value.value.error_type],
@@ -67,14 +55,10 @@ export const startErrorReporting = () => {
         tags: { error_type: value.value.error_type, page_id: value.value.page_id },
       });
   });
-  // Every dashboard chunk is emitted beside this module.
   const scripts = scriptDirectory(import.meta.url);
   Sentry.init({
     tunnel,
     dsn,
-    // The SDK sends with keepalive while its own requests stay under 64 KiB, but the browser refuses
-    // one once all of the page's keepalive requests would pass that, and the SDK then drops the
-    // report. Its requests draw from the page's one budget instead.
     transport: (options) =>
       Sentry.makeFetchTransport(options, (input, init) =>
         budgetedFetch(envelopeSender(init?.body), pageFetch)(input, init),
@@ -86,7 +70,6 @@ export const startErrorReporting = () => {
     initialScope: {
       tags: { product_version: "v2", surface: "dashboard", page_id: browserPageId() },
     },
-    // Breadcrumbs are attached before this hook runs, so they are scrubbed here too.
     beforeBreadcrumb: (crumb) => strippedBreadcrumb(crumb),
     beforeSend: (event, hint) => {
       if (automaticBrowserCapture(event) && !firstPartyFailure(hint.originalException, scripts))
@@ -103,5 +86,4 @@ export const startErrorReporting = () => {
   });
 };
 
-/** Boot failures are reported after early initialization, with no entry data attached. */
 export const reportBootFailure = (error: unknown) => Sentry.captureException(error);

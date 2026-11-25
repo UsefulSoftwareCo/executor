@@ -1,7 +1,3 @@
-/**
- * Self-host invitations left pending after their inviter lost the role to invite, made by changing
- * the role in the product's database while it is stopped.
- */
 import { layer } from "@effect/vitest";
 import { Effect } from "effect";
 import { HostedLive, withHostedCase } from "../support/case.ts";

@@ -51,17 +51,12 @@ import { OrganizationAvatar } from "../components/organization.tsx";
 import { useAccountOrganization } from "../components/account.tsx";
 import { useDocumentationUrl } from "../documentation.ts";
 
-/** The organization select value: one organization id, or the whole account. */
 const fullAccount = "account";
 const errorMessage = (cause: Cause.Cause<ApiKeyFailed>) => {
   const error = Cause.squash(cause);
   return error instanceof ApiKeyFailed ? error.message : "Could not update API keys. Try again.";
 };
 
-/**
- * Every token the signed-in user owns, across organizations. The organization a visitor came
- * from only preselects the scope of a new token.
- */
 export function TokensPage({
   organization: reference,
 }: {
@@ -71,7 +66,6 @@ export function TokensPage({
   const { organizations, memberships, selected } = useAccountOrganization(reference);
   const retryOrganizations = useAtomRefresh(organizationsAtom);
   const tokenDocsUrl = useDocumentationUrl("api-keys/#personal-access-tokens");
-  /** A pinned key names its organization; one the user has left keeps a plain label. */
   const pinnedOrganization = (key: ApiKeySummary) =>
     key.metadata?.organization === undefined
       ? undefined
@@ -309,7 +303,6 @@ export function TokensPage({
               event.preventDefault();
               if (creating || scope === undefined) return;
               setError(undefined);
-              // The server refuses it too; say why here rather than as a failed request.
               if (name.trim() === managedKeyName) {
                 setError(
                   "That name is reserved for the key Executor creates for the Executor app. Choose another name.",
@@ -447,7 +440,6 @@ export function TokensPage({
           </DialogDescription>
           {created && (
             <>
-              {/* A text input masked with CSS: password inputs refuse to copy the secret. */}
               <Input
                 type="text"
                 aria-label="New token"

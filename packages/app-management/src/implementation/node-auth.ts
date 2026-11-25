@@ -1,12 +1,5 @@
 import { homedir } from "node:os";
 import { lock } from "proper-lockfile";
-/**
- * CLI device sign-in and credential-store adapter. A host can hold two sign-ins: app management,
- * for the host's API resource, and tools, for its MCP resource. Sessions live in the OS credential
- * store, or on machines without one in a file only this user can read. Credentials never enter
- * repositories or config files. The host signed in to last is remembered beside them, without a
- * credential, so client commands default to it.
- */
 import {
   Clock,
   Config,
@@ -56,27 +49,18 @@ const Session = Schema.Struct({
   expiresAt: Schema.Number,
   organization: Schema.String,
   namespace: Schema.String,
-  /**
-   * Other origins where the host that issued this session serves Git, from its context at
-   * sign-in. Absent for sessions saved before the host named them, and for hosts that serve Git
-   * only on their own origin.
-   */
   gitOrigins: Schema.optional(Schema.Array(Schema.String)),
 });
-/** The tools sign-in: a grant for the host's MCP resource, which may be on another origin. */
 const ToolsSession = Schema.Struct({
   clientId: Schema.String,
   accessToken: Schema.String,
   refreshToken: Schema.String,
   expiresAt: Schema.Number,
-  /** The MCP endpoint the grant is for, as the host's resource metadata names it. */
   resource: Schema.String,
 });
 export type ToolsSession = typeof ToolsSession.Type;
-/** Which of a host's two sign-ins: app management (`api`) or tools (`mcp`). */
 export type SignIn = "api" | "mcp";
 const authError = () => new AppClientError({ reason: "authentication" });
-/** Session locks, and sessions on machines without an OS credential store, live here. */
 const authDirectory = Effect.gen(function* () {
   const path = yield* Path.Path;
   return path.join(homedir(), ".local", "state", "executor", "auth");
@@ -89,15 +73,9 @@ const digest = (input: string) =>
       ),
     catch: authError,
   });
-/** The app management sign-in's store entry; the name predates the tools sign-in. */
 const sessionService = "Executor Registry";
 const toolsService = "Executor Tools";
-/**
- * Which signed-in host a Git origin's remotes use. It holds an origin, never a credential, and
- * {@link gitSession} accepts it only when that host's own session names the Git origin.
- */
 const gitService = "Executor Registry Git";
-// Loaded lazily so a native binding that cannot load means no OS store instead of a failed start.
 const osEntry = (service: string, account: string) =>
   Effect.tryPromise({
     try: async () => {
@@ -114,7 +92,6 @@ const credentialFile = (service: string, account: string) =>
     yield* fs.makeDirectory(directory, { recursive: true, mode: 0o700 });
     return path.join(directory, `${yield* digest(`${service}\n${account}`)}.json`);
   });
-/** Read from the OS credential store, then from the file used where that store is unavailable. */
 const readCredential = (service: string, account: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -129,11 +106,6 @@ const readCredential = (service: string, account: string) =>
     const file = yield* credentialFile(service, account);
     return (yield* fs.exists(file)) ? yield* fs.readFileString(file) : undefined;
   }).pipe(Effect.catchTag("PlatformError", authError));
-/**
- * Save in the OS credential store when this machine has one, as on a desktop. A Linux server or
- * container usually has no Secret Service, so there the value goes to a file readable only by
- * this user. Returns that file, or nothing when the OS store took it.
- */
 const writeCredential = (service: string, account: string, value: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -149,7 +121,6 @@ const writeCredential = (service: string, account: string, value: string) =>
         )
       : false;
     if (inOsStore) {
-      // A session saved to a file before the OS store was available must not outlive it.
       yield* fs.remove(file, { force: true });
       return Option.none<string>();
     }
@@ -158,11 +129,6 @@ const writeCredential = (service: string, account: string, value: string) =>
     yield* fs.rename(temporary, file);
     return Option.some(file);
   }).pipe(Effect.catchTag("PlatformError", authError));
-/**
- * Remove a credential from the OS credential store and the file fallback. A store that cannot
- * delete it is left alone only when it cannot read it either, as when there is no store; a value
- * that can still be read afterwards fails the removal.
- */
 const deleteCredential = (service: string, account: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -175,7 +141,6 @@ const deleteCredential = (service: string, account: string) =>
     yield* fs.remove(yield* credentialFile(service, account), { force: true });
     if ((yield* readCredential(service, account)) !== undefined) return yield* authError();
   }).pipe(Effect.catchTag("PlatformError", authError));
-/** Read a JSON response from the Executor host; redirects fail rather than carry credentials. */
 const fetchJson = <A>(request: HttpClientRequest.HttpClientRequest, schema: Schema.Decoder<A>) =>
   HttpClient.execute(request).pipe(
     Effect.flatMap(HttpClientResponse.filterStatusOk),
@@ -195,7 +160,6 @@ const request = <A>(url: string, body: URLSearchParams | object, schema: Schema.
 const Endpoint = Schema.String.check(
   Schema.makeFilter((input) => Schema.is(RegistryOrigin)(URL.parse(input)?.origin ?? "")),
 );
-/** The MCP resource a host's metadata names: an endpoint at `/mcp` on a permitted origin. */
 const isMcpResource = (resource: string) => {
   const url = URL.parse(resource);
   return (
@@ -249,7 +213,6 @@ const discover = (host: string, signIn: SignIn) =>
       device: metadata.device_authorization_endpoint,
     };
   });
-/** The MCP endpoint a host names for tools, read from its unauthenticated resource metadata. */
 export const mcpResource = (host: string) =>
   Schema.decodeUnknownEffect(RegistryOrigin)(host).pipe(
     Effect.mapError(authError),
@@ -259,7 +222,6 @@ export const mcpResource = (host: string) =>
 const save = (host: string, session: typeof Session.Type) =>
   writeCredential(sessionService, host, JSON.stringify(session));
 
-/** Serialize refresh and replacement across Git helper processes; the lock contains no credentials. */
 const withSessionLock = <A, E, R>(host: string, work: Effect.Effect<A, E, R>) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -284,17 +246,8 @@ const withSessionLock = <A, E, R>(host: string, work: Effect.Effect<A, E, R>) =>
     }),
   ).pipe(Effect.catchTag("PlatformError", authError));
 
-/**
- * A session is refreshed this long before its access token expires, so a token handed out has at
- * least this long left. The Git helper reports the same point as the token's expiry, so a copy
- * another credential helper keeps is dropped when this one would refresh it.
- */
 export const sessionRefreshMarginMs = 60_000;
 
-/**
- * The session as saved, or with fresh tokens from the host when its access token is due to
- * expire. The caller holds the host's session lock and saves the result.
- */
 const refreshDue = <S extends { clientId: string; refreshToken: string; expiresAt: number }>(
   host: string,
   signIn: SignIn,
@@ -320,7 +273,6 @@ const refreshDue = <S extends { clientId: string; refreshToken: string; expiresA
     });
   });
 
-/** Read and refresh one explicitly selected organization grant. The credential store owns refresh-token custody. */
 export const registrySession = (host: string) =>
   withSessionLock(
     host,
@@ -338,7 +290,6 @@ export const registrySession = (host: string) =>
     }),
   );
 
-/** Read the tools sign-in, if the host has one, without refreshing it. */
 const readToolsSession = (host: string) =>
   Effect.gen(function* () {
     const raw = yield* readCredential(toolsService, host);
@@ -350,7 +301,6 @@ const readToolsSession = (host: string) =>
     );
   });
 
-/** The tools sign-in for `host`, refreshed as the app management sign-in is. */
 export const toolsSession = (host: string) =>
   withSessionLock(
     host,
@@ -365,16 +315,9 @@ export const toolsSession = (host: string) =>
     }),
   );
 
-/** Whether `host` holds an app management sign-in. Reads the store; refreshes nothing. */
 export const hasRegistrySession = (host: string) =>
   readCredential(sessionService, host).pipe(Effect.map((raw) => raw !== undefined));
 
-/**
- * The session for Git remotes on `origin`. Hosted Executor serves Git on other origins than its
- * API (`executor.sh` beside `api.executor.sh`), so sign-in records which host's session each of
- * them uses, and that session must still name the origin. Otherwise a session signed in at
- * `origin` itself is used, as on hosts that serve Git beside their API.
- */
 export const gitSession = (origin: string) =>
   Effect.gen(function* () {
     const host = (yield* readCredential(gitService, origin)) ?? origin;
@@ -384,7 +327,6 @@ export const gitSession = (origin: string) =>
     return session;
   });
 
-/** The scope each sign-in asks for; both keep a refresh token. */
 const scopes: Record<SignIn, string> = {
   api: "executor offline_access",
   mcp: "mcp offline_access",
@@ -394,16 +336,11 @@ type Endpoints = Effect.Success<ReturnType<typeof discover>>;
 const failure = (signIn: SignIn) => (reason: LoginFailed["reason"]) => () =>
   new LoginFailed({ reason, signIn });
 const TokenError = Schema.Struct({ error: Schema.String });
-/** Seconds a rate-limited response asks to wait, in delta-seconds; Better Auth names its own header. */
 const retryAfter = (headers: Readonly<Record<string, string | undefined>>) => {
   const seconds = Number(headers["retry-after"] ?? headers["x-retry-after"]);
   return Number.isFinite(seconds) && seconds > 0 ? seconds : 0;
 };
 
-/**
- * Whether a browser opened here reaches the person signing in. Over SSH it would open on the
- * remote machine, and a Linux session without a display has none to open.
- */
 const browserReachable = (platform: string) =>
   Effect.gen(function* () {
     const variable = (name: string) =>
@@ -413,12 +350,6 @@ const browserReachable = (platform: string) =>
     return !remote && (platform !== "linux" || display);
   }).pipe(Effect.orElseSucceed(() => false));
 
-/**
- * Open the approval page in this machine's browser; the printed code still works if none opens.
- * The opener is started and left alone. Outside a desktop it detects, xdg-open runs a browser it
- * has to start in the foreground until that browser quits, so waiting for it would hold polling
- * back while the person approves, and ending it would close the browser they approve in.
- */
 const openBrowser = (platform: string, url: string) =>
   Effect.gen(function* () {
     if (!(yield* browserReachable(platform))) return;
@@ -434,7 +365,6 @@ const openBrowser = (platform: string, url: string) =>
       stdout: "ignore",
       stderr: "ignore",
     });
-    // An unreferenced process outlives this scope and does not keep the CLI running.
     yield* Effect.scoped(spawner.spawn(command).pipe(Effect.flatMap((child) => child.unref))).pipe(
       Effect.ignore,
     );
@@ -473,8 +403,6 @@ const deviceLogin = (endpoints: Endpoints, signIn: SignIn, platform: string) =>
         interval: Schema.optional(Schema.Number),
       }),
     ).pipe(Effect.mapError(fail("registration")));
-    // One link: with the code in it when the host offers that, so nothing needs typing. The code
-    // is still shown, to compare with the page before approving.
     yield* Console.error(
       [
         "",
@@ -519,8 +447,6 @@ const deviceLogin = (endpoints: Endpoints, signIn: SignIn, platform: string) =>
             Effect.flatMap(Schema.decodeUnknownEffect(Token)),
             Effect.mapError(fail("token")),
           );
-        // A per-address limit in front of the token endpoint answers without an OAuth error. Slow
-        // down as `slow_down` asks, waiting at least as long as the limit names.
         if (response.status === 429)
           return yield* wait(interval + 5, Math.max(interval + 5, retryAfter(response.headers)));
         const { error } = yield* response.json.pipe(
@@ -536,16 +462,11 @@ const deviceLogin = (endpoints: Endpoints, signIn: SignIn, platform: string) =>
     return { clientId: client.client_id, token: yield* wait(started.interval ?? 5) };
   });
 
-/**
- * The host client commands use when neither --host nor EXECUTOR_HOST names one: the host signed in
- * to last, recorded beside the sessions without a credential.
- */
 const RememberedHost = Schema.fromJsonString(Schema.Struct({ host: RegistryOrigin }));
 const rememberedFile = Effect.gen(function* () {
   const path = yield* Path.Path;
   return path.join(yield* authDirectory, "host.json");
 });
-/** The host signed in to last, if one is remembered. */
 export const rememberedHost = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const file = yield* rememberedFile;
@@ -567,7 +488,6 @@ const remember = (host: string) =>
     yield* fs.rename(temporary, file);
   });
 
-/** Say where a session went when the OS credential store could not take it. */
 const reportFileFallback = (saved: Option.Option<string>) =>
   Option.isSome(saved)
     ? Console.error(
@@ -575,10 +495,6 @@ const reportFileFallback = (saved: Option.Option<string>) =>
       )
     : Effect.void;
 
-/**
- * Sign in to a hosted Executor for app commands with a code approved on any signed-in browser.
- * The host becomes the one client commands use by default.
- */
 export const registryLogin = (host: string, platform: string) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -593,7 +509,6 @@ export const registryLogin = (host: string, platform: string) =>
         Schema.Struct({
           organization: Schema.String,
           slug: Schema.String,
-          // Hosts released before this field serve Git only on their own origin.
           gitOrigins: Schema.optional(Schema.Array(RegistryOrigin)),
         }),
       ).pipe(Effect.mapError(fail("context")));
@@ -620,11 +535,6 @@ export const registryLogin = (host: string, platform: string) =>
     }),
   );
 
-/**
- * Sign in for tool commands and `executor mcp`: a device grant for the host's MCP resource. What
- * the grant reaches and how its approvals are answered are chosen on the approval page. The host
- * becomes the one client commands use by default. Returns the saved session.
- */
 export const toolsLogin = (host: string, platform: string) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -652,10 +562,6 @@ export const toolsLogin = (host: string, platform: string) =>
     }),
   );
 
-/**
- * Remove both of `host`'s sign-ins, and the Git origins its app management sign-in named, and
- * forget it when it is the remembered host. Returns whether it held any sign-in.
- */
 export const logout = (host: string) =>
   withSessionLock(
     host,
@@ -674,7 +580,6 @@ export const logout = (host: string) =>
       const tools = yield* readCredential(toolsService, host);
       yield* deleteCredential(sessionService, host);
       yield* deleteCredential(toolsService, host);
-      // A damaged record cannot name another host, so signing out is how it is cleared.
       const remembered = yield* rememberedHost.pipe(
         Effect.catchTag("SignInStateInvalid", () => Effect.succeed(Option.some(host))),
       );

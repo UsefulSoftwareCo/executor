@@ -1,4 +1,3 @@
-/** Node composition for Alchemy's workerd app runtime and native workflow engine. */
 import {
   Runtime as LocalRuntime,
   layerLocalRuntime,
@@ -59,17 +58,6 @@ import { workerdHostModules } from "./workerd-bundle.ts";
 import { appWorkerIdleSeconds, appWorkerLimit } from "./app-worker-residency.ts";
 import { EngineFaults } from "../contracts/engine-faults.ts";
 
-/**
- * E2E runs only: delays that make a data supervisor's reset meet other work on purpose. Each is read
- * from its `EXECUTOR_TEST_SUPERVISOR_*_MS` setting, from 1 to 25,000 ms (workerd resets an object
- * itself after 30 s of blocked input). Any other run has none.
- * - `resetDelayMs`: the reset waits this long, its input open, before checking it may reset, so
- *   a call or a release can be running then.
- * - `replyDelayMs`: a call's reply waits this long after the call has left the facet, as a reply
- *   waits for its object's output gate, so a reset can meet a call that already ran.
- * - `resetHoldMs`: after its checks, the reset holds its input this long before it resets, so a
- *   request sent then is accepted but cannot start, and the reset meets it.
- */
 const supervisorFaults = Effect.gen(function* () {
   const environment = yield* Config.option(Config.String("EXECUTOR_ENVIRONMENT"));
   if (Option.getOrUndefined(environment) !== "e2e") return null;
@@ -84,7 +72,6 @@ const supervisorFaults = Effect.gen(function* () {
   };
   return Object.values(faults).some((value) => value !== undefined) ? faults : null;
 });
-/** E2E runs only: engine call faults for the runtime's workflows; see `engine-faults.ts`. */
 const engineFaults = Effect.gen(function* () {
   const environment = yield* Config.option(Config.String("EXECUTOR_ENVIRONMENT"));
   if (Option.getOrUndefined(environment) !== "e2e") return null;
@@ -98,21 +85,11 @@ const engineFaults = Effect.gen(function* () {
 import { runtimeHops, type SocketRecord } from "./runtime-hop.ts";
 import { repeatingAtConnect, repeatUnopened, type Opening } from "./runtime-connect.ts";
 
-/** Existing stores need an explicit migration; opening a new empty store would hide retained app data. */
 export class WorkerdMigrationRequired extends Schema.TaggedError<WorkerdMigrationRequired>()(
   "WorkerdMigrationRequired",
   { directory: Schema.String },
 ) {}
-/**
- * workerd's `internet` service backs every global fetch, and Alchemy configures it to allow
- * private and loopback addresses because the host worker and local development need them. A
- * second network service carries the public-only rule, so app isolates can be pointed at it
- * through `globalOutbound` without changing the network the host itself uses. The refusal
- * happens in workerd after DNS resolution, so a public name that resolves to 127.0.0.1 is
- * refused too.
- */
 const PUBLIC_EGRESS_SERVICE = "internet:public";
-/** Environment name of the public-only network service inside the workerd host worker. */
 const PUBLIC_EGRESS_BINDING = "PUBLIC_FETCH";
 class PublicEgress extends AlchemyPlugin.Service<PublicEgress>()(
   "cloudflare-runtime/plugin/executor-public-egress",
@@ -123,9 +100,7 @@ const publicEgress = Layer.effect(
     services: [
       {
         name: PUBLIC_EGRESS_SERVICE,
-        // A getter, like Alchemy's own service, so added CA certificates are read per config build.
         get network() {
-          // Same TLS trust as the default network. Only the destination rule differs.
           return {
             ...("network" in internet ? internet.network : undefined),
             allow: ["public"],
@@ -140,11 +115,6 @@ const publicEgressBinding: BindingHook = Effect.succeed({
   name: PUBLIC_EGRESS_BINDING,
   service: { name: PUBLIC_EGRESS_SERVICE },
 });
-/**
- * The product's own listener, reached as a workerd external service rather than through a
- * network service. App requests for the dashboard origin use it, so they never depend on what
- * that origin's name resolves to.
- */
 const SELF_ORIGIN_SERVICE = "executor:self-origin";
 class SelfOriginService extends AlchemyPlugin.Service<SelfOriginService>()(
   "cloudflare-runtime/plugin/executor-self-origin",
@@ -161,13 +131,6 @@ const selfOriginBinding: BindingHook = Effect.succeed({
 const engineFailure = () => new WorkflowFailure({ reason: "engine", retryable: true });
 const protocolFailure = () => new RuntimeProtocolFailed();
 
-/**
- * The credential handle secret for an instance: HMAC-SHA256 of a fixed label under its
- * encryption key, so it differs from every other use of that key. The packaged self-host host
- * derives it the same way. Handles sealed by earlier versions, under a per-process secret or the
- * packaged image's constant, do not open under it and are refused with `credential_app`; apps
- * get new handles on their next invocation. See notes/provider-authoring.md.
- */
 const credentialHandleSecret = (encryptionKey: Redacted.Redacted<string>) =>
   Effect.promise(async () => {
     const key = await crypto.subtle.importKey(
@@ -185,32 +148,14 @@ const credentialHandleSecret = (encryptionKey: Redacted.Redacted<string>) =>
     return Hex.encode(new Uint8Array(signature));
   });
 
-/** App-facing callbacks are scoped to the already-authorized invocation, never looked up by arbitrary IDs. */
-/** Own one workerd process for authored apps and workflows. Agent execute(code) is unrelated. */
 export const workerdApps = (options: {
   readonly directory: string;
   readonly blobs: BlobStorage;
   readonly executor: Effect.Effect<Executor>;
   readonly legacyDataDirectories?: readonly string[];
-  /**
-   * Let authored app code reach loopback and private address space. Hosted Cloudflare never
-   * does. Local development needs it, because the bundled Executor app calls this process on
-   * 127.0.0.1. Self-host leaves it off unless an operator opts in for an internal service.
-   */
   readonly allowPrivateAppFetch?: boolean;
-  /**
-   * The dashboard origin and the local address that serves it. App requests for that origin
-   * go straight to the address, so the bundled Executor app works when the origin's name
-   * resolves to a private address and private app fetch is off.
-   */
   readonly selfOrigin?: { readonly origin: string; readonly address: string };
-  /** The npm registry app builds resolve packages from. Defaults to the public registry. */
   readonly npmRegistry?: string;
-  /**
-   * The instance's encryption key. The apps Worker seals credential handles with a secret derived
-   * from it, so handles keep working across restarts with the same key and the key itself never
-   * reaches workerd. Handles sealed before an instance upgraded to this derivation are refused.
-   */
   readonly encryptionKey: Redacted.Redacted<string>;
 }): Effect.Effect<
   {
@@ -231,10 +176,6 @@ export const workerdApps = (options: {
         return yield* new WorkerdMigrationRequired({ directory });
     }
     const handler = yield* workerdHostHandler(options);
-    // The runtime reads extra V8 flags for the workerd it starts from this variable. `gc` lets each
-    // app bridge collect its isolate's garbage after a call; see worker-bridge.ts. Without
-    // `--no-flush-liftoff-code`, each new isolate drops and recompiles the build's WebAssembly code
-    // and the process keeps the dropped pages; see the self-host runtime config.
     const flags = (process.env.ALCHEMY_WORKERD_V8_FLAGS ?? "").split(/\s+/).filter(Boolean);
     process.env.ALCHEMY_WORKERD_V8_FLAGS = [
       ...flags,
@@ -242,7 +183,6 @@ export const workerdApps = (options: {
     ].join(" ");
     const runtimeContext = yield* Layer.build(
       layerLocalRuntime({ directory: options.directory }).pipe(
-        // Registered as runtime plugins so their services reach the generated workerd config.
         Layer.provide(publicEgress),
         Layer.provide(
           options.selfOrigin === undefined
@@ -260,9 +200,6 @@ export const workerdApps = (options: {
       ),
     );
     const engine = yield* LocalRuntime.pipe(Effect.provideContext(runtimeContext));
-    // A workerd that exits on its own, such as when V8 runs out of heap, is replaced on the same
-    // ports, and every RPC session into it breaks. Record each replacement so a failed call can be
-    // matched to one. Only the exit's code and signal are kept: its stderr can quote app output.
     const services = yield* Effect.context<never>();
     let restarts = 0;
     let lastRestartAt: number | undefined;
@@ -288,7 +225,6 @@ export const workerdApps = (options: {
       .start({
         name: "executor-apps",
         compatibilityDate: "2026-07-30",
-        // The trusted host worker keeps the default network. Only app isolates are restricted.
         compatibilityFlags: ["nodejs_compat", "no_brotli_content_encoding"],
         modules: yield* workerdHostModules,
         durableObjectNamespaces: [
@@ -322,14 +258,11 @@ export const workerdApps = (options: {
           ...(options.selfOrigin === undefined ? [] : [selfOriginBinding]),
           Loopback.local({ binding: "HOST", name: "executor-workflow-host", handler }),
         ],
-        // Raw authored console output is not a host log. Apps return bounded telemetry through their protocol.
         logging: { onOutput: () => {} },
         onRestart: restarted,
       })
       .pipe(Effect.provideContext(runtimeContext));
     const headers = { authorization: `Bearer ${secret}` };
-    // How far a failed exchange with the runtime got, with its restarts; see runtime-hop.ts. A
-    // supervisor's probe events would go in `probe`.
     const hops = runtimeHops({
       restarts: () => ({ count: restarts, lastAt: lastRestartAt }),
       probe: () => ({}),
@@ -339,13 +272,8 @@ export const workerdApps = (options: {
       url.protocol = "ws:";
       return url.href;
     };
-    // Loopback RPC does not need compression. With permessage-deflate negotiated between
-    // ws and workerd, frames written after a large compressed invocation are sometimes never
-    // delivered to the host Worker. The session then waits forever for its result.
     const connect = (pathname: string) =>
       new NodeWebSocket(websocketUrl(pathname), { headers, perMessageDeflate: false });
-    // An RPC exchange sends nothing until its socket has opened. One whose socket never opened is
-    // run once more from `session`'s start; see runtime-connect.ts.
     const rpc = <A, E>(
       work: (api: RpcStub<WorkerdAppApi>, signal: AbortSignal) => Effect.Effect<A, E>,
     ) =>
@@ -366,19 +294,14 @@ export const workerdApps = (options: {
           const peer = yield* Effect.acquireRelease(
             Effect.sync(() => {
               const socket = connect("/rpc");
-              // Measured only, for a failed call's span: see runtime-hop.ts.
               socketRecord = hops.track(socket);
               opening.watch(socket);
-              // Registered before Cap'n Web's own listeners, so the session knows its socket
-              // closed by the time it breaks; see `TransportClosed`.
               let closed = false;
               const close = () => {
                 closed = true;
               };
               socket.on("close", close);
               socket.on("error", close);
-              // SAFETY: ws implements the WebSocket methods used by Cap'n Web's transport;
-              // its Node-specific constructor only supplies the private authorization header.
               const peer = newWebSocketRpcSession<WorkerdAppApi>(
                 socket as unknown as WebSocket,
                 undefined,
@@ -423,9 +346,6 @@ export const workerdApps = (options: {
             };
             socket.on("message", changed);
             socket.on("close", failed);
-            // Keep the error listener for the socket's whole life. Closing a socket that is
-            // still connecting emits "error" after release; with no listener, the EventEmitter
-            // throws and terminates the host process. Failing the finished queue is a no-op.
             socket.on("error", failed);
             yield* Effect.addFinalizer(() =>
               Effect.sync(() => {
@@ -436,11 +356,6 @@ export const workerdApps = (options: {
           }),
         { bufferSize: 1, strategy: "sliding" },
       );
-    // workerd closes an idle keep-alive connection after 5 seconds, and reconciliation polls
-    // every 5 seconds. A pooled socket can then close while a request is written to it, and
-    // the fetch fails with a transport error. Each workflow request asks for its connection to be
-    // closed after the response. Bun can still send it on an idle pooled connection, which only a
-    // request without that header would leave; none to this origin does.
     const backend = (operation: "start" | "status" | "terminate", run: WorkflowRunId) =>
       repeatingAtConnect(
         Effect.gen(function* () {
@@ -457,8 +372,6 @@ export const workerdApps = (options: {
           );
         }),
       ).pipe(Effect.mapError(engineFailure));
-    // Each command asks for its connection to be closed after the response, like workflow requests
-    // above.
     const evaluated = (app: string, command: EvaluatedCommand) =>
       repeatingAtConnect(
         Effect.gen(function* () {

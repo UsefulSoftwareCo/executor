@@ -1,4 +1,3 @@
-/** Read one Bearer challenge without using another scheme's parameters or ambiguous challenges. */
 export const bearerChallenge = (
   header: string | undefined,
 ):
@@ -37,7 +36,6 @@ export const bearerChallenge = (
   let bearers = 0;
   for (const part of parts) {
     if (!part) continue;
-    // A new scheme is separated from its first parameter by whitespace.
     const challenge = /^[!#$%&'*+.^_`|~A-Za-z0-9-]+[ \t]*=/.test(part)
       ? null
       : /^([!#$%&'*+.^_`|~A-Za-z0-9-]+)(?:[ \t]+(.*))?$/.exec(part);
@@ -81,6 +79,5 @@ export const bearerChallenge = (
       };
 };
 
-/** Read Bearer metadata without mistaking another scheme's parameters for Bearer. */
 export const bearerResourceMetadata = (header: string | undefined): string | undefined =>
   bearerChallenge(header)?.resourceMetadata;

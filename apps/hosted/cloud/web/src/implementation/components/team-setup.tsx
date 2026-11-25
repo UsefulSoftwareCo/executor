@@ -37,11 +37,9 @@ import {
 } from "../../../../src/contracts/onboarding.ts";
 import { prepareTeamAtom, createTeamAtom, setupSequenceAtom } from "../../contracts/onboarding.ts";
 
-/** Confirm first-team details at entry; exact invitation and organization links remain intact. */
 export function TeamSetupBoundary({ children }: { readonly children: ReactNode }) {
   const session = Option.getOrUndefined(AsyncResult.value(useAtomValue(sessionAtom)));
   const { pathname } = useLocation();
-  // Approving a client, by consent or by a device's code, can create the first team on the way.
   const approval = pathname === "/mcp/authorize" || pathname === "/device";
   if (session === undefined || session === null || (pathname !== "/" && !approval)) return children;
   return (
@@ -55,10 +53,6 @@ export function TeamSetupBoundary({ children }: { readonly children: ReactNode }
   );
 }
 
-/**
- * What the entry gate shows while it reads memberships. On the server that read suspends the root,
- * so the root shows this too; no other page waits there, so any other page stays blank.
- */
 export function TeamSetupPending() {
   const { pathname } = useLocation();
   if (pathname === "/mcp/authorize") return <McpConsentLoading />;
@@ -66,9 +60,7 @@ export function TeamSetupPending() {
   return <UnknownPagePending fullScreen />;
 }
 
-/** The dedicated setup route owns its membership check, form, and completion navigation. */
 export function CreateTeamPage() {
-  // Keep the supplied membership snapshot available for the confirmed-write handoff.
   useAtomMount(organizationsAtom);
   const session = Option.getOrUndefined(AsyncResult.value(useAtomValue(sessionAtom)));
   if (session === undefined || session === null) return <HostedEntryLoading />;
@@ -180,11 +172,8 @@ function TeamEntry({
   }
   if (Schema.is(OnboardingDraft)(entry))
     return <TeamForm userId={userId} suggestion={entry.suggestion} />;
-  // The confirmed entry can publish before the mutation settles; both states open the new team's
-  // setup. A confirmation that found other memberships instead leaves the choice to the entry.
   const team = entry.organizations.length === 1 ? entry.organizations[0] : undefined;
   if (!mcp && team !== undefined && (created.waiting || AsyncResult.isSuccess(created))) {
-    // A confirmation that carried the team's setup opens its first step, the assistant, directly.
     const setup = Schema.is(OnboardingTeamCreated)(entry) ? entry.setup : undefined;
     return (
       <Navigate
@@ -305,10 +294,6 @@ function TeamForm({
   );
 }
 
-/**
- * The team's setup steps. They render only once the team's setup is known (whether its steps can
- * be skipped), which the setup document reads with the page, so no step shows the wrong buttons.
- */
 export function CloudSetupSequence({ children }: { readonly children: ReactNode }) {
   const { organization } = useOrganizationRoute();
   const sequence = useAtomValue(setupSequenceAtom(organization));
@@ -329,7 +314,6 @@ export function CloudSetupSequence({ children }: { readonly children: ReactNode 
     .exhaustive();
 }
 
-/** A new team's setup starts at the first step of its sequence, replacing this entry. */
 export function SetupStart() {
   return (
     <>

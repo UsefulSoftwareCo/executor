@@ -1,10 +1,3 @@
-/**
- * CI configuration plane: repository settings, deployment environments, the CI Cloudflare
- * token and the public export. Development happens in this private repository;
- * `.github/workflows/export-public.yml` snapshots `main` to the public repository's export
- * branch. This stack places the token that workflow pushes with and protects the export branch
- * on the public repository. The `main` ruleset is its own stack, `alchemy.github-ruleset.ts`.
- */
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as GitHub from "alchemy/GitHub";
@@ -31,14 +24,6 @@ import {
   partialFirstPartySlackClient,
 } from "./src/infrastructure/first-party-oauth-settings.ts";
 
-/**
- * Secrets seeded from the environment. `op run --env-file=.env.ci.op` resolves the 1Password
- * references; the resolved values never reach disk, state, or stack outputs.
- *
- * GitHub Actions rejects secret and variable names that start with `GITHUB_`, so the login
- * client uses the `AUTH_GITHUB_` prefix. Workflows map it back to the variable the cloud
- * stack reads: `GITHUB_CLIENT_ID: ${{ secrets.AUTH_GITHUB_CLIENT_ID }}`.
- */
 const productionSecrets = [
   "AUTH_GITHUB_CLIENT_ID",
   "AUTH_GITHUB_CLIENT_SECRET",
@@ -58,14 +43,12 @@ const productionSecrets = [
   "SENTRY_AUTH_TOKEN",
 ] as const;
 
-/** A secret from `.env.ci.op`; unset and empty are both absent. */
 const nonEmptySecret = (name: string) =>
   Config.Redacted(name).pipe(
     Config.option,
     Effect.map(Option.filter((value) => Redacted.value(value) !== "")),
   );
 
-/** Non-sensitive deployment settings. They are readable in logs and pull requests. */
 const productionVariables = [
   "AUTH_EMAIL_DOMAIN",
   "AUTH_EMAIL_PROVISION_SUBDOMAIN",
@@ -96,7 +79,6 @@ export default Alchemy.Stack(
   "executor-next-ci",
   {
     providers: Layer.mergeAll(GitHub.providers(), Cloudflare.providers()),
-    // The `ci` stage shares the account state store with every other deployed stage.
     state: stackState,
   },
   Effect.gen(function* () {
@@ -112,8 +94,6 @@ export default Alchemy.Stack(
     const runnerMode = yield* Config.Literals(["blacksmith", "desktop"], "CI_RUNNER_MODE").pipe(
       Config.withDefault("blacksmith" as const),
     );
-    // The repository already exists. Alchemy observes it and converges these settings only;
-    // every property it does not declare keeps its current value.
     const repository = yield* GitHub.Repository("Repository", {
       owner,
       name,
@@ -124,7 +104,6 @@ export default Alchemy.Stack(
       hasProjects: true,
       hasWiki: false,
       hasDiscussions: false,
-      // Squash is the only merge strategy: one commit per pull request on main.
       allowSquashMerge: true,
       allowMergeCommit: false,
       allowRebaseMerge: false,
@@ -134,21 +113,8 @@ export default Alchemy.Stack(
 
     const target = { owner, repository: name };
 
-    /**
-     * The `production` and `release` environments exist but are not Alchemy resources. Alchemy's
-     * Environment provider always sends protection-rule fields, and GitHub rejects those for a
-     * private repository on the Free plan. Create each once with a bare upsert, which the plan
-     * accepts: `gh api -X PUT repos/<owner>/<name>/environments/production`. Secrets and
-     * variables scope to the environment by name.
-     */
     const production = "production";
 
-    /**
-     * The CI deployment token. Cloudflare returns its value once, on creation, so Alchemy is
-     * the only place that can copy it into the GitHub secret. Cloudflare's API names the
-     * "Edit" permission groups "Write". Zone permissions on an account-owned token nest
-     * under the account resource.
-     */
     const deployToken = yield* Cloudflare.ApiToken.AccountApiToken("DeployToken", {
       name: `executor-next-ci-${name}`,
       accountId,
@@ -157,14 +123,11 @@ export default Alchemy.Stack(
           effect: "allow",
           permissionGroups: [
             "Workers Scripts Write",
-            // Request timing provisions a private native trace export destination.
             "Workers Observability Write",
             "Workers R2 Storage Write",
             "Hyperdrive Write",
             "Account Settings Read",
-            // The shared state store keeps its bearer token in the account Secrets Store.
             "Secrets Store Write",
-            // Hyperdrive's PlanetScale CA certificate is an account-level certificate upload.
             "Account: SSL and Certificates Write",
           ],
           resources: { [`com.cloudflare.api.account.${accountId}`]: "*" },
@@ -172,8 +135,6 @@ export default Alchemy.Stack(
         {
           effect: "allow",
           permissionGroups: ["SSL and Certificates Write", "Workers Routes Write"],
-          // Every zone in the account: the product zone (`executor.sh`), the app-page zone
-          // (`executor.website`, wildcard Worker routes) and the test-stage zone.
           resources: {
             [`com.cloudflare.api.account.${accountId}`]: {
               "com.cloudflare.api.account.zone.*": "*",
@@ -183,7 +144,6 @@ export default Alchemy.Stack(
       ],
     }).pipe(retain());
 
-    // Repository scope: pull request workflows deploy test stages with the same credential.
     yield* GitHub.Secret("CloudflareApiToken", {
       ...target,
       name: "CLOUDFLARE_API_TOKEN",
@@ -195,21 +155,12 @@ export default Alchemy.Stack(
       value: accountId,
     }).pipe(retain());
 
-    // Secretless PR and main checks can run on the trusted desktop runner when requested.
-    // Deployment, staging and release workflows intentionally keep their own Blacksmith
-    // capacity because they hold credentials or require an OS-specific runner matrix.
     yield* GitHub.Variable("CiRunnerMode", {
       ...target,
       name: "CI_RUNNER_MODE",
       value: runnerMode,
     }).pipe(retain());
 
-    /**
-     * The public export token: a fine-grained token with `contents: write` on the public
-     * repository only. GitHub cannot mint it through the API and the organization disables
-     * deploy keys, so the value comes from 1Password. Repository scope, because the export
-     * workflow runs on `main` outside any deployment environment.
-     */
     yield* Config.Redacted("PUBLIC_EXPORT_TOKEN").pipe(
       Effect.flatMap((value) =>
         GitHub.Secret("PublicExportToken", {
@@ -246,11 +197,6 @@ export default Alchemy.Stack(
       ),
     );
 
-    /**
-     * Where production's social sign-ins return, and so the OAuth proxy's production URL: the
-     * edge on `executor.sh`, whichever host serves sign-in. It is fixed by the code, not by
-     * `.env.ci.op`; the deploy refuses any other value (`deploy-settings.ts`).
-     */
     yield* GitHub.Variable("production-OAUTH_PROXY_PRODUCTION_URL", {
       ...target,
       name: "OAUTH_PROXY_PRODUCTION_URL",
@@ -258,10 +204,6 @@ export default Alchemy.Stack(
       environment: production,
     }).pipe(retain());
 
-    /**
-     * The rollback switch (`notes/cloud-domains.md`): `deployment` serves the dashboard and
-     * sign-in on `v2.executor.sh` again. `.env.ci.op` sets it; unset is `app`, the cutover.
-     */
     const browserOrigin: BrowserOrigin = yield* browserOriginSetting;
     yield* GitHub.Variable("production-CLOUD_BROWSER_ORIGIN", {
       ...target,
@@ -270,11 +212,6 @@ export default Alchemy.Stack(
       environment: production,
     }).pipe(retain());
 
-    /**
-     * Who serves `executor.sh` (`executor-sh.ts`, `notes/v1-shutdown.md`): `v1` (unset), or v2's
-     * gateway by the route (`route`) or by the route and the custom domain (`v2`). `.env.ci.op`
-     * sets it.
-     */
     const executorSh: ExecutorShOwner = yield* executorShSetting;
     yield* GitHub.Variable("production-CLOUD_EXECUTOR_SH", {
       ...target,
@@ -283,11 +220,6 @@ export default Alchemy.Stack(
       environment: production,
     }).pipe(retain());
 
-    /**
-     * v1's WorkOS API key, which the WorkOS API key check reads. Production requires it, so this
-     * stack refuses to apply without it and says what to set: the key's Agents vault reference,
-     * in `.env.ci.op`.
-     */
     const v1Key = yield* Config.Redacted("V1_WORKOS_API_KEY").pipe(
       Config.option,
       Effect.map(Option.filter((value) => Redacted.value(value) !== "")),
@@ -300,12 +232,6 @@ export default Alchemy.Stack(
       environment: production,
     }).pipe(retain());
 
-    /**
-     * The operator's OAuth clients' credentials (`first-party-oauth-settings.ts`). Production
-     * offers v1's Executor.sh GitHub App, so this stack refuses to apply without its client ID and
-     * secret and says which Agents vault item to reference. Executor for Google and Executor for
-     * Slack are each turned on once both of their values are set; one without the other is refused.
-     */
     const credentials = (names: { readonly clientId: string; readonly clientSecret: string }) =>
       Effect.all([nonEmptySecret(names.clientId), nonEmptySecret(names.clientSecret)]);
     const [githubId, githubSecret] = yield* credentials(firstPartyGitHubSettings);
@@ -342,11 +268,6 @@ export default Alchemy.Stack(
       }).pipe(retain()),
     );
 
-    /**
-     * The secret v1 signs the MCP requests it forwards with (`v1-mcp-forward.ts`), the same value
-     * as v1's `V2_MCP_FORWARD_SECRET`. Without it production accepts no forwarded request, which v1
-     * answers as unavailable for a moved workspace.
-     */
     const v1Forward = yield* nonEmptySecret(v1McpForwardSecretName);
     if (Option.isSome(v1Forward))
       yield* GitHub.Secret(`production-${v1McpForwardSecretName}`, {
@@ -356,10 +277,6 @@ export default Alchemy.Stack(
         environment: production,
       }).pipe(retain());
 
-    /**
-     * The secret v1 signs session handoffs with (`v1-session-handoff.ts`), the same value as v1's
-     * `V2_SESSION_HANDOFF_SECRET`. Without it a member v1 sends to a moved workspace signs in to v2.
-     */
     const v1Handoff = yield* nonEmptySecret(v1SessionHandoffSecretName);
     if (Option.isSome(v1Handoff))
       yield* GitHub.Secret(`production-${v1SessionHandoffSecretName}`, {
@@ -369,13 +286,6 @@ export default Alchemy.Stack(
         environment: production,
       }).pipe(retain());
 
-    /**
-     * The export branch on the public repository receives fast-forward snapshot commits from
-     * the export workflow. An export commit can have more parents: the heads of public pull
-     * requests that main ports (see notes/ci.md), which GitHub then shows as merged. So the
-     * ruleset must not require linear history. Block deletion and force pushes; no pull request
-     * or status check rules, because nothing merges through GitHub's merge button there.
-     */
     const publicRuleset = yield* GitHub.Ruleset("PublicExport", {
       owner,
       repository: publicName,

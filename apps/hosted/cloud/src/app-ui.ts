@@ -1,6 +1,5 @@
 import { recordUnclassifiedRefusals, requestServices } from "@executor-js/hosted-server";
 import { previewLifetime } from "./infrastructure/test-stage-expiry.ts";
-/** Private app-origin entry point. Dashboard assets and management APIs are never mounted here. */
 import { hostedAppUi, appAddresses } from "@executor-js/hosted-server/app-ui";
 import { appPrivateHeaders, appSignInCallbackPath } from "apps/ui/auth";
 import { AppUiApi } from "apps/ui/contracts";
@@ -35,7 +34,6 @@ import {
 import { workerBuild } from "./infrastructure/worker-build.ts";
 import { servedRequest } from "./infrastructure/served-request.ts";
 
-/** A dedicated native Worker guarantees that every private HTML/JS/CSS request passes app authentication. */
 export default class AppPages extends Cloudflare.Worker<AppPages>()(
   "AppPages",
   Effect.gen(function* () {
@@ -80,7 +78,6 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
     const appSessions = yield* cloudAppSessions;
     const executor = yield* cloudServingProduct(yield* appDataSupervisors);
     const base = yield* cloudAppUiBase.pipe(Effect.orDie);
-    // App pages send sign-in to the dashboard, on the browser origin.
     const appUi = hostedAppUi(appAddresses((yield* cloudHosts.pipe(Effect.orDie)).browser, base));
     const services = requestServices(Layer.mergeAll(appSessions, executor));
     const notFound = HttpServerResponse.empty({ status: 404 });
@@ -111,8 +108,6 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
     const lifetime = yield* previewLifetime;
     return {
       fetch: handle.pipe(
-        // Every GET reaches the page route, so an unmatched route is another method. Not found,
-        // as on self-host.
         Effect.catchIf(
           (error): error is HttpServerError.HttpServerError =>
             HttpServerError.isHttpServerError(error) && error.reason._tag === "RouteNotFound",
@@ -122,8 +117,6 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
         analytics.wrap,
         recordRequestRejections,
         reportErrors,
-        // Request errors keep their status at the Worker's boundary. Anything else was reported
-        // above and is Executor's fault; the response does not reveal it.
         Effect.catch((error) =>
           HttpServerError.isHttpServerError(error)
             ? Effect.fail(error)
@@ -133,8 +126,6 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
         recordClientNetwork,
         recordUnclassifiedRefusals,
         lifetime.http,
-        // The request whose close releases its database connections before it waits on
-        // telemetry, as on the API Worker (`served-request.ts`).
         servedRequest,
       ),
     };

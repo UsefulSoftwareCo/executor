@@ -1,7 +1,3 @@
-/**
- * The Executor app's managed key: revoking it on the Tokens page no longer breaks the app, only a
- * member who may hold it gets it back, and an Executor API key account is checked when connected.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Layer, Redacted, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -23,10 +19,8 @@ import { McpClient } from "../support/mcp-client.ts";
 import { McpOAuth } from "../support/mcp-oauth.ts";
 
 const managedName = "Executor app (created automatically)";
-/** What a call that may write says once access is restored, since it is not repeated. */
 const restoredSentence =
   "Access was restored. This call was not repeated; earlier steps may have changed data. Check the result and retry only if the user chooses.";
-/** The one sentence a refused API key's 401 gives the agent where recovery is not automatic. */
 const replaceKeySentence =
   "This Executor API key was revoked, has expired or does not exist; unless Executor restores access by itself, create a new token on the Tokens page and connect it to the account that uses this key.";
 const Keys = Schema.Struct({
@@ -70,10 +64,6 @@ const Source = Schema.Struct({
 });
 const Deployed = Schema.Struct({ id: Schema.String });
 const OrganizationCreated = Schema.Struct({ id: Schema.String, slug: Schema.String });
-/**
- * Another app with the Executor app's own provider. Its one tool reports that the service refused
- * the caller's account, without calling the service, as any app's code can.
- */
 const refusingApp = `import { defineApp, query, router, object, ProviderError } from "apps";
 import { provider } from "./provider.ts";
 export default defineApp({ user: { accounts: { service: provider } } }, async ({ user: { accounts } }) => ({
@@ -85,22 +75,16 @@ export default defineApp({ user: { accounts: { service: provider } } }, async ({
 }));
 `;
 
-/**
- * Wait for the page's finite animations, such as a dialog opening or a theme change, before a
- * screenshot. A looping animation never finishes, so it is not waited for.
- */
 const settled = (page: Page) =>
   page.evaluate(() =>
     Promise.all(
       document
         .getAnimations()
         .filter((animation) => animation.effect?.getComputedTiming().iterations !== Infinity)
-        // A transition another replaces is cancelled, which also ends it.
         .map((animation) => animation.finished.catch(() => animation)),
     ).then(() => undefined),
   );
 
-/** The actor's keys named as the Executor app's, pinned to `organization`. */
 const managedKeys = (actor: Session, organization: string) =>
   Effect.gen(function* () {
     const api = yield* Api;
@@ -113,7 +97,6 @@ const managedKeys = (actor: Session, organization: string) =>
     );
   });
 
-/** The organization's display name, which its URL slug is not. */
 const organizationName = (actor: Session, organization: string) =>
   Effect.gen(function* () {
     const api = yield* Api;
@@ -126,7 +109,6 @@ const organizationName = (actor: Session, organization: string) =>
     return found.name;
   });
 
-/** Revoke one of the actor's keys and require success. */
 const revokeKey = (actor: Session, keyId: string) =>
   Effect.gen(function* () {
     const api = yield* Api;
@@ -134,7 +116,6 @@ const revokeKey = (actor: Session, keyId: string) =>
     expect(revoked.status, JSON.stringify(revoked.body)).toBe(200);
   });
 
-/** One confirmed read of the Executor app at `path` as `actor`. */
 const contextRead = (actor: Session, path: string) =>
   Effect.flatMap(Api, (api) =>
     api.request(actor, "POST", `${path}/tools/call`, {
@@ -144,10 +125,6 @@ const contextRead = (actor: Session, path: string) =>
     }),
   );
 
-/**
- * A refused read either answers, repeated with the renewed key, or, where the app has not confirmed
- * the tool only reads, fails once saying access was restored. Either way the next read answers.
- */
 const answeredOrRestored = (response: Response, organization: string, restored: string[]) =>
   Effect.gen(function* () {
     if (response.status === 200) {
@@ -156,10 +133,8 @@ const answeredOrRestored = (response: Response, organization: string, restored: 
     }
     expect(response.status, JSON.stringify(response.body)).toBe(502);
     expect(response.body).toMatchObject({ reason: "unauthorized", credentialsRenewed: true });
-    // Its words are checked once the scenario's other checks have run (`saidRestored`).
     restored.push(JSON.stringify(response.body));
   });
-/** Every call that failed once because access was restored says so in the same words. */
 const saidRestored = (restored: ReadonlyArray<string>) =>
   Effect.sync(() => {
     for (const text of restored) expect(text).toContain(restoredSentence);
@@ -278,8 +253,6 @@ layer(HostedLive, { excludeTestServices: true })("Executor app's managed key", (
         ).toBe(200);
         expect(yield* managedKeys(actors.owner, organization)).toEqual([]);
 
-        // Ten agents' calls arrive together, each with the revoked key; each read is repeated once
-        // with the one key the first renewal saved.
         const answers = yield* Effect.forEach(
           Array.from({ length: 10 }, (_, index) => index),
           (index) => contextGet(`Management call ${index + 1} after the key was revoked`),
@@ -291,7 +264,6 @@ layer(HostedLive, { excludeTestServices: true })("Executor app's managed key", (
         const renewed = yield* managedKeys(actors.owner, organization);
         expect(renewed).toHaveLength(1);
         expect(renewed[0]?.id).not.toBe(original.id);
-        // The same account holds the new key and stays the app's one link for this member.
         expect(yield* apiKeyAccounts(actors.owner, organization)).toEqual([account]);
         expect(yield* linkedAccountIds(actors.owner, path)).toEqual([account]);
         expect(yield* contextGet("A later call uses the renewed key")).toEqual({
@@ -344,7 +316,6 @@ layer(HostedLive, { excludeTestServices: true })("Executor app's managed key", (
           kind: "query",
           input: {},
         });
-        // A member may not hold a managed key, so losing the admin role means nothing is minted.
         yield* setRole("member");
         for (const attempt of ["first", "second"]) {
           const refused = yield* call;
@@ -355,8 +326,6 @@ layer(HostedLive, { excludeTestServices: true })("Executor app's managed key", (
           expect(failure.upstream.message).toBe(replaceKeySentence);
           expect(yield* managedKeys(actors.admin, organization)).toEqual([]);
         }
-        // The same member made admin again may hold it, and the next call restores it. A call that
-        // names no kind may write, so it is not repeated: it fails once, saying access was restored.
         yield* setRole("admin");
         const renewing = yield* api.request(actors.admin, "POST", `${path}/tools/call`, {
           tool: "context.get",
@@ -380,7 +349,6 @@ layer(HostedLive, { excludeTestServices: true })("Executor app's managed key", (
         expect(yield* managedKeys(actors.admin, organization)).toHaveLength(1);
         expect(yield* apiKeyAccounts(actors.admin, organization)).toEqual([account]);
 
-        // A removed member loses their pinned keys and every call; nothing is minted for them.
         const removed = yield* api.request(
           actors.owner,
           "POST",
@@ -406,7 +374,6 @@ layer(HostedLive, { excludeTestServices: true })("Executor app's managed key", (
           actors = yield* Actors,
           browser = yield* Browser;
         const organization = actors.organization;
-        // A display name as people write one, which can never be read as a URL slug.
         const name = `Synthetic Key Check Team ${randomUUID().slice(0, 4)}`;
         const renamed = yield* api.request(actors.owner, "POST", "/api/auth/organization/update", {
           organizationId: organization.id,
@@ -514,7 +481,6 @@ layer(HostedLive, { excludeTestServices: true })("Executor app's managed key", (
             Effect.flatMap((response) => Schema.decodeUnknownEffect(KeyRefused)(response.body)),
           );
         expect((yield* refusal({ token, organization: name })).reason).toBe("organization");
-        // A well-formed slug that names no organization the token can reach.
         const unreachable = yield* refusal({
           token,
           organization: `no-such-organization-${randomUUID().slice(0, 8)}`,
@@ -526,7 +492,6 @@ layer(HostedLive, { excludeTestServices: true })("Executor app's managed key", (
           organization: organization.slug,
         });
         expect(revoked.reason).toBe("token");
-        // Nothing refused was saved: the managed key is still the only API key account.
         expect(yield* apiKeyAccounts(actors.owner, organization.id)).toEqual([account]);
 
         const call = api.request(actors.owner, "POST", `${path}/tools/call`, {
@@ -560,8 +525,6 @@ layer(HostedLive, { excludeTestServices: true })("Executor app's managed key", (
         const path = `${prefix}/apps/${app.id}`;
         const [original] = yield* managedKeys(actors.owner, organization);
         if (original === undefined) return yield* Effect.die("The managed key is missing");
-        // The owner deploys another app with the Executor app's provider and links the managed
-        // account to it as well, which any member may do with an account of their own.
         const source = yield* body(
           Source,
           yield* api.request(actors.owner, "GET", `${path}/source`),
@@ -580,7 +543,6 @@ layer(HostedLive, { excludeTestServices: true })("Executor app's managed key", (
           tool: "refuse",
           input: {},
         });
-        /** The other app's refusal stands as it reported it: nothing renewed, nothing minted. */
         const refusedAsReported = (attempt: string) =>
           Effect.gen(function* () {
             const refused = yield* refuse;
@@ -594,14 +556,10 @@ layer(HostedLive, { excludeTestServices: true })("Executor app's managed key", (
             expect(JSON.stringify(refused.body)).not.toContain(restoredSentence);
           });
 
-        // The key is revoked while the account is linked to both apps. The other app's refusal
-        // mints nothing and is told nothing: only the Executor app's own calls renew its key.
         yield* revokeKey(actors.owner, original.id);
         yield* refusedAsReported("The other app reports the revoked key refused");
         expect(yield* managedKeys(actors.owner, organization)).toEqual([]);
 
-        // A hundred of the Executor app's own reads arrive together with the revoked key: each
-        // uses the one key the first renewal saved, and a later read answers.
         const answers = yield* Effect.forEach(
           Array.from({ length: 100 }, (_, index) => index),
           () => contextRead(actors.owner, path),
@@ -615,14 +573,11 @@ layer(HostedLive, { excludeTestServices: true })("Executor app's managed key", (
         expect(renewed).toHaveLength(1);
         expect(renewed[0]?.id).not.toBe(original.id);
         expect(yield* apiKeyAccounts(actors.owner, organization)).toEqual([account]);
-        // With a key that exists, a refusal the other app reports changes nothing.
         yield* refusedAsReported("The other app reports the renewed key refused");
         expect((yield* managedKeys(actors.owner, organization)).map((key) => key.id)).toEqual([
           renewed[0]?.id,
         ]);
 
-        // The owner unlinks the account from the Executor app and revokes its key; the account
-        // stays linked to the other app, whose refusal again mints nothing.
         yield* unlinkAccount(actors.owner, path, "service", account);
         yield* revokeKey(actors.owner, renewed[0]!.id);
         yield* refusedAsReported("The other app reports the key refused after the unlink");
@@ -644,14 +599,12 @@ layer(HostedLive, { excludeTestServices: true })("Executor app's managed key", (
         const organization = actors.organization.id;
         const { app, account } = yield* managementApp(actors.owner);
         const path = `/api/organizations/${organization}/apps/${app.id}`;
-        // The cut-off the revoke dialog names: delete the account under Apps, Executor, Accounts.
         const deleted = yield* api.request(
           actors.owner,
           "DELETE",
           `/api/organizations/${organization}/accounts/${account}`,
         );
         expect(deleted.status, JSON.stringify(deleted.body)).toBe(200);
-        // Its key, if deleting the account left it, is revoked too, so a new key would show.
         for (const key of yield* managedKeys(actors.owner, organization))
           yield* revokeKey(actors.owner, key.id);
         for (const round of ["first", "second"]) {
@@ -662,7 +615,6 @@ layer(HostedLive, { excludeTestServices: true })("Executor app's managed key", (
           );
           for (const called of calls)
             expect(called.status, `${round}: ${JSON.stringify(called.body)}`).not.toBe(200);
-          // Reading the inventory runs member setup, which never recreates a deleted account.
           expect(yield* apiKeyAccounts(actors.owner, organization)).toEqual([]);
           expect(yield* managedKeys(actors.owner, organization)).toEqual([]);
           expect(yield* linkedAccountIds(actors.owner, path)).toEqual([]);
@@ -697,7 +649,6 @@ layer(HostedLive, { excludeTestServices: true })("Executor app's managed key", (
         if (firstKey === undefined || secondKey === undefined)
           return yield* Effect.die("A managed key is missing");
         yield* revokeKey(actors.owner, firstKey.id);
-        // The other organization's app answers with its own key, and mints nothing for the first.
         const elsewhere = yield* contextRead(actors.owner, secondPath);
         expect(elsewhere.status, JSON.stringify(elsewhere.body)).toBe(200);
         expect(yield* body(Identity, elsewhere)).toEqual({ organization: second, role: "owner" });
@@ -705,7 +656,6 @@ layer(HostedLive, { excludeTestServices: true })("Executor app's managed key", (
         expect((yield* managedKeys(actors.owner, second)).map((key) => key.id)).toEqual([
           secondKey.id,
         ]);
-        // The first organization's app recreates its own key, pinned to the first organization.
         const restored: string[] = [];
         yield* answeredOrRestored(yield* contextRead(actors.owner, firstPath), first, restored);
         const later = yield* contextRead(actors.owner, firstPath);

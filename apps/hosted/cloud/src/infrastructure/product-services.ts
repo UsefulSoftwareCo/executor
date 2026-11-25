@@ -1,4 +1,3 @@
-/** The executor and the services every cloud Worker shares, including app pages. */
 import {
   HostedBackground,
   HostedExecutor,
@@ -21,10 +20,6 @@ import type { AppSources } from "./source.ts";
 import { cloudOrigin } from "./stage.ts";
 import type { AppDataSupervisor } from "./app-data.ts";
 
-/**
- * The executor, its per-event SQL client and the services every cloud Worker serves from them.
- * App pages compose only this; `product.ts` adds management, provisioning and source services.
- */
 export const cloudProductServices = Effect.fn(function* (
   databases: Cloudflare.DurableObject<AppDataSupervisor>,
   sources: AppSources,
@@ -40,14 +35,11 @@ export const cloudProductServices = Effect.fn(function* (
       (key, range) => blobs.stream(key, range),
     ),
   );
-  // Alchemy's runtime requirement marks event-only operations; it is not a
-  // service supplied to request fibers. Keep the live caller scope and tracer.
   const sdk = executor.pipe(Effect.provide(RuntimeContext.phantom));
   const sql = database.pipe(
     Effect.map((services) => Context.get(services, SqlClient.SqlClient)),
     Effect.provide(RuntimeContext.phantom),
   );
-  // Product checks run on the event's connection, beside the executor's own reads.
   const withDatabase = <A, E>(work: Effect.Effect<A, E, SqlClient.SqlClient>) =>
     database.pipe(
       Effect.flatMap((services) => work.pipe(Effect.provideContext(services))),
@@ -58,7 +50,6 @@ export const cloudProductServices = Effect.fn(function* (
       HostedExecutor,
       sdk.pipe(Effect.map((executor) => withDeploySetupWake(withExecutorAnalytics(executor)))),
     ),
-    // Tool call log writes a call does not wait for run in this event's background work.
     Layer.succeed(HostedBackground, (work) =>
       background(work).pipe(Effect.provide(RuntimeContext.phantom)),
     ),

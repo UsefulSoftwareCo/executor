@@ -7,7 +7,6 @@ import {
   startupCatalogCopyRebuild,
 } from "@executor-js/app-management/data-steps";
 import { SelfHostAuth, selfHostAuth } from "../auth.ts";
-/** Self-host SDK uses the same PGlite connection as Better Auth. */
 import type { HostEgress } from "@executor-js/utils/url-policy";
 import {
   createExecutor,
@@ -59,30 +58,24 @@ import { Cause, Config, Effect, Layer, Option, Deferred, Schedule, Context, Scop
 import { GroupDatabase } from "@executor-js/hosted-server/groups";
 import { SqlClient } from "effect/sql";
 
-/** Native resources supplied at the self-host composition boundary. */
 export interface SelfHostPlatform {
   readonly blobs: BlobStorage;
   readonly repositories: RepositoryBackend;
   readonly runtime: AppRuntime;
   readonly workflows: WorkflowRuntime;
-  /** Evaluated results kept in each app's data supervisor. */
   readonly declarations: DurableDeclarations;
-  /** Reads the npm registry app installs use, as they reach it; the release check's only path. */
   readonly readRegistry: RegistryRead;
 }
 
-/** Private callback surface for app workflows, exposed only through a service binding. */
 export class SelfHostWorkflowRequests extends Context.Service<
   SelfHostWorkflowRequests,
   Effect.Success<ReturnType<typeof workerdHostHandler>>
 >()("self-host/WorkflowRequests") {}
 
-/** How the release check reads the npm registry: as this host's app installs reach it. */
 export class SelfHostRegistry extends Context.Service<SelfHostRegistry, RegistryRead>()(
   "self-host/Registry",
 ) {}
 
-/** Database initialization finishes before this service is acquired. */
 export const selfHostExecutorServices = <E, R>(
   egress: HostEgress,
   acquire: (executor: Effect.Effect<Executor>) => Effect.Effect<SelfHostPlatform, E, R>,
@@ -92,15 +85,11 @@ export const selfHostExecutorServices = <E, R>(
       const key = yield* Config.Redacted("EXECUTOR_ENCRYPTION_KEY");
       const settings = yield* authSettings;
       const origin = settings.url;
-      // A configured account callback is the one saved clients were keyed with.
       const accountCallback = settings.oauthRedirectUri;
       const clientMetadata = yield* clientMetadataSetting({
         origin,
         oauthRedirectUri: Option.getOrUndefined(accountCallback),
       });
-      // Only E2E hosts add test client definitions; see `firstPartyOAuthClients`.
-      // A self-host operator's credentials are its own registrations, which Executor's service
-      // approvals do not limit.
       const firstPartyClients = yield* firstPartyOAuthClients({
         registrations: "operator",
         testDefinitions:
@@ -121,7 +110,6 @@ export const selfHostExecutorServices = <E, R>(
       );
       const lifecycle = yield* hostedResourceLifecycle;
       const api = lazyHostedApiDocument(() => executorSelfHostApiDocument(origin));
-      // The Executor app reads this server's API; its cache and listings follow the API's revision.
       const revision = yield* hostedApiRevision(yield* api.body).pipe(
         Effect.provide(Digest.layerWebCrypto),
       );
@@ -153,12 +141,10 @@ export const selfHostExecutorServices = <E, R>(
         },
         cache: {
           memory: makeDeclarationCache(evaluation.limits),
-          // Kept in each app's supervisor too, so a restart does not evaluate every app again.
           durable: declarations,
           toolListings: evaluation.toolListings,
         },
         hostApi: hostedApi([origin], revision),
-        // Stale declarations refresh on the server's own lifetime.
         background,
         events: {
           sender: httpEventSender(egress),
@@ -166,29 +152,22 @@ export const selfHostExecutorServices = <E, R>(
           allowInsecureCallbacks: egress.policy.allowLoopbackHttp,
         },
       }).pipe(Effect.provide([SecureRandom.layerWebCrypto, Digest.layerWebCrypto]));
-      // Password registration is admitted locally; self-host does not send verification mail.
       yield* lifecycle.attach(executor, { requireVerifiedEmail: false });
       yield* Deferred.succeed(ready, executor);
       yield* Effect.forkScoped(deliverEvents(executor));
-      // The schema is current and nothing serves or builds yet; the caller holds the data lock.
       const auth = yield* selfHostAuth;
-      // Self-host applies at startup without a reviewed report, so the catalog-copy rebuild is
-      // listed only when its operator turns it on.
       const catalogCopyRebuild = yield* startupCatalogCopyRebuild;
       yield* runStartupDataSteps(
         {
           executor,
           blobs,
           agentGrants: auth.agentGrants,
-          // Nothing reconciles webhook sources yet: the schedule worker starts after these steps,
-          // and its first pass reconciles the sources a redeploy left pending.
           executorAppRedeployed: executorDefaultRedeployed(Effect.void),
           appCopies: hostedAppCopies(executor),
           ...(catalogCopyRebuild === undefined ? {} : { catalogCopyRebuild }),
         },
         "private_hosted",
       );
-      // Once the idle grant step has applied, revoke grants that became idle since, daily.
       yield* Effect.forkScoped(
         expireIdleAgentGrants(auth.agentGrants, "private_hosted").pipe(
           Effect.catch(() => Effect.logWarning("Idle agent grant expiry failed")),
@@ -207,8 +186,6 @@ export const selfHostExecutorServices = <E, R>(
           Effect.repeat(Schedule.spaced("5 seconds")),
         ),
       );
-      // Marks approvals that lapsed unanswered and deletes calls past the retention. A defect fails
-      // one pass, not the loop: pruning goes on at the next.
       yield* Effect.forkScoped(
         pruneToolCallLog.pipe(
           Effect.catchCause((cause) =>
@@ -219,16 +196,8 @@ export const selfHostExecutorServices = <E, R>(
           Effect.repeat(Schedule.spaced("5 minutes")),
         ),
       );
-      const initialize = yield* organizationDefaults(
-        executor,
-        origin,
-        api.document,
-        // Password registration is admitted locally; self-host does not send verification mail.
-        false,
-      );
+      const initialize = yield* organizationDefaults(executor, origin, api.document, false);
       const scheduleAuthority = yield* makeScheduledAuthority(executor);
-      // Records and wakes setup only inside requests that carry this instance's analytics sink
-      // and schedule wake.
       const hosted = withDeploySetupWake(withExecutorAnalytics(executor));
       const groupDatabase = yield* SqlClient.SqlClient;
       const workflowRequests = yield* workerdHostHandler({
@@ -242,7 +211,6 @@ export const selfHostExecutorServices = <E, R>(
         Layer.succeed(ScheduledAuthority, scheduleAuthority),
         Layer.succeed(GroupDatabase, Effect.succeed(groupDatabase)),
         Layer.succeed(OrganizationIcons, makeOrganizationIcons(blobs)),
-        // Self-host serves Git, like everything else, on its one origin.
         Layer.succeed(AppGitOrigins, () => [new URL(origin).origin]),
         Layer.succeed(
           AppManagementHost,
@@ -252,11 +220,9 @@ export const selfHostExecutorServices = <E, R>(
           }),
         ),
         Layer.succeed(HostedExecutor, Effect.succeed(hosted)),
-        // Tool call log writes a call does not wait for run on the server's lifetime too.
         Layer.succeed(HostedBackground, background),
         Layer.succeed(OrganizationDefaults, initialize),
         Layer.succeed(HostedAppRuntime, toEffectRuntime(runtime, blobs)),
-        // Self-host cannot remove an organization.
         noOrganizationRemovals,
       );
     }),

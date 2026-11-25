@@ -15,7 +15,6 @@ import {
 import { Target } from "../support/platform.ts";
 import { scenarios } from "../test-plan.ts";
 
-/** The onboarding actions setup itself reports; team creation's own run before any assignment. */
 const setupActions = new Set([
   "setup_accounts",
   "setup_assistant",
@@ -29,7 +28,6 @@ const setupActions = new Set([
 ]);
 const setupEvents = (events: readonly Captured[]) =>
   onboardingActions(events).filter((event) => setupActions.has(String(event.properties.action)));
-/** Each setup screen's first view, in the order the member saw them. */
 const screens = (events: readonly Captured[]) => [
   ...new Set(
     setupEvents(events)
@@ -37,15 +35,10 @@ const screens = (events: readonly Captured[]) => [
       .map((event) => String(event.properties.action)),
   ),
 ];
-/**
- * The setup actions the member started, in order. A step's forward button reports `skip_` while it
- * reads "Skip for now" and `continue_` once the step is done.
- */
 const started = (events: readonly Captured[]) =>
   setupEvents(events)
     .filter((event) => event.properties.outcome === "started")
     .map((event) => String(event.properties.action));
-/** The ended order experiment's exposures: the product records none any more. */
 const orderExposures = (events: readonly Captured[]) =>
   events.filter(
     (event) =>
@@ -53,10 +46,6 @@ const orderExposures = (events: readonly Captured[]) =>
       event.properties.$feature_flag === onboardingOrderFlag,
   );
 
-/**
- * The one evaluation for a new member's team asks PostHog for the skip experiment's flag only,
- * never the ended order experiment's, and no exposure of the order flag was sent.
- */
 const orderNeverAsked = (userId: string) =>
   Effect.gen(function* () {
     expect(yield* flagRequests(userId)).toEqual([[onboardingSkipFlag]]);
@@ -64,10 +53,6 @@ const orderNeverAsked = (userId: string) =>
   });
 
 layer(TestLive, { excludeTestServices: true })("Cloud onboarding experiment", (it) => {
-  /**
-   * The ended experiment's winning order: a new member connects the assistant, then accounts, and
-   * reaches the first prompt. No setup event carries an order variant.
-   */
   it.effect(scenarios.onboardingAssistantFirst.title, (context) =>
     withCase(
       context,
@@ -93,16 +78,12 @@ layer(TestLive, { excludeTestServices: true })("Cloud onboarding experiment", (i
           "setup_accounts",
           "setup_prompt",
         ]);
-        // Skip reports skip_ and Next, once the agent connects, continue_. The member skips the
-        // waiting guide once and comes back. Managed Cloud's account step stays at Skip.
         expect(started(events)).toEqual([
           "skip_assistant",
           "continue_assistant",
           "skip_accounts",
           "finish_setup",
         ]);
-        // No setup event carries an order variant. Each is reported from setup, except Open
-        // dashboard, which is reported as the dashboard starts to open and so may already name Apps.
         expect(
           setupEvents(events).map((event) => [
             event.properties.action,
@@ -116,7 +97,6 @@ layer(TestLive, { excludeTestServices: true })("Cloud onboarding experiment", (i
             event.properties.action === "finish_setup" ? "leaving" : "setup",
           ]),
         );
-        // Events from Claude's guide onward name it; the choices and the account step name none.
         const guided = new Set([
           "setup_guide",
           "setup_prompt",
@@ -144,10 +124,6 @@ layer(TestLive, { excludeTestServices: true })("Cloud onboarding experiment", (i
     ),
   );
 
-  /**
-   * PostHog still answers the ended order flag with `accounts_first` for this member, but the
-   * product never asks for it: setup opens on the assistant step and no event names the order.
-   */
   it.effect(scenarios.onboardingOrderIgnored.title, (context) =>
     withCase(
       context,
@@ -159,8 +135,6 @@ layer(TestLive, { excludeTestServices: true })("Cloud onboarding experiment", (i
         const name = yield* onboarding.prepareTeam;
         const userId = yield* onboarding.sessionUserId;
         yield* answerOnboardingFlag(userId, { order: "accounts_first" });
-        // The assistant step, then the account step, then the dashboard. The install check that
-        // runs before the checks below gives an exposure the server might send time to arrive.
         yield* onboarding.confirmTeam(name);
         const events = yield* awaitPersonEvents(userId, (events) =>
           setupEvents(events).some((event) => event.properties.action === "skip_accounts"),
@@ -188,9 +162,6 @@ layer(TestLive, { excludeTestServices: true })("Cloud onboarding experiment", (i
         const name = yield* onboarding.prepareTeam;
         const userId = yield* onboarding.sessionUserId;
         yield* answerOnboardingFlag(userId, "unavailable");
-        // The one order: the assistant, then accounts, then the dashboard.
-        // The check below is for an exposure that never arrives, which no wait can confirm, so this
-        // keeps the install check that runs before it, as on main.
         yield* onboarding.confirmTeam(name);
         const events = yield* awaitPersonEvents(userId, (events) =>
           setupEvents(events).some((event) => event.properties.action === "skip_accounts"),
@@ -205,7 +176,6 @@ layer(TestLive, { excludeTestServices: true })("Cloud onboarding experiment", (i
               "onboarding_skip_variant" in event.properties,
           ),
         ).toBe(false);
-        // Exposures are sent with the request that reads setup; none came for this member.
         expect(
           (yield* personEvents(userId)).filter((event) => event.event === "$feature_flag_called"),
         ).toEqual([]);

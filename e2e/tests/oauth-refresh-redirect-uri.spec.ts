@@ -1,8 +1,3 @@
-/**
- * Services such as GitLab and Yahoo ask for the sign-in's callback again when a token is
- * refreshed. A grant keeps the callback its sign-in used and sends it on every refresh. A grant an
- * earlier release saved has none, and refreshes as it did before, without one.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
@@ -51,7 +46,6 @@ layer(TestLive, { excludeTestServices: true })("OAuth refresh redirect URI", (it
           clientId: "synthetic-redirect-client",
           clientSecret: "synthetic-redirect-secret",
         };
-        // Tokens are issued inside the host's renewal window, so using the account refreshes it.
         yield* issuer.configure({ refreshTokens: true, expiresIn: 20, registeredClient: client });
         const name = `Refresh callback ${randomUUID().slice(0, 8)}`;
         const deployed = yield* api.request(agent, "POST", "/v1/apps/deploy", {
@@ -74,7 +68,6 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
         expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
         const { app } = yield* body(Published, deployed);
         let account: string | undefined;
-        // A legacy storage write leaves the product stopped, so start it before cleaning up.
         yield* Effect.addFinalizer(() =>
           Effect.gen(function* () {
             yield* serverControl("start");
@@ -140,12 +133,9 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
           return metrics;
         });
 
-        // The service refuses a refresh that does not repeat the sign-in's callback.
         yield* issuer.configure({ requireRefreshRedirectUri: redirectUri });
         expect((yield* read).refreshRedirectUri).toBe(redirectUri);
 
-        // An earlier release saved the grant without its callback, with a refresh token the
-        // service issued at sign-in and an access token that is due for renewal.
         const registration = (yield* issuer.metrics).lastRegistration;
         if (registration === undefined) return yield* Effect.die("Sign-in registered no client");
         const refreshToken = yield* issuer.issueRefreshToken(client.clientId);

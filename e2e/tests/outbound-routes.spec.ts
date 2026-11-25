@@ -1,28 +1,3 @@
-/**
- * Cloud's choice of route for each app request (`apps/hosted/cloud/src/implementation/
- * app-outbound-routes.ts`) and its relay objects (`app-outbound-relay.ts`), run as they are in the
- * workerd this repository pins, against a service this file runs and can hold open.
- *
- * The scenarios in `concurrent-outbound.spec.ts` show the rule through the product, but they cannot
- * choose what each guard turns on: whether the AppData isolate's direct route has answered in the
- * last 30 s (every scenario of a job shares that isolate), when a request is cancelled, a send that
- * throws before it returns, or 56 requests held at once. So a probe Worker bundles the two modules
- * and sends real requests through them: direct with `fetch`, relayed through the relay objects'
- * own code in a second Worker, as AppData does. Each case is one request to the probe, since
- * workerd ends a request's fetches when it answers, and starts from a new set of routes, so in no
- * case has the direct route answered unless the case made it answer.
- *
- * - "lifetime": a call holds a group, sends five requests that wait, and ends. A request of the
- *   group sent then, and one of a later call that holds the group again, still count against
- *   those five, so each waits and relays.
- * - "throws": five sends that throw before returning release their slots; five more go direct.
- * - "waiting": the sixth request waits holding no connection, and relays after 500 ms while no
- *   direct request has answered.
- * - "warm": once a direct request has answered, the sixth relays after 50 ms, well before 500.
- * - "cancelWaiting": a request cancelled while it waits is never sent and leaves no waiter behind.
- * - "cancelRelayed": cancelling a relayed request ends it and closes its connection to the service.
- * - "cap": past 50 relayed requests the next one waits, and relays once one of them is answered.
- */
 import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, FileSystem, Path, Schedule, Schema } from "effect";
@@ -31,7 +6,6 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { createServer, type ServerResponse } from "node:http";
 import { createServer as createNetServer } from "node:net";
 
-/** The probe Worker; `routes` and `relay` are the paths of the two modules under test. */
 const probe = (routes: string, relay: string) => `
 import { appOutboundRoutes } from ${JSON.stringify(routes)};
 import { relayed } from ${JSON.stringify(relay)};
@@ -243,10 +217,6 @@ const relay :Workerd.Worker = (
 );
 `;
 
-/**
- * The service the probe sends to. `/held` waits until `/answer` answers it; `/state` lists, per
- * case, the held requests received and those whose connection closed before they were answered.
- */
 const service = Effect.acquireRelease(
   Effect.callback<{ readonly origin: string; readonly close: () => void }>((resume) => {
     const cases = new Map<
@@ -330,13 +300,11 @@ const freePort = Effect.callback<number>((resume) => {
   });
 });
 
-/** How a request was sent, as the routes record it for its span. */
 const Sent = Schema.Struct({
   route: Schema.Literals(["direct", "relay"]),
   wait_ms: Schema.Number,
   headers_ms: Schema.optional(Schema.Number),
 });
-/** How a request was sent, or null if it never took a route. */
 const Routed = Schema.NullOr(Sent);
 const Outcome = Schema.Union([
   Schema.Struct({ ok: Schema.Literal(true), text: Schema.String }),
@@ -378,7 +346,6 @@ it.live(
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
-      // Under the repository, so the bundle resolves; `.local` is ignored.
       const directory = path.resolve(".local/outbound-routes");
       yield* fs.makeDirectory(directory, { recursive: true });
       const implementation = path.resolve("apps/hosted/cloud/src/implementation");
@@ -402,7 +369,6 @@ it.live(
         ),
       );
       expect(built, "The probe bundles").toBe(0);
-      // The relay Worker's code, as AppData deploys it.
       yield* fs.writeFileString(
         path.join(directory, "relay-script.ts"),
         `import { relayScript } from ${JSON.stringify(relayModule)};
@@ -423,7 +389,6 @@ await Bun.write(${JSON.stringify(path.join(directory, "relay.js"))}, relayScript
         path.join(directory, "config.capnp"),
         config(port, upstream.origin),
       );
-      // The workerd local Cloud runs, from this repository's pinned `workerd` package.
       yield* processes.spawn(
         ChildProcess.make(
           "node_modules/.bin/workerd",
@@ -453,9 +418,6 @@ await Bun.write(${JSON.stringify(path.join(directory, "relay.js"))}, relayScript
       const results = Schema.decodeUnknownSync(Results)(answers);
       const direct = { route: "direct", wait_ms: 0 };
 
-      // Each case is checked on its own, so a failure names every guard that broke.
-      // A group outlives the call that held it while its requests wait for headers, so a later call
-      // of the same incoming request counts them: its request waits, then relays.
       expect
         .soft(results.lifetime.five, "lifetime: five go direct")
         .toMatchObject(Array.from({ length: 5 }, () => direct));
@@ -471,14 +433,12 @@ await Bun.write(${JSON.stringify(path.join(directory, "relay.js"))}, relayScript
       expect
         .soft(results.lifetime.sixth?.wait_ms, "lifetime: the later call's request waited")
         .toBeGreaterThanOrEqual(500);
-      // A send that throws before it returns a promise still releases its slot.
       expect
         .soft(results.throws.thrown, "throws: each send fails with its own error")
         .toEqual(Array.from({ length: 5 }, () => ({ ok: false, error: "Error: set-up failed" })));
       expect
         .soft(results.throws.five, "throws: their slots are free again")
         .toMatchObject(Array.from({ length: 5 }, () => direct));
-      // Fewer than five waiting go direct at once; the sixth waits with no connection, then relays.
       expect
         .soft(results.waiting.five, "waiting: five go direct")
         .toMatchObject(Array.from({ length: 5 }, () => direct));
@@ -489,11 +449,9 @@ await Bun.write(${JSON.stringify(path.join(directory, "relay.js"))}, relayScript
         )
         .toEqual({ during: 5, route: null });
       expect.soft(results.waiting.sixth?.route, "waiting: the sixth relays").toBe("relay");
-      // While no direct request has answered, a request waits 500 ms before it relays ...
       expect
         .soft(results.waiting.sixth?.wait_ms, "waiting: it waits the longer wait while cold")
         .toBeGreaterThanOrEqual(500);
-      // ... and once one has, 50 ms.
       expect.soft(results.warm.first, "warm: the first request answers").toEqual({
         ok: true,
         text: "fast",
@@ -508,7 +466,6 @@ await Bun.write(${JSON.stringify(path.join(directory, "relay.js"))}, relayScript
       expect
         .soft(results.warm.sixth?.wait_ms, "warm: it relays sooner than the cold wait")
         .toBeLessThan(500);
-      // A request cancelled while it waits fails at once, is never sent, and leaves no waiter.
       expect
         .soft(results.cancelWaiting.outcome, "cancelWaiting: it fails as cancelled")
         .toMatchObject({ ok: false, error: expect.stringMatching(/^AbortError/u) });
@@ -519,7 +476,6 @@ await Bun.write(${JSON.stringify(path.join(directory, "relay.js"))}, relayScript
       expect
         .soft(results.cancelWaiting.seventh, "cancelWaiting: the freed slot goes to the next")
         .toMatchObject(direct);
-      // Cancelling a relayed request ends it and closes the relay's connection to the service.
       expect
         .soft(results.cancelRelayed.sixth, "cancelRelayed: it was relayed")
         .toMatchObject({ route: "relay" });
@@ -529,7 +485,6 @@ await Bun.write(${JSON.stringify(path.join(directory, "relay.js"))}, relayScript
       expect
         .soft(results.cancelRelayed.closed, "cancelRelayed: its connection closes")
         .toEqual(["5"]);
-      // At most 50 requests of one incoming request are relayed at once.
       expect
         .soft(results.cap.relayed, "cap: fifty relay")
         .toEqual(Array.from({ length: 50 }, () => "relay"));

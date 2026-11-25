@@ -1,20 +1,3 @@
-/**
- * The `gh` that e2e/check-description.ts puts first on e2e/ci-selection.ts's PATH. It answers each
- * read the selection makes from GitHub with the same text from this checkout, and refuses any
- * other call, so a new read in the selection fails here loudly instead of being answered wrong.
- *
- * - `api repos/<r>/pulls/<n> --jq '.body // ""'`: the description being checked.
- * - `pr list ... --base <branch> ...`: the real `gh` for a pull request given with --pr; otherwise
- *   none, as for a branch with no pull request above it.
- * - `api repos/<r>/compare/<main>...<head> --jq ...`: each file changed on HEAD since main, and a
- *   renamed file's old name.
- * - `api --paginate repos/<r>/pulls/<n>/files --jq '.[].filename'`: the files changed on HEAD
- *   since the base, a renamed file by its new name and a deleted one by its old.
- * - `api repos/<r>/contents/<file>?ref=<main> -H 'Accept: application/vnd.github.raw+json'`: the
- *   file on main.
- * - `api repos/<r>/contents/<directory>?ref=<main> --jq '.[] | "\(.sha) \(.name)"'` (or `.path`):
- *   the directory's files on main with their blob IDs.
- */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Console, Effect, FileSystem, Stream } from "effect";
@@ -23,7 +6,6 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 const args = process.argv.slice(2);
 const env = (name: string) => process.env[name] ?? "";
 
-/** Runs a command and returns what it prints, failing the stand-in with its error output. */
 const run = (command: string, commandArgs: ReadonlyArray<string>) =>
   Effect.gen(function* () {
     const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -43,7 +25,6 @@ const run = (command: string, commandArgs: ReadonlyArray<string>) =>
     return stdout;
   }).pipe(Effect.scoped);
 
-/** `git diff --name-status` of `from...HEAD`, as `[status, path, renamed-to?]` rows. */
 const changes = (from: string) =>
   run("git", ["diff", "--name-status", "-M", `${from}...HEAD`]).pipe(
     Effect.map((text) =>
@@ -75,7 +56,6 @@ const answer = Effect.gen(function* () {
   const route = path.replace(/^repos\/[^/]+\/[^/]+\//, "");
   if (/^pulls\/[^/]+$/.test(route) && jq === '.body // ""')
     return yield* Console.log(yield* fs.readFileString(env("CHECK_DESCRIPTION_FILE")));
-  // GitHub lists at most 3,000 of a pull request's files, and 300 of a comparison's.
   if (/^pulls\/[^/]+\/files$/.test(route) && jq === ".[].filename")
     return yield* Console.log(
       (yield* changes(env("CHECK_DESCRIPTION_BASE")))
@@ -92,7 +72,6 @@ const answer = Effect.gen(function* () {
     );
   if (!route.startsWith("contents/")) return yield* refuse;
   const target = route.slice("contents/".length).replace(/\?.*$/, "");
-  // The file's text as GitHub serves it raw; a trailing newline more changes no reading of it.
   if (args.includes("-H"))
     return yield* Console.log(yield* run("git", ["show", `${main}:${target}`]));
   const field =

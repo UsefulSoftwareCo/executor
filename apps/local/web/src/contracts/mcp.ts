@@ -6,7 +6,6 @@ import {
 } from "@executor-js/ui/contracts/http";
 import { DashboardClient } from "./api.ts";
 
-/** OAuth endpoint and management app IDs; this response contains no administrative credential. */
 export const mcpInstallationAtom = DashboardClient.query(
   "dashboard",
   "mcpInstallation",
@@ -19,7 +18,6 @@ import { grantSettingsHeader, type GrantSettings } from "@executor-js/mcp-auth/g
 import { Atom } from "effect/reactivity";
 import { BrowserAtoms } from "./telemetry.ts";
 
-/** Connection errors contain only safe product text, never OAuth callback data. */
 export class McpConnectionFailed extends Schema.TaggedError<McpConnectionFailed>()(
   "McpConnectionFailed",
   { message: Schema.String },
@@ -56,12 +54,6 @@ const json = <A>(request: HttpClientRequest.HttpClientRequest, schema: Schema.De
     Effect.provide(dashboardHttpClient),
   );
 const LocalMcpClient = Schema.Struct({ client_name: Schema.optionalKey(Schema.String) });
-/**
- * Registered client metadata is loaded from the issuer, never trusted from a URL label. The server
- * renders the consent page with it, so it is sent with the page: hydration then renders the same
- * form, Connect included, instead of the loading view, which would replace the form and drop a
- * decision made before the page hydrated.
- */
 export const localMcpClientAtom = Atom.family((id: string) =>
   BrowserAtoms.atom(
     json(
@@ -76,12 +68,10 @@ export const localMcpClientAtom = Atom.family((id: string) =>
     }),
   ),
 );
-/** Pairing cookies authorize the selected grant; no MCP bearer key is sent from this page. */
 export const localMcpConsentAtom = BrowserAtoms.fn(
   (input: { accept: boolean; query: string; settings?: GrantSettings | undefined }) =>
     HttpClientRequest.bodyJson(
       HttpClientRequest.post("/api/auth/oauth2/consent").pipe(
-        // A denial carries no settings, as on hosted.
         input.accept && input.settings !== undefined
           ? HttpClientRequest.setHeader(grantSettingsHeader, JSON.stringify(input.settings))
           : (request) => request,

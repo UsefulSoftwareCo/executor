@@ -1,11 +1,6 @@
-/** Access records for OAuth clients, beside the executor's stored clients they describe. */
 import { Effect } from "effect";
 import { SqlClient } from "effect/sql";
 
-/**
- * Additive: two new tables the running server never reads. A client without a record is usable
- * by nobody, so a client created before its record commits stays hidden, never exposed.
- */
 export const migrateOAuthClientAccess = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`create table if not exists hosted_oauth_client_access (

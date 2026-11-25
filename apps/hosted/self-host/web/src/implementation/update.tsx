@@ -1,8 +1,3 @@
-/**
- * Self-host's "Update available" block, for owners and admins. The server checks for a newer
- * release once a day (`apps/hosted/self-host/src/implementation/update-check.ts`); the browser
- * asks only its own server what it found. Members see nothing and their browsers ask nothing.
- */
 import { useRef, useState } from "react";
 import { useAtomValue } from "@effect/atom-react";
 import { Effect, Option, Schema } from "effect";
@@ -27,7 +22,6 @@ const UpdateStatus = Schema.Struct({
 });
 type Update = NonNullable<typeof UpdateStatus.Type.update>;
 
-/** Asks this instance, never the registry; any refusal or failure is no update. */
 const updateAtom = Atom.family((organization: string) =>
   browserOnly(
     BrowserAtoms.atom(
@@ -48,17 +42,12 @@ const updateAtom = Atom.family((organization: string) =>
 );
 const noUpdate = Atom.make(AsyncResult.success(Option.none<Update>()));
 
-/** The update the server found, for an owner or admin of the open organization; none otherwise. */
 export function useSelfHostUpdate() {
   const { slug, role } = useOrganizationRoute();
   const result = useAtomValue(role === "owner" || role === "admin" ? updateAtom(slug) : noUpdate);
   return AsyncResult.isSuccess(result) ? result.value : Option.none<Update>();
 }
 
-/**
- * An "Update available" tag and the version, as one button that opens how to update. It cannot be
- * dismissed; it goes when the instance runs the new version.
- */
 export function SelfHostUpdateBlock({ update }: { readonly update: Update }) {
   const [open, setOpen] = useState(false);
   const opener = useRef<HTMLButtonElement>(null);

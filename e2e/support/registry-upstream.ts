@@ -1,15 +1,9 @@
-/**
- * A synthetic public app registry. It answers a name with the listings published under exactly that
- * name, and fixed names select responses the product must classify. Like Cloud's registry, it
- * serves a listing's source only for the commit the listing selects now.
- */
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Deferred, Effect, Exit, Layer, Option, Ref, Scope } from "effect";
 import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { createServer } from "node:http";
 import { withApps } from "./apps-release.ts";
 
-/** A listing of an older or custom registry: its name has no dot in its scope. */
 export const registryPublication = {
   name: "@fixture/example",
   commit: "a".repeat(40),
@@ -17,14 +11,12 @@ export const registryPublication = {
   publishedAt: "2026-01-01T00:00:00.000Z",
 };
 
-/** A listing in an organization's publishing scope. Clients released before scopes read `@scoped/notes`. */
 export const registryScopedListing = {
   name: "@scoped.executor.community/notes",
   commit: "b".repeat(40),
   description: "Notes in a publishing scope",
   publishedAt: "2026-01-02T00:00:00.000Z",
 };
-/** Two listings that clients released before publisher scopes would both read as `@twin/notes`. */
 export const registryTwinListings = [
   {
     name: "@twin/notes",
@@ -39,31 +31,20 @@ export const registryTwinListings = [
     publishedAt: "2026-01-04T00:00:00.000Z",
   },
 ] as const;
-/** Every listing the registry publishes, as it lists them. */
 export const registryCatalog = [
   registryPublication,
   registryScopedListing,
   ...registryTwinListings,
 ];
 
-/**
- * A listing in a format no release reads yet: a name outside every package name pattern, as a
- * later widening could send.
- */
 export const registryFutureListing = { ...registryPublication, name: "@fixture/future+format" };
-/** A listing with a supported name and malformed metadata, which no release reads. */
 export const registryMalformedListing = {
   ...registryPublication,
   name: "@fixture/malformed",
   description: 42,
 };
-/**
- * The name that selects a listing of a readable publication beside {@link registryFutureListing}
- * and {@link registryMalformedListing}.
- */
 export const registryMixedName = "@fixture/mixed";
 
-/** Package names that select each upstream behavior. */
 export const registryFixtureNames = {
   redirect: "@fixture/moved",
   unavailable: "@fixture/down",
@@ -73,7 +54,6 @@ export const registryFixtureNames = {
 
 type Listing = (typeof registryCatalog)[number];
 
-/** A listing's source: an app that deploys, whose package.json names the listing. */
 const listingSource = (listing: Listing) => ({
   publication: listing,
   files: [
@@ -100,12 +80,6 @@ const changed = HttpServerResponse.jsonUnsafe(
   { status: 400 },
 );
 
-/**
- * Start the registry on loopback. `paths` lists every received request. `close` stops the
- * listener early so later reads cannot connect; the case scope otherwise closes it. `hold` keeps
- * later listing responses pending until `release`; `held` waits until one has arrived. `publish`
- * replaces what the registry publishes, as when a listing is replaced or renamed.
- */
 export const registryUpstream = Effect.gen(function* () {
   const listener = yield* Scope.make();
   const gate = yield* Ref.make(
@@ -145,7 +119,6 @@ export const registryUpstream = Effect.gen(function* () {
         const name = url.searchParams.get("name");
         switch (name) {
           case registryFixtureNames.redirect:
-            // A followed redirect would succeed here, so only a refused redirect fails.
             return HttpServerResponse.empty({ status: 302, headers: { location: "/elsewhere" } });
           case registryFixtureNames.unavailable:
             return HttpServerResponse.text("unavailable", { status: 503 });
@@ -203,7 +176,6 @@ export const registryUpstream = Effect.gen(function* () {
   return {
     origin: `http://127.0.0.1:${server.address.port}`,
     paths: Ref.get(paths),
-    /** The wire revision each listing request stated. */
     revisions: Ref.get(revisions),
     hold: Effect.gen(function* () {
       const arrived = yield* Deferred.make<void>();

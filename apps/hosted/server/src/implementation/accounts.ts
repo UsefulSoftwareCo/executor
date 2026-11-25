@@ -18,7 +18,6 @@ import {
   visibleApps,
   visibleAccounts,
 } from "./resource-policy.ts";
-/** Account use cases, connection grants and OAuth routes share the same ownership checks. */
 import {
   type AccountConnectionId,
   type AccountScope,
@@ -55,7 +54,6 @@ import { AccountLinkedToApp, ExecutorKeyRefused } from "../contracts/accounts.ts
 import { visibleAccountRefusal } from "./webhooks.ts";
 import { RequirementMismatch } from "../contracts/app-accounts.ts";
 
-/** The apps the caller can use and linked this account to, or that link it for everyone. */
 const linkedApps = (owner: OwnerId, account: AccountId) =>
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
@@ -74,10 +72,6 @@ const linkedApps = (owner: OwnerId, account: AccountId) =>
     );
     return apps.filter((app) => linked.has(app.id));
   });
-/**
- * Read provider metadata through the public SDK, including for accounts with no remaining apps.
- * App-scoped tokens reach this only through an app they can use; see RequireAccountGrant.
- */
 export const getAccount = Effect.gen(function* () {
   const { owner, account } = yield* AccountGrants.inspect;
   const executor = yield* Effect.flatten(HostedExecutor);
@@ -89,7 +83,6 @@ export const getAccount = Effect.gen(function* () {
     account,
     apps: apps.map((app) => app.id),
   });
-  // An unreadable grant is unreadable storage to this view.
   const { revocation } = yield* executor.accounts
     .revocation({ owner, account })
     .pipe(Effect.catchTag("CredentialsError", () => new StorageError()));
@@ -99,16 +92,13 @@ export const getAccount = Effect.gen(function* () {
     apps,
     health: visibleHealth(health, apps),
     revocation,
-    // The inspect grant proves the caller owns the account, and owners manage their accounts.
     canManage: true,
   };
 });
-/** Keep only the checks of apps the caller can see. */
 const visibleHealth = (health: AccountHealth, apps: readonly App[]): AccountHealth => {
   const visible = new Set(apps.map((app) => app.id));
   return { ...health, apps: health.apps.filter((entry) => visible.has(entry.app)) };
 };
-/** Check unsaved credentials with an app the caller can use; nothing is saved. */
 export const checkCredentials = (
   owner: OwnerId,
   input: Omit<Parameters<Executor["apps"]["checkCredentials"]>[0], "owner">,
@@ -118,21 +108,15 @@ export const checkCredentials = (
     yield* requireAppAccess(input.app, "use");
     return yield* executor.apps.checkCredentials({ ...input, owner });
   });
-/** Run the checks of the apps the caller linked the account to, with their own account access. */
 export const checkAccount = Effect.gen(function* () {
   const { owner, account } = yield* AccountGrants.use;
   const executor = yield* Effect.flatten(HostedExecutor);
   const apps = yield* linkedApps(owner, account);
-  // A check decrypts the account's credentials and may renew them, on the caller's request.
   const health = yield* executor.accounts
     .check({ owner, account, apps: apps.map((app) => app.id) })
     .pipe(audited("credential.read", { kind: "account", id: () => account }, { purpose: "check" }));
   return visibleHealth(health, apps);
 });
-/**
- * Check only providers reachable through the caller's app or account access. Lists the registered
- * clients the caller may use, as metadata; never a client secret.
- */
 export const oauthSetup = (
   owner: OwnerId,
   input: Omit<Parameters<Executor["accountConnections"]["oauthSetup"]>[0], "owner">,
@@ -157,7 +141,6 @@ export const oauthSetup = (
     )
       return yield* new OrganizationForbidden();
     const setup = yield* executor.accountConnections.oauthSetup({ ...input, owner });
-    // Client credentials clients are each account's own; only browser sign-in shares clients.
     const clients =
       setup.grant === "client_credentials"
         ? []
@@ -165,13 +148,6 @@ export const oauthSetup = (
     return { ...setup, clients };
   });
 
-/**
- * Delete saved credentials and remove their user links through the transactional lifecycle hook.
- * An account linked to an app for everyone is refused until it is unlinked: the app uses it for
- * every caller. One a webhook subscription holds is refused naming only the holders the caller
- * may see. The caller must already hold the authority to delete it; the lifecycle hook rechecks
- * that authority in the deleting transaction.
- */
 export const removeAccount = ({
   owner,
   account,
@@ -193,9 +169,7 @@ export const removeAccount = ({
         ),
       );
   });
-/** Delete an account the route's grant proves the caller may delete. */
 export const disconnectAccount = Effect.flatMap(AccountGrants.delete, removeAccount);
-/** Update the label or description using the owner-filtered SDK primitive. */
 export const updateAccount = (metadata: {
   readonly label?: string | undefined;
   readonly description?: string | null | undefined;
@@ -205,12 +179,6 @@ export const updateAccount = (metadata: {
     const executor = yield* Effect.flatten(HostedExecutor);
     return yield* executor.accounts.update({ ...metadata, owner, account });
   });
-/**
- * Create a sign-in request for an app requirement in the scope the route names. Completing it
- * links the new account to the requirement: for the caller for a user requirement, for everyone for
- * an app requirement, which only people who can edit the app may do. With `account`, it replaces
- * that account's credentials; there is no reconnect outside an app.
- */
 export const connectAccount = (
   owner: OwnerId,
   input: {
@@ -234,7 +202,6 @@ export const connectAccount = (
         scope: input.scope,
         reason: "requirement",
       });
-    // Only the owner may replace an account's credentials; a new account is the caller's own.
     if (input.account !== undefined)
       yield* AccountGrants.reconnect.pipe(
         Effect.provideService(AccountTargets.reconnect, { account: input.account }),
@@ -247,7 +214,6 @@ export const connectAccount = (
       })
       .pipe(Effect.flatMap((connection) => recordConnection(connection, input.scope)));
   });
-/** The dashboard page where a connection's creator finishes it, under the caller's slug. */
 export const connectionUrl = (
   auth: SessionAuthentication["Service"],
   api: BearerAuthentication["Service"],
@@ -257,7 +223,6 @@ export const connectionUrl = (
     const slug = yield* currentOrganizationSlug(auth, api);
     return `${auth.origin}/org/${encodeURIComponent(slug)}/connections/${encodeURIComponent(connection)}`;
   });
-/** Connection metadata never grants access to another organization's request or app. */
 export const getConnection = (
   owner: OwnerId,
   input: Omit<Parameters<Executor["accountConnections"]["get"]>[0], "owner">,
@@ -269,12 +234,6 @@ export const getConnection = (
     return connection;
   });
 const ExecutorKeyFields = Schema.Struct({ token: Schema.String, organization: Schema.String });
-/**
- * An "Executor API key" account for the organization's built-in Executor app is checked before it
- * is saved, by the API's own bearer check with exactly what the app sends: the token as its
- * bearer, and the Organization as the path's organization and its `X-Executor-Organization`
- * header. An account every call of which would be refused is never shown as connected.
- */
 const checkExecutorKey = (owner: OwnerId, app: AppId, fields: Redacted.Redacted<JsonObject>) =>
   Effect.gen(function* () {
     if (!owner.startsWith("organization:")) return;
@@ -288,7 +247,6 @@ const checkExecutorKey = (owner: OwnerId, app: AppId, fields: Redacted.Redacted<
     const entered = Option.getOrUndefined(
       Schema.decodeUnknownOption(ExecutorKeyFields)(Redacted.value(fields)),
     );
-    // The provider's own field validation reports missing fields.
     if (entered === undefined) return;
     const organization = Option.getOrUndefined(
       Schema.decodeUnknownOption(OrganizationReference)(entered.organization),
@@ -307,7 +265,6 @@ const checkExecutorKey = (owner: OwnerId, app: AppId, fields: Redacted.Redacted<
       .pipe(
         Effect.catchTags({
           Unauthorized: () => new ExecutorKeyRefused({ reason: "token" }),
-          // The name of one of the member's own organizations is the usual mistake; say so.
           OrganizationForbidden: () =>
             Effect.gen(function* () {
               const user = yield* CurrentUserId;
@@ -323,7 +280,6 @@ const checkExecutorKey = (owner: OwnerId, app: AppId, fields: Redacted.Redacted<
         }),
       );
   });
-/** Save credentials and complete the connection's selected app requirement. */
 export const submitConnection = (
   owner: OwnerId,
   input: Omit<Parameters<Executor["accountConnections"]["submit"]>[0], "owner">,
@@ -338,10 +294,6 @@ export const submitConnection = (
       .submit({ ...input, owner })
       .pipe(Effect.tap(() => Effect.flatten(ScheduleWakeup)));
   });
-/**
- * The member's client choice is checked against its audience here, then named to the SDK, which
- * keeps client secrets and protocol state. Entered clients sign in this account only.
- */
 export const startOAuth = (
   owner: OwnerId,
   input: Omit<Parameters<Executor["accountConnections"]["startOAuth"]>[0], "owner" | "client"> & {
@@ -359,7 +311,6 @@ export const startOAuth = (
       ...(client === undefined ? {} : { client }),
     });
   });
-/** Completion rechecks connection and target ownership before saving provider credentials. */
 export const completeOAuth = (
   owner: OwnerId,
   input: Omit<Parameters<Executor["accountConnections"]["completeOAuth"]>[0], "owner">,
@@ -372,7 +323,6 @@ export const completeOAuth = (
       .pipe(Effect.tap(() => Effect.flatten(ScheduleWakeup)));
   });
 
-/** Account policy and persisted connection ownership protect management and OAuth return requests. */
 export const hostedAccountHandlers = HttpApiBuilder.group(HostedApi, "accounts", (handlers) =>
   Effect.gen(function* () {
     const auth = yield* SessionAuthentication;
@@ -430,11 +380,6 @@ export const hostedAccountHandlers = HttpApiBuilder.group(HostedApi, "accounts",
   }),
 );
 
-/**
- * A provider's link can open in a tab or browser without the page that started sign-in. The
- * callback's state finds the pending connection, which only its creator, still a member of its
- * organization, may resume. Completion then runs the organization route's full checks.
- */
 export const hostedOAuthCallbackHandlers = HttpApiBuilder.group(
   HostedApi,
   "oauthCallback",
@@ -464,7 +409,6 @@ export const hostedOAuthCallbackHandlers = HttpApiBuilder.group(
             organizationSlug,
             connection: connection.id,
             app: connection.target.app,
-            // The callback this sign-in sent, which a saved client may have kept from before.
             redirectUri: connection.redirectUri,
             reconnect: connection.reconnectAccount !== null,
           };
@@ -473,7 +417,6 @@ export const hostedOAuthCallbackHandlers = HttpApiBuilder.group(
     }),
 );
 
-/** Keep the existing provider redirect URL. Completion still requires the browser session and membership. */
 export const hostedOAuthCallback = Effect.gen(function* () {
   const { origin } = yield* SessionAuthentication;
   const request = yield* HttpServerRequest.HttpServerRequest;

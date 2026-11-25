@@ -1,14 +1,8 @@
-/** Serve real npm archives through a scoped local registry boundary; no npm publication is needed. */
 import { createServer, request as httpRequest } from "node:http";
 import { Config, Effect, FileSystem, Path, Schema } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { lockedArchive } from "./npm-registry.ts";
 
-/**
- * Published apps versions, pinned with their npm integrity in e2e/npm-packages.json. beta.0 and
- * beta.1 speak host protocol 1, beta.4 protocol 2, beta.5 protocol 3, beta.9 and beta.14 protocol 5,
- * beta.22 protocol 7, beta.33 protocol 8 and beta.59 protocol 11.
- */
 const releases = [
   "0.0.1-beta.0",
   "0.0.1-beta.1",
@@ -20,7 +14,6 @@ const releases = [
   "0.0.1-beta.33",
   "0.0.1-beta.59",
 ] as const;
-/** A published `apps` release this suite serves. */
 export type Release = (typeof releases)[number];
 const RuntimePackage = Schema.Record(Schema.String, Schema.Unknown);
 const Packed = Schema.NonEmptyArray(Schema.Struct({ filename: Schema.String }));
@@ -29,13 +22,10 @@ class PackageFixtureFailed extends Schema.TaggedError<PackageFixtureFailed>()(
   { reason: Schema.String },
 ) {}
 
-/** A published archive as `e2e:prepare` downloaded it, refused unless it matches its integrity. */
 const publishedArchive = (version: Release = "0.0.1-beta.0") => lockedArchive("apps", version);
 
-/** The reason phrase of a missing archive's 404, which a build failure must not repeat. */
 export const missingArchiveReason = "Archive withheld by its host";
 
-/** Serve archives on loopback for the scope, counting each request path. */
 const loopbackArchives = Effect.gen(function* () {
   const archives = new Map<string, Uint8Array>();
   const requests = new Map<string, number>();
@@ -69,13 +59,11 @@ const loopbackArchives = Effect.gen(function* () {
   return { base, archives, requests: Effect.sync(() => Object.fromEntries(requests)) };
 });
 
-/** `npm pack` one package directory without running its scripts, returning the archive bytes. */
 const packDirectory = (source: string, destination: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
-    // Windows npm is a shell wrapper. Invoke its JavaScript entry with Node, without a shell.
     const npm =
       process.platform === "win32"
         ? {
@@ -103,10 +91,6 @@ const packDirectory = (source: string, destination: string) =>
     return yield* fs.readFile(path.join(destination, packed[0].filename));
   });
 
-/**
- * The published `apps@0.0.1-beta.0`, and a copy whose `runtime.json` declares protocol 99. The real
- * archive predates exports the host added later, so linking only current exports would fail.
- */
 export const appPackageFixture = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -117,7 +101,6 @@ export const appPackageFixture = Effect.gen(function* () {
 
   const archive = yield* publishedArchive();
   archives.set("/apps-0.0.1-beta.0.tgz", archive);
-  // Only the declared protocol differs, so the rejection comes from the protocol check alone.
   const extracted = path.join(directory, "unsupported");
   yield* fs.makeDirectory(extracted);
   yield* fs.writeFile(path.join(directory, "published.tgz"), archive);
@@ -156,10 +139,6 @@ export const appPackageFixture = Effect.gen(function* () {
   };
 });
 
-/**
- * A published `apps` release served on loopback, so the product resolves it without depending on
- * the npm registry. Hosts resolve the bare version from npm in production.
- */
 export const publishedRelease = (version: Release) =>
   Effect.gen(function* () {
     const { base, archives, requests } = yield* loopbackArchives;
@@ -168,23 +147,8 @@ export const publishedRelease = (version: Release) =>
     return { url: `${base}${route}`, route, requests };
   });
 
-/** Text a registry sends that no build failure may repeat. */
 export const upstreamMarker = "UPSTREAM-REGISTRY-TEXT";
 
-/**
- * A private registry on loopback, standing in for an operator's own, beside archives on a second
- * loopback origin. Packages:
- *
- * - `registry-fixture`: its tarball is on the registry's origin.
- * - `offsite-fixture`: its metadata names a tarball on the other origin.
- * - `redirected-fixture`: its tarball URL is on the registry's origin and redirects to the other.
- * - `nested-fixture`: on the registry's origin, depending on a tarball URL on the other origin.
- * - `malformed-fixture`, `versionless-fixture` and `manifest-fixture`: metadata that is not JSON,
- *   that names no tarball, and that lists a dependency by a name and range of the registry's own.
- *
- * Every other request goes to the suite's registry, addressed as this registry, so its archive
- * links (`apps` among them) point back here.
- */
 export const privateRegistryFixture = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -314,9 +278,7 @@ export const privateRegistryFixture = Effect.gen(function* () {
     return yield* new PackageFixtureFailed({ reason: "private registry address" });
   return {
     url: `http://127.0.0.1:${address.port}`,
-    /** Requests to the registry's origin, by path. */
     requests: Effect.sync(() => Object.fromEntries(requests)),
-    /** Requests to the other origin, by path. */
     offsite: offsite.requests,
   };
 });

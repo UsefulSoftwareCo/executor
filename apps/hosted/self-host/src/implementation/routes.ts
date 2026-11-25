@@ -13,7 +13,6 @@ import {
 } from "@executor-js/sdk/scheduling";
 import { frameworkDocumentation, gitRoutes } from "@executor-js/app-management";
 import { hostedAppGitAccess } from "@executor-js/hosted-server/app-management";
-/** The route map is shared by native development and the packaged Worker. */
 import {
   browserTelemetry,
   requestServices,
@@ -60,7 +59,6 @@ import {
   selfHostUpdateStatus,
   type UpdateCheckStore,
 } from "./update-check.ts";
-/** Compose the self-host route map without opening a listener; shared by the process entry and HTTP tests. */
 export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
   readonly skills: readonly SourceFile[];
   readonly egress: HostEgress;
@@ -68,7 +66,6 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
     Layer.Success<ReturnType<typeof selfHostExecutorServices>>
   >;
   readonly dashboard: Effect.Effect<HttpServerResponse.HttpServerResponse, DashboardE, DashboardR>;
-  /** Where the daily release check keeps its last answer (`update-check.ts`). */
   readonly updateCheckStore: UpdateCheckStore;
 }) =>
   Effect.gen(function* () {
@@ -79,7 +76,6 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
     );
     const auth = yield* SelfHostAuth.pipe(Effect.provide(executorServices));
     const analytics = yield* selfHostAnalytics;
-    /** Requests and background schedules record through this instance's sink unless it opted out. */
     const observed = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
       analytics === undefined
         ? effect
@@ -95,16 +91,13 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
         runner: "self-host",
         concurrency,
       });
-      // The worker's polling fibers inherit the observer it starts with.
       return yield* analytics === undefined
         ? worker
         : worker.pipe(Effect.provideService(ScheduleObservation, analytics.schedules));
     }).pipe(Effect.provide(executorServices));
-    // A span per wake, named as Cloud's coordinator wake, shows which write asked for setup.
     const wake = scheduler.wakeWebhookSources.pipe(
       Effect.withSpan("schedule.wake", { attributes: { "executor.schedule.wake": "change" } }),
     );
-    // Member setup links accounts and redeploys the default Executor app; it wakes webhook sources.
     yield* drainProvisioning(selfHostProvisioningServices).pipe(
       Effect.catch(() => Effect.logWarning("Provisioning queue processing failed")),
       Effect.repeat(Schedule.spaced("1 second")),
@@ -112,7 +105,6 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
       Effect.provide(executorServices),
       Effect.forkScoped,
     );
-    // The account callback the executor's sign-ins send, so the document lists the same one.
     const clientMetadata = yield* clientMetadataSetting({
       origin: auth.origin,
       oauthRedirectUri: Option.getOrUndefined((yield* authSettings).oauthRedirectUri),
@@ -132,12 +124,10 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
           egress,
           clientMetadata,
           auth.origin,
-          // The official feed unless the operator names another or turns it off.
           yield* catalogFeedSetting,
         ),
       ),
       Layer.provide(hostedMiddlewareLive),
-      // Organization middleware reads the product's removal tombstones when it is built.
       Layer.provide(executorServices),
       HttpRouter.provideRequest(executorServices),
       Layer.provide(auth.identity),
@@ -198,7 +188,6 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
         HttpRouter.add("GET", "/api", apiChallenge),
         HttpRouter.add("GET", "/.well-known/oauth-protected-resource/api", apiProtectedResource),
       ).pipe(HttpRouter.provideRequest(auth.apiIdentity)),
-      // Resolved on the server so opening an app never renders an intermediate dashboard page.
       HttpRouter.add("GET", "/app-auth", appUi.signIn(dashboard)).pipe(
         HttpRouter.provideRequest(auth.appSessions),
         HttpRouter.provideRequest(executorServices),
@@ -238,7 +227,6 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
     const routes = HttpRouter.add(
       "*",
       "*",
-      // Server-rendered pages read the product API through this same dispatch, in-process.
       withHostPipeline(
         Effect.gen(function* () {
           const request = yield* HttpServerRequest.HttpServerRequest;

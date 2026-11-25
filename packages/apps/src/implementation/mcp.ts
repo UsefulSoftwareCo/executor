@@ -130,7 +130,6 @@ const errorBody = (response: HttpClientResponse.HttpClientResponse) =>
     const length = response.headers["content-length"];
     if (!json || (length !== undefined && Number(length) > errorBodyLimits.maxBytes))
       return { body: Stream.toReadableStream(response.stream), upstream: undefined };
-    // An unreadable, oversized or stalled body states nothing; the refusal keeps its status.
     const unreadable = new McpError({ phase: "transport", reason: "invalid_response" });
     const read = yield* response.stream.pipe(
       Stream.mapError(() => unreadable),
@@ -148,8 +147,6 @@ const errorBody = (response: HttpClientResponse.HttpClientResponse) =>
     };
   });
 
-// The library consumes Web Responses; Effect owns requests and streaming bodies.
-// Retain the transport abort signal after response headers arrive.
 const transportFetch =
   (
     connection: McpConnection,
@@ -161,30 +158,25 @@ const transportFetch =
   (url, init) =>
     Effect.runPromiseWith(telemetry.context)(
       Effect.gen(function* () {
-        // Executor's own refusals name the setting or server response at fault, never a network failure.
         const target = yield* Effect.try({
           try: () => new URL(url),
           catch: () => new McpError({ phase: "transport", reason: "invalid_response" }),
         });
         if (connection.url.username || connection.url.password)
           return yield* new McpError({ phase: "transport", reason: "invalid_input" });
-        // The server directed the client to another origin or embedded credentials in a URL.
         if (target.origin !== connection.url.origin || target.username || target.password)
           return yield* new McpError({ phase: "transport", reason: "invalid_response" });
         const request = yield* Effect.try({
           try: () => {
             const headers = new Headers(Redacted.value(connection.headers));
             new Headers(init?.headers).forEach((value, name) => headers.set(name, value));
-            // Workers send no User-Agent, and some Cloudflare-hosted servers refuse requests without one.
             if (!headers.has("user-agent")) headers.set("user-agent", "Executor");
             return HttpClientRequest.fromWeb(new Request(target, { ...init, headers }));
           },
-          // The provider's headers cannot form an HTTP request, such as a name with a space.
           catch: () => new McpError({ phase: "transport", reason: "invalid_input" }),
         });
         const client = yield* HttpClient.HttpClient;
         const response = yield* client.execute(request);
-        // Executor's network refused the request; its reason names the host or credential at fault.
         yield* failOnNetworkRefusal(response).pipe(
           Effect.tapError((refused) => Deferred.fail(rejected, refused)),
         );
@@ -200,19 +192,12 @@ const transportFetch =
           );
         const { body, upstream } = yield* errorBody(response);
         const provider = httpProviderError(response.status, response.headers);
-        // The Streamable HTTP client's GET only opens the optional server-initiated stream. A
-        // server can refuse it and still answer every POST, and the client carries on without the
-        // stream, so its refusal does not fail the session. The SSE transport's GET is the session.
         const optionalStream = kind === "http" && request.method === "GET";
         if (provider !== undefined && !optionalStream) {
-          // EventSource replaces rejected fetch errors. Retain our safe failure
-          // within this session so SSE cannot erase its status or reason.
           const refused = providerErrorDetail(provider, { upstream });
           yield* Deferred.fail(rejected, refused);
           return yield* refused;
         }
-        // The SDK reports only the status of a refused request; keep the error the body stated.
-        // Only the Streamable HTTP transport sends the session ID its server issued.
         const session = new Headers(init?.headers).has("mcp-session-id");
         yield* Ref.update(answered, (responses) =>
           new Map(responses).set(response.status, { upstream, session }),
@@ -246,8 +231,6 @@ const explain = <E>(
   responses: ErrorResponses,
 ) => {
   if (Schema.is(ProviderError)(error)) return providerErrorDetail(error, { phase });
-  // A tool call's request that failed without an answer, such as on a closed connection, failed
-  // the call, which the server may already have run; it is not a failure to connect.
   if (
     phase === "call" &&
     Schema.is(McpError)(error) &&
@@ -357,18 +340,12 @@ function withClient<A, E>(
                   Effect.ignore,
                 );
               }
-              // `close` aborts the request `terminateSession` sends, so it comes after it.
               // oxlint-disable-next-line executor/authored-code-through-adapter -- MCP SDK
               yield* Effect.tryPromise(() => client.close()).pipe(
                 Effect.timeout(defaultMcpClientLimits.cleanupTimeoutMs),
                 Effect.ignore,
               );
             });
-            // An answered call's result is already in hand: end its session after the reply, so
-            // the caller does not wait for the server to acknowledge it. Catalog invalidations the
-            // server announced during the call still finish first, so a later call sees them.
-            // Anything else, such as a failed or cancelled call, or discovery, ends its session
-            // before going on.
             return afterReply !== undefined && mode === "call" && Exit.isSuccess(exit)
               ? settle.pipe(
                   Effect.andThen(afterReply(end.pipe(owned("background", "provider.mcp.close")))),
@@ -376,7 +353,6 @@ function withClient<A, E>(
               : settle.pipe(Effect.andThen(end), owned("upstream", "provider.mcp.close"));
           },
         );
-        // Hide the SDK getter that conflicts with its own exact-optional Transport type.
         const wire: Omit<StreamableHTTPClientTransport, "sessionId"> | SSEClientTransport =
           transport;
         // oxlint-disable-next-line executor/authored-code-through-adapter -- MCP SDK
@@ -404,7 +380,6 @@ function withClient<A, E>(
       }),
     );
   return attempt("http").pipe(
-    // Fallback is only for negotiation. Tool calls are never automatically replayed.
     Effect.catch((error) =>
       Schema.is(McpError)(error) &&
       error.phase === "connect" &&
@@ -487,7 +462,6 @@ export const mcpHealthEffect = (check: McpHealthCheck, options: McpHealthOptions
         : Effect.fail(new McpError({ phase: "transport", reason: "timeout" })),
     );
     yield* (yield* mcpClientEffect({ ...parsed, timeoutMs: yield* remaining })).check;
-    // The same server, limits and budget; nothing derived from the account.
     return yield* remaining.pipe(
       Effect.flatMap((timeoutMs) =>
         mcpClientEffect({ url: parsed.url, signal: parsed.signal, timeoutMs }),
@@ -495,7 +469,6 @@ export const mcpHealthEffect = (check: McpHealthCheck, options: McpHealthOptions
       Effect.flatMap((anonymous) => anonymous.check),
       Effect.matchEffect({
         onSuccess: () => Effect.fail(new McpCredentialsUnverified({ anonymous: "answered" })),
-        // Executor's network refused the attempt, so the server never answered it.
         onFailure: (error): Effect.Effect<void, McpCredentialsUnverified | NetworkRefused> =>
           Schema.is(NetworkRefused)(error)
             ? Effect.fail(error)

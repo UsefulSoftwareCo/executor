@@ -1,4 +1,3 @@
-/** Workflow actions share the read-only browser and keep independent mutation state. */
 import { Json, type HostedWorkflow, type WorkflowRun } from "@executor-js/sdk";
 import { randomUuid } from "@executor-js/utils/random-uuid";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";

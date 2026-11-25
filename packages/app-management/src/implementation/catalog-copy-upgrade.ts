@@ -1,22 +1,3 @@
-/**
- * The mechanical upgrade the catalog-copy rebuild applies to a copy's own files, and the digest
- * that names a reviewed result. Nothing here reads the catalog or chooses newer source.
- *
- * - Every source: `dependencies.apps` in `package.json` becomes the target release, in place.
- * - Sources on host protocol 12 or earlier (`apps` before `0.0.1-beta.90`): `index.ts` moves its
- *   account requirements under `user`, exactly as the catalog's own move to `0.0.1-beta.100`
- *   (executor-apps aea5787c) rewrote every package:
- *   `defineApp({ accounts: { x: p.many() }, … }, async ({ accounts, … }) => … accounts.x …)`
- *   becomes
- *   `defineApp({ user: { accounts: { x: p.many() } }, … }, async ({ user, … }) => … user?.accounts.x ?? [] …)`.
- *
- * The rewrite recognizes only that shape and returns `undefined` for anything else: another file
- * that names `accounts` in code, a context read as `ctx.accounts`, a requirement that is not
- * `.many()`, a use of the accounts other than as an argument or value, or a name `user` already in
- * use. `scripts/catalog-copy-snapshots.ts` checks every published catalog snapshot against the
- * TypeScript compiler and the official `app-user-accounts` codemod before its result is listed as a
- * reviewed target; the step rebuilds only listed targets.
- */
 import { Array as Arr, Effect, Option, Schema } from "effect";
 import {
   isTextFile,
@@ -26,11 +7,9 @@ import {
   type SourceFiles,
 } from "@executor-js/sdk/core";
 
-/** An exact semver version; ranges, tags and other specifiers are not releases. */
 const exactVersion =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+[0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*)?$/u;
 
-/** Semver precedence: negative when `left` is older than `right`. Undefined for non-releases. */
 export const compareReleases = (left: string, right: string): number | undefined => {
   const parse = (version: string) => {
     const match = exactVersion.exec(version);
@@ -61,13 +40,11 @@ export const compareReleases = (left: string, right: string): number | undefined
   return a.pre.length - b.pre.length;
 };
 
-/** The first release of host protocol 13, where requirements are nested by scope. */
 export const scopedRequirementsRelease = "0.0.1-beta.90";
 
 const Manifest = Schema.fromJsonString(JsonObject);
 const Dependencies = Schema.Record(Schema.String, Schema.Unknown);
 
-/** The exact `apps` release a source declares, if its manifest is JSON and declares one. */
 export const declaredRelease = (files: ReadonlyArray<SourceFile>) => {
   const content = sourceText(files, "package.json");
   if (content === undefined) return undefined;
@@ -79,7 +56,6 @@ export const declaredRelease = (files: ReadonlyArray<SourceFile>) => {
   return typeof apps === "string" && exactVersion.test(apps) ? apps : undefined;
 };
 
-/** The package name a source's manifest declares, if its manifest is JSON and names one. */
 export const declaredPackage = (files: ReadonlyArray<SourceFile>) => {
   const content = sourceText(files, "package.json");
   if (content === undefined) return undefined;
@@ -89,11 +65,6 @@ export const declaredPackage = (files: ReadonlyArray<SourceFile>) => {
   return typeof name === "string" ? name : undefined;
 };
 
-/**
- * `content` with the single `"apps": "<from>"` declaration set to `to`, byte for byte otherwise.
- * Undefined unless exactly one declaration matches and the result parses to the same manifest
- * with only `dependencies.apps` changed.
- */
 const repinnedManifest = (content: string, from: string, to: string) => {
   const escaped = from.replaceAll(".", "\\.").replaceAll("+", "\\+");
   const declaration = new RegExp(`("apps"\\s*:\\s*)"${escaped}"`, "gu");
@@ -108,24 +79,15 @@ const repinnedManifest = (content: string, from: string, to: string) => {
   return JSON.stringify(after.value) === JSON.stringify(expected) ? replaced : undefined;
 };
 
-/**
- * Blank out strings, template text, comments and regular expression literals, keeping offsets,
- * so the rewrite only matches code. Template substitutions stay code.
- */
 export const codeOnly = (text: string): string => {
-  // UTF-16 code units, so offsets match the text's own (an emoji is two).
   const out = text.split("");
   const blank = (from: number, to: number) => {
     for (let index = from; index < to; index++) if (out[index] !== "\n") out[index] = " ";
   };
-  // The kinds of brace open at each depth: `{` in code, or a template substitution's `${`.
   const braces: Array<"code" | "template"> = [];
   let index = 0;
-  // Whether a `/` here starts a regular expression rather than dividing.
   let regexAllowed = true;
   const templateFrom = (start: number) => {
-    // Reads template text from `start` (just after a backtick or a substitution's `}`) to its end
-    // or the next `${`, blanking the text.
     let cursor = start;
     while (cursor < text.length) {
       const char = text[cursor];
@@ -226,7 +188,6 @@ export const codeOnly = (text: string): string => {
       let cursor = index;
       while (cursor < text.length && /[A-Za-z0-9_$]/u.test(text[cursor]!)) cursor++;
       const word = text.slice(index, cursor);
-      // After a keyword such as `return` an expression starts; after a name or number it does not.
       regexAllowed =
         /^(?:return|typeof|instanceof|in|of|new|delete|void|throw|case|do|else|yield|await)$/u.test(
           word,
@@ -234,14 +195,12 @@ export const codeOnly = (text: string): string => {
       index = cursor;
       continue;
     }
-    // Punctuation: a `/` after `)` or `]` divides; after any other operator it starts a regex.
     regexAllowed = char !== ")" && char !== "]";
     index++;
   }
   return out.join("");
 };
 
-/** The offset of the bracket that closes the one at `open` in code-only text, or undefined. */
 const closing = (code: string, open: number) => {
   const pairs: Record<string, string> = { "{": "}", "(": ")", "[": "]" };
   const stack: string[] = [];
@@ -268,10 +227,6 @@ const previousNonSpace = (code: string, from: number) => {
   return index;
 };
 
-/**
- * One change to `index.ts`: the declaration's new `user: { ` and ` }`, the factory's binding, or a
- * read of one requirement. The kinds let the generator compare the codemod's own style.
- */
 export type ScopedEdit = {
   readonly kind: "declaration" | "binding" | "read";
   readonly start: number;
@@ -279,13 +234,11 @@ export type ScopedEdit = {
   readonly text: string;
 };
 
-/** Offsets of each whole word `word` in code-only text. */
 const wordsAt = (code: string, word: string) =>
   [...code.matchAll(new RegExp(`(?<![A-Za-z0-9_$])${word}(?![A-Za-z0-9_$])`, "gu"))].map(
     (match) => match.index,
   );
 
-/** Whether every code use of `word` is a property (`x.word`) or an object key (`word:`). */
 const onlyProperties = (code: string, word = "accounts") =>
   wordsAt(code, word).every((at) => {
     const previous = code[previousNonSpace(code, at)];
@@ -293,7 +246,6 @@ const onlyProperties = (code: string, word = "accounts") =>
     return previous === "." || ((previous === "{" || previous === ",") && following === ":");
   });
 
-/** `text` with `edits` applied. */
 export const applyEdits = (text: string, edits: ReadonlyArray<ScopedEdit>) => {
   let result = text;
   for (const edit of edits.toSorted((left, right) => right.start - left.start))
@@ -301,19 +253,13 @@ export const applyEdits = (text: string, edits: ReadonlyArray<ScopedEdit>) => {
   return result;
 };
 
-/**
- * `index.ts` with its account requirements moved under `user`, as described above, or undefined
- * when the source is not exactly the catalog's shape.
- */
 export const scopedIndex = (text: string): string | undefined => {
   const edits = scopedIndexEdits(text);
   return edits === undefined ? undefined : applyEdits(text, edits);
 };
 
-/** The edits {@link scopedIndex} makes, or undefined when the source is not the catalog's shape. */
 export const scopedIndexEdits = (text: string): ReadonlyArray<ScopedEdit> | undefined => {
   const code = codeOnly(text);
-  // `user` is the name the factory's context gains; a variable of that name could be captured.
   if (!onlyProperties(code, "user")) return undefined;
   const calls = [...code.matchAll(/(?<![A-Za-z0-9_$.])defineApp\s*\(/gu)];
   if (calls.length !== 1) return undefined;
@@ -330,14 +276,12 @@ export const scopedIndexEdits = (text: string): ReadonlyArray<ScopedEdit> | unde
   const handled = new Set<number>();
   const names: string[] = [];
 
-  // The requirement: `accounts: { … }` directly in defineApp's first argument.
   const requirement = wordsAt(code, "accounts").filter((at) => at > objectOpen && at < objectClose);
   if (requirement.length !== 1) return undefined;
   const key = requirement[0]!;
   const before = code[previousNonSpace(code, key)];
   if (before !== "{" && before !== ",") return undefined;
   if (closing(code, objectOpen) !== objectClose) return undefined;
-  // Directly inside the object, not nested in a value.
   {
     let depth = 0;
     for (let index = objectOpen + 1; index < key; index++) {
@@ -370,9 +314,6 @@ export const scopedIndexEdits = (text: string): ReadonlyArray<ScopedEdit> | unde
   edits.push({ kind: "declaration", start: valueClose + 1, end: valueClose + 1, text: " }" });
   handled.add(key);
 
-  // Code uses of `accounts` that are a property of something else (`client.accounts`, a router
-  // key `accounts:`) stay as written. Whether such a property is a context's, which the upgrade
-  // would have to rewrite, is checked offline against the codemod for every listed target.
   for (const at of wordsAt(code, "accounts")) {
     if (handled.has(at)) continue;
     const previous = code[previousNonSpace(code, at)];
@@ -381,7 +322,6 @@ export const scopedIndexEdits = (text: string): ReadonlyArray<ScopedEdit> | unde
       handled.add(at);
   }
 
-  // The factory: defineApp's second argument, `async ({ …, accounts, … }) => …`, if it reads them.
   const comma = skipSpace(code, objectClose + 1);
   const accounts = wordsAt(code, "accounts").filter((at) => !handled.has(at));
   if (accounts.length > 0) {
@@ -404,7 +344,6 @@ export const scopedIndexEdits = (text: string): ReadonlyArray<ScopedEdit> | unde
       return undefined;
     edits.push({ kind: "binding", start: at, end: at + "accounts".length, text: "user" });
     handled.add(at);
-    // Every other use reads one requirement as a value: `accounts.x` before `,` or `)`.
     for (const use of accounts) {
       if (handled.has(use)) continue;
       if (use < bindingClose || use > callClose) return undefined;
@@ -425,11 +364,6 @@ export const scopedIndexEdits = (text: string): ReadonlyArray<ScopedEdit> | unde
   return edits;
 };
 
-/**
- * The copy's files rebuilt on `to`, or undefined when its upgrade is not the mechanical one. Only
- * `package.json`'s `apps` and, before protocol 13, `index.ts` change. No other file may name
- * `accounts` in code before protocol 13.
- */
 export const upgradedFiles = (files: SourceFiles, to: string): SourceFiles | undefined => {
   const from = declaredRelease(files);
   if (from === undefined) return undefined;
@@ -458,7 +392,6 @@ export const upgradedFiles = (files: SourceFiles, to: string): SourceFiles | und
   );
 };
 
-/** What identifies one file's contents, as `sourceFilesEqual` compares them. */
 const fileIdentity = (file: SourceFile) =>
   "object" in file
     ? `object:${file.object}`
@@ -466,10 +399,6 @@ const fileIdentity = (file: SourceFile) =>
       ? `base64:${file.content}`
       : `text:${file.content}`;
 
-/**
- * The first 64 bits of the SHA-256 of the files in path order, base64url. It names a reviewed
- * target, not a secret: a copy whose upgraded files have another digest is not rebuilt.
- */
 export const sourceDigest = (files: ReadonlyArray<SourceFile>) =>
   Effect.promise(async () => {
     const ordered = files

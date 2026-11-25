@@ -1,7 +1,3 @@
-/**
- * Every dashboard sign-in fills one app requirement, in the scope the dialog names: saving the
- * account links it to that requirement. Credentials are never entered outside an app.
- */
 import { Effect } from "effect";
 import type { Atom } from "effect/reactivity";
 import type {
@@ -18,10 +14,8 @@ import { accountCredentialsChanged } from "./accounts.ts";
 import { refreshAppLinks } from "./app-accounts.ts";
 import { refreshAppDiscovery } from "./app-discovery.ts";
 
-/** One dialog's connection for an app requirement. `account` replaces that account's credentials. */
 export function appConnectionAtoms(key: {
   readonly app: AppId;
-  /** The version whose discovery the page shows, read again once the account is linked. */
   readonly version: VersionId | null;
   readonly scope: AccountScope;
   readonly requirement: string;

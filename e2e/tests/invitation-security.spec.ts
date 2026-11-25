@@ -1,4 +1,3 @@
-/** Invitation capability secrecy through the native Better Auth HTTP routes. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { Api, body } from "../support/api.ts";
@@ -18,7 +17,6 @@ layer(HostedLive, { excludeTestServices: true })("Invitation privacy", (it) => {
         const api = yield* Api,
           actors = yield* Actors;
         const organizationId = actors.organization.id;
-        // Cloud's Free plan is full; free a seat for the invitation, then restore the member.
         const seat = yield* freeSeat;
         const created = yield* api.request(
           actors.owner,
@@ -84,7 +82,6 @@ layer(HostedLive, { excludeTestServices: true })("Invitation privacy", (it) => {
         const memberList = yield* api.request(actors.member, "GET", list);
         expect(memberList.status).toBe(403);
         expect((yield* api.request(actors.member, "GET", full)).status).toBe(403);
-        // The member roster must remain usable without fetching invitation capabilities.
         expect(
           (yield* api.request(
             actors.member,
@@ -128,7 +125,6 @@ layer(HostedLive, { excludeTestServices: true })("Invitation privacy", (it) => {
             invitationId: invitation.id,
           })).status,
         ).toBe(200);
-        // A cancelled link no longer registers an account on self-host.
         if ((yield* Target).metadata.target !== "cloud")
           expect(
             (yield* api.request(yield* api.session(), "POST", "/api/auth/self-host/register", {
@@ -155,7 +151,6 @@ layer(HostedLive, { excludeTestServices: true })("Invitation privacy", (it) => {
         );
         const membership = roster.members.find((member) => member.userId === administrator.userId);
         expect(membership).toBeDefined();
-        // The admin invites the member back as an administrator, then loses the admin role.
         const departed = yield* freeSeat;
         const sent = yield* api.request(
           actors.admin,
@@ -172,10 +167,8 @@ layer(HostedLive, { excludeTestServices: true })("Invitation privacy", (it) => {
             role: "member",
           })).status,
         ).toBe(200);
-        // Existing sessions lose invitation access as soon as membership changes.
         for (const path of [list, full])
           expect((yield* api.request(actors.admin, "GET", path)).status).toBe(403);
-        // The invitations the admin sent are cancelled with the role, and cannot be accepted.
         const remaining = yield* body(
           Schema.Array(Schema.Struct({ id: Schema.String, status: Schema.String })),
           yield* api.request(actors.owner, "GET", list),

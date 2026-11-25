@@ -32,7 +32,6 @@ import {
   useDesktopUpdate,
 } from "./desktop-update.tsx";
 
-/** Finish pairing and session checks before mounting any dashboard data consumers. */
 export function AuthenticationGate({
   children,
   loading = <Connect pending />,
@@ -60,7 +59,6 @@ function SessionGate({
   return session.value.authenticated ? children : <Connect />;
 }
 
-/** Only dashboard pages load inventory and navigation after authentication. */
 export function DashboardLayout() {
   return (
     <AuthenticationGate>
@@ -80,7 +78,6 @@ function Connect({
   expired?: boolean;
   unavailable?: boolean;
 }) {
-  // A pairing link arrives in the URL fragment, which the server never sees; show it once hydrated.
   const connecting = useHydrated() && pending;
   return (
     <div className="connect-page min-h-dvh flex flex-col">
@@ -120,7 +117,6 @@ function Connect({
   );
 }
 
-/** A release names its version; a server started without one, such as development, names none. */
 const buildLabel = (build: string | undefined) =>
   build === undefined || build === "development" ? "Development" : `v${build}`;
 

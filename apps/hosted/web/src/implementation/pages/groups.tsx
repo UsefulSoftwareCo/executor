@@ -34,13 +34,11 @@ import { appError, type HostedError } from "../../contracts/errors.ts";
 import { GroupConflict } from "@executor-js/hosted-server/groups";
 import { Alert, AlertTitle, AlertDescription } from "@executor-js/ui/components/alert";
 
-/** The groups, keyed by the URL; a group's page also lists the apps shared with it. */
 export const groupsPageReads: OrganizationPageReads = (organization, params) => [
   groupsAtom(organization),
   ...(typeof params.groupId === "string" ? [resourceDirectoryAtom(organization)] : []),
 ];
 
-/** Shared hosted groups page. A reload reads persisted membership, never fixture data. */
 export function GroupsPage({ id }: { readonly id?: string }) {
   const { organization } = useOrganizationRoute();
   usePreload(...groupsPageReads(organization, { groupId: id }));
@@ -382,7 +380,6 @@ function GroupEditor({
   useEffect(() => {
     if (submitting || !focusFailure.current) return;
     focusFailure.current = false;
-    // Wait for enabled controls and their accessible errors to render before focusing.
     element.current
       ?.querySelector<HTMLElement>('[aria-invalid="true"], [data-submit-error]')
       ?.focus();
@@ -407,7 +404,6 @@ function GroupEditor({
           onSubmit={async (event) => {
             event.preventDefault();
             if (submitting) return;
-            // A server failure belongs to the previous attempt, not the next validation.
             form.setErrorMap({ onSubmit: { fields: {} } });
             await form.handleSubmit();
           }}

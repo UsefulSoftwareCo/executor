@@ -1,4 +1,3 @@
-/** Provider MCP defaults reach the source of custom imports; OAuth discovery keeps the entered URL. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";

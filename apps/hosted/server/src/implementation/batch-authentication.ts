@@ -19,14 +19,9 @@ class Membership extends Data.Class<{
   readonly organization: OrganizationId;
 }> {}
 
-/**
- * Keep an answer for the rest of the batch, but not a failure: a read after a failed lookup asks
- * again, as it would in a request of its own. Reads already waiting on the lookup share its result.
- */
 const answersOnly = (exit: Exit.Exit<unknown, unknown>) =>
   Exit.isSuccess(exit) ? Duration.infinity : Duration.zero;
 
-/** A batch's reads all carry its one identity; other requests use the native checks. */
 export const requestAuthentication = (native: typeof SessionAuthentication.Service) =>
   Effect.map(BatchAuthentication, (batch) => batch ?? native);
 
@@ -34,11 +29,6 @@ export const requestTombstones = Effect.gen(function* () {
   return (yield* BatchTombstones) ?? (yield* OrganizationTombstones);
 });
 
-/**
- * Share pending and completed identity reads only inside one dashboard batch. The router's
- * streaming response captures this context, so every read shares it until the batch ends.
- * Resource permissions still run in each endpoint, and the next request reads authority again.
- */
 export const batchAuthentication = HttpRouter.middleware(
   Effect.gen(function* () {
     const native = yield* SessionAuthentication;

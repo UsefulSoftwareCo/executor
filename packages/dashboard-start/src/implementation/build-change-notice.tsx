@@ -2,10 +2,6 @@ import { useSyncExternalStore } from "react";
 import { Button } from "@executor-js/ui/components/button";
 import { pageOutdated, subscribePageOutdated } from "./build-change.ts";
 
-/**
- * Offers a reload once the server reports another build. It does not reload by itself: the page
- * may hold unsaved input, and its requests keep working where the API did not change.
- */
 export function BuildChangeNotice() {
   const outdated = useSyncExternalStore(subscribePageOutdated, pageOutdated, () => false);
   if (!outdated) return null;

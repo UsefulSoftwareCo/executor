@@ -78,7 +78,6 @@ layer(HostedLive, { excludeTestServices: true })("Empty states", (it) => {
           page.keyboard.press("Escape"),
         );
 
-        // Controlled HTTP results exercise first-use states without deleting the built-in app or its token.
         yield* browser.use("Provide an empty authorized resource directory", (page) =>
           page.route("**/api/organizations/*/resources*", (route) =>
             route.fulfill({ json: { apps: [], accounts: [], pendingApp: false } }),
@@ -178,12 +177,9 @@ layer(HostedLive, { excludeTestServices: true })("Empty states", (it) => {
         yield* browser.use("Fail the catalog read", (page) =>
           page.route(/\/api\/catalog(?:\?|$)/, (route) => route.abort("failed")),
         );
-        // The running dashboard keeps the catalog it already loaded, so a new document reads it again.
         yield* browser.use("Open Add app during the failure", (page) =>
           page.goto(`/org/${actors.organization.slug}/apps/add`),
         );
-        // Read alone, the aborted read is a lost connection. Batched with another read that starts
-        // with it, such as Cloud's v1 import notice, its batch ends without answering it.
         yield* browser.use("The catalog error is visible", (page) =>
           page.getByText(/^(Can’t reach Executor|Unable to complete this request)$/).waitFor(),
         );

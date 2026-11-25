@@ -1,10 +1,3 @@
-/**
- * A build refuses one of the app's own JavaScript or TypeScript files over 2,000,000 bytes before
- * compiling it: esbuild compiles one file in a single stretch on the thread that runs every app's
- * code. Files of npm packages the app imports are not limited and compile however large. JSON
- * files are outside the limit: the app's own server JSON imports become modules of their own, and
- * other JSON goes through esbuild's JSON loader.
- */
 import { expect, layer } from "@effect/vitest";
 import { Clock, Effect, Fiber, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -18,7 +11,6 @@ import { appsManifest, withApps } from "../support/apps-release.ts";
 import { largeModuleCount, largeModulePackage } from "../support/npm-registry.ts";
 
 const limit = 2_000_000;
-/** An app that imports a package whose one module is 3,000,000 bytes, served by the e2e registry. */
 const largePackageModule = largeModulePackage.name;
 const largePackageApp = [
   {
@@ -46,7 +38,6 @@ const BuildFailed = Schema.Struct({
 
 const head = 'export const filler = "';
 const tail = '";\n';
-/** A module of exactly `bytes` UTF-8 bytes whose `filler` export is `unit` repeated. */
 const module = (bytes: number, unit = "x") => {
   const unitBytes = new TextEncoder().encode(unit).length;
   const room = bytes - head.length - tail.length;
@@ -54,11 +45,6 @@ const module = (bytes: number, unit = "x") => {
   expect(new TextEncoder().encode(content).length).toBe(bytes);
   return content;
 };
-/**
- * A module of exactly `bytes` ASCII bytes of generated objects, as an app's bundled API description
- * is: dense code, which costs the compiler far more per byte than one string. `filler` is the
- * number of objects.
- */
 const denseModule = (bytes: number) => {
   const entry = (at: number) =>
     `  { id: ${at}, name: "item ${at}", tags: ["a", "b"], nested: { x: ${at}, y: "z" } },\n`;
@@ -76,7 +62,6 @@ const denseModule = (bytes: number) => {
 };
 const dense = denseModule(limit - 1_000);
 const utf8 = (text: string) => new TextEncoder().encode(text).length;
-/** A module of `filler` followed by a comment that ends the file with `last`. */
 const endingWith = (bytes: number, last: string) => {
   const room = bytes - head.length - tail.length - 2 - utf8(last);
   const content = `${head}${"x".repeat(room)}${tail}//${last}`;
@@ -123,8 +108,6 @@ layer(HostedLive, { excludeTestServices: true })("Compiled file limit", (it) => 
             return failed;
           });
 
-        // A module just under the limit builds and runs, beside a larger JSON import, which becomes
-        // a module of its own and is outside the limit.
         const underName = `Under the limit ${randomUUID().slice(0, 8)}`;
         const document = `{"items":"${"y".repeat(3_000_000)}"}`;
         const started = yield* Clock.currentTimeMillis;
@@ -165,8 +148,6 @@ export default defineApp({}, {
           ),
         ).toEqual({ filler: dense.count, document: 3_000_000 });
 
-        // Exactly the limit builds, whatever characters reach it. A high surrogate with no low
-        // one after it, here the file's last unit, is three bytes, as TextEncoder writes it.
         const atLimit = {
           ascii: module(limit),
           twoByte: module(limit, "é"),
@@ -192,10 +173,6 @@ export default defineApp({}, {
           accepted.push(name);
         }
 
-        // Over the limit is refused before it compiles, and no app is created: one byte over in
-        // ASCII and in two-byte characters, and text that is not valid UTF-16, which TextEncoder
-        // and esbuild write with three bytes for each lone surrogate. 350,000 unpaired high
-        // surrogates, each before a three-byte character, are 700,025 units and 2,100,025 bytes.
         const overLimit = {
           ascii: module(limit + 1),
           twoByte: module(limit + 1, "é"),
@@ -218,8 +195,6 @@ export default defineApp({}, {
           refusedNames.push(name);
         }
 
-        // A package's file is not limited: an app that imports a 3,000,000-byte module builds and
-        // its tool answers.
         const packageName = `Large package ${randomUUID().slice(0, 8)}`;
         const large = yield* deploy(packageName, largePackageApp);
         yield* evidence.json("large-package.json", large.body);
@@ -258,8 +233,6 @@ export default defineApp({}, {
           const prefix = `/api/organizations/${actors.organization.id}`;
           const deploy = (name: string, files: ReadonlyArray<{ path: string; content: string }>) =>
             api.request(actors.owner, "POST", `${prefix}/apps/deploy`, { name, files });
-          // A small app, whose deploy also starts the compiler, answers while nothing holds the
-          // runtime's thread. Every app's code and every build share that thread.
           const pinger = yield* deploy(`Pinger ${randomUUID().slice(0, 8)}`, [
             {
               path: "index.ts",
@@ -284,10 +257,6 @@ export default defineApp({}, {
             .pipe(Effect.timeout("60 seconds"));
           expect((yield* ping).status).toBe(200);
 
-          /**
-           * Deploy `files` while calling the ping tool back to back, and return the longest wait
-           * between two answers, counted from before the request was sent until its answer came.
-           */
           const measured = (
             label: string,
             files: ReadonlyArray<{ path: string; content: string }>,
@@ -322,7 +291,6 @@ export default defineApp({}, {
               return { deployed, deployMs: answered - sent, pings: during.length, longestGapMs };
             });
 
-          // One file just under the limit: the work a legitimate build does on its largest file.
           const accepted = yield* measured("Calibration", [
             { path: "index.ts", content: reader },
             { path: "filler.ts", content: denseModule(limit - 1_000).content },
@@ -336,9 +304,6 @@ export default defineApp({}, {
               .pipe(Effect.orDie),
           );
 
-          // A dense file of 15,000,000 bytes, within the 16 MiB source limit. Compiling it would
-          // hold the thread for several times as long as the calibration did; refusing it does not
-          // hold the thread for even as long as that one file's compile.
           const oversized = denseModule(15_000_000).content;
           const refusedDeploy = yield* measured("Refused", [
             { path: "index.ts", content: reader },
@@ -367,8 +332,6 @@ export default defineApp({}, {
           expect(accepted.pings).toBeGreaterThan(0);
           expect(refusedDeploy.longestGapMs).toBeLessThan(accepted.longestGapMs);
 
-          // What a large package file costs, which the limit does not cover: the apps wait while
-          // its 3,000,000-byte module compiles. Recorded, not bounded.
           const packaged = yield* measured("Large package", largePackageApp);
           expect(packaged.deployed.status, JSON.stringify(packaged.deployed.body)).toBe(200);
           const packagedApp = yield* body(App, packaged.deployed);

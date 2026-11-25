@@ -1,7 +1,3 @@
-/**
- * Registry ownership, scheduled reconciliation and live verification of PR previews; Alchemy owns
- * provisioning and comments. `prepare` is in `pr-preview-decision.ts`, which needs no dependency.
- */
 import { Config, Console, Effect, FileSystem, Schema } from "effect";
 import { Argument, Command } from "effect/cli";
 import { HttpClient, HttpClientRequest } from "effect/http";
@@ -35,7 +31,6 @@ const guard = Command.make("guard", { number }, ({ number }) =>
     yield* output({ exists: lease === undefined ? "false" : "true" });
   }),
 );
-/** Retained previews whose PR closed, has another layer stacked above it or no longer needs one. */
 const stale = Command.make("stale", {}, () =>
   Effect.gen(function* () {
     const repository = yield* previewRepository;
@@ -61,7 +56,6 @@ const verify = Command.make("verify", { number }, ({ number }) =>
   Effect.gen(function* () {
     const client = yield* HttpClient.HttpClient;
     const deployment = previewOrigin(number);
-    // Health is the deployment's; sign-in, its pages and its session are on the browser origin.
     const origin = previewBrowserOrigin(number);
     for (const path of ["/health", "/login", "/api/auth/get-session"]) {
       const response = yield* client.get(`${path === "/health" ? deployment : origin}${path}`);
@@ -106,8 +100,6 @@ const verify = Command.make("verify", { number }, ({ number }) =>
         }
       }
     }
-    // Starting both real social flows catches missing proxy/client settings. This does not claim
-    // the identity provider's callback was completed, and sends no email or login credentials.
     const proxy = yield* Config.NonEmptyString("OAUTH_PROXY_PRODUCTION_URL");
     for (const provider of ["google", "github"]) {
       const request = yield* HttpClientRequest.post(`${origin}/api/auth/sign-in/social`, {
@@ -141,8 +133,6 @@ const verify = Command.make("verify", { number }, ({ number }) =>
       `Verified preview health, login, assets, session and social sign-in redirects: ${deployment}`,
     );
   }).pipe(
-    // The message names the request's method and public preview URL, such as a TLS handshake
-    // that failed on a role host.
     Effect.catchTag("HttpClientError", (error) =>
       Effect.fail(new TestStageFailed({ message: `Preview request failed: ${error.message}` })),
     ),
@@ -150,7 +140,6 @@ const verify = Command.make("verify", { number }, ({ number }) =>
   ),
 );
 
-/** Called from workflows with step-scoped GitHub and staging credentials. */
 export const prPreviewCommand = Command.make("pr-preview").pipe(
   Command.withSubcommands([guard, stale, verify]),
 );

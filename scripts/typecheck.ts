@@ -1,17 +1,3 @@
-/**
- * Typechecks the TypeScript projects concurrently. Each `tsc-rs` already checks a project on
- * several threads, so the script runs one project per four cores: two on a 4-core CI runner, at
- * most four.
- *
- * Every project runs to completion. Its output is printed in one block when it finishes, and the
- * script exits non-zero when any project fails. A signal stops every running project.
- *
- * Errors and every other line are printed in full. Warnings are counted instead: the last lines
- * give each rule's count and the files with the most. `--all-warnings` or `TYPECHECK_WARNINGS=all`
- * prints every warning where it occurred. A project that fails without printing an error is
- * printed in full, so a failure is never hidden. Warnings never change the exit code.
- * `e2e/tests/typecheck-runner.spec.ts` checks this.
- */
 import { spawn, type ChildProcess } from "node:child_process";
 import { availableParallelism, constants } from "node:os";
 
@@ -20,12 +6,8 @@ type Step = {
   readonly command: string;
   readonly args: ReadonlyArray<string>;
 };
-// `needs` runs first, in the project's slot. Root is first in the queue: it is the longest
-// project, and only it imports the Cloud framework snapshot that `framework:build` writes.
 type Project = { readonly path: string; readonly needs?: Step };
 
-// The `framework:build` script, without `bun run` in between. The build only stops on SIGINT or
-// SIGTERM once its compiler call returns, and killing a `bun` in front of it would leave it running.
 const frameworkBuild: Step = {
   name: "framework:build",
   command: process.execPath,
@@ -67,14 +49,10 @@ const allWarnings = warningsMode === "all" || process.argv.slice(2).includes("--
 
 type Result = { readonly name: string; readonly code: number };
 
-// A diagnostic starts with `file(line,column): warning TS123: ` or, for a project option,
-// `warning TS123: `. The lines after it up to the next diagnostic or a blank line continue it;
-// an Effect diagnostic ends with its rule, `effect(ruleName)`.
 const diagnosticStart = /^(?:(.+?)\(\d+,\d+\): )?(error|warning) TS(\d+): /;
 type Warning = { readonly rule: string; readonly file: string };
 const warnings: Array<Warning> = [];
 
-/** `text` without its warnings, which are returned instead, and the number of errors it has. */
 const splitWarnings = (text: string) => {
   const kept: Array<string> = [];
   const found: Array<Warning> = [];
@@ -107,10 +85,6 @@ const splitWarnings = (text: string) => {
   return { kept: kept.join("\n"), warnings: found, errors };
 };
 
-// The steps stay in this process group, so a signal or kill sent to the group (Ctrl-C in a
-// terminal, an agent harness's kill) reaches them directly. A signal sent only to this process,
-// as `bun run` forwards it, is passed on to the steps. `tsc-rs` ignores SIGINT and SIGTERM, so a
-// step that is still running a second later is killed.
 const running = new Set<ChildProcess>();
 let stoppedBy: NodeJS.Signals | undefined;
 const killAll = (signal: NodeJS.Signals) => {
@@ -123,7 +97,6 @@ for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
     setTimeout(() => killAll("SIGKILL"), 1_000).unref();
   });
 }
-// An uncaught error or `process.exit` must not leave compilers running.
 process.on("exit", () => killAll("SIGKILL"));
 
 const run = (step: Step): Promise<Result> =>
@@ -131,12 +104,10 @@ const run = (step: Step): Promise<Result> =>
     const started = performance.now();
     const child = spawn(step.command, [...step.args], { stdio: ["ignore", "pipe", "pipe"] });
     running.add(child);
-    // Kept apart so a chunk on one stream cannot split a line on the other.
     const stdout: Array<Buffer> = [];
     const stderr: Array<Buffer> = [];
     child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
     child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
-    // A process that fails to start emits `error` and then `close` with a negative code.
     child.on("error", (error) => stderr.push(Buffer.from(`${error.message}\n`)));
     child.on("close", (exit, signal) => {
       running.delete(child);
@@ -180,7 +151,6 @@ await Promise.all(
   }),
 );
 
-/** `items` grouped by `key`, the largest group first. */
 const largestFirst = <T>(items: ReadonlyArray<T>, key: (item: T) => string) => {
   const groups = new Map<string, Array<T>>();
   for (const item of items) {
@@ -213,7 +183,6 @@ console.log(
     (failed.length ? ` Failed: ${failed.map((result) => result.name).join(", ")}.` : "") +
     (stoppedBy ? ` Stopped by ${stoppedBy}.` : ""),
 );
-// No `process.exit`: it would drop stdout that a pipe has not drained yet.
 process.exitCode = stoppedBy
   ? 128 + constants.signals[stoppedBy]
   : failed.length || results.length !== projects.length

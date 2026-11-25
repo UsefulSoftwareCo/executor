@@ -1,7 +1,6 @@
 import { browserPageId, BrowserOperationFailure } from "@executor-js/telemetry/browser";
 import { budgetedFetch } from "@executor-js/telemetry/keepalive";
 import { documentBuild } from "@executor-js/dashboard-start/document-build";
-/** Cloud-only product analytics, sharing the marketing site's PostHog project. */
 import posthog, { type PostHogConfig } from "posthog-js";
 import { BrowserUsage } from "@executor-js/hosted-web/contracts/product-analytics";
 import { useAtomValue } from "@effect/atom-react";
@@ -12,7 +11,6 @@ import { useEffect } from "react";
 import type { SupportLink } from "@executor-js/ui/dashboard/support-dialog";
 import { dashboardReplay, replayPageAllowed } from "./analytics-replay.ts";
 
-// The PostHog SDK is a browser-global singleton; these mirror its state for this document.
 /* oxlint-disable executor/no-module-level-mutable-state -- browser-only; server renders never start analytics */
 let started = false;
 let identified = false;
@@ -21,7 +19,6 @@ let recorder: Promise<unknown> | undefined;
 
 const replayAllowed = () => identified && replayPageAllowed(new URL(location.href));
 
-/** Stop before route changes so login, consent and private settings never enter the recorder. */
 export const pauseReplay = () => {
   if (started) posthog.stopSessionRecording();
 };
@@ -31,21 +28,18 @@ const updateReplay = () => {
     posthog.stopSessionRecording();
     return;
   }
-  // The bundled recorder must be registered first, or the SDK fetches its blockable script.
   recorder ??= import("./replay-runtime.ts").catch((error: unknown) => {
     recorder = undefined;
     throw error;
   });
   recorder.then(
     () => {
-      // Navigation or sign-out can happen while the chunk loads.
       if (replayAllowed()) posthog.startSessionRecording();
     },
     () => console.warn("Could not load session replay"),
   );
 };
 
-/** URL fingerprints are kept out of PostHog on every property channel, not just events. */
 const deniedUrlProperties = [
   "$current_url",
   "$initial_current_url",
@@ -70,7 +64,6 @@ const ordinaryRequests: NonNullable<PostHogConfig["fetch_options"]> & { keepaliv
   keepalive: false,
 };
 
-/** Initialize explicit event capture at the browser entry point. */
 export const startAnalytics = () => {
   if (started) return;
   const key: unknown = import.meta.env.VITE_POSTHOG_KEY;
@@ -80,24 +73,15 @@ export const startAnalytics = () => {
     throw new Error("PostHog proxy path is missing from this build");
   posthog.init(key, {
     defaults: "2025-05-24",
-    // Keep SDK identity/attribution, but deliver analytics without vendor URL fingerprints.
     before_send: (event) => {
-      // Replay owns its chunked /s/ transport; sending snapshots to the event endpoint loses recordings.
       if (event?.event === "$snapshot")
         return identified && replayPageAllowed(new URL(location.href)) ? event : null;
       if (event) {
         event.properties.event_id ??= crypto.randomUUID();
-        // property_denylist covers event.properties only. Initial person properties
-        // travel on $set_once and $set, and $initial_current_url is the raw
-        // first-visit href, including an invitation token or an OAuth code.
         for (const key of deniedUrlProperties) {
           delete event.$set_once?.[key];
           delete event.$set?.[key];
         }
-        // A beacon uses the page's keepalive quota, but its sender cannot tell when it ends, and one
-        // the browser refuses is lost. This request is counted, and goes as an ordinary one when
-        // the page's error reports and exports leave no room. It goes through the page's own fetch,
-        // which the Sentry SDK does not record, so analytics never becomes a report's breadcrumb.
         try {
           const body = new Blob([JSON.stringify(event)], { type: "application/json" });
           void budgetedFetch("analytics")(`${path}/push`, {
@@ -109,19 +93,12 @@ export const startAnalytics = () => {
           console.warn("Could not encode analytics event");
         }
       }
-      // This adapter owns delivery; the SDK must not send the same event again.
       return null;
     },
     api_host: `${location.origin}${path}`,
-    // PostHog sends with keepalive while its own requests in flight stay under about 52 KB, and
-    // the browser counts those against the 64 KiB the page's error reports and exports share. Its
-    // requests go as ordinary ones instead; as the page unloads it still sends its last queued
-    // requests and replay chunk as beacons. Its runtime reads `keepalive` from these options,
-    // which its config type does not list.
     fetch_options: ordinaryRequests,
     ui_host: import.meta.env.VITE_POSTHOG_HOST,
     autocapture: false,
-    // The managed loopback receiver exercises capture from an automated browser. Production keeps bot filtering.
     opt_out_useragent_filter: import.meta.env.VITE_EXECUTOR_ENVIRONMENT === "test-local",
     property_denylist: deniedUrlProperties,
     capture_pageview: false,
@@ -176,7 +153,6 @@ export const startAnalytics = () => {
   });
 };
 
-/** Route categories avoid high-cardinality customer names, resource IDs and capability values. */
 export const pageContext = (pathname: string, search = "") => {
   const segments = pathname.split("/").filter(Boolean);
   const pages = new Set([
@@ -214,7 +190,6 @@ export const pageContext = (pathname: string, search = "") => {
       "settings",
       "source",
       "versions",
-      // The former name of `versions`, in links saved before the rename.
       "deployments",
     ].includes(view)
       ? view
@@ -226,7 +201,6 @@ export const pageContext = (pathname: string, search = "") => {
   };
 };
 
-/** Record resolved SPA navigation without OAuth codes, search parameters or fragments. */
 export const capturePageview = (pathname: string) => {
   updateReplay();
   if (started)
@@ -235,12 +209,10 @@ export const capturePageview = (pathname: string) => {
     });
 };
 
-/** Record that the support dialog opened. */
 export const captureSupportOpened = () => {
   if (started) posthog.capture("support_opened", pageContext(location.pathname, location.search));
 };
 
-/** Record which fixed support channel was followed. */
 export const captureSupportLinkClicked = (label: SupportLink) => {
   if (started)
     posthog.capture("support_link_clicked", {
@@ -249,7 +221,6 @@ export const captureSupportLinkClicked = (label: SupportLink) => {
     });
 };
 
-/** Identify only confirmed sessions; reset persisted identity after confirmed sign-out. */
 export function AnalyticsIdentity() {
   const session = useAtomValue(sessionAtom);
   useEffect(() => {

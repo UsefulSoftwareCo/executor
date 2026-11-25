@@ -1,4 +1,3 @@
-/** Add app lists Executor's official apps and installs one's own source as a copy. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -30,7 +29,6 @@ const Entries = Schema.Array(
     ),
   }),
 );
-/** A listing whose feed was read: the official apps are all there. */
 const Catalog = Schema.Struct({
   apps: Entries,
   feed: Schema.Struct({ status: Schema.Literal("listed") }),
@@ -69,7 +67,6 @@ layer(HostedLive, { excludeTestServices: true })("Official app catalog", (it) =>
           Catalog,
           yield* api.request(actors.owner, "GET", "/api/catalog"),
         );
-        // The built-in Executor app comes first, then the feed's apps in its order.
         expect(entries.map((entry) => entry.name)).toEqual([
           "Executor",
           officialApps.mail.name,
@@ -78,14 +75,12 @@ layer(HostedLive, { excludeTestServices: true })("Official app catalog", (it) =>
         ]);
         const mail = entries.find((entry) => entry.id === officialApps.mail.id);
         if (mail === undefined) return yield* Effect.die("The official mail fixture is missing");
-        // Icons are the package's own files, resolved against the feed's address.
         expect(mail.icons.map((icon) => [icon.theme, new URL(icon.src).pathname])).toEqual([
           ["light", "/catalog/icons/mail-light.svg"],
           ["dark", "/catalog/icons/mail-dark.svg"],
         ]);
         expect(mail.auth).toEqual([{ method: "apiKey", kind: "secrets", label: "API key" }]);
 
-        // A listing whose source names another package is refused before anything is created.
         const refusedName = `Mismatched ${randomUUID().slice(0, 8)}`;
         const refused = yield* api.request(actors.owner, "POST", `${prefix}/apps/install`, {
           entry: officialApps.mismatched.id,
@@ -100,7 +95,6 @@ layer(HostedLive, { excludeTestServices: true })("Official app catalog", (it) =>
           )).apps.map((app) => app.name),
         ).not.toContain(refusedName);
 
-        // An official app installs its own source as a copy and keeps its package name.
         const trackerName = `Tracker ${randomUUID().slice(0, 8)}`;
         const tracker = yield* body(
           Installed,
@@ -127,7 +121,6 @@ layer(HostedLive, { excludeTestServices: true })("Official app catalog", (it) =>
             .name,
         ).toBe(officialApps.tracker.package);
 
-        // An unrelated app already holds the mail app's catalog name, so adding it meets a conflict.
         const held = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
           name: officialApps.mail.name,
           files: [
@@ -152,9 +145,6 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
         const row = (page: Page, name: string) => page.locator(".catalog-row", { hasText: name });
         yield* browser.login(actors.owner);
 
-        // The tracker's source declares no icons, so its page shows the catalog entry's icon, found
-        // by the package it was copied from. Until the catalog answers it shows a neutral icon,
-        // never its OAuth host's domain logo.
         const catalog = yield* holdQuery(["/api/catalog"], "continue");
         const logos: string[] = [];
         yield* browser.use("Watch for domain logos", (page) => {
@@ -196,8 +186,6 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
         );
         yield* browser.checkpoint("The tracker shows its catalog icon");
         expect(logos).toEqual([]);
-        // Add app keeps its layout while the catalog loads: the placeholders take the loaded
-        // toolbar's and rows' places, so nothing moves when the catalog answers.
         const layout = (page: Page, row: string) =>
           Promise.all(
             [".list-toolbar", row].map((selector) =>
@@ -237,7 +225,6 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
             .locator(`img[src$="/catalog/icons/mail-light.svg"]`)
             .waitFor(),
         );
-        // The tracker was installed before this visit, so its row offers Open instead of Add.
         yield* browser.use("An installed app offers Open", (page) =>
           row(page, officialApps.tracker.name).getByRole("link", { name: "Open" }).waitFor(),
         );
@@ -248,7 +235,6 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
         );
         yield* browser.checkpoint("Add app lists official apps");
 
-        // The taken name asks for another one.
         yield* browser.use("Add the mail app", (page) =>
           page.getByRole("button", { name: `Add ${officialApps.mail.name}`, exact: true }).click(),
         );
@@ -268,7 +254,6 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
         yield* browser.use("Add the renamed app", (page) =>
           page.getByRole("dialog").getByRole("button", { name: "Add app", exact: true }).click(),
         );
-        // The page stays put with its search; the row now offers Open.
         yield* browser.use("The mail row offers Open", (page) =>
           row(page, officialApps.mail.name).getByRole("link", { name: "Open" }).waitFor(),
         );
@@ -292,7 +277,6 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
         );
         yield* browser.checkpoint("The added app offers Open on the same page");
 
-        // A fresh visit still knows both apps are installed.
         yield* browser.use("Reload the app catalog", (page) => page.reload());
         yield* browser.use("Search the catalog again", (page) =>
           page.getByPlaceholder("Search apps…").fill("synthetic"),
@@ -311,7 +295,6 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
         );
         yield* browser.checkpoint("Open leads to the added app's account setup");
 
-        // Add app offers making your own app first, then the app catalog.
         yield* browser.use("Return to Apps", (page) =>
           page.goto(`/org/${actors.organization.slug}/apps`),
         );
@@ -357,7 +340,6 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
           page.keyboard.press("Escape"),
         );
 
-        // URL import is for MCP servers only; anything else, such as OpenAPI, starts from scratch.
         yield* choose("From an MCP server");
         const mcp = yield* browser.use("The MCP server dialog offers one URL form", (page) => {
           const dialog = page.getByRole("dialog", { name: "Create from an MCP server" });

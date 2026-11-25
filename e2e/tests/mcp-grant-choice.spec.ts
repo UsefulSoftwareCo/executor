@@ -1,8 +1,3 @@
-/**
- * Sign-in chooses an MCP grant's connection and approval mode. The consent sends them in
- * `x-executor-grant-settings`; the URL only preselects them. Every request then reads both from the
- * grant record, whatever address the client uses, and `/mcp/whoami` describes them.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -43,7 +38,6 @@ const Agents = Schema.Array(
 );
 const Token = Schema.Struct({ key: Schema.RedactedFromValue(Schema.String), id: Schema.String });
 
-/** An account-free app with a read tool, a write tool and a tool that always asks for approval. */
 const deployApp = Effect.gen(function* () {
   const api = yield* Api,
     actors = yield* Actors;
@@ -91,7 +85,6 @@ const createConnection = (session: Session, apps: readonly unknown[]) =>
     return yield* body(ConnectionView, created);
   });
 
-/** The scenario organization's slug and name, as `/mcp/whoami` names it. */
 const organizationOf = Effect.gen(function* () {
   const api = yield* Api,
     actors = yield* Actors;
@@ -104,7 +97,6 @@ const organizationOf = Effect.gen(function* () {
   return found;
 });
 
-/** `GET /mcp/whoami` on the MCP origin with a bearer and no cookies, as a CLI sends it. */
 const whoami = (
   token: Redacted.Redacted<string> | undefined,
   query = "",
@@ -125,7 +117,6 @@ const whoami = (
     return { ...response, body: parsed };
   });
 
-/** Run code through one MCP client's `execute` tool and return its structured result. */
 const runner =
   (client: Effect.Success<ReturnType<McpClient["Service"]["connect"]>>) =>
   (operation: string, code: string) =>
@@ -153,7 +144,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP grant choice at sign-in", 
         const connection = yield* createConnection(actors.owner, [
           { app: app.id, runsAs: [{ kind: "app" }], tools: { kind: "readOnly" } },
         ]);
-        // Another connection, which an address may name, that would allow the hidden app.
         const other = yield* createConnection(actors.owner, [
           { app: hidden.app.id, runsAs: [{ kind: "app" }], tools: { kind: "all" } },
         ]);
@@ -258,7 +248,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP grant choice at sign-in", 
               "Call a tool that needs approval",
               `return await ${path}.review({})`,
             ).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Pending)));
-            // Browser mode links the approval page; model mode asks the client to resume.
             expect(pending.approvalUrl).toBeDefined();
             const url = new URL(pending.approvalUrl ?? "");
             const review = `/api/mcp/approvals/${encodeURIComponent(pending.requestId)}${url.search}`;
@@ -307,7 +296,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP grant choice at sign-in", 
         const [owned, members, revoked] = yield* Effect.all(
           [
             createConnection(actors.owner, apps),
-            // The member's own connection; the owner's app is not one a member may include.
             createConnection(actors.member, []),
             createConnection(actors.owner, apps),
           ],
@@ -338,7 +326,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP grant choice at sign-in", 
             [settingsHeader]: choose(owned.id),
           }),
         ).toBe(403);
-        // A connection's access comes from its record, so a policy cannot accompany one.
         expect(
           yield* attempt({
             ...organization,
@@ -350,7 +337,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP grant choice at sign-in", 
         expect(
           yield* attempt({ ...organization, [settingsHeader]: JSON.stringify({ mode: "phone" }) }),
         ).toBe(400);
-        // An API grant has no mode or connection to choose.
         expect(
           yield* attempt(
             { ...organization, [settingsHeader]: JSON.stringify({ mode: "model" }) },
@@ -358,13 +344,11 @@ layer(HostedLive, { excludeTestServices: true })("MCP grant choice at sign-in", 
             "executor offline_access",
           ),
         ).toBe(400);
-        // None of the refused approvals left a grant.
         const listed = yield* body(
           Schema.Array(Schema.Struct({ clientId: Schema.String })),
           yield* api.request(actors.owner, "GET", "/api/auth/mcp/grants"),
         );
         expect(listed.filter((grant) => clients.includes(grant.clientId))).toEqual([]);
-        // The same choice of the owner's own connection in its organization is approved.
         expect(yield* attempt({ ...organization, [settingsHeader]: choose(owned.id) })).toBe(200);
       }),
     ),
@@ -384,7 +368,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP grant choice at sign-in", 
           slug: organization.slug,
           name: organization.name,
         };
-        // Without a credential it answers as the MCP endpoint does: the OAuth challenge.
         const anonymous = yield* whoami(undefined);
         expect(anonymous.status).toBe(401);
         expect(anonymous.challenge).toContain(
@@ -414,7 +397,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP grant choice at sign-in", 
             .pipe(Effect.orDie),
         );
         const named = { "x-executor-organization": actors.organization.id };
-        // A token has no record, so its mode is the URL's.
         const pat = yield* whoami(key.key, "?elicitation_mode=native", named);
         expect(pat.status, JSON.stringify(pat.body)).toBe(200);
         expect(pat.body).toEqual({
@@ -422,8 +404,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP grant choice at sign-in", 
           access: { kind: "all" },
           mode: "native",
         });
-        // A URL without a mode gives a token automatic mode, as a sign-in there preselects; a URL
-        // that names model mode keeps it.
         const patPlain = yield* whoami(key.key, "", named);
         expect(patPlain.status, JSON.stringify(patPlain.body)).toBe(200);
         expect(patPlain.body).toEqual({

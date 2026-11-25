@@ -1,4 +1,3 @@
-/** T3-style macOS development bundle. Only paths enter its launch script; scripts/local-dev.ts supplies dev defaults. */
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -28,7 +27,6 @@ export async function resolveLauncher() {
   if (previous !== revision) {
     await mkdir(runtime, { recursive: true });
     await rm(bundle, { recursive: true, force: true });
-    // Preserve framework-relative links, as in T3 Code; absolute links break the sandbox and signing.
     await cp(resolve(dirname(electron), "../.."), bundle, {
       recursive: true,
       verbatimSymlinks: true,

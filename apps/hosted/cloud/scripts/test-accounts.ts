@@ -1,4 +1,3 @@
-/** Privileged deploy-time fixtures for dedicated e2e stages; never imported by the Worker. */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Config, Console, Effect, FileSystem, Option, Path, Redacted, Schema } from "effect";
@@ -47,7 +46,6 @@ const provision = Effect.scoped(
     )
       return yield* new FixtureFailed({ phase: "configuration" });
     yield* fs.makeDirectory(path.dirname(output), { recursive: true, mode: 0o700 });
-    // Reserve a private output file before mutating anything. Never overwrite another run's sessions.
     const file = yield* fs.open(output, { flag: "wx", mode: 0o600 });
     let complete = false;
     yield* Effect.addFinalizer(() =>
@@ -68,7 +66,6 @@ const provision = Effect.scoped(
     const accountOperation = <A>(run: () => Promise<A>) =>
       Effect.tryPromise({ try: run, catch: () => new FixtureFailed({ phase: "accounts" }) });
     const sessions = yield* Effect.gen(function* () {
-      // Fixtures create sessions only; they never issue tokens for an OAuth resource.
       const base = authOptions(
         {
           url: origin,
@@ -84,11 +81,9 @@ const provision = Effect.scoped(
         database: pool,
         secret: Redacted.value(secret),
         advanced: { ...base.advanced, cookiePrefix: cloudSessionCookiePrefix(origin) },
-        // A full deployed suite may outlive the old one-hour fixture window.
         session: { ...base.session, expiresIn: testStageLifetimeMilliseconds / 1000 },
         plugins: [
           ...base.plugins,
-          // Fixture helpers create organizations and members through this plugin.
           organizationPlugin({ disableOrganizationDeletion: true }),
           {
             ...helpers,

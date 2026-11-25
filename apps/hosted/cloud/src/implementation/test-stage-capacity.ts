@@ -1,19 +1,7 @@
-/**
- * Durable Object classes and Workers are account quotas: each Durable Object class a Worker exports
- * is one namespace, and Cloudflare documents at most 500 classes and 500 Workers per Workers Paid
- * account. Every test stage uses several of each, and production and other stacks share the account.
- * A deploy of a new stage past a quota fails part way through Alchemy's apply, for whoever creates
- * the one too many.
- *
- * An account's quotas can be raised, and nothing the API returns says what they are, so the
- * documented figures only warn. A quota is enforced only when its variable gives the account's real
- * one; then a stage past it is refused before anything is evicted, reserved or built.
- */
 import { Config, Effect, Option, Schema } from "effect";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 import { TestStageFailed } from "../contracts/test-stage-lifetime.ts";
 
-/** The two quotas, Cloudflare's documented Workers Paid figure for each, and what sets the real one. */
 const quotas = {
   classes: {
     counted: "Durable Object namespaces",
@@ -30,13 +18,11 @@ const quotas = {
 } as const;
 type Quota = keyof typeof quotas;
 
-/** The namespace listing pages by `page` and `per_page` and gives `total_count`, not a page count. */
 const Namespaces = Schema.Struct({
   success: Schema.Literal(true),
   result: Schema.Array(Schema.Struct({ script: Schema.optional(Schema.NullOr(Schema.String)) })),
   result_info: Schema.Struct({ total_count: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)) }),
 });
-/** The Worker listing returns every Worker in one answer, as test-stage discovery reads it. */
 const Scripts = Schema.Struct({
   success: Schema.Literal(true),
   result: Schema.Array(
@@ -47,19 +33,15 @@ const Scripts = Schema.Struct({
   ),
 });
 
-/** How many of one kind the account has, and how many each test stage holds. */
 interface Count {
   readonly total: number;
   readonly byStage: ReadonlyMap<string, number>;
 }
-/** The account's Durable Object namespaces and Workers. */
 export type AccountUsage = Readonly<Record<Quota, Count>>;
 
-/** Read the account's namespaces and Workers. It only reads. */
 export const accountUsage = Effect.gen(function* () {
   const account = yield* Config.NonEmptyString("CLOUDFLARE_ACCOUNT_ID");
   const token = yield* Config.Redacted("CLOUDFLARE_API_TOKEN");
-  // A recorded copy of the API can stand in for it (`test-stage-unreadable.spec.ts`).
   const api = yield* Config.String("TEST_STAGE_CLOUDFLARE_API").pipe(
     Config.withDefault("https://api.cloudflare.com"),
   );
@@ -81,7 +63,6 @@ export const accountUsage = Effect.gen(function* () {
       );
       items.push(...body.result);
       if (items.length >= body.result_info.total_count || body.result.length === 0) {
-        // A count that falls short of the total it states would understate the account's use.
         if (items.length < body.result_info.total_count)
           return yield* Effect.fail(new Error("The namespace listing ended before its total."));
         return items;
@@ -132,24 +113,17 @@ export const accountUsage = Effect.gen(function* () {
   ),
 );
 
-/** Each quota's real figure, where the account owner set one. */
 export const accountLimits = Effect.all({
   classes: Config.option(Config.Int(quotas.classes.variable)),
   workers: Config.option(Config.Int(quotas.workers.variable)),
 });
 export type AccountLimits = Readonly<Record<Quota, Option.Option<number>>>;
 
-/**
- * What a new stage would do to each quota. A new stage is taken to need as many as the largest test
- * stage holds now; the stages it evicts free theirs first. A quota with a configured figure refuses
- * past it; one without warns past Cloudflare's documented figure and lets the deploy go on.
- */
 export const capacityCheck = (
   usage: AccountUsage,
   limits: AccountLimits,
   slug: string,
   evicting: ReadonlyArray<string>,
-  /** Whether evictions already ran and one failed, so the text says so. */
   afterFailedEviction = false,
 ) => {
   const refusals: string[] = [];

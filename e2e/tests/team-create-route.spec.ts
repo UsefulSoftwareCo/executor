@@ -6,7 +6,6 @@ import { HostedLive, withHostedCase } from "../support/case.ts";
 import { holdOrganizationEntry, trackEntryNavigations } from "../support/organization-entry.ts";
 import { scenarios } from "../test-plan.ts";
 
-/** A document navigation, as a browser sends it. */
 const navigation = { accept: "text/html" };
 
 layer(HostedLive, { excludeTestServices: true })("Team setup routing", (it) => {
@@ -31,8 +30,6 @@ layer(HostedLive, { excludeTestServices: true })("Team setup routing", (it) => {
                 yield* browser.use("Set the entry viewport", (page) =>
                   page.setViewportSize(viewport),
                 );
-                // Membership is resolved on the server. A browser read of the list would stall
-                // here, so entry completing proves the browser never waits for its own lookup.
                 const list = yield* holdOrganizationEntry;
                 const paths = yield* trackEntryNavigations;
                 const document = yield* browser.use(
@@ -51,8 +48,6 @@ layer(HostedLive, { excludeTestServices: true })("Team setup routing", (it) => {
                 );
                 if (path === "/") {
                   expect(document.status).toBe(200);
-                  // The server knew the membership before sending HTML, and sends neither a
-                  // dashboard nor team setup before the member's own organization opens.
                   expect(document.html).not.toMatch(/class="shell[\s"]/);
                   expect(document.html).not.toContain("Create your team");
                 } else {
@@ -78,7 +73,6 @@ layer(HostedLive, { excludeTestServices: true })("Team setup routing", (it) => {
                   ),
                 ).toBe(0);
                 expect(yield* list.wasRequested).toBe(false);
-                // Setup is redirected before its document loads, so the browser never renders it.
                 if (path === "/create") expect(paths).not.toContain("/create");
                 yield* browser.checkpoint(`${viewport.width}px ${path}: existing team selected`);
                 yield* list.release;

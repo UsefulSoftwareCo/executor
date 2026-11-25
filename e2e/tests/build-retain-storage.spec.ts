@@ -1,32 +1,3 @@
-/**
- * A deploy whose build cannot be kept because storage refused the write answers "try again", not
- * "your app is wrong". On 17 Nov a Cloud stage's 17 concurrent builds wrote the same framework
- * object within 2 s; R2 takes one write a second per key and refused one (`r2.10058`), and that
- * deploy answered 422, failing deployed run #1093 before any scenario ran.
- *
- * Through the SDK's own deploy path (packages/sdk/scripts/build-retain-fixture.ts: the real
- * `appRuntime` and retain stage, a compiler stub, and a store that refuses a key's writes faster
- * than one a second):
- * - 17 concurrent deploys sharing a framework all deploy; the framework is written once and every
- *   refused write is answered by the object already being there;
- * - a framework write refused every time ends with `StorageError` (500, "try again"), naming
- *   storage, not `VersionBuildFailed`;
- * - an app whose own code does not compile still gets `VersionBuildFailed` (422), built once;
- * - so does a UI file whose name no storage key can hold (a control character), and a key the
- *   store refuses as invalid (a 400, as R2's 10020 for a key over 1,024 bytes): the app's own
- *   failures at the retain stage answer 422 once, with no look-again and no repeat.
- *
- * And through Cloud's blob store write (apps/hosted/cloud/scripts/r2-write-fixture.ts): R2's
- * rate limit (10058), internal error (10001) and temporary unavailability (10043) are repeated and
- * the write lands; a failed condition (10031) and an invalid key (10020) are not repeated, and
- * the invalid key's failure keeps R2's 400; a persistent refusal stops after three attempts. And
- * 17 builds keeping their shared framework at once through that write and the retain stage's
- * look-again, against a put refusing a key's writes faster than one a second, are all kept.
- *
- * And the spans the writes leave: a deploy's version source and initial source writes each have a
- * `storage.blob.put` span with the object's kind, its size in bytes and its outcome, and never its
- * key; Cloud's write records how many attempts (each a whole upload) it took.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
@@ -85,7 +56,6 @@ const Writes = Schema.Struct({
   }),
 });
 
-/** Runs a fixture and decodes the JSON line it ends with; its output is kept as evidence. */
 const fixture = <S extends Schema.Codec<unknown, unknown>>(
   script: string,
   args: ReadonlyArray<string>,
@@ -133,7 +103,6 @@ layer(TestLive, { excludeTestServices: true })("Build retain storage", (it) => {
             expect(concurrent.builds).toBe(17);
             expect(concurrent.frameworkObjects).toBe(1);
             expect(concurrent.framework.stored).toBe(1);
-            // Every refused write was answered by the object another build stored.
             expect(concurrent.framework.refused).toBeGreaterThan(0);
             expect(concurrent.framework.existsAnswers.filter(Boolean)).toHaveLength(
               concurrent.framework.refused,
@@ -152,8 +121,6 @@ layer(TestLive, { excludeTestServices: true })("Build retain storage", (it) => {
               },
             ]);
             expect(refused.frameworkObjects).toBe(0);
-            // The look before the write, the refused write, then four looks for the object (at once,
-            // then after 1, 2 and 4 s), none finding it: about 7 s, then the write's own failure.
             expect(refused.framework.refused).toBe(1);
             expect(refused.framework.existsAnswers).toEqual([false, false, false, false, false]);
             expect(refused.elapsedMs).toBeGreaterThan(6_000);
@@ -189,7 +156,6 @@ layer(TestLive, { excludeTestServices: true })("Build retain storage", (it) => {
                 },
               ]);
               expect(own.builds).toBe(1);
-              // Only the look before the write: no look-again after the refusal.
               expect(own.framework.existsAnswers).toEqual([false]);
             }
           }),
@@ -218,7 +184,6 @@ layer(TestLive, { excludeTestServices: true })("Build retain storage", (it) => {
             ]);
           }),
         );
-        // One run of Cloud's write fixture: the write retry alone, and with the look-again.
         const writes = yield* fixture(
           "apps/hosted/cloud/scripts/r2-write-fixture.ts",
           [],
@@ -255,7 +220,6 @@ layer(TestLive, { excludeTestServices: true })("Build retain storage", (it) => {
           Effect.gen(function* () {
             const { framework } = writes;
             expect(framework).toMatchObject({ retained: 17, failed: [], frameworkObjects: 1 });
-            // R2 takes one write a second to the key: a write or two land, the rest are refused.
             expect(framework.refused).toBeGreaterThan(0);
             expect(framework.stored).toBeGreaterThanOrEqual(1);
             expect(framework.stored).toBeLessThan(5);

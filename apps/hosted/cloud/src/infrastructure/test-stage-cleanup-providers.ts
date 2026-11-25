@@ -1,4 +1,3 @@
-/** Cleanup runs from a shared checkout; local build files are not owned by a remote preview. */
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Command from "alchemy/Command";
 import * as Provider from "alchemy/Provider";
@@ -10,7 +9,6 @@ import { HttpClient, HttpClientRequest } from "effect/http";
 import { appDomainControlSecretId } from "./app-domain-control.ts";
 import { AppDomainLifecycle, AppDomainLifecycleProvider } from "./app-domain-lifecycle.ts";
 
-/** Only Alchemy's exact empty precreate script can have no runtime-owned team DNS. */
 export const isAlchemyWorkerPlaceholder = (script: string) =>
   /^(?:import \{ DurableObject \} from "cloudflare:workers";\n\n)?export default \{ fetch\(\) \{ return new Response\("Alchemy worker is being deployed\.\.\."\) \} \};\n(?:export class [A-Za-z_$][\w$]* extends DurableObject \{\}(?:\n|$))*$/.test(
     script,
@@ -21,12 +19,6 @@ class PlaceholderCheckFailed extends Schema.TaggedError<PlaceholderCheckFailed>(
   {},
 ) {}
 
-/**
- * Failed first deployments leave an empty Worker stub with no reachable drain endpoint. A teardown
- * that stopped after deleting the stage's Workers and its control secret leaves only this record,
- * whose drain can never be answered: with the API Worker gone (404) and no secret recorded, it is
- * forgotten instead of failing every scheduled cleanup.
- */
 export const TestStageDomainCleanup = () =>
   Provider.effect(
     AppDomainLifecycle,
@@ -40,7 +32,6 @@ export const TestStageDomainCleanup = () =>
             if (!stage.startsWith("test-")) return yield* native.delete(input);
             const account = yield* Config.NonEmptyString("CLOUDFLARE_ACCOUNT_ID");
             const token = yield* Config.Redacted("CLOUDFLARE_API_TOKEN");
-            // A recorded copy of the API can stand in for it (`test-stage-domain-cleanup.spec.ts`).
             const api = yield* Config.String("TEST_STAGE_CLOUDFLARE_API").pipe(
               Config.withDefault("https://api.cloudflare.com"),
             );
@@ -89,15 +80,12 @@ export const TestStageDomainCleanup = () =>
                 return;
               }
             }
-            // Any uploaded application, including one whose state commit failed,
-            // still has to drain. Never turn an unavailable real app into success.
             yield* native.delete(input);
           }).pipe(Effect.timeout("2 minutes")),
       };
     }).pipe(Effect.provide(AppDomainLifecycleProvider())),
   );
 
-/** Forget a completed build's state without deleting another deploy's local output directory. */
 export const TestStageBuildCleanup = () =>
   Provider.succeed(Command.Build, {
     read: ({ output }) => Effect.succeed(output),
@@ -106,13 +94,11 @@ export const TestStageBuildCleanup = () =>
     delete: () => Effect.void,
   });
 
-/** The buckets a test stage owns: retained app builds and retained site assets. */
 const testStageBuckets = [
   "executor-next-hosted-appbuilds-test-",
   "executor-next-hosted-siteassets-test-",
 ];
 
-/** An authorized preview teardown includes its bucket contents, including older persisted props. */
 export const TestStageBucketCleanup = () =>
   Provider.effect(
     Cloudflare.R2.Bucket,

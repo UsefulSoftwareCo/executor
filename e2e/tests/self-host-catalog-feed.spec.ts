@@ -1,8 +1,3 @@
-/**
- * When a self-host instance cannot read its app feed, or its operator turned the catalog off,
- * onboarding, Add app and the agent's catalog tool say why Executor's official apps are missing,
- * and the built-in Executor app stays listed.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schedule, Schema } from "effect";
 import { createServer } from "node:http";
@@ -29,7 +24,6 @@ const Listing = Schema.Struct({
     }),
   ]),
 });
-/** The array `organization.catalog` has always returned. */
 const Entries = Schema.Array(Schema.Struct({ package: Schema.String }));
 const Inventory = Schema.Struct({
   apps: Schema.Array(
@@ -44,29 +38,19 @@ const Inventory = Schema.Struct({
 const unavailableTitle = "App catalog unavailable";
 const unavailableDescription =
   "This Executor server could not read its app catalog feed just now, so this request to list or add Executor’s official apps did not complete.";
-/** Who can repair it, on any host. */
 const unavailableRepair =
   "If it keeps failing on Executor Cloud, contact Executor support; on a self-hosted or local server, whoever runs it should check its EXECUTOR_CATALOG_URL setting, its outbound internet access, and that the feed returns valid catalog data.";
-/**
- * What `organization.catalog` fails with when the feed cannot be read: the description, then the
- * next step, because an agent may read nothing but this message.
- */
 const unavailableMessage = `${unavailableDescription} Nothing was added, and the apps still exist. Try again shortly; if it still fails, add the app from its MCP server URL or build it. ${unavailableRepair}`;
 const unavailableAction = `Try again. ${unavailableRepair}`;
 const offTitle = "App catalog turned off";
 const offText =
   "Executor’s official apps are not listed because this instance’s app catalog is turned off. Whoever runs it can list them by removing EXECUTOR_CATALOG_URL=off.";
 
-/** A notice's text explains the unread feed and the next step, whichever layout shows it. */
 const expectUnavailable = (text: string) => {
   expect(text).toContain(unavailableDescription);
   expect(text).toContain(unavailableAction);
 };
 
-/**
- * Try again while the listing's read is held: the notice says it is checking and cannot be pressed
- * again, then offers Try again once the read answers.
- */
 const heldRetry = (where: string) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -92,10 +76,6 @@ const heldRetry = (where: string) =>
     }),
   );
 
-/**
- * Run first-run setup in the browser, which opens the assistant step first, skip it, and wait for
- * onboarding's account step to settle.
- */
 const setUp = (origin: string, email: string) =>
   Effect.gen(function* () {
     const browser = yield* Browser;
@@ -132,14 +112,12 @@ const setUp = (origin: string, email: string) =>
     );
   });
 
-/** A notice's heading and text, as a person reads it. */
 const notice = (page: Page, title: string) =>
   page
     .getByRole("heading", { name: title, exact: true })
     .locator("xpath=..")
     .evaluate((element) => (element instanceof HTMLElement ? element.innerText : ""));
 
-/** Send a request as the signed-in browser does, and keep its status and body. */
 const request = (route: string, body?: unknown) =>
   Effect.gen(function* () {
     const browser = yield* Browser;
@@ -158,7 +136,6 @@ const request = (route: string, body?: unknown) =>
     );
   });
 
-/** A response's body, decoded, after checking its status. */
 const answered = <S extends Schema.Top>(
   schema: S,
   status: number,
@@ -169,7 +146,6 @@ const answered = <S extends Schema.Top>(
     return yield* Schema.decodeUnknownEffect(Schema.fromJsonString(schema))(response.text);
   });
 
-/** Read a route that answers 200 as the signed-in browser does. */
 const read = <S extends Schema.Top>(schema: S, route: string, body?: unknown) =>
   request(route, body).pipe(Effect.flatMap((response) => answered(schema, 200, response)));
 
@@ -181,8 +157,6 @@ layer(TestLive, { excludeTestServices: true })("Self-host catalog feed", (it) =>
         const browser = yield* Browser,
           target = yield* Target;
 
-        // A feed address that answers with a sign-in page instead of a feed, as a captive portal
-        // or a misconfigured proxy would.
         let feedRequests = 0;
         const feed = yield* Effect.acquireRelease(
           driver(
@@ -208,7 +182,6 @@ layer(TestLive, { excludeTestServices: true })("Self-host catalog feed", (it) =>
           ({ server }) => Effect.sync(() => server.close()),
         );
 
-        // Each instance stops before the next starts, so the scenario never runs two at once.
         yield* Effect.scoped(
           Effect.gen(function* () {
             const unreadable = yield* startFreshSelfHost(target, {
@@ -247,7 +220,6 @@ layer(TestLive, { excludeTestServices: true })("Self-host catalog feed", (it) =>
             yield* browser.checkpoint("Add app when the app feed cannot be read");
             yield* heldRetry("Add app");
 
-            // The dashboards' session listing keeps the Executor app and says why, and what to do.
             const [organization] = yield* read(
               Schema.NonEmptyArray(Schema.Struct({ id: Schema.String })),
               "/api/auth/organization/list",
@@ -261,8 +233,6 @@ layer(TestLive, { excludeTestServices: true })("Self-host catalog feed", (it) =>
             expect(listing.feed.error.recovery.instructions).toContain("EXECUTOR_CATALOG_URL=off");
             expect(listing.feed.error.recovery.instructions).toContain("apps.importCustom");
 
-            // API keys and agents keep organization.catalog's response: an unread feed fails it with
-            // exactly the `_tag` and `message` it always has, the message now saying what to do.
             const failed = yield* request(`/api/organizations/${organization.id}/catalog`);
             expect(failed.status, failed.text).toBe(502);
             expect(JSON.parse(failed.text)).toEqual({
@@ -270,7 +240,6 @@ layer(TestLive, { excludeTestServices: true })("Self-host catalog feed", (it) =>
               message: unavailableMessage,
             });
 
-            // The agent's catalog tool, the Executor app's organization.catalog, returns the same.
             const executor = yield* read(
               Inventory,
               `/api/organizations/${organization.id}/inventory`,
@@ -285,8 +254,6 @@ layer(TestLive, { excludeTestServices: true })("Self-host catalog feed", (it) =>
               ),
               Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 120 }),
             );
-            // An agent calling it through the Executor app gets the failure with the service's own
-            // words quoted, the next step included. The app adds its own retry advice for any 5xx.
             const agent = yield* answered(
               Schema.Struct({ _tag: Schema.Literal("AppProviderFailed"), message: Schema.String }),
               502,
@@ -302,7 +269,6 @@ layer(TestLive, { excludeTestServices: true })("Self-host catalog feed", (it) =>
           }),
         );
 
-        // Turned off: only built-in apps, a note that says so, and no feed request.
         yield* Effect.scoped(
           Effect.gen(function* () {
             const before = feedRequests;
@@ -330,7 +296,6 @@ layer(TestLive, { excludeTestServices: true })("Self-host catalog feed", (it) =>
             const offListing = yield* read(Listing, "/api/catalog");
             expect(offListing.apps.map((entry) => entry.package)).toEqual(["executor"]);
             expect(offListing.feed.status).toBe("off");
-            // organization.catalog lists the built-in apps, as it always has.
             expect(
               (yield* read(Entries, `/api/organizations/${offOrganization.id}/catalog`)).map(
                 (entry) => entry.package,

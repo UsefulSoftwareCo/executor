@@ -1,4 +1,3 @@
-/** Explicit telemetry-only context across Promise and HTTP boundaries. */
 import { Context, Effect, Logger, Metric, Option, Stream, Tracer } from "effect";
 import {
   FetchHttpClient,
@@ -11,12 +10,10 @@ import {
 } from "effect/http";
 import { ownedBy } from "./ownership.ts";
 
-/** Trusted in-process capability containing no product authority, database or credentials. */
 export interface InvocationTelemetry {
   readonly context: Context.Context<never>;
 }
 
-/** Capture the tracer, loggers, registry and parent for a host-owned callback. */
 export const captureTelemetry: Effect.Effect<InvocationTelemetry> = Effect.gen(function* () {
   let context = Context.make(Tracer.Tracer, yield* Tracer.Tracer).pipe(
     Context.add(Logger.CurrentLoggers, yield* Logger.CurrentLoggers),
@@ -27,14 +24,12 @@ export const captureTelemetry: Effect.Effect<InvocationTelemetry> = Effect.gen(f
   return { context };
 });
 
-/** Encode the active span; absent tracing remains a valid no-header case. */
 export const traceHeaders: Effect.Effect<Readonly<Record<string, string>>> =
   Effect.currentSpan.pipe(
     Effect.map(HttpTraceContext.toHeaders),
     Effect.orElseSucceed(() => ({})),
   );
 
-/** Decode W3C context and start a server span in the recipient's own telemetry runtime. */
 export const withRemoteSpan =
   (request: Request, name: string) =>
   <A, E, R>(effect: Effect.Effect<A, E, R>) =>
@@ -49,7 +44,6 @@ export const withRemoteSpan =
       }),
     );
 
-/** Plain fetch for app authors, correlated with the invocation and cancelled by its owner. */
 export const invocationFetch = (signal: AbortSignal) =>
   Effect.gen(function* () {
     const { context } = yield* captureTelemetry;
@@ -86,8 +80,6 @@ export const invocationFetch = (signal: AbortSignal) =>
           );
           const streamed = HttpServerResponse.fromClientResponse(response);
           const body = streamed.body;
-          // Span the body's actual consumption, including streamed responses and cancellation.
-          // Keep Effect's empty-body handling, cookies and content metadata intact.
           const traced =
             body instanceof HttpBody.Stream
               ? HttpServerResponse.setBody(

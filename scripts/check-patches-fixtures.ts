@@ -1,8 +1,3 @@
-/**
- * Setups check-patches.ts must reject (`applied: false`) or accept, for a package `fixture` whose
- * selector is `fixture@1.0.0` unless the fixture names another. `installed` maps Bun store entries
- * (`fixture@1.0.0`, `fixture@1.0.0_peer` for a second copy) to the files of that copy.
- */
 export type Fixture = {
   readonly name: string;
   readonly applied: boolean;
@@ -15,7 +10,6 @@ const text = (...lines: ReadonlyArray<string>) => lines.map((line) => `${line}\n
 
 const original = text("a", "b", "c", "d", "e", "f", "g");
 const patched = text("a", "b", "c", "D", "e", "f", "g");
-/** Changes `d` to `D` in `path`. */
 const change = (path: string) =>
   text(
     `--- a/${path}`,
@@ -69,7 +63,6 @@ const createAndDelete = text(
   "@@ -1 +0,0 @@",
   "-removed",
 );
-/** A file whose line 9 onwards repeats lines 1 to 7: the block a hunk at line 9 changes. */
 const twice = (first: string, second: string) => `${first}x\n${second}`;
 const changeAtNine = text(
   "--- a/index.js",
@@ -205,7 +198,6 @@ export const fixtures: ReadonlyArray<Fixture> = [
     installed: { "fixture@1.0.0": { "index.js": patched, "other.js": original } },
   },
   {
-    // Git skips the second section and applies the first, which names the same file.
     name: "header with no hunks borrowing another section's file",
     applied: false,
     patch: change("index.js") + text("--- a/old.js", "+++ b/index.js"),
@@ -218,7 +210,6 @@ export const fixtures: ReadonlyArray<Fixture> = [
     installed: { "fixture@1.0.0": { "index.js": patched, "old.js": original } },
   },
   {
-    // Removes `-- a/x` and adds `++ b/x`: hunk lines, not a section header.
     name: "hunk lines that look like a header",
     applied: true,
     patch: text(
@@ -246,7 +237,6 @@ export const fixtures: ReadonlyArray<Fixture> = [
     installed: { "fixture@1.0.0": { "index.js": patched } },
   },
   {
-    // Git warns that the installed file is not executable, and succeeds.
     name: "file mode differs from the patch",
     applied: false,
     patch:
@@ -286,15 +276,12 @@ export const fixtures: ReadonlyArray<Fixture> = [
     installed: { "fixture@1.0.0": { "image.png": "png" } },
   },
   {
-    // The unpatched block also appears before the patched one, so the patch applies forward too,
-    // but only at an offset.
     name: "patched block repeats an unpatched one",
     applied: true,
     patch: changeAtNine,
     installed: { "fixture@1.0.0": { "index.js": twice(original, patched) } },
   },
   {
-    // The hunk's result is in the file, but not at the line its header names.
     name: "patched block only at another line",
     applied: false,
     patch: changeAtNine,

@@ -1,13 +1,8 @@
-/**
- * Prepare an official app's source without a product server, account, database or workspace.
- * Usage: EXECUTOR_CATALOG_URL=<feed>/index.json node prepare.ts [entry]
- */
 import { createCatalog } from "@executor-js/catalog";
 import { httpsOnlyUrlPolicy } from "@executor-js/utils/url-policy";
 import { Config, Console, Effect } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
 
-// A host normally passes a client that also checks the address a destination resolves to.
 const egress = {
   policy: httpsOnlyUrlPolicy,
   client: Effect.runSync(HttpClient.HttpClient.pipe(Effect.provide(FetchHttpClient.layer))),
@@ -27,7 +22,5 @@ await Effect.runPromise(
       prepared.origin,
       prepared.files.map((file) => file.path),
     );
-
-    // Stop at files. A local or hosted product decides how to install them.
   }),
 );

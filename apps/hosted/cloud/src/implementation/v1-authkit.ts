@@ -24,7 +24,6 @@ import { v1GonePage } from "./v1-edge.ts";
 
 const shutDown = "Executor v1's sign-in has shut down. Sign in to Executor again.";
 
-/** Public, credential-free answers: any origin may read them, and nothing keeps them. */
 const headers = { "cache-control": "no-store", "access-control-allow-origin": "*" };
 
 const json = (status: number, error: string) =>
@@ -45,14 +44,11 @@ const page = (browser: string) =>
 const read = ["GET", "HEAD"];
 const at = (path: string) => (pathname: string) => pathname === path;
 
-/** The first rule whose method and path match answers. */
 const rules: ReadonlyArray<{
   readonly methods: ReadonlyArray<string>;
   readonly path: (pathname: string) => boolean;
   readonly answer: (browser: string) => HttpServerResponse.HttpServerResponse;
 }> = [
-  // `oauth-authorization-server`, `openid-configuration`, and their path-inserted and
-  // path-appended forms.
   {
     methods: read,
     path: (pathname) => pathname.includes("/.well-known/"),
@@ -66,11 +62,9 @@ const rules: ReadonlyArray<{
   },
   { methods: read, path: at("/oauth2/jwks"), answer: () => json(404, "not_found") },
   { methods: ["POST"], path: at("/oauth2/register"), answer: () => json(410, "gone") },
-  // `/oauth2/authorize` and every other page.
   { methods: read, path: () => true, answer: page },
 ];
 
-/** Every request to the AuthKit host. `browser` is where people open Executor. */
 export const v1AuthKitHost = (browser: string) =>
   Effect.map(HttpServerRequest.HttpServerRequest, (request) => {
     const { pathname } = new URL(request.originalUrl);

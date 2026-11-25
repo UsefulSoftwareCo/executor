@@ -1,9 +1,3 @@
-/**
- * The release workflow's failed jobs gather their failed scenarios' evidence with
- * `e2e/release-evidence.ts`, in the layout `ci-evidence.ts` reads: `<run>/<target>/report/evidence/
- * <id>/result.json` beside the scenario's files. These cases run it as the workflow does, on
- * synthetic runs and Vitest reports.
- */
 import { expect, layer } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, FileSystem, Path, Stream } from "effect";
@@ -22,7 +16,6 @@ const node = (args: ReadonlyArray<string>) =>
     return { exitCode, log };
   }).pipe(Effect.scoped);
 
-/** Write `files`, paths relative to `root`, creating their folders. */
 const write = (root: string, files: Record<string, string>) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -33,7 +26,6 @@ const write = (root: string, files: Record<string, string>) =>
     }
   });
 
-/** Every file under `root`, relative and sorted; none when it does not exist. */
 const listing = (root: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -85,7 +77,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("release evidence", (it
         "run/local/run.json",
       ]);
 
-      // A run with no failed scenario gives nothing to upload.
       const green = yield* fs.makeTempDirectoryScoped({ prefix: "executor-e2e-green-" });
       yield* write(green, scenario("cccccc33", "passed", "s3"));
       const none = path.join(green, "out");
@@ -146,7 +137,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("release evidence", (it
       });
       expect(files.some((file) => file.endsWith("/desktop-1/window-1.png"))).toBe(true);
 
-      // A report whose tests all passed gives nothing to upload.
       const none = path.join(root, "none");
       yield* write(root, {
         "green.json": JSON.stringify({

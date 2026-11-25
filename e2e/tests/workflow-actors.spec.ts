@@ -1,4 +1,3 @@
-/** Approval-resumed workflow controls stay inside the runs of the caller who started them. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -76,7 +75,6 @@ layer(HostedLive, { excludeTestServices: true })("Workflow actors", (it) => {
             audience: { kind: "everyone" },
           })).status,
         ).toBe(200);
-        // Two end users, each with a personal MCP key.
         const user = (actor: Session, label: string) =>
           Effect.gen(function* () {
             const issued = yield* api.request(actor, "POST", "/api/auth/api-key/create", {
@@ -85,7 +83,6 @@ layer(HostedLive, { excludeTestServices: true })("Workflow actors", (it) => {
             expect(issued.status).toBe(200);
             const key = yield* body(Token, issued);
             keys.push({ actor, id: key.id });
-            // Model mode, named in the URL, so approvals pause for a resume.
             const client = yield* mcp.connect(key.key, `workflow-actors-${label}`, {
               organization,
               mode: "model",
@@ -107,7 +104,6 @@ layer(HostedLive, { excludeTestServices: true })("Workflow actors", (it) => {
                   ),
                   Effect.map((result) => result.execution.value),
                 );
-            // The mutation pauses for approval; its body, including workflow controls, runs on resume.
             const launch = (label: string) =>
               Effect.gen(function* () {
                 const paused = yield* client.use(`${label}: request approval`, (client, signal) =>
@@ -149,15 +145,12 @@ layer(HostedLive, { excludeTestServices: true })("Workflow actors", (it) => {
 
         const first = yield* alice.launch(`alice-${randomUUID().slice(0, 8)}`);
         const second = yield* bob.launch(`bob-${randomUUID().slice(0, 8)}`);
-        // Bob's approved mutation listed runs before starting its own; Alice's run must be absent.
         expect(second.visible).not.toContain(first.run);
-        // Each run belongs to the actor whose approved call started it.
         expect((yield* body(Run, yield* runOf(alice.actor, first.run))).id).toBe(first.run);
         expect((yield* body(Run, yield* runOf(bob.actor, second.run))).id).toBe(second.run);
         expect((yield* runOf(alice.actor, second.run)).status).toBe(403);
         expect((yield* runOf(bob.actor, first.run)).status).toBe(403);
 
-        // Non-approval queries read through the same actor boundary.
         expect(yield* bob.execute("Bob lists runs", "runs", {})).toEqual([second.run]);
         expect(yield* bob.execute("Bob reads Alice's run", "peek", { run: first.run })).toBe(null);
         expect(yield* alice.execute("Alice lists runs", "runs", {})).toEqual([first.run]);

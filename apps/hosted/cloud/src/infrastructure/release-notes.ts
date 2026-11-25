@@ -1,14 +1,3 @@
-/**
- * Cloud's "what's new" for a deploy. Writing the notes is a step of its own, which reads main's
- * history (`scripts/releases/release-notes.ts --cloud <file>`); the deploy names that file in
- * `EXECUTOR_CLOUD_RELEASE_NOTES_FILE`, and the dashboard's build takes its notes as
- * `EXECUTOR_CLOUD_RELEASE_NOTES` (apps/hosted/cloud/web/release-notes.ts).
- *
- * Production, which every Cloud user sees, must have them: a production deploy without the file,
- * or with one that holds no such notes, stops here before anything builds. Any other stage,
- * development and a checkout's own builds take the notes when a file is named, and otherwise build
- * with none, which shows no "What's new".
- */
 import { Config, Effect, FileSystem, Option, Schema } from "effect";
 import { CloudReleaseNotes } from "@executor-js/utils/release-notes";
 import { DeploySettingRejected } from "./deploy-settings.ts";
@@ -16,7 +5,6 @@ import { productionStage, stageName } from "./stage.ts";
 
 const notesFile = "EXECUTOR_CLOUD_RELEASE_NOTES_FILE";
 
-/** The notes JSON the dashboard's build takes, or none for a build given no notes file. */
 export const cloudReleaseNotesInput = Effect.gen(function* () {
   const file = yield* Config.String(notesFile).pipe(Config.option);
   if (Option.isNone(file)) {

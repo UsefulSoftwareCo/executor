@@ -1,20 +1,3 @@
-/**
- * The start-up record of one push to main, from what apps/hosted/cloud/scripts/worker-startup.ts
- * printed for it, and a table for the job summary. It records and gates nothing else.
- *
- *   node scripts/ci/worker-startup-record.ts <harness.json> <record.json>
- *
- * Reads HEAD_SHA (the pushed commit), BEFORE_SHA (the commit before the push) and BASE_COMMIT
- * (the commit whose build was measured against it, empty when there was none: the head was then
- * measured against itself, and only its own numbers are kept). Writes the record:
- *
- *   { commit, before, base, workerd, runs, machine, skipped,
- *     workers: { <worker>: { staticBytes, chunks, compile, evaluate } } }
- *
- * where `staticBytes` and `chunks` are `{ base, head }`, and `compile` and `evaluate` are
- * `{ base: { median, min }, head: { median, min }, difference }` in milliseconds, `difference`
- * being the head's median less the base's. Without a base, every `base` and `difference` is null.
- */
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 

@@ -1,5 +1,4 @@
 import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-/** Official MCP client adapter. Only public wire traffic crosses the application boundary. */
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { Clock, Context, Effect, Layer, Redacted, Schema } from "effect";
@@ -14,26 +13,19 @@ const make = Effect.gen(function* () {
     evidence = yield* Evidence;
   return {
     connect: (
-      /** A function is read for every request, as when each request carries a freshly signed bearer. */
       accessToken: Redacted.Redacted<string> | (() => Redacted.Redacted<string>),
       label: string,
       options: {
-        /** X-Executor-Organization, read for every request so a client can follow a renamed slug. */
         readonly organization?: string | (() => string);
         readonly mode?: "model" | "native" | "browser" | "automatic";
-        /** A scoped connection's URL. A grant is served per its record wherever it connects. */
         readonly connection?: string;
-        /** Runs while a native client holds an approval request, before it accepts. */
         readonly whileApproving?: Effect.Effect<void, unknown>;
-        /** Another origin that serves the product's MCP endpoint, such as a Cloud role host. */
         readonly origin?: string;
-        /** Another MCP path than `/mcp`, such as one of Executor v1's URLs Cloud's edge serves. */
         readonly path?: string;
       } = {},
     ) =>
       Effect.gen(function* () {
         const requests: { method: string; protocol: string | null; status: number }[] = [];
-        /** When each response's body ended, or the client stopped reading it, after its request. */
         const bodies: Array<{
           readonly method: string;
           readonly traceId: string;
@@ -50,7 +42,6 @@ const make = Effect.gen(function* () {
           ),
           (client) => driver("close MCP client", () => client.close()).pipe(Effect.orDie),
         );
-        // The prompt of each request a native client was shown, in order.
         const prompts: string[] = [];
         const whileApproving = options.whileApproving ?? Effect.void;
         if (options.mode === "native")
@@ -61,7 +52,6 @@ const make = Effect.gen(function* () {
               whileApproving.pipe(Effect.as({ action: "accept" as const, content: {} })),
             );
           });
-        // Record methods, revisions and timing only. OAuth headers and tool arguments are excluded.
         const observedFetch: typeof fetch = (input, init) =>
           // oxlint-disable-next-line executor/no-manual-effect-runtime-in-tests -- the MCP SDK transport takes a Promise-returning fetch
           Effect.runPromise(
@@ -157,7 +147,6 @@ const make = Effect.gen(function* () {
           },
           fetch: observedFetch,
         });
-        // SDK's optional sessionId getter includes undefined; its Transport declaration omits it.
         const compatible: Omit<StreamableHTTPClientTransport, "sessionId"> = transport;
         yield* Effect.addFinalizer(() =>
           evidence.json(`mcp-${label}.json`, {
@@ -170,9 +159,7 @@ const make = Effect.gen(function* () {
         yield* driver("initialize MCP client", () => client.connect(compatible));
         return {
           elicitationCount: Effect.sync(() => prompts.length),
-          /** When each response body this client read ended, by the trace of its request. */
           bodies: Effect.sync(() => [...bodies]),
-          /** The message of each elicitation request a native client received, in order. */
           prompts: Effect.sync(() => [...prompts]),
           use: <A>(
             operation: string,
@@ -186,7 +173,6 @@ const make = Effect.gen(function* () {
       }),
   };
 });
-/** Case-scoped factory: each opened protocol connection has its own Effect lifetime. */
 export class McpClient extends Context.Service<McpClient, Effect.Success<typeof make>>()(
   "e2e/McpClient",
 ) {

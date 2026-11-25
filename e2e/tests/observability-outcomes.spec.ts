@@ -1,4 +1,3 @@
-/** Observe real API/MCP outcomes after app execution and collector ingestion. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -28,8 +27,6 @@ layer(HostedLive, { excludeTestServices: true })("Observability outcomes", (it) 
           target = yield* Target;
         expect(target.metadata.mode).toBe("managed");
         const cloud = target.metadata.target === "cloud";
-        // Each runtime operation's span names the app it ran and, on Cloud, the organization of
-        // a signed-in caller, so one app's or organization's failures can be told apart.
         const runtime = cloud ? "runtime.cloud" : "runtime.workerd";
         const upstream = yield* mcpOutcomeFixture;
         const prefix = `/api/organizations/${actors.organization.id}`;
@@ -94,7 +91,6 @@ export default defineApp({}, async () => {
             actors.owner,
             "POST",
             `${prefix}/apps/${app.id}/tools/call`,
-            // The upstream tool is read-only, like the local lookalike.
             { tool, kind: "query", input: {} },
           );
           expect(called.status).toBe(200);
@@ -155,7 +151,6 @@ export default defineApp({}, async () => {
         );
         expect(bulk.status).toBe(200);
         expect(bulk.body).toEqual({ requests: 340 });
-        // App and host spans arrive in separate export batches. Wait for the complete trace.
         const bulkTrace = yield* waitFor(yield* latestTrace(), "sdk.tools.call", 340);
         expect(
           bulkTrace.data.filter(({ span }) => span.operationName === "provider.http.request"),

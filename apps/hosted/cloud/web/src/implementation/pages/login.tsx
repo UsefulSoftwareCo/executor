@@ -23,7 +23,6 @@ import {
   verifyCodeAtom,
 } from "../../contracts/auth.ts";
 
-/** Cloud adds passkeys and verified email codes to the social sign-in choices. */
 export function CloudLoginPage(
   props: LoginProps & {
     readonly method?: "sso";
@@ -34,7 +33,6 @@ export function CloudLoginPage(
   const refresh = useAtomRefresh(sessionAtom);
   const current = Option.getOrUndefined(AsyncResult.value(session));
   const verified = AsyncResult.isSuccess(session) && !session.waiting && session.value !== null;
-  // This is the displayed flow's identity, never session authority or a credential cache.
   const [enrollmentUser, setEnrollmentUser] = useState<string>();
   if (verified && enrollmentUser !== session.value.user.id)
     setEnrollmentUser(session.value.user.id);
@@ -104,8 +102,6 @@ function CloudSignInForm(props: LoginProps & { readonly mode?: "signin" | "signu
   const [email, setEmail] = useState("");
   const [sent, setSent] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // A passkey made for the dashboard's former host cannot sign in here: the browser offers
-  // none, or the ceremony is cancelled. Either way, say why and what to do instead.
   const [passkeyMoved, setPasskeyMoved] = useState(false);
   const redirecting = AsyncResult.isSuccess(beginning) && beginning.value === "sso";
   const pending =
@@ -180,7 +176,6 @@ function CloudSignInForm(props: LoginProps & { readonly mode?: "signin" | "signu
           event.preventDefault();
           setError(null);
           if (!sent) {
-            // The browser accepts addresses without a domain such as name@example; catch them here.
             if (!plausibleEmail(email.trim())) {
               setError(invalidEmailMessage);
               return;

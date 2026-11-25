@@ -21,7 +21,6 @@ import {
   DropdownMenuTrigger,
 } from "@executor-js/ui/components/dropdown-menu";
 
-/** Gate page rendering on a live session. The server independently protects API access. */
 export function AuthBoundary({ children }: { readonly children: ReactNode }) {
   const session = useAtomValue(sessionAtom);
   const refresh = useAtomRefresh(sessionAtom);
@@ -65,7 +64,6 @@ export function AuthBoundary({ children }: { readonly children: ReactNode }) {
       <div className="min-h-dvh" aria-busy="true" aria-label="Opening Executor" />
     );
   }
-  // Keep signed OAuth queries intact instead of using the router's reserialized href.
   if (current === null)
     return (
       <Navigate
@@ -94,19 +92,13 @@ export function AuthBoundary({ children }: { readonly children: ReactNode }) {
   );
 }
 
-/**
- * The signed-in identity. In the dashboard sidebar it opens a menu with the personal settings
- * and sign-out; entry pages pass a label and get a plain sign-out control instead.
- */
 export function SessionMenu({
   signOutLabel,
   organization,
   onSignOut,
 }: {
   readonly signOutLabel?: string;
-  /** The organization the visitor is in, so account pages know where to return. */
   readonly organization?: string | undefined;
-  /** Called as the person chooses to sign out, before the session ends. */
   readonly onSignOut?: (() => void) | undefined;
 } = {}) {
   const session = AsyncResult.value(useAtomValue(sessionAtom));
@@ -114,8 +106,6 @@ export function SessionMenu({
   const state = useAtomValue(signOutAtom);
   const [error, setError] = useState<string | null>(null);
   if (Option.isNone(session) || session.value === null) return null;
-  // Email-code accounts can have no personal display name. Their email still
-  // identifies the signed-in account independently of the selected team.
   const name = session.value.user.name.trim();
   const email = session.value.user.email;
   const identity = name.length > 0 ? name : email;

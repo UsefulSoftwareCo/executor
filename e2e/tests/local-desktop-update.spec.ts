@@ -1,10 +1,3 @@
-/**
- * The desktop app's update in the local dashboard's sidebar. The desktop window has no preload or
- * IPC bridge: its main process writes the update on the dashboard's document as the
- * `data-desktop-update` attribute's JSON and announces it with the `executor:desktop-update`
- * event, and intercepts the `executor-update:restart` navigation of the sidebar's "Restart to update"
- * link to restart into it. This scenario plays the desktop's part in a browser, so it checks the dashboard's side.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
 import type { Page } from "playwright";
@@ -25,7 +18,6 @@ type Update = {
   readonly releasesSince?: string | undefined;
 } | null;
 
-/** What the desktop's main process runs in the dashboard's page when its update changes. */
 const showUpdate = (page: Page, update: Update) =>
   page.evaluate(
     (value) => {
@@ -42,17 +34,12 @@ const restartLink = (page: Page) =>
 
 const box = (page: Page, selector: string) => page.locator(selector).first().boundingBox();
 
-/** The polite live region that says once that the update is ready. */
 const announcement = (page: Page) =>
   Promise.all([
     page.locator('[role="status"][aria-live="polite"].desktop-update-announcement').count(),
     page.locator(".desktop-update-announcement").innerText(),
   ]).then(([count, text]) => ({ count, text }));
 
-/**
- * The block's text that is cut off or runs out of the sidebar: each element whose content is wider
- * or taller than its box, and whether the block itself reaches past the sidebar.
- */
 const clipped = (page: Page) =>
   page.evaluate(() => {
     const block = document.querySelector("aside.sidebar .sidebar-update");
@@ -67,10 +54,8 @@ const clipped = (page: Page) =>
     };
   });
 
-/** The sidebar's resource links the block takes the place of. */
 const resources = ["Docs", "Feedback", "Star on GitHub"] as const;
 
-/** Which of the resource links the sidebar shows. */
 const links = (page: Page) =>
   Promise.all(
     resources.map((name) =>
@@ -78,22 +63,16 @@ const links = (page: Page) =>
     ),
   );
 
-/**
- * Where the navigation, the divider above the footer, the resource links (the list and each link)
- * and the version row sit, and whether the sidebar has more than it shows.
- */
 const layout = (page: Page) =>
   Promise.all([
     box(page, "aside.sidebar nav"),
     box(page, "aside.sidebar .sidebar-utilities"),
-    // The links' list, or null when the sidebar has none.
     page.evaluate(() => {
       const list = document.querySelector("aside.sidebar .sidebar-resource-links");
       if (list === null) return null;
       const { x, y, width, height } = list.getBoundingClientRect();
       return { x, y, width, height };
     }),
-    // Each link's box, or null when the sidebar has none.
     page.locator("aside.sidebar").evaluate(
       (sidebar, names) =>
         names.map((name) => {
@@ -119,12 +98,6 @@ const layout = (page: Page) =>
     scrolls,
   }));
 
-/**
- * The sidebar `without` an update, as it is with the block in place of the resource links: the
- * navigation and the version row stay where they were, and the sidebar does not need to scroll
- * where it did not. The divider above the footer moves down by exactly the links' height, as the
- * footer below it loses them and keeps its place at the bottom; the block takes the room above it.
- */
 const inPlaceOfLinks = (without: Awaited<ReturnType<typeof layout>>) => {
   const { divider, linkList } = without;
   if (divider === null || linkList === null) throw new Error("No divider or links to measure");
@@ -140,7 +113,6 @@ const inPlaceOfLinks = (without: Awaited<ReturnType<typeof layout>>) => {
   };
 };
 
-/** The block's box, and whether it sits below the navigation and above the links' divider. */
 const placement = (page: Page) =>
   Promise.all([
     box(page, "aside.sidebar .sidebar-update"),
@@ -152,10 +124,6 @@ const placement = (page: Page) =>
     aboveDivider: block !== null && divider !== null && block.y + block.height <= divider.y,
   }));
 
-/**
- * The update's mark in the icon rail: its name, what text it shows, its icons and dot, its size,
- * and whether it sits below the navigation and above the links' divider.
- */
 const railMark = (page: Page) =>
   page.evaluate(() => {
     const marks = document.querySelectorAll<HTMLElement>(
@@ -180,18 +148,12 @@ const railMark = (page: Page) =>
     };
   });
 
-/** The block's lines of text, top to bottom. */
 const lines = (page: Page) =>
   page
     .locator("aside.sidebar .sidebar-update")
     .innerText()
     .then((text) => text.split("\n").filter((line) => line.trim() !== ""));
 
-/**
- * How the block is drawn: the tag is a pill of its own, the block has no border or fill of a card
- * around it, and the restart, when there is one, is a text link narrower than the block rather than
- * a full-width button.
- */
 const look = (page: Page) =>
   page.evaluate(() => {
     const block = document.querySelector<HTMLElement>("aside.sidebar .sidebar-update");
@@ -211,7 +173,6 @@ const look = (page: Page) =>
     };
   });
 
-/** Whether the sidebar shows the block or its restart, as a person or a screen reader meets it. */
 const shown = (page: Page) =>
   Promise.all([
     page.locator("aside.sidebar .sidebar-update").isVisible(),
@@ -242,10 +203,6 @@ layer(TestLive, { excludeTestServices: true })("Local desktop update", (it) => {
         yield* browser.use("Wait for apps", (page) =>
           page.getByRole("heading", { level: 1, name: /^Apps/ }).waitFor(),
         );
-        // The Geist faces load with `font-display: optional`: a face that misses the first paint
-        // is kept from that text but used for text laid out later, such as the links coming back
-        // below, which would then measure differently. Once both faces are loaded, a reload paints
-        // with them from the start.
         expect(
           yield* browser.use("Load the dashboard's fonts", (page) =>
             page.evaluate(() =>
@@ -261,8 +218,6 @@ layer(TestLive, { excludeTestServices: true })("Local desktop update", (it) => {
             .then(() => page.getByRole("heading", { level: 1, name: /^Apps/ }).waitFor()),
         );
 
-        // A dashboard the desktop has told about no update, as in any browser, shows no block and
-        // keeps nothing in its place; the resource links are there.
         expect(
           yield* browser.use("Check the sidebar has no update", (page) =>
             Promise.all([
@@ -274,15 +229,11 @@ layer(TestLive, { excludeTestServices: true })("Local desktop update", (it) => {
         expect(yield* browser.use("Read the resource links", links)).toEqual([true, true, true]);
         const without = yield* browser.use("Measure the sidebar", layout);
         expect(without.scrolls).toBe(false);
-        // The live region that says the update is ready is on the page already, and empty, so the
-        // moment it fills is announced.
         expect(yield* browser.use("Read the empty announcement", announcement)).toEqual({
           count: 1,
           text: "",
         });
 
-        // While the update downloads, a "Downloading" tag and the version say so as a status and
-        // offer nothing to press.
         yield* browser.use("Show a downloading update", (page) =>
           showUpdate(page, { state: "downloading", version: "2.4.0" }),
         );
@@ -315,8 +266,6 @@ layer(TestLive, { excludeTestServices: true })("Local desktop update", (it) => {
           belowNavigation: true,
           aboveDivider: true,
         });
-        // It takes the place of the resource links, and leaves the navigation and the version
-        // row where they were.
         expect(yield* browser.use("Read the links while downloading", links)).toEqual([
           false,
           false,
@@ -327,9 +276,6 @@ layer(TestLive, { excludeTestServices: true })("Local desktop update", (it) => {
         );
         yield* browser.checkpoint("Update downloading in the sidebar");
 
-        // Once it is ready, an "Update ready" tag and one line name the version, and a text link
-        // under them restarts into it. There is no card around them and no full-width button. It
-        // sits above the footer's divider in place of the resource links.
         yield* browser.use("Show a ready update", (page) =>
           showUpdate(page, { state: "ready", version: "2.4.0" }),
         );
@@ -375,8 +321,6 @@ layer(TestLive, { excludeTestServices: true })("Local desktop update", (it) => {
           inPlaceOfLinks(without),
         );
 
-        // The keyboard reaches it, and pressing it follows the link the desktop intercepts. The
-        // browser has no handler for that scheme, so the page records where it would go instead.
         const focused = (page: Page) =>
           page.evaluate(() => document.activeElement?.getAttribute("aria-label") ?? null);
         yield* browser.use("Start from the page", (page) => page.locator("body").focus());
@@ -405,9 +349,6 @@ layer(TestLive, { excludeTestServices: true })("Local desktop update", (it) => {
           ),
         ).toBe("executor-update:restart");
 
-        // The shortest desktop window, 540 px tall, still shows it where the links were, with no
-        // need to scroll: the navigation and the version row stay where they are at that height
-        // without an update.
         yield* browser.use("Clear the update for the short window", (page) =>
           showUpdate(page, null),
         );
@@ -438,9 +379,6 @@ layer(TestLive, { excludeTestServices: true })("Local desktop update", (it) => {
         );
         yield* browser.checkpoint("Update ready in a short window");
 
-        // The collapsed rail has no room for the block and keeps its resource links where they are
-        // without an update. Above them one small icon, with a dot and no text, says the update is
-        // ready; the same region still says it to a screen reader.
         yield* browser.use("Collapse the rail", (page) =>
           page
             .setViewportSize({ width: 900, height: 800 })
@@ -477,8 +415,6 @@ layer(TestLive, { excludeTestServices: true })("Local desktop update", (it) => {
           text: "Update ready: Executor v2.4.0. Restart Executor to install it.",
         });
         yield* browser.checkpoint("Update ready in the collapsed rail");
-        // While it downloads the icon has no dot, and nothing marks a rail without an update; the
-        // links stay where they are throughout.
         yield* browser.use("Show the download in the rail", (page) =>
           showUpdate(page, { state: "downloading", version: "2.4.0" }),
         );
@@ -505,7 +441,6 @@ layer(TestLive, { excludeTestServices: true })("Local desktop update", (it) => {
           collapsedWith,
         );
 
-        // Pressing the mark expands the rail to the block and its restart.
         yield* browser.use("Show the ready update in the rail again", (page) =>
           showUpdate(page, { state: "ready", version: "2.4.0" }),
         );
@@ -532,8 +467,6 @@ layer(TestLive, { excludeTestServices: true })("Local desktop update", (it) => {
           showUpdate(page, null),
         );
 
-        // When the desktop clears it, as after a failed download, the block goes away and the
-        // resource links come back, where they were.
         yield* browser.use("Widen the window", (page) =>
           page.setViewportSize({ width: 1180, height: 800 }),
         );
@@ -560,9 +493,6 @@ layer(TestLive, { excludeTestServices: true })("Local desktop update", (it) => {
           text: "",
         });
 
-        // A long prerelease version wraps in full instead of being cut off, in the narrowest
-        // sidebar, which a window under 1,000 px wide shows when the rail is expanded: while it
-        // downloads and once it is ready. Its last identifier has 80 digits.
         const long = `2.0.0-beta.${"1234567890".repeat(8)}`;
         yield* browser.use("Narrow the window and expand the rail", (page) =>
           page
@@ -642,10 +572,6 @@ layer(TestLive, { excludeTestServices: true })("Local desktop update", (it) => {
         const without = yield* browser.use("Measure the sidebar", layout);
         const title = yield* browser.use("Read the page title", (page) => page.title());
 
-        // The desktop runs 2.2.0 and its feed lists notes for the releases up to 2.4.0, and says
-        // that every release after 2.0.0 is there. One of 2.4.0's lines is HTML, and one of 2.3.0's
-        // a Markdown link: neither is a note the release notes' allow-list accepts, so the
-        // dashboard leaves both out, whatever the desktop sent.
         const ready: Update = {
           state: "ready",
           version: "2.4.0",
@@ -672,7 +598,6 @@ layer(TestLive, { excludeTestServices: true })("Local desktop update", (it) => {
         const opener = (page: Page) =>
           page.locator("aside.sidebar").getByRole("button", { name: "See what's new in v2.4.0" });
         yield* browser.use("Wait for the block's button", (page) => opener(page).waitFor());
-        // The line leads with the ready version's newest note; the restart link is as before.
         expect(yield* browser.use("Read the block", lines)).toEqual([
           "Update ready",
           "v2.4.0 Apps open from the sidebar.",
@@ -692,8 +617,6 @@ layer(TestLive, { excludeTestServices: true })("Local desktop update", (it) => {
         );
         yield* browser.checkpoint("Update ready with its newest note");
 
-        // The keyboard opens the panel: every release after the running one up to the ready one,
-        // newest first, each with its notes as text and its public release page.
         yield* browser.use("Focus the block's button", (page) => opener(page).focus());
         yield* browser.use("Open the notes", (page) => page.keyboard.press("Enter"));
         const dialog = (page: Page) => page.getByRole("dialog", { name: "What's new in v2.4.0" });
@@ -750,9 +673,7 @@ layer(TestLive, { excludeTestServices: true })("Local desktop update", (it) => {
           ],
           images: 0,
         });
-        // Nothing from the refused HTML ran.
         expect(yield* browser.use("Read the page title again", (page) => page.title())).toBe(title);
-        // The panel repeats the restart, with the sidebar link's name.
         expect(
           yield* browser.use("Read the panel's restart", (page) =>
             dialog(page)
@@ -760,7 +681,6 @@ layer(TestLive, { excludeTestServices: true })("Local desktop update", (it) => {
               .getAttribute("href"),
           ),
         ).toBe("executor-update:restart");
-        // Escape closes it and returns focus to the block.
         yield* browser.use("Close the notes", (page) => page.keyboard.press("Escape"));
         yield* browser.use("Wait for the notes to close", (page) =>
           dialog(page).waitFor({ state: "detached" }),
@@ -771,8 +691,6 @@ layer(TestLive, { excludeTestServices: true })("Local desktop update", (it) => {
           ),
         ).toBe("See what's new in v2.4.0");
 
-        // A ready version with no notes of its own shows the version alone; the panel still lists
-        // what changed in between.
         yield* browser.use("Show a ready update whose version has no notes", (page) =>
           showUpdate(page, {
             ...ready,
@@ -792,7 +710,6 @@ layer(TestLive, { excludeTestServices: true })("Local desktop update", (it) => {
         ]);
         expect(yield* browser.use("Check the block opens", (page) => opener(page).count())).toBe(1);
 
-        // A development build runs no release version: every release up to the ready one is listed.
         yield* browser.use("Show a development build's update", (page) =>
           showUpdate(page, { ...ready, current: "0.0.0" }),
         );
@@ -818,9 +735,6 @@ layer(TestLive, { excludeTestServices: true })("Local desktop update", (it) => {
           page.keyboard.press("Escape"),
         );
 
-        // Only the feed knows whether its list is whole: the notes script leaves out a release it
-        // cannot place. The panel says "since" the running version only when the feed says the
-        // list is whole back to it, and otherwise says the list may leave some out.
         yield* browser.use("Wait for the development build's notes to close", (page) =>
           dialog(page).waitFor({ state: "detached" }),
         );
@@ -837,8 +751,6 @@ layer(TestLive, { excludeTestServices: true })("Local desktop update", (it) => {
         const partial =
           "Recent changes. Some releases since the version running now may not be listed here; All releases has every one. Executor restarts to install it.";
         for (const [name, update, expected] of [
-          // Whole back to 2.0.0, which runs now: no release lies between it and the oldest listed,
-          // and the panel does not claim one does.
           [
             "whole back to the running version",
             { ...ready, current: "2.0.0" },
@@ -848,7 +760,6 @@ layer(TestLive, { excludeTestServices: true })("Local desktop update", (it) => {
               versions: ["v2.4.0", "v2.3.0", "v2.2.0", "v2.1.0"],
             },
           ],
-          // The same between two betas next to each other.
           [
             "whole between two betas",
             {
@@ -864,7 +775,6 @@ layer(TestLive, { excludeTestServices: true })("Local desktop update", (it) => {
               versions: ["v2.0.0-beta.2"],
             },
           ],
-          // A feed holding only 2.4.0, whole only after 2.3.0, on a desktop running 2.0.0.
           [
             "whole only after a later release",
             {
@@ -876,7 +786,6 @@ layer(TestLive, { excludeTestServices: true })("Local desktop update", (it) => {
             },
             { description: partial, versions: ["v2.4.0"] },
           ],
-          // A feed that does not say, even with an entry as old as the running version.
           [
             "silent about its range",
             { ...ready, releasesSince: undefined },
@@ -907,8 +816,6 @@ layer(TestLive, { excludeTestServices: true })("Local desktop update", (it) => {
           );
         }
 
-        // A feed with no notes, or with none after the running version, shows the block of a
-        // plain update: the version, the restart, nothing to open.
         for (const [name, update] of [
           ["no notes", { state: "ready", version: "2.4.0", current: "2.2.0" }],
           [

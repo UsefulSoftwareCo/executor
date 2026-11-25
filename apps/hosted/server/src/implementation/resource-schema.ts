@@ -1,8 +1,6 @@
-/** Fresh hosted policy tables; every resource receives policy in its creation transaction. */
 import { Effect } from "effect";
 import { SqlClient } from "effect/sql";
 
-/** Caller holds the hosted migration lock after SDK and group tables exist. */
 export const migrateResourceAccess = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`create unique index if not exists hosted_groups_organization_identity on hosted_groups (organization_id, id)`;
@@ -51,14 +49,6 @@ export const migrateResourceAccess = Effect.gen(function* () {
   )`;
 });
 
-/**
- * Accounts are no longer shared with groups. A sign-in request saved to create a group-shared
- * account would now complete as an account for the whole organization, so its access record is
- * removed: the request is refused and its creator starts again. Saved accounts are not changed
- * here: one whose audience is still `groups` is used by nobody, and its creator and the
- * organization's admins can delete it. `hosted_account_groups` stays until no running server
- * reads it.
- */
 export const removeGroupAccountConnections = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`delete from hosted_connection_access

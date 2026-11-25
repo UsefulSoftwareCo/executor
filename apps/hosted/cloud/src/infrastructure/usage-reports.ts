@@ -1,4 +1,3 @@
-/** Managed reports use successful product actions, not pageviews, for adoption. */
 import type {
   EventsNode,
   InsightQuerySchema,
@@ -17,7 +16,6 @@ const event = (
   properties: EventPropertyFilter[] = [],
   math = "total",
 ): EventsNode => ({ kind: "EventsNode", event: name, name, properties, math });
-// A HogQL predicate selects multiple event names within one series so a user is counted once.
 const meaningful: EventsNode = {
   kind: "EventsNode",
   math: "dau",
@@ -67,7 +65,6 @@ interface UsageReport {
   readonly description: string;
   readonly query: InsightQuerySchema;
 }
-/** Resource IDs preserve existing saved reports while adding explicit adoption and quality views. */
 export const usageReports: readonly UsageReport[] = [
   {
     id: "OperationFailureRate",

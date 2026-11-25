@@ -4,7 +4,6 @@ import {
   selfHostSsoDiscovery,
 } from "./implementation/auth-options.ts";
 import { selfHostRegistration, selfHostUserHooks } from "./implementation/registration.ts";
-/** Better Auth over the host's shared, persisted PGlite database. */
 import { betterAuth } from "better-auth";
 import { HostedAppSessions, hostedAppSessions } from "@executor-js/hosted-server/app-ui";
 import {
@@ -34,7 +33,6 @@ import { SqlClient } from "effect/sql";
 import { AuthDatabase } from "./contracts/database.ts";
 import { HttpServerRequest, HttpServerResponse } from "effect/http";
 
-/** Initialize auth before listening; the database owns persistent users and sessions. */
 export const selfHostAuth = Effect.gen(function* () {
   const settings = yield* selfHostAuthSettings;
   const database = yield* AuthDatabase;
@@ -133,7 +131,6 @@ export const selfHostAuth = Effect.gen(function* () {
     const incoming = yield* HttpServerRequest.toWeb(request);
     yield* routes.record(new URL(incoming.url).pathname);
     const web = new Request(incoming, { headers: new Headers(incoming.headers) });
-    // The socket address is trusted. Never accept a client-supplied forwarding header.
     web.headers.delete("x-executor-client-ip");
     if (Option.isSome(request.remoteAddress))
       web.headers.set("x-executor-client-ip", request.remoteAddress.value);
@@ -166,7 +163,6 @@ export const selfHostAuth = Effect.gen(function* () {
   };
 });
 
-/** The one auth instance, built before startup data steps and shared with the routes. */
 export class SelfHostAuth extends Context.Service<
   SelfHostAuth,
   Effect.Success<typeof selfHostAuth>

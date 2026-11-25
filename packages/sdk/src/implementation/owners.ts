@@ -1,4 +1,3 @@
-/** One transactional purge for an owner that no longer exists. */
 import { type Duration, Effect, Option } from "effect";
 import type { Executor } from "../contracts/executor.ts";
 import { OwnerWebhooksActive } from "../contracts/owner.ts";
@@ -9,11 +8,6 @@ import type { RemovedGrant } from "./accounts.ts";
 import { query, transaction, type Query } from "./database.ts";
 import { removeToolSearch } from "./tool-search-store.ts";
 
-/**
- * The refusals a caller cannot clear by acting on providers: work is in flight
- * and will finish on its own. Read-only, so `check` and `remove` share one
- * definition and a caller can gate irreversible steps on the same verdict.
- */
 const assertNoWorkInFlight = (tx: Query, owner: OwnerId, accountIds: ReadonlyArray<AccountId>) =>
   Effect.gen(function* () {
     const activeRun = yield* query(() =>
@@ -36,34 +30,15 @@ const assertNoWorkInFlight = (tx: Query, owner: OwnerId, accountIds: ReadonlyArr
     }
   });
 
-/** How many removed grants are revoked at their providers at once. */
 const revocationConcurrency = 8;
 
-/**
- * How long one revocation in a purge may take. A revocation is one small request that a working
- * endpoint answers in well under a second. The protocol's 30-second request timeout, which a single
- * account's removal keeps, covers every OAuth request rather than being chosen for this one; at that
- * timeout a stalled provider would let a purge get through only 80 grants in the default budget.
- */
 const revocationDeadline: Duration.Input = "10 seconds";
 
-/**
- * How long a purge spends revoking, all grants together, by default. Organization removal runs the
- * purge as one durable step that Cloudflare Workflows ends at 10 minutes, and the purge's own
- * transaction shares that step. With the deadline above, a provider that never answers still
- * gets at least 240 revocation requests (all of them time out); a working one, thousands.
- */
 const defaultRevocationBudget: Duration.Input = "5 minutes";
 
-/** Owner-keyed rows and the app/account-keyed rows that hang off them, deleted in dependency order. */
 export const makeOwners = (
   db: Query,
-  /**
-   * Best-effort provider-side revocation, bounded by `deadline`; it never fails and runs only after
-   * the purge commits.
-   */
   revokeRemoved: (removed: RemovedGrant, deadline: Duration.Input) => Effect.Effect<void>,
-  /** See `ExecutorInputs.ownerRevocationBudget`. */
   revocationBudget: Duration.Input = defaultRevocationBudget,
 ): Executor["owners"] => ({
   check: (input: Parameters<Executor["owners"]["check"]>[0]) =>
@@ -86,7 +61,6 @@ export const makeOwners = (
       const { removed, grants } = yield* transaction(db, (tx) =>
         Effect.gen(function* () {
           const owner = input.owner;
-          // Workflow start locks apps before accounts. Hold that same order through the purge.
           yield* query(() =>
             tx.updateMany("apps", { where: (b) => b("owner", "=", owner), set: { owner } }),
           );
@@ -108,7 +82,6 @@ export const makeOwners = (
               where: (b) => b("owner", "=", owner),
             }),
           );
-          // A registration still held at the provider is the caller's to remove; never abandon it.
           const live = webhooks.filter((webhook) => webhook.status !== "stopped");
           if (live.length > 0)
             return yield* new OwnerWebhooksActive({
@@ -148,18 +121,13 @@ export const makeOwners = (
             );
             yield* query(() => tx.deleteMany("webhooks", { where: (b) => b("owner", "=", owner) }));
           }
-          // The due scan selects on schedule state alone, so a surviving schedule keeps
-          // claiming and failing forever. Delete by owner, not by app, so a schedule whose
-          // app row already went stays reachable. Same order as apps.remove.
           yield* query(() =>
             tx.deleteMany("scheduledRuns", { where: (b) => b("owner", "=", owner) }),
           );
           yield* query(() => tx.deleteMany("schedules", { where: (b) => b("owner", "=", owner) }));
-          // Webhook sources belong to the app owner; delete by owner for the same reason as schedules.
           yield* query(() =>
             tx.deleteMany("webhookSources", { where: (b) => b("owner", "=", owner) }),
           );
-          // Event subscriptions too, so a subscription whose app row already went stays reachable.
           const subscriptions = yield* query(() =>
             tx.findMany("eventSubscriptions", {
               select: ["id"],
@@ -192,8 +160,6 @@ export const makeOwners = (
             yield* removeToolSearch(tx, appIds);
             yield* query(() => tx.deleteMany("apps", { where: (b) => b("owner", "=", owner) }));
           }
-          // The grants deleted here are revoked once the purge commits. A repeated purge finds none,
-          // so each grant is revoked at most once.
           const grants: Array<RemovedGrant> = [];
           if (accountIds.length > 0) {
             yield* query(() =>
@@ -236,14 +202,12 @@ export const makeOwners = (
           yield* query(() =>
             tx.deleteMany("toolApprovals", { where: (b) => b("owner", "=", owner) }),
           );
-          // Grants keep their own copy of a client, so other owners' accounts keep renewing.
           yield* query(() =>
             tx.deleteMany("storedOAuthClients", { where: (b) => b("owner", "=", owner) }),
           );
           yield* query(() =>
             tx.deleteMany("storedOAuthClientCredentials", { where: (b) => b("owner", "=", owner) }),
           );
-          // Apps reference their active version, so retained code is removed last.
           const versions = yield* query(() =>
             tx.findMany("deployments", { select: ["id"], where: (b) => b("owner", "=", owner) }),
           );
@@ -263,15 +227,6 @@ export const makeOwners = (
           };
         }),
       );
-      // Revoke only after the purge is durable, and before the call returns: a durable caller
-      // such as organization removal ends its step here, and nothing would revoke a grant left to
-      // work the step does not wait for. The outcomes cannot change the result.
-      //
-      // The pass is bounded so it ends inside that step's time limit. When the budget runs out,
-      // revocations still in flight are cut off and grants not yet started are never revoked:
-      // their records are already deleted, so a retry finds nothing to revoke. Those tokens stay
-      // valid at the provider until it expires them, as every grant did before removal revoked
-      // any. The span and a warning log record how many, never which.
       let started = 0;
       let settled = 0;
       const finished = yield* Effect.forEach(
@@ -279,7 +234,6 @@ export const makeOwners = (
         (grant) =>
           Effect.suspend(() => {
             started++;
-            // Counted only when it finishes: one the budget interrupts is cut off, not settled.
             return revokeRemoved(grant, revocationDeadline).pipe(
               Effect.andThen(
                 Effect.sync(() => {

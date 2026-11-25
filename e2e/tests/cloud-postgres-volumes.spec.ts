@@ -1,9 +1,3 @@
-/**
- * A Cloud run removes another run's database volume only when that run is certainly gone
- * (`volumeVerdict` in `e2e/support/cloud-postgres.ts`). Several runs share one Docker daemon, so
- * every doubt keeps the volume. The verdict cases supply the owner's start time; the last cases
- * read real processes' start times.
- */
 import { expect, layer } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, Option } from "effect";
@@ -25,7 +19,6 @@ const here: VolumeOwner = {
 const now = Date.parse("2026-11-15T12:00:00Z");
 const hourAgo = now - 60 * 60_000;
 
-/** A volume another run in this namespace made an hour ago, unmounted, owned by pid 4242. */
 const volume = (change: Partial<SweptVolume> = {}): SweptVolume => ({
   name: "executor-e2e-0123456789abcdef-data",
   labels: {
@@ -40,7 +33,6 @@ const volume = (change: Partial<SweptVolume> = {}): SweptVolume => ({
   ...change,
 });
 
-/** pid 4242 as the operating system reports it; every other pid is gone. */
 const owner =
   (answer: Option.Option<string> | undefined) =>
   (pid: number): Effect.Effect<Option.Option<string> | undefined> =>
@@ -146,7 +138,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Cloud test database vo
 
   it.effect("a volume this harness did not label is kept", () =>
     Effect.gen(function* () {
-      // An anonymous volume, a hand-run database's, the development database's.
       for (const labels of [
         { "com.docker.volume.anonymous": "" },
         {},

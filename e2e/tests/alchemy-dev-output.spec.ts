@@ -1,10 +1,3 @@
-/**
- * A managed local Cloud writes `alchemy dev`'s stdout and stderr to cloud.log line by line, and its
- * readiness wait fails as soon as alchemy prints that it gave up on starting a resource
- * (e2e/support/cloud-environment.ts), with the cause alchemy reports after it. These cases run a
- * child that writes lines in pieces to both pipes, and check the lines and failures the harness
- * reads from it.
- */
 import { expect, it, layer } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, Stream } from "effect";
@@ -29,10 +22,6 @@ const runFailed = "alchemy dev: run failed; waiting for the next file change to 
 const runInterrupted =
   "alchemy dev: run was interrupted internally (a bug in a provider or the engine — please report it with the trace below); waiting for the next file change to retry.";
 
-/**
- * Writes each piece after the one before has left the process, alternating pipes mid-line. The
- * interrupted message is cut inside the UTF-8 bytes of its dash.
- */
 const writer = `
 const pieces = JSON.parse(process.argv[1]);
 for (const [pipe, base64] of pieces) {
@@ -88,8 +77,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("alchemy dev output", (
     () =>
       Effect.gen(function* () {
         const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
-        // As alchemy dev does: the failure and its cause in one write, then a wait for a file
-        // change that never comes.
         const report = [
           runFailed,
           "Error: synthetic plan failure",
@@ -130,12 +117,6 @@ setInterval(() => {}, 1000);`,
   );
 });
 
-/**
- * Local Cloud's AppData runtime ran out of memory twice on main on 13 Nov (CI runs 43476304417 and
- * 43477570393). These are its lines from those runs' cloud.log, each at the time the harness read
- * it, and the cases that ran then: the ones that failed while it was down carry a line naming the
- * crash; a case that failed far from it, or passed during it, does not.
- */
 const at = (time: string) => Date.parse(`2026-11-13T${time}Z`);
 const gcs = "[AppData] <--- Last few GCs --->";
 const scavenger =

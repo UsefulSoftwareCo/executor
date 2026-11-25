@@ -1,9 +1,3 @@
-/**
- * Fixtures for MCP event scenarios: an app that emits `issue.opened`, and a receiver app whose
- * webhook checks Standard Webhooks signatures, echoes verification challenges and records what
- * arrived. The receiver gives a callback URL on the product's own origin, so deployed Cloudflare
- * needs no outside service.
- */
 import { expect } from "@effect/vitest";
 import { Clock, Effect, Redacted, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
@@ -19,7 +13,6 @@ import { appsManifest } from "./apps-release.ts";
 import { heldValue, reveal } from "./failure-text.ts";
 
 const whsec = () => `whsec_${randomBytes(32).toString("base64")}`;
-/** The receiver accepts a signature from either secret; the second is the rotated one. */
 export const secrets = [whsec(), whsec()] as const;
 
 export const receiverFiles = [
@@ -162,9 +155,7 @@ export const Occurrence = Schema.fromJsonString(
     cursor: Schema.Null,
   }),
 );
-/** The one event `events/list` offers every caller; its arguments select apps' events. */
 export const appEvent = "executor.app_event";
-/** A delivery to a selection: the app and event beside the data. */
 export const Selected = Schema.fromJsonString(
   Schema.Struct({
     eventId: Schema.String,
@@ -212,7 +203,6 @@ export const meta = {
   "io.modelcontextprotocol/clientCapabilities": {},
 };
 
-/** Deploy both apps and register the receiver's webhook. Created resources are removed at scope end. */
 export const eventFixtures = Effect.gen(function* () {
   const api = yield* Api,
     actors = yield* Actors,
@@ -233,7 +223,6 @@ export const eventFixtures = Effect.gen(function* () {
         yield* api.request(actors.owner, "POST", "/api/auth/api-key/delete", {
           keyId: created.key,
         });
-      // Unlinking the receiver's account removes its webhook; the app is removable once it stops.
       if (created.account && created.apps[0])
         yield* api.request(
           actors.owner,
@@ -258,8 +247,6 @@ export const eventFixtures = Effect.gen(function* () {
       return app;
     });
 
-  // The receiver's webhook is registered when an account is linked to it, and gives a public
-  // callback URL. Connecting the account from the app links it.
   const receiver = yield* deploy(`Event receiver ${suffix}`, receiverFiles);
   const receiverPath = `${prefix}/apps/${receiver.id}`;
   const connection = yield* api.request(
@@ -300,7 +287,6 @@ export const eventFixtures = Effect.gen(function* () {
   const deliveries = callReceiver("deliveries", "query", {}).pipe(
     Effect.flatMap((response) => body(Schema.Array(Delivery), response)),
   );
-  /** Wait until the receiver holds what `ready` asks for; deliveries are asynchronous. */
   const awaitDeliveries = (
     ready: (all: ReadonlyArray<typeof Delivery.Type>) => boolean,
     seconds = 30,
@@ -318,7 +304,6 @@ export const eventFixtures = Effect.gen(function* () {
     all.filter((delivery) => delivery.kind === "event");
 
   const emitter = yield* deploy(`Issue events ${suffix}`, emitterFiles);
-  /** Emit `issue.opened` from an app deployed with {@link emitterFiles}. */
   const emitFrom = (
     app: { readonly id: string },
     repo: string,
@@ -359,8 +344,6 @@ export const eventFixtures = Effect.gen(function* () {
           "x-executor-organization": actors.organization.id,
         }),
       );
-      // No deadline, as before: a response whose headers never come fails when the client gives
-      // up (undici's 300 s headers timeout), labelled `before response` with that time-out's code.
       const { response, text, started } = yield* readResponse(
         http.execute(
           yield* HttpClientRequest.bodyJson(request, {
@@ -398,7 +381,6 @@ export const eventFixtures = Effect.gen(function* () {
       Effect.map(({ error }) => error),
       Effect.tapError(() => Effect.sync(() => expect.fail(JSON.stringify(value)))),
     );
-  /** A personal access token, deleted at scope end unless the scenario deletes it first. */
   const createKey = (name: string) =>
     Effect.gen(function* () {
       const key = yield* body(

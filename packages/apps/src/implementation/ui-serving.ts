@@ -35,7 +35,6 @@ export const appFile = <E, R>(options: {
     const pathname = yield* Effect.try(() => new URL(request.url, options.origin).pathname).pipe(
       Effect.mapError(() => new UiForbidden()),
     );
-    // Files are named by decoded paths; a path that does not decode names no file.
     const path = Option.getOrUndefined(assetPath(pathname.slice(1)));
     const file =
       pathname === "/" || path === undefined || path === "index.html"
@@ -48,8 +47,6 @@ export const appFile = <E, R>(options: {
           headers: appPrivateHeaders,
         }),
       );
-    // The page's origin serves the active version, so the same URL can change content on the
-    // next activation: browsers revalidate against the content hash.
     if (file !== undefined) return Option.some(yield* storedFile(file, "private, no-cache"));
     if (pathname.includes(".") && pathname !== "/index.html")
       return Option.some(HttpServerResponse.empty({ status: 404 }));
@@ -77,13 +74,11 @@ export const appDocument = <E, R>(options: {
         headers: appPrivateHeaders,
       });
     const document = yield* options.asset("index.html");
-    // The page is always compiled into the build, never a stored file.
     if (document === undefined || !("body" in document))
       return HttpServerResponse.text("This app has no UI.", {
         status: 404,
         headers: appPrivateHeaders,
       });
-    // Encoded through `UiContext` so pages built before versions were named still find `deployment`.
     const context = JSON.stringify(
       Schema.encodeSync(UiContext)({ version: options.version, accounts: options.accountIds }),
     ).replaceAll("<", "\\u003c");
@@ -94,8 +89,6 @@ export const appDocument = <E, R>(options: {
       telemetry === undefined
         ? ""
         : `<meta name="executor-build" content="${attribute(telemetry.version)}"><meta name="executor-environment" content="${attribute(telemetry.environment)}">`;
-    // The watcher is inline so a page costs no extra request. An inline module runs after
-    // parsing, as the deferred file it replaces did.
     const boot = `${metadata}<script type="application/json" id="executor-context">${context}</script>${appFailureBootstrap}${notice === undefined || notice.problems.length === 0 ? "" : accountNoticeBootstrap(notice)}<script type="module">${appWatchSource}</script>`;
     return HttpServerResponse.text(
       versionDocument(new TextDecoder().decode(document.body), options.version).replace(

@@ -1,10 +1,3 @@
-/**
- * Every release job that packages the CLI runtime starts beside the collector jobs and runs
- * `scripts/releases/collector-job.ts` before it fetches its target's collector build: it waits for
- * that target's `collector (<target>)` job and fails unless it succeeded. These cases run it as a
- * process against a local stand-in for GitHub's jobs API that answers with the given states in
- * order, repeating the last, and read its exit code, output and the requests it made.
- */
 import { expect, layer } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { createServer } from "node:http";
@@ -14,11 +7,6 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 type State = { readonly status: string; readonly conclusion: string | null };
 
-/**
- * One answer of the jobs API: an HTTP status with no body, a 200 with an empty body, the collector
- * jobs' states (absent: not listed), or the raw job list, which the stand-in serves 100 to a page
- * as GitHub does.
- */
 type Answer =
   | { readonly status: number }
   | { readonly empty: true }
@@ -32,7 +20,6 @@ type Answer =
 const run = "4243";
 const repository = "example/executor-next";
 
-/** A jobs API that answers `answers` in order and records each request's path and token. */
 const jobsApi = (answers: ReadonlyArray<Answer>) => {
   const requests: Array<{ readonly path: string; readonly authorization: string | undefined }> = [];
   let listed = 0;
@@ -41,7 +28,6 @@ const jobsApi = (answers: ReadonlyArray<Answer>) => {
     const page = Number(
       new URL(request.url ?? "/", "http://stand-in").searchParams.get("page") ?? 1,
     );
-    // A later page belongs to the same listing as the first.
     if (page === 1) listed += 1;
     const answer = answers[Math.min(listed - 1, answers.length - 1)]!;
     if ("status" in answer) {
@@ -65,7 +51,6 @@ const jobsApi = (answers: ReadonlyArray<Answer>) => {
             })),
           ];
     response.writeHead(200, { "content-type": "application/json" });
-    // GitHub gives every job an id; the waiter reads it to tell a list that changed between pages.
     const withIds = jobs.map((job, index) => ({ id: index + 1, run_attempt: 1, ...job }));
     response.end(
       JSON.stringify({
@@ -90,7 +75,6 @@ const jobsApi = (answers: ReadonlyArray<Answer>) => {
   );
 };
 
-/** The waiter for `target`, as attempt `attempt` of the run, with short limits if `limits`. */
 const wait = (
   api: string,
   target: string,
@@ -311,8 +295,6 @@ layer(NodeServices.layer)("packaging waits for its target's collector job", (it)
     }).pipe(Effect.scoped),
   );
 
-  // Answers that say nothing about the collector job: each is waited out and stops packaging at
-  // the deadline, never taken as success.
   for (const [ending, answer, reason] of [
     ["a 404", { status: 404 }, "the jobs API answered 404"],
     ["a 401", { status: 401 }, "the jobs API answered 401"],

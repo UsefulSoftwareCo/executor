@@ -1,20 +1,3 @@
-/**
- * The built-in Executor app reads the server's own API through its app cache, and agents find its
- * tools through kept listings. Replacing the image with one whose API changed must not leave either
- * serving the previous API: after #2951 removed profiles, upgraded servers kept listing
- * `profiles.*`, which failed as unknown tools, and hid the new `appAccounts.*` tools for up to a day.
- * The same holds for an Executor app that owns a database, as after an operator adds a migration to
- * it: the upgrade keeps edited source, so its build stays the same and only the API's revision can
- * start its listing afresh.
- *
- * The Executor app calls the API with the agent's grant, so it lists only operations a bearer
- * credential may call. An operation the document secures with the browser session alone, such as
- * the dashboard's tool call log, is never listed, new or not.
- *
- * `EXECUTOR_E2E_DOCKER_UPGRADE_FROM_IMAGE` names the published image the server starts on, which
- * must serve a different API from `EXECUTOR_E2E_DOCKER_IMAGE`: without that difference the scenario
- * proves nothing, so it fails rather than replacing an image with itself.
- */
 import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Config, Console, Effect, Exit, Schedule, Schema } from "effect";
@@ -34,12 +17,6 @@ const Operation = Schema.Struct({
     Schema.Array(Schema.Record(Schema.String, Schema.Array(Schema.String))),
   ),
 });
-/**
- * An operation whose only security is the browser session refuses every bearer credential, so the
- * Executor app, which calls with the agent's grant, must not list it. Every alternative must name
- * exactly the browser session: an empty one, `{}`, allows anonymous callers, so an operation that
- * has one is not browser-only and must be listed if it is new.
- */
 const browserSessionOnly = (operation: typeof Operation.Type) =>
   operation.security !== undefined &&
   operation.security.length > 0 &&
@@ -57,7 +34,6 @@ const Source = Schema.Struct({
   files: Schema.Array(Schema.Struct({ path: Schema.String, content: Schema.String })),
 });
 
-/** Start on the previous image, warm the Executor app, replace the image and list its tools. */
 const upgrade = (database: boolean) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -84,7 +60,6 @@ const upgrade = (database: boolean) =>
           }),
       );
       const address = `http://127.0.0.1:${port}`;
-      // The server and the Executor app inside it reach the API at the container's own port.
       const origin = "http://localhost:8080";
       yield* Effect.acquireRelease(run(["volume", "create", id]), () =>
         run(["volume", "rm", id]).pipe(Effect.orDie),
@@ -133,10 +108,6 @@ const upgrade = (database: boolean) =>
         ),
         Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 240 }),
       );
-      /**
-       * The operations of the API document the running image serves, which the Executor app reads,
-       * each with whether only a browser session may call it.
-       */
       const operations = request("/openapi.json").pipe(
         Effect.flatMap((response) => driver("API document", () => response.json())),
         Effect.flatMap(Schema.decodeUnknownEffect(Document)),
@@ -191,7 +162,6 @@ const upgrade = (database: boolean) =>
           Schema.decodeUnknownEffect(Schema.NonEmptyArray(Schema.Struct({ id: Schema.String }))),
         ),
       );
-      // Setup installs the Executor app in the background.
       const executor = yield* request(
         `/api/organizations/${organization.id}/inventory`,
         undefined,
@@ -212,7 +182,6 @@ const upgrade = (database: boolean) =>
         Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 120 }),
       );
       if (database) {
-        // The operator's edit: its version owns a database, and its tool calls run in a facet.
         const app = `/api/organizations/${organization.id}/apps/${executor.id}`;
         const source = yield* request(`${app}/source`, undefined, cookie).pipe(
           Effect.flatMap((response) => driver("app source", () => response.json())),
@@ -242,7 +211,6 @@ const upgrade = (database: boolean) =>
         Effect.flatMap(Schema.decodeUnknownEffect(Schema.Struct({ key: Schema.String }))),
       );
       const before = yield* operations;
-      // An agent's search on the previous image keeps the Executor app's listing and document.
       yield* Effect.scoped(
         Effect.gen(function* () {
           const client = yield* connect(key, organization.id);
@@ -264,7 +232,6 @@ const upgrade = (database: boolean) =>
       yield* start(image);
       yield* ready;
       const after = yield* operations;
-      // The upgrade must change the API, or the listing checks below hold for a stale listing too.
       expect(
         [...before.keys()].filter((operation) => !after.has(operation)).length +
           [...after.keys()].filter((operation) => !before.has(operation)).length,
@@ -291,11 +258,8 @@ const upgrade = (database: boolean) =>
       );
       const tools = new Set(listed.map((path) => path.replace(/^tools\.executor\./, "")));
       expect(tools.size).toBeGreaterThan(0);
-      // Every listed tool is an operation of the API now served, so none of them is a removed one.
       expect([...tools].filter((tool) => !after.has(tool))).toEqual([]);
-      // No operation that refuses the agent's credential is listed.
       expect([...tools].filter((tool) => after.get(tool) === true)).toEqual([]);
-      // Every operation the replacement added that the agent's credential can call is listed.
       expect(
         [...after]
           .filter(([operation, browserOnly]) => !browserOnly && !before.has(operation))

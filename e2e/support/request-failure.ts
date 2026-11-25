@@ -1,15 +1,3 @@
-/**
- * How far a failed HTTP call got, so a failure that never produced a usable response can be told
- * apart from another: a refused or reset connection, a DNS or TLS failure, a socket closed while
- * the body was streaming, a body that is not JSON, or no answer before the deadline.
- *
- * It records only identifier-shaped facts: the stage, the response status once headers were read,
- * Cloudflare's `cf-ray` and edge location once headers were read (one ray names one request in
- * Cloudflare's logs), what the client saw when no answer completed (DNS, connect, TLS, a reset, a
- * closed socket or a time-out), the tags and names along the error's cause chain, the first
- * low-level error `code`, and the time the call ran. Never a URL, a header, a body or an error message: those can hold credentials, and
- * `failure-text.ts` gives a masked message where one is wanted.
- */
 import { Clock, Duration, Effect, Option, Redacted, Result, Schema } from "effect";
 import type { HttpClientError, HttpClientResponse } from "effect/http";
 import { errorCode, nextCause } from "./failure-text.ts";
@@ -17,24 +5,13 @@ import { platformSignatures } from "../platform-signatures.ts";
 import { sentFacts } from "./lost-connections.ts";
 
 export const RequestStage = Schema.Literals([
-  // No response headers arrived: connect, DNS, TLS, a reset before the answer, or a request
-  // the client could not send.
   "before response",
-  // Headers arrived with `status`; the body failed while it was read.
   "reading body",
-  // The whole body arrived, and it is not the JSON the caller reads.
   "decoding body",
-  // The deadline passed; `status` says whether headers had arrived.
   "timeout",
 ]);
 export type RequestStage = typeof RequestStage.Type;
 
-/**
- * What the client saw when the call did not complete: a name lookup that failed, a connection
- * that was refused or never made, a TLS handshake that failed, a connection reset or closed by
- * the other side, or no answer before a deadline. `other` is a transport failure with none of
- * those codes. A body that arrived whole but is not JSON has none.
- */
 export const RequestConnection = Schema.Literals([
   "dns",
   "connect",
@@ -50,24 +27,12 @@ export const RequestFailure = Schema.Struct({
   stage: RequestStage,
   status: Schema.optional(Schema.Number),
   connection: Schema.optional(RequestConnection),
-  /** Cloudflare's ray id from the response's `cf-ray` header, when one arrived. */
   ray: Schema.optional(Schema.String),
-  /** The Cloudflare location that answered, the ray's suffix (`IAD`), when one arrived. */
   colo: Schema.optional(Schema.String),
-  /** Tags and names along the cause chain, outermost first: `TransportError > TypeError > SocketError`. */
   errors: Schema.optional(Schema.String),
-  /** The first low-level error code on the chain: `ECONNRESET`, `UND_ERR_SOCKET`, `ENOTFOUND`. */
   code: Schema.optional(Schema.String),
   elapsedMs: Schema.Number,
-  /** A platform failure this is exactly one of; see `platformSignatures`. */
   signature: Schema.optional(Schema.Literals(["runtime-502", "lost"])),
-  /**
-   * For a stage request that failed in transport: whether its connection was new or reused, how
-   * many requests it had carried, how old and how long idle it was, how much of the request was
-   * written, and whether a response began (`support/lost-connections.ts`). Only a request of
-   * which nothing was written is sent again: how many attempts failed so, over how long, and why
-   * the repeats stopped.
-   */
   sent: Schema.optional(
     Schema.Struct({
       connection: Schema.optional(Schema.Literals(["new", "reused"])),
@@ -84,7 +49,6 @@ export const RequestFailure = Schema.Struct({
 });
 export type RequestFailure = typeof RequestFailure.Type;
 
-/** The facts `lost-connections.ts` put on the first error along a cause chain that carries them. */
 const sentOf = (cause: unknown): RequestFailure["sent"] => {
   let current: unknown = cause;
   for (let level = 0; level < depth && typeof current === "object" && current !== null; level++) {
@@ -106,10 +70,6 @@ const sentOf = (cause: unknown): RequestFailure["sent"] => {
   return undefined;
 };
 
-/**
- * `on a new connection 12 ms old, whole request written, no response`, or for a reused one
- * `on a reused connection (3 earlier requests, 4.2 s old) idle 0.0 s, …`.
- */
 const sentText = (sent: NonNullable<RequestFailure["sent"]>) =>
   [
     sent.connection === undefined
@@ -121,24 +81,8 @@ const sentText = (sent: NonNullable<RequestFailure["sent"]>) =>
     .filter((part) => part !== undefined)
     .join(", ");
 
-/**
- * Two ways a request to a stage fails in Cloudflare's platform rather than in our Worker, as seen
- * on deployed runs. A failure that is exactly one of them says so at the start of its first line,
- * and Cloud tests on main counts each per run (`e2e/ci-selection.ts`, `verify deployed`).
- *
- * - `runtime-502`: Cloudflare's Workers runtime answered `502` with its own plain-text body
- *   `Bad Gateway`, with a ray id, so our Worker did not answer. Our own 502s are JSON errors with
- *   a `_tag`, or empty.
- * - `lost`: the request was sent and no response arrived: the connection was reset or closed with
- *   no response headers.
- *
- * Anything else keeps its ordinary text: a refused connection, a failed name lookup or TLS
- * handshake, and a deadline with no response headers, which is also what our own Worker hanging
- * looks like (a handler stuck on the database or on a hung endpoint) and so is not the platform's.
- */
 export { platformSignatures } from "../platform-signatures.ts";
 
-/** Cloudflare's runtime 502: status 502, `text/plain`, body exactly `Bad Gateway`, and a ray. */
 export const isRuntimeBadGateway = (input: {
   readonly status: number;
   readonly contentType: string | undefined;
@@ -150,13 +94,11 @@ export const isRuntimeBadGateway = (input: {
   input.text === "Bad Gateway" &&
   input.ray !== undefined;
 
-/** No response headers arrived, and the connection was reset or closed. A deadline is not this. */
 export const isLost = (failure: Omit<RequestFailure, "signature">) =>
   failure.status === undefined &&
   failure.stage === "before response" &&
   (failure.connection === "reset" || failure.connection === "closed");
 
-/** The start of a failure's first line when it is a platform signature, else nothing. */
 export const signatureText = (failure: RequestFailure | undefined) => {
   if (failure?.signature === "runtime-502")
     return `${platformSignatures["runtime-502"]} (ray ${failure.ray}${failure.colo === undefined ? "" : `-${failure.colo}`}): `;
@@ -165,7 +107,6 @@ export const signatureText = (failure: RequestFailure | undefined) => {
   return "";
 };
 
-// Names are identifiers set by code, never by data, and kept only in that shape.
 const identifier = /^[A-Za-z][A-Za-z0-9]{0,39}$/u;
 const depth = 8;
 
@@ -174,10 +115,6 @@ const field = (value: unknown, key: string): unknown =>
     ? (value as Record<string, unknown>)[key]
     : undefined;
 
-/**
- * The tags and names on a cause chain and its first code. An Effect `HttpClientError` holds its
- * `reason` (`TransportError`, `DecodeError`, …); fetch's `TypeError` holds the socket error.
- */
 export const causeChain = (cause: unknown): { errors?: string; code?: string } => {
   const errors: Array<string> = [];
   const code = errorCode(cause);
@@ -195,10 +132,8 @@ export const causeChain = (cause: unknown): { errors?: string; code?: string } =
   };
 };
 
-// `cf-ray` is 16 hex digits and, on a response, a dash and the three-letter location.
 const rayShape = /^([0-9a-f]{16})(?:-([A-Z]{3}))?$/u;
 
-/** The ray and location of a response that came through Cloudflare. Anything else is not kept. */
 export const edgeOf = (
   headers: Readonly<Record<string, string | undefined>> | undefined,
 ): { ray?: string; colo?: string } => {
@@ -222,7 +157,6 @@ const connectionCodes: ReadonlyArray<readonly [RequestConnection, RegExp]> = [
   ["timeout", /^(?:UND_ERR_HEADERS_TIMEOUT|UND_ERR_BODY_TIMEOUT)$/u],
 ];
 
-/** What the client saw, from the stage and the low-level code. A decoded body has none. */
 export const connectionOf = (
   stage: RequestStage,
   code: string | undefined,
@@ -230,16 +164,10 @@ export const connectionOf = (
   if (stage === "decoding body") return undefined;
   if (stage === "timeout") return "timeout";
   if (code === undefined) return "other";
-  // Before a response, ETIMEDOUT is a connection that was never made. Once headers arrived it is
-  // a socket that went quiet mid-body.
   if (code === "ETIMEDOUT" && stage !== "before response") return "timeout";
   return connectionCodes.find(([, pattern]) => pattern.test(code))?.[0] ?? "other";
 };
 
-/**
- * One line: `before response (reset), TransportError > TypeError > SocketError ECONNRESET, after
- * 412 ms`, with `ray 8f0c1a2b3c4d5e6f-IAD` when a response came through Cloudflare.
- */
 export const requestFailureText = (failure: RequestFailure) =>
   [
     (failure.status === undefined
@@ -260,21 +188,11 @@ export const requestFailureText = (failure: RequestFailure) =>
     .filter((part) => part !== undefined)
     .join(", ");
 
-/** A call that failed before its body could be read, with how far it got. */
 export class CallFailed extends Schema.TaggedError<CallFailed>()("CallFailed", {
   failure: RequestFailure,
-  /**
-   * The raw transport error, kept redacted for `failure-text.ts` to give its masked text. A decode
-   * failure has none: a parser's message quotes the body.
-   */
   cause: Schema.optional(Schema.Redacted(Schema.Unknown)),
 }) {}
 
-/**
- * Run a request and read its whole body as text, within `timeout` when one is given. A failure
- * says which stage it reached; the caller decodes the text and reports a decode failure with
- * `decodeFailure` or `parseJson`.
- */
 export const readResponse = <R>(
   execute: Effect.Effect<HttpClientResponse.HttpClientResponse, HttpClientError.HttpClientError, R>,
   timeout?: Duration.Input,
@@ -331,13 +249,11 @@ export const readResponse = <R>(
     });
   });
 
-/** The failure of a body that arrived whole and is not JSON. */
 export const decodeFailure = (
   status: number,
   started: number,
   cause: unknown,
   headers?: Readonly<Record<string, string | undefined>>,
-  /** The whole body, so Cloudflare's own 502 can be told from ours; it is not kept. */
   text?: string,
 ) =>
   Clock.currentTimeMillis.pipe(
@@ -362,11 +278,6 @@ export const decodeFailure = (
     }),
   );
 
-/**
- * Parse a whole body as JSON. A body that is not JSON fails as a `decoding body` failure with the
- * parser's error name only: its message quotes the body, which can hold tokens and secrets, so the
- * parser's error is neither kept nor passed on as a cause.
- */
 export const parseJson = (
   text: string,
   status: number,
@@ -374,7 +285,6 @@ export const parseJson = (
   headers?: Readonly<Record<string, string | undefined>>,
 ) =>
   Effect.suspend(() => {
-    // An empty body is no value, as before, not a decode failure.
     if (text === "") return Effect.succeed(null as unknown);
     const parsed = Result.try((): unknown => JSON.parse(text));
     return Result.isSuccess(parsed)

@@ -1,12 +1,3 @@
-/**
- * Local-only probe of the one repeat of a runtime exchange whose connection never formed
- * (`runtime-connect.ts`). Each case runs an exchange against a stub on 127.0.0.1 and prints, as
- * JSON, how it ended, how many connections the stub saw and what the span recorded, for
- * `runtime-connect-repeat.spec.ts` to judge. The RPC cases compose a session as `workerd-apps.ts`
- * does: a `ws` socket, the hop's tracker, the open watch, nothing sent before it opens. The HTTP
- * cases use the same `FetchHttpClient` the runtime's hops use, on this process's runtime (Node or
- * Bun, whichever runs the script).
- */
 import { Cause, Effect, Exit, Schema, type Scope } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 import * as Net from "node:net";
@@ -52,16 +43,13 @@ const cases = [
 ] as const;
 type Case = (typeof cases)[number];
 
-/** Milliseconds of delay forced at a case's ordering point, from `--delay`. */
 const delay = Number(process.argv[process.argv.indexOf("--delay") + 1] ?? 0) || 0;
 const forced = Effect.sleep(`${delay} millis`);
 
-/** The `executor.runtime.*` attributes the current span carries. */
 const recorded = Effect.map(Effect.currentSpan, (span) =>
   Object.fromEntries([...span.attributes].filter(([key]) => key.startsWith("executor.runtime."))),
 );
 
-/** A TCP server on 127.0.0.1 handling its `n`th connection (from 1) with `onConnection`. */
 const tcpServer = (onConnection: (socket: Net.Socket, n: number) => void) =>
   Effect.acquireRelease(
     Effect.callback<{ server: Net.Server; connections: () => number }>((resume) => {
@@ -77,12 +65,6 @@ const tcpServer = (onConnection: (socket: Net.Socket, n: number) => void) =>
     })),
   );
 
-/**
- * A loopback port that nothing listens on, and nothing can listen on, for the rest of the case: the
- * local end of an open connection holds it. A socket bound without listening answers a connect with
- * a reset, so the connect is refused (`ECONNREFUSED`) on Linux, macOS and Windows alike, and no other
- * process can bind the port while the connection stays open.
- */
 const closedPort = Effect.gen(function* () {
   const { port: listener } = yield* tcpServer((socket) => socket.on("error", () => {}));
   const holder = yield* Effect.acquireRelease(
@@ -97,7 +79,6 @@ const closedPort = Effect.gen(function* () {
   return holder.localPort!;
 });
 
-/** Run `then` once the request's headers have arrived on `socket`. */
 const untilHeaders = (socket: Net.Socket, then: (head: Buffer) => void) => {
   let buffered = Buffer.alloc(0);
   const onData = (chunk: Buffer) => {
@@ -109,18 +90,11 @@ const untilHeaders = (socket: Net.Socket, then: (head: Buffer) => void) => {
   socket.on("data", onData);
 };
 
-/**
- * One RPC exchange composed as `workerd-apps.ts` composes it: the socket is tracked and watched as
- * it is made, and `work` runs only once it has opened. `work` here sends `messages` and then waits
- * for a reply to each, or for the socket to close.
- */
 const exchange = (
   port: number,
   messages: number,
   options: {
-    /** Run before each connect, as a host's own pre-connect check would be. */
     readonly beforeEachConnect?: Effect.Effect<void>;
-    /** Replace the session's failure, as a session that chose its own reason would. */
     readonly ownReason?: RuntimeProtocolFailed;
   } = {},
 ) => {
@@ -161,7 +135,6 @@ const exchange = (
   );
 };
 
-/** A WebSocket server for the RPC cases, which upgrades the connections `upgrade` accepts. */
 const wsStub = (
   upgrade: (n: number) => "upgrade" | "close-before-upgrade",
   serve: (socket: WebSocket) => void,
@@ -172,7 +145,6 @@ const wsStub = (
     return yield* tcpServer((socket, n) => {
       if (upgrade(n) === "close-before-upgrade")
         return untilHeaders(socket, () => socket.destroy());
-      // Hand the raw connection to `ws` as an HTTP server would, with the bytes it has read.
       untilHeaders(socket, (head) => {
         const text = head.toString("latin1");
         const [requestLine, ...lines] = text.slice(0, text.indexOf("\r\n\r\n")).split("\r\n");
@@ -194,7 +166,6 @@ const wsStub = (
     });
   });
 
-/** An RPC case: how the exchange ended, the stub's connection count and what the span recorded. */
 const rpcCase = (
   stub: Effect.Effect<{ port: number; connections: () => number }, never, Scope.Scope>,
   messages: number,
@@ -228,7 +199,6 @@ const failureOf = (cause: Cause.Cause<unknown>) => {
   };
 };
 
-/** One HTTP exchange through `hops.http`, repeated as `workerd-apps.ts` repeats it. */
 const httpCase = (
   port: () => number,
   connections: () => number,
@@ -239,8 +209,6 @@ const httpCase = (
     const hops = runtimeHops();
     const http = yield* HttpClient.HttpClient;
     let attempt = 0;
-    // The exchange's own first statement runs again on the repeat, as a check before connecting
-    // would in the product.
     const once = Effect.gen(function* () {
       yield* beforeConnect(++attempt);
       const request = HttpClientRequest.post(`http://127.0.0.1:${port()}/workflow`, {
@@ -257,10 +225,6 @@ const httpCase = (
     };
   }).pipe(Effect.withSpan("probe"), Effect.provide(FetchHttpClient.layer));
 
-/**
- * A call's surfaced failure after `entries` hand-offs to the app's code, the last never sent, judged
- * by the tracker both of the host's call paths use (`appEntries`), which `AppCodeEntered` reaches.
- */
 const callCase = (entries: number, read: boolean) => {
   let enteredApp = false;
   const tracker = appEntries(() => {
@@ -286,7 +250,6 @@ const callCase = (entries: number, read: boolean) => {
   });
 };
 
-/** What `failedAtConnect` decides for each platform's error shape, without its text. */
 const decisions = () => {
   const transport = (cause: unknown) => ({
     _tag: "HttpClientError",
@@ -296,13 +259,11 @@ const decisions = () => {
     Object.assign(new TypeError("synthetic"), fields);
   return Effect.succeed({
     decisions: {
-      // Bun: a connect that failed, and its ETIMEDOUT, which is also its idle time-out.
       bunRefused: failedAtConnect(
         transport(shaped({ code: "ECONNREFUSED", errno: 0, path: "/x" })),
       ),
       bunTimedOut: failedAtConnect(transport(shaped({ code: "ETIMEDOUT", errno: 0, path: "/x" }))),
       bunReset: failedAtConnect(transport(shaped({ code: "ECONNRESET", errno: 0, path: "/x" }))),
-      // Node: a connect error carries its syscall.
       nodeConnectTimedOut: failedAtConnect(
         transport(
           Object.assign(new TypeError("fetch failed"), {
@@ -333,13 +294,6 @@ const decisions = () => {
   });
 };
 
-/**
- * The previous release's view of the wire (main at 9cbea0adc): its closed list of runtime failures,
- * and what its server sends for an exchange that never connected. A reader from that release
- * decodes `RuntimeProtocolFailed.reason` and `EvaluationRuntime.failure` against that list, so a
- * failure this release sends must carry one of its values; the new fact rides in optional fields,
- * which that reader drops. And this release reads that server's answers.
- */
 const previousRuntimeFailures = [
   "cold-start",
   "memory",
@@ -400,12 +354,10 @@ const wireSchemas = {
 const wireJson = (name: keyof typeof wireSchemas) =>
   Schema.fromJsonString(wireSchemas[name] as never);
 
-/** Every runtime failure value a never-opened exchange sends, and whether the old list has it. */
 const wireCase = () =>
   Effect.gen(function* () {
     const app = "app_00000000-0000-4000-8000-000000000000" as never;
     const version = "dpl_00000000-0000-4000-8000-000000000000" as never;
-    // The failure the repeat itself ends with when nothing listens.
     const port = yield* closedPort;
     const exit = yield* Effect.exit(exchange(port, 1));
     const reason = Exit.isFailure(exit) ? exit.cause.reasons[0] : undefined;
@@ -444,7 +396,6 @@ const wireCase = () =>
         return { label, decoded: false };
       }
     });
-    // The not-sent and partly-run tool call failures: optional fields only, and never both facts.
     const call = mayHaveWritten(
       ToolCallFailed,
       new ToolCallFailed({ app, version, tool: "probe" as never, reason: "x", notSent: true }),
@@ -459,7 +410,6 @@ const wireCase = () =>
     };
   });
 
-/** The host's side of a Cap'n Web session, which counts the calls it runs. */
 class CountingApi extends RpcTarget {
   invocations = 0;
   invoke() {
@@ -468,10 +418,6 @@ class CountingApi extends RpcTarget {
   }
 }
 
-/**
- * A real Cap'n Web session over `ws`, composed as `workerd-apps.ts` composes it: the stub closes the
- * first connection before its upgrade and serves the API on the second. The call must run once.
- */
 const capnwebRescue = Effect.gen(function* () {
   const api = new CountingApi();
   const { port, connections } = yield* wsStub(
@@ -520,8 +466,6 @@ const capnwebRescue = Effect.gen(function* () {
 const run = (name: Case): Effect.Effect<unknown, unknown, Scope.Scope> => {
   switch (name) {
     case "rpc-rescued":
-      // The stub closes the first connection before answering its upgrade and upgrades the
-      // second: which connection is which is the stub's count, not a time.
       return rpcCase(
         wsStub(
           (n) => (n === 1 ? "close-before-upgrade" : "upgrade"),
@@ -540,7 +484,6 @@ const run = (name: Case): Effect.Effect<unknown, unknown, Scope.Scope> => {
     case "rpc-unreachable":
       return rpcCase(closedPort.pipe(Effect.map((port) => ({ port, connections: () => 0 }))), 1);
     case "rpc-never-opens":
-      // The stub closes every connection before answering its upgrade: two connections, no more.
       return rpcCase(
         wsStub(
           () => "close-before-upgrade",
@@ -549,7 +492,6 @@ const run = (name: Case): Effect.Effect<unknown, unknown, Scope.Scope> => {
         1,
       );
     case "rpc-closed-after-open":
-      // Opens, then the stub closes it with a code before any message: never repeated.
       return rpcCase(
         wsStub(
           () => "upgrade",
@@ -564,7 +506,6 @@ const run = (name: Case): Effect.Effect<unknown, unknown, Scope.Scope> => {
         0,
       );
     case "rpc-sent-then-closed":
-      // Opens, the client sends, the stub closes on receiving it: never repeated.
       return rpcCase(
         wsStub(
           () => "upgrade",
@@ -581,8 +522,6 @@ const run = (name: Case): Effect.Effect<unknown, unknown, Scope.Scope> => {
         1,
       );
     case "http-rescued":
-      // Nothing listens for the first attempt; the exchange's own start opens the listener before
-      // the second, so the repeat is what reaches it.
       return Effect.gen(function* () {
         const closed = yield* closedPort;
         let open: { port: number; connections: () => number } | undefined;
@@ -619,7 +558,6 @@ const run = (name: Case): Effect.Effect<unknown, unknown, Scope.Scope> => {
         ),
       );
     case "http-reset-after-write":
-      // The stub resets once the request's headers arrived: bytes were written. Never repeated.
       return tcpServer((socket) =>
         untilHeaders(socket, () =>
           Effect.runFork(
@@ -635,7 +573,6 @@ const run = (name: Case): Effect.Effect<unknown, unknown, Scope.Scope> => {
         ),
       );
     case "http-closed-after-write":
-      // The stub closes without answering once the request arrived. Never repeated.
       return tcpServer((socket) =>
         untilHeaders(socket, () =>
           Effect.runFork(
@@ -653,7 +590,6 @@ const run = (name: Case): Effect.Effect<unknown, unknown, Scope.Scope> => {
     case "wire-previous-release":
       return wireCase();
     case "rpc-check-before-each-connect":
-      // The check runs before each connect: the stub has seen 0 connections, then 1.
       return Effect.gen(function* () {
         const stub = yield* wsStub(
           () => "close-before-upgrade",
@@ -675,8 +611,6 @@ const run = (name: Case): Effect.Effect<unknown, unknown, Scope.Scope> => {
         };
       });
     case "rpc-never-opens-own-reason":
-      // The session ends a never-opened attempt with a reason of its own: it is kept, with
-      // `notSent` added.
       return Effect.gen(function* () {
         const stub = yield* wsStub(
           () => "close-before-upgrade",

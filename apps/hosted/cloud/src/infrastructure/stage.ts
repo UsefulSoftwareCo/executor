@@ -1,4 +1,3 @@
-/** Test stages are named `test-<slug>`. Each one derives its origin and owns generated secrets. */
 import { AlchemyContext } from "alchemy/AlchemyContext";
 import { Stage } from "alchemy/Stage";
 import { singleResourceOrigin, type ResourceOrigins } from "@executor-js/hosted-server";
@@ -8,27 +7,17 @@ import { TestStageSlug } from "../contracts/test-stage-lifetime.ts";
 
 export const testStagePrefix = "test-";
 
-/** The stage every push to `main` deploys. It serves real customers. */
 export const productionStage = "v2";
 
-/**
- * Production's API Worker script name, retained from the original edge binding. Keep the
- * existing Worker identity when the public site moves to its separate marketing gateway.
- */
 export const productionApiWorkerName = "executor-next-hosted-api-v2-qs32brgjwvt7ytx4";
 
 export interface TestStage {
   readonly name: string;
   readonly slug: string;
-  /** The zone the stage's hostnames live in (`TEST_STAGE_DOMAIN`). */
   readonly domain: string;
   readonly origin: string;
 }
 
-/**
- * Provisioning receives the stage as a service and the deployed Worker reads Alchemy's plain
- * binding. Jobs and tests outside Alchemy have neither and use explicit configuration.
- */
 export const stageName = Effect.serviceOption(Stage).pipe(
   Effect.flatMap(
     Option.match({
@@ -38,7 +27,6 @@ export const stageName = Effect.serviceOption(Stage).pipe(
   ),
 );
 
-/** Only stages with the prefix are test stages. Every other stage keeps its explicit configuration. */
 export const testStage = Effect.gen(function* () {
   const name = yield* stageName;
   if (Option.isNone(name) || !name.value.startsWith(testStagePrefix))
@@ -57,12 +45,6 @@ export const testStage = Effect.gen(function* () {
   });
 });
 
-/**
- * A configured public origin. The OAuth issuer takes its scheme as configured, so a deployed stage
- * must serve HTTPS; Better Auth no longer rewrites an HTTP issuer to HTTPS for it. Cloud development
- * runs on a loopback origin, as `cloudEmulators` and the session cookie name tell it apart, and may
- * use plain HTTP there.
- */
 const Origin = Schema.String.check(
   Schema.makeFilter(
     (value) => {
@@ -85,14 +67,8 @@ const Origin = Schema.String.check(
   ),
 );
 
-/** The zone that serves production. See `product-zone.ts` for its certificate rule. */
 export const productZone = "executor.sh";
 
-/**
- * A hostname this stage's Worker serves, as a custom domain or a route. Each new custom domain in
- * the product zone orders a certificate that Cloudflare then serves for the apex, so only
- * production may serve a host in it.
- */
 export const customDomain = (origin: URL) =>
   Effect.gen(function* () {
     const hostname = origin.hostname;
@@ -110,7 +86,6 @@ export const customDomain = (origin: URL) =>
     return hostname;
   });
 
-/** The public origin: derived from the stage name for test stages, configured everywhere else. */
 export const cloudOrigin = testStage.pipe(
   Effect.flatMap(
     Option.match({
@@ -121,15 +96,9 @@ export const cloudOrigin = testStage.pipe(
   ),
 );
 
-/**
- * The hosts that each serve one part of the product beside the deployment origin
- * (`notes/cloud-domains.md`): `app.` the dashboard and sign-in, `mcp.` MCP and its discovery,
- * `api.` the API, its discovery and app webhooks.
- */
 export const hostRoles = ["app", "mcp", "api"] as const;
 export type HostRole = (typeof hostRoles)[number];
 
-/** The origin of each role host, and the zone a deployed stage serves them from. */
 export interface RoleHosts {
   readonly origins: { readonly [Role in HostRole]: string };
   /**
@@ -143,9 +112,7 @@ export interface RoleHosts {
    * AuthKit's sign-in move to v2 (`notes/v1-shutdown.md`, "AuthKit").
    */
   readonly authKit: string;
-  /** The domain the role hosts live under, and the passkey relying party. */
   readonly domain: string;
-  /** None when the hosts come from `EXECUTOR_ROLE_HOSTS_DOMAIN`, which only local runs set. */
   readonly zone: Option.Option<string>;
 }
 
@@ -162,11 +129,6 @@ const RoleHostsDomain = Schema.String.check(
   ),
 );
 
-/**
- * The domain under which the role hosts live: `executor.sh` for production, the stage's own
- * hostname for a test stage (`mcp.<slug>.executor.engineering`), and `EXECUTOR_ROLE_HOSTS_DOMAIN`
- * elsewhere, which jobs outside Alchemy and local runs set. Unset there means no role hosts.
- */
 export const roleHostsDomain = Effect.gen(function* () {
   if (Option.getOrUndefined(yield* stageName) === productionStage)
     return Option.some({ domain: productZone, zone: Option.some(productZone) });
@@ -182,10 +144,6 @@ export const roleHostsDomain = Effect.gen(function* () {
   return Option.some({ domain, zone: Option.none<string>() });
 });
 
-/**
- * The role hosts' setting for a job that runs outside Alchemy, such as the migration job that
- * provisions their OAuth resources: it has no stage, so it reads `EXECUTOR_ROLE_HOSTS_DOMAIN`.
- */
 export const roleHostsJobEnvironment = roleHostsDomain.pipe(
   Effect.map(
     Option.match({
@@ -195,11 +153,9 @@ export const roleHostsJobEnvironment = roleHostsDomain.pipe(
   ),
 );
 
-/** The role hosts beside `deployment`, with its scheme and port. */
 const roleHostsAt = (deployment: string) =>
   roleHostsDomain.pipe(
     Effect.tap((roles) =>
-      // v1 serves `executor.sh`; production's deployment origin is `v2.executor.sh` beside it.
       Option.isSome(roles) &&
       roles.value.domain === productZone &&
       new URL(deployment).hostname === productZone
@@ -215,8 +171,6 @@ const roleHostsAt = (deployment: string) =>
         const at = (label: string) => `${protocol}//${label}.${domain}${suffix}`;
         return {
           origins: { app: at("app"), mcp: at("mcp"), api: at("api") },
-          // Production's domain is `executor.sh` itself. A test stage or local run serves its
-          // deployment at the domain, so its edge takes the `edge.` label under it.
           edge: hostname === domain ? at("edge") : `${protocol}//${domain}${suffix}`,
           authKit: at("signin"),
           domain,
@@ -226,29 +180,12 @@ const roleHostsAt = (deployment: string) =>
     ),
   );
 
-/** This deployment's role hosts, if it has them. */
 export const cloudRoleHosts = Effect.flatMap(cloudOrigin, roleHostsAt);
 
-/**
- * Which origin names the canonical MCP and API resources: the URLs pages show and the audience of
- * an authorization request that names no resource. `deployment` keeps `cloudOrigin`
- * (`v2.executor.sh`) canonical and serves the role hosts' resources beside it; `role` makes
- * `mcp.` and `api.` canonical. Every listed origin keeps accepting its own grants either way.
- */
 export type CanonicalResourceOrigin = "deployment" | "role";
 
-/** Ship 6 of `notes/cloud-domains.md` makes `mcp.` and `api.` canonical. */
 export const canonicalResourceOrigin: CanonicalResourceOrigin = "role";
 
-/**
- * Where connected-account sign-ins return when the deployment has role hosts. `current` is the
- * permanent `executor.sh` callback, which v1's edge forwards by the state prefix: the `redirect_uri`
- * new sign-ins send, the client metadata document lists and dynamic client registration
- * registers. `previous` is the deployment origin's callback (`v2.executor.sh`), the only one OAuth
- * clients saved before the move are registered with. Entered clients keep sending it; Executor
- * registers its own clients again at `current`. Both
- * bounce to the browser origin's callback page.
- */
 export interface AccountCallbacks {
   readonly current: string;
   readonly previous: readonly string[];
@@ -260,7 +197,6 @@ const accountCallbacksFor = (deployment: string, roles: Option.Option<RoleHosts>
     previous: [new URL("/api/oauth/callback", deployment).href],
   }));
 
-/** The resource origins for a deployment origin, its role hosts and the canonical choice. */
 const resourceOriginsFor = (
   canonical: CanonicalResourceOrigin,
   deployment: string,
@@ -268,8 +204,6 @@ const resourceOriginsFor = (
 ): ResourceOrigins => {
   if (Option.isNone(roles)) return singleResourceOrigin(deployment);
   const { mcp, api } = roles.value.origins;
-  // The edge serves v1's MCP URLs, each its own resource, once v1 shuts down
-  // (`notes/v1-shutdown.md`). Before then v1 owns those paths and its edge never forwards them.
   const legacyMcp = roles.value.edge;
   switch (canonical) {
     case "deployment":
@@ -279,14 +213,6 @@ const resourceOriginsFor = (
   }
 };
 
-/**
- * Which host serves the dashboard and sign-in when the deployment has role hosts
- * (`CLOUD_BROWSER_ORIGIN`): `app` (`app.executor.sh`, the cutover, and the default) or
- * `deployment` (`v2.executor.sh`). `deployment` is the rollback switch of
- * `notes/cloud-domains.md`: it moves only the browser origin back. The role hosts, the issuer on
- * the edge, the resource audiences and the edge's forwarding stay as they are, so clients that
- * adopted them keep working and grants issued either way still validate.
- */
 export const BrowserOrigin = Schema.Literals(["app", "deployment"]);
 export type BrowserOrigin = typeof BrowserOrigin.Type;
 
@@ -295,27 +221,6 @@ export const browserOriginSetting = Config.Literals(
   "CLOUD_BROWSER_ORIGIN",
 ).pipe(Config.withDefault<BrowserOrigin>("app"));
 
-/**
- * Where one Cloud deployment serves each part of the product (`notes/cloud-domains.md`). Without
- * role hosts, as in local development and self-contained jobs, every field names the deployment
- * origin. With them:
- *
- * - `deployment` (`v2.executor.sh`) is the Worker's own domain. It keeps serving MCP, the API,
- *   discovery, Git, webhooks and callbacks; its browser pages redirect to `browser`.
- * - `browser` (`app.executor.sh`) serves the dashboard and sign-in. It is Better Auth's base URL,
- *   so sessions and every sign-in cookie are host-only there. `CLOUD_BROWSER_ORIGIN=deployment`
- *   puts it back on `deployment`; `app.` then redirects its pages there.
- * - `edge` (`executor.sh`) is the origin v1's edge forwards a fixed set of paths from. The
- *   identifiers clients and providers store live there: the issuer, the social sign-in and
- *   connected-account callbacks.
- * - `site` serves the site and its documentation: the edge with role hosts, whose site pages
- *   every other host redirects to, and the deployment origin without them.
- * - `issuer` is exact, without a trailing slash; its endpoints stay on `browser`.
- * - `gitOrigins` serve app Git remotes, canonical first: the edge, whose remote URLs never move,
- *   then the deployment origin, where earlier clones' remotes point.
- * - Passkeys use the role hosts' domain as their relying party, so a move of the dashboard
- *   between hosts under it, the rollback included, keeps them.
- */
 export interface CloudHosts {
   readonly deployment: string;
   readonly browser: string;
@@ -325,17 +230,10 @@ export interface CloudHosts {
   readonly issuer: string;
   readonly gitOrigins: readonly [string, ...string[]];
   readonly passkey: { readonly rpId: string; readonly origin: string };
-  /** Absent without role hosts, where the host's own or configured callback applies. */
   readonly accountCallbacks: Option.Option<AccountCallbacks>;
-  /**
-   * The `Domain` of cookies the edge and the browser origin share: the site's anonymous visitor
-   * identity, set on `executor.sh` and read when that visitor signs up on `app.`. None without
-   * role hosts or under `localhost`, where each host keeps its own.
-   */
   readonly sharedCookieDomain: Option.Option<string>;
 }
 
-/** The host layout of a deployment at `deployment`, with its browser origin setting. */
 export const cloudHostsAt = (deployment: string) =>
   Effect.gen(function* () {
     const roles = yield* roleHostsAt(deployment);
@@ -358,8 +256,6 @@ export const cloudHostsAt = (deployment: string) =>
       passkey: Option.match(roles, {
         onNone: () => ({ rpId: new URL(deployment).hostname, origin: deployment }),
         onSome: (r) => ({
-          // WebAuthn accepts only a registrable domain as a parent relying party, so a local run
-          // under `localhost` keeps its passkeys on the browser host itself.
           rpId: isLoopbackHostname(r.domain) ? new URL(browser).hostname : r.domain,
           origin: browser,
         }),
@@ -371,68 +267,31 @@ export const cloudHostsAt = (deployment: string) =>
     } satisfies CloudHosts;
   });
 
-/** This deployment's host layout. */
 export const cloudHosts = Effect.flatMap(cloudOrigin, cloudHostsAt);
 
-/** Where a deployment at `deployment` serves its MCP and API resources. */
 export const resourceOriginsAt = (deployment: string) =>
   Effect.map(cloudHostsAt(deployment), (hosts) => hosts.resourceOrigins);
 
-/** Where this deployment serves its MCP and API resources. */
 export const cloudResourceOrigins = Effect.map(cloudHosts, (hosts) => hosts.resourceOrigins);
 
-/**
- * API Worker props: `AUTH_RATE_LIMIT_SWITCH` is true only under `alchemy dev`, from
- * `AlchemyContext.dev`, so every deployed Worker gets `false`. Read it from the Worker
- * environment, never through `Config`: Alchemy binds each `Config` read during initialization
- * from the deploy's own environment, over these props.
- */
 export const authRateLimitSwitchBindings = Effect.gen(function* () {
   return { AUTH_RATE_LIMIT_SWITCH: (yield* AlchemyContext).dev };
 });
 
-/**
- * API Worker props: `REMOVAL_REVOCATION_BUDGET_SWITCH` is true only under `alchemy dev`, as
- * `AUTH_RATE_LIMIT_SWITCH` is, so every deployed Worker gets `false`; see
- * `cloudOwnerRevocationBudget`.
- */
 export const removalRevocationBudgetBindings = Effect.gen(function* () {
   return { REMOVAL_REVOCATION_BUDGET_SWITCH: (yield* AlchemyContext).dev };
 });
 
-/**
- * The time organization removal's purge spends revoking OAuth grants
- * (`ExecutorInputs.ownerRevocationBudget`). Only a local Cloud shortens it, to
- * `TEST_STAGE_REMOVAL_REVOCATION_BUDGET_MS`, so a scenario can run it out in seconds.
- * `localRuntime` is the Worker's `REMOVAL_REVOCATION_BUDGET_SWITCH`; every deployed Worker keeps
- * the SDK's default whatever its configuration says.
- */
 export const cloudOwnerRevocationBudget = (localRuntime: boolean) =>
   Effect.gen(function* () {
-    // Read on every stage, so Alchemy binds it into the local Worker; only a local runtime uses it.
     const configured = yield* Config.Number("TEST_STAGE_REMOVAL_REVOCATION_BUDGET_MS").pipe(
       Config.option,
     );
     return localRuntime ? Option.getOrUndefined(configured) : undefined;
   });
 
-/**
- * Whether Better Auth's per-address limit applies. Every request a test runner sends comes from
- * one address, so automated environments may turn it off; no deployed stage outside them can:
- *
- * - Production (`v2`) always enforces it, whatever its configuration says.
- * - A deployed `test-e2e-*` stage turns it off unless `TEST_STAGE_AUTH_RATE_LIMIT=true`.
- * - Cloud dev turns it off for `TEST_STAGE_AUTH_RATE_LIMIT=false` on a loopback origin, as the
- *   e2e harness asks. `localRuntime` is the Worker's `AUTH_RATE_LIMIT_SWITCH`, which only
- *   `alchemy dev` sets, so no deploy configuration reaches this branch, a loopback
- *   `BETTER_AUTH_URL` included.
- * - Every other stage enforces it.
- *
- * `scripts/check-auth-rate-limit.ts` checks these rules over every combination.
- */
 export const cloudAuthRateLimit = (localRuntime: boolean) =>
   Effect.gen(function* () {
-    // Read on every stage, so Alchemy binds it into the local Worker; only the rules use it.
     const configured = yield* Config.Boolean("TEST_STAGE_AUTH_RATE_LIMIT").pipe(Config.option);
     if (Option.getOrUndefined(yield* stageName) === productionStage) return true;
     const stage = yield* testStage;

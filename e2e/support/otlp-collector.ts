@@ -1,4 +1,3 @@
-/** Run the shipped collector as separate processes; query only their public HTTP API. */
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Deferred, Effect, FileSystem, Layer, Option, Path, Ref, Schema, Stream } from "effect";
 import {
@@ -16,10 +15,8 @@ import { createServer } from "node:http";
 import { SpanQuery } from "./contracts.ts";
 import { refuseTruncated, searchLimit } from "./evidence.ts";
 
-/** The collector's one line on stdout once it accepts connections on its TCP port. */
 const Listening = Schema.Struct({ event: Schema.Literal("listening"), port: Schema.Number });
 
-/** Bounds a scenario sets on its own collector, as the collector's flags name them. */
 export interface CollectorBounds {
   readonly maxStoreMb?: number | undefined;
   readonly retentionHours?: number | undefined;
@@ -27,12 +24,6 @@ export interface CollectorBounds {
   readonly maxExportBytes?: number | undefined;
 }
 
-/**
- * Serve one collector from the build `e2e:prepare` made, storing its data in `diagnostics/<name>`
- * and its log in `<name>.log`. Every target in a run starts the same executable, and a build
- * replaces it, so nothing in a run builds it. `bounds` are passed as its flags; the rest keep the
- * collector's defaults, which are the product's.
- */
 const serveCollector = (
   directory: string,
   name: string,
@@ -63,7 +54,6 @@ const serveCollector = (
         stdin: "ignore",
         stdout: "pipe",
         stderr: "pipe",
-        // It stops within 2.5 seconds of SIGTERM.
         forceKillAfter: "3 seconds",
       }),
     );
@@ -86,7 +76,6 @@ const serveCollector = (
       ),
       Effect.forkScoped,
     );
-    // The listening line, or the collector's exit if it could not start: it says why in its log.
     return yield* Deferred.await(ready).pipe(
       Effect.raceFirst(
         child.exitCode.pipe(
@@ -99,7 +88,6 @@ const serveCollector = (
     );
   });
 
-/** Name the collector's query URL in `data/diagnostics/collector.json`, where readers find it. */
 const announce = (directory: string, url: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -111,7 +99,6 @@ const announce = (directory: string, url: string) =>
     );
   });
 
-/** One collector, as a scenario that owns its own collector uses it, with any `bounds` it sets. */
 export const serveOtlpCollector = (directory: string, bounds: CollectorBounds = {}) =>
   Effect.gen(function* () {
     const url = yield* serveCollector(directory, "collector", "collector.log", bounds);
@@ -119,11 +106,6 @@ export const serveOtlpCollector = (directory: string, bounds: CollectorBounds = 
     return url;
   });
 
-/**
- * The spans a collector this scenario served itself (`serveOtlpCollector`) holds that started in
- * [from, to), of one operation or all, newest first. That collector receives only this scenario's
- * servers, so all of it is the scenario's.
- */
 export const ownCollectorSpans = (
   collector: string,
   window: { readonly from: number; readonly to: number; readonly operation?: string | undefined },
@@ -134,7 +116,6 @@ export const ownCollectorSpans = (
       Effect.gen(function* () {
         const url = new URL("/api/spans/search", collector);
         if (window.operation !== undefined) url.searchParams.set("operation", window.operation);
-        // The collector looks back whole minutes from now: as few as cover the window's start.
         const minutes = Math.max(1, Math.ceil((Date.now() - window.from) / 60_000) + 1);
         url.searchParams.set("lookback", `${minutes}m`);
         url.searchParams.set("limit", String(searchLimit));
@@ -155,7 +136,6 @@ export const ownCollectorSpans = (
   });
 
 const Json = Schema.Record(Schema.String, Schema.Json);
-/** An OTLP JSON record, keeping every field; only its trace ID is read. */
 const Traced = Schema.StructWithRest(Schema.Struct({ traceId: Schema.optional(Schema.String) }), [
   Json,
 ]);
@@ -193,16 +173,10 @@ const LogExport = Schema.fromJsonString(
     [Json],
   ),
 );
-/** The parts of a query answer the router merges: its items, and the limit that bounds them. */
 const Listing = Schema.StructWithRest(Schema.Struct({ data: Schema.Array(Schema.Json) }), [Json]);
 const SpanItem = Schema.Struct({ span: Schema.Struct({ startTime: Schema.String }) });
-/** A list the collector cut off at its limit. */
 const Truncated = Schema.Struct({ meta: Schema.Struct({ truncated: Schema.Literal(true) }) });
 
-/**
- * Which collector holds a trace. OTLP JSON names a trace in hex, or in base64 from exporters that
- * follow protobuf's JSON mapping; both name the same 16 bytes.
- */
 const shardOf = (traceId: string | undefined, shards: number) => {
   if (traceId === undefined || traceId === "") return 0;
   const hex = /^[0-9a-f]{32}$/i.test(traceId)
@@ -211,22 +185,6 @@ const shardOf = (traceId: string | undefined, shards: number) => {
   return Number.parseInt(hex.slice(-8), 16) % shards;
 };
 
-/**
- * Several collectors behind one OTLP and query endpoint, each holding the traces whose ID it is
- * given.
- *
- * The managed Cloud job's six workers export together while they provision their organizations.
- * Motel, the collector this harness first ran, stored about 1,500 spans a second and refused them;
- * so the job split the traces over several. The Rust collector stores about 24,000 spans a second
- * on a desktop (its README, "Disk use and the write-ahead log"); whether one would keep up with the
- * job has not been measured, so the split and its count are unchanged.
- *
- * Each export is split by trace and sent to the collectors holding those traces. When one refuses its
- * part, the export is answered with that refusal, so the exporter resends it as it would to one
- * collector; spans are stored by their IDs, so the parts already stored are replaced, not repeated. A
- * trace's reads go to its collector; a search across traces asks every collector and merges the
- * answers.
- */
 export const serveShardedOtlpCollector = (directory: string, shards: number) =>
   Effect.gen(function* () {
     const http = yield* HttpClient.HttpClient;
@@ -255,7 +213,6 @@ export const serveShardedOtlpCollector = (directory: string, shards: number) =>
     const get = (collector: string, url: string) =>
       Effect.scoped(http.get(new URL(url, collector).href).pipe(Effect.flatMap(answer)));
 
-    /** Send each collector its part; the first refusal, if any, answers the whole export. */
     const ingest = (parts: ReadonlyMap<number, unknown>, path: string) =>
       Effect.forEach(
         [...parts],
@@ -297,9 +254,6 @@ export const serveShardedOtlpCollector = (directory: string, shards: number) =>
           ]);
       return parts;
     };
-    // The spans received for the traces a scenario watches, by trace and span ID, so it can tell a
-    // span exported twice. Only watched traces are counted; `*` watches every trace, for a scenario
-    // whose Cloud serves it alone.
     const watched = new Map<string, Map<string, number>>();
     const watch = Effect.gen(function* () {
       const request = yield* HttpServerRequest.HttpServerRequest;
@@ -316,8 +270,6 @@ export const serveShardedOtlpCollector = (directory: string, shards: number) =>
         duplicated: seen.filter((count) => count > 1).length,
       });
     });
-    // While a scenario holds exports, each one is accepted and left unanswered until it releases
-    // them, as an endpoint that hangs; the exporter's own deadline gives up on it first.
     const held = yield* Ref.make(Option.none<Deferred.Deferred<void>>());
     const hold = Effect.gen(function* () {
       const released = yield* Deferred.make<void>();
@@ -329,8 +281,6 @@ export const serveShardedOtlpCollector = (directory: string, shards: number) =>
       if (Option.isSome(current)) yield* Deferred.succeed(current.value, undefined);
       return HttpServerResponse.empty({ status: 204 });
     });
-    // While a scenario refuses exports, each one is answered 503 with the Retry-After it names, as
-    // a collector shedding load does, and is not stored.
     const refusing = yield* Ref.make(Option.none<string>());
     const refuse = Effect.gen(function* () {
       const request = yield* HttpServerRequest.HttpServerRequest;
@@ -399,19 +349,16 @@ export const serveShardedOtlpCollector = (directory: string, shards: number) =>
       return yield* unchanged;
     });
 
-    /** A trace's reads go to the collector holding it. */
     const trace = Effect.gen(function* () {
       const request = yield* HttpServerRequest.HttpServerRequest;
       const id = new URL(request.url, "http://collector").pathname.split("/")[3];
       return yield* get(collectors[shardOf(id, shards)]!, request.url);
     });
-    /** A search names one trace, or asks every collector and returns the newest matches first. */
     const search = Effect.gen(function* () {
       const request = yield* HttpServerRequest.HttpServerRequest;
       const url = new URL(request.url, "http://collector");
       const traceId = url.searchParams.get("traceId");
       if (traceId !== null) return yield* get(collectors[shardOf(traceId, shards)]!, request.url);
-      // Each collector's matches, or the answer of the first that could not search.
       const answers = yield* Effect.forEach(
         collectors,
         (collector) =>
@@ -448,7 +395,6 @@ export const serveShardedOtlpCollector = (directory: string, shards: number) =>
         .flatMap((listing) => listing.data)
         .sort((a, b) => start(b).localeCompare(start(a)));
       const data = matched.slice(0, limit);
-      // Cut off when any collector had more than it returned, or the merge kept fewer than matched.
       const truncated =
         matched.length > data.length ||
         listings.some((listing) =>

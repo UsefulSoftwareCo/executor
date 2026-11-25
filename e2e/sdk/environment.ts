@@ -1,4 +1,3 @@
-/** Importable environment lifecycle used by interactive tooling and scenario adapters. */
 import { Clock, Effect, FileSystem, Path } from "effect";
 import { secret } from "../support/failure-text.ts";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
@@ -8,7 +7,6 @@ import { startCloudEnvironment } from "../support/cloud-environment.ts";
 import { startDeployment } from "./deployment.ts";
 import { freePort } from "../support/ports.ts";
 
-/** Acquire real infrastructure once. The caller's scope owns servers, fixtures, emulators and teardown. */
 export const startEnvironment = (input: {
   readonly target: "local" | "self-host" | "cloud" | "deployed";
   readonly database?: "neon" | "planetscale";

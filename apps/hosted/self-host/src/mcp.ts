@@ -1,4 +1,3 @@
-/** Docker keeps protocol state in bounded, idle-expiring Effect scopes. */
 import {
   CallStateCache,
   type CallState,
@@ -30,22 +29,12 @@ import { McpSchema } from "effect/ai";
 import { HttpServerResponse } from "effect/http";
 import { mcpClientLimits } from "./contracts/config.ts";
 
-/**
- * Protocol sessions one client's handler keeps in each elicitation mode, by last use, forgetting
- * only sessions that own no work. A handler stays while its caller keeps calling, and the transport
- * has no session DELETE, so each client that opened a session for one call, or left without ending
- * its session, kept about 0.7 KB until restart.
- */
 const maxSessions = 256;
-/** A client with no request in flight and no paused program is forgotten after this long. */
 const idleMillis = Duration.toMillis(Duration.minutes(30));
 
-/** Every client that could make room owns work: a request in flight or a paused program. */
 class McpClientsFull extends Schema.TaggedError<McpClientsFull>()("McpClientsFull", {}) {}
 
-/** Own protocol sessions in the server scope; the returned handler receives SDK/auth per request. */
 export const selfHostMcp = Effect.gen(function* () {
-  // Decoded as McpLimits, so a budget that is not a positive integer stops startup.
   const limits = yield* Schema.decodeUnknownEffect(McpLimits)({
     ...defaultMcpLimits,
     timeoutMs: yield* Config.Number("EXECUTOR_MCP_TIMEOUT_MS").pipe(
@@ -53,13 +42,11 @@ export const selfHostMcp = Effect.gen(function* () {
     ),
   });
   const bound = yield* mcpClientLimits;
-  // Each client keeps what its callers' last tool calls read (CallStateCache).
   const build = Effect.map(
     makeHostedMcp(undefined, limits, undefined, undefined, maxSessions),
     (handler) => ({ ...handler, calls: new Map<string, CallState>() }),
   );
   type Handler = Effect.Success<typeof build>;
-  // A handler outlives the request that opened it, so it is built in the server's context.
   const context = yield* Effect.context<Exclude<Effect.Services<typeof build>, Scope.Scope>>();
   const server = yield* Effect.scope;
   const clock = yield* Clock.Clock;
@@ -69,11 +56,9 @@ export const selfHostMcp = Effect.gen(function* () {
     readonly scope: Scope.Closeable;
     readonly ready: Deferred.Deferred<Handler>;
     handler: Handler | undefined;
-    /** Requests in flight, each until its response has been sent, its event stream included. */
     requests: number;
     idleSince: number;
   }
-  /** One client per `mcpSessionKey`, least recently used first. */
   const clients = new Map<string, Client>();
   const ownsWork = (client: Client) =>
     client.requests > 0 || client.handler === undefined || client.handler.programs() > 0;
@@ -81,7 +66,6 @@ export const selfHostMcp = Effect.gen(function* () {
     clients.delete(key);
     Scope.close(client.scope, Exit.void).pipe(Effect.runForkWith(context), Fiber.runIn(server));
   };
-  /** Forget the least recently used client, of `user` when named, that owns no work. */
   const forgetIdle = (user?: string) => {
     for (const [key, client] of clients) {
       if ((user === undefined || client.user === user) && !ownsWork(client)) {
@@ -91,7 +75,6 @@ export const selfHostMcp = Effect.gen(function* () {
     }
     return false;
   };
-  /** Room for one more client of `user`, in the same synchronous step that will take it. */
   const makeRoom = (user: string) => {
     let held = 0;
     for (const client of clients.values()) if (client.user === user) held++;
@@ -120,7 +103,6 @@ export const selfHostMcp = Effect.gen(function* () {
       });
     return client;
   };
-  /** The handler of `user`'s client `key`, held by the request's scope and moved to most recent. */
   const handlerFor = (key: string, user: string) =>
     Effect.uninterruptibleMask((restore) =>
       Effect.suspend(() => {
@@ -138,7 +120,6 @@ export const selfHostMcp = Effect.gen(function* () {
           Effect.sync(() => {
             held.requests--;
             held.idleSince = clock.currentTimeMillisUnsafe();
-            // Used until its response ended, so a long event stream does not leave it first in line.
             if (clients.get(key) === held) {
               clients.delete(key);
               clients.set(key, held);
@@ -156,10 +137,6 @@ export const selfHostMcp = Effect.gen(function* () {
   const http = authenticatedMcp((access, address) =>
     Effect.gen(function* () {
       const handler = yield* handlerFor(mcpSessionKey(access), access.userId);
-      // PGlite runs in-process, so reads issued together cost no extra connection. A tool call's
-      // statements run together under the client's lock, its reads in one snapshot, as in Cloud.
-      // Not read-only: a statement another caller handed to PGlite just before the lock can still
-      // run inside the transaction, as with any PGlite transaction, and must not fail there.
       return yield* dispatchHostedMcp(access, address, handler.http).pipe(
         Effect.provideService(ConcurrentStatements, { group: (effect) => effect }),
         Effect.provideService(StatementBatch, (leaves, { outside }) =>
@@ -168,7 +145,6 @@ export const selfHostMcp = Effect.gen(function* () {
         Effect.provideService(CallStateCache, handler.calls),
       );
     }).pipe(
-      // A client that owns work is never forgotten to admit another, so this one waits its turn.
       Effect.catchTag("McpClientsFull", () =>
         Effect.succeed(
           HttpServerResponse.jsonUnsafe(

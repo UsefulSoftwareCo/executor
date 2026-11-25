@@ -1,5 +1,4 @@
 ---
-// Lead with what an app can be, then build one up step by step.
 import { release, platforms, desktopAssetSuffix, desktopDownloads } from "../../../../../scripts/releases/config.ts";
 import Testimonials from "./testimonials.astro";
 import CopyPrompt from "./copy-prompt.astro";
@@ -11,8 +10,6 @@ import MoreExamples from "../more-examples.astro";
 import AppStructure from "../app-structure.astro";
 import { appStructure } from "../../content/app-structure";
 import { AppPieces } from "../app-pieces";
-// Avatar goes through Vite so it ships as a hashed asset; new /public files
-// are not picked up by the deploy pipeline.
 import rhysAvatar from "../../assets/rhys-sullivan.jpg";
 import { appHref } from "../../content/site-origin.ts";
 const X_URL = "https://x.com/RhysSullivan";
@@ -187,8 +184,6 @@ interface Props {
 <script>
   import { assetUrl, fetchNewestRelease } from "../../lib/desktop-release";
 
-  // Point each download at the newest published release. Buttons cloned into
-  // "Other platforms" keep data-asset, so they are updated too.
   void (async () => {
     for (const root of document.querySelectorAll<HTMLElement>("[data-download]")) {
       const { releasesApi, tagPrefix, stableOnly } = root.dataset;
@@ -205,8 +200,6 @@ interface Props {
     }
   })();
 
-  // Show one download button for the visitor's OS and tuck the rest behind
-  // "Other platforms". Without JS or on an unknown OS, all platforms stay visible.
   type DownloadOs = "mac-arm64" | "mac-x64" | "win-x64" | "linux-x64" | "linux-arm64";
   type UserAgentData = {
     readonly platform: string;

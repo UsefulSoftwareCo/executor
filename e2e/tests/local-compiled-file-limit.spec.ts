@@ -1,8 +1,3 @@
-/**
- * The local server builds with the same compiler as self-host, in its app runtime. A deploy from
- * the real CLI that reaches a file over the compile limit fails with the file, its size and the
- * limit, and the app keeps no version.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, FileSystem, Path, Queue, Redacted, Schema, Stream } from "effect";
 import { randomUUID } from "node:crypto";
@@ -94,7 +89,6 @@ layer(TestLive, { excludeTestServices: true })("Local compiled file limit", (it)
           session.send("DELETE", `/v1/apps/${app.id}`, undefined, authorization).pipe(Effect.orDie),
         );
 
-        // One byte over the limit: the module the app imports is refused before it compiles.
         const head = 'export const filler = "';
         const tail = '";\n';
         yield* fs.writeFileString(
@@ -120,7 +114,6 @@ layer(TestLive, { excludeTestServices: true })("Local compiled file limit", (it)
         });
         expect(failed.message).toContain(message);
 
-        // The app keeps no version: none is active and the server lists none.
         const stored = yield* body(
           Stored,
           yield* session.send("GET", `/v1/apps/${app.id}`, undefined, authorization),
@@ -139,13 +132,6 @@ layer(TestLive, { excludeTestServices: true })("Local compiled file limit", (it)
   );
 });
 
-/**
- * No import of the oversized module is resolved before the refusal. The module imports a declared
- * package whose registry metadata never arrives: a build that resolved that import would ask the
- * registry for the package and wait on it. This does not show that the file was not parsed (a
- * parse need not resolve imports); `compiledFileLimitResponsive` checks that no compile work held
- * the runtime's thread.
- */
 layer(TestLive, { excludeTestServices: true })("Local compiled file limit imports", (it) => {
   it.effect(scenarios.localCompiledFileLimitImports.title, (context) =>
     withCase(
@@ -184,7 +170,6 @@ layer(TestLive, { excludeTestServices: true })("Local compiled file limit import
         expect(deployed.text).toContain(
           "filler.ts is 2,000,001 bytes; a JavaScript or TypeScript file the build compiles can be at most 2,000,000 bytes (2 MB).",
         );
-        // Nothing asked the registry for the package the oversized module imports.
         expect(yield* Queue.size(holding.arrived)).toBe(0);
       }),
     ),

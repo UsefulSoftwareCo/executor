@@ -1,13 +1,3 @@
-/**
- * The command line of scripts/releases/publishing-steps.ts, for e2e/tests/beta-due.spec.ts, which
- * may import nothing outside e2e/:
- *
- *   node scripts/releases/publishing-steps-check.ts check [release-artifacts.yml] [bun-runtime.yml]
- *     each problem with the steps' declarations (`classificationProblems`), one a line; exits 1
- *     when any
- *   node scripts/releases/publishing-steps-check.ts classify [release-artifacts.yml] [bun-runtime.yml] < jobs.json
- *     the publishing failures of a run's jobs (`publishingFailures`), as JSON
- */
 import { readFileSync } from "node:fs";
 import { classificationProblems, publishingFailures, type RunJob } from "./publishing-steps.ts";
 

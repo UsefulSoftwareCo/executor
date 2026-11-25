@@ -1,9 +1,3 @@
-/**
- * `scripts/releases/npm-channel.ts` waits for npm's dist-tags to name a release npm already serves,
- * as `publish-npm.ts` does after publishing. These cases run it as a process against a local
- * registry that replays what npm's dist-tags endpoint answered after beta.51's publish: the old
- * tag for a while, then the new one; or the old one for good.
- */
 import { expect, layer } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { createServer, type ServerResponse } from "node:http";
@@ -13,16 +7,11 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 type Tags = Readonly<Record<string, string>>;
 
-/** One answer of the dist-tags endpoint: tags, a status with a body, or no answer at all. */
 type Answer = Tags | { readonly status: number; readonly body: string } | "hang";
 
 const isStatus = (answer: Answer): answer is { readonly status: number; readonly body: string } =>
   typeof answer === "object" && typeof answer.status === "number";
 
-/**
- * A registry whose `/-/package/executor/dist-tags` gives `answers` in order, repeating the last.
- * Counts the requests.
- */
 const registry = (answers: ReadonlyArray<Answer>) =>
   Effect.acquireRelease(
     Effect.callback<{ url: string; requests: () => number; close: () => void }>((resume) => {
@@ -64,7 +53,6 @@ const registry = (answers: ReadonlyArray<Answer>) =>
 const before: Tags = { latest: "1.6.11", beta: "2.0.0-beta.50" };
 const published: Tags = { latest: "1.6.11", beta: "2.0.0-beta.51" };
 
-/** The wait as a process, against `registry` with a 3 s limit, unless `env` says otherwise. */
 const wait = (registry: string, env: Readonly<Record<string, string>> = {}) =>
   Effect.gen(function* () {
     const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -153,7 +141,6 @@ layer(NodeServices.layer)("publication waits for npm's channel tag", (it) => {
       Effect.gen(function* () {
         const newer = { latest: "1.6.11", beta: "2.0.0-beta.52" };
         const stub = yield* registry([newer]);
-        // Its tags before publishing were read when the re-run started, after the newer release.
         const result = yield* wait(stub.url, { NPM_CHANNEL_BEFORE: JSON.stringify(newer) });
         expect(result.exitCode, result.log).toBe(1);
         expect(result.log).toContain("this run is stale");

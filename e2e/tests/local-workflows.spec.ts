@@ -1,4 +1,3 @@
-/** Local product coverage uses the real bearer-protected SDK routes and its persistent engine. */
 import { expect, layer } from "@effect/vitest";
 import { Clock, Effect, Redacted, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -34,8 +33,6 @@ layer(TestLive, { excludeTestServices: true })("Local workflows", (it) => {
         const api = yield* Api,
           target = yield* Target,
           session = yield* api.session();
-        // Local rejects browser-origin requests at its agent API. Keep evidence capture,
-        // while using the host-issued bearer credential and the actual agent protocol.
         const agent: Session = {
           ...session,
           send: (method, path, data, headers = {}) => {
@@ -46,7 +43,6 @@ layer(TestLive, { excludeTestServices: true })("Local workflows", (it) => {
             });
           },
         };
-        // Local saves the app and its accounts under the one owner it assigns.
         const owner = "local",
           name = `Workflow ${randomUUID().slice(0, 8)}`;
         const resources: {
@@ -79,9 +75,6 @@ layer(TestLive, { excludeTestServices: true })("Local workflows", (it) => {
         const { app } = yield* body(Version, deployed);
         resources.apps.push(app.id);
         const path = `/v1/apps/${app.id}`;
-        // Calls name no accounts: each uses the account linked to the app, which connecting from
-        // the app replaces.
-        /** Connect an account for the app, or replace one's key. */
         const connect = (token: string, account?: string) =>
           connectLocalAccount(agent, {
             app: app.id,
@@ -175,15 +168,12 @@ layer(TestLive, { excludeTestServices: true })("Local workflows", (it) => {
           expect(yield* Clock.currentTimeMillis).toBeLessThan(deadline);
           yield* Effect.sleep("100 millis");
         }
-        // Local's owners are shared by every scenario on this server, so the run blocks removing
-        // its own app and account rather than a whole owner.
         const blockedApp = yield* api.request(agent, "DELETE", path);
         expect(blockedApp.status).toBe(409);
         expect(blockedApp.body).toMatchObject({ _tag: "AppWorkflowsActive", app: app.id });
         const blockedAccount = yield* api.request(agent, "DELETE", `/v1/accounts/${account}`);
         expect(blockedAccount.status).toBe(409);
         expect(blockedAccount.body).toMatchObject({ _tag: "AccountWorkflowsActive", account });
-        // Reconnecting replaces the key while the run holds the account.
         expect((yield* connect("synthetic-refreshed", account)).id).toBe(account);
         const second = yield* addAccount("synthetic-other");
         expect(second).not.toBe(account);

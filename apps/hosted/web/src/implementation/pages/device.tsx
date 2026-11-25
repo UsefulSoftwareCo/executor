@@ -31,7 +31,6 @@ import { organizationsAtom, type OrganizationSummary } from "../../contracts/org
 import { useResourceOrigins } from "../resource-origin.ts";
 import { useGrantChoices } from "../components/grant-choices.tsx";
 
-/** `verification_uri_complete` carries the code; the plain `verification_uri` asks for it. */
 export const deviceSearch = (search: Record<string, unknown>) => ({
   user_code: typeof search.user_code === "string" ? search.user_code : "",
 });
@@ -43,7 +42,6 @@ export const deviceSearch = (search: Record<string, unknown>) => ({
  */
 export function DevicePage({ user_code }: { readonly user_code: string }) {
   const code = normalizeUserCode(user_code);
-  // A new code starts a new decision; nothing from a previous code carries over.
   return code === undefined ? (
     <EnterCode initial={user_code} error={user_code === "" ? null : invalidCode} />
   ) : (

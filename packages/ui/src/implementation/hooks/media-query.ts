@@ -1,6 +1,5 @@
 import { useCallback, useSyncExternalStore } from "react";
 
-/** Track a CSS media query from React; the dashboard uses it for layout that JavaScript owns. */
 export function useMediaQuery(query: string) {
   const subscribe = useCallback(
     (onChange: () => void) => {

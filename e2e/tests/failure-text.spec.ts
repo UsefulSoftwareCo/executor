@@ -1,10 +1,3 @@
-/**
- * A failed step says what went wrong, and no secret its cause carried. The cases in
- * e2e/failure-text fail on purpose, with synthetic secrets planted in each place one can appear: a
- * revealed secret echoed in a message or a page, a URL's userinfo, query and fragment, request
- * headers and cookies, and an opaque token the harness never revealed. They run in their own
- * Vitest process, and this scenario reads the log, the Vitest results and the evidence they leave.
- */
 import { expect, layer } from "@effect/vitest";
 import { Config, Effect, FileSystem, Path, Schema, type PlatformError } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
@@ -57,10 +50,8 @@ const PageRequests = Schema.Array(
   }),
 );
 
-/** The evidence files a case writes as text; screenshots, videos and the trace are binary. */
 const textFile = /\.(?:json|ndjson|txt|log|md)$/u;
 
-/** Every form of a planted value a leak could take: whole, cut off, URL-encoded or base64. */
 const forms = (value: string) => [
   value,
   value.slice(0, 10),
@@ -68,13 +59,8 @@ const forms = (value: string) => [
   Buffer.from(value).toString("base64").replace(/=+$/u, ""),
   Buffer.from(value).toString("base64url"),
 ];
-/**
- * The names the runner passes the worker (`runSuite` in e2e/sdk/suite.ts), and Vitest's own.
- * NODE_EXTRA_CA_CERTS is the path of the CA of emulators.dev when CI serves it on the runner.
- */
 const workerVariable =
   /^(?:PATH|HOME|TMPDIR|NODE_EXTRA_CA_CERTS|MCP_CACHE_FIXTURE_ORIGIN|E2E_[A-Z0-9_]+|EXECUTOR_E2E_[A-Z0-9_]+|VITEST[A-Z0-9_]*|FORCE_TTY|NODE_ENV|TEST|PROD|DEV|MODE|BASE_URL|SSR)$/u;
-/** Synthetic values in the runner's own environment, named as a deployed job's tokens are. */
 const infrastructure = {
   CLOUDFLARE_API_TOKEN: "inf1-planted-cloudflare-token",
   NEON_API_KEY: "inf2-planted-neon-key",
@@ -86,11 +72,6 @@ const plantedValues: ReadonlyArray<readonly [string, string]> = [
   ...Object.entries(shapes).map(([kind, { value }]) => [kind, value] as const),
 ];
 
-/**
- * Runs the worker environment scenario in a run of its own, started with `args` and `env` over this
- * process's environment, and returns the variable names its worker recorded and every text file
- * the run left, its log included.
- */
 const nestedWorkerRun = (label: string, args: ReadonlyArray<string>, env: Record<string, string>) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem,
@@ -167,7 +148,6 @@ layer(TestLive, { excludeTestServices: true })("Failure text", (it) => {
             path.join(yield* Config.String("EXECUTOR_E2E_RUN"), "run.json"),
             path.join(run, "run.json"),
           );
-          // The cases' whole log, as a CI job prints it.
           const log = yield* evidence.step(
             "Run the failing cases",
             processes.string(
@@ -205,7 +185,6 @@ layer(TestLive, { excludeTestServices: true })("Failure text", (it) => {
             cases.set(result.title, path.join(folders, name));
           }
 
-          // No planted secret reaches the log, the Vitest results or any text evidence file.
           const outputs: { name: string; text: string }[] = [
             { name: "the cases' log", text: log },
             { name: "results.json", text: yield* fs.readFileString(resultsFile) },
@@ -225,10 +204,6 @@ layer(TestLive, { excludeTestServices: true })("Failure text", (it) => {
                   `${name} holds the planted ${kind} secret as ${JSON.stringify(form)}`,
                 ).toBe(false);
 
-          /**
-           * The text each output reports for a case: its Vitest failure message, its result's
-           * error and its failed step's error. Each must hold every expected fragment.
-           */
           const reports = (title: string, step: string | undefined, fragments: string[]) =>
             Effect.gen(function* () {
               const folder = cases.get(title);
@@ -297,9 +272,6 @@ layer(TestLive, { excludeTestServices: true })("Failure text", (it) => {
               text: "Console saw <secret>",
             },
           ]);
-          // Every request a page sent, as method, origin and path, status and times: never the query
-          // or fragment that held the planted token, never a header or cookie. The scan above
-          // checks this file for every planted value too; a missing or empty record fails here.
           const requests = yield* read(
             PageRequests,
             path.join(consoleErrors, "page-requests.json"),
@@ -327,7 +299,6 @@ layer(TestLive, { excludeTestServices: true })("Failure text", (it) => {
             'fill("<value>")',
           ]);
           yield* reports(failureTextCases.straddle, "Call an SDK with a long message", [
-            // The placeholder itself is cut at the limit: the secret was masked first.
             `${"x".repeat(385)} <secret`,
           ]);
           yield* reports(failureTextCases.split, "Call an SDK that echoes a token", [
@@ -359,7 +330,6 @@ layer(TestLive, { excludeTestServices: true })("Failure text", (it) => {
           } satisfies Record<keyof typeof shapes, string>;
           for (const [shape, { title }] of Object.entries(shapes))
             yield* reports(title, `Echo a ${shape} secret`, [echoed[shape as keyof typeof shapes]]);
-          // The browser keeps every page error in the evidence, whether or not a case asserts on it.
           expect(
             (yield* read(PageErrors, path.join(pageErrors, "page-errors.json"))).map(
               ({ kind, text }) => ({ kind, text }),
@@ -372,7 +342,6 @@ layer(TestLive, { excludeTestServices: true })("Failure text", (it) => {
             { kind: "page", text: "Error: Rendered <secret> into the page" },
           ]);
 
-          // A preparation failure names its request and each cause, masked, in its record and the log.
           const preparation = cases.get(failureTextCases.preparation);
           expect(reported.get(failureTextCases.preparation)?.status).toBe("passed");
           if (preparation === undefined)
@@ -406,7 +375,6 @@ layer(TestLive, { excludeTestServices: true })("Failure text", (it) => {
           );
           expect(log).toMatch(/Cloud organization not ready for .*Bearer <value>/u);
 
-          // A passing case records nothing new: no step error and no page errors.
           const passing = cases.get(failureTextCases.passing);
           expect(reported.get(failureTextCases.passing)?.status).toBe("passed");
           if (passing === undefined) return yield* Effect.die("The passing case left no evidence");
@@ -422,9 +390,6 @@ layer(TestLive, { excludeTestServices: true })("Failure text", (it) => {
     120_000,
   );
 
-  // The runner starts the Vitest worker with only the variables it lists (`runSuite` in
-  // e2e/sdk/suite.ts), so a job's infrastructure tokens never enter the process whose errors are
-  // printed. This scenario runs in every worker the runner starts, and records variable names only.
   it.effect(scenarios.workerEnvironment.title, (context) =>
     withCase(
       context,
@@ -443,7 +408,6 @@ layer(TestLive, { excludeTestServices: true })("Failure text", (it) => {
       withCase(
         context,
         Effect.gen(function* () {
-          // The runner's own environment holds infrastructure-style variables, as a deployed job's does.
           const { names, texts } = yield* nestedWorkerRun(
             "Run the worker environment scenario with infrastructure variables set",
             [],
@@ -453,22 +417,18 @@ layer(TestLive, { excludeTestServices: true })("Failure text", (it) => {
             expect(names, "the worker's variables").not.toContain(name);
             for (const text of texts) expect(text.includes(value), name).toBe(false);
           }
-          // Without --update-snapshots the worker's Vitest writes no snapshot.
           expect(names, "the worker's variables").not.toContain(updateSnapshotsVariable);
         }),
       ),
     180_000,
   );
 
-  // Only the runner's --update-snapshots lets the worker's Vitest write snapshots
-  // (e2e/snapshot-updates.ts); snapshot-updates.spec.ts shows what Vitest then does.
   it.effect(
     scenarios.workerSnapshotUpdates.title,
     (context) =>
       withCase(
         context,
         Effect.gen(function* () {
-          // Outside CI, as on a workstation: in CI the runner refuses the flag.
           const { names } = yield* nestedWorkerRun(
             "Run the worker environment scenario with --update-snapshots",
             ["--update-snapshots"],

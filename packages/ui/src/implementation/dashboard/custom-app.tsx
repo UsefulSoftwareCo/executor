@@ -10,10 +10,6 @@ import type { MutationProps } from "../../contracts/dashboard.ts";
 import { Button } from "../components/button.tsx";
 import { Input } from "../components/input.tsx";
 
-/**
- * Add a remote MCP server by URL. Executor confirms whether it needs no sign-in or supports
- * OAuth; anything else is set up with the user's agent.
- */
 export function CustomAppForm<E>({
   mutation,
   Failure,
@@ -28,7 +24,6 @@ export function CustomAppForm<E>({
   const [pending, setPending] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState<string>();
-  // Closing the dialog during an import must not navigate away once it finishes.
   const mounted = useRef(false);
   useEffect(() => {
     mounted.current = true;

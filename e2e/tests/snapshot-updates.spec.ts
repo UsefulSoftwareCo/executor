@@ -1,13 +1,3 @@
-/**
- * The runner starts Vitest without `CI` (e2e/sdk/suite.ts), and there Vitest writes a missing or
- * empty snapshot and passes. No Vitest run in e2e/ may write or update a snapshot unless asked
- * (e2e/snapshot-updates.ts). These cases import every config to read its `update`, run snapshot
- * cases in a scratch project under the runner's own config and the environment the runner gives
- * Vitest, start Vitest there with its own update argument in CI, and start `e2e/run.ts` to show
- * that asking is refused in CI and asked only for the scenarios `--test-name` names. That the runner's
- * `--update-snapshots` reaches the scenario worker is checked by a scenario in
- * failure-text.spec.ts.
- */
 import { expect, layer } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, FileSystem, Path, Schema, Stream } from "effect";
@@ -16,22 +6,18 @@ import { ciRefusal, unnamedRefusal, updateSnapshotsVariable } from "../snapshot-
 
 const checkout = process.cwd();
 
-/** The variables the runner passes the Vitest it starts (`runSuite`): never `CI`. */
 const runnerEnvironment = (directory: string) => ({
   PATH: process.env.PATH ?? "",
   ...(process.env.HOME === undefined ? {} : { HOME: process.env.HOME }),
-  // e2e/vitest.config.ts reads these, as `runSuite` sets them.
   EXECUTOR_E2E_RUN: directory,
   E2E_TARGET: "self-host",
   E2E_SUITE: "all",
   E2E_CLOUD_MODE: "managed",
   E2E_WORKERS: "1",
   E2E_TEST_NAME: "",
-  // Plain text to read diffs from, however this process was started.
   NO_COLOR: "1",
 });
 
-/** Runs a process to its end and returns its whole output and its exit code. */
 const run = (
   command: string,
   args: ReadonlyArray<string>,
@@ -47,7 +33,6 @@ const run = (
     return { output, exitCode: Number(exitCode) };
   }).pipe(Effect.scoped);
 
-/** Every Vitest config in e2e/: `e2e/*.config.ts` and the nested `e2e/<folder>/vitest.config.ts`. */
 const configFiles = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -65,10 +50,6 @@ const configFiles = Effect.gen(function* () {
   return files;
 });
 
-/**
- * Each config's `test.update`, imported in a process with `env` and the arguments `args` after its
- * script, as Vitest is started, or the error importing it threw.
- */
 const updates = (
   files: ReadonlyArray<string>,
   env: Record<string, string>,
@@ -104,7 +85,6 @@ console.log("UPDATES " + JSON.stringify(read));`;
   }).pipe(Effect.scoped);
 
 const text = "The app threw SpecInvalid (server_url)\nreason: Server URLs must use HTTPS";
-/** An empty inline snapshot, a file snapshot with no file, and an inline snapshot of other text. */
 const cases = `import { expect, it } from "vitest";
 const text = ${JSON.stringify(text)};
 it("an empty inline snapshot", () => {
@@ -133,22 +113,13 @@ const Results = Schema.fromJsonString(
   }),
 );
 
-/** How `runCases` starts Vitest on the scratch project: a command and its arguments. */
 type Launch = readonly [command: string, args: ReadonlyArray<string>];
 
-/** `node node_modules/vitest/vitest.mjs run`, as the runner starts it, with `args` after. */
 const vitestMjs = (args: ReadonlyArray<string> = []): Launch => [
   "node",
   [`${checkout}/node_modules/vitest/vitest.mjs`, "run", "--config", "vitest.config.ts", ...args],
 ];
 
-/**
- * A scratch project whose config takes `update` from the runner's own config (e2e/vitest.config.ts)
- * and whose setup adds the runner's note to an unrecorded snapshot's failure. `launch` starts Vitest
- * on its cases with the runner's environment and `env`, and returns what it printed, each case's
- * status, and the cases file and recorded file afterwards. Its package.json runs the same Vitest as
- * `bun run cases`, as the repository's own scripts do.
- */
 const runCases = (env: Record<string, string>, launch: Launch = vitestMjs()) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -207,7 +178,6 @@ installSnapshotFailures();
       recorded: (yield* fs.exists(recordedFile))
         ? yield* fs.readFileString(recordedFile)
         : undefined,
-      // Runs the same, now recorded, cases again without asking.
       again: Effect.gen(function* () {
         const again = yield* run(...vitestMjs(), {
           cwd: project,
@@ -219,7 +189,6 @@ installSnapshotFailures();
     };
   });
 
-/** Starts `e2e/run.ts` in an empty directory, and returns its output and whether it made `.local`. */
 const startRunner = (args: ReadonlyArray<string>, env: Record<string, string>) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -228,7 +197,6 @@ const startRunner = (args: ReadonlyArray<string>, env: Record<string, string>) =
     const result = yield* run(
       "node",
       [path.join(checkout, "e2e/run.ts"), "--target", "self-host", ...args],
-      // The host slot would wait for other runs on this machine.
       {
         cwd: directory,
         env: { EXECUTOR_E2E_HOST_SLOTS: "off", NO_COLOR: "1", ...env },
@@ -246,7 +214,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("e2e snapshot updates",
       expect(files).toContain("e2e/failure-text/vitest.config.ts");
       expect(files.length).toBeGreaterThan(60);
       const every = (value: string) => Object.fromEntries(files.map((file) => [file, value]));
-      // Without asking, a config sets `update: snapshotUpdate()` (e2e/snapshot-updates.ts).
       expect(yield* updates(files, {})).toEqual(every("none"));
       expect(yield* updates(files, { [updateSnapshotsVariable]: "1" })).toEqual(every("all"));
       expect(yield* updates(files, { [updateSnapshotsVariable]: "1", CI: "true" })).toEqual(
@@ -255,14 +222,12 @@ layer(NodeServices.layer, { excludeTestServices: true })("e2e snapshot updates",
       expect(
         yield* updates(files, { [updateSnapshotsVariable]: "1", GITHUB_ACTIONS: "true" }),
       ).toEqual(every(`threw: ${ciRefusal}`));
-      // Vitest's own -u overrides `update`: refused in CI, by every config, before a case runs.
       expect(yield* updates(files, { CI: "true" }, ["run", "-u"])).toEqual(
         every(`threw: Vitest's update argument (true) refused: ${ciRefusal}`),
       );
       expect(yield* updates(files, { GITHUB_ACTIONS: "true" }, ["run", "--update=all"])).toEqual(
         every(`threw: Vitest's update argument ("all") refused: ${ciRefusal}`),
       );
-      // Outside CI, asking Vitest itself is a person's choice; in CI, writing none is allowed.
       expect(yield* updates(files, {}, ["run", "-u"])).toEqual(every("none"));
       expect(yield* updates(files, { CI: "true" }, ["run", "--update=none"])).toEqual(
         every("none"),
@@ -284,14 +249,12 @@ layer(NodeServices.layer, { excludeTestServices: true })("e2e snapshot updates",
         expect(result.written).toBe(cases);
         expect(result.recorded).toBeUndefined();
         expect(result.output).not.toMatch(/Snapshots\s+\d+ (?:written|updated)/u);
-        // An unrecorded snapshot's failure shows the value the scenario produced.
         const unrecorded = `no snapshot is recorded, and this run records none.\nThe scenario produced:\n`;
         expect(result.output).toContain(
           `${unrecorded}${JSON.stringify(text).replace("\\n", "\n")}\n`,
         );
         expect(result.output).toContain(`${unrecorded}${text}\n`);
         expect(result.output).toContain("--update-snapshots");
-        // A changed one shows its diff.
         expect(result.output).toContain('- reason: Server URLs may use HTTP"');
         expect(result.output).toContain('+ reason: Server URLs must use HTTPS"');
       }).pipe(Effect.scoped),
@@ -309,7 +272,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("e2e snapshot updates",
         expect(result.written).not.toBe(cases);
         expect(result.written).not.toContain("may use HTTP");
         expect(result.written).not.toContain("toMatchInlineSnapshot()");
-        // What it recorded is what a run that does not ask then checks, writing nothing.
         const again = yield* result.again;
         expect(again.exitCode, again.output).toBe(0);
         expect(again.written).toBe(result.written);
@@ -353,7 +315,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("e2e snapshot updates",
           "--update-snapshots records only the scenarios --test-name names",
         );
         expect(unnamed.startedRun).toBe(false);
-        // Only spaces name no scenario either: as a pattern they match nearly every title.
         const blank = yield* startRunner(["--test-name", " ", "--update-snapshots"], {
           CI: "",
           GITHUB_ACTIONS: "",
@@ -369,7 +330,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("e2e snapshot updates",
     "in CI, Vitest's own update argument is refused however Vitest is started, and nothing is written",
     () =>
       Effect.gen(function* () {
-        // Every spelling Vitest 5.0.1's parser reads as an update; `--update false` reads as all.
         const spellings = [
           ["-u"],
           ["--update"],
@@ -413,12 +373,10 @@ layer(NodeServices.layer, { excludeTestServices: true })("e2e snapshot updates",
     () =>
       Effect.gen(function* () {
         const outside = { CI: "", GITHUB_ACTIONS: "" };
-        // An empty --test-name is refused before --part makes it a pattern naming every scenario.
         const unnamed = yield* startRunner(["--part", "1/1", "--update-snapshots"], outside);
         expect(unnamed.exitCode, unnamed.output).not.toBe(0);
         expect(unnamed.output).toContain(unnamedRefusal);
         expect(unnamed.startedRun).toBe(false);
-        // With one, a part is CI's share of a run, where nothing is recorded: refused too.
         const named = yield* startRunner(
           [
             "--test-name",

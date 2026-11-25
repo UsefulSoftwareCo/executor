@@ -1,4 +1,3 @@
-/** Cloud records an unusable OAuth response with safe evidence and tells the user it was tracked. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -24,7 +23,6 @@ const Ledger = Schema.Struct({
     }),
   ),
 });
-/** The safe reports of the unusable OAuth responses among `events`. */
 const failureReports = (events: ReadonlyArray<AnalyticsEvent>) =>
   events
     .filter(
@@ -48,8 +46,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth error report", (it) => {
           target.metadata.mode,
           "This scenario requires managed Cloud with the local analytics collector",
         ).toBe("managed");
-        // Cloud Workers fetch only public addresses, so the issuer is a private MCP emulator
-        // instance whose registration endpoint answers 200 without a client ID.
         const issuer = (yield* emulatorRequest("https://mcp.emulators.dev", "/_emulate/instances", {
           instance: `executor-oauth-report-${randomUUID()}`,
         }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Instance)))).providerBaseUrl;
@@ -80,8 +76,6 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
           page.emulateMedia({ colorScheme: "dark" }),
         );
         const title = "Executor could not use the service’s response";
-        // Open the page in its own step: the dashboard is server-rendered, and the browser waits
-        // for hydration only after a step, so a click in the same step can land on inert markup.
         yield* browser.use("Open the app's accounts", (page) =>
           page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=accounts`),
         );
@@ -140,7 +134,6 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
           ),
         ).toEqual([1, 0]);
         yield* browser.checkpoint("OAuth-incompatible-tracked-desktop");
-        // This organization's reports: other cases on the Cloud report their own failures.
         const reports = yield* analyticsEvents({ organization: actors.organization.id }).pipe(
           Effect.map(failureReports),
           Effect.repeat({

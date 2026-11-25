@@ -1,36 +1,3 @@
-/**
- * Local-only probe of the order in which webhook-source reconciliation serves saved intent, and of
- * the lease that keeps two sweeps off one source. It runs the SDK's real `makeWebhookSources` on
- * PGlite in memory. Apps have no deployment, so a served source becomes `needs-setup` without any
- * external call; the stubbed resources only list subscriptions (none) and can hold one source's
- * listing, which keeps that source's lease held by a known sweep. Prints, as JSON, what each case
- * named (`--case NAME`, repeatable, or `--all`) found, for `webhook-source-order.spec.ts` to judge.
- * Each case runs on a database of its own, a copy of one migrated once (`rowsAtOpen` says each
- * opened empty), so no other case's or
- * scenario's sources are ever in its queue; the cases run one after another in one process. The
- * whole run is a few seconds of CPU, so a busy host stays far from the scenario's time limit.
- * Nothing here depends on timing: each case counts sweeps and reads stored state.
- *
- * - `relink-while-new-arrive`: an existing source is linked again while every sweep also finds new
- *   sources. The round in which it is served, or none within the bound.
- * - `configure-while-new-arrive`: the same, saving its intent by configuring it.
- * - `relink-during-lease`: a source is linked again while a sweep holds its lease. Whether a second
- *   sweep claims it meanwhile, and whether it is served again once the first sweep finishes.
- * - `outside-failures-then-new`: eight sources fail outside their attempt at every run, one new
- *   source joins after them. The sweep in which it is served, and how often the failing ones ran.
- * - `relinks-before-each-sweep-then-new`: one new source; before every sweep four older sources are
- *   linked again. The sweep in which the new one is served.
- * - `two-sweeps-race`: two sweeps both read the pending queue before either claims. How many claims.
- * - `setup-completed-while-new-arrive`: a failed source holding a retry time an hour ahead has its
- *   setup completed while every sweep also finds new sources. The round in which it is served.
- * - `waiting-push-after-setup`: a source's setup is completed while the waiting check of that source
- *   runs, between its read and its conditional write. Whether that write pushed the source ahead.
- * - `intent-plan`: 2,000 pending and 2,000 served sources; how the pending query is planned, in
- *   `leaseUntil` order and, for comparison, in `createdAt` order.
- *
- * The clock moves one millisecond at every read, so when each source joined the queue is a fact
- * of the order of the case's writes.
- */
 import { cpSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -56,7 +23,6 @@ const cases = [
   "waiting-push-after-setup",
 ] as const;
 type Case = (typeof cases)[number];
-/** The cases named by `--case` (repeatable), or every case with `--all`, in that order. */
 const selected: readonly Case[] = process.argv.includes("--all")
   ? cases
   : process.argv.flatMap((arg, i) => (process.argv[i - 1] === "--case" ? [arg as Case] : []));
@@ -64,18 +30,11 @@ for (const name of selected)
   if (!cases.includes(name)) throw new Error(`--case must be one of ${cases.join(", ")}`);
 if (selected.length === 0) throw new Error("Name a case with --case, or pass --all.");
 
-/** Sweeps the starvation cases allow before they report that the source was not served. */
 const rounds = 20;
-/** Sources one sweep serves, as the host's tick asks for. */
 const limit = 4;
 
 const owner = "org_fixture";
 
-/**
- * A clock that moves one millisecond at every read, so that two writes always store different
- * times, in the order they were made: when a source joined the queue is a fact of the case, not of
- * how fast it ran.
- */
 let ticks = Date.UTC(2026, 10, 16);
 const tickingClock: Clock.Clock = {
   currentTimeMillisUnsafe: () => ++ticks,
@@ -93,7 +52,6 @@ let serial = 0;
 const id = (prefix: string) =>
   `${prefix}_00000000-0000-4000-8000-${String(++serial).padStart(12, "0")}`;
 
-/** One case, on a database of its own: no other case's sources are ever in its queue. */
 const program = (name: Case) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -103,17 +61,13 @@ const program = (name: Case) =>
     yield* storage.migrate;
     const db = database(storage);
     const crypto = yield* hostCrypto;
-    // The provider every fixture account belongs to.
     yield* db.create("providers", {
       id: "prv_fixture",
       definition: {},
     } as never) as Effect.Effect<unknown>;
 
-    /** Apps whose listing dies. */
     const dying = new Set<string>();
-    /** How many times each app's subscriptions were listed: once per claimed reconciliation. */
     const listed = new Map<string, number>();
-    /** An app whose listing waits for `release`, keeping its source's lease held. */
     let holding:
       | {
           readonly app: string;
@@ -121,7 +75,6 @@ const program = (name: Case) =>
           readonly release: Deferred.Deferred<void>;
         }
       | undefined;
-    /** Called inside the waiting check, between its read and its conditional write. */
     let duringWaitingCheck: Effect.Effect<void> | undefined;
     let waitingChecks = 0;
     const resources = {
@@ -131,14 +84,12 @@ const program = (name: Case) =>
           const during = duringWaitingCheck;
           duringWaitingCheck = undefined;
           if (during !== undefined) yield* during;
-          // An account must reconnect: the source keeps waiting.
           return "acc_00000000-0000-4000-8000-ffffffffffff";
         }),
       webhooks: {
         list: ({ app }: { readonly app: string }) =>
           Effect.gen(function* () {
             listed.set(app, (listed.get(app) ?? 0) + 1);
-            // A defect, outside the reconciliation's attempt: its release puts the source back.
             if (dying.has(app)) return yield* Effect.die(new Error("listing died"));
             if (holding !== undefined && holding.app === app) {
               const held = holding;
@@ -152,7 +103,6 @@ const program = (name: Case) =>
     };
     const sources = makeWebhookSources(db, crypto, undefined, resources as never);
 
-    /** An app without a deployment and an account its owner holds. */
     const appWithAccount = Effect.gen(function* () {
       const app = id("app");
       const account = id("acc");
@@ -189,7 +139,6 @@ const program = (name: Case) =>
     const link = (source: { readonly app: string; readonly account: string }) =>
       sources.link({ app: source.app, account: source.account } as never);
 
-    /** One source, served once, then its intent saved again while new sources keep arriving. */
     const whileNewArrive = (
       saveAgain: (source: { app: string; account: string }) => Effect.Effect<unknown, unknown>,
     ) =>
@@ -202,7 +151,6 @@ const program = (name: Case) =>
         const pendingAfterSave = yield* status(target);
         let servedInRound: number | null = null;
         for (let round = 1; round <= rounds && servedInRound === null; round++) {
-          // A full sweep's worth of new sources arrives before each sweep.
           for (let i = 0; i < limit; i++) yield* link(yield* appWithAccount);
           yield* sources.tick(limit);
           if ((yield* status(target)) !== "pending") servedInRound = round;
@@ -232,8 +180,6 @@ const program = (name: Case) =>
           }),
         );
       case "outside-failures-then-new": {
-        // Eight sources served once, linked again, and each failing outside its attempt from then
-        // on; one new source after them. Where it is served, and how often the failing ones run.
         const old = [];
         for (let i = 0; i < 8; i++) old.push(yield* appWithAccount);
         for (const source of old) yield* link(source);
@@ -247,7 +193,6 @@ const program = (name: Case) =>
         yield* link(fresh);
         let servedInSweep: number | null = null;
         for (let sweep = 1; sweep <= rounds && servedInSweep === null; sweep++) {
-          // The host runs each sweep on its own; one whose reconciliation died does not stop it.
           yield* Effect.exit(sources.tick(limit));
           if ((yield* status(fresh)) !== "pending") servedInSweep = sweep;
         }
@@ -255,7 +200,6 @@ const program = (name: Case) =>
         return { servedInSweep, rounds, limit, maxOldClaims: Math.max(...claims) };
       }
       case "relinks-before-each-sweep-then-new": {
-        // Four sources served once; one new source; before every sweep the four are linked again.
         const old = [];
         for (let i = 0; i < limit; i++) old.push(yield* appWithAccount);
         for (const source of old) yield* link(source);
@@ -272,8 +216,6 @@ const program = (name: Case) =>
         return { servedInSweep, rounds, limit };
       }
       case "two-sweeps-race": {
-        // Two sweeps both read the pending queue before either claims anything: each waits after
-        // its read until the other has read too. Then both try to claim the same source.
         const target = yield* appWithAccount;
         yield* link(target);
         const arrived = yield* Deferred.make<void>();
@@ -300,9 +242,6 @@ const program = (name: Case) =>
         return { readsBeforeClaims: reads, claims: listed.get(target.app) ?? 0 };
       }
       case "intent-plan": {
-        // 2,000 served sources and, after them, 2,000 pending ones that joined one millisecond apart:
-        // how the pending query is planned. One statement writes them, as linking them one by one
-        // would, so the case's time does not grow with the rows it needs.
         const base = ticks;
         yield* sql.unsafe(
           `insert into executor_webhook_sources
@@ -348,8 +287,6 @@ const program = (name: Case) =>
         };
       }
       case "setup-completed-while-new-arrive": {
-        // A source that failed and holds a retry time an hour ahead; a person completes its setup
-        // while every sweep also finds a full sweep's worth of new sources.
         const target = yield* appWithAccount;
         yield* link(target);
         yield* sources.tick(limit);
@@ -373,9 +310,6 @@ const program = (name: Case) =>
         return { pendingAfterSetup, servedInRound, rounds, limit };
       }
       case "waiting-push-after-setup": {
-        // A source waiting on its accounts and due for its check, of an app with a deployment that
-        // declares no accounts (so its accounts resolve and the check runs). While the check runs,
-        // a person completes the source's setup. The check's own write must not then push it.
         const target = yield* appWithAccount;
         const version = id("dpl");
         const app = (yield* db.findFirst("apps", {
@@ -427,16 +361,12 @@ const program = (name: Case) =>
         const reached = yield* Deferred.make<void>();
         const release = yield* Deferred.make<void>();
         holding = { app: target.app, reached, release };
-        // The first sweep claims the source and waits inside its reconciliation, lease held.
         const first = yield* Effect.forkChild(sources.tick(limit));
         yield* Deferred.await(reached);
-        // Linked again while that sweep holds the lease.
         yield* link(target);
-        // A second sweep meanwhile, with other intent beside it.
         yield* link(yield* appWithAccount);
         yield* sources.tick(limit);
         const claimsWhileHeld = listed.get(target.app) ?? 0;
-        // The first sweep finishes; the link it did not see must not be lost.
         yield* Deferred.succeed(release, undefined);
         yield* Fiber.await(first);
         const afterFirst = yield* status(target);
@@ -451,7 +381,6 @@ const program = (name: Case) =>
     }
   });
 
-/** One node of a JSON query plan, as `explain (format json)` returns it. */
 interface PlanNode {
   readonly "Node Type": string;
   readonly "Index Name"?: string;
@@ -459,7 +388,6 @@ interface PlanNode {
   readonly Plans?: ReadonlyArray<PlanNode>;
 }
 
-/** The schema, migrated once on disk; each case opens a copy of it, a database of its own. */
 const migrated = (dataDir: string) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -471,10 +399,6 @@ const migrated = (dataDir: string) =>
     }),
   ).pipe(Effect.provide(pgliteLayer({ dataDir })));
 
-/**
- * Rows a case's database holds when the case opens it: zero for a database of its own. Each copy is
- * a separate directory, opened by its own PGlite instance, so no write of one case reaches another.
- */
 const rowsAtOpen = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const [row] = yield* sql.unsafe<{ rows: number }>(
@@ -484,10 +408,6 @@ const rowsAtOpen = Effect.gen(function* () {
   return row?.rows ?? -1;
 });
 
-/**
- * Each case in turn, each on its own copy of the migrated database, in one process. A case whose
- * database already holds rows is not run: `rowsAtOpen` reports it.
- */
 const all = Effect.acquireUseRelease(
   Effect.sync(() => mkdtempSync(join(tmpdir(), "webhook-sources-fixture-"))),
   (directory) =>

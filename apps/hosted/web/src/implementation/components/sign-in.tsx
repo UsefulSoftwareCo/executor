@@ -35,7 +35,6 @@ function ReplaceAfterSignIn({
   readonly children?: ReactNode;
 }) {
   const page = usePageUrl();
-  // A fresh document drops prior session state and preserves signed return URLs verbatim.
   useEffect(() => {
     if (verified) window.location.replace(keepFragment(destination));
   }, [destination, verified]);
@@ -60,7 +59,6 @@ function PendingApps() {
   );
 }
 
-/** Opens `page` of the only organization, or the chooser when there are several; `children` waits. */
 function FirstOrganizationDestination({
   verified,
   page,
@@ -89,7 +87,6 @@ function FirstOrganizationDestination({
     .exhaustive();
 }
 
-/** Finish a confirmed sign-in before entering the product; explicit return links stay intact. */
 export function ContinueAfterSignIn({
   redirect,
   userId,
@@ -119,7 +116,6 @@ export function ContinueAfterSignIn({
   );
 }
 
-/** First-run setup continues with the first step, the assistant, of the organization it created. */
 export function ContinueToSetup({ userId }: { readonly userId: string }) {
   const session = useAtomValue(sessionAtom);
   const verified =

@@ -1,9 +1,3 @@
-/**
- * Self-host sign-in reads whether first-run setup is open and whether SSO is configured on the
- * server, so it renders its own form. A stalled read must hold neither sign-in nor any other page.
- * Sign-in the browser opens after a session ends has no settings, so on an SSO instance it draws
- * nothing until the form arrives.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect } from "effect";
 import type { Page } from "playwright";
@@ -15,28 +9,15 @@ import { Target } from "../support/platform.ts";
 import { scenarios } from "../test-plan.ts";
 import { noPageErrors } from "../support/page-errors.ts";
 
-/** React reports a server/browser markup difference with one of these messages or codes. */
 const hydrationFailure = /hydrat|Minified React error #(418|419|423|425)/i;
-/** Stalls a document's settings read; see `apps/hosted/testing/access-check-fixture.ts`. */
 const signInSettingsCookie = "executor-test-sign-in-settings";
-/**
- * The fixture holds the read for 12 seconds, and sign-in gives up on it after 2. Headers arrived
- * 2.01–2.36 s after the request in local and review runs, the slowest on a host under heavy load;
- * the rest of a second allows for a loaded runner, and a deadline of 3 seconds or more fails.
- */
 const signInHeadersWithinMs = 3_000;
-/**
- * No other page reads the settings, so the stall cannot delay it. Those headers took 7–72 ms, and
- * up to 810 ms on a host under heavy load; a page that waited for the read would take at least
- * sign-in's 2-second deadline on top of its own time.
- */
 const otherHeadersWithinMs = 1_500;
 const settingsRoute = /\/api\/auth\/self-host\/config$/;
 
 const desktop = { width: 1100, height: 700 },
   phone = { width: 390, height: 844 };
 
-/** Collect React's hydration failures from the page, for the scenario to assert on. */
 const watchHydration = (page: Page) => {
   const failures: string[] = [];
   page.on("console", (message) => {
@@ -49,14 +30,9 @@ const watchHydration = (page: Page) => {
   return failures;
 };
 
-/** Whether the page fits its viewport, so nothing on it needs scrolling into view. */
 const fits = (page: Page) =>
   page.evaluate(() => document.documentElement.scrollHeight <= window.innerHeight);
 
-/**
- * What the page draws: each visible element with no children that shows text, an image, a field,
- * a fill or a border. Text only a screen reader reads is not drawn.
- */
 const drawn = (page: Page) =>
   page.evaluate(() =>
     Array.from(document.body.querySelectorAll("*")).flatMap((element) => {
@@ -76,7 +52,6 @@ const drawn = (page: Page) =>
     }),
   );
 
-/** How long the server takes to start answering a document request. */
 const headersAfter = (page: Page, url: string) => {
   const started = performance.now();
   return page.goto(url, { waitUntil: "commit" }).then((response) => ({
@@ -94,13 +69,11 @@ layer(TestLive, { excludeTestServices: true })("Sign-in settings", (it) => {
       Effect.gen(function* () {
         const browser = yield* Browser,
           target = yield* Target;
-        // The test entry point mounts the fixture; the production one does not.
         const origin = yield* startDevelopmentServer(target);
         const failures = yield* browser.use("Watch hydration", (page) =>
           Promise.resolve(watchHydration(page)),
         );
 
-        // Signed out with settings that answer: the server renders the form itself.
         const settled = yield* browser.use("Open sign-in", (page) =>
           page
             .goto(`${origin}/login`)
@@ -119,7 +92,6 @@ layer(TestLive, { excludeTestServices: true })("Sign-in settings", (it) => {
         expect(signIn.ms, "Sign-in's headers arrive by its deadline").toBeLessThan(
           signInHeadersWithinMs,
         );
-        // The browser's own read answers, and its form replaces the loading screen.
         yield* browser.use("The browser reads the settings itself", (page) =>
           hydrated(page).then(() =>
             page.getByRole("heading", { level: 1, name: "Sign in to Executor" }).waitFor(),
@@ -128,7 +100,6 @@ layer(TestLive, { excludeTestServices: true })("Sign-in settings", (it) => {
         yield* browser.checkpoint("Sign-in after its server read stalled");
         yield* noPageErrors(failures, "The loading screen hydrates as the server rendered it");
 
-        // When the browser's read fails too, sign-in says so instead of guessing a form.
         yield* browser.use("Refuse the browser's settings read", (page) =>
           page.route(settingsRoute, (route) =>
             route.fulfill({ status: 503, contentType: "application/json", body: "{}" }),
@@ -142,7 +113,6 @@ layer(TestLive, { excludeTestServices: true })("Sign-in settings", (it) => {
         expect(alert).toBe("Unable to load sign-in settings. Reload to try again.");
         yield* noPageErrors(failures);
 
-        // Other pages never wait for the settings, signed out or in.
         yield* browser.use("Let the browser's settings read answer", (page) =>
           page.unrouteAll({ behavior: "ignoreErrors" }),
         );
@@ -183,8 +153,6 @@ layer(TestLive, { excludeTestServices: true })("Sign-in settings", (it) => {
         const browser = yield* Browser,
           evidence = yield* Evidence,
           target = yield* Target;
-        // An operator SSO configuration. No identity provider answers: the instance still offers
-        // SSO, and only the form's shape is checked here.
         const origin = yield* startFreshSelfHost(target, {
           SSO_DISCOVERY_URL: "https://127.0.0.1:9/.well-known/openid-configuration",
           SSO_CLIENT_ID: "synthetic-client",
@@ -221,7 +189,6 @@ layer(TestLive, { excludeTestServices: true })("Sign-in settings", (it) => {
               .then(() => hydrated(page))
               .then(() => page.evaluate(() => document.fonts.ready)),
           );
-          // Hold the sign-in page's code and any settings read, so the loading window stays open.
           let release = () => {};
           const held = new Promise<void>((resolve) => {
             release = resolve;
@@ -254,7 +221,6 @@ layer(TestLive, { excludeTestServices: true })("Sign-in settings", (it) => {
                   page
                     .context()
                     .clearCookies()
-                    // The dashboard notices the ended session when the tab is shown again.
                     .then(() =>
                       page.evaluate(() => window.dispatchEvent(new Event("visibilitychange"))),
                     )
@@ -283,8 +249,6 @@ layer(TestLive, { excludeTestServices: true })("Sign-in settings", (it) => {
           );
           yield* evidence.attach(`sso-loading-${viewport.width}.png`, "image/png", before[2]);
           yield* evidence.attach(`sso-ready-${viewport.width}.png`, "image/png", after[1]);
-          // The dashboard did not arrive with the settings, so a card could not know the SSO
-          // button is coming: nothing is drawn until the form is.
           expect(before[0], `${title}: the loading window draws nothing`).toEqual([]);
           expect(before[1], `${title}: the loading window does not scroll`).toBe(true);
           expect(after[0], `${title}: the form fits without scrolling`).toBe(true);
@@ -301,7 +265,6 @@ layer(TestLive, { excludeTestServices: true })("Sign-in settings", (it) => {
           ).toBe(200);
         }
 
-        // A signed-out sign-in document arrives as the SSO form and hydrates without a mismatch.
         const signedOut = yield* browser.use("Open sign-in signed out", (page) =>
           page
             .context()

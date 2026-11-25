@@ -1,17 +1,3 @@
-/**
- * MCP events: `events/list`, `events/subscribe` and `events/unsubscribe` over the caller's backend.
- * Webhook delivery is the only mode.
- *
- * `events/list` returns one event, {@link appEventName}, the same for every caller. Clients such as
- * ChatGPT save the list once, when the server is scanned, and offer it to every user; a list of
- * the caller's own apps would offer one user's events to everyone, and none of theirs. Its
- * arguments select the events: an app's slug and one of its events, the slug alone for all of the
- * app's events, or nothing for every event of every app the connection can use. With an app and an
- * event, that event's filters may be added. Each delivery carries `{ app, event, data }`.
- *
- * An app's event can also be subscribed to by its own name, `<app slug>.<event>`, with its filters
- * as the arguments; subscriptions made that way keep refreshing.
- */
 import { Effect, Match, Predicate, Redacted, Schema } from "effect";
 import { McpSchema, type McpServer } from "effect/ai";
 import { EventArguments } from "@executor-js/sdk/core";
@@ -23,7 +9,6 @@ import type {
 } from "../contracts/backend.ts";
 import { withOperationSpan } from "./telemetry.ts";
 
-/** The one listed event. Apps cannot declare it: an app's events need its slug before the dot. */
 export const appEventName = "executor.app_event";
 
 const appEventDefinition: McpSchema.EventDefinition = {
@@ -64,7 +49,6 @@ const appEventDefinition: McpSchema.EventDefinition = {
 const mcpError = (code: number, message: string, data?: Schema.Json) =>
   new McpSchema.McpErrorBase({ code, message, ...(data === undefined ? {} : { data }) });
 
-/** Map a refusal to its draft-extension error. Other failures keep no detail beyond a safe message. */
 const projectError = (error: unknown) =>
   Predicate.isTagged(error, "EventNotFound") ||
   Predicate.isTagged(error, "EventDefinitionChanged") ||
@@ -79,8 +63,6 @@ const projectError = (error: unknown) =>
               kind === "event" ? "No event with this name" : "No subscription with this key",
               { kind },
             ),
-          // A refresh whose arguments name filters the event no longer declares: the draft's
-          // in-place schema change. The subscription has been stopped.
           EventDefinitionChanged: () =>
             mcpError(
               McpSchema.UNSUPPORTED_ERROR_CODE,
@@ -119,9 +101,7 @@ const decodeArguments = (value: unknown) =>
     ),
   );
 
-/** Events handlers for one product's backend. The backend authorizes each operation. */
 export const eventsHandler = (backend: McpBackend<Error>): McpServer.EventsHandler => {
-  /** The app and event a name refers to now, among the apps this caller can reach. */
   const resolve = (name: string) =>
     Effect.gen(function* () {
       const separator = name.indexOf(".");
@@ -131,10 +111,6 @@ export const eventsHandler = (backend: McpBackend<Error>): McpServer.EventsHandl
       const app = (yield* backend.listApps()).find((candidate) => candidate.slug === slug);
       return app === undefined ? undefined : { app: app.id, event };
     });
-  /**
-   * The subscription key. For {@link appEventName}, `app` and `event` leave the arguments for the
-   * selection, which is part of the key, and the rest are the selected event's filters.
-   */
   const key = (params: {
     readonly name: string;
     readonly arguments?: Readonly<Record<string, Schema.Json>> | undefined;
@@ -171,7 +147,6 @@ export const eventsHandler = (backend: McpBackend<Error>): McpServer.EventsHandl
         },
       } satisfies McpEventKey;
     });
-  /** The events a new subscription's key refers to now, among the apps this caller can reach. */
   const target = (subscription: McpEventKey) =>
     Effect.gen(function* () {
       const selection = subscription.selection;
@@ -201,8 +176,6 @@ export const eventsHandler = (backend: McpBackend<Error>): McpServer.EventsHandl
             ),
           );
         const subscription = yield* key(params);
-        // A saved subscription keeps its app and event, so its refreshes still work after the
-        // app's slug changes. The SDK checks it against the current declaration.
         const existing = yield* backend.findEventSubscription(subscription);
         const selected: McpEventTarget | undefined =
           existing === null
@@ -238,7 +211,6 @@ export const eventsHandler = (backend: McpBackend<Error>): McpServer.EventsHandl
       Effect.gen(function* () {
         const subscription = yield* key(params);
         const existing = yield* backend.findEventSubscription(subscription);
-        // Unsubscribing what does not exist, or no longer exists, succeeds.
         if (existing === null) return;
         yield* backend.unsubscribeEvent({ app: existing.app, key: subscription });
       }).pipe(

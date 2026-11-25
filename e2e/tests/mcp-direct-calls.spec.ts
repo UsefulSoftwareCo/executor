@@ -1,4 +1,3 @@
-/** Search, describe and call reach app tools through MCP without an execute program. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -46,11 +45,9 @@ const Pending = Schema.Struct({
   requestId: Schema.String,
 });
 
-// A 1x1 PNG and a few bytes of WAV header, as an MCP tool returns them.
 const png =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNQWPX/PwAFgALJpImt0wAAAABJRU5ErkJggg==";
 const wav = "UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA=";
-// The head and tail of a PDF, as a file API returns an attachment.
 const pdf = Buffer.from("%PDF-1.4\n%\u00e2\u00e3\u00cf\u00d3\n%%EOF\n", "latin1").toString(
   "base64",
 );
@@ -72,7 +69,6 @@ export default defineApp({}, async () => ({ tools: router({
     })),
 }) }));`;
 
-/** A personal access token and the app above, deployed for one scenario. */
 const fixture = Effect.gen(function* () {
   const api = yield* Api,
     actors = yield* Actors;
@@ -100,7 +96,6 @@ const fixture = Effect.gen(function* () {
   return { key, app, organization: actors.organization.id };
 });
 
-/** Call one MCP tool and keep its structured result as evidence. */
 const callTool = (
   client: Effect.Success<ReturnType<McpClient["Service"]["connect"]>>,
   label: string,
@@ -126,7 +121,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP direct calls", (it) => {
       Effect.gen(function* () {
         const mcp = yield* McpClient;
         const { key, app, organization } = yield* fixture;
-        // Model mode, named in the URL, so the approval below pauses for a resume.
         const client = yield* mcp.connect(key.key, "direct-calls", { organization, mode: "model" });
         const tool = (label: string, name: string, args: Record<string, unknown>) =>
           callTool(client, label, name, args);
@@ -141,7 +135,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP direct calls", (it) => {
           "skills",
         ]);
 
-        // Search returns the exact paths call and execute both accept.
         const found = yield* Schema.decodeUnknownEffect(SearchResult)(
           yield* tool("Search the app", "search", { namespace: app.slug, query: "echo" }),
         );
@@ -156,11 +149,9 @@ layer(HostedLive, { excludeTestServices: true })("MCP direct calls", (it) => {
         );
         expect(described.items.map((item) => item.path)).toEqual([echo]);
         expect(described.items[0]?.signature).toContain("text");
-        // An unknown path lists the closest paths, nearest first.
         expect(described.missing.map((entry) => entry.path)).toEqual([`${echo}x`]);
         expect(described.missing[0]?.matches[0]).toBe(echo);
 
-        // One call returns its outcome alone.
         const single = yield* Schema.decodeUnknownEffect(Completed)(
           yield* tool("Call one tool", "call", { calls: { path: echo, input: { text: "hi" } } }),
         );
@@ -170,8 +161,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP direct calls", (it) => {
           toolCalls: [{ name: echo, outcome: "success" }],
         });
 
-        // A batch keeps its order, one call failing does not stop the others, and a result over
-        // 100,000 bytes comes back whole.
         const batch = yield* Schema.decodeUnknownEffect(Completed)(
           yield* tool("Call a batch", "call", {
             calls: [
@@ -193,7 +182,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP direct calls", (it) => {
           `"matches":[${JSON.stringify(echo)}`,
         );
 
-        // An approval pauses the call; resume runs it once and returns its outcome.
         const pending = yield* Schema.decodeUnknownEffect(Pending)(
           yield* tool("Call a tool that needs approval", "call", {
             calls: { path: review, input: { note: "ship it" } },
@@ -248,7 +236,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP direct calls", (it) => {
             const completed = yield* Schema.decodeUnknownEffect(Completed)(
               result.structuredContent,
             );
-            // The text block repeats the structured result, which keeps no base64.
             expect(text).toMatchObject({ type: "text" });
             expect(JSON.parse(String(text?.text))).toEqual(result.structuredContent);
             expect(String(text?.text)).not.toContain(png);
@@ -257,7 +244,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP direct calls", (it) => {
             return { completed, media };
           });
 
-        // A direct call's image reaches the client as an image block; the result keeps its index.
         const called = yield* run("Call a tool that returns an image", "call", {
           calls: { path: tool("screenshot"), input: {} },
         });
@@ -271,10 +257,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP direct calls", (it) => {
           },
         });
 
-        // A program's result sends each distinct image or audio block once, in first-seen order.
-        // A program can wrap bytes a tool returns in another shape, here unpadded base64url, and
-        // they are sent in the standard form: the same screenshot, so the same block. Data that
-        // is not base64 is not media and stays in the result as the tool returned it.
         const executed = yield* run("Execute a program that returns media", "execute", {
           code: `const shot = await ${tool("screenshot")}({});
 const audio = await ${tool("recording")}({});
@@ -298,9 +280,6 @@ return { first: shot.content[0], audio: audio.content[0], again: shot,
           },
         });
 
-        // A file reaches the client as an embedded resource block, its blob in the standard form,
-        // so a client can save it and the model can read it. The result keeps its URI and type.
-        // A text resource is already readable and stays in the result.
         const reported = yield* run("Call a tool that returns a PDF", "call", {
           calls: { path: tool("report"), input: {} },
         });
@@ -344,7 +323,6 @@ return { first: shot.content[0], audio: audio.content[0], again: shot,
         });
         const review = `tools[${JSON.stringify(app.slug)}].review`;
 
-        // The client confirms each call itself: call is marked destructive and open-world.
         const listed = yield* client.use("List the MCP tools", (client) => client.listTools());
         expect(listed.tools.find((tool) => tool.name === "call")?.annotations).toMatchObject({
           readOnlyHint: false,
@@ -352,7 +330,6 @@ return { first: shot.content[0], audio: audio.content[0], again: shot,
           openWorldHint: true,
         });
 
-        // That confirmation answers the app's approval policy, so call asks nothing more.
         const called = yield* Schema.decodeUnknownEffect(Completed)(
           yield* callTool(client, "Call a tool that needs approval", "call", {
             calls: { path: review, input: { note: "native" } },
@@ -365,7 +342,6 @@ return { first: shot.content[0], audio: audio.content[0], again: shot,
         });
         expect(yield* client.elicitationCount).toBe(0);
 
-        // A program has no per-call confirmation, so execute still asks through the client.
         const executed = yield* Schema.decodeUnknownEffect(Completed)(
           yield* callTool(client, "Execute a tool that needs approval", "execute", {
             code: `return await ${review}({ note: "program" })`,
@@ -388,8 +364,6 @@ return { first: shot.content[0], audio: audio.content[0], again: shot,
         const origin = (yield* Target).metadata.origin;
         const { key, app, organization } = yield* fixture;
         const prefix = `/api/organizations/${organization}`;
-        // An app that reaches this same Executor through its MCP server, as a remote MCP router.
-        // Its account holds the access token the inner Executor accepts.
         const name = `Nested executor ${randomUUID().slice(0, 8)}`;
         const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
           name,
@@ -462,8 +436,6 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
         );
         yield* evidence.json("nested-executor-result.json", result);
         const completed = yield* Schema.decodeUnknownEffect(Completed)(result.structuredContent);
-        // The inner Executor's text block only repeats its structured result, so the outer
-        // Executor keeps the structured result alone.
         expect(completed.execution).toMatchObject({
           ok: true,
           value: {
@@ -478,7 +450,6 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
             },
           },
         });
-        // Each hop carries the payload once, so nesting does not multiply the agent's context.
         const nested = JSON.stringify(completed.execution.value);
         expect(nested.split(id).length - 1).toBe(1);
         expect(nested).toContain(JSON.stringify(marker));

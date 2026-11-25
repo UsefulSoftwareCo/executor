@@ -18,7 +18,6 @@ import {
 
 const Index = Schema.Struct({ items: Schema.Array(Schema.Struct({ name: Schema.String })) });
 
-/** The IDs of a span's ancestors in its trace, nearest first. */
 const ancestry = (
   trace: typeof SpanQuery.Type,
   span: { readonly parentSpanId: string | null },
@@ -49,13 +48,11 @@ layer(HostedLive, { excludeTestServices: true })("Cloud build reuse", (it) => {
           files: [{ path: "index.ts", content: accountToolSource }, appsManifest],
         });
         expect(deployed.status).toBe(200);
-        // The deploy writes its retained build to this data centre's Cache API in the background.
         const deployRequest = (yield* evidence.requests).at(-1);
         if (deployRequest === undefined)
           return yield* Effect.die("Deploy request evidence missing");
         const warmed = yield* telemetry.query(deployRequest.traceId).pipe(
           Effect.flatMap((result) => {
-            // The record is always written; the framework only when the isolate did not hold it.
             const write = result.data.find(
               ({ span }) =>
                 span.operationName === "runtime.cloud.build.cache_write" &&
@@ -88,7 +85,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud build reuse", (it) => {
           Effect.gen(function* () {
             const connection = yield* body(
               Resource,
-              // Connecting from the app links the account to it.
               yield* api.request(
                 actors.owner,
                 "POST",
@@ -115,7 +111,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud build reuse", (it) => {
         const work = yield* add("Work", "work"),
           personal = yield* add("Personal", "personal");
 
-        // Every delivered trace with a span of this operation in `scope`.
         const tracesWith = (operation: string, scope: SpanScope) =>
           telemetry
             .search(operation, scope)
@@ -131,13 +126,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud build reuse", (it) => {
               (under === undefined || ancestry(trace, span).includes(under)),
           ).length;
 
-        // Each linked account set is a separate Worker identity, so each index starts a cold Worker
-        // for the same immutable build. The runner in the AppData Worker reads the build itself:
-        // the API that sends the call never loads, decodes or transfers app code.
-        // Linking an account wakes the schedule coordinator, which may call the app with the
-        // linked account before the index does. Whichever call reaches a Worker first starts it,
-        // so an account's cold start is found by its Worker identity, in the index's trace
-        // or the coordinator's.
         const coldStarts = (identity: string) =>
           tracesWith("runtime.app.invoke", { worker: identity }).pipe(
             Effect.map((traces) =>
@@ -149,7 +137,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud build reuse", (it) => {
                       span.tags["executor.worker.identity"] === identity,
                   )
                   .flatMap(({ span: invoke }) => {
-                    // The build loads beside the call, under the runner's span that serves it.
                     const served = invoke.parentSpanId;
                     const loads = trace.data.filter(
                       ({ span }) =>
@@ -168,7 +155,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud build reuse", (it) => {
             ),
             Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 60 }),
           );
-        /** The many() requirement uses every linked account: link exactly `account` first. */
         const linkOnly = (account: string) =>
           Effect.gen(function* () {
             const path = `${prefix}/apps/${app.id}`;
@@ -227,13 +213,11 @@ layer(HostedLive, { excludeTestServices: true })("Cloud build reuse", (it) => {
           });
 
         const first = yield* coldIndex(work, "work");
-        // The coordinator may have loaded the build already, for another linked account.
         expect(["hit", "memory"], "The runner reads a cached record").toContain(first.source);
         const second = yield* coldIndex(personal, "personal");
         expect(second.source, "The runner reuses the build it already decoded").toBe("memory");
         if (first.build === undefined) return yield* Effect.die("Build ID missing");
 
-        // Every load of the build in the runner, by any call.
         const loads = (yield* tracesWith("runtime.cloud.build.cached", { build: first.build }))
           .flatMap((trace) =>
             trace.data
@@ -254,9 +238,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud build reuse", (it) => {
           earliest?.span.tags["executor.build.cache"],
           "The runner reads the record the deploy cached",
         ).toBe("hit");
-        // The framework is stored apart from the record. The deploy cached it unless the cache
-        // already held it; the runner may also hold it decoded from an earlier build, or be
-        // decoding it for another app on this apps release, whose read this one waits for.
         expect(["hit", "memory", "shared"], "The runner reads a cached framework").toContain(
           earliest?.span.tags["executor.build.framework_cache"],
         );

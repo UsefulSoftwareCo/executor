@@ -1,89 +1,25 @@
-/**
- * Each local suite run writes a run folder under the workspace's `.local/e2e`, and nothing else
- * removes them: on the shared host they reached 107 GB over 283 workspaces. When a run starts it
- * removes older run folders in its own workspace:
- *
- * - any run started more than `keepMs` ago;
- * - passed runs past the newest `keepPassedRuns` that ended more than `recentMs` ago. A run with a
- *   failed scenario, or whose outcome cannot be read (it crashed, was stopped or timed out), is kept
- *   for its failure evidence;
- * - then, while the rest exceed `defaultKeepBytes`, passed runs oldest first, then the others oldest
- *   first. Only this cap, which protects the disk, takes a run that ended within `recentMs`.
- *
- * A series of quick runs, one scenario each, read together afterwards is an ordinary way to work:
- * on the MacBook Pro sixteen passed runs over 13 minutes, read 30-45 minutes after they ended,
- * lost all but the last six to the count before `recentMs` existed.
- *
- * A run passed only when its `evidence.json` says `"outcome": "passed"`, which `runSuite` writes
- * from the same checks that fail the run. Runs saved before that field, and runs whose outcome
- * cannot be read, count as not passed.
- *
- * The start time comes from the folder's name. A folder whose name is not a real time is kept and
- * left out of the count and the size, as are runs in progress. A system clock set more than three
- * days ahead would make every finished run look old.
- *
- * A run (or a render of one) holds an `in-progress-*.json` marker naming its PID while it writes,
- * and a folder with a marker whose process is alive is never removed, whatever its age. A marker
- * left by a killed run names a PID that is gone, so its folder is pruned like any other.
- *
- * Only folders named like a run directly in `.local/e2e` are candidates. A symbolic link there,
- * or a `.local/e2e` that is a link, is left alone and never followed; removal never follows links
- * inside a run folder either. `runSuite` does not prune in CI: one job runs several suites in a
- * fresh checkout, then uploads and collects coverage from every run folder.
- *
- * Runs it keeps are shrunk: their bulk is removed and the rest stays. Bulk is each target's
- * (`local`, `self-host`, `cloud`) `coverage/` and `data/` folders and every `data/` folder under
- * its `scenarios/<id>/`: the product databases, Cloud's diagnostics SQLite and the raw coverage
- * reports, most of a run's bytes. On the shared host no file in them was read more than an hour
- * after its run ended, while `server.log`, the reports, evidence files, traces, videos and
- * screenshots were; those stay. A passed run is shrunk once a newer passed run exists and it ended
- * more than `recentMs` ago; any other run 24 hours after it ended (its `evidence.json` was written,
- * or its folder last changed). Nothing under a target's `report/` is ever bulk.
- * A shrunk run holds `shrunk.json`, naming what was removed and when; with no bulk left, a later
- * start passes it by.
- *
- * A `keep-all-runs` file in `.local/e2e` turns removal and shrinking off for the workspace, for
- * someone investigating; the host's evidence sweep honours it too.
- */
 import { Cause, Console, Effect, FileSystem, Option, Path, Schema } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { randomBytes } from "node:crypto";
 import { alive } from "../host-slot.ts";
 
-/**
- * Run folders measured 2-190 MB, 30 MB on average over 3,575 runs; a local run is about 120 MB.
- * Agents compare a run with the one or two before a fix, often across two targets, within a day or
- * two, and prove a fix by looping one scenario 20 times and reading only the failures afterwards.
- * 3 GB holds such a loop on local with every run failed (2.4 GB) beside five passed runs.
- */
 const keepPassedRuns = 5;
 const keepMs = 3 * 24 * 60 * 60_000;
 const defaultKeepBytes = 3 * 1024 ** 3;
-/**
- * A run that ended this recently is neither removed for the count nor shrunk. Later reads of a
- * run's files on the shared host came within an hour of its end (none of its bulk after one), and
- * the series above was read 45 minutes after its first run ended; two hours covers both with room.
- */
 const recentMs = 2 * 60 * 60_000;
-/** A run other than a passed one keeps its bulk this long after it ended. */
 const shrinkAfterMs = 24 * 60 * 60_000;
-/** In `.local/e2e`: keep every run whole. */
 export const keepAllMarker = "keep-all-runs";
-/** In a shrunk run folder: what was removed and when. */
 export const shrunkMarker = "shrunk.json";
 const targets = ["local", "self-host", "cloud"] as const;
 
-/** The outcome `runSuite` records in a run's `evidence.json`. */
 const Outcome = Schema.fromJsonString(
   Schema.Struct({ outcome: Schema.optional(Schema.Literals(["passed", "failed"])) }),
 );
 
-/** `2026-11-12T19-04-07.123Z-cloud-1a2b3c`, as `runSuite` names a run; older runs lack the suffix. */
 const runName =
   /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2}\.\d{3})Z-(?:self-host|local|cloud|all|hosted)(?:-[0-9a-f]{6})?$/;
 const markerPrefix = "in-progress-";
 
-/** Marks a run folder as being written for the enclosing scope. */
 export const holdRun = (directory: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem,
@@ -101,10 +37,6 @@ export const holdRun = (directory: string) =>
     );
   });
 
-/**
- * Removes old run folders in `workspace`'s `.local/e2e` beside `current`, the run starting now.
- * Reports, never fails. `keepBytes` is a parameter only so a check can use a small cap.
- */
 export const pruneRuns = ({
   workspace,
   current,
@@ -125,7 +57,6 @@ export const pruneRuns = ({
     if (yield* fs.exists(path.join(root, keepAllMarker)))
       return yield* Console.log(`e2e: kept every run: ${path.join(root, keepAllMarker)} is set.`);
 
-    /** True while a live process holds a marker, or when a marker cannot be read. */
     const inProgress = (directory: string) =>
       Effect.gen(function* () {
         for (const name of yield* fs.readDirectory(directory)) {
@@ -134,17 +65,12 @@ export const pruneRuns = ({
             Effect.flatMap((text) => Effect.try(() => (JSON.parse(text) as { pid?: unknown }).pid)),
             Effect.orElseSucceed(() => undefined),
           );
-          // `process.kill` throws on a PID that is not a positive integer, which reads as gone.
           if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0 || alive(pid))
             return true;
         }
         return false;
       }).pipe(Effect.orElseSucceed(() => true));
 
-    /**
-     * Bytes allocated under `file`, without following links and counting each inode once. A file
-     * that cannot be read, or vanishes while another run writes, counts as nothing.
-     */
     const counted = new Set<string>();
     const sizeOf = (file: string, seen = counted): Effect.Effect<number> =>
       Effect.gen(function* () {
@@ -161,19 +87,16 @@ export const pruneRuns = ({
         seen.add(inode);
         return Option.match(info.blocks, {
           onNone: () => Number(info.size),
-          // Effect 4.1 gives the block count as a bigint.
           onSome: (blocks) => Number(blocks) * 512,
         });
       }).pipe(Effect.orElseSucceed(() => 0));
 
-    /** A real directory, not a link to one. */
     const isDirectory = (file: string) =>
       Effect.gen(function* () {
         if (Option.isSome(yield* Effect.option(fs.readLink(file)))) return false;
         return (yield* fs.stat(file)).type === "Directory";
       }).pipe(Effect.orElseSucceed(() => false));
 
-    /** The run's bulk folders, relative to it: see the comment at the top. */
     const bulkOf = (directory: string) =>
       Effect.gen(function* () {
         const found: Array<string> = [];
@@ -197,7 +120,6 @@ export const pruneRuns = ({
         return found;
       });
 
-    /** When the run ended: its `evidence.json` was written, or else its folder last changed. */
     const endedAt = (directory: string) =>
       fs.stat(path.join(directory, "evidence.json")).pipe(
         Effect.catch(() => fs.stat(directory)),
@@ -210,7 +132,6 @@ export const pruneRuns = ({
         Effect.orElseSucceed(() => now),
       );
 
-    /** Only an outcome `runSuite` recorded as passed. */
     const passed = (directory: string) =>
       fs.readFileString(path.join(directory, "evidence.json")).pipe(
         Effect.flatMap(Schema.decodeUnknownEffect(Outcome)),
@@ -218,7 +139,6 @@ export const pruneRuns = ({
         Effect.orElseSucceed(() => false),
       );
 
-    /** Free bytes on the workspace's file system, from POSIX `df`; none if it hangs, as on a stale mount. */
     const free = processes.string(ChildProcess.make("df", ["-Pk", root])).pipe(
       Effect.map((text) => Number(text.trim().split("\n").at(-1)?.split(/\s+/)[3]) * 1024),
       Effect.timeout("3 seconds"),
@@ -235,17 +155,14 @@ export const pruneRuns = ({
       ended: number;
     };
     const aged: Array<string> = [];
-    // Finished runs from the last 3 days, newest first.
     const runs: Array<Run> = [];
     for (const name of names.reverse()) {
       const directory = path.join(root, name);
-      // A link resolves elsewhere (or nowhere): leave it and what it points to.
       const resolved = yield* Effect.option(fs.realPath(directory));
       if (Option.isNone(resolved) || resolved.value !== path.join(real, name)) continue;
       const [, day, hours, minutes, seconds] = runName.exec(name) ?? [];
       const time = `${day}T${hours}:${minutes}:${seconds}Z`;
       const started = Date.parse(time);
-      // Not a real time (hour 25, 30 February): keep it, uncounted.
       if (!Number.isFinite(started) || new Date(started).toISOString() !== time) continue;
       if (name === current || (yield* inProgress(directory))) continue;
       if (now - started > keepMs) aged.push(directory);
@@ -257,7 +174,6 @@ export const pruneRuns = ({
           ended: yield* endedAt(directory),
         });
     }
-    // Shrink before sizing against the cap, so the cap counts what stays.
     const newestPassed = runs.find((run) => run.passed);
     const shrinking = new Map<Run, { bulk: Array<string>; bytes: number; reason: string }>();
     for (const run of runs) {
@@ -301,8 +217,6 @@ export const pruneRuns = ({
     let count = 0;
     const failed: Array<string> = [];
     for (const directory of doomed) {
-      // A render may have started on it since the scan. One starting between this read and the
-      // removal still loses the folder; only folders already condemned are at stake.
       if (yield* inProgress(directory)) continue;
       const result = yield* Effect.result(fs.remove(directory, { recursive: true, force: true }));
       if (result._tag === "Failure")
@@ -315,7 +229,6 @@ export const pruneRuns = ({
       const done: Array<string> = [];
       for (const relative of plan.bulk) {
         const target = path.join(run.directory, relative);
-        // Checked again just before: a real directory inside this run folder, not a link.
         const resolved = yield* Effect.option(fs.realPath(target));
         if (
           Option.isNone(resolved) ||

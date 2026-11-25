@@ -1,8 +1,3 @@
-/**
- * An app schedule has one copy, without an actor, which the app's managers control. It runs
- * without a caller, with the accounts linked for everyone only, and waits while a plain requirement
- * has none linked. A workflow it starts runs in the app scope too.
- */
 import { expect, layer } from "@effect/vitest";
 import { Clock, Effect, Schedule, Schema } from "effect";
 import { Api, body, type Session } from "../support/api.ts";
@@ -13,11 +8,6 @@ import { appLinksFixture, keyProvider, ok, okBody, refused } from "../support/ap
 import { WorkflowRun } from "../support/workflow-app.ts";
 import { scenarios } from "../test-plan.ts";
 
-/**
- * `tick` records the account it ran with and whether it had a caller, then starts `capture`, which
- * sleeps and then reads the account it captured in a step. `observe` records the `capture` runs as
- * the app sees them; an app schedule runs it, since only app-scope work sees runs without an actor.
- */
 const appSource = `import { defineApp, defineProvider, secrets, query, mutation, workflow, appInterval, object, string, router,
   type QueryContext, type MutationContext, type WorkflowContext } from "apps";
 const team = ${keyProvider("App schedule fixture")};
@@ -46,7 +36,6 @@ export default defineApp(requirements, async () => ({
   workflows: { capture },
   schedules: { tick: appInterval({ minutes: 1 }, tick, {}), observe: appInterval({ minutes: 1 }, observe, {}) },
 }));`;
-/** The same declaration as a member's schedule, before it became the app's. */
 const userSource = `import { defineApp, defineProvider, secrets, query, mutation, userInterval, object, string, router } from "apps";
 const team = ${keyProvider("App schedule fixture")};
 const tick = mutation({ input: object({}) }, async () => "user tick");
@@ -91,7 +80,6 @@ layer(HostedLive, { excludeTestServices: true })("App schedules", (it) => {
     withHostedCase(
       context,
       Effect.gen(function* () {
-        // The declaration starts as a member's schedule; the member enables their copy.
         const fixture = yield* appLinksFixture([
           { path: "index.ts", content: userSource },
           migration,
@@ -124,20 +112,16 @@ layer(HostedLive, { excludeTestServices: true })("App schedules", (it) => {
           Effect.tap(ok),
           Effect.flatMap((response) => body(Ticks, response)),
         );
-        // Evaluating the app needs its app link, which a manager connects first.
         const team = yield* connect(actors.owner, "app", "team", "team-key");
         const memberCopy = yield* okBody(Settings, yield* configure(actors.member, true));
         expect(memberCopy.actor).toBe(fixture.ids.member);
 
-        // Deploying the declaration as an app schedule replaces the members' copies with one
-        // schedule without an actor, which starts paused.
         const redeployed = yield* api.request(actors.owner, "POST", `${path}/deploy`, {
           files: [{ path: "index.ts", content: appSource }, migration, appsManifest],
         });
         expect(redeployed.status, JSON.stringify(redeployed.body)).toBe(200);
         expect(yield* schedules()).toEqual([]);
 
-        // Only the app's managers enable it, and a member cannot make a copy of their own.
         expect((yield* configure(actors.member, true, "app")).status).toBe(403);
         expect((yield* configure(actors.member, true)).status).not.toBe(200);
         expect(yield* schedules()).toEqual([]);
@@ -146,7 +130,6 @@ layer(HostedLive, { excludeTestServices: true })("App schedules", (it) => {
         expect(enabled.accountRequired).toBeUndefined();
         const appSchedule = copyPath(enabled.id);
 
-        // Members can see it but not run, pause or remove it.
         expect(yield* schedules(actors.member)).toMatchObject([{ id: enabled.id, actor: null }]);
         expect((yield* api.request(actors.member, "POST", `${appSchedule}/run`)).status).toBe(403);
         expect(
@@ -154,8 +137,6 @@ layer(HostedLive, { excludeTestServices: true })("App schedules", (it) => {
         ).toBe(403);
         expect((yield* api.request(actors.member, "DELETE", appSchedule)).status).toBe(403);
 
-        // A manager runs it: it runs without a caller, with the linked account. Its tick starts a
-        // workflow, which finishes with the account still linked.
         yield* ok(yield* api.request(actors.owner, "POST", `${appSchedule}/run`));
         yield* runsWith("succeeded", 1);
         expect(yield* ticks).toEqual([{ account: team, caller: "none" }]);
@@ -163,7 +144,6 @@ layer(HostedLive, { excludeTestServices: true })("App schedules", (it) => {
         if (first === undefined) return yield* Effect.die(new Error("No workflow run"));
         yield* waitForRun(api, actors.owner, path, first.id, "complete");
 
-        // Unlinking does not pause it: it waits for an account and refuses to run.
         yield* ok(yield* unlink(actors.owner, "team", team));
         expect(yield* schedules()).toMatchObject([
           { id: enabled.id, enabled: true, accountRequired: "team" },
@@ -175,7 +155,6 @@ layer(HostedLive, { excludeTestServices: true })("App schedules", (it) => {
         );
         expect((yield* runs).map((run) => run.status)).toEqual(["succeeded"]);
 
-        // Linking an account again resumes it.
         yield* ok(yield* link(actors.owner, "team", team));
         expect((yield* schedules())[0]?.accountRequired).toBeUndefined();
         yield* ok(yield* api.request(actors.admin, "POST", `${appSchedule}/run`));
@@ -184,14 +163,12 @@ layer(HostedLive, { excludeTestServices: true })("App schedules", (it) => {
           { account: team, caller: "none" },
           { account: team, caller: "none" },
         ]);
-        // The workflow this tick started finishes too, before anything unlinks its account.
         const second = (yield* waitForWorkflows(api, actors.owner, path, 2)).find(
           (run) => run.id !== first.id,
         );
         if (second === undefined) return yield* Effect.die(new Error("No second workflow run"));
         yield* waitForRun(api, actors.owner, path, second.id, "complete");
 
-        // Managers pause and remove it.
         expect(
           yield* okBody(
             Settings,
@@ -208,15 +185,11 @@ layer(HostedLive, { excludeTestServices: true })("App schedules", (it) => {
       context,
       Effect.gen(function* () {
         const { api, actors, path, team, start, unlink, link } = yield* appWorkflowFixture;
-        // The run the app schedule started has no caller and reads the linked account.
         const first = yield* start([]);
         const completed = yield* waitForRun(api, actors.owner, path, first, "complete");
         expect(completed.output).toEqual({ caller: false, account: team, token: "team-key" });
-        // A member may read the app's run while its captured account is linked for everyone.
         const history = `${path}/workflow-runs/${first}`;
         yield* ok(yield* api.request(actors.member, "GET", history));
-        // Retained history is checked by the captured app account's current app link, even for
-        // the owner, who can still use the account.
         yield* ok(yield* unlink(actors.owner, "team", team));
         expect((yield* api.request(actors.owner, "GET", history)).status).toBe(403);
         expect((yield* api.request(actors.member, "GET", history)).status).toBe(403);
@@ -231,12 +204,8 @@ layer(HostedLive, { excludeTestServices: true })("App schedules", (it) => {
       Effect.gen(function* () {
         const fixture = yield* appWorkflowFixture;
         const { api, actors, prefix, app, path, team, start, connect, unlink, link } = fixture;
-        // The run captures the account as it starts; it is unlinked while the run sleeps, so the
-        // run's step fails as a revoked credential would.
         const run = yield* start([]);
         yield* ok(yield* unlink(actors.owner, "team", team));
-        // Reading the run needs the captured account linked. Another account linked in its place
-        // lets the app's own schedule report the run, which keeps the account it captured.
         const spare = yield* connect(actors.owner, "app", "team", "spare-key");
         const observer = yield* okBody(
           Settings,
@@ -254,7 +223,6 @@ layer(HostedLive, { excludeTestServices: true })("App schedules", (it) => {
                 rows.filter((row) => row.name === "observe" && row.status === "succeeded").length,
             ),
           );
-        /** Run `observe` and wait for it, then read what it recorded for the run. */
         const observe = Effect.gen(function* () {
           const before = yield* observations;
           yield* ok(
@@ -289,7 +257,6 @@ layer(HostedLive, { excludeTestServices: true })("App schedules", (it) => {
           error: "credentials",
           step: "use",
         });
-        // Linked again, the captured account makes the failed run readable.
         yield* ok(yield* unlink(actors.owner, "team", spare));
         yield* ok(yield* link(actors.owner, "team", team));
         const read = yield* waitForRun(api, actors.owner, path, run, "errored");
@@ -299,7 +266,6 @@ layer(HostedLive, { excludeTestServices: true })("App schedules", (it) => {
   );
 });
 
-/** The app with its account linked for everyone and its app schedule enabled. */
 const appWorkflowFixture = Effect.gen(function* () {
   const fixture = yield* appLinksFixture([{ path: "index.ts", content: appSource }, migration]);
   const { api, actors, path, connect } = fixture;
@@ -311,7 +277,6 @@ const appWorkflowFixture = Effect.gen(function* () {
       scope: "app",
     }),
   );
-  /** Run the app schedule and return the workflow run it started, beside the `known` ones. */
   const start = (known: ReadonlyArray<string>) =>
     Effect.gen(function* () {
       yield* ok(
@@ -325,7 +290,6 @@ const appWorkflowFixture = Effect.gen(function* () {
   return { ...fixture, team, start };
 });
 
-/** Read one workflow run until it reaches `status`; fails after 20 seconds. */
 const waitForRun = (
   api: Effect.Success<typeof Api>,
   actor: Session,
@@ -344,7 +308,6 @@ const waitForRun = (
       yield* Effect.sleep("200 millis");
     }
   });
-/** Wait until `actor` sees at least `count` workflow runs of the app, and return them. */
 const waitForWorkflows = (
   api: Effect.Success<typeof Api>,
   actor: Session,

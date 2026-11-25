@@ -1,9 +1,3 @@
-/**
- * The images, audio and files a tool result carries as MCP content blocks, written to disk for the
- * tool commands. The host moves each block's bytes out of the result's JSON and leaves the block
- * without them, plus its `contentIndex`, in its place. The CLI prints only that JSON, so it writes
- * each block's bytes to a file and adds the file's `path` beside the `contentIndex`.
- */
 import { Effect, FileSystem, Option, Path, Schema } from "effect";
 
 const Media = Schema.Struct({
@@ -26,18 +20,12 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 
 const decodeComponent = Option.liftThrowable(decodeURIComponent);
 
-/** `.pdf` for `application/pdf`, `.svg` for `image/svg+xml`; nothing for an unusual type. */
 const extension = (mimeType: string | undefined) => {
   const subtype = mimeType?.split(";")[0]?.split("/")[1]?.split("+")[0]?.trim().toLowerCase();
   if (subtype === undefined || !/^[a-z0-9-]{1,16}$/u.test(subtype)) return "";
   return subtype === "jpeg" ? ".jpg" : `.${subtype}`;
 };
 
-/**
- * A safe file name for the block at `index`: the index, then the resource URI's last path segment
- * with anything but letters, digits, `.`, `_` and `-` replaced, or `content` and the extension its
- * MIME type implies.
- */
 const fileName = (index: number, uri: string | undefined, mimeType: string | undefined) => {
   const segment = uri === undefined ? "" : (URL.parse(uri)?.pathname ?? uri).split("/").at(-1);
   const decoded = Option.getOrElse(decodeComponent(segment ?? ""), () => segment ?? "");
@@ -49,12 +37,6 @@ const fileName = (index: number, uri: string | undefined, mimeType: string | und
   return `${index}-${name}${name.includes(".") ? "" : extension(mimeType)}`;
 };
 
-/**
- * Write each image, audio and blob resource block in `content` to its own file in `directory`, or
- * in a new temporary directory when none is given, and return `value` with each placeholder that
- * names one of those blocks by `contentIndex` given the file's `path`. A result without such
- * blocks is returned unchanged and writes nothing.
- */
 export const saveContentFiles = (
   value: unknown,
   content: ReadonlyArray<unknown>,

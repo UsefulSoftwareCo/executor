@@ -1,27 +1,3 @@
-/**
- * Decide whether this Deploy run deploys, before anything builds. Many merges change only tests,
- * CI or notes, and every deploy replaces every production Worker, which resets the MCP session
- * Worker's Durable Objects. A push whose changes since the last deploy all lie in paths no deploy
- * reads (`src/infrastructure/deploy-inputs.ts`) skips the deploy job.
- *
- *   node apps/hosted/cloud/scripts/deploy-decision.ts
- *
- * It compares this commit with what production holds: the commit of the deploy job that started
- * last, of any run and attempt, as GitHub's Actions API records it (`newestDeployStart` in
- * `src/infrastructure/deploy-history.ts`). If that deploy step did not succeed, production may
- * hold any part of it, and this run deploys.
- *
- * Every doubt deploys: a manual dispatch (a changed repository variable or secret makes no
- * commit), a re-run of all jobs, a dispatch or re-run since the last deploy that was cancelled
- * before its deploy job started (`lostRequest`), no deploy GitHub can show, a rerun of the
- * deployed commit, a commit git cannot compare, or any failure of this script, which the summary
- * reports as a failure to decide. "Re-run failed jobs" keeps this job's earlier output, so it
- * deploys only if this job failed.
- *
- * Writes the decision, its base and the files that matched to the job summary, then `deploy=true`
- * or `deploy=false` and `base=<commit>` to `GITHUB_OUTPUT`, last: a run that fails before then
- * leaves no output, and the deploy job runs.
- */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
@@ -63,14 +39,11 @@ class DeployDecisionFailed extends Schema.TaggedError<DeployDecisionFailed>()(
 
 interface Decision {
   readonly deploy: boolean;
-  /** The decision did not finish, so the run deploys. */
   readonly failed?: boolean;
   readonly reason: string;
-  /** The last deployed commit and its run attempt, when the decision compared with one. */
   readonly base?: { readonly sha: string; readonly url: string };
   readonly matched: ReadonlyArray<string>;
   readonly changed: number;
-  /** The root package.json changed, but only in `e2e:*` scripts. */
   readonly e2eScriptsOnly?: boolean;
 }
 const deploy = (reason: string, fields: Partial<Decision> = {}): Decision => ({
@@ -86,10 +59,6 @@ const PackageScripts = Schema.Struct({
   scripts: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
 });
 
-/**
- * The checkout's workspace directories, each with whether `bun install` runs scripts there: a
- * manifest that does not read faithfully (`readManifest`) counts as one that does.
- */
 const workspacesOf = (root: string, manifest: unknown) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -110,10 +79,6 @@ const workspacesOf = (root: string, manifest: unknown) =>
 
 const Contents = Schema.Struct({ content: Schema.String, encoding: Schema.String });
 
-/**
- * The root manifest at `sha`, read through GitHub: the decide job's checkout holds no file
- * contents but this commit's.
- */
 const manifestAt = (repository: string, sha: string) =>
   githubGet(Contents, `repos/${repository}/contents/package.json?ref=${sha}`).pipe(
     Effect.flatMap(({ content, encoding }) =>
@@ -127,10 +92,6 @@ const manifestAt = (repository: string, sha: string) =>
     ),
   );
 
-/**
- * One git command's standard output. Any exit status but 0 fails, so a commit git does not hold
- * is a failure, which deploys, and never an empty list of changes.
- */
 const git = (...args: ReadonlyArray<string>) =>
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -197,23 +158,18 @@ const decide = Effect.gen(function* () {
       base,
     });
   const root = (yield* git("rev-parse", "--show-toplevel")).trim();
-  // NUL-separated, so git writes every path as it is rather than quoting unusual ones. Without
-  // rename detection a moved file is listed at both its old and its new path.
   const changed = (yield* git("diff", "-z", "--name-only", "--no-renames", base.sha, head))
     .split("\0")
     .filter((file) => file !== "");
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const manifest = yield* fs.readFileString(path.join(root, "package.json"));
-  // Everything below reads the root manifest, so it must have one reading: the one Bun takes.
   const parsed = readManifest(manifest);
   if (parsed === undefined)
     return yield* new DeployDecisionFailed({
       message:
         "the root package.json does not read faithfully (a duplicated key, a rewritten escape or a non-canonical number), so what Bun reads from it cannot be shown",
     });
-  // Only a change to `e2e:*` scripts leaves the root manifest out, and only while no other script
-  // runs one: the decision fails, and so deploys, while one does.
   const naming = scriptsNamingE2e(manifest);
   if (naming.length > 0)
     return yield* new DeployDecisionFailed({
@@ -243,7 +199,6 @@ const decide = Effect.gen(function* () {
       } satisfies Decision);
 });
 
-/** The job summary: the decision, its base, and the files that matched or how many did not. */
 const summaryOf = (decision: Decision) => {
   const shown = 50;
   const heading = decision.failed
@@ -288,8 +243,6 @@ const summaryOf = (decision: Decision) => {
 const program = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const decision = yield* decide.pipe(
-    // Any failure deploys: a skipped deploy must never rest on a decision that did not finish. It
-    // is reported as a failure to decide, so a gate that stopped working does not pass unnoticed.
     Effect.catchCause((cause) =>
       Effect.gen(function* () {
         const first = Cause.pretty(cause).split("\n")[0] ?? "unknown failure";
@@ -303,8 +256,6 @@ const program = Effect.gen(function* () {
   const stepSummary = yield* Config.NonEmptyString("GITHUB_STEP_SUMMARY").pipe(Config.option);
   if (Option.isSome(stepSummary))
     yield* fs.writeFileString(stepSummary.value, `${summary}\n`, { flag: "a" });
-  // The output comes last: if anything before it fails, the step fails with no output, and the
-  // deploy job runs.
   const output = yield* Config.NonEmptyString("GITHUB_OUTPUT").pipe(Config.option);
   if (Option.isSome(output))
     yield* fs.writeFileString(

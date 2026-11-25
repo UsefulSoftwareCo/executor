@@ -1,31 +1,3 @@
-/**
- * Tell whether this pull request run repeats one that already finished: `node e2e/ci-repeat.ts`.
- *
- * A stack push that moves a layer's base and head together makes GitHub send that layer's
- * `synchronize` event twice, with the same payload, so two CI runs start on one head within a
- * second. They cannot cancel each other: a cancelled run fails the required checks, and GitHub
- * decides a check reported twice on a commit by the newer check suite (notes/ci.md, "The main
- * ruleset"). So `ci.yml` queues them by head commit, and the second starts once the first has
- * finished. This finds that first run, and the second reports its result instead of testing the
- * same merge again, which took as long as the first run.
- *
- * A run repeats another when that run of the same workflow finished on the same head, for a
- * `pull_request` event, and tested the same thing: its `select` job uploaded the record this run's
- * did (`CI_TESTED`, an artifact named for the pull request and a key of the merge tree, the base
- * commit for a pull request into main, the select job's outputs and the description's
- * worker-growth blocks it read; see e2e/ci-key.ts). When that run's size gate decided (`checks / site` passed or failed), the gate
- * must have read the same worker-growth blocks this run's select read: the site job uploads its
- * own record (`CI_SIZED`). The run must be on its first attempt: a re-run's jobs may have read a
- * later description than its select did. Its `checks / select` must have succeeded, so a failure
- * there (a missing e2e block, a missing deployed-stage line) is decided again on today's
- * description. Its `checks / check` and `checks / e2e` must both have passed, and so must the run:
- * only a pass is handed on. A failure is tested again, since its cause may be a dependency rather
- * than the code (the hosted emulator timing out failed one of two runs on one head, 16 Nov), and a
- * repeat of it would be a red that only testing can clear. A cancelled run, or one that has not
- * finished, is not repeated either. Anything else, including a re-run of this run, no record and
- * any failure to read, tests in full. It writes `of`, `check` and `e2e` to `GITHUB_OUTPUT` only for a repeat; `check` and `e2e`
- * read the repeated run's results again when they run.
- */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Config, Console, Effect, FileSystem, Option, Schema, Stream } from "effect";
@@ -35,11 +7,8 @@ class RepeatUnknown extends Schema.TaggedError<RepeatUnknown>()("RepeatUnknown",
   message: Schema.String,
 }) {}
 
-/** The required checks a repeat reports (apps/hosted/cloud/alchemy.github-ruleset.ts). */
 const requiredChecks = { check: "checks / check", e2e: "checks / e2e" } as const;
-/** The job that records what a run tests and chooses its suites. */
 const selectJob = "checks / select";
-/** The job whose size gate reads the description's worker-growth blocks for itself. */
 const siteJob = "checks / site";
 
 const Run = Schema.Struct({
@@ -64,7 +33,6 @@ const Jobs = Schema.fromJsonString(
   }),
 );
 
-/** Runs `gh` with the job's token and returns what it prints. */
 const gh = (args: ReadonlyArray<string>) =>
   Effect.gen(function* () {
     const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -92,7 +60,6 @@ const read = <S extends Schema.Top>(schema: S, path: string) =>
     ),
   );
 
-/** The finished run this run repeats, with its required checks' conclusions, or none. */
 const repeated = Effect.gen(function* () {
   const repository = yield* Config.String("GITHUB_REPOSITORY");
   const runId = Number(yield* Config.String("GITHUB_RUN_ID"));
@@ -172,7 +139,6 @@ NodeRuntime.runMain(
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const found = yield* repeated.pipe(
-      // Not knowing is not a repeat: the run tests in full.
       Effect.catchCause((cause) =>
         Console.log(
           `Could not tell whether this run repeats another (${String(cause).split("\n")[0]}); it tests in full.`,

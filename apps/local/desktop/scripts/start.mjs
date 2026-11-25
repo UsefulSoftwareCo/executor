@@ -1,4 +1,3 @@
-/** Workspace launcher: build Electron main, retain the explicit host environment, forward shutdown. */
 import { spawn } from "node:child_process";
 import { mkdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
@@ -12,7 +11,6 @@ await buildDesktop();
 const { executable } = await resolveLauncher();
 const env = { ...process.env };
 delete env.ELECTRON_RUN_AS_NODE;
-// A background server this desktop starts serves the dashboard through Vite with hot reload.
 if (process.argv.includes("--dev")) env.EXECUTOR_DESKTOP_DEV = "1";
 const child = spawn(executable, [desktop, ...process.argv.slice(2)], {
   cwd: root,

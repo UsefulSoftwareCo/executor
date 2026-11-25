@@ -1,13 +1,3 @@
-/**
- * A service whose token endpoint refuses PKCE from confidential clients, as LinkedIn's web flow
- * does: a token request carrying `code_verifier` fails client authentication with 401
- * `invalid_client`, even with the right secret. Its provider declares `pkce: false`, and sign-in
- * and reconnect then send neither a challenge nor a verifier. Secrets with reserved characters
- * reach the token endpoint unchanged however the client was saved. A provider that declares
- * nothing keeps signing in with PKCE S256. Turning PKCE off gives the requirement a new provider:
- * accounts connected before cannot reconnect into it, and a sign-in in flight fails when it saves;
- * both errors tell the person to connect again.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
@@ -39,7 +29,6 @@ const Registered = Schema.Struct({
 });
 const BuildFailed = Schema.Struct({ stage: Schema.String, message: Schema.String });
 const CompletionFailure = Schema.Struct({ _tag: Schema.String, reason: Schema.String });
-/** What the person and an agent read: the error's description and recovery. */
 const Presented = Schema.Struct({
   _tag: Schema.String,
   message: Schema.String,
@@ -47,7 +36,6 @@ const Presented = Schema.Struct({
 });
 const Redeployed = Schema.Struct({ app: AppProvider });
 
-/** Synthetic secrets with every character a form or Basic credential encodes. */
 const secrets = {
   reserved: "Ab+c/d=e%f&g:h",
   encoded: "x%2By%20z",
@@ -59,7 +47,6 @@ const secrets = {
 type Method = "client_secret_post" | "client_secret_basic";
 type Credentials = { readonly clientId: string; readonly clientSecret: string };
 
-/** Deploy, connect and sign in against the shared loopback issuer. */
 const harness = Effect.gen(function* () {
   const api = yield* Api,
     actors = yield* Actors,
@@ -72,7 +59,6 @@ const service=defineProvider({name:${JSON.stringify(name)},auth:{oauth:oauth2(${
 export default defineApp({user: { accounts:{service} }},async()=>({tools: router({
   read:query({input:object({})},async()=>({ok:true})),
 })}));`;
-  /** Redeploy an app with a changed provider declaration; returns its new requirement. */
   const redeploy = (app: string, name: string, config: object) =>
     Effect.gen(function* () {
       const response = yield* api.request(actors.owner, "POST", `${prefix}/apps/${app}/deploy`, {
@@ -101,7 +87,6 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
     tokenUrl: `${issuer.origin}/token`,
     scopes: ["openid", "profile"],
   };
-  /** A new connection, or with `account` a reconnect of that account. */
   const connectionRequest = (app: string, account?: string) =>
     api.request(
       actors.owner,
@@ -139,10 +124,6 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
     api.request(actors.owner, "POST", `${prefix}/connections/${id}/oauth/complete`, {
       callbackUrl,
     });
-  /**
-   * Sign in through one app with a client, as the service registered it; with `account`, reconnect
-   * that account. Returns what the authorization URL and the issuer saw.
-   */
   const signIn = (
     app: typeof AppProvider.Type,
     credentials: Credentials,
@@ -202,9 +183,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth PKCE refused", (it) => {
           yield* harness;
         yield* issuer.configure({ pkce: "refused" });
 
-        // Without the declaration, Executor signs in with PKCE, and the service refuses the
-        // exchange as a client authentication failure although the secret is right. That is what
-        // people saw: a correct secret, replaced and refused again.
         const undeclared = yield* deploy("PKCE sent", {
           ...endpoints,
           tokenEndpointAuthMethod: "client_secret_post",
@@ -226,7 +204,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth PKCE refused", (it) => {
           _tag: "OAuthCompletionFailed",
           reason: "invalid_client",
         });
-        // The issuer counts only token requests that carried a `code_verifier`.
         expect(refused.metrics.refusedClientAuthentications).toBe(refusedBefore + 1);
 
         for (const method of ["client_secret_post", "client_secret_basic"] as const) {
@@ -255,7 +232,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth PKCE refused", (it) => {
             expect(signedIn.challengeMethod, label).toBeNull();
             expect(signedIn.metrics.authorizationChallenged, label).toBe(false);
             expect(signedIn.metrics.lastExchangeAuth, label).toBe(method);
-            // In "refused" mode `pkce` holds only when the token request carried no verifier.
             expect(signedIn.metrics.tokenChecks, label).toMatchObject({
               pkce: true,
               authClient: true,
@@ -265,7 +241,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth PKCE refused", (it) => {
           let last: { credentials: Credentials; client: object; account: string } | undefined;
           for (const [name, clientSecret] of Object.entries(secrets))
             for (const saved of ["entered", "registered", "updated"] as const) {
-              // Client IDs carry the characters Basic credentials must encode too.
               const credentials = {
                 clientId: `${saved}-${name}-${randomUUID().slice(0, 8)}:a+b`,
                 clientSecret,
@@ -305,7 +280,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth PKCE refused", (it) => {
               if (signedIn.account !== undefined)
                 last = { credentials, client, account: signedIn.account };
             }
-          // Reconnecting an account signs in again the same way, without PKCE.
           if (last === undefined) return yield* Effect.die("No account signed in");
           const reconnected = yield* signIn(
             app,
@@ -317,7 +291,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth PKCE refused", (it) => {
           expectNoPkce(reconnected, `${method} reconnect`);
           expect(reconnected.account).toBe(last.account);
         }
-        // `pkce: false` needs a secret: without one, nothing but the code would bind it.
         for (const tokenEndpointAuthMethod of [undefined, "none"]) {
           const publicClient = yield* deployRequest("PKCE refused public", {
             ...endpoints,
@@ -332,7 +305,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth PKCE refused", (it) => {
           );
         }
 
-        // Only the undeclared provider's exchange carried a verifier.
         expect((yield* issuer.metrics).refusedClientAuthentications).toBe(refusedBefore + 1);
       }),
     ),
@@ -343,7 +315,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth PKCE refused", (it) => {
       context,
       Effect.gen(function* () {
         const { issuer, deploy, endpoints, signIn } = yield* harness;
-        // The issuer's default requires an S256 challenge and checks the verifier against it.
         yield* issuer.configure({ pkce: "required" });
         const app = yield* deploy("PKCE default", {
           ...endpoints,
@@ -361,7 +332,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth PKCE refused", (it) => {
           expect(signedIn.challenge, label).toMatch(/^[\w-]{43}$/);
           expect(signedIn.challengeMethod, label).toBe("S256");
           expect(signedIn.metrics.authorizationChallenged, label).toBe(true);
-          // In "required" mode `pkce` holds only when the verifier hashes to the challenge.
           expect(signedIn.metrics.tokenChecks, label).toMatchObject({ pkce: true });
         };
         const signedIn = yield* signIn(app, credentials, "client_secret_post", credentials);
@@ -410,20 +380,16 @@ layer(HostedLive, { excludeTestServices: true })("OAuth PKCE refused", (it) => {
         expect(signedIn.challenge).not.toBeNull();
         if (signedIn.account === undefined) return yield* Effect.die("No account signed in");
 
-        // A second sign-in reaches the service's consent before the app changes.
         const pending = yield* connection(app.id);
         const started = yield* start(pending, credentials);
         expect(new URL(started.authorizationUrl).searchParams.get("code_challenge")).not.toBeNull();
         const callbackUrl = yield* consent(started.authorizationUrl);
 
-        // The app turns PKCE off, which is part of the provider's identity.
         const changed = yield* redeploy(app.id, "PKCE changed", { ...declared, pkce: false });
         expect(changed.requirements.accounts.service.provider).not.toBe(
           app.requirements.accounts.service.provider,
         );
 
-        // The sign-in in flight exchanges its code as it started, then cannot save against the
-        // changed requirement, and tells the person to start again.
         const completed = yield* complete(pending, callbackUrl);
         expect(completed.status, JSON.stringify(completed.body)).toBe(409);
         expect(yield* body(Presented, completed)).toEqual({
@@ -432,8 +398,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth PKCE refused", (it) => {
           recovery: { action: "Close this form and start account setup again." },
         });
 
-        // The account connected before cannot be reconnected into the changed provider; the
-        // error says to connect a new account.
         const reconnect = yield* connectionRequest(app.id, signedIn.account);
         expect(reconnect.status, JSON.stringify(reconnect.body)).toBe(422);
         expect(yield* body(CompletionFailure, reconnect)).toMatchObject({
@@ -443,7 +407,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth PKCE refused", (it) => {
         expect((yield* body(Presented, reconnect)).recovery.action).toBe(
           "Open Accounts and connect a new account for this requirement.",
         );
-        // It is kept, with the credentials it had.
         const kept = yield* api.request(
           actors.owner,
           "GET",
@@ -451,7 +414,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth PKCE refused", (it) => {
         );
         expect(kept.status, JSON.stringify(kept.body)).toBe(200);
 
-        // A new connection signs in to the changed provider without PKCE.
         yield* issuer.configure({ pkce: "refused" });
         const fresh = yield* signIn(changed, credentials, "client_secret_post", credentials);
         expect(fresh.response.status, JSON.stringify(fresh.response.body)).toBe(200);

@@ -1,33 +1,3 @@
-/**
- * Generate the reviewed targets of the catalog-copy rebuild (data step
- * `13_rebuild_catalog_copies_on_current_apps`) from the catalog repository's history.
- *
- *   bun scripts/catalog-copy-snapshots.ts --catalog <executor-apps checkout> \
- *     --commits scripts/catalog-copy-snapshots.commits --reviewed 1fefdb42:97ba6d9d \
- *     [--stats <file>] [--dump <directory>]
- *
- * A catalog install copies the feed's files unchanged: every file of `packages/<id>/` except
- * `node_modules` and `.DS_Store`, as UTF-8 text (executor-apps `scripts/feed.ts`). Each commit
- * listed in `--commits` is one the feed published (the catalog's `main`). For every distinct
- * package tree they hold, on a release before the step's target, this applies the step's own
- * upgrade (`upgradedFiles`) and lists the result's digest only when every check passes:
- *
- * 1. The upgrade recognizes the source (`upgradedFiles` is defined).
- * 2. Before protocol 13, the official codemod (`scripts/codemods/app-user-accounts.ts`) changes
- *    exactly the account declaration and the factory's binding, in its own style, and nothing
- *    else in any script file: the source reads no context's accounts the upgrade would miss.
- * 3. Every upgraded script file parses with the TypeScript compiler, and, before protocol 13, the
- *    compiler confirms each rewritten read: it was the object of a property access, and the upgraded
- *    `index.ts` names `accounts` only as a property or key (`readsResolve`).
- * 4. Before protocol 13, the catalog's own move of the package to beta.100 on its main (`--reviewed`:
- *    the commits before and after it) changed only `package.json` and `index.ts`, and its
- *    `index.ts` equals the upgrade's. A package whose move needed anything else (a restructure, a
- *    provider file) has none of its older trees listed.
- *
- * The output replaces `packages/app-management/src/implementation/catalog-copy-snapshots.ts`.
- * Builds are not run here: the step builds every target before it deploys one and compares its
- * requirements with the running version's.
- */
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -58,7 +28,6 @@ const catalog = argument("catalog");
 const commitsFile = argument("commits");
 const reviewed = argument("reviewed");
 const statsFile = argument("stats");
-/** A directory to write each file the codemod disagrees on, for a person to read. */
 const dump = argument("dump");
 if (catalog === undefined || commitsFile === undefined || reviewed === undefined) {
   console.error(
@@ -78,7 +47,6 @@ const git = (...args: string[]) => {
   return result.stdout;
 };
 
-/** Read many blobs in one `git cat-file --batch`. */
 const readBlobs = (shas: ReadonlyArray<string>) => {
   const result = spawnSync("git", ["-C", catalog, "cat-file", "--batch"], {
     input: `${shas.join("\n")}\n`,
@@ -104,7 +72,6 @@ const decoder = new TextDecoder("utf-8", { fatal: true });
 const ignored = (path: string) =>
   path.split("/").some((part) => part === "node_modules" || part === ".DS_Store");
 
-/** Each distinct package tree of `commits`, by package. */
 const packageTrees = (commits: ReadonlyArray<string>) => {
   const trees = new Map<string, string>();
   for (const commit of commits)
@@ -115,7 +82,6 @@ const packageTrees = (commits: ReadonlyArray<string>) => {
   return trees;
 };
 
-/** A tree's files as the feed serves them, or undefined when the feed skips the package. */
 const treeFiles = (tree: string, pkg: string, blobs: Map<string, Uint8Array>) => {
   const entries = git("ls-tree", "-r", tree)
     .split("\n")
@@ -147,7 +113,6 @@ const treeFiles = (tree: string, pkg: string, blobs: Map<string, Uint8Array>) =>
 const scripts = (files: SourceFiles) =>
   files.filter((file) => /\.(?:[cm]?[jt]sx?)$/u.test(file.path) && "content" in file);
 
-/** Each `accounts` identifier in `text` by its start, with whether it reads the binding. */
 const accountsIdentifiers = (text: string) => {
   const source = ts.createSourceFile(
     "index.ts",
@@ -179,11 +144,6 @@ const accountsIdentifiers = (text: string) => {
   return found;
 };
 
-/**
- * The compiler's view of the upgrade: every `read` edit starts at an `accounts` identifier that
- * is the object of a property access, and the upgraded file names `accounts` only as a property
- * or key, so no reference to the renamed binding is left.
- */
 const readsResolve = (original: string, upgraded: string) => {
   const edits = scopedIndexEdits(original);
   if (edits === undefined) return false;
@@ -200,11 +160,6 @@ const parses = (path: string, text: string) => {
   );
 };
 
-/**
- * What the codemod writes for the catalog's shape, from the step's own edits: the same
- * declaration, except that an empty one is dropped with the comma after it, `user: { accounts }`
- * for the factory's binding, and the reads of the requirements left as they are.
- */
 const codemodStyle = (original: string) => {
   const edits = scopedIndexEdits(original);
   if (edits === undefined) return undefined;
@@ -219,8 +174,6 @@ const codemodStyle = (original: string) => {
     if (edit.kind === "binding") return [{ ...edit, text: "user: { accounts }" }];
     if (!empty) return [edit];
     if (edit !== opened) return [];
-    // `{ accounts: {}, icons }` becomes `{ icons }`, `{ icons, accounts: {} }` becomes
-    // `{ icons }` and `{ accounts: {} }` becomes `{}`.
     const after = /^,\s*/u.exec(original.slice(closed.start));
     if (after !== null) return [{ ...edit, end: closed.start + after[0].length, text: "" }];
     const before = /,\s*$/u.exec(original.slice(0, opened.start));
@@ -257,15 +210,12 @@ const stats = {
   notRecognized: 0,
   codemodDisagrees: 0,
   doesNotParse: 0,
-  /** Upgrades whose reads the TypeScript compiler does not confirm (see `readsResolve`). */
   readsUnresolved: 0,
   readsUnresolvedPackages: [] as string[],
   listed: 0,
   reviewedCompared: 0,
   reviewedEqual: 0,
-  /** Packages whose own move to beta.100 was not exactly the upgrade; their older trees are not listed. */
   reviewedDiffer: [] as string[],
-  /** Trees before protocol 13 left out because their package's move was not exactly the upgrade. */
   notReviewed: 0,
   notRecognizedPackages: [] as string[],
   codemodPackages: [] as string[],
@@ -293,7 +243,6 @@ for (const [tree, pkg] of trees) {
   candidates.push({ pkg, tree, from, files, upgraded });
 }
 
-// The codemod reads a directory of every candidate before protocol 13, each in its own folder.
 const scoped = candidates.filter(
   (candidate) => (compareReleases(candidate.from, scopedRequirementsRelease) ?? 0) < 0,
 );
@@ -332,9 +281,6 @@ for (const candidate of scoped)
   }
 rmSync(work, { recursive: true, force: true });
 
-// The catalog's own move to beta.100 on its main. A package whose move changed any file but
-// `package.json` and `index.ts`, or whose `index.ts` after it differs from the upgrade of the one
-// before it, needed more than the upgrade makes: none of its trees before protocol 13 is listed.
 const reviewedTrees = packageTrees([reviewedBefore]);
 const afterIndex = (pkg: string) => {
   const sha = git("ls-tree", reviewedAfter, `packages/${pkg}/index.ts`).split(/\s+/u)[2];

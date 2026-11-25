@@ -1,9 +1,3 @@
-/**
- * A run's body meets an engine whose calls fail. The server's E2E fault list
- * (`EXECUTOR_TEST_WORKFLOW_ENGINE_FAULTS`, honoured only with `EXECUTOR_ENVIRONMENT=e2e`) fails
- * chosen calls as the platform's engine would, or holds one before it reaches the engine as a slow
- * call would be, so no case depends on timing or on the platform.
- */
 import { expect, layer } from "@effect/vitest";
 import { Clock, Effect, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -16,18 +10,9 @@ import { WorkflowRun as Run } from "../support/workflow-app.ts";
 import { Target } from "../support/platform.ts";
 import { scenarios } from "../test-plan.ts";
 
-/** How long `napOnce`'s first sleep waits; the case reads it to judge how that sleep ended. */
 const napOnceMillis = 50;
-/**
- * How far ahead the paused, terminated and transient sleepUntils wait. Their faults fail the
- * engine's answer after it waited, so the call must reach the engine before its time: one that
- * arrives after it meets the engine's refusal of a time in the past instead, which ends the sleep
- * (`sleep-until.ts`), and the fault never answers. The hop to the engine on a loaded runner has
- * taken over 100 ms; this leaves it far more than that.
- */
 const untilAheadMillis = 3000;
 
-/** Each workflow meets the fault the plan configures for its step names. */
 const files = [
   { path: "package.json", content: JSON.stringify({ dependencies: withApps() }) },
   {
@@ -130,7 +115,6 @@ export default defineApp({}, { tools: router({ count, calls }), workflows });`,
   },
 ];
 const Deployed = Schema.Struct({ id: Schema.String });
-/** The four calls a sleep gets in all: the first and three repeats. */
 const sleepAttempts = 4;
 
 layer(HostedLive, { excludeTestServices: true })("Workflow engine calls", (it) => {
@@ -141,8 +125,6 @@ layer(HostedLive, { excludeTestServices: true })("Workflow engine calls", (it) =
         const api = yield* Api,
           actors = yield* Actors,
           telemetry = yield* Telemetry;
-        // Only Cloud delivers spans from inside a run; self-host's runner hands the host the
-        // run's result as data (`app-failure-telemetry.spec.ts`).
         const cloud = (yield* Target).metadata.target === "cloud";
         const prefix = `/api/organizations/${actors.organization.id}/apps`;
         const runs: string[] = [];
@@ -172,7 +154,6 @@ layer(HostedLive, { excludeTestServices: true })("Workflow engine calls", (it) =
             runs.push(run.id);
             return run.id;
           });
-        /** The run once it has ended, whichever way. */
         const ended = (id: string) =>
           Effect.gen(function* () {
             const deadline = (yield* Clock.currentTimeMillis) + 40_000;
@@ -199,7 +180,6 @@ layer(HostedLive, { excludeTestServices: true })("Workflow engine calls", (it) =
             expect(response.status, JSON.stringify(response.body)).toBe(200);
             return response.body;
           });
-        /** The run's sleep spans, `count` of them once they have all been delivered. */
         const sleeps = (run: string, count: number) =>
           Effect.gen(function* () {
             const read = Effect.gen(function* () {
@@ -216,7 +196,6 @@ layer(HostedLive, { excludeTestServices: true })("Workflow engine calls", (it) =
             );
           });
 
-        // A sleep whose engine call fails once is called again and the run completes.
         const once = yield* start("napOnce");
         const onceRun = yield* ended(once);
         expect(onceRun, JSON.stringify(onceRun)).toMatchObject({
@@ -224,7 +203,6 @@ layer(HostedLive, { excludeTestServices: true })("Workflow engine calls", (it) =
           output: "awake",
         });
         if (cloud) {
-          // A sleep's spans: one per execution of the body, and a span can be delivered twice.
           const named = (spans: ReadonlyArray<DeliveredSpan>, name: string) =>
             spans.filter((span) =>
               (span.tags["executor.workflow.step"] ?? "").includes(`:${name}:`),
@@ -248,10 +226,6 @@ layer(HostedLive, { excludeTestServices: true })("Workflow engine calls", (it) =
                 waitedMs: span.tags["executor.workflow.call.waited_ms"],
               })),
             );
-          // nap-once is a sleep. Its fault fails the first call before the engine sees it, and the
-          // product then repeats it, unless that failed call itself lasted the sleep's duration:
-          // then the sleep's time has passed and the product ends it (a slow failure can outlast
-          // a 50 ms sleep on a busy host). Either is a correct end; any other is not.
           const nap = named(onceSpans, "nap-once");
           expect(
             nap.map((span) => span.status),
@@ -262,19 +236,12 @@ layer(HostedLive, { excludeTestServices: true })("Workflow engine calls", (it) =
               (span) =>
                 (span.tags["executor.workflow.call.attempts"] === "2" &&
                   span.tags["executor.workflow.call.repeat_1.code"] === "internal") ||
-                // The product's own record of how long the failed call lasted, not this
-                // scenario's clock: a product that skipped the repeat would record less.
                 (span.tags["executor.workflow.call.attempts"] === "1" &&
                   span.tags["executor.workflow.call.waited"] === "true" &&
                   Number(span.tags["executor.workflow.call.waited_ms"]) >= napOnceMillis),
             ),
             `nap-once was repeated after its fault, or its failed call outlasted it: ${facts(nap)}`,
           ).toBe(true);
-          // wake-once is a sleepUntil, which ends without the engine once its time has passed.
-          // The body computes that time with the app's clock, which advances only with its I/O,
-          // so on a slow host the time can have passed by the first call, before the engine is
-          // asked and before the fault is used. Either way the run is right: its fault failed the
-          // first call and the repeat ended it, or its first call found the time passed.
           const wake = named(onceSpans, "wake-once");
           expect(
             wake.map((span) => span.status),
@@ -292,7 +259,6 @@ layer(HostedLive, { excludeTestServices: true })("Workflow engine calls", (it) =
           ).toBe(true);
         }
 
-        // A sleepUntil a time that has passed is over without the engine, which refuses it.
         const late = yield* start("lateWake");
         const lateRun = yield* ended(late);
         expect(lateRun, JSON.stringify(lateRun)).toMatchObject({
@@ -307,8 +273,6 @@ layer(HostedLive, { excludeTestServices: true })("Workflow engine calls", (it) =
           });
         }
 
-        // A sleep whose every call fails ends the run, its cause recorded for the owner and on
-        // the span, after the bounded calls.
         const never = yield* start("napNever");
         const neverRun = yield* ended(never);
         expect(neverRun).toMatchObject({
@@ -329,7 +293,6 @@ layer(HostedLive, { excludeTestServices: true })("Workflow engine calls", (it) =
             "executor.workflow.call.error_class": "Error",
             "executor.workflow.call.code": "internal",
           });
-          // The waits the product scheduled before each repeat: 200, 400 and 800 ms, each 80-120%.
           for (const [repeat, base] of [
             [1, 200],
             [2, 400],
@@ -343,7 +306,6 @@ layer(HostedLive, { excludeTestServices: true })("Workflow engine calls", (it) =
           }
         }
 
-        // A step whose answer failed after its write ran is not called again: the write ran once.
         const step = yield* start("stepOnce");
         const stepRun = yield* ended(step);
         expect(stepRun, JSON.stringify(stepRun)).toMatchObject({
@@ -357,8 +319,6 @@ layer(HostedLive, { excludeTestServices: true })("Workflow engine calls", (it) =
         });
         expect(yield* calls("step-once")).toBe(1);
 
-        // A sleep the engine waited, whose answer was then lost, is over: it is not waited again.
-        // Its four faults would end the run if each call were repeated.
         const waited = yield* start("waitedOut");
         const waitedRun = yield* ended(waited);
         expect(waitedRun, JSON.stringify(waitedRun)).toMatchObject({
@@ -376,8 +336,6 @@ layer(HostedLive, { excludeTestServices: true })("Workflow engine calls", (it) =
           ).toBe(true);
         }
 
-        // The engine's own answers reach the body at once, unrepeated: a paused or terminated
-        // instance, and a failure the engine relays from the app. Each fault fails one call.
         for (const [workflow, expected] of [
           [
             "pausedOnce",
@@ -396,8 +354,6 @@ layer(HostedLive, { excludeTestServices: true })("Workflow engine calls", (it) =
             },
           ],
           ["relayedOnce", { reason: "execution" }],
-          // A pause or a termination that arrives after a sleepUntil's time is still the
-          // engine's answer: it reaches the body, which does not go on as if it had slept.
           [
             "pausedUntil",
             {
@@ -422,22 +378,17 @@ layer(HostedLive, { excludeTestServices: true })("Workflow engine calls", (it) =
           });
         }
 
-        // A transient failure after a sleepUntil's time is over: the time has passed.
         const transient = yield* ended(yield* start("transientUntil"));
         expect(transient, JSON.stringify(transient)).toMatchObject({
           status: "complete",
           output: { slept: true },
         });
 
-        // A sleepUntil that reaches the engine after its time meets the engine's refusal of a time
-        // in the past, which ends the sleep: its time has passed. This engine words that refusal its
-        // own way (`workflow-errors.ts`, `pastSleep`).
         const lateUntil = yield* ended(yield* start("lateUntil"));
         expect(lateUntil, JSON.stringify(lateUntil)).toMatchObject({
           status: "complete",
           output: { slept: true },
         });
-        // The run went on past the sleep once: the step after it ran exactly once.
         expect(yield* calls("after-late-until")).toBe(1);
       }),
     ),

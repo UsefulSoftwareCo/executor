@@ -1,35 +1,3 @@
-/**
- * Run, before pushing, the cheap gates CI applies to a pull request, with the code CI runs:
- *
- *   bun run pr:check                       the open pull request of this branch, and its stack
- *   bun run pr:check --description FILE    before the pull request is open: its description
- *
- * - `static`: `bun run check`, which the `static` job runs (format, lint, typecheck, generated
- *   files such as the Executor skill digests, and the other checks it lists).
- * - `description`: `e2e/check-description.ts`, which runs the `select` job's program on this
- *   checkout: the e2e block, the spec files it names, scenarios new to the deployed suite (a
- *   renamed scenario is one) and what would run. For an open pull request it reads the layers
- *   above from GitHub, so a `skip` with none fails as CI fails it. Each other open layer of the
- *   stack (`gh stack view`) is checked the same way, on a checkout of its own local head under
- *   .local/pr-check/layers, compared with the layer below it: its block, the spec files it names
- *   in its own tree, and its skip.
- * - `apps-version`: the `apps-version` job's steps (scripts/ci/apps-version.sh) against main and
- *   where this branch meets main, each checked out under .local/pr-check: bun.lock, the apps
- *   version bump and the host protocols.
- * - `release-notes`: the branch's commits as GitHub will squash them, read by the release notes
- *   script (`scripts/releases/release-notes.ts --check`), and a Release-note line written only in
- *   the description, which the squash would lose.
- *
- * The steps run at once. Each prints its name, how it ended and how long it took; a failed step
- * prints its output. It exits 1 when any failed. It always ends by naming the gates CI applies that
- * it does not (`notChecked`), so a pass here is never read as a pass of those.
- *
- * It needs the network and cannot run offline: it fetches main and the base from origin (an HTTPS
- * remote needs git credentials), reads the pull request, its stack and the layers' descriptions
- * with `gh` (signed in, with the gh-stack extension for a stack), and the apps-version steps may
- * install main's packages from the registry. When one of those reads fails it says which, and
- * exits 2.
- */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Clock, Console, Effect, FileSystem, Path, Schema, Stream } from "effect";
@@ -42,7 +10,6 @@ class PrCheckFailed extends Schema.TaggedError<PrCheckFailed>()("PrCheckFailed",
 const usage =
   "Usage: bun run pr:check [--description <file>] [--only static|description|apps-version|release-notes]";
 
-/** The gates CI applies to a pull request that this does not run, printed after every check. */
 export const notChecked = [
   "the skip check of a layer whose block says skip (that the layer above's CI run was computed on this layer, scripts/ci/worker-baseline.ts above)",
   "site: the site build, its links, and the Cloud Workers' upload and start-up size budgets",
@@ -53,13 +20,11 @@ export const notChecked = [
   "line coverage, and the aggregate check and e2e jobs that judge every job's result",
 ];
 
-/** What a read that needs the network says when it fails. */
 const offline = (what: string, detail: string) =>
   new PrCheckFailed({
     message: `pr:check could not ${what}. It needs the network, and cannot check offline: it fetches main and the base from origin (an HTTPS remote needs git credentials), and reads the pull request, its stack and their descriptions with gh, signed in. ${detail.trim()}`,
   });
 
-/** Runs a command and returns its output, both streams together, and its exit code. */
 const run = (command: string, args: ReadonlyArray<string>) =>
   Effect.gen(function* () {
     const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -73,7 +38,6 @@ const run = (command: string, args: ReadonlyArray<string>) =>
     return { output, exitCode: Number(exitCode) };
   }).pipe(Effect.scoped);
 
-/** Runs a command that must succeed and returns what it printed. */
 const read = (command: string, args: ReadonlyArray<string>) =>
   run(command, args).pipe(
     Effect.flatMap(({ output, exitCode }) =>
@@ -109,7 +73,6 @@ const Stack = Schema.fromJsonString(
   }),
 );
 
-/** A step's result: a line for the report, and the output to show when it failed. */
 interface Outcome {
   readonly name: string;
   readonly passed: boolean;
@@ -136,11 +99,9 @@ const step = <R>(
     return { name, seconds, ...result } satisfies Outcome;
   });
 
-/** A command as a step's body. */
 const command = (name: string, args: ReadonlyArray<string>) =>
   run(name, args).pipe(Effect.map(({ output, exitCode }) => ({ passed: exitCode === 0, output })));
 
-/** A detached checkout of `commit` at `directory`, made or moved there with `git worktree`. */
 const checkout = (directory: string, commit: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -172,7 +133,6 @@ const program = Effect.gen(function* () {
     branch === "HEAD"
       ? undefined
       : yield* run("gh", ["pr", "view", "--json", "number,title,body,baseRefName"]);
-  // gh says "no pull requests found" for a branch without one; anything else is a failed read.
   if (
     viewed !== undefined &&
     viewed.exitCode !== 0 &&
@@ -191,8 +151,6 @@ const program = Effect.gen(function* () {
   yield* read("git", [
     "fetch",
     "--quiet",
-    // Only the refs named here: without it git also moves refs/remotes/origin/main to what it
-    // fetched, so a check against another origin (the selection spec's) rewrote the checkout's.
     "--refmap=",
     "origin",
     "+refs/heads/main:refs/pr-check/main",
@@ -215,10 +173,6 @@ const program = Effect.gen(function* () {
     `Checking ${branch} at ${(yield* read("git", ["rev-parse", "--short", "HEAD"])).trim()} against main at ${main.slice(0, 9)}${pullRequest === undefined ? `, with the description in ${descriptionFile}` : `, with #${pullRequest.number}'s description`}.`,
   );
 
-  // Each other open layer of the stack, checked as CI's select job checks it: its own description
-  // on a checkout of its local head, as the head of its own branch and pull request, compared with
-  // the layer below it (or the stack's trunk).
-  // Not being in a stack is an answer (gh stack exits 2); any other failure to read it fails.
   const otherLayers = Effect.gen(function* () {
     if (branch === "HEAD") return { passed: true, output: "" };
     const stack = yield* run("gh", ["stack", "view", "--json"]);
@@ -234,7 +188,6 @@ const program = Effect.gen(function* () {
     for (const [index, layer] of branches.entries()) {
       if (layer.pr?.state !== "OPEN" || layer.name === branch) continue;
       const number = layer.pr.number;
-      // A layer's local branch, which a push sends, or the head gh stack last recorded for it.
       const tip = (entry: { readonly name: string; readonly head: string }) =>
         run("git", ["rev-parse", "--verify", "--quiet", `refs/heads/${entry.name}^{commit}`]).pipe(
           Effect.map(({ output, exitCode }) => (exitCode === 0 ? output.trim() : entry.head)),
@@ -265,7 +218,6 @@ const program = Effect.gen(function* () {
         body,
         "--pull",
         String(number),
-        // Its checkout is detached: the layers above it are found by its own branch, not HEAD.
         "--head-ref",
         layer.name,
         ...(below === undefined ? ["--base", trunk] : ["--base-commit", below]),

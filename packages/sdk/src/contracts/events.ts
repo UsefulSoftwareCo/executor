@@ -63,7 +63,6 @@ export const defaultEventDeliveryLimits = EventDeliveryLimits.make({
   requestTimeoutMs: 10_000,
   verificationReuseMs: 24 * 60 * 60_000,
   secretOverlapMs: 5 * 60_000,
-  // 5 s doubling to the 1 h cap: 14 attempts keep retrying for about four and a half hours.
   maxAttempts: 14,
   firstBackoffMs: 5_000,
   maxBackoffMs: 60 * 60_000,

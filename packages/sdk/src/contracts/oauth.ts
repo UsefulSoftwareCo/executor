@@ -668,7 +668,6 @@ export const OAuthSetupFailed = UserFacingError.define({
   },
   recorded: ({ reason, cause }) => oauthRecorded("OAuth setup failed", reason, cause),
   presentation: ({ reason, callbackUrl, cause, serviceError, retryAfter, operatorScopes }) => {
-    // Forms that open client entry already show the callback, so only the fix prompt repeats it.
     const callback = callbackUrl === undefined ? "" : ` Executor’s callback URL is ${callbackUrl}.`;
     return withCause(
       (
@@ -842,7 +841,6 @@ export type OAuthSetupFailed = typeof OAuthSetupFailed.Type;
  * failures recorded with it.
  */
 export const OAuthCompletionReason = Schema.Literals([
-  // Executor matches the callback to the sign-in it started.
   "callback_malformed",
   "sign_in_not_found",
   "sign_in_replaced",
@@ -850,15 +848,12 @@ export const OAuthCompletionReason = Schema.Literals([
   "sign_in_expired",
   "sign_in_used",
   "account_unavailable",
-  // The stored client the sign-in started with is no longer one the caller may use.
   "client_unavailable",
-  // The service's authorization response, validated before its `error` is read.
   "issuer_mismatch",
   "denied",
   "invalid_scope",
   "invalid_client",
   "authorization_rejected",
-  // The token exchange.
   "authorization_code_rejected",
   "registered_client_rejected",
   "registered_client_incompatible",
@@ -871,7 +866,6 @@ export const OAuthCompletionReason = Schema.Literals([
   "incompatible_response",
   "unsupported",
   "oauth_unavailable",
-  // The operator's client was granted scopes it does not allow.
   "scope_exceeded",
 ]);
 export type OAuthCompletionReason = typeof OAuthCompletionReason.Type;
@@ -1155,7 +1149,6 @@ export const OAuthCompletionFailed = UserFacingError.define({
             },
             retryable: false,
           },
-          // The sign-in was claimed before the token request, so only a new one can finish.
           rate_limited: rateLimited(retryAfter, {
             description: "The service asked Executor to wait before sending more sign-in requests.",
             action: "Start the connection again",
@@ -1184,8 +1177,6 @@ export const OAuthCompletionFailed = UserFacingError.define({
             },
             agentFixable: false,
           },
-          // Revocation runs beside the answer and the service may refuse or not support it, so the
-          // text does not say it happened.
           scope_exceeded: {
             title: "The service granted more access than allowed",
             description:

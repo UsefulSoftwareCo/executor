@@ -1,34 +1,17 @@
-/**
- * The JSON-RPC method an MCP POST carries, for the gateway's spans, so MCP latency and failures
- * can be split by method. Every value is from a closed set; nothing the caller chose is recorded.
- */
 import type { BrowserMcpToolkit, McpToolkit, NativeMcpToolkit } from "@executor-js/mcp";
 import { Option, Schema } from "effect";
 import type { McpSchema } from "effect/ai";
 
-/**
- * What 2026-07-28 adds to a client's methods, the events extension's included
- * (`patches/effect-mcp-events.md`). Its adapter's RPC group is internal to Effect, so these are
- * copied from it.
- */
 type StatelessClientMethod =
   | "server/discover"
   | "subscriptions/listen"
   | "events/list"
   | "events/subscribe"
   | "events/unsubscribe";
-/** Requests and notifications the earlier revisions take from a client, as `McpSchema` types them. */
 type ClientMethod =
   | McpSchema.ClientRequestEncoded["method"]
   | McpSchema.ClientNotificationEncoded["method"]
   | StatelessClientMethod;
-/**
- * Every method a client can send Executor's MCP server in a revision it serves (`protocols` in
- * `packages/mcp/src/implementation/server.ts`). Any other is `other`, including one only a server
- * sends, such as `sampling/createMessage` or `notifications/subscriptions/acknowledged`. The record
- * type keeps the list equal to `ClientMethod`. It is not read from the protocol adapters at
- * runtime, because that would load them into the API Worker, which runs the gateway.
- */
 const methods = new Set(
   Object.keys({
     initialize: true,
@@ -60,7 +43,6 @@ type ExecutorTool =
   | keyof (typeof McpToolkit)["tools"]
   | keyof (typeof NativeMcpToolkit)["tools"]
   | keyof (typeof BrowserMcpToolkit)["tools"];
-/** Executor's own MCP tools in every elicitation mode; the record type keeps the list complete. */
 const executorTools = new Set(
   Object.keys({
     execute: true,
@@ -74,7 +56,6 @@ const executorTools = new Set(
 
 const isRequest = Schema.is(Schema.Struct({ method: Schema.String }));
 const isToolCall = Schema.is(Schema.Struct({ params: Schema.Struct({ name: Schema.String }) }));
-/** A client's answer to the server's own request, such as an elicitation; it has no method. */
 const isResponse = Schema.is(
   Schema.Union([
     Schema.Struct({ result: Schema.Unknown }),
@@ -83,15 +64,9 @@ const isResponse = Schema.is(
 );
 
 const Json = Schema.fromJsonString(Schema.Unknown);
-/** A POST body as JSON. The gateway parses it once, for these attributes and `answerMemoryLimit`. */
 export const parseMcpBody = (body: string | undefined): Option.Option<unknown> =>
   body === undefined ? Option.none() : Schema.decodeUnknownOption(Json)(body);
 
-/**
- * `rpc.method`: one of `methods`, `batch` for an array of messages, `response` for a client's answer
- * and `other` for anything else, including a body that is not JSON. A `tools/call` also records
- * `executor.mcp.tool`: the Executor tool it names, or `other`. Arguments are never read.
- */
 export const mcpRequestAttributes = (message: Option.Option<unknown>) => {
   const value = Option.getOrUndefined(message);
   const method = Array.isArray(value)

@@ -1,13 +1,3 @@
-/**
- * A save of a new account must do the same work however many accounts its app and organization
- * already have. The inventory scenario in hosted.spec.ts checks the statements of a save's traces,
- * but only on its first saves, and a statement with the same text can still read more rows as the
- * inventory grows. Here the owner already has 100,000 accounts, each with its access row, its link
- * to the app and its webhook source on the app. One more account is saved, and every statement the
- * save ran is planned by the database: no table may be read at more than the cost of a lookup of a
- * few rows. An index scan that matches the app and filters the rest costs as much as reading them
- * all, so the bound is on the planner's cost, not on the rows it returns.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomBytes } from "node:crypto";
@@ -34,18 +24,10 @@ export default defineApp({user: { accounts:{service:service.many()} }},async()=>
   },
   appsManifest,
 ];
-/** Accounts the owner has before the save, each linked to the app with a ready webhook source. */
 const seeded = 100_000;
-/**
- * The most a read of one table in a save may cost, in the planner's units. A lookup of one row by
- * an index costs about 8, and reading a few rows of a small table less than that. Reading the
- * seeded rows of one of these tables costs thousands, through an index or not.
- */
 const lookupCost = 100;
-/** The account's own webhook source is found by the app and account together. */
 const appAccountIndex = "executor_webhook_sources_app_account";
 
-/** One node of a JSON query plan, as `explain (format json)` returns it. */
 interface PlanNode {
   readonly "Node Type": string;
   readonly "Relation Name"?: string;
@@ -70,11 +52,8 @@ const nodesOf = (node: PlanNode): ReadonlyArray<PlanNode> => [
   node,
   ...(node.Plans ?? []).flatMap(nodesOf),
 ];
-/** Statements Postgres can plan. */
 const plannable = /^\s*(select|insert|update|delete|with)\b/i;
-/** Statements that read no table: transactions, savepoints and settings. Any other fails. */
 const control = /^\s*(begin|commit|rollback|savepoint|release|set)\b/i;
-/** The table seeded beside the account's own source, read only by its key. */
 const sources = "executor_webhook_sources";
 const traceparent = (traceId: string) => `00-${traceId}-${randomBytes(8).toString("hex")}-01`;
 
@@ -101,15 +80,9 @@ layer(HostedLive, { excludeTestServices: true })("Webhook source lookup", (it) =
             params: [actors.organization.id],
           })
           .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Owner)), Effect.orDie);
-        // The Cloud database is shared by every scenario of the run: the seeded rows carry a tag of
-        // their own and are removed when the scenario ends. Removing the accounts removes their
-        // access rows and links.
         const tag = randomBytes(6).toString("hex"),
           rows = String(seeded);
         const account = `'acc_lookup_' || $1 || '_' || g`;
-        // The clean-up is registered before the first insert. Each insert commits on its own, so
-        // a seed that fails partway leaves the rows of the inserts before it; the deletes are keyed
-        // by the tag alone and remove those too, whichever insert failed.
         yield* Effect.addFinalizer(() =>
           Effect.forEach(
             [
@@ -173,7 +146,6 @@ layer(HostedLive, { excludeTestServices: true })("Webhook source lookup", (it) =
         ])
           yield* locks.run({ sql: `analyze ${table}` });
 
-        // One save of a new account, each request in a trace of its own.
         const connect = randomBytes(16).toString("hex"),
           submit = randomBytes(16).toString("hex");
         const connection = yield* api.request(
@@ -193,7 +165,6 @@ layer(HostedLive, { excludeTestServices: true })("Webhook source lookup", (it) =
           { traceparent: traceparent(submit) },
         );
 
-        // The request's own span ends after every statement it ran, so once it is in, they are.
         const traced = yield* Effect.forEach([connect, submit], (trace) =>
           telemetry.settled(trace, (found) =>
             found.some((span) => span.operationName.startsWith("http.server")),
@@ -207,13 +178,11 @@ layer(HostedLive, { excludeTestServices: true })("Webhook source lookup", (it) =
               .map((span) => span.tags["db.query.text"] ?? ""),
           ),
         ];
-        // A statement this check cannot plan and that reads no table would go unchecked.
         expect(
           ran.filter((statement) => !plannable.test(statement) && !control.test(statement)),
           "statements a save ran that are neither planned nor transaction control",
         ).toEqual([]);
         const statements = ran.filter((statement) => plannable.test(statement));
-        // The link reads the account's source among those planned.
         expect(statements.some((statement) => statement.includes("executor_webhook_sources"))).toBe(
           true,
         );
@@ -237,8 +206,6 @@ layer(HostedLive, { excludeTestServices: true })("Webhook source lookup", (it) =
             reads.filter((read) => read.cost > lookupCost),
             `a save reads no table at more than a lookup's cost: ${statement}`,
           ).toEqual([]);
-          // The sources are read by their key alone, as one row through an index: a read of
-          // twenty sources, or one shaped as a scan of the app's, fails here at any cost.
           for (const scan of nodesOf(plan).filter(
             (node) => node["Relation Name"] === sources && node["Node Type"].endsWith("Scan"),
           ))
@@ -255,7 +222,6 @@ layer(HostedLive, { excludeTestServices: true })("Webhook source lookup", (it) =
             nodesOf(plan).some((node) => node["Index Name"] === appAccountIndex),
           ),
         ).toBe(true);
-        // Checked last, so a read that fails on the seeded rows is still judged by its plan.
         expect(saved.status).toBe(200);
       }),
     ),

@@ -1,4 +1,3 @@
-/** Cloud's app runtime: the shared runner in the AppData Worker, with R2 and the Cache API as build store. */
 import { traceHeaders } from "@executor-js/telemetry";
 import {
   BlobStoreError,
@@ -39,17 +38,8 @@ import {
   cloudBuildAsset,
 } from "../implementation/build-storage.ts";
 
-/** The deployer sees the underlying failure; builds bind no accounts, so it holds no credentials. */
 const failed = (stage: RuntimeBuildFailed["stage"], cause: unknown) =>
   new RuntimeBuildFailed({ stage, message: describeBuildCause(cause) });
-/**
- * How long a deploy waits for the compiler Worker to answer. A lost compiler isolate otherwise
- * leaves the binding call open until the platform reports a lost connection, 100-230s later.
- * Over September 2026, the slowest successful compiler requests took 16.5s in production and
- * 34s on test stages (a cold default-app provision), and compiler memory failures surfaced within
- * 37s, so they still report as such. The bound leaves the whole deploy room to answer within the
- * 60s that MCP clients and the deployed scenarios commonly wait.
- */
 const compilerDeadline = "50 seconds";
 const compilerDidNotAnswer = Effect.annotateCurrentSpan(
   "build.compiler_deadline_exceeded",
@@ -65,10 +55,6 @@ const compilerDidNotAnswer = Effect.annotateCurrentSpan(
     ),
   ),
 );
-/**
- * Attribute Worker Loader use to the caller. Cloudflare bills each unique loaded Worker per day,
- * and its own usage data cannot be split by user or organization.
- */
 const withActor = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   Effect.flatMap(runtimeActor, (actor) => Effect.annotateSpans(effect, actor));
 const NativeNamespace = Schema.declare(
@@ -79,20 +65,9 @@ const NativeNamespace = Schema.declare(
     typeof value.getByName === "function",
 );
 
-/**
- * What a supervisor's `run` answers: the call's encoded result. The Durable Object bridge answers a
- * method its object does not define with `undefined`, before and instead of running anything, so
- * `undefined` comes only from an AppData deployment older than `run`.
- */
 const SupervisorRun = Schema.UndefinedOr(Schema.String);
 
-/** The group each incoming request's app calls name; see `AppInvocation.outboundGroup`. */
 const outboundGroups = new WeakMap<object, string>();
-/**
- * Name the incoming request a call serves as the group its outgoing requests count against.
- * Cloudflare lets one incoming request have six connections waiting for response headers, counting
- * every app call it makes, and AppData's network counts them by this name (`app-outbound.ts`).
- */
 const outboundGroup = (unserved: object) =>
   Effect.map(CurrentRequest, (request) => {
     const key = request ?? unserved;
@@ -103,7 +78,6 @@ const outboundGroup = (unserved: object) =>
     return named;
   });
 
-/** Native Alchemy bindings are resolved once; actual work belongs to the current invocation. */
 export const cloudRuntime = Effect.fn(function* (
   origin: string,
   databases: Cloudflare.DurableObject<AppDataSupervisor>,
@@ -112,21 +86,10 @@ export const cloudRuntime = Effect.fn(function* (
   const appData = yield* Cloudflare.Workers.bindWorker(AppData);
   const environment = yield* Cloudflare.WorkerEnvironment;
   return Effect.gen(function* () {
-    // App Workers run in AppData, whose own entrypoint can be their outbound network.
     const runner = remoteAppRunner({
       invoke: (invocation, capabilities) => appData.invoke(invocation, capabilities),
       declare: (bundle, headers) => appData.declare(bundle, headers),
     });
-    /**
-     * A call that uses the app's database runs in the app's data facet, which only its supervisor
-     * can reach, so it goes to the supervisor directly, which runs its runner. Through the shared
-     * runner it would wait for a runner isolate to start only to forward the call there.
-     *
-     * An AppData deployment from before `run` (a partial deploy, or AppData rolled back alone)
-     * answers `undefined` without running anything (see `SupervisorRun`); only then does the call
-     * take the shared runner, which every AppData deployment serves. A failure is never retried
-     * there: it may have run part of the call.
-     */
     const supervised = (app: string) =>
       remoteAppRunner({
         invoke: (invocation, capabilities) =>
@@ -147,15 +110,11 @@ export const cloudRuntime = Effect.fn(function* (
             ),
         declare: (bundle, headers) => appData.declare(bundle, headers),
       });
-    // Work outside a served request, such as a workflow step, names one group for its runtime.
     const unserved = {};
-    // Cache writes run in this event scope, bounded when it closes.
     const warming = yield* FiberSet.make();
     yield* Effect.addFinalizer(() =>
       FiberSet.awaitEmpty(warming).pipe(Effect.timeoutOption("2 seconds"), Effect.asVoid),
     );
-    // Only a runner from before AppData read builds itself calls this loader; it stays until
-    // callers stop sending it, so such a runner keeps working through a rollback.
     const load = cachedRuntimeBuilds(
       origin,
       {
@@ -169,7 +128,6 @@ export const cloudRuntime = Effect.fn(function* (
       name: "runtime.cloud",
       actor: runtimeActor,
       loadBuild: load,
-      // A database call goes to its supervisor, an object with its own connection limit.
       invoke: (invocation, capabilities) =>
         withActor(
           runsInFacet(invocation)
@@ -187,8 +145,6 @@ export const cloudRuntime = Effect.fn(function* (
                 duration: compilerDeadline,
                 orElse: () => compilerDidNotAnswer,
               }),
-              // The compiler answers every build it judged, failed ones included; a call that
-              // failed without an answer is the host's failure, not the source's.
               Effect.catchTag("RpcCallError", (error) => {
                 const cause = error.cause;
                 return Effect.fail(
@@ -201,9 +157,6 @@ export const cloudRuntime = Effect.fn(function* (
                       }),
                 );
               }),
-              // Builds share a compiler isolate, so another build can exhaust its memory. The
-              // runtime discards that isolate: one retry compiles alone on a fresh one, and a
-              // build that cannot fit fails again.
               Effect.tapError((error) =>
                 Schema.is(BuildMemoryExceeded)(error)
                   ? Effect.annotateCurrentSpan("build.memory_retry", true)
@@ -228,9 +181,6 @@ export const cloudRuntime = Effect.fn(function* (
                         Effect.flatMap(Effect.fail),
                       ),
                 ),
-                // The runner answers every declaration it ran, the app's own failure included; a call
-                // that failed without an answer is the host's failure, not the source's. Its message
-                // is the same either way.
                 Effect.mapError((cause) =>
                   cause instanceof RunnerUnanswered
                     ? declarationFailed(
@@ -242,7 +192,6 @@ export const cloudRuntime = Effect.fn(function* (
                 ),
                 Effect.withSpan("runtime.cloud.requirements"),
               );
-            // A check keeps nothing: no R2 object, no cache entry. Its build id names nothing.
             if (!retain) return { build, requirements };
             const stored = yield* retainCloudBuild(
               build,
@@ -250,8 +199,6 @@ export const cloudRuntime = Effect.fn(function* (
               framework,
               ui,
             ).pipe(Effect.provide(RuntimeContext.phantom));
-            // Only after R2 holds the build: the runner's first read of it can then skip R2 in this
-            // data centre. The Cache API is per data centre, so other colos still read R2 once.
             yield* cacheRuntimeBuild(warming, origin, build, stored);
             const assets = stored.record.ui;
             return { build, requirements, ...(assets === undefined ? {} : { ui: assets }) };
@@ -267,8 +214,6 @@ export const cloudRuntime = Effect.fn(function* (
                       : Schema.is(RuntimeAppsDependencyMissing)(error)
                         ? "dependencies"
                         : error.stage,
-                // The message quotes the deployer's source and its compiler errors, which only the
-                // deployer receives; the span records which failure it was.
                 "build.error": error._tag,
               }),
             ),
@@ -276,7 +221,6 @@ export const cloudRuntime = Effect.fn(function* (
         ),
       asset: ({ build, path }) =>
         cloudBuildAsset(build, path).pipe(Effect.provide(RuntimeContext.phantom)),
-      // Native fetch retains the upgrade response; Alchemy's typed HTTP stub omits it.
       changes: (app) =>
         dataChanges(Schema.decodeUnknownSync(NativeNamespace)(environment.AppDataSupervisor), app),
     });

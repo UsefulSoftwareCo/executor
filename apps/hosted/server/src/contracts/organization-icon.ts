@@ -1,10 +1,7 @@
 import { Schema } from "effect";
 
-/** Team icons are small raster images, never active SVG or HTML documents. */
 export const organizationIconMaxBytes = 2 * 1024 * 1024;
-/** Media types accepted by the picker and served by the private image endpoint. */
 export type OrganizationIconContentType = "image/png" | "image/jpeg" | "image/webp";
-/** Identify a raster image from its bytes rather than the caller's filename or MIME header. */
 export const organizationIconContentType = (
   bytes: Uint8Array,
 ): OrganizationIconContentType | undefined => {
@@ -19,7 +16,6 @@ export const organizationIconContentType = (
     return "image/webp";
   return undefined;
 };
-/** Base64 exists only on the JSON wire; consumers receive validated bytes. */
 export const UploadedOrganizationIcon = Schema.Struct({
   bytes: Schema.String.check(Schema.isMaxLength(Math.ceil(organizationIconMaxBytes / 3) * 4)).pipe(
     Schema.decodeTo(Schema.Uint8ArrayFromBase64),
@@ -31,10 +27,8 @@ export const UploadedOrganizationIcon = Schema.Struct({
   ),
 );
 export type UploadedOrganizationIcon = typeof UploadedOrganizationIcon.Type;
-/** Opaque content digest within one uploader's namespace. */
 export const OrganizationIconKey = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u));
 
-/** Same-origin uploaded images use a canonical path, never a protocol-relative URL. */
 export const OrganizationIconUrl = Schema.String.check(
   Schema.makeFilter((value) => {
     try {

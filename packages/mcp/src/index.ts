@@ -1,4 +1,3 @@
-/** Shared Effect MCP surface. Authentication and authorization belong to the host. */
 export * from "./contracts/backend.ts";
 export * from "./contracts/execute.ts";
 export * from "./contracts/elicitation.ts";

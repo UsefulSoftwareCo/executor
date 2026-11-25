@@ -1,4 +1,3 @@
-/** Real OAuth and MCP setup shared by the two framework authoring journeys. */
 import { Effect, Schema } from "effect";
 import { Actors } from "./actors.ts";
 import { Browser } from "./browser.ts";
@@ -11,7 +10,6 @@ const Completed = Schema.Struct({
   status: Schema.Literal("completed"),
   execution: Schema.Struct({ ok: Schema.Literal(true), value: Schema.Unknown }),
 });
-/** Open a scoped client with the actor's linked Executor key and live tool execution. */
 export const frameworkSession = Effect.gen(function* () {
   const actors = yield* Actors,
     browser = yield* Browser;

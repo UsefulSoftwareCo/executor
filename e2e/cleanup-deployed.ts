@@ -1,7 +1,4 @@
-/** A separate CI step recovers cleanup after GitHub kills a cancelled test process. */
-// First: the harness's outbound connect time-out (support/connect-timeout.ts).
 import "./support/connect-timeout.ts";
-// Second: each stage request on a connection of its own (support/stage-connections.ts).
 import "./support/stage-connections.ts";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -42,7 +39,6 @@ NodeRuntime.runMain(
           stderr: "inherit",
         }),
       );
-      // A branch the destroy left must fail the job by name, whether or not the destroy succeeded.
       if (database === "planetscale") yield* confirmBranchDeleted(slug).pipe(Effect.orDie);
       if (Number(code) !== 0) return yield* Effect.die(new Error(`Cleanup failed for ${slug}`));
       yield* fs.writeFileString(destroyed, "{}");

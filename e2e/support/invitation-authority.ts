@@ -1,9 +1,3 @@
-/**
- * Invitations whose inviter no longer holds a role that may invite, left pending as a cleanup that
- * never ran would leave them. Changing the role through the API cancels them, so each target's
- * scenario changes it in its own storage with `write` instead, and this checks that nothing
- * redeems or offers them, and that an owner resending one makes it acceptable.
- */
 import { expect } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { Api, body } from "./api.ts";
@@ -14,7 +8,6 @@ import { freeSeat } from "./seats.ts";
 
 const Invitations = Schema.Array(Schema.Struct({ id: Schema.String, status: Schema.String }));
 
-/** One parameterized statement against the target's own auth tables. */
 export interface RoleStatement {
   readonly sql: string;
   readonly params: ReadonlyArray<string>;
@@ -24,7 +17,6 @@ type Write<E, R> = (
   statements: readonly [RoleStatement],
 ) => Effect.Effect<ReadonlyArray<ReadonlyArray<unknown>>, E, R>;
 
-/** Makes the admin a member in storage, so their pending invitations stay pending. */
 const demoteAdmin = <E, R>(write: Write<E, R>) =>
   Effect.gen(function* () {
     const api = yield* Api,
@@ -61,12 +53,10 @@ export const staleInvitations = <E, R>(write: Write<E, R>) =>
         expect(response.status).toBe(200);
         return (yield* body(Resource, response)).id;
       });
-    // The admin invites the removed member back, and on self-host someone without an account.
     const seat = yield* freeSeat;
     const returning = yield* invite(seat.email);
     const newcomer = "invited-before-demotion@example.test";
     const unregistered = cloud ? undefined : yield* invite(newcomer);
-    // The admin becomes a member in storage; their invitations stay pending.
     yield* demoteAdmin(write);
     const invitations = yield* body(
       Invitations,
@@ -79,12 +69,10 @@ export const staleInvitations = <E, R>(write: Write<E, R>) =>
     for (const id of [returning, unregistered].filter((id) => id !== undefined))
       expect(invitations.find((invitation) => invitation.id === id)?.status).toBe("pending");
     if (cloud) {
-      // Cloud's entry does not send the member to an invitation that cannot be accepted.
       const entry = yield* api.request(actors.member, "POST", "/api/onboarding/prepare");
       expect(entry.status).toBe(200);
       expect((yield* body(Schema.Struct({ status: Schema.String }), entry)).status).toBe("draft");
     }
-    // Accepting is refused, so the member does not come back as an admin.
     expect(
       (yield* api.request(actors.member, "POST", "/api/auth/organization/accept-invitation", {
         invitationId: returning,
@@ -94,7 +82,6 @@ export const staleInvitations = <E, R>(write: Write<E, R>) =>
       (yield* api.request(actors.member, "GET", `/api/organizations/${organizationId}/access`))
         .status,
     ).toBe(403);
-    // Self-host registration with the other invitation is refused as well.
     if (unregistered !== undefined)
       expect(
         (yield* api.request(yield* api.session(), "POST", "/api/auth/self-host/register", {
@@ -106,10 +93,6 @@ export const staleInvitations = <E, R>(write: Write<E, R>) =>
       ).toBe(403);
   });
 
-/**
- * An owner's resend of an invitation whose inviter has since become a member makes it acceptable
- * again; the former admin's own resend is refused.
- */
 export const resentStaleInvitation = <E, R>(write: Write<E, R>) =>
   Effect.gen(function* () {
     const api = yield* Api,

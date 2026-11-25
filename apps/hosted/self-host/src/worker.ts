@@ -1,4 +1,3 @@
-/** Product Worker. One durable actor owns PostgreSQL, auth, sessions and background work. */
 import { Digest } from "effect/crypto";
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import type { DurableObjectState, Fetcher } from "@cloudflare/workers-types";
@@ -72,17 +71,11 @@ interface Environment {
   readonly DASHBOARD: HttpBinding;
   readonly PUBLIC_FETCH: HttpBinding;
   readonly PRIVATE_FETCH: HttpBinding;
-  /** The bundled collector's private Unix socket, which the host connects. */
   readonly COLLECTOR: HttpBinding;
-  /** This product's own `SelfOrigin` entrypoint, for requests to the dashboard origin. */
   readonly SELF: HttpBinding;
   readonly APPS: Fetcher;
 }
 
-/**
- * The native host did not answer with its configuration; keeps its status or the request's cause.
- * A body that is not a record of strings keeps neither, because parse errors quote its values.
- */
 class HostConfigurationUnavailable extends Schema.TaggedError<HostConfigurationUnavailable>()(
   "HostConfigurationUnavailable",
   { status: Schema.optionalKey(Schema.Int), cause: Schema.optionalKey(Schema.Defect()) },
@@ -105,7 +98,6 @@ const configuration = (native: HttpBinding) =>
     ),
   );
 
-/** The product actor's storage key for the release check's last answer. */
 const updateCheckKey = "update-check";
 
 const prepare = (state: DurableObjectState, env: Environment) =>
@@ -184,7 +176,6 @@ const prepare = (state: DurableObjectState, env: Environment) =>
         egress,
         executorServices: Layer.succeedContext(services),
         dashboard: bindingDashboard(env.DASHBOARD, dashboard),
-        // The release check's last answer, in the product actor's own storage.
         updateCheckStore: {
           location: `the product's storage under the data volume's product directory, key "${updateCheckKey}"`,
           read: Effect.promise(() => state.storage.get<string>(updateCheckKey)).pipe(
@@ -229,24 +220,10 @@ const prepare = (state: DurableObjectState, env: Environment) =>
     }).pipe(Effect.provideContext(common));
   });
 
-/**
- * The image's host asks /health every second to notice when the product stops answering; that
- * request records no trace, or it would fill the telemetry store. Only the host sends the header:
- * it removes it from every request it proxies, and `SelfOrigin` removes it from the requests apps
- * send to their own instance.
- */
 const hostProbeHeader = "x-executor-host-probe";
 const isHostProbe = (request: HttpServerRequest.HttpServerRequest) =>
   request.url === "/health" && request.headers[hostProbeHeader] === "1";
 
-/**
- * The product store has its own disk service, namespace and migration journal.
- *
- * Opening it runs schema migrations and data steps, which can take longer on a large install than
- * workerd allows a `blockConcurrencyWhile` callback: after 30 seconds workerd cancels the callback
- * and resets the object. So the store opens outside it, and every entry point waits for the open
- * product instead. Nothing is served, built or run in the background before the open finishes.
- */
 export class ExecutorProduct extends DurableObject<Environment> implements ProductStub {
   readonly #state: DurableObjectState;
   readonly #env: Environment;
@@ -255,10 +232,8 @@ export class ExecutorProduct extends DurableObject<Environment> implements Produ
     super(state, env);
     this.#state = state;
     this.#env = env;
-    // Start at once, as after a restart; a failure is reported to the events that wait for it.
     this.#product().catch(() => undefined);
   }
-  /** The open product. A failed open releases what it acquired, and the next event retries it. */
   #product() {
     this.#opening ??= this.#open().catch((error: unknown) => {
       this.#opening = undefined;
@@ -268,9 +243,6 @@ export class ExecutorProduct extends DurableObject<Environment> implements Produ
   }
   async #open() {
     const scope = Scope.makeUnsafe();
-    // Invalid operator settings say which setting and field, never a value, so they are reported
-    // as they are; any other failure keeps the storage report. Both keep the whole failure, with
-    // every concurrent failure, defect and interruption, as the cause.
     let settings: string | undefined;
     let failure: unknown;
     try {
@@ -303,37 +275,27 @@ export class ExecutorProduct extends DurableObject<Environment> implements Produ
       { cause: failure },
     );
   }
-  /** Dispatch the existing authenticated product routes. */
   async fetch(request: Request): Promise<Response> {
     return (await this.#product()).fetch(request);
   }
-  /** Private workflow callbacks are reached only through the named service entrypoint. */
   async workflow(request: Request): Promise<Response> {
     return (await this.#product()).workflow(request);
   }
-  /** The offline export process owns the volume lock; no public socket serves this method. */
   async exportDatabase(): Promise<Response> {
     return (await this.#product()).exportDatabase();
   }
-  /** Restore the background owner after a restart even when no public request arrives. */
   async alarm(): Promise<void> {
     await this.#product();
     await this.#state.storage.setAlarm(Date.now() + 30_000);
   }
 }
 
-/** Private service binding used by the workerd workflow engine. */
 export class WorkflowCallbacks extends WorkerEntrypoint<Environment> {
   async fetch(request: Request): Promise<Response> {
     return this.env.PRODUCT.getByName("product").workflow(request);
   }
 }
 
-/**
- * Requests this instance sends to its own dashboard origin, from app isolates or host egress.
- * They never cross the network, so they carry a fixed internal source instead of any client
- * address header the sender supplied.
- */
 export class SelfOrigin extends WorkerEntrypoint<Environment> {
   async fetch(request: Request): Promise<Response> {
     const internal = new Request(request);
@@ -343,14 +305,12 @@ export class SelfOrigin extends WorkerEntrypoint<Environment> {
   }
 }
 
-/** Only the offline supervisor binds a socket to this entrypoint. */
 export class ProductExport extends WorkerEntrypoint<Environment> {
   async fetch(): Promise<Response> {
     return this.env.PRODUCT.getByName("product").exportDatabase();
   }
 }
 
-/** Public traffic can only reach the product's authenticated route map. */
 export default {
   fetch(request: Request, env: Environment): Promise<Response> {
     return env.PRODUCT.getByName("product").fetch(request);

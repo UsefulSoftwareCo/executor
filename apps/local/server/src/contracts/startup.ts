@@ -1,9 +1,7 @@
-/** Startup failures are safe to display; transport payloads and keys stay out of diagnostics. */
 import { Schema } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
 import { serverFlag, standaloneFlag } from "./service.ts";
 
-/** System codes permitted in persistent startup diagnostics. */
 export const StartupCode = Schema.Literals([
   "EADDRINUSE",
   "EACCES",
@@ -19,14 +17,12 @@ export const StartupCode = Schema.Literals([
   "ETIMEDOUT",
 ]);
 
-/** The local server's PGlite databases, by the names of their directories. */
 export const LocalDatabaseName = Schema.Literals([
   "browser-auth.pglite",
   "executor.pglite",
   "mcp-auth.pglite",
 ]);
 
-/** The step of creating a local database that failed (`PgliteCreationFailed` in fumadb-effect). */
 const creationSteps = {
   clear: "remove the unfinished copy left beside",
   create: "create a new copy beside",
@@ -34,10 +30,6 @@ const creationSteps = {
   "move into place": "move the new copy into place as",
 } as const;
 
-/**
- * One explicit startup stage failed without exposing its raw input. A `database` failure names the
- * database and the step of creating it that failed.
- */
 export class StartupFailed extends Schema.TaggedError<StartupFailed>()("StartupFailed", {
   stage: Schema.Literals([
     "database",
@@ -62,20 +54,11 @@ export class StartupFailed extends Schema.TaggedError<StartupFailed>()("StartupF
       : `Local startup failed at ${this.stage}${code}`;
   }
 }
-/**
- * CLI declarations parse before handlers acquire configuration or server resources. The default
- * command uses the background server unless `--standalone` or `--server` chooses another.
- */
 export const executorCommand = Command.make("executor", {
   standalone: standaloneFlag,
   server: serverFlag,
 }).pipe(Command.withDescription("Start or join the background Executor and open its dashboard"));
 
-/**
- * Run a server in this process without opening a browser. `--service` is the background server a
- * client starts; `--stdio` is a client's private server, which prints `{"url"}` and stops when its
- * stdin closes.
- */
 export const serveCommand = Command.make("serve", {
   service: Flag.Boolean("service").pipe(
     Flag.withDescription("Run as the background server for this data directory"),
@@ -89,18 +72,9 @@ export const serveCommand = Command.make("serve", {
   ),
 }).pipe(Command.withDescription("Start without opening a browser"));
 
-/** The desktop app pairs its own server; the CLI may not know its data directory or port. */
 export const desktopPairing =
   "If Executor desktop is running, use its File > Open in browser menu item instead.";
 
-/**
- * Pairing found no running server, a registered one still starting, stopping or not responding
- * after 30 seconds, a server that refused the credential, or something that is not a working
- * Executor server, including one whose link the CLI may not open. Pairing only reads keys, so
- * every message says what to correct and that nothing was changed. `keys` says which credential
- * was sent: the API key saved in `directory`, EXECUTOR_API_KEY, or the password the background
- * server registered. `server` is the host the request went to; none when no server was found.
- */
 export class PairFailed extends Schema.TaggedError<PairFailed>()("PairFailed", {
   reason: Schema.Literals([
     "no-server",
@@ -140,10 +114,6 @@ export class PairFailed extends Schema.TaggedError<PairFailed>()("PairFailed", {
   }
 }
 
-/**
- * Install a newer release the way this copy was installed: a standalone install downloads and
- * switches to it, and an npm-family install runs its package manager.
- */
 export const upgradeCommand = Command.make("upgrade", {
   version: Argument.String("version").pipe(
     Argument.withDescription("Release to install, such as 2.0.0-beta.16. Default: the newest"),
@@ -170,13 +140,6 @@ export const upgradeCommand = Command.make("upgrade", {
   ),
 );
 
-/**
- * `executor upgrade` stopped. Every message says what to do next, and whether anything changed:
- * only `install-failed` and `verify-failed` follow a package manager run, and a standalone
- * install switches versions only after the new one has passed its checks. `service-running`: the
- * background server did not stop, so the package manager did not run over its files. A failure
- * after the background server stopped starts it again first.
- */
 export class UpgradeFailed extends Schema.TaggedError<UpgradeFailed>()("UpgradeFailed", {
   reason: Schema.Literals([
     "development-build",

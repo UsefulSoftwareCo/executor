@@ -71,7 +71,6 @@ export function LogsPage() {
 
   return (
     <div className="flex flex-col h-full">
-      {/* Toolbar */}
       <div className="border-b border-white/5 shrink-0">
         <PageContainer className="flex items-center gap-3 py-3">
           <form onSubmit={handleSearch} className="contents">
@@ -96,7 +95,6 @@ export function LogsPage() {
         </PageContainer>
       </div>
 
-      {/* Table */}
       <div className="flex-1 overflow-auto">
         <div className="mx-auto max-w-7xl">
           <Suspense fallback={<LoadingState message="Loading logs..." />}>

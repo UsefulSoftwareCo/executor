@@ -54,7 +54,6 @@ Markdown representations of the pages above, for machines rather than browsers.
 - [Discord](https://discord.gg/eF29HBHwM6): support and discussion.
 `;
 
-/** Serve the agent index with links belonging to this deployment. */
 export const GET: APIRoute = () =>
   new Response(body, {
     headers: {

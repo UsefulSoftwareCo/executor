@@ -1,4 +1,3 @@
-/** Retained workflow output keeps its account authorization after the app's account link changes. */
 import { expect, layer } from "@effect/vitest";
 import { Clock, Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -82,8 +81,6 @@ layer(HostedLive, { excludeTestServices: true })("Workflow replay access", (it) 
             accounts.push(account.id);
             return account.id;
           });
-        // Connecting for the app's requirement links each of the owner's accounts as the app's in
-        // turn, so the original replaces the replacement and serves every member.
         const replacement = yield* connect("synthetic-replacement");
         const original = yield* connect("synthetic-original");
         const appLink = (account: string) =>
@@ -113,8 +110,6 @@ layer(HostedLive, { excludeTestServices: true })("Workflow replay access", (it) 
         const run = yield* wait(actors.member, (yield* body(Resource, started)).id);
         expect(run.output).toMatchObject({ account: original, value: "synthetic-original" });
         expect((yield* body(WorkflowRun, yield* start(actors.member))).output).toEqual(run.output);
-        // A key belongs to the actor that used it. Another member using the same app account cannot
-        // read or replay this run; the same key starts their own run.
         expect(
           (yield* api.request(actors.admin, "GET", `${path}/workflow-runs/${run.id}`)).status,
         ).toBe(403);
@@ -124,7 +119,6 @@ layer(HostedLive, { excludeTestServices: true })("Workflow replay access", (it) 
         expect(adminRun.id).not.toBe(run.id);
         expect(adminRun.output).toMatchObject({ account: original });
         expect(adminRun.output).not.toEqual(run.output);
-        // The app's link moves to the replacement, so the original no longer serves the app.
         yield* appLink(replacement);
         expect(
           (yield* api.request(actors.member, "GET", `${path}/workflow-runs/${run.id}`)).status,
@@ -141,7 +135,6 @@ layer(HostedLive, { excludeTestServices: true })("Workflow replay access", (it) 
             input: { label: "different" },
             key,
           });
-        // Authorization precedes comparing retained inputs, including the conflict response.
         expect((yield* changedInput()).status).toBe(403);
         const history = yield* api.request(actors.member, "GET", `${path}/workflow-runs`);
         expect(history.status).toBe(200);

@@ -41,15 +41,11 @@ export function TraceDetailPage() {
   const logsPaging = usePagedList(logsList);
   const refreshTrace = useAtomRefresh(traceAtom);
   const restartLogs = useRestartList(logsList);
-  // The trace and its logs are one view: Refresh reads both again, the logs from their first page.
   const refresh = () => {
     refreshTrace();
     restartLogs();
   };
 
-  // The collector, like Motel, adds a placeholder span for each missing parent and counts it in
-  // the trace's error count. A span is a placeholder when the trace's warnings name its id as
-  // missing (`missing span <id> (<n> child…)`); its name alone does not say so.
   const hasMissingParents = useMemo(() => {
     if (!AsyncResult.isSuccess(traceResult)) return false;
     const { warnings, spans } = traceResult.value.data;
@@ -68,8 +64,6 @@ export function TraceDetailPage() {
   }
 
   const trace = traceResult.value.data;
-  // Set when the trace was too large to answer whole. The trace's duration and error count are
-  // then computed from the spans shown, so they are labelled as covering those spans.
   const partial = trace.partial;
   const logs = logsPaging.state.rows;
   const logsComplete = logsPaging.state.end.status === "complete";
@@ -80,7 +74,6 @@ export function TraceDetailPage() {
 
   return (
     <div className="flex flex-col h-full">
-      {/* Header */}
       <PageContainer className="pt-4 pb-3 border-b border-white/5">
         <Link to="/traces" className="text-sm text-zinc-500 no-underline hover:text-zinc-300">
           &larr; Traces
@@ -163,7 +156,6 @@ export function TraceDetailPage() {
         </PageContainer>
       )}
 
-      {/* Tabs */}
       <PageContainer className="flex gap-1 py-2 border-b border-white/5">
         <TabButton active={activeTab === "waterfall"} onClick={() => setActiveTab("waterfall")}>
           Waterfall
@@ -173,7 +165,6 @@ export function TraceDetailPage() {
         </TabButton>
       </PageContainer>
 
-      {/* Body — full page width for the waterfall */}
       <div className="flex flex-1 overflow-hidden w-full">
         {activeTab === "waterfall" ? (
           <>

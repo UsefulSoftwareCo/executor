@@ -15,14 +15,9 @@ import {
   SelectValue,
 } from "@executor-js/ui/components/select";
 
-/** A field's title, or its name in words: `apiKey` reads "Api Key". */
 export const fieldLabel = (name: string, field: { readonly title?: string | undefined }) =>
   field.title ?? name.replace(/([A-Z])/g, " $1").replace(/^./, (s) => s.toUpperCase());
 
-/**
- * Whether the app gets a secret field's value. A provider with hosts hides unmarked fields behind
- * placeholders; its `raw()` fields, and every field of a provider without hosts, are readable.
- */
 function FieldAccess({
   hidden,
   hosts,
@@ -58,19 +53,10 @@ function FieldAccess({
   );
 }
 
-/** Whether `text` spans lines: it has a line break between other characters. */
 const multiline = (text: string) => /[^\r\n][\r\n]+[^\r\n]/.test(text);
 
-/** How many lines `text` has. A line break at its end doesn't start another. */
 const lineCount = (text: string) => text.replace(/(\r\n|\r|\n)$/, "").split(/\r\n|\r|\n/).length;
 
-/**
- * A secret credential's text box. An `<input>` turns pasted line breaks into spaces, which changes
- * a multi-line secret such as a PEM private key, and only a password input hides its text from
- * assistive software. So a paste or drop that spans lines doesn't go into the input: it replaces
- * the whole value, exactly as pasted, and the field shows a summary that holds none of the text.
- * Clear goes back to the empty input. A value without line breaks is the input, as before.
- */
 export function CredentialInput({
   value,
   onValueChange,
@@ -82,7 +68,6 @@ export function CredentialInput({
   readonly onValueChange: (value: string) => void;
   readonly required?: boolean | undefined;
   readonly disabled?: boolean | undefined;
-  /** The ID of the field's description, which the input and its summary refer to. */
   readonly describedBy?: string | undefined;
 }) {
   const input = useRef<HTMLInputElement>(null);
@@ -102,12 +87,10 @@ export function CredentialInput({
     return (
       <div
         className="max-[740px]:min-h-11 flex h-9 w-full items-center gap-2 rounded-md border border-input pr-0.5 pl-3 shadow-xs has-[output:focus-visible]:border-ring has-[output:focus-visible]:ring-[3px] has-[output:focus-visible]:ring-ring/50 dark:bg-input/30"
-        // Undo here would reach past this field to the page's previous edit, such as another field.
         onKeyDown={(event) => {
           if ((event.ctrlKey || event.metaKey) && /^[yz]$/i.test(event.key)) event.preventDefault();
         }}
       >
-        {/* The first control in the field's label, so clicking the label doesn't press Clear. */}
         <output
           ref={summary}
           tabIndex={-1}
@@ -147,7 +130,6 @@ export function CredentialInput({
   );
 }
 
-/** Empty inputs for new credentials; saved values never enter the form. */
 export function CredentialFields({
   fields,
   values,
@@ -156,7 +138,6 @@ export function CredentialFields({
   hosts,
 }: {
   readonly fields: AccountFormFields;
-  /** The provider's credential hosts. Without them the app reads every secret. */
   readonly hosts?: readonly string[] | undefined;
   readonly values: Readonly<Record<string, string>>;
   readonly onChange: (values: Readonly<Record<string, string>>) => void;
@@ -207,7 +188,6 @@ export function CredentialFields({
                     describedBy={described}
                   />
                 ) : (
-                  // A plain value is shown, and the summary would hide it, so it keeps main's input.
                   <Input
                     type={field.type === "string" ? "text" : "number"}
                     autoComplete="off"
@@ -222,8 +202,6 @@ export function CredentialFields({
               </div>
             </label>
             {field.description && described && (
-              // The app's Markdown on where to find the value. It stays outside the label, so the
-              // field's accessible name is its title alone.
               <SetupHelp id={described}>{field.description}</SetupHelp>
             )}
           </div>

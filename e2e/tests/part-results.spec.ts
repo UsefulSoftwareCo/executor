@@ -1,9 +1,3 @@
-/**
- * The release workflow runs the installed CLI suite and the desktop crash recovery scenarios in
- * parts. Vitest passes a part whose filter matched nothing, so each part records what it ran
- * (`e2e/part-results.ts record`), and the archives job requires each platform's parts to have run
- * their suite exactly once (`compare`). These cases run the script as the workflow does.
- */
 import { expect, layer } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, FileSystem, Path, Stream } from "effect";
@@ -46,13 +40,11 @@ const node = (args: ReadonlyArray<string>, env: Record<string, string> = {}) =>
     return { exitCode, log };
   }).pipe(Effect.scoped);
 
-/** Titles split into `count` parts, in order. */
 const split = (titles: ReadonlyArray<string>, count: number) =>
   Array.from({ length: count }, (_, index) =>
     titles.filter((_, position) => position % count === index),
   );
 
-/** Lay out recorded parts as actions/download-artifact does and run the comparison. */
 const compare = (recorded: Record<string, ReadonlyArray<string>>) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;

@@ -1,4 +1,3 @@
-/** Atomic setup and invitation redemption over Better Auth's transaction adapter. */
 import {
   defineRequestState,
   getCurrentAdapter,
@@ -65,7 +64,6 @@ const decode = <S extends Schema.Top>(schema: S, value: unknown) =>
     ),
   );
 const deny = (message: string) => Effect.fail(new APIError("FORBIDDEN", { message }));
-/** Better Auth returns a coded refusal of its callback to the login page, which explains it. */
 const refuseSso = (code: (typeof SsoRefusal)[keyof typeof SsoRefusal], message: string) =>
   Effect.fail(new APIError("FORBIDDEN", { code, message }));
 const adapterFor = (ctx: GenericEndpointContext) =>
@@ -86,7 +84,6 @@ const instanceOrganization = (ctx: GenericEndpointContext) =>
     return yield* decode(Organization, organizations[0]);
   });
 
-/** Reject non-SSO user creation; only verified, allowlisted OIDC users can join automatically. */
 export const selfHostUserHooks = (settings: Effect.Success<typeof selfHostAuthSettings>) =>
   ({
     user: {
@@ -97,7 +94,6 @@ export const selfHostUserHooks = (settings: Effect.Success<typeof selfHostAuthSe
               if (ctx?.path === "/self-host/setup" || ctx?.path === "/self-host/register") return;
               if (!ctx || !isSsoCallback(ctx) || settings.sso === null)
                 return yield* deny("Create the first account through setup, or use an invitation.");
-              // Only an address the provider vouches for joins; an absent claim is not a yes.
               if (!user.emailVerified)
                 return yield* refuseSso(
                   SsoRefusal.emailUnverified,
@@ -133,7 +129,6 @@ export const selfHostUserHooks = (settings: Effect.Success<typeof selfHostAuthSe
                 }),
               );
               if (member === null) {
-                // Re-check the policy on every SSO login; no email/password login can auto-join.
                 if (!isSsoCallback(ctx) || settings.sso === null)
                   return yield* deny("Your account is not a member of this instance.");
                 if (!(yield* call(() => admittedSsoUser.get())))
@@ -188,8 +183,6 @@ const register = (
         await runWithTransaction(ctx.context.adapter, () =>
           run(
             Effect.gen(function* () {
-              // PGlite reserves its only connection for this whole transaction. Concurrent
-              // first-run requests therefore cannot both observe an empty user table.
               const adapter = yield* adapterFor(ctx);
               const email = input.email.toLowerCase();
               let organizationId: string;
@@ -249,7 +242,6 @@ const register = (
               );
               const user = yield* Effect.gen(function* () {
                 if (existing) {
-                  // A new invitation can readmit a removed member, but cannot replace their password.
                   const account = existing.accounts.find(
                     (account) => account.providerId === "credential",
                   );
@@ -302,7 +294,6 @@ const register = (
     ),
   );
 
-/** Public capability discovery contains no users, emails, or SSO credentials. */
 export const selfHostRegistration = (settings: Effect.Success<typeof selfHostAuthSettings>) =>
   ({
     id: "executor-self-host-registration",
@@ -334,8 +325,6 @@ export const selfHostRegistration = (settings: Effect.Success<typeof selfHostAut
         (ctx) => register(ctx, ctx.body, { invitation: ctx.body.invitation }),
       ),
     },
-    // Both routes check a password (registration does for an existing account), so they take
-    // Better Auth's sign-in limit: three requests per address every ten seconds.
     rateLimit: [
       {
         pathMatcher: (path) => path === "/self-host/setup" || path === "/self-host/register",

@@ -49,7 +49,6 @@ export default defineApp({}, async () => {
         );
         const failed = yield* api.request(actors.owner, "GET", `${prefix}/apps/${app.id}/tools`);
         expect(failed.status).toBe(502);
-        // The app's own factory error explains the failure to its caller.
         expect((yield* body(EvaluationFailure, failed)).failure).toEqual({
           source: "app",
           errorName: "Error",
@@ -84,7 +83,6 @@ export default defineApp({}, async () => {
         );
         expect(prompt).toContain(app.id);
         expect(prompt).toContain("AppEvaluationFailed");
-        // The app's code raised it, which does not show whether Executor caused it.
         expect(prompt).toContain("failed with this error. It does not show whether the cause");
         expect(prompt).not.toContain("not Executor");
         expect(prompt).toContain("SYNTHETIC_FACTORY_FAILURE");
@@ -188,9 +186,6 @@ export default defineApp({}, async () => ({
         );
         yield* browser.checkpoint("Tools-error-recovered");
 
-        // A Worker failure whose text matches a resource limit, written by the app's own code: one
-        // retry, then stop retrying unchanged and investigate, rebuilding only an app on an older
-        // apps version. Executor has not confirmed the limit, so nothing says a repeat proves it.
         const limited = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
           name: "Sample limited tools",
           files: [

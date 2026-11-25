@@ -14,10 +14,6 @@ import { startFreshSelfHost } from "../support/managed-server.ts";
 import { driver, Target } from "../support/platform.ts";
 import { scenarios } from "../test-plan.ts";
 
-/**
- * The private address the operator configured. Nothing listens there: every request the client
- * makes to it reaches the product's loopback listener, as a LAN route to the host would.
- */
 const lanOrigin = "http://192.168.50.10:4788";
 const issuer = `${lanOrigin}/api/auth`;
 
@@ -52,7 +48,6 @@ layer(TestLive, { excludeTestServices: true })("MCP OAuth at a private HTTP orig
           BETTER_AUTH_URL: lanOrigin,
           EXECUTOR_URL_ALLOW_HTTP_ORIGINS: JSON.stringify([lanOrigin]),
         });
-        /** The client's network: the LAN address resolves to this host's loopback listener. */
         const lan: typeof fetch = (input, init) => {
           const url = input instanceof Request ? input.url : String(input);
           const routed = url.startsWith(lanOrigin) ? origin + url.slice(lanOrigin.length) : url;
@@ -60,7 +55,6 @@ layer(TestLive, { excludeTestServices: true })("MCP OAuth at a private HTTP orig
         };
         const get = (path: string) => driver(`GET ${path}`, () => lan(`${lanOrigin}${path}`));
 
-        // The resource names its authorization server, and that server's metadata names itself.
         const resource = yield* get("/.well-known/oauth-protected-resource/mcp");
         expect(resource.status).toBe(200);
         expect(yield* json(ResourceMetadata, "read resource metadata", resource)).toEqual({
@@ -100,7 +94,6 @@ layer(TestLive, { excludeTestServices: true })("MCP OAuth at a private HTTP orig
           }),
         );
 
-        // The MCP SDK's own OAuth client: discovery, registration, PKCE, code exchange.
         let registered: Awaited<ReturnType<OAuthClientProvider["clientInformation"]>>;
         let tokens: Awaited<ReturnType<OAuthClientProvider["tokens"]>>;
         let verifier = "";
@@ -113,7 +106,6 @@ layer(TestLive, { excludeTestServices: true })("MCP OAuth at a private HTTP orig
             redirect_uris: [redirectUrl],
             grant_types: ["authorization_code", "refresh_token"],
             response_types: ["code"],
-            // A confidential client may introspect its own token, which shows the token's issuer.
             token_endpoint_auth_method: "client_secret_post",
           },
           clientInformation: () => registered,
@@ -130,11 +122,9 @@ layer(TestLive, { excludeTestServices: true })("MCP OAuth at a private HTTP orig
             authProvider: provider,
             fetch: lan,
           });
-          // SDK's optional sessionId getter includes undefined; its Transport declaration omits it.
           const compatible: Omit<StreamableHTTPClientTransport, "sessionId"> = created;
           return { created, compatible };
         };
-        // Unauthorized, the client discovers the server, registers and asks to authorize.
         const signIn = transport();
         const refused = yield* driver("connect before authorizing", () =>
           new Client({ name: "LAN client", version: "1.0.0" }).connect(signIn.compatible),
@@ -145,12 +135,9 @@ layer(TestLive, { excludeTestServices: true })("MCP OAuth at a private HTTP orig
           `${issuer}/oauth2/authorize`,
         );
 
-        // The signed-in owner reaches consent and approves it for their organization.
         const cookie = Redacted.value(yield* owner.cookies)
           .map(({ name, value }) => `${name}=${value}`)
           .join("; ");
-        // Node's fetch always states `sec-fetch-mode: cors`, so Better Auth answers with the
-        // redirect's target in JSON, as it does a page script, instead of a 302.
         const authorize = yield* driver("open authorization", () =>
           lan(authorization!.href, { headers: { cookie }, redirect: "manual" }),
         );
@@ -172,7 +159,6 @@ layer(TestLive, { excludeTestServices: true })("MCP OAuth at a private HTTP orig
         if (code === null) return yield* Effect.die("No authorization code");
         yield* driver("exchange the code", () => signIn.created.finishAuth(code));
 
-        // The issued token names the same issuer.
         const introspected = yield* driver("introspect the token", () =>
           lan(`${issuer}/oauth2/introspect`, {
             method: "POST",
@@ -191,7 +177,6 @@ layer(TestLive, { excludeTestServices: true })("MCP OAuth at a private HTTP orig
           iss: issuer,
         });
 
-        // The token opens an MCP session at the LAN address.
         const client = new Client({ name: "LAN client", version: "1.0.0" });
         yield* Effect.acquireRelease(
           driver("connect MCP", () => client.connect(transport().compatible)),

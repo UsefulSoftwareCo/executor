@@ -1,11 +1,3 @@
-/**
- * A deploy leaves every webhook source of its app `pending` until setup registers its webhooks on
- * the new version. Each deploy wakes webhook source setup (Cloud's schedule coordinator,
- * self-host's setup worker), so setup reaches the new version without a reconcile and without
- * waiting for polling. A schedule keeps its saved setting when its timing changes. Member setup,
- * which links the default Executor app's managed key and redeploys that app, wakes setup from the
- * background job it runs in.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -19,7 +11,6 @@ import { appsManifest } from "../support/apps-release.ts";
 import { removeAppWhenStopped } from "../support/webhook-sources.ts";
 import { connectionsPath, unlinkAccount } from "../support/app-accounts.ts";
 
-/** A linked account's webhook source registers `incoming` on each version. */
 const source = (
   timing: string,
 ) => `import { defineApp, defineProvider, secrets, mutation, userInterval, userCron, object, string, router } from "apps";
@@ -33,7 +24,6 @@ const daily = 'userCron({ expression: "0 9 * * *", timezone: "UTC" }, tick, {})'
 
 const Deployed = Schema.Struct({ ...App.fields, activeVersion: Schema.String });
 const Redeployed = Schema.Struct({ app: Deployed });
-/** A webhook source's setup state: the version its webhooks were last registered on. */
 const Sources = Schema.Array(
   Schema.Struct({
     account: Schema.String,
@@ -48,13 +38,8 @@ const Schedules = Schema.Array(
     timing: Schema.Struct({ kind: Schema.String }),
   }),
 );
-/**
- * Setup must reach the new version this soon after its deploy answers. Without a wake Cloud
- * waits for the coordinator's minute heartbeat, which stalled a redeploy for over 20 s.
- */
 const deadline = "15 seconds";
 
-/** The trace holds a setup wake that a committed change asked for. */
 const wakes = (trace: (typeof SpanQuery.Type)["data"]) =>
   trace.some(
     ({ span }) =>
@@ -80,7 +65,6 @@ layer(HostedLive, { excludeTestServices: true })("Deploy setup", (it) => {
           const app = yield* body(Deployed, deployed);
           const path = `${prefix}/apps/${app.id}`;
           const created: { account?: string } = {};
-          // Unlinking removes the webhook source; the app is removable once its webhook stops.
           yield* Effect.addFinalizer(() =>
             Effect.gen(function* () {
               if (created.account !== undefined)
@@ -90,7 +74,6 @@ layer(HostedLive, { excludeTestServices: true })("Deploy setup", (it) => {
                 yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${created.account}`);
             }).pipe(Effect.orDie),
           );
-          // Connecting an account from the app links it, which makes it a webhook source.
           const connection = yield* api.request(
             actors.owner,
             "POST",
@@ -119,7 +102,6 @@ layer(HostedLive, { excludeTestServices: true })("Deploy setup", (it) => {
           );
           const observed: Array<{ step: string; status: string; current: boolean }> = [];
           yield* Effect.addFinalizer(() => evidence.json("setup-observations.json", observed));
-          /** Setup is ready for exactly this version, not still on the one before. */
           const setUp = (step: string, version: string) =>
             readSetup.pipe(
               Effect.tap((setup) =>
@@ -156,7 +138,6 @@ layer(HostedLive, { excludeTestServices: true })("Deploy setup", (it) => {
 
           const redeploy = (step: string, timing: string) =>
             Effect.gen(function* () {
-              // Files deploy straight to the app: local Cloud has no Git storage for commits.
               const response = yield* api.request(actors.owner, "POST", `${path}/deploy`, {
                 files: [{ path: "index.ts", content: source(timing) }, appsManifest],
               });
@@ -170,7 +151,6 @@ layer(HostedLive, { excludeTestServices: true })("Deploy setup", (it) => {
             Schedules,
             yield* api.request(actors.owner, "GET", `${path}/schedules`),
           );
-          // The setting saved for the interval schedule carries over to its cron timing.
           expect(schedules).toEqual([
             expect.objectContaining({ name: "tick", enabled: true, timing: { kind: "cron" } }),
           ]);
@@ -189,11 +169,7 @@ layer(HostedLive, { excludeTestServices: true })("Deploy setup", (it) => {
         Effect.gen(function* () {
           const evidence = yield* Evidence,
             telemetry = yield* Telemetry;
-          // Creating the organization queued its installation and its owner's member setup, which
-          // linked the owner's default Executor key in a background provisioning job.
           const actors = yield* Actors;
-          // This organization's provisioning jobs, each in its own trace. Its team installation
-          // runs the owner's member setup itself, so the owner's own member job finds it done.
           const woken = yield* telemetry
             .search("hosted.provision", { organization: actors.organization.id })
             .pipe(

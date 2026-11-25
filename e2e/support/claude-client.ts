@@ -1,4 +1,3 @@
-/** Drive the real interactive CLI. Claude owns MCP discovery, PKCE, tokens and its loopback callback. */
 import { Config, Context, Effect, FileSystem, Layer, Path, Schedule, Schema } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import type { Key } from "@kitlangton/terminal-control";
@@ -242,7 +241,6 @@ const make = Effect.gen(function* () {
     }),
   };
 });
-/** An isolated interactive client with model API access and no preauthorized Executor credentials. */
 export class ClaudeClient extends Context.Service<ClaudeClient, Effect.Success<typeof make>>()(
   "e2e/ClaudeClient",
 ) {

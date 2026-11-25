@@ -1,4 +1,3 @@
-/** Pending tool calls are encrypted; consumption clears their payload before external work. */
 import { approvalElicitation, type ApprovalResponse } from "apps/contracts";
 import { Clock, Effect, Redacted, Schema } from "effect";
 import type { HostCrypto } from "./host-crypto.ts";
@@ -21,10 +20,6 @@ import {
 import type { Credentials } from "../contracts/storage.ts";
 import { query, transaction, type Query } from "./database.ts";
 
-/**
- * A pending call as its encrypted record holds it, read again on resume. Requests saved before
- * accounts were named per call carry installation keys; decoding ignores them.
- */
 export const ApprovalPayload = Schema.Struct({
   invocation: ToolInvocation,
   originalInput: Json,
@@ -39,7 +34,6 @@ const Record = Schema.Struct({
   expiresAt: Schema.Date,
 });
 
-/** Consume-once storage. The caller supplies authority; no decision or tool result is retained. */
 export function makeToolApprovals(
   db: Query,
   credentials: Credentials,
@@ -67,7 +61,6 @@ export function makeToolApprovals(
             b.and(
               b("expiresAt", "<=", now),
               owner === undefined ? true : b("owner", "=", owner),
-              // Let this resume report expiry for its pending request. Expired consumed markers are absent.
               pendingRequest === undefined
                 ? true
                 : b.or(b("id", "!=", pendingRequest), b("status", "=", "consumed")),
@@ -99,10 +92,6 @@ export function makeToolApprovals(
           ...(payload.issuer === undefined ? {} : { issuer: payload.issuer }),
         };
       }),
-    /**
-     * Save a call for review. Its prompt is built here from the saved invocation, never taken from
-     * the app, so it describes the exact call approval runs, as every later review of it does.
-     */
     save: (
       invocation: ToolInvocation,
       originalInput: Json,
@@ -159,9 +148,6 @@ export function makeToolApprovals(
         yield* Effect.annotateCurrentSpan("executor.approval.id", input.requestId);
         if (yield* inTransaction) return yield* new RequestInvalid();
         yield* prune(input.owner, input.requestId);
-        // The issuer is inside the ciphertext, so check it before the claim: a caller from another
-        // flow consumes nothing. A pending payload never changes, so the check holds at the claim.
-        // A consumed request has no payload left and reports already-consumed below.
         const found = yield* read(input.requestId, input.owner);
         if (found.status === "pending" && (yield* decrypt(found)).issuer !== issuer)
           return yield* new ToolApprovalNotFound({ requestId: input.requestId });
@@ -183,7 +169,6 @@ export function makeToolApprovals(
               );
               return { kind: "expired" as const };
             }
-            // Claim and clear atomically. Only the winning transaction retains the prior ciphertext in memory.
             yield* query(() =>
               db.updateMany("toolApprovals", {
                 where: (b) =>
@@ -214,7 +199,6 @@ export function makeToolApprovals(
         if (input.response.action === "cancel")
           return { status: "cancelled" as const, requestId: input.requestId };
         const payload = yield* decrypt(consumed.original);
-        // The consume commits before dispatch. A crash, interruption or lost response never makes it retryable.
         return yield* execute(payload.invocation, payload.originalInput);
       }),
   };

@@ -1,9 +1,3 @@
-/**
- * Deploys copy a source's `ui/public/` files into the host's blob store, under the app code
- * lineage that owns them and named by their Git blob, so redeploys copy only changed files. Each
- * build lists its files at `<build>/public.json`; serving reads only listed files. Removing an app
- * releases its lineage's files. There is no API for this store.
- */
 import { Effect, Option, Schema, Stream } from "effect";
 import { RuntimeBuildUnavailable, type RuntimePublicFile } from "../contracts/runtime.ts";
 import { BlobKey, removeAllKeys, type BlobStorage } from "../contracts/blobs.ts";
@@ -30,13 +24,11 @@ import {
   type SourceTextFile,
 } from "../contracts/source.ts";
 
-/** Where the bytes of a snapshot's stored files come from: a repository, a store or a registry. */
 export type StoredBytes = (file: {
   readonly path: string;
   readonly object: GitObjectId;
 }) => Effect.Effect<Uint8Array, SourceError>;
 
-/** A lineage's own copies: the files its deploys retained. */
 export const storeBytes =
   (blobs: BlobStorage, code: AppCodeId): StoredBytes =>
   ({ object }) =>
@@ -49,10 +41,8 @@ export const storeBytes =
       ),
     );
 
-/** Files a public path names, relative to the page's origin. */
 export const servedPath = (path: string) => path.slice(publicSourcePrefix.length);
 
-/** Every name in a store folder, page by page. */
 const listed = (blobs: BlobStorage, folder: BlobKey) =>
   Effect.gen(function* () {
     const names = new Set<string>();
@@ -65,15 +55,8 @@ const listed = (blobs: BlobStorage, folder: BlobKey) =>
     }
   });
 
-/** Copies above this size go one at a time, so a deploy holds at most one large file. */
 const smallFile = 1024 * 1024;
 
-/**
- * Copy a source's public files into the lineage's store, skipping files it already holds, and
- * return the build's listing and the files as the version retains them: text stays inline,
- * and binary files become stored entries that name the lineage's copy. Stored files missing from
- * the store are read through `stored`; each one's bytes must hash to the blob it names.
- */
 export const retainPublicFiles = (
   blobs: BlobStorage,
   code: AppCodeId,
@@ -140,7 +123,6 @@ export const retainPublicFiles = (
 
 const manifestKey = (build: BuildId) => BlobKey.make(`${build}/public.json`);
 
-/** Retain a build's listing before any version names the build. */
 export const writePublicManifest = (
   blobs: BlobStorage,
   build: BuildId,
@@ -151,7 +133,6 @@ export const writePublicManifest = (
     Effect.mapError(() => new SourceError({ reason: "storage" })),
   );
 
-/** A build's listing; builds without public files, including every earlier build, have none. */
 export const readPublicManifest = (blobs: BlobStorage, build: BuildId) =>
   blobs
     .get(manifestKey(build))
@@ -165,10 +146,6 @@ export const readPublicManifest = (blobs: BlobStorage, build: BuildId) =>
       ),
     );
 
-/**
- * Save files whose stored entries name blobs outside the target repository: each one becomes an
- * upload read through `stored`. Inline files are kept as they are.
- */
 export const uploadsFrom = (
   files: ReadonlyArray<SourceFile>,
   stored: StoredBytes,
@@ -179,7 +156,6 @@ export const uploadsFrom = (
       : file,
   );
 
-/** Copy a snapshot's stored files into a lineage's store, so its retained files can name them. */
 export const adoptStoredFiles = (
   blobs: BlobStorage,
   code: AppCodeId,
@@ -193,10 +169,6 @@ export const adoptStoredFiles = (
     stored,
   ).pipe(Effect.asVoid);
 
-/**
- * Release every public file of a removed lineage, as many per request as the store deletes at
- * once. Missing objects are already released.
- */
 export const releasePublicFiles = (blobs: BlobStorage, code: AppCodeId) =>
   Effect.gen(function* () {
     const folder = publicFileFolder(code);
@@ -210,8 +182,6 @@ export const releasePublicFiles = (blobs: BlobStorage, code: AppCodeId) =>
       Array.from({ length: Math.ceil(keys.length / removeAllKeys) }, (_, index) =>
         keys.slice(index * removeAllKeys, (index + 1) * removeAllKeys),
       ),
-      // A failed batch can leave up to `removeAllKeys` files no version serves; the other
-      // batches still run, and the removal is not undone.
       (batch) =>
         blobs.removeAll(batch).pipe(
           Effect.catchTag("BlobStoreError", () =>
@@ -225,7 +195,6 @@ export const releasePublicFiles = (blobs: BlobStorage, code: AppCodeId) =>
     );
   }).pipe(Effect.withSpan("sdk.apps.public.release"));
 
-/** Serve a listed public file from the lineage's store, streaming the requested range. */
 export const publicFileAsset = (
   blobs: BlobStorage,
   code: string,
@@ -241,7 +210,6 @@ export const publicFileAsset = (
       blobs.stream(key, range).pipe(
         Effect.mapError(() => new RuntimeBuildUnavailable()),
         Effect.flatMap((found) =>
-          // The build lists the file, so missing bytes are a storage fault.
           Option.isNone(found)
             ? Effect.fail(new RuntimeBuildUnavailable())
             : Effect.succeed(
@@ -252,6 +220,5 @@ export const publicFileAsset = (
   };
 };
 
-/** Text files of a list, the only ones code and manifests are read from. */
 export const textFiles = (files: ReadonlyArray<SourceFile>): ReadonlyArray<SourceTextFile> =>
   files.filter(isTextFile);

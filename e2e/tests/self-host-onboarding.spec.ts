@@ -13,7 +13,6 @@ import { Target, driver } from "../support/platform.ts";
 import { scenarios } from "../test-plan.ts";
 
 const appRow = (page: Page, name: string) => page.getByRole("group", { name, exact: true });
-/** Where each row sits in the list, so a connection can be checked to move none of them. */
 const rowBoxes = (page: Page) =>
   page
     .getByRole("region", { name: "Apps", exact: true })
@@ -24,7 +23,6 @@ const rowBoxes = (page: Page) =>
         return { name: row.getAttribute("aria-label"), top: box.top, height: box.height };
       }),
     );
-/** The list's last row: what to do about an app it does not show, without a link or button. */
 const notListed = (page: Page) =>
   page.getByRole("region", { name: "Apps", exact: true }).evaluate((list) => {
     const last = list.lastElementChild;
@@ -39,7 +37,6 @@ const generalNote =
   "Not seeing what you’re looking for?\n\nOnce your assistant is connected, ask it to add any app or API through Executor.";
 const searchNote = (query: string) =>
   `Not seeing “${query}”?\n\nOnce your assistant is connected, ask it to add “${query}” through Executor.`;
-/** The label of the focused element, if any element other than the page has focus. */
 const focused = (page: Page) =>
   page.evaluate(() =>
     document.activeElement === null || document.activeElement === document.body
@@ -47,14 +44,12 @@ const focused = (page: Page) =>
       : (document.activeElement.getAttribute("aria-label") ??
         document.activeElement.getAttribute("type")),
   );
-/** Where an element sits on the page. */
 const boxOf = (locator: ReturnType<Page["locator"]>) =>
   locator
     .boundingBox()
     .then((box) => box && { x: box.x, y: box.y, width: box.width, height: box.height });
 const desktop = { width: 1440, height: 960 };
 
-/** Connect one Synthetic Mail account with an API key and name it. */
 const addMailToken = (page: Page, label: string) =>
   page
     .getByRole("dialog")
@@ -96,7 +91,6 @@ layer(TestLive, { excludeTestServices: true })("Self-host onboarding", (it) => {
         yield* browser.use("Create the administrator", (page) =>
           page.getByRole("button", { name: "Create administrator account", exact: true }).click(),
         );
-        // Setup starts with the assistant, then accounts, then the first prompt.
         yield* browser.use("Administrator setup opens the organization's assistant step", (page) =>
           page.waitForURL(new RegExp(`^${origin}/org/[^/]+/setup/assistant$`, "u")),
         );
@@ -151,7 +145,6 @@ layer(TestLive, { excludeTestServices: true })("Self-host onboarding", (it) => {
         yield* browser.use("Setup waits for Claude", (page) =>
           page.getByText("Waiting for Claude to connect…", { exact: true }).waitFor(),
         );
-        // The assistant signs in from its own tab, so agent setup keeps its state.
         yield* Effect.scoped(
           Effect.gen(function* () {
             yield* browser.omitNetworkTrace;
@@ -171,7 +164,6 @@ layer(TestLive, { excludeTestServices: true })("Self-host onboarding", (it) => {
         yield* browser.use("Continue to the account step", (page) =>
           page.getByRole("link", { name: "Next: connect accounts", exact: true }).click(),
         );
-        // The account step carries the assistant and its agent on to the first prompt.
         yield* browser.use("Next opens the account step with the agent", (page) =>
           page.waitForURL(
             (url) => url.pathname === `${setup}/accounts` && url.search.startsWith("?assistant="),
@@ -186,13 +178,11 @@ layer(TestLive, { excludeTestServices: true })("Self-host onboarding", (it) => {
         yield* browser.use("The account step lists the catalog", (page) =>
           page.locator("[aria-label='Loading apps']").waitFor({ state: "detached" }),
         );
-        // Only apps that take an account are offered; the search counts them.
         expect(
           yield* browser.use("Read the listed apps", (page) =>
             Promise.all([
               page.getByRole("searchbox", { name: "Search apps" }).getAttribute("placeholder"),
               page.getByRole("region", { name: "Apps" }).getByRole("group").allInnerTexts(),
-              // With nothing connected, the step's one forward button offers to skip, quietly.
               page.getByRole("link", { name: "Skip for now", exact: true }).isVisible(),
               page
                 .getByRole("link", { name: "Skip for now", exact: true })
@@ -218,8 +208,6 @@ layer(TestLive, { excludeTestServices: true })("Self-host onboarding", (it) => {
             ]),
           ),
         ).toEqual(["Connect", "Connect"]);
-        // On a desktop the search has focus, so typing finds an app; the list ends with what to do
-        // about an app it does not show.
         expect(yield* browser.use("The search has focus on a desktop", focused)).toBe(
           "Search apps",
         );
@@ -231,7 +219,6 @@ layer(TestLive, { excludeTestServices: true })("Self-host onboarding", (it) => {
         });
         yield* browser.checkpoint("Connect your accounts");
 
-        // Loading holds the list's place, so the actions stay put when the catalog arrives.
         yield* Effect.scoped(
           Effect.gen(function* () {
             const catalog = yield* holdQuery(/\/catalog$/u, "continue");
@@ -255,7 +242,6 @@ layer(TestLive, { excludeTestServices: true })("Self-host onboarding", (it) => {
             ).toEqual(loading);
           }),
         );
-        // A search, too, keeps the list's height and so the actions' place.
         const actions = yield* browser.use("Measure the actions", (page) =>
           boxOf(page.getByRole("link", { name: "Skip for now", exact: true })),
         );
@@ -278,7 +264,6 @@ layer(TestLive, { excludeTestServices: true })("Self-host onboarding", (it) => {
           page.getByRole("button", { name: "Clear search", exact: true }).click(),
         );
 
-        // On a phone the keyboard would cover the list, so nothing takes focus.
         yield* browser.use("Use a phone viewport", (page) =>
           page.setViewportSize({ width: 390, height: 844 }),
         );
@@ -296,7 +281,6 @@ layer(TestLive, { excludeTestServices: true })("Self-host onboarding", (it) => {
         yield* browser.checkpoint("Connect your accounts on a phone, before a search");
         yield* browser.use("Restore the desktop viewport", (page) => page.setViewportSize(desktop));
 
-        // Search filters the list in place, without leaving setup.
         yield* browser.use("Search for the tracker", (page) =>
           page.getByRole("searchbox", { name: "Search apps" }).fill("track"),
         );
@@ -319,8 +303,6 @@ layer(TestLive, { excludeTestServices: true })("Self-host onboarding", (it) => {
           page.getByRole("button", { name: "Clear search", exact: true }).click(),
         );
 
-        // Connecting installs the app, runs its own connection form, then names the account.
-        // Only the row's detail and button change: no row moves or grows.
         const before = yield* browser.use("Measure the rows", rowBoxes);
         const forwardBox = (name: string) =>
           browser.use(`Measure ${name}`, (page) =>
@@ -336,7 +318,6 @@ layer(TestLive, { excludeTestServices: true })("Self-host onboarding", (it) => {
         yield* browser.use("The app's connection form opens", (page) =>
           page.getByRole("dialog", { name: `Connect ${officialApps.mail.name}` }).waitFor(),
         );
-        // The form opens on its first field, not on the hint beside the field's label.
         expect(
           yield* browser.use("The first field has focus and no hint is open", (page) =>
             Promise.all([
@@ -369,11 +350,8 @@ layer(TestLive, { excludeTestServices: true })("Self-host onboarding", (it) => {
             ]),
           ),
         ).toEqual(["Add another +", true, "default", 0]);
-        // The button changes its label and style in place.
         expect(yield* forwardBox("Continue with 1 account")).toEqual(skipBox);
         yield* browser.checkpoint("Continue replaces Skip for now");
-        // On a short screen the list scrolls. Connecting from a row it shows only in part, then
-        // closing the dialogs, leaves the list where it was rather than scrolling the row into view.
         yield* browser.use("Use a short phone viewport", (page) =>
           page.setViewportSize({ width: 375, height: 600 }),
         );
@@ -386,8 +364,6 @@ layer(TestLive, { excludeTestServices: true })("Self-host onboarding", (it) => {
             }),
         );
         expect(scrolled).toBe(12);
-        // Phones shorten the button to "Add +". It is pressed where it is, as a pointer would: the
-        // driver's own click first scrolls its target fully into view, which would hide the result.
         yield* browser.use("Add another Synthetic Mail account", (page) =>
           appRow(page, officialApps.mail.name)
             .getByRole("button", { name: "Add +", exact: true })
@@ -439,7 +415,6 @@ layer(TestLive, { excludeTestServices: true })("Self-host onboarding", (it) => {
           page.setViewportSize({ width: 1440, height: 960 }),
         );
 
-        // An OAuth sign-in started here returns here, even when the service cancels it.
         yield* browser.use("Connect the tracker with OAuth", (page) =>
           appRow(page, officialApps.tracker.name).getByRole("button", { name: "Connect" }).click(),
         );

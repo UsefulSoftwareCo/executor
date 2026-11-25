@@ -1,4 +1,3 @@
-/** Hosted MCP journeys use isolated grants and run against Node and Cloudflare. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Layer, Redacted, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -93,7 +92,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP server", (it) => {
             ),
         );
         const found = yield* Schema.decodeUnknownEffect(Completed)(search.structuredContent);
-        // Discovery must expose the callable public path for this exact app.
         const discovered = yield* Schema.decodeUnknownEffect(
           Schema.Struct({
             items: Schema.Array(Schema.Struct({ path: Schema.String })),
@@ -111,7 +109,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP server", (it) => {
           (yield* Schema.decodeUnknownEffect(Completed)(call.structuredContent)).execution.value,
         ).toEqual({ message: "from MCP", receipt });
         yield* evidence.json("mcp-invocation.json", call.structuredContent);
-        // Narrow the persisted grant through its public browser API. The open MCP session must obey it immediately.
         const grants = yield* body(
           Schema.Array(
             Schema.Struct({ clientId: Schema.String, grant: Schema.Struct({ id: Schema.String }) }),
@@ -190,7 +187,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP server", (it) => {
           "search",
           "skills",
         ]);
-        // The grant's record holds model mode; an address naming another mode is served in it.
         const native = yield* mcp.connect(token, "without-resource-native-address", {
           mode: "native",
         });
@@ -198,7 +194,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP server", (it) => {
           "An address naming native mode serves the grant's model mode",
           (client) => client.listTools(),
         );
-        // Native mode has no resume tool; model mode lists it.
         expect(nativeListed.tools.map((tool) => tool.name).sort()).toEqual([
           "call",
           "describe",
@@ -217,7 +212,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP server", (it) => {
         yield* evidence.step(
           "A grant whose approval mode is model cannot be narrowed to browser approval",
           Effect.gen(function* () {
-            // Its own approval mode cannot ask for browser approval, so no request could use it.
             const narrowed = yield* api.request(
               actors.owner,
               "POST",
@@ -282,8 +276,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP server", (it) => {
         const instructions = yield* client.use("Read the server's MCP instructions", (client) =>
           Promise.resolve(client.getInstructions()),
         );
-        // The default app installs asynchronously after signup. Observe its public
-        // MCP catalog instead of depending on how long earlier test actions took.
         const executorSkills = yield* client
           .use("Discover the default Executor app's skills", (client, signal) =>
             client.callTool({ name: "skills", arguments: {} }, undefined, { signal }),
@@ -299,8 +291,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP server", (it) => {
             }),
             Effect.timeout("15 seconds"),
           );
-        // Discovery finds the entry skill and the two skills the instructions name; the full list
-        // the host publishes is deferred-server-paths' subject.
         expect(executorSkills.map((entry) => entry.name)).toEqual(
           expect.arrayContaining(["app-authoring", "code-mode", "executor"]),
         );
@@ -322,7 +312,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP server", (it) => {
               ),
             );
         const entry = yield* readExecutorSkill("executor", "Read the Executor app's entry skill");
-        // The instructions are the entry skill without its frontmatter, so the two cannot drift.
         expect(entry.content).toMatch(/^---\nname: executor\n/);
         expect(instructions).toBe(entry.content.replace(/^---\n[\s\S]*?\n---\n/, "").trim());
         expect(instructions).toContain("`code-mode`");
@@ -348,8 +337,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP server", (it) => {
         expect(executorSource.files.find((file) => file.path === "index.ts")?.content).toContain(
           "wellKnownSkills",
         );
-        // An app that never deployed and an app still waiting for its account must not hide
-        // other apps' skills, and a direct read must say what the agent should do next.
         const prefix = `/api/organizations/${actors.organization.id}`;
         const created = yield* api.request(actors.owner, "POST", `${prefix}/apps`, {
           name: `Undeployed ${randomUUID().slice(0, 8)}`,
@@ -357,8 +344,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP server", (it) => {
         });
         expect(created).toMatchObject({ status: 200 });
         const undeployed = yield* body(App, created);
-        // A plain requirement needs one linked account. A many() requirement uses every linked
-        // account, so with none it reads as an empty set rather than a missing account.
         const deployAccountApp = (name: string, requirement: string) =>
           Effect.gen(function* () {
             const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
@@ -471,7 +456,6 @@ export default defineApp({ user: { accounts: { service: ${requirement} } } }, as
         expect(
           (yield* Schema.decodeUnknownEffect(skillDocument)(reference.structuredContent)).content,
         ).toBe("Call echo with a message.");
-        // Narrow the persisted grant through its public browser API. The open MCP session must obey it immediately.
         const grants = yield* body(
           Schema.Array(
             Schema.Struct({ clientId: Schema.String, grant: Schema.Struct({ id: Schema.String }) }),

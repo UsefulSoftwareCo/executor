@@ -1,18 +1,9 @@
-/**
- * CI serves emulators.dev on each E2E runner (scripts/ci/emulators.sh): the emulate-hosts Worker
- * under miniflare behind `scripts/ci/emulators-server.ts`. These cases run that server as a process
- * with a stand-in Worker that echoes what it received, and a CA and certificate made as `start`
- * makes them, and check what the Worker sees and what the client gets back: the Worker routes on its
- * URL's host, OAuth flows answer with redirects and cookies, and a client without the CA must be
- * refused, since verification stays on.
- */
 import { expect, layer } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, FileSystem, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { createServer } from "node:net";
 
-/** The stand-in Worker: one Durable Object class under the binding the real Worker uses. */
 const worker = `
 export class EmulatorDurableObject { fetch() { return new Response("unused"); } }
 export default {
@@ -49,7 +40,6 @@ export default {
 };
 `;
 
-/** A free local port. */
 const freePort = Effect.callback<number>((resume) => {
   const server = createServer();
   server.listen(0, "127.0.0.1", () => {
@@ -58,10 +48,6 @@ const freePort = Effect.callback<number>((resume) => {
   });
 });
 
-/**
- * One HTTPS request to the server as `host`, with curl, trusting `ca` (a file) when given: curl
- * verifies the certificate against it, as the job's processes do.
- */
 const call = (
   port: number,
   host: string,
@@ -113,7 +99,6 @@ const call = (
     };
   }).pipe(Effect.scoped);
 
-/** The server, started on a free port with a stand-in Worker and a CA for emulators.dev. */
 const served = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -182,7 +167,6 @@ const served = Effect.gen(function* () {
       stderr: "inherit",
     }),
   );
-  // Listening once it has written the service hosts.
   for (let attempt = 0; attempt < 200; attempt++) {
     const services = `${state}/services`;
     if ((yield* fs.exists(services)) && (yield* fs.readFileString(services)).length > 0) break;
@@ -191,7 +175,6 @@ const served = Effect.gen(function* () {
   return { port, state, ca: `${state}/ca.pem` };
 });
 
-// Real time: the server takes a moment to listen, and the cases wait for it.
 layer(NodeServices.layer, { excludeTestServices: true })("emulators.dev on the runner", (it) => {
   it.effect(
     "the Worker sees each request's own host, path, method, headers and body, and the service hosts are listed",
@@ -202,7 +185,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("emulators.dev on the r
         expect(yield* fs.readFileString(`${state}/services`)).toBe("github\ngoogle\n");
         const read = yield* call(port, "github.emulators.dev", "/_emulate/manifest?x=1", ca);
         expect(read.status, read.error).toBe(200);
-        // The Worker sees the host the client named, port included (443 in CI, so none there).
         expect(JSON.parse(read.text)).toEqual({
           url: `https://github.emulators.dev:${port}/_emulate/manifest?x=1`,
           method: "GET",
@@ -295,7 +277,6 @@ export default { fetch() { return Response.json({ error: "unavailable" }, { stat
     Effect.gen(function* () {
       const { port } = yield* served;
       const refused = yield* call(port, "github.emulators.dev", "/", undefined);
-      // curl's exit code 60: the peer certificate cannot be verified with the known CAs.
       expect(refused.exitCode).toBe(60);
       expect(refused.status).toBe(0);
     }).pipe(Effect.scoped),

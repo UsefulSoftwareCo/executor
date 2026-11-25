@@ -1,11 +1,3 @@
-/**
- * Requests that reach an app's data supervisor as it resets itself are sent once more and run
- * once. The run holds a supervisor's incoming requests for a moment before it resets
- * (`EXECUTOR_TEST_SUPERVISOR_RESET_HOLD_MS`, e2e only), so a request sent then is accepted but
- * cannot start, and the reset meets it every time. With an app Worker limit of one, a call to app
- * B unloads app A's facet and starts A's held reset; what is sent to A during the hold meets it:
- * a write, a change subscription, and the cache traffic of listing A's tools.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schedule, Schema, Stream } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
@@ -17,8 +9,6 @@ import { Telemetry } from "../support/evidence.ts";
 import { Target } from "../support/platform.ts";
 import { scenarios } from "../test-plan.ts";
 
-// Its definition writes the app cache: listing its tools runs it in the app's Worker, outside the
-// data facet, so that cache traffic goes to the app's data supervisor on its own.
 const source = `import { defineApp, query, mutation, router, object, number } from "apps";
 export default defineApp({}, async (ctx) => {
   await ctx.cache.write([{ key: "listed", value: Date.now() }], "1 minute");
@@ -95,8 +85,6 @@ layer(TestLive, { excludeTestServices: true })("App data reset resend", (it) => 
             { "executor.runtime.resent": "true" },
           );
 
-          // 1. A call: A's facet loads, B's call unloads it and starts A's held reset, and the
-          // next call to A arrives during the hold.
           expect(yield* call(a, "add", "mutation")).toBe(1);
           yield* call(b, "count", "query");
           expect(yield* call(a, "add", "mutation"), "the resent write ran once").toBe(2);
@@ -109,7 +97,6 @@ layer(TestLive, { excludeTestServices: true })("App data reset resend", (it) => 
           expect(resent.length, "exactly one call met the reset").toBe(1);
           expect(yield* call(a, "count", "query"), "each write ran once").toBe(2);
 
-          // 2. A change subscription opened during A's held reset still delivers A's changes.
           yield* call(b, "count", "query");
           const values: Array<number> = [];
           const request = HttpClientRequest.post(
@@ -129,14 +116,11 @@ layer(TestLive, { excludeTestServices: true })("App data reset resend", (it) => 
             Stream.tap((value) =>
               Effect.gen(function* () {
                 values.push(value);
-                // The first value is the current count; a write after it must arrive as a change.
                 if (values.length === 1) yield* Effect.forkChild(call(a, "add", "mutation"));
               }),
             ),
             Stream.take(2),
             Stream.runDrain,
-            // The first value comes as the 10 s hold ends; the subscription's own re-read would
-            // come 15 s after it, so only the change signal delivers the second value in time.
             Effect.timeout("14 seconds"),
             Effect.scoped,
             Effect.result,
@@ -147,8 +131,6 @@ layer(TestLive, { excludeTestServices: true })("App data reset resend", (it) => 
           expect(read._tag, `the subscription delivered ${JSON.stringify(values)}`).toBe("Success");
           expect(values).toEqual([2, 3]);
 
-          // 3. Listing A's tools during A's held reset: its definition's cache write meets the
-          // reset and is sent again. Give the closed subscription's socket time to close first.
           yield* Effect.sleep("2 seconds");
           yield* call(b, "count", "query");
           const index = yield* api.request(agent, "GET", `/v1/tools/index?app=${a}`);

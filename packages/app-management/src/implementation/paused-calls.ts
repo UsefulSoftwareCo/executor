@@ -1,16 +1,8 @@
 import { homedir } from "node:os";
-/**
- * The MCP session of each call paused for browser approval. A browser approval belongs to the MCP
- * session that made the call, and every tool command opens its own, so `executor resume` continues
- * the paused call's session. The record holds identifiers only: the session ID and its protocol
- * version, which route a request but carry no authority. It is removed once the request is no
- * longer pending.
- */
 import { Effect, FileSystem, Option, Path, Schema } from "effect";
 import { Hex } from "effect/encoding";
 import { McpSession } from "./tools-client.ts";
 
-/** A result that waits for an answer given on its approval page. */
 const BrowserPause = Schema.Struct({
   status: Schema.Literals(["approval-required", "input-required"]),
   requestId: Schema.String,
@@ -31,7 +23,6 @@ const recordFile = (host: string, requestId: string) =>
     return { directory, file: path.join(directory, `${digest}.json`) };
   });
 
-/** The session the paused request `requestId` on `host` was made in, if this CLI made it. */
 export const pausedSession = (host: string, requestId: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -42,10 +33,6 @@ export const pausedSession = (host: string, requestId: string) =>
     );
   });
 
-/**
- * After a tool command on `host`: remember the session of a call that now waits for its approval
- * page, and forget the record of `resumed` once it no longer does.
- */
 export const recordPause = (
   host: string,
   result: unknown,

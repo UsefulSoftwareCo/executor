@@ -70,7 +70,6 @@ import { type OrganizationPageReads, useOrganizationRoute } from "../components/
 import { AppTools } from "./app-tools.tsx";
 import { AppSource, AppVersions } from "./app-source.tsx";
 
-/** The organization's inventory and the app, its linked accounts and its access, keyed by the URL. */
 export const appDetailPageReads: OrganizationPageReads = (organization, params) =>
   Option.match(Schema.decodeUnknownOption(AppId)(params.appId), {
     onNone: () => [],
@@ -83,13 +82,8 @@ export const appDetailPageReads: OrganizationPageReads = (organization, params) 
     ],
   });
 
-/** Views that read only the app. The others also read the inventory and the app's links. */
 const appWideViews: ReadonlySet<AppView> = new Set(["settings", "versions", "source", "history"]);
 
-/**
- * Links with their sign-in state and checks by this app. Accounts the caller can use show the
- * inventory's details, which renames keep current; others only the link's.
- */
 const withSummaries = (
   links: readonly AppAccountLink[],
   summaries: readonly AccountSummary[],
@@ -104,7 +98,6 @@ const withSummaries = (
     },
   }));
 
-/** Views that run app code use the accounts linked to the app. */
 export function AppDetailPage({
   appId,
   view,
@@ -529,7 +522,6 @@ function DeleteApp({ app }: { readonly app: App }) {
   );
 }
 
-/** The mutation acknowledges shared metadata before the dialog closes. */
 function AppRename({ app }: { readonly app: App }) {
   const { organization } = useOrganizationRoute();
   const rename = useAtomSet(renameAppAtom({ organization, app: app.id }), { mode: "promiseExit" });

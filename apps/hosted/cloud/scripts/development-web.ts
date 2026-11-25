@@ -1,4 +1,3 @@
-/** Serve the cloud dashboard directly so Alchemy owns the complete process lifetime. */
 import { createServer } from "node:https";
 import { createServer as createHttpServer } from "node:http";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
@@ -18,7 +17,6 @@ import { resourceOriginsAt } from "../src/infrastructure/stage.ts";
 import { cloudDevtools } from "@executor-js/hosted-testing/cloud";
 import { dashboardPageRoutes } from "../src/implementation/dashboard.ts";
 
-/** Route map shared by the cloud development entry point and its HTTP checks. */
 export const developmentRoutes = (
   marketing: Effect.Success<ReturnType<typeof marketingFiles>>,
   dashboard: Effect.Success<ReturnType<typeof developmentDashboard>>,
@@ -72,11 +70,9 @@ const main = Effect.scoped(
       path.dirname(yield* path.fromFileUrl(new URL(import.meta.url))),
       "../web",
     );
-    // Alchemy starts this process after the shared Site build has finished.
     const marketingRoot = path.resolve(root, "../../../marketing");
     const configuration = yield* cloudDevelopment;
     const origin = new URL(configuration.origin);
-    // Behind the local proxy the origin's TLS ends at the proxy; this process serves plain HTTP.
     const proxied = Option.isSome(configuration.webPort);
     const tls =
       origin.protocol === "https:" && !proxied
@@ -89,23 +85,19 @@ const main = Effect.scoped(
     const socket = yield* Effect.sync(() =>
       tls === null ? createHttpServer() : createServer(tls),
     );
-    // Effect owns HTTP upgrades on the product listener. Vite gets a separate scoped TLS listener for HMR.
     const hmrSocket = yield* Effect.sync(() =>
       tls === null ? createHttpServer() : createServer(tls),
     );
     yield* Layer.build(NodeHttpServer.layerServer(() => hmrSocket, { host: listenHost, port: 0 }));
-    // The proxy routes whole hostnames, so a proxied HMR client connects to its loopback listener.
     const apiOrigin = `http://127.0.0.1:${configuration.apiPort}`;
     const dashboard = yield* developmentDashboard(
       root,
       hmrSocket,
       proxied ? new URL(`http://${listenHost}`) : origin,
       apiOrigin,
-      // The development renderer serves the dashboard on its own origin.
       {
         resourceOrigins: yield* resourceOriginsAt(origin.origin),
         formerPasskeyHost: null,
-        // The development dashboard proxies documentation to the Worker on its own origin.
         documentation: new URL("/docs/", origin).href,
       },
     );

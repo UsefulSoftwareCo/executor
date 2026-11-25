@@ -1,14 +1,3 @@
-/**
- * MCP `search` reads every app the caller can reach before it ranks their kept tool listings, and
- * each SQL statement is a network round trip from Cloud's session object to the database. Search
- * reads what discovery needs for all of the request's apps together, so the statements under
- * `mcp.search` do not grow with the number of apps: the regression guard is the count with a few
- * apps against the count with several times as many, of each kind discovery treats differently (an
- * app without accounts, one with a linked key account, one whose requirement has no linked account,
- * and two whose OAuth account must reconnect, one the caller's and one the app's own). Each item
- * still comes from its own app, and each app whose account must reconnect is still reported as
- * unavailable, naming whose account it is as resolving it would.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schedule, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
@@ -24,7 +13,6 @@ import { McpClient } from "../support/mcp-client.ts";
 import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
 import { scenarios } from "../test-plan.ts";
 
-/** Every tool names its app's marker, so an item shows which app it came from. */
 const tool = (marker: string, account: string) =>
   `probe: query({ description: "Search statements probe ${marker}.", input: object({}), output: string() }, async () => ${account})`;
 
@@ -53,7 +41,6 @@ export default defineApp({ user: { accounts: { service: service.many() } } }, as
   tools: router({ ${tool(marker, "String(ctx.user.accounts.service.length)")} }),
 }));`;
 
-/** An OAuth app whose `service` account is the caller's (`user`) or the app's own (`app`). */
 const oauthSource = (
   discover: string,
   scope: "user" | "app",
@@ -102,7 +89,6 @@ layer(HostedLive, { excludeTestServices: true })("Search statements", (it) => {
               { discard: true },
             ).pipe(Effect.orDie),
           );
-          /** Each deployed app, by the marker its tool names. */
           const deployed = new Map<
             string,
             { readonly id: string; readonly slug: string; readonly path: string }
@@ -126,7 +112,6 @@ layer(HostedLive, { excludeTestServices: true })("Search statements", (it) => {
               deployed.set(marker, { id: app.id, slug: app.slug, path });
               return { app, path, marker };
             });
-          /** Connecting an account from the app links it for the owner, or for the app. */
           const connection = (path: string, scope: "user" | "app" = "user") =>
             api.request(actors.owner, "POST", connectionsPath(path, scope, "service"), {}).pipe(
               Effect.tap((pending) => Effect.sync(() => expect(pending.status).toBe(200))),
@@ -149,7 +134,6 @@ layer(HostedLive, { excludeTestServices: true })("Search statements", (it) => {
             expect(saved.status, JSON.stringify(saved.body)).toBe(200);
             yield* linked(path, (yield* body(Resource, saved)).id);
           });
-          /** Apps of every kind but the OAuth one, `count` of each. */
           const deployKinds = (count: number) =>
             Effect.forEach(
               Array.from({ length: count }),
@@ -162,8 +146,6 @@ layer(HostedLive, { excludeTestServices: true })("Search statements", (it) => {
               { discard: true },
             );
 
-          // Two OAuth apps whose service ends the grant, one using the caller's account and one
-          // the app's own: each next use marks its account for reconnecting.
           yield* issuer.configure({ expiresIn: 1 });
           const signedIn = (scope: "user" | "app") =>
             Effect.gen(function* () {
@@ -220,7 +202,6 @@ layer(HostedLive, { excludeTestServices: true })("Search statements", (it) => {
             { discard: true },
           );
 
-          /** An MCP connection with an API key of `actor`. */
           const connect = (actor: typeof actors.owner, name: string) =>
             Effect.gen(function* () {
               const created = yield* api.request(actor, "POST", "/api/auth/api-key/create", {
@@ -238,7 +219,6 @@ layer(HostedLive, { excludeTestServices: true })("Search statements", (it) => {
           const client = yield* connect(actors.owner, "Search statements");
           type Connection = typeof client;
 
-          /** One MCP search, its page and the SQL statements made under `mcp.search`. */
           const search = (operation: string, client: Connection) =>
             Effect.gen(function* () {
               const called = yield* client.use(operation, (client, signal) =>
@@ -304,15 +284,12 @@ layer(HostedLive, { excludeTestServices: true })("Search statements", (it) => {
             });
 
           yield* deployKinds(1);
-          // The first search keeps each new app's listing as search rows; the next one reads them.
           yield* search("Keep the listings of a few apps", client);
           const few = yield* search("Search a few apps", client);
           yield* deployKinds(4);
           yield* search("Keep the listings of several times as many apps", client);
           const many = yield* search("Search several times as many apps", client);
 
-          // A member may use only the apps shared with them: the apps without accounts are shared
-          // with everyone, and the owner's other apps stay private.
           const shared = [...deployed].filter(([marker]) => marker.startsWith("accountless-"));
           yield* Effect.forEach(
             shared,
@@ -339,7 +316,6 @@ layer(HostedLive, { excludeTestServices: true })("Search statements", (it) => {
             member: { count: member.statements.length, ...member },
           });
 
-          /** The markers of the probes a page found; other apps, such as the built-in one, may match. */
           const probesOf = (label: string, result: typeof few) =>
             result.page.items.flatMap((item) => {
               const marker = /Search statements probe ([a-z]+-[0-9a-f]{8})\./.exec(

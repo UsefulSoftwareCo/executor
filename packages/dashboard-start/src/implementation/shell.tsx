@@ -1,5 +1,4 @@
 /// <reference types="vite/client" />
-/** The HTML document every dashboard renders on the server and hydrates in the browser. */
 import { HeadContent, Scripts } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 import { DisplayFormatSync } from "@executor-js/ui/hooks/display-format";
@@ -7,17 +6,6 @@ import type {} from "../contracts/build.ts";
 import { documentBuild } from "./document-build.ts";
 import { BuildChangeNotice } from "./build-change-notice.tsx";
 
-/**
- * A form rendered on the server has no submit handler until React hydrates it, and the browser
- * would submit it natively: a GET to the current address with every field, passwords included, in
- * the query. This runs before any form exists. It holds a submission until React owns the form,
- * then submits it again with the same button, so an early click or Enter still takes effect. A
- * form still unhydrated after 30 seconds loses the submission rather than sending it natively.
- * React records its props on each element it hydrates (`__reactProps$…`).
- *
- * React attaches them before it commits the form, and a submit in between reaches no handler, so
- * one that reaches the window unhandled, on a form without its own `action`, is held again.
- */
 const holdEarlySubmissions = `(() => {
 const owned = (form) => Object.keys(form).some((key) => key.startsWith("__reactProps$"));
 const held = new Map();
@@ -54,10 +42,8 @@ hold(form, event.submitter);
 });
 })();`;
 
-/** Public build metadata read by browser telemetry; it carries no identity or configuration secrets. */
 export function DashboardDocument({ children }: { readonly children: ReactNode }) {
   return (
-    // `data-dashboard` lets automation tell dashboard documents from authored app pages.
     <html lang="en" data-dashboard="">
       <head>
         <meta charSet="UTF-8" />

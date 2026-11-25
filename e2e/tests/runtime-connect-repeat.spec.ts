@@ -1,16 +1,3 @@
-/**
- * An exchange with the local app runtime whose connection never formed sent nothing, so the host
- * repeats it once, at once, and the span records the repeat and how it ended. On Windows a loopback
- * connect that is not answered in about a quarter of a second fails that way while the runtime is
- * healthy. Anything that may have reached the runtime is never repeated: a session that opened, a
- * request whose bytes were written. A call whose only exchange with the app never left the host
- * says so and may be repeated; one that reached the app's code earlier in the same call may have
- * written, and says that instead.
- *
- * Each case runs `packages/sdk/scripts/runtime-connect-fixture.ts` against a stub on 127.0.0.1,
- * under Node and under Bun (the packaged CLI's runtime), composed as `workerd-apps.ts` composes its
- * exchanges. `local-app-runtime-restart.spec.ts` checks the same repeat through the product itself.
- */
 import { expect, layer } from "@effect/vitest";
 import { Clock, Duration, Effect, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
@@ -53,17 +40,7 @@ const Probe = Schema.Struct({
   attributes: Attributes,
 });
 
-/**
- * Each probe's own bound, so a hung probe fails as itself and not as the scenario's time-out.
- * Measured on CI (17 Nov 2026, CI run 44037352539, `e2e-self-host (1/1)` on
- * blacksmith-16vcpu-ubuntu-2404 at 07:17Z): 30 probes, median 0.31 s, longest 1.28 s (the call-path
- * probes); the scenario took 13.1 s. On minisforum the longest was 1.8 s. Whole self-host shards
- * run on 8 vCPU, and weekday afternoons are up to about 1.5× slower (AS1's runner-speed report,
- * 16 Nov), so 20 s is about 15× the longest measured probe. It is below the fixture's own 30 s, and
- * a hung probe plus the rest stays well inside the scenario's time-out.
- */
 const probeBound = Duration.seconds(20);
-/** How much of a probe's output a time-out reports. */
 const lastOutputChars = 2_000;
 
 class ProbeTimedOut extends Schema.TaggedError<ProbeTimedOut>()("ProbeTimedOut", {
@@ -78,11 +55,6 @@ class ProbeTimedOut extends Schema.TaggedError<ProbeTimedOut>()("ProbeTimedOut",
   }
 }
 
-/**
- * Run one probe process under its own bound and return its stdout. Its duration is recorded as a
- * measurement; past the bound it is stopped and fails with its name, how long it ran and the end
- * of its stdout and stderr.
- */
 const runProbe = (label: string, command: string, args: ReadonlyArray<string>) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -140,7 +112,6 @@ const runProbe = (label: string, command: string, args: ReadonlyArray<string>) =
     }),
   );
 
-/** One case of the probe under `runtime` (`node` or `bun`). */
 const probe = (runtime: "node" | "bun", name: string) =>
   Effect.gen(function* () {
     const evidence = yield* Evidence;
@@ -156,7 +127,6 @@ const probe = (runtime: "node" | "bun", name: string) =>
     return result;
   });
 
-/** A case of the SDK call-path probe: a tool call through the real call path over a stub transport. */
 const CallPath = Schema.Struct({
   asked: Schema.optional(Schema.String),
   failure: Schema.Struct({
@@ -207,8 +177,6 @@ layer(TestLive, { excludeTestServices: true })("Runtime connect repeat", (it) =>
                 [`${rpc}connect_outcome`]: "opened",
               });
               expect(typeof rescued.attributes[`${rpc}first_attempt.failed_ms`]).toBe("number");
-              // The plain attributes describe the attempt that decided: it opened and answered, so
-              // none are written; the first attempt's facts are under first_attempt.
               expect(
                 Object.keys(rescued.attributes).filter(
                   (key) => !key.includes("connect_") && !key.includes("first_attempt."),
@@ -253,7 +221,6 @@ layer(TestLive, { excludeTestServices: true })("Runtime connect repeat", (it) =>
                 [`${rpc}sent`]: 0,
                 "executor.runtime.failure": "unreachable",
               });
-              // A listener that closes every connection before its upgrade sees exactly two.
               const neverOpens = yield* probe(runtime, "rpc-never-opens");
               expect(neverOpens).toMatchObject({
                 outcome: "failed",
@@ -344,7 +311,6 @@ layer(TestLive, { excludeTestServices: true })("Runtime connect repeat", (it) =>
               reason:
                 "Executor could not connect to the app runtime, so it did not send this tool call.",
             });
-            // The catalog read for the call's kind reached the app's code first: it may have written.
             expect(yield* probe("node", "call-second-exchange")).toMatchObject({
               notSent: false,
               mayHaveWritten: true,
@@ -352,7 +318,6 @@ layer(TestLive, { excludeTestServices: true })("Runtime connect repeat", (it) =>
               reason:
                 "Executor could not reach the app runtime to finish this tool call. An earlier step of the call reached the app, so the call may have partly run.",
             });
-            // A call the app confirms only reads stays safe to repeat.
             expect(yield* probe("node", "call-second-exchange-read")).toMatchObject({
               notSent: true,
               mayHaveWritten: false,
@@ -363,7 +328,6 @@ layer(TestLive, { excludeTestServices: true })("Runtime connect repeat", (it) =>
         yield* evidence.step(
           "Through the SDK's call path, a call says it was not sent only when its never-opened exchange was its only hand-off to the app",
           Effect.gen(function* () {
-            // The call names its kind: one hand-off, which never connected.
             expect(yield* callPath("call-once")).toMatchObject({
               operations: ["call"],
               failure: {
@@ -373,12 +337,10 @@ layer(TestLive, { excludeTestServices: true })("Runtime connect repeat", (it) =>
                 mayHaveWritten: false,
               },
             });
-            // The catalog read for its kind reached the app first.
             expect(yield* callPath("call-after-kind-read")).toMatchObject({
               operations: ["inspect", "call"],
               failure: { reason: partlyRunSentence, notSent: false, mayHaveWritten: true },
             });
-            // The approval request reached the app: its setup and approval check ran.
             expect(yield* callPath("call-resumed")).toMatchObject({
               asked: "approval-required",
               operations: ["call", "call"],
@@ -407,7 +369,6 @@ layer(TestLive, { excludeTestServices: true })("Runtime connect repeat", (it) =>
             const { wire } = yield* probe("node", "wire-previous-release");
             expect(wire?.values).toHaveLength(3);
             for (const value of wire?.values ?? []) {
-              // The previous release's closed list has the value; the fact is in `notSent`.
               expect(value, value.label).toMatchObject({
                 failure: "disconnected",
                 known: true,

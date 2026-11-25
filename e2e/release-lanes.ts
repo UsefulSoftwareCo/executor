@@ -1,32 +1,3 @@
-/**
- * The paths that start the release checks, before and after merge.
- *
- * A pull request runs two short release lanes in CI, which the required `checks / e2e` check
- * covers (`.github/workflows/checks.yml`):
- *
- * - `release-docker` builds the self-host image on amd64 and runs the released-image suite when
- *   the image's source, its build inputs or a file that suite imports changed.
- * - `release-local` packages linux-x64 and runs its install, launcher, lockdown, credential store
- *   and desktop startup checks, without desktop crash recovery, when the CLI's or the desktop
- *   app's source, their build inputs or a packaging path changed.
- *
- * After merge, `.github/workflows/release-check.yml` runs e2e/release-check.ts on every push to
- * main and hourly, which starts the paced check in `.github/workflows/release-artifacts.yml` when a path
- * in `mainPushPaths` changed since the last check: Linux x64 packaging with desktop crash recovery,
- * its installed CLI suite and the image on both architectures, at most every two hours. Build and
- * publishing runs test every platform. Every list here is computed from the checkout when a run
- * needs it, so none is kept by hand and none can fall behind the suites' imports.
- *
- * Each artifact's source is the workspace packages it is built from: its own, and every
- * workspace package those depend on, transitively, read from their package.json files. The CLI
- * bundles `apps/local/server` and serves `apps/local/web`; the desktop app wraps both; the image
- * bundles `apps/hosted/self-host` and its web app. So a change to the server, the SDK or any
- * package they use starts the lane, and one to a package only Cloud uses does not. Each release
- * suite's files are found by following the relative imports of the files its configs run, so a
- * support file joins a lane when one of its spec files imports it, and other support files never
- * start it. Paths are GitHub's glob patterns: `*` within one path segment, `**` across
- * them.
- */
 import { packagedEngineInputs, packagedEngineSpecs } from "./packaged-engine.ts";
 import { Effect, FileSystem, Path, Schema } from "effect";
 
@@ -34,19 +5,13 @@ class ReleaseLanesFailed extends Schema.TaggedError<ReleaseLanesFailed>()("Relea
   message: Schema.String,
 }) {}
 
-/** The dependencies every artifact installs and the compiler settings it builds with. */
 const buildInputs = ["package.json", "bun.lock", "patches/**", "tsconfig.json"] as const;
 
-/** The workspace packages whose dependency closure each artifact is built from. */
 const artifactRoots = {
   local: ["apps/cli", "apps/local/server", "apps/local/web", "apps/local/desktop"],
   image: ["apps/hosted/self-host", "apps/hosted/self-host/web"],
 } as const;
 
-/**
- * The scripts the packaged CLI, desktop app and install scripts are built with, and what the
- * `release-local` lane's steps read besides its suites (e2e-tools installs their browsers).
- */
 const packagingPaths = [
   ".github/actions/setup/**",
   ".github/actions/e2e-tools/**",
@@ -54,27 +19,14 @@ const packagingPaths = [
   "apps/docs/public/install.*",
   ".github/workflows/bun-runtime.yml",
   "scripts/pack-test-apps.ts",
-  // The run's collector job builds or restores the Rust telemetry collector through these; the
-  // release-local jobs wait for it and fetch its build before they package it.
   ".github/actions/collector/**",
   ".github/actions/rustup/**",
 ] as const;
 
-/** Only the matrix after merge reads its own workflow. */
 const matrixOnlyPaths = [".github/workflows/release-artifacts.yml"] as const;
 
-/**
- * Workspace packages the suites start at run time rather than import: e2e/sdk/fixtures.ts runs
- * the scenario server in `apps/hosted/testing` for the fixtures the scenarios use.
- */
 const harnessRoots = ["apps/hosted/testing"] as const;
 
-/**
- * The installed CLI suite after merge runs `bun run e2e:local` and stages its pinned packages, so
- * the files that command and that script load, and the pins it reads, change its result. Vitest
- * loads the setup file by name. Its spec files are the local scenarios CI's E2E jobs run on source
- * and select themselves, so they are left to CI.
- */
 const cliSuiteEntries = [
   "e2e/check-boundary.ts",
   "e2e/run.ts",
@@ -84,12 +36,6 @@ const cliSuiteEntries = [
 ] as const;
 const cliSuiteData = ["e2e/npm-packages.json"] as const;
 
-/**
- * What else the image's build reads, besides its workspace packages: the Dockerfile installs with
- * the playground's and the viewer's manifests present, builds the live inbox demo app, and runs
- * Bun with the root bunfig.toml. Then the release identity that names it, and the action that
- * installs its suite's browsers.
- */
 const imagePaths = [
   ".github/actions/setup/**",
   ".github/actions/e2e-tools/**",
@@ -97,25 +43,15 @@ const imagePaths = [
   "bunfig.toml",
   "playground/**",
   "e2e/viewer/package.json",
-  // The apps package its scenarios deploy is in the image's closure; this packs it for them.
   "scripts/pack-test-apps.ts",
   "scripts/releases/config.ts",
   "scripts/releases/workflow.ts",
-  // Pulls the image's base images and builds it in the background of the lane's job.
   "scripts/releases/pull-image-bases.sh",
   "scripts/releases/background.sh",
 ] as const;
 
-/** The lanes are defined there, so a change to them runs them. Main runs no lane. */
 const laneDefinition = ".github/workflows/checks.yml";
 
-/**
- * The configs of each release suite, as literal imports so e2e/check-boundary.ts can check them.
- * `test.include` and `test.globalSetup` start each walk. `local` runs in the `release-local` lane
- * and after merge; `matrix` only after merge (desktop crash recovery, and the PGlite checks on
- * Windows). The installed CLI suite after merge runs the scenarios CI's E2E jobs run on source,
- * which CI already selects.
- */
 const suites = {
   docker: { "e2e/docker-release.config.ts": () => import("./docker-release.config.ts") },
   local: {
@@ -131,17 +67,12 @@ const suites = {
   },
 } as const satisfies Record<string, Record<string, () => Promise<unknown>>>;
 
-/** Every release suite's config, which the release workflows must not run without listing here. */
 export const releaseSuiteConfigs: ReadonlyArray<string> = Object.keys({
   ...suites.docker,
   ...suites.local,
   ...suites.matrix,
 }).sort();
 
-/**
- * Files the release suites import that cannot change what they do, and why. The released-image
- * suite must still import each, or the selection fails until the exception is removed.
- */
 const notSuiteInputs: Readonly<Record<string, string>> = {
   "e2e/test-plan.ts":
     "e2e/report-model.ts imports only its TestPlan schema; the scenario list, which most changes to it edit, never reaches the suites, and `bun run check` typechecks the schema.",
@@ -156,7 +87,6 @@ const SuiteConfig = Schema.Struct({
   }),
 });
 
-/** A GitHub path glob as a regular expression over a whole repository path. */
 const globExpression = (glob: string) =>
   new RegExp(
     `^${glob
@@ -171,22 +101,14 @@ const globExpression = (glob: string) =>
       .join("")}$`,
   );
 
-/** Whether a repository path matches any of these globs. */
 export const matchesAny = (globs: ReadonlyArray<string>, file: string) =>
   globs.some((glob) => globExpression(glob).test(file));
 
-/** Relative module specifiers in a file's text: imports, re-exports and dynamic imports. */
 const specifiers = (text: string) =>
   [...text.matchAll(/(?:\bfrom|\bimport)\s*\(?\s*["'](\.{1,2}\/[^"']+)["']/g)].map(
     (match) => match[1]!,
   );
 
-/**
- * Every repository file one suite loads: its configs, the spec files and global setup they name,
- * and each file those import by a relative path, transitively, apart from `notSuiteInputs`. A
- * specifier that resolves to no file, such as one inside an app's source a scenario writes, is not
- * followed.
- */
 const suiteFiles = (
   root: string,
   configs: Readonly<Record<string, () => Promise<unknown>>>,
@@ -248,11 +170,6 @@ const Workspaces = Schema.fromJsonString(
   Schema.Struct({ workspaces: Schema.Array(Schema.String) }),
 );
 
-/**
- * The workspace package directories these roots are built from: the roots and every workspace
- * package any of them depends on, of any dependency kind, transitively. A dependency on a package
- * outside the workspace is in bun.lock, which `buildInputs` covers.
- */
 const workspaceClosure = (root: string, roots: ReadonlyArray<string>) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -301,11 +218,6 @@ const workspaceClosure = (root: string, roots: ReadonlyArray<string>) =>
     return [...found].sort().map((directory) => `${directory}/**`);
   });
 
-/**
- * What a release ships: the workspace packages the CLI, the desktop app and the self-host image
- * are built from, as globs, read from this checkout. scripts/releases/release-notes.ts lists the
- * changes to these in a release's notes.
- */
 export const shippedSources = Effect.gen(function* () {
   const path = yield* Path.Path;
   const root = path.dirname(path.dirname(yield* path.fromFileUrl(new URL(import.meta.url))));
@@ -315,31 +227,18 @@ export const shippedSources = Effect.gen(function* () {
   };
 });
 
-/** What each release check is built from and runs, read from this checkout. */
 export interface ReleaseSources {
-  /** The source of the CLI and the desktop app, as globs over their workspace packages. */
   readonly local: ReadonlyArray<string>;
-  /** The source of the self-host image, likewise. */
   readonly image: ReadonlyArray<string>;
-  /** The files the released-image suite loads. */
   readonly docker: ReadonlyArray<string>;
-  /** The files the packaged CLI and desktop suites of the `release-local` lane load. */
   readonly localSuites: ReadonlyArray<string>;
-  /** The files the suites only the matrix after merge runs load. */
   readonly matrixSuites: ReadonlyArray<string>;
-  /** The packages the suites start at run time, as globs over their workspace packages. */
   readonly harness: ReadonlyArray<string>;
-  /**
-   * What the packaged engine's scenarios depend on beyond the rest of the image's suite: the
-   * files that make the image's engine differ (e2e/packaged-engine.ts), the scenarios, and the
-   * files only they import.
-   */
   readonly packagedEngine: ReadonlyArray<string>;
 }
 
 export const releaseSources = Effect.gen(function* () {
   const path = yield* Path.Path;
-  // The checkout this module is in, so a copy of it reads the copy's files.
   const root = path.dirname(path.dirname(yield* path.fromFileUrl(new URL(import.meta.url))));
   const docker = yield* suiteFiles(root, suites.docker);
   const stale = Object.keys(notSuiteInputs).filter((file) => !docker.has(file));
@@ -349,8 +248,6 @@ export const releaseSources = Effect.gen(function* () {
     });
   const inputs = (files: ReadonlySet<string>) =>
     [...files].filter((file) => !(file in notSuiteInputs)).sort();
-  // The files only the packaged engine's scenarios import: theirs, less what the rest of the
-  // image's suite (its other spec files, config and setup) imports.
   const engineScenarios = yield* suiteFiles(root, {}, packagedEngineSpecs);
   const rest = yield* suiteFiles(root, {}, [
     ...Object.keys(suites.docker),
@@ -377,7 +274,6 @@ export const releaseSources = Effect.gen(function* () {
   } satisfies ReleaseSources;
 });
 
-/** The paths that start each lane on a pull request. */
 export const lanePaths = (sources: ReleaseSources) => ({
   "release-docker": [
     ...new Set([
@@ -401,7 +297,6 @@ export const lanePaths = (sources: ReleaseSources) => ({
   ],
 });
 
-/** The files that start each lane among a pull request's changed files. */
 export const lanesFor = (sources: ReleaseSources, changed: ReadonlyArray<string>) => {
   const paths = lanePaths(sources);
   const matching = (globs: ReadonlyArray<string>) =>
@@ -409,12 +304,10 @@ export const lanesFor = (sources: ReleaseSources, changed: ReadonlyArray<string>
   return {
     "release-docker": matching(paths["release-docker"]),
     "release-local": matching(paths["release-local"]),
-    /** Of those, the files that also start the packaged engine's scenarios. */
     "release-docker-engine": matching(sources.packagedEngine),
   };
 };
 
-/** What any release check builds or runs: a push that changes one of these needs the paced check. */
 export const mainPushPaths = (sources: ReleaseSources) => [
   ...new Set([
     ...buildInputs,
@@ -426,7 +319,6 @@ export const mainPushPaths = (sources: ReleaseSources) => [
     ...sources.matrixSuites,
     ...cliSuiteData,
     ...sources.harness,
-    // The installed CLI suite's OAuth scenarios start this issuer.
     "e2e/support/oauth-setup-issuer.ts",
     ...imagePaths,
     ...sources.docker,

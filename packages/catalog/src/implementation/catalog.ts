@@ -1,4 +1,3 @@
-/** Resolve catalog choices into ordinary app source; installation belongs to the caller. */
 import { catalogStage } from "./diagnostics.ts";
 import { Effect } from "effect";
 import {
@@ -11,13 +10,6 @@ import {
 } from "../contracts/catalog.ts";
 import { catalogSource, turnedOffPrepare } from "./source.ts";
 
-/**
- * Read the host's official app feed, or a supplied source. Without either, the catalog is turned
- * off. Construction performs no I/O. The host supplies the egress it fetches with and its OAuth
- * client settings. A feed that cannot be read gives a listing that says so instead of failing, so
- * the host's built-in apps stay listed. The MCP source generator for custom URLs loads with the
- * first such import, which keeps it out of hosted startup.
- */
 export const createCatalog = (
   host: CatalogHost,
   source: CatalogSource | undefined = host.feedUrl === undefined

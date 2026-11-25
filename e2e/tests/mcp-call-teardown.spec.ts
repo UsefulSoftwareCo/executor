@@ -1,17 +1,3 @@
-/**
- * What an MCP app's tool call sends its server over Streamable HTTP, counted at the server. Each
- * call opens its own session: `initialize`, `notifications/initialized`, the optional GET stream
- * (refused here with 405, as many hosted servers do) and `tools/call`, then the `DELETE` that
- * ends the session. Before the fix every completed call also sent `notifications/cancelled` for
- * itself as its client closed, and the caller waited for the server to answer the `DELETE` before
- * it got the result it already had. On Cloud a request may have six connections waiting for
- * response headers at once, so those two requests slowed every concurrent call behind them.
- *
- * The server below runs in the test process and records each request on the test's own clock,
- * so the order of a result and the server's answer to the `DELETE` is read on one clock. Its
- * account token is checked on the `DELETE` too: the session is ended after the reply, and must
- * still go out with the account's real credential, not its sealed handle.
- */
 import { expect, layer } from "@effect/vitest";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Deferred, Effect, Layer, Schema, Semaphore } from "effect";
@@ -34,45 +20,29 @@ const Wire = Schema.Struct({
   params: Schema.optionalKey(Schema.Record(Schema.String, Schema.Json)),
 });
 
-/** One request the server received, on the test's clock. */
 interface Received {
   readonly http: "POST" | "GET" | "DELETE";
-  /** The JSON-RPC method of a POST. */
   readonly method?: string;
   readonly id?: number | string;
-  /** The request a `notifications/cancelled` names. */
   readonly cancels?: Schema.Json;
   readonly session?: string;
   readonly authorization?: string;
   readonly receivedAt: number;
-  /** When the server returned its answer; a request it never answered has none. */
   answeredAt?: number;
 }
 
-/**
- * How long the server takes to answer a `DELETE` in the single-call scenarios: below the client's
- * one-second cleanup bound, so a caller that waits for the answer gets it before returning.
- */
 const deleteAnswerMs = 600;
 
 interface Options {
-  /** Requests that may wait for response headers at once; the rest queue. */
   readonly awaitingHeaders: number;
-  /** How long every request waits before its headers, inside its slot. */
   readonly beforeHeadersMs: number;
-  /** How long a `DELETE` waits before its headers, inside its slot. */
   readonly deleteMs: number;
 }
 
-/**
- * A remote MCP server that issues a session at `initialize` and answers `tools/call` for `work`
- * after 100 ms. `stall` is never answered, so a call to it ends only when its client gives up.
- */
 const sessionServer = (options: Options) =>
   Effect.gen(function* () {
     const received: Received[] = [];
     const gate = yield* Semaphore.make(options.awaitingHeaders);
-    // Released when the scenario ends, so a stalled call's request does not outlive it.
     const ended = yield* Deferred.make<void>();
     yield* Effect.addFinalizer(() => Deferred.succeed(ended, undefined));
     let sessions = 0;
@@ -81,7 +51,6 @@ const sessionServer = (options: Options) =>
         { jsonrpc: "2.0", id, result },
         headers === undefined ? {} : { headers },
       );
-    /** Record a request, then answer it within one slot of those waiting for headers. */
     const served = (
       entry: Omit<Received, "receivedAt" | "answeredAt">,
       answer: (entry: Received) => Effect.Effect<HttpServerResponse.HttpServerResponse>,
@@ -209,14 +178,12 @@ const sessionServer = (options: Options) =>
     return {
       url: `http://127.0.0.1:${server.address.port}/mcp`,
       received,
-      /** Forget what was received so far, such as the app's discovery. */
       reset: Effect.sync(() => {
         received.length = 0;
       }),
     };
   });
 
-/** The session each tool call ran in, keyed by that session's ID. */
 const callSessions = (received: readonly Received[]) =>
   new Map(
     received
@@ -224,17 +191,14 @@ const callSessions = (received: readonly Received[]) =>
       .map((row) => [row.session!, row] as const),
   );
 
-/** What a session's requests were, in a fixed order: the GET stream races `tools/call`. */
 const shape = (received: readonly Received[], session: string) =>
   received
     .filter((row) => row.session === session)
     .map((row) => (row.method === undefined ? row.http : `${row.http} ${row.method}`))
     .sort();
 
-/** The requests one completed call sends inside its session (initialize carries no session ID). */
 const completedCall = ["DELETE", "GET", "POST notifications/initialized", "POST tools/call"];
 
-/** Wait until the server has answered a `DELETE` for every session in `sessions`. */
 const sessionsEnded = (received: readonly Received[], sessions: readonly string[]) =>
   Effect.gen(function* () {
     const ended = () =>
@@ -246,10 +210,6 @@ const sessionsEnded = (received: readonly Received[], sessions: readonly string[
     while (!ended()) yield* Effect.sleep("20 millis");
   }).pipe(Effect.timeout("20 seconds"));
 
-/**
- * An app whose account's token reaches the server only through Executor's outbound network,
- * which swaps the sealed handle the app code holds for the real value.
- */
 const deploy = (url: string, token: string) =>
   Effect.gen(function* () {
     const api = yield* Api,
@@ -318,7 +278,6 @@ export default defineApp({ app: { accounts: { service: provider } } }, async ({ 
       organization: actors.organization.id,
     });
     const tools = `tools[${JSON.stringify(app.slug)}]`;
-    /** Run a program through `execute`; `returnedAt` is when its result reached this client. */
     const execute = (step: string, code: string) =>
       client
         .use(step, (client, signal) =>
@@ -359,7 +318,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP call teardown", (it) => {
         const server = yield* sessionServer(unbounded);
         const token = randomUUID();
         const { tools, execute } = yield* deploy(server.url, token);
-        // The first program discovers the server's tools; count only the call that follows.
         const warm = yield* execute(
           "Discover and call once",
           `return await ${tools}.work({ i: 0 });`,
@@ -379,15 +337,11 @@ layer(HostedLive, { excludeTestServices: true })("MCP call teardown", (it) => {
           returnedAt: result.returnedAt,
           received: server.received,
         });
-        // One initialize, then only these, all in the session it opened: no cancellation of the
-        // call the server answered.
         expect(server.received.filter((row) => row.method === "initialize")).toHaveLength(1);
         expect(shape(server.received, session)).toEqual(completedCall);
         expect(server.received.filter((row) => row.method === "notifications/cancelled")).toEqual(
           [],
         );
-        // The session ends with the account's real token, after the result reached the caller:
-        // the caller did not wait for the server to answer the DELETE.
         const deleted = server.received.find(
           (row) => row.http === "DELETE" && row.session === session,
         )!;
@@ -409,8 +363,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP call teardown", (it) => {
         yield* sessionsEnded(server.received, [...callSessions(server.received).keys()]);
         yield* server.reset;
 
-        // The second call's server never answers, so its budget runs out and the call is
-        // cancelled while in flight.
         const result = yield* execute(
           "Complete one call, then give up on another",
           `const done = await ${tools}.work({ i: 1 });
@@ -422,12 +374,10 @@ return { done: done.structuredContent, failed };`,
         expect(result.value).toEqual({ done: { done: { i: 1 } }, failed: true });
         const sessions = callSessions(server.received);
         expect(sessions.size).toBe(2);
-        // The server answered the first call; the second's request it never answers.
         const stalled = [...sessions.values()].find((row) => row.answeredAt === undefined);
         expect(stalled).toBeDefined();
         yield* sessionsEnded(server.received, [...sessions.keys()]);
         yield* evidence.json("cancelled-call.json", server.received);
-        // Exactly one cancellation: the stalled call's, naming its request in its session.
         const cancelled = server.received.filter((row) => row.method === "notifications/cancelled");
         expect(cancelled.map((row) => ({ session: row.session, cancels: row.cancels }))).toEqual([
           { session: stalled!.session, cancels: stalled!.id },
@@ -441,8 +391,6 @@ return { done: done.structuredContent, failed };`,
       context,
       Effect.gen(function* () {
         const evidence = yield* Evidence;
-        // Six requests may wait for headers at once, each 200 ms, as a Cloud request's
-        // connections to one slow server do.
         const server = yield* sessionServer({
           awaitingHeaders: 6,
           beforeHeadersMs: 200,
@@ -471,7 +419,6 @@ return results.map((result) => result.structuredContent.done.i);`,
           requests: server.received.length,
           received: server.received,
         });
-        // Five requests a call, every session ended, and no call cancelled after its answer.
         expect(server.received.filter((row) => row.method === "notifications/cancelled")).toEqual(
           [],
         );

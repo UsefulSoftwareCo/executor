@@ -1,9 +1,3 @@
-/**
- * `bun run typecheck` runs `node scripts/typecheck.ts`, which runs the TypeScript projects
- * concurrently. These cases copy that entry point into a temporary directory with a fake
- * framework build, put a fake `tsc-rs` first on PATH, and run it through `bun run typecheck` or
- * `node` directly. They read its piped output, exit code and the processes it leaves behind.
- */
 import { expect, layer } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, FileSystem, Path, Stream } from "effect";
@@ -12,17 +6,6 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 const lines = 10_000;
 const projects = 9;
 
-/**
- * The fakes append what ran to `$FAKE_STATE/ran`. `FAKE_MODE` picks the behavior:
- * - `long`: `apps/docs`, last in the queue, sleeps, prints `lines` lines and exits 2;
- * - `mixed`: every step writes 500 numbered lines to each stream, with stdout lines split
- *   across two writes around a stderr line;
- * - `hang`: records its pid in `$FAKE_STATE/pids` and runs until killed, ignoring SIGINT and
- *   SIGTERM as the real compiler and framework build do;
- * - `warnings`: the root project prints warnings in the compiler's format, one of them two lines
- *   long and one for a project option; `apps/docs` prints an error with a second line among
- *   warnings and exits 2; `apps/marketing` prints a warning and a crash message and exits 101.
- */
 const tsc = `#!/bin/sh
 echo "$*" >> "$FAKE_STATE/ran"
 project=$(echo "$*" | sed 's/.* -p //')
@@ -80,7 +63,6 @@ if (process.env.FAKE_MODE === "hang") {
 }
 `;
 
-/** A directory with the repository's `typecheck` script and runner, and the fakes. */
 const fakes = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -112,11 +94,8 @@ const typecheck = (input: {
   readonly mode: "long" | "mixed" | "hang" | "warnings";
   readonly concurrency: string | undefined;
   readonly warnings?: string | undefined;
-  /** Arguments after `bun run typecheck` or the runner. */
   readonly args?: ReadonlyArray<string>;
-  /** `bun run typecheck`, or the runner without `bun` in front of it. */
   readonly entry?: "bun" | "node";
-  /** Runs once the process has started, with its pid and state directory. */
   readonly whileRunning?: (
     pid: number,
     state: string,
@@ -135,7 +114,6 @@ const typecheck = (input: {
     if (input.concurrency !== undefined) env.TYPECHECK_CONCURRENCY = input.concurrency;
     if (input.warnings !== undefined) env.TYPECHECK_WARNINGS = input.warnings;
     const args = input.args ?? [];
-    // The process leads its own process group, as a terminal job or an agent's command does.
     const child = yield* processes.spawn(
       input.entry === "node"
         ? ChildProcess.make("node", ["scripts/typecheck.ts", ...args], {
@@ -153,7 +131,6 @@ const typecheck = (input: {
       [
         child.stdout.pipe(Stream.decodeText(), Stream.mkString),
         child.stderr.pipe(Stream.decodeText(), Stream.mkString),
-        // `undefined` when a signal killed the process.
         child.exitCode.pipe(Effect.orElseSucceed(() => undefined)),
         input.whileRunning ? input.whileRunning(child.pid, state) : Effect.void,
       ],
@@ -174,7 +151,6 @@ const alive = (pid: number) => {
   }
 };
 
-/** Polls `done` every 50 ms for up to `seconds`, and returns whether it became true. */
 const within = <R>(seconds: number, done: () => Effect.Effect<boolean, never, R>) =>
   Effect.gen(function* () {
     for (let tries = seconds * 20; tries > 0; tries--) {
@@ -186,21 +162,15 @@ const within = <R>(seconds: number, done: () => Effect.Effect<boolean, never, R>
 
 const signals = { SIGTERM: 15, SIGINT: 2, SIGHUP: 1 } as const;
 
-/**
- * Starts a hanging typecheck at concurrency 4, waits until framework:build and three projects
- * run, stops it with `stop`, and checks that none of those four processes is left.
- */
 const stopped = (input: {
   readonly entry: "bun" | "node";
   readonly stop: (pid: number) => Effect.Effect<void>;
-  /** The signal the runner reports, or none when it is killed. */
   readonly reports: keyof typeof signals | undefined;
 }) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const pids: Array<number> = [];
-    // Processes this case started are killed even when an assertion fails.
     yield* Effect.addFinalizer(() =>
       Effect.sync(() => {
         for (const pid of pids) if (alive(pid)) process.kill(pid, "SIGKILL");
@@ -232,7 +202,6 @@ const stopped = (input: {
       expect(run.stdout).toContain(`Typechecked 4 of ${projects} projects`);
       expect(run.stdout).toContain(`Stopped by ${input.reports}.`);
     }
-    // Killed processes are reaped by init after their parents exit.
     const gone = yield* within(5, () => Effect.succeed(!pids.some(alive)));
     expect(pids.filter(alive)).toEqual([]);
     expect(gone).toBe(true);
@@ -240,7 +209,6 @@ const stopped = (input: {
 
 const signal = (pid: number, name: NodeJS.Signals) => Effect.sync(() => process.kill(pid, name));
 
-// Live clock: the signal cases poll for the fake processes.
 layer(NodeServices.layer, { excludeTestServices: true })("Parallel typecheck runner", (it) => {
   it.effect("an invalid TYPECHECK_CONCURRENCY fails before any project runs", () =>
     Effect.gen(function* () {
@@ -316,7 +284,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Parallel typecheck run
           "c.ts(4,1): error TS2322: Type 'string' is not assignable to type 'number'.",
         );
         expect(lines).toContain("  The second line of the error.");
-        // A project that fails without an error prints every line, its warning too.
         expect(lines).toContain("thread main panicked");
         expect(run.stdout).toMatch(/^d\.ts\(1,1\): warning TS377057: /m);
         for (const warning of [
@@ -395,7 +362,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Parallel typecheck run
         .filter((line) => line.startsWith("OUT:") || line.startsWith("ERR:"));
       const broken = output.filter((line) => !/^(OUT|ERR):[\w./-]+:\d+$/.test(line));
       expect(broken).toEqual([]);
-      // The nine projects and framework:build.
       expect(new Set(output).size).toBe((projects + 1) * 2 * 500);
     }).pipe(Effect.scoped),
   );

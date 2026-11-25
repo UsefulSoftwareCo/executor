@@ -1,23 +1,3 @@
-/**
- * An OpenAPI app whose document is larger than the biggest imported vendor API's builds within
- * the compiler's memory, and its tools call the API. The document is an indented JSON file, as
- * imported apps wrote it, so it is the size whose build exceeded the hosted compiler's memory.
- *
- * Imported apps write their document as compact JSON in ASCII. As large as the largest imported
- * vendor API's, with prose beyond Latin-1 in every operation, such a document builds and calls,
- * also beside source files whose text goes beyond Latin-1, such as a provider's display name.
- *
- * A document whose resources expand into one another, as Stripe's do, gives every tool all of
- * its definitions. Its catalog written tool by tool is larger than any string, yet it lists in
- * pages no larger than their bound.
- *
- * Linked through several accounts, as official catalog apps link theirs with `accountRouter`, the
- * same document lists every tool once, with one input branch naming every account whose schema is
- * the same, and each tool's schemas still complete. Merging the accounts' tools reads each shared
- * definition once for the listing: before, it wrote every tool's definitions, which cost a cold
- * listing of this document most of a Cloud app Worker's CPU time. The app counts the JSON text its
- * isolate writes while it lists, so that cost fails the scenario on any machine, however fast.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -40,22 +20,8 @@ export default defineApp({}, async ({ cache, fetch, signal }) => ({
   tools: liveOpenapiRouter({ ...configuration, cache, fetch, ...(signal === undefined ? {} : { signal }) }),
 }));`;
 
-/**
- * The most JSON text, in characters, the accounts app's isolate may write in one evaluation: its
- * cold listing compiles the document, merges the accounts' tools and answers with the catalog.
- * Counting text rather than time makes the bound the same on every machine and runner. Measured
- * on this document with three accounts (2026-11-12, the framework run in Bun as the app runs it):
- * merging each shared definition once wrote 78 million characters, and writing every tool's
- * schemas, as merging did before, 9.0 billion. The bound is about ten times the first and a ninth
- * of the second.
- */
 const listingJsonBudget = 800_000_000;
 
-/**
- * The same document behind a key provider, merged across every linked account as catalog apps do.
- * `JSON.stringify` counts what it writes from the start of each evaluation and throws past the
- * budget, so the listing fails with the count.
- */
 const accountsIndex = `import { accountRouter, defineApp, defineProvider, object, router, secrets, string } from "apps";
 import { liveOpenapiRouter } from "apps/openapi";
 import configuration from "./openapi.json";
@@ -87,13 +53,10 @@ export default defineApp(
     };
   },
 );`;
-/** Accounts the merged app links: several, as some organizations link to one catalog app. */
 const linkedAccounts = 3;
 
-/** Prose with Latin-1, punctuation, symbols and an emoji, as vendor API descriptions use. */
 const prose = "Returns the service’s “state” — café → ✅ or 🔴.";
 
-/** The document's configuration as imported apps write it: compact, each non-ASCII character a `\u` escape. */
 const asciiConfiguration = (origin: string) =>
   JSON.stringify({
     source: { document: largeOpenapiDocument(origin, 1000, prose) },
@@ -106,7 +69,6 @@ const asciiConfiguration = (origin: string) =>
     (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
   );
 
-/** An entry like `index`, beside a provider module whose display name goes beyond Latin-1. */
 const wideIndex = `import { defineApp } from "apps";
 import { liveOpenapiRouter } from "apps/openapi";
 import configuration from "./openapi.json";
@@ -117,17 +79,8 @@ export default defineApp({}, async ({ cache, fetch, signal }) => ({
 }));`;
 const wideProvider = `export const provider = { name: "Kanji 日本 API", headers: { "X-Note": "東京" } };\n`;
 
-/**
- * Three hundred resources that expand into one another, each about ten thousand characters of
- * definition, and 700 operations that each return one. Every tool's output schema reaches all
- * three hundred definitions, so the tools written out in full are about 2.2 billion characters:
- * more than a JavaScript string holds, whatever the host's memory. The document is about 3.5 MB,
- * and the app's catalog with each definition and each distinct `$defs` once about 5 million
- * characters, near Stripe's 6.8 million, so a deployed Worker holds about as much as Stripe's.
- */
 const expandableResources = 300;
 const expandableOperations = 700;
-/** The most a page of the tool listing holds, in characters, unless its first tool alone is more. */
 const pageChars = 16 * 1024 * 1024;
 
 const JsonSchemaDocument = Schema.Record(Schema.String, Schema.Json);
@@ -141,7 +94,6 @@ const ToolPage = Schema.Struct({
   next: Schema.optional(Schema.String),
 });
 const ToolIndex = Schema.Struct({ items: Schema.Array(Schema.Struct({ name: Schema.String })) });
-/** A merged tool: its input is a union of account branches, each naming the accounts it serves. */
 const AccountsTool = Schema.Struct({
   name: Schema.String,
   inputSchema: Schema.Struct({
@@ -158,7 +110,6 @@ const AccountsTool = Schema.Struct({
 const AccountsToolPage = Schema.Struct({ items: Schema.Array(AccountsTool) });
 const SearchResult = Schema.Struct({ items: Schema.Array(Schema.Struct({ path: Schema.String })) });
 
-/** Every `#/$defs/` name a JSON value references, anywhere in it. */
 const referenced = (value: unknown, found = new Set<string>()): Set<string> => {
   if (Array.isArray(value)) for (const item of value) referenced(item, found);
   else if (value !== null && typeof value === "object")
@@ -168,10 +119,6 @@ const referenced = (value: unknown, found = new Set<string>()): Set<string> => {
       else referenced(item, found);
   return found;
 };
-/**
- * The definitions a resource's output schema holds, after checking it is complete on its own: every
- * reference anywhere in it names one of its own definitions.
- */
 const ownDefinitions = (schema: typeof JsonSchemaDocument.Type | undefined) => {
   const definitions = schema?.$defs;
   const names =
@@ -225,12 +172,7 @@ layer(HostedLive, { excludeTestServices: true })("Large OpenAPI app", (it) => {
             api.request(actors.owner, "DELETE", path).pipe(Effect.orDie),
           );
 
-          // The listing evaluates the whole catalog. Each page stays within the page bound, and
-          // each tool's schemas are complete on their own, as an agent reads them.
           const first = yield* api.request(actors.owner, "GET", `${path}/tools`);
-          // The body as sent: the server writes it as `JSON.stringify` does, so encoding the parsed
-          // body again gives back its text. Each page is encoded once: at 16 MB, another encoding
-          // adds about a tenth to the walk.
           const firstText = JSON.stringify(first.body);
           yield* evidence.json("expandable-openapi-first-page.json", {
             status: first.status,
@@ -248,15 +190,12 @@ layer(HostedLive, { excludeTestServices: true })("Large OpenAPI app", (it) => {
           for (const tool of resources)
             expect(ownDefinitions(tool.outputSchema)).toHaveLength(expandableResources);
 
-          // The index names every tool.
           const listed = yield* body(
             ToolIndex,
             yield* api.request(actors.owner, "GET", `${path}/tools/index`),
           );
           expect(listed.items).toHaveLength(expandableOperations + 1);
 
-          // Following `next` to the end lists every tool once, each page within the bound and
-          // continuing after the page before it.
           const last = page.items.at(-1)?.name ?? "";
           const paged = page.items.map((tool) => tool.name);
           let next = page.next;
@@ -281,7 +220,6 @@ layer(HostedLive, { excludeTestServices: true })("Large OpenAPI app", (it) => {
           expect(new Set(paged).size).toBe(paged.length);
           expect([...paged].sort()).toEqual(listed.items.map((tool) => tool.name).sort());
 
-          // The last tool reads with its whole schema.
           const lastTool =
             listed.items
               .map((tool) => tool.name)
@@ -299,7 +237,6 @@ layer(HostedLive, { excludeTestServices: true })("Large OpenAPI app", (it) => {
             expandableResources,
           );
 
-          // MCP search ranks the app's tools rather than reporting the app unavailable.
           const key = yield* body(
             Schema.Struct({ id: Schema.String, key: Schema.RedactedFromValue(Schema.String) }),
             yield* api.request(actors.owner, "POST", "/api/auth/api-key/create", {
@@ -336,10 +273,6 @@ layer(HostedLive, { excludeTestServices: true })("Large OpenAPI app", (it) => {
           ).toBe(true);
         }).pipe(Effect.provide(McpClient.layer)),
       ),
-    // Following `next` reads about 140 pages of 16 MB, one after another. Self-host CI runs the
-    // scenario in 25 to 58 seconds, but a busy runner took 0.68 seconds a page, about 110 seconds
-    // in all. A deployed stage answers a page in 1.1 to 2.1 seconds, 1.55 at the median of 55 runs,
-    // so the walk alone takes 2.5 to 5 minutes there.
     { timeout: 360_000 },
   );
 
@@ -382,7 +315,6 @@ layer(HostedLive, { excludeTestServices: true })("Large OpenAPI app", (it) => {
             api.request(actors.owner, "DELETE", path).pipe(Effect.orDie),
           );
 
-          // Several accounts of the owner's, each linked to the app's user requirement.
           const accounts: string[] = [];
           for (let index = 0; index < linkedAccounts; index++) {
             const started = yield* api.request(
@@ -403,8 +335,6 @@ layer(HostedLive, { excludeTestServices: true })("Large OpenAPI app", (it) => {
             accounts.push((yield* body(Schema.Struct({ id: Schema.String }), submitted)).id);
           }
 
-          // The cold listing evaluates the catalog for every account and merges their tools within
-          // the app's JSON budget. Its time is evidence only: it depends on the machine.
           const started = Date.now();
           const first = yield* api.request(actors.owner, "GET", `${path}/tools`);
           const firstText = JSON.stringify(first.body);
@@ -420,17 +350,14 @@ layer(HostedLive, { excludeTestServices: true })("Large OpenAPI app", (it) => {
           const resources = page.items.filter((tool) => tool.name.startsWith("resources."));
           expect(resources.length).toBeGreaterThan(0);
           for (const tool of resources) {
-            // The accounts' input schemas are the same, so one branch names every account.
             const branches = tool.inputSchema.anyOf;
             expect(branches).toHaveLength(1);
             expect([...(branches[0]?.properties.accountId.enum ?? [])].sort()).toEqual(
               [...accounts].sort(),
             );
-            // Each output schema still holds every definition it reaches, once.
             expect(ownDefinitions(tool.outputSchema)).toHaveLength(expandableResources);
           }
 
-          // Every tool is listed once, whichever account lists it.
           const listed = yield* body(
             ToolIndex,
             yield* api.request(actors.owner, "GET", `${path}/tools/index`),
@@ -439,7 +366,6 @@ layer(HostedLive, { excludeTestServices: true })("Large OpenAPI app", (it) => {
           expect(new Set(listed.items.map((tool) => tool.name)).size).toBe(listed.items.length);
         }),
       ),
-    // Deploying the document and listing it cold, as the expandable scenario does.
     { timeout: 240_000 },
   );
 
@@ -481,7 +407,6 @@ layer(HostedLive, { excludeTestServices: true })("Large OpenAPI app", (it) => {
           api.request(actors.owner, "DELETE", path).pipe(Effect.orDie),
         );
 
-        // The call compiles the whole document, then sends the one operation the product answers.
         const called = yield* api.request(actors.owner, "POST", `${path}/tools/call`, {
           tool: "service.health",
           kind: "query",
@@ -509,7 +434,6 @@ layer(HostedLive, { excludeTestServices: true })("Large OpenAPI app", (it) => {
           actors = yield* Actors,
           evidence = yield* Evidence;
         const origin = (yield* Target).metadata.origin;
-        // Each character beyond ASCII is a `\u` escape, as the importer writes it.
         const configuration = asciiConfiguration(origin);
         yield* evidence.json("large-openapi-ascii-source.json", { bytes: configuration.length });
         expect(configuration.length).toBeGreaterThan(13_600_000);
@@ -561,8 +485,6 @@ layer(HostedLive, { excludeTestServices: true })("Large OpenAPI app", (it) => {
         const configuration = asciiConfiguration(origin);
         expect(configuration.length).toBeGreaterThan(13_600_000);
         expect(configuration).not.toMatch(/[\u0080-\uffff]/);
-        // Characters beyond Latin-1 in the other files: the host retains every server file's text
-        // together, so these would otherwise widen the document's copy too.
         expect(wideIndex + wideProvider).toMatch(/[\u0100-\uffff]/);
 
         const prefix = `/api/organizations/${actors.organization.id}/apps`;
@@ -586,7 +508,6 @@ layer(HostedLive, { excludeTestServices: true })("Large OpenAPI app", (it) => {
           api.request(actors.owner, "DELETE", path).pipe(Effect.orDie),
         );
 
-        // The app's files read back exactly as deployed.
         const source = yield* api.request(actors.owner, "GET", `${path}/source`);
         expect(source.status).toBe(200);
         const files = (yield* body(

@@ -1,7 +1,3 @@
-/**
- * In-app workflow controls answer every app build, refuse invalid calls before the engine, and
- * never present a start whose run is saved as one to repeat.
- */
 import { expect, layer } from "@effect/vitest";
 import { Clock, Effect, Layer, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -15,8 +11,6 @@ import { appsManifest } from "../support/apps-release.ts";
 import { startDevelopmentServer } from "../support/managed-server.ts";
 import { Target } from "../support/platform.ts";
 
-// Each tool returns what its control call answered, or the failure it threw. Releases before the
-// account scopes declare requirements as \`{ accounts: {} }\`; later ones as \`{}\`.
 const source = (
   requirements: string,
 ) => `import { defineApp, mutation, query, workflow, object, string, router } from "apps";
@@ -56,7 +50,6 @@ type Send = (
   path: string,
   payload?: unknown,
 ) => ReturnType<(typeof Api.Service)["request"]>;
-/** Call the app at `path`'s tools, and read its run history through the management API. */
 const appClient = (send: Send, path: string) => ({
   call: (tool: keyof typeof kinds, input: Schema.Json) =>
     Effect.gen(function* () {
@@ -73,10 +66,6 @@ const appClient = (send: Send, path: string) => ({
     expect(response.status, JSON.stringify(response.body)).toBe(200);
     return (yield* body(Page, response)).items.map((item) => item.id).toSorted();
   }),
-  /**
-   * The run once it has ended. An app with an active run cannot be deleted, so a scenario waits
-   * for its runs before its clean-up deletes the app.
-   */
   ended: (run: string) =>
     Effect.gen(function* () {
       const deadline = (yield* Clock.currentTimeMillis) + 20_000;
@@ -91,28 +80,20 @@ const appClient = (send: Send, path: string) => ({
     }),
 });
 
-/** The self-host test host's storage fault; see `apps/hosted/testing/storage-fault-fixture.ts`. */
 const storageFault = "/api/devtools/storage-fault";
-/** Whether the armed read failed, and the spans it ran inside, innermost first. */
 const Faulted = Schema.Struct({
   failed: Schema.Boolean,
   spans: Schema.optional(Schema.Array(Schema.String)),
 });
-/** A start's read of its run right after the transaction that saves it. */
 const readBack = ["workflow.start.read-back", "workflow.start"];
 const Users = Schema.Struct({
   users: Schema.Array(Schema.Struct({ id: Schema.String, email: Schema.String })),
 });
 const Organizations = Schema.Array(Schema.Struct({ id: Schema.String, slug: Schema.String }));
 
-/**
- * Deploy an app on a fresh test host, which mounts the storage fault, and disarm the fault when
- * the scenario ends.
- */
 const faultHost = (label: string) =>
   Effect.gen(function* () {
     const target = yield* Target;
-    // Only the test entry point mounts the storage fault.
     const origin = yield* startDevelopmentServer(target);
     const api = yield* Api.pipe(
       Effect.provide(Layer.fresh(Api.layer)),
@@ -136,7 +117,6 @@ const faultHost = (label: string) =>
     ))[0];
     if (!organization) return yield* Effect.die("Development organization is missing");
     const prefix = `/api/organizations/${organization.id}`;
-    // A failed assertion must not leave the fault armed.
     yield* Effect.addFinalizer(() => send("DELETE", storageFault).pipe(Effect.orDie));
 
     const deployed = yield* send("POST", `${prefix}/apps/deploy`, {
@@ -186,7 +166,6 @@ layer(HostedLive, { excludeTestServices: true })("Workflow controls", (it) => {
         const check = (path: string) =>
           Effect.gen(function* () {
             const { call, history, ended } = appClient(send, path);
-            // Start, list and get each answer with the run, and the start made exactly one.
             const key = `controls-${randomUUID()}`;
             const started = yield* call("launch", { label: "first", key });
             expect(started).toEqual({ ok: expect.stringMatching(/^wfr_/) });
@@ -195,14 +174,11 @@ layer(HostedLive, { excludeTestServices: true })("Workflow controls", (it) => {
               ok: [run],
             });
             expect(yield* call("peek", { run })).toEqual({ ok: run });
-            // Starting again with the same key and input returns the same run.
             expect(yield* call("launch", { label: "first", key })).toEqual({
               ok: run,
             });
             expect(yield* history).toEqual([run]);
 
-            // A key over the limit is refused as the caller's input, naming the field, and
-            // starts nothing.
             const refused = yield* call("launch", { label: "long", key: "k".repeat(140) });
             expect(refused).toEqual({
               failed: {
@@ -215,13 +191,10 @@ layer(HostedLive, { excludeTestServices: true })("Workflow controls", (it) => {
               },
             });
             expect(yield* history).toEqual([run]);
-            // The one run ends with its input, so the app can be deleted.
             expect(yield* ended(run)).toEqual({ status: "complete", output: "first" });
           });
 
-        // An app on this checkout's `apps` release.
         yield* check(yield* deploy("current", "{}", appsManifest));
-        // An app built on `apps` beta.84, which names a run's version `deployment`.
         yield* check(
           yield* deploy("beta.84", "{ accounts: {} }", {
             path: "package.json",
@@ -239,10 +212,6 @@ layer(HostedLive, { excludeTestServices: true })("Workflow controls", (it) => {
         const evidence = yield* Evidence;
         const { send, app, call, history } = yield* faultHost("Workflow read-back");
 
-        /**
-         * Start with the start's first read of this app's runs after its save failing, and return
-         * the saved run the failure names.
-         */
         const startUnread = (tool: "begin" | "launch", input: Schema.Json, file: string) =>
           Effect.gen(function* () {
             const armed = yield* send("POST", storageFault, { binds: app.id, within: readBack });
@@ -254,7 +223,6 @@ layer(HostedLive, { excludeTestServices: true })("Workflow controls", (it) => {
               failed: true,
               spans: expect.arrayContaining(readBack),
             });
-            // The run is saved, so the failure names it and is not offered as a retry.
             expect(settled).toEqual({
               failed: {
                 tag: "WorkflowFailure",
@@ -267,15 +235,12 @@ layer(HostedLive, { excludeTestServices: true })("Workflow controls", (it) => {
             return { run: message.split(" ")[1] ?? "", message };
           });
 
-        // Without a key, the failure says starting again makes another run; getting the run by
-        // its ID, as it advises, finds it and starts nothing.
         const unkeyed = yield* startUnread("begin", { label: "unkeyed" }, "unkeyed-start.json");
         expect(unkeyed.message).toContain("This start had no key");
         expect(yield* history).toEqual([unkeyed.run]);
         expect(yield* call("peek", { run: unkeyed.run })).toEqual({ ok: unkeyed.run });
         expect(yield* history).toEqual([unkeyed.run]);
 
-        // With a key, starting again with the same key and input returns the saved run.
         const key = `read-back-${randomUUID()}`;
         const keyed = yield* startUnread("launch", { label: "keyed", key }, "keyed-start.json");
         expect(keyed.message).toContain(
@@ -293,7 +258,6 @@ layer(HostedLive, { excludeTestServices: true })("Workflow controls", (it) => {
       Effect.gen(function* () {
         const evidence = yield* Evidence;
         const { send, call, history } = yield* faultHost("Workflow commit");
-        /** Start with the commit of the start's save failing as `commit` says. */
         const startUncommitted = (
           commit: "refused" | "timeout" | "lost",
           tool: "begin" | "launch",
@@ -320,8 +284,6 @@ layer(HostedLive, { excludeTestServices: true })("Workflow controls", (it) => {
           },
         });
 
-        // The database refuses the commit. The host cannot tell that apart from a commit that
-        // applied, so the run may exist; without a key, the failure says to check the list.
         expect(yield* startUncommitted("refused", "begin", { label: "refused" })).toEqual(
           mayExist(
             "so the run may exist. This start had no key: check ctx.workflows.list before starting again",
@@ -329,8 +291,6 @@ layer(HostedLive, { excludeTestServices: true })("Workflow controls", (it) => {
         );
         expect(yield* history).toEqual([]);
 
-        // The commit times out. With a key, starting again with the same key and input is safe,
-        // and here makes the one run the refused commit left out.
         const key = `commit-${randomUUID()}`;
         expect(yield* startUncommitted("timeout", "launch", { label: "timeout", key })).toEqual(
           mayExist(
@@ -343,8 +303,6 @@ layer(HostedLive, { excludeTestServices: true })("Workflow controls", (it) => {
         const keyed = "ok" in again ? String(again.ok) : "";
         expect(yield* history).toEqual([keyed]);
 
-        // The commit applies and its answer is lost. Reading the run back confirms the start, so
-        // it answers with the run and makes no other.
         const lost = yield* startUncommitted("lost", "begin", { label: "lost" });
         expect(lost).toEqual({ ok: expect.stringMatching(/^wfr_/) });
         const run = "ok" in lost ? String(lost.ok) : "";

@@ -1,20 +1,3 @@
-/**
- * Hosted requests can be attributed and refusals explained without any credential reaching
- * telemetry. A request span names the kind of credential the request presented
- * (`auth.credential.kind`), its non-secret ID (`auth.credential.id`, an API key's ID) and the
- * verified user, and a 401 or 403 names why (`auth.failure.reason`): no credential, an
- * Authorization header of another form, a token or key nobody issued, a key since deleted, or a
- * write from another origin, which Better Auth refuses with its own code (`auth.failure.code`). A
- * bare 401 from Better Auth is a missing credential only when the request presented none; a
- * signed-in caller an endpoint refuses stays `unclassified`. On Cloud the span also names the
- * client's address (`client.address`), and creating or deleting an API key, a refused one-time
- * code, a refused role change, a consent, a refused agent revocation and a sign-out leave
- * `security.audit` log records, each naming the session that acted when one was loaded. A body
- * field an endpoint ignores changes nothing a record names. No span or record holds the key, the code or the email address,
- * nor any ID, organization or OAuth error a caller sent: a record names only stored records and
- * known codes. A sign-out is a confirmed revocation only where its session row was deleted. Each
- * request's handler logs arrive, however many requests run before or beside it.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schedule, Schema } from "effect";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
@@ -45,7 +28,6 @@ const LogRecords = Schema.fromJsonString(
     ),
   }),
 );
-/** The named attributes of the trace's one `security.audit` record for `action`. */
 const auditRecord = (logs: string, action: string, keys: ReadonlyArray<string>) => {
   const records = Schema.decodeUnknownSync(LogRecords)(logs).data.filter(
     (record) => record.body === "security.audit" && record.attributes["audit.action"] === action,
@@ -71,7 +53,6 @@ layer(HostedLive, { excludeTestServices: true })("Security observability", (it) 
             const traceId = randomBytes(16).toString("hex");
             return { traceId, traceparent: `00-${traceId}-${randomBytes(8).toString("hex")}-01` };
           };
-          /** A trace's delivered spans, once one of them is the request span of `route`. */
           const delivered = (label: string, traceId: string, route?: string) =>
             telemetry.query(traceId).pipe(
               Effect.map((result) => result.data.map(({ span }) => span)),
@@ -87,7 +68,6 @@ layer(HostedLive, { excludeTestServices: true })("Security observability", (it) 
               Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 40 }),
               Effect.tap((spans) => evidence.json(`${label}.json`, spans)),
             );
-          /** `GET` the organization's access as `actor` with `headers`: its status and request span. */
           const access = (label: string, actor: Session, headers: Record<string, string> = {}) =>
             Effect.gen(function* () {
               const { traceId, traceparent } = traced();
@@ -115,7 +95,6 @@ layer(HostedLive, { excludeTestServices: true })("Security observability", (it) 
               span.tags["auth.failure.reason"],
             ]);
           const bearer = (token: string) => ({ authorization: `Bearer ${token}` });
-          /** The trace's `security.audit` records, once one names `action`. */
           const audit = (traceId: string, action: string) =>
             telemetry.logs(traceId).pipe(
               Effect.filterOrFail(
@@ -143,7 +122,6 @@ layer(HostedLive, { excludeTestServices: true })("Security observability", (it) 
           expect(createdResponse.status, JSON.stringify(createdResponse.body)).toBe(200);
           const key = yield* body(Key, createdResponse);
           const secret = Redacted.value(key.key);
-          /** No delivered span or record may hold the key, the session cookie or the email. */
           const assertPrivate = (value: unknown) => {
             const json = JSON.stringify(value);
             expect(json, "The API key never reaches telemetry").not.toContain(secret);
@@ -206,8 +184,6 @@ layer(HostedLive, { excludeTestServices: true })("Security observability", (it) 
               for (const request of [missing, malformed, unknownToken, unknownKey, accepted])
                 assertPrivate(request.spans);
               if (cloud) {
-                // Cloud records why Better Auth's own endpoints refused, from the fixed code they
-                // answer with.
                 const foreign = traced();
                 const refusedWrite = yield* api.request(
                   actors.member,
@@ -227,8 +203,6 @@ layer(HostedLive, { excludeTestServices: true })("Security observability", (it) 
                   ]),
                   "A write from another origin is refused as one",
                 ).toEqual([["origin_mismatch", "INVALID_ORIGIN"]]);
-                // Better Auth answers a bare 401 both without a session and to a signed-in caller
-                // it refuses: Cloud refuses OAuth client management to every session.
                 const refusedClient = (label: string, actor: Session) =>
                   Effect.gen(function* () {
                     const { traceId, traceparent } = traced();
@@ -279,7 +253,6 @@ layer(HostedLive, { excludeTestServices: true })("Security observability", (it) 
                 actors.member,
                 "POST",
                 "/api/auth/api-key/delete",
-                // Better Auth ignores a field the endpoint does not take, whatever its value.
                 { keyId: key.id, role: 42 },
                 { traceparent: deleted.traceparent },
               );
@@ -314,7 +287,6 @@ layer(HostedLive, { excludeTestServices: true })("Security observability", (it) 
                 });
                 assertPrivate(logs);
               }
-              // An action a product handler performs is recorded too, a refused one included.
               const revoke = traced();
               const revoked = yield* api.request(
                 actors.member,
@@ -328,7 +300,6 @@ layer(HostedLive, { excludeTestServices: true })("Security observability", (it) 
               expect(revokeLogs, "The refused revocation names its outcome").toContain("failure");
               expect(revokeLogs, "and its user").toContain(member.id);
               expect(revokeLogs, "and the organization").toContain(actors.organization.id);
-              // A wrong code for an address nobody asked a code for is refused like any other.
               const email = `security-observability-${randomUUID().slice(0, 8)}@example.test`;
               const otp = traced();
               const refusedOtp = yield* api.request(
@@ -352,13 +323,8 @@ layer(HostedLive, { excludeTestServices: true })("Security observability", (it) 
           yield* evidence.step(
             "Identifiers, organizations and error codes a caller sends never reach telemetry",
             Effect.gen(function* () {
-              // Shaped like an ID or a fixed code, so only where a value comes from keeps it out.
               const marker = `hostile_${randomBytes(12).toString("hex")}`;
               const organizations = `/api/organizations/${actors.organization.slug}`;
-              /**
-               * Send a refused request in its own trace; its record, if `action` names one, and
-               * every span and log of the trace arrive without the marker.
-               */
               const refused = (
                 label: string,
                 action: string | undefined,
@@ -374,7 +340,6 @@ layer(HostedLive, { excludeTestServices: true })("Security observability", (it) 
                     );
                   const spans = yield* delivered(label, traceId);
                   const traceLogs = yield* telemetry.logs(traceId);
-                  // The marker is this request's own, so it may appear nowhere in the environment.
                   const searched = yield* telemetry.logsWholeEnvironment(marker);
                   for (const [where, value] of [
                     ["records", logs],
@@ -400,8 +365,6 @@ layer(HostedLive, { excludeTestServices: true })("Security observability", (it) 
                 "api_key.delete",
                 post("/api/auth/api-key/delete", { keyId: marker }),
               );
-              // `apiKeyManagement` refuses a pin to an organization the creator is not in before
-              // Better Auth's endpoint runs, so the request leaves no record at all.
               yield* refused(
                 "key-create",
                 undefined,
@@ -419,9 +382,6 @@ layer(HostedLive, { excludeTestServices: true })("Security observability", (it) 
                   role: "admin",
                 }),
               );
-              // Nothing but the product analytics plugin's after hook reads this endpoint's
-              // session, and it runs before the audit plugin's because it is registered first.
-              // Reordering the plugins, or removing that read, leaves the record without an actor.
               expect(
                 auditRecord(role, "member.role_change", [
                   "audit.target.id",
@@ -457,7 +417,6 @@ layer(HostedLive, { excludeTestServices: true })("Security observability", (it) 
                 "mcp_connection.revoke",
                 post(`${organizations}/mcp-connections/${marker}/revoke`, {}),
               );
-              // Better Auth returns a provider's `error` to the browser in its error redirect.
               const browser = yield* api.session();
               const started = yield* api.request(browser, "POST", "/api/auth/sign-in/social", {
                 provider: "github",
@@ -480,7 +439,6 @@ layer(HostedLive, { excludeTestServices: true })("Security observability", (it) 
                   .request(browser, "GET", `${callback.pathname}${callback.search}`, undefined, {
                     traceparent,
                   })
-                  // The redirect opens the sign-in page, which is not JSON.
                   .pipe(Effect.exit),
               );
               expect(social, "The provider's error is recorded as an unknown code").toMatch(
@@ -539,7 +497,6 @@ layer(HostedLive, { excludeTestServices: true })("Security observability", (it) 
                 actors.member,
                 "POST",
                 "/api/auth/oauth2/consent",
-                // `role` is no consent field; Better Auth ignores it, and so must the record.
                 { accept: false, oauth_query: consentPage.search.slice(1), role: 42 },
                 { traceparent: denied.traceparent },
               );
@@ -584,7 +541,6 @@ layer(HostedLive, { excludeTestServices: true })("Security observability", (it) 
               );
               expect(revoked, "naming the deleted session").toContain(signedIn.session.id);
               expect(revoked, "and its user").toContain(signedIn.user.id);
-              // A sign-out without a session deletes nothing, though Better Auth answers success.
               const nothing = traced();
               const empty = yield* api.request(
                 anonymous,
@@ -606,7 +562,6 @@ layer(HostedLive, { excludeTestServices: true })("Security observability", (it) 
           yield* evidence.step(
             "A handler's log arrives from successive and concurrent requests",
             Effect.gen(function* () {
-              // `security.audit` is an ordinary log a handler writes with its request's loggers.
               const revoke = Effect.gen(function* () {
                 const { traceId, traceparent } = traced();
                 const response = yield* api.request(

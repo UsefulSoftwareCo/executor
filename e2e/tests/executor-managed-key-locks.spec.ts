@@ -1,14 +1,3 @@
-/**
- * The Executor app's managed key against the stored rows its renewal reads, which only Cloud's
- * Postgres lets a scenario hold or set beside the server: a member's own token reconnected into the
- * key's account while a renewal commits, a token that already bears the key's name, a key that is
- * disabled or expired, and a renewal that fails after it minted a key. Row statements touch only
- * rows the scenario's own organization created: the held lock is on the scenario's own account row,
- * which no other scenario reads, and the failure is a trigger on the shared accounts table, created
- * and dropped by the scenario, that fires only for the scenario's own account. They list API keys,
- * whose listing deletes expired keys, so they never share a local Cloud with the auth cleanup
- * scenarios, whose held lock pauses every such delete (`cloud-product`, not `cloud-locks`).
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Fiber, Redacted, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -53,7 +42,6 @@ const Holder = Schema.Tuple([Schema.Struct({ pid: Schema.Number })]);
 const Backends = Schema.Array(Schema.Struct({ pid: Schema.Number }));
 const Generations = Schema.Tuple([Schema.Struct({ generations: Schema.NullOr(Schema.Unknown) })]);
 
-/** The actor's keys pinned to `organization`. */
 const pinnedKeys = (actor: Session, organization: string) =>
   Effect.gen(function* () {
     const api = yield* Api;
@@ -63,7 +51,6 @@ const pinnedKeys = (actor: Session, organization: string) =>
     );
     return page.apiKeys.filter((key) => key.metadata?.organization === organization);
   });
-/** The actor's keys named as the Executor app's, pinned to `organization`. */
 const managedKeys = (actor: Session, organization: string) =>
   Effect.map(pinnedKeys(actor, organization), (keys) =>
     keys.filter((key) => key.name === managedName),
@@ -74,7 +61,6 @@ const revokeKey = (actor: Session, keyId: string) =>
     const revoked = yield* api.request(actor, "POST", "/api/auth/api-key/delete", { keyId });
     expect(revoked.status, JSON.stringify(revoked.body)).toBe(200);
   });
-/** A token of the actor's own, pinned to `organization`, revoked when the scenario ends. */
 const ownToken = (actor: Session, organization: string, name: string) =>
   Effect.gen(function* () {
     const api = yield* Api;
@@ -94,7 +80,6 @@ const ownToken = (actor: Session, organization: string, name: string) =>
   });
 const restoredSentence =
   "Access was restored. This call was not repeated; earlier steps may have changed data. Check the result and retry only if the user chooses.";
-/** A refused read that answers with the renewed key, or fails once saying access was restored. */
 const answeredOrRestored = (response: Response, organization: string, restored: string[]) =>
   Effect.gen(function* () {
     if (response.status === 200) {
@@ -103,10 +88,8 @@ const answeredOrRestored = (response: Response, organization: string, restored: 
     }
     expect(response.status, JSON.stringify(response.body)).toBe(502);
     expect(response.body).toMatchObject({ reason: "unauthorized", credentialsRenewed: true });
-    // Its words are checked once the scenario's other checks have run (`saidRestored`).
     restored.push(JSON.stringify(response.body));
   });
-/** Every call that failed once because access was restored says so in the same words. */
 const saidRestored = (restored: ReadonlyArray<string>) =>
   Effect.sync(() => {
     for (const text of restored) expect(text).toContain(restoredSentence);
@@ -119,7 +102,6 @@ const contextRead = (actor: Session, path: string) =>
       input: {},
     }),
   );
-/** A read the service refused with the key, which stands: nothing was renewed. */
 const refusedRead = (actor: Session, path: string, account: string, attempt: string) =>
   Effect.gen(function* () {
     const refused = yield* contextRead(actor, path);
@@ -144,7 +126,6 @@ layer(HostedLive, { excludeTestServices: true })("Executor app key rows", (it) =
         const [original] = yield* managedKeys(actors.owner, organization);
         if (original === undefined) return yield* Effect.die("The managed key is missing");
         const own = yield* ownToken(actors.owner, organization, "Synthetic own token");
-        // The owner starts reconnecting the managed account with a token of their own.
         const connection = yield* body(
           Connection,
           yield* api.request(actors.owner, "POST", connectionsPath(path, "user", "service"), {
@@ -154,7 +135,6 @@ layer(HostedLive, { excludeTestServices: true })("Executor app key rows", (it) =
         yield* revokeKey(actors.owner, original.id);
 
         const locks = yield* cloudLocks;
-        // Commit first, so a failed scenario does not leave the account locked.
         yield* Effect.addFinalizer(() => Effect.ignore(locks.release));
         const [holder] = yield* locks
           .hold({ sql: "select pg_backend_pid() as pid" })
@@ -163,7 +143,6 @@ layer(HostedLive, { excludeTestServices: true })("Executor app key rows", (it) =
           sql: "select id from executor_accounts where id = $1 for update",
           params: [account],
         });
-        /** The one other backend waiting on a lock while running `statement`. */
         const waiting = (statement: string, label: string, excluded: number) =>
           locks
             .run({
@@ -181,14 +160,12 @@ layer(HostedLive, { excludeTestServices: true })("Executor app key rows", (it) =
               Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 150 }),
               Effect.orDie,
             );
-        // The Executor app's read is refused with the revoked key; its renewal waits on the row.
         const renewal = yield* Effect.forkChild(contextRead(actors.owner, path));
         const renewing = yield* waiting(
           `${holder!.pid} = any(pg_blocking_pids(pid)) and query ilike '%from executor_accounts%for update%'`,
           "The renewal",
           holder!.pid,
         );
-        // The reconnect, with the generation it read before the renewal commits, waits behind it.
         const reconnect = yield* Effect.forkChild(
           api.request(
             actors.owner,
@@ -216,8 +193,6 @@ layer(HostedLive, { excludeTestServices: true })("Executor app key rows", (it) =
         const minted = (yield* managedKeys(actors.owner, organization)).map((key) => key.id);
         expect(minted).toHaveLength(1);
 
-        // The account now holds the owner's own token, which is theirs to replace. Revoked, it
-        // stays refused, however often: the renewal's generation never labels it.
         yield* revokeKey(actors.owner, own.id);
         for (const attempt of ["first", "second"]) {
           const failure = yield* refusedRead(actors.owner, path, account, attempt);
@@ -244,7 +219,6 @@ layer(HostedLive, { excludeTestServices: true })("Executor app key rows", (it) =
         const [managed] = yield* managedKeys(actors.owner, organization.id);
         if (managed === undefined) return yield* Effect.die("The managed key is missing");
         const named = yield* ownToken(actors.owner, organization.id, "Synthetic ordinary token");
-        // A token created before the name was reserved bears it: its row is written as it was then.
         const locks = yield* cloudLocks;
         yield* locks.run({
           sql: "update apikey set name = $1 where id = $2",
@@ -261,7 +235,6 @@ layer(HostedLive, { excludeTestServices: true })("Executor app key rows", (it) =
             .then(() => rows);
         });
         expect(yield* browser.use("Count the named rows", () => rows.count())).toBe(2);
-        // Only the key the product minted is marked; the name marks nothing.
         expect(
           yield* browser.use("Count the marked rows", () =>
             rows.filter({ hasText: "In use by the Executor app" }).count(),
@@ -282,13 +255,10 @@ layer(HostedLive, { excludeTestServices: true })("Executor app key rows", (it) =
         expect(explanation).toContain("Create and install a replacement first");
         expect(explanation).not.toContain("Executor creates a new key for the app automatically");
         yield* browser.use("Close the revoke dialog", (page) => page.keyboard.press("Escape"));
-        // The mark is the product's own, in the key's metadata.
         const pinned = yield* pinnedKeys(actors.owner, organization.id);
         expect(pinned.find((key) => key.id === named.id)?.metadata?.executorApp).toBeUndefined();
         expect(pinned.find((key) => key.id === managed.id)?.metadata?.executorApp).toBe(true);
 
-        // Connected as the Executor app's account, it is an ordinary token there too: revoked, it
-        // is never recreated.
         const started = yield* body(
           Connection,
           yield* api.request(actors.owner, "POST", connectionsPath(path, "user", "service"), {}),
@@ -334,9 +304,7 @@ layer(HostedLive, { excludeTestServices: true })("Executor app key rows", (it) =
         const keyIds = Effect.map(managedKeys(actors.owner, organization), (keys) =>
           keys.map((item) => item.id),
         );
-        // The product mints its key with no expiry.
         expect((yield* managedKeys(actors.owner, organization))[0]?.expiresAt).toBeNull();
-        // A disabled key still exists, so it stays refused and nothing is minted.
         yield* locks.run({
           sql: "update apikey set enabled = false where id = $1",
           params: [key.id],
@@ -345,9 +313,6 @@ layer(HostedLive, { excludeTestServices: true })("Executor app key rows", (it) =
           yield* refusedRead(actors.owner, path, account, `disabled, ${attempt}`);
           expect(yield* keyIds).toEqual([key.id]);
         }
-        // An expired key's first refused use deletes it, as the bearer check deletes every expired
-        // key; once gone it is renewed as a revoked one, with one new key and again no expiry. No
-        // part of the product sets an expiry on this key; the row is written here.
         yield* locks.run({
           sql: `update apikey set enabled = true, "expiresAt" = now() - interval '1 minute' where id = $1`,
           params: [key.id],
@@ -361,9 +326,6 @@ layer(HostedLive, { excludeTestServices: true })("Executor app key rows", (it) =
         const answered = yield* contextRead(actors.owner, path);
         expect(answered.status, JSON.stringify(answered.body)).toBe(200);
 
-        // Revoked, it is renewed, but a renewal that fails after minting its key and before the
-        // account saves it leaves no key and no recorded generation, and is not repeated: each
-        // call fails once with the refusal, and the next call tries again.
         yield* revokeKey(actors.owner, recreated[0]!.id);
         if (!/^[A-Za-z0-9_-]+$/.test(account)) return yield* Effect.die("Unexpected account ID");
         const suffix = randomUUID().replaceAll("-", "");

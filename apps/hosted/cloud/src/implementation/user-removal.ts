@@ -1,4 +1,3 @@
-/** Cloud is where people sign themselves up, so only cloud lets them delete themselves. */
 import {
   audited,
   CurrentPrincipal,
@@ -27,8 +26,6 @@ export const userRemovalHandlers = HttpApiBuilder.group(
           Effect.gen(function* () {
             const principal = yield* CurrentPrincipal;
             const removed = yield* removeUser;
-            // Each organization the user was alone in is tombstoned, which is its durable start
-            // record; its erasure starts after the response, as deleting it by hand does.
             for (const organization of removed.organizations)
               yield* dispatchAcceptedRemoval(start, recover, organization, organization);
             return { removed, user: principal.userId };

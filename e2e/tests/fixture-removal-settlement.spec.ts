@@ -1,20 +1,3 @@
-/**
- * The Cloud fixture's two halves of an organization's clean-up. A scenario's own clean-up
- * (`/remove`) returns as soon as the product has accepted the removal and refuses the
- * organization's owner; the erasure runs afterwards in the removal Workflow. The end-of-run check
- * (`settleRemovals`, `/settle`) is what waits for that erasure, once per run.
- *
- * The extra scenario's organization has its Workflow start stalled by the local Worker's test hook
- * (`organization-removal-stalls.ts`), so its erasure cannot begin. Its clean-up must still return,
- * leaving the organization row in place. The check, narrowed to that scenario with a short
- * deadline, must fail naming the scenario, the phase it is stuck in and since when, and note the
- * stall for the deployed runner's evidence. Once the stall is released the recovery alarm starts
- * the removal, and the check with its own deadline must find the organization row gone, the
- * removal done and the scenario's users deleted.
- *
- * Only this scenario's organization is stalled, and it is released before the case ends; the
- * check is narrowed to its scenario, so the run's own end-of-run check is not affected.
- */
 import { expect, layer } from "@effect/vitest";
 import { randomBytes } from "node:crypto";
 import { createServer, request as forward } from "node:http";
@@ -36,7 +19,6 @@ import { removalStallsFile, RemovalStall } from "../sdk/removal-evidence.ts";
 
 const Status = Schema.Array(Schema.Struct({ status: Schema.Literals(["running", "done"]) }));
 const Count = Schema.Tuple([Schema.Struct({ count: Schema.Number })]);
-/** Accepted removals in the parallel case: four times the fixture's 6 checks at once. */
 const many = 24;
 
 layer(HostedLive, { excludeTestServices: true })("Fixture removal settlement", (it) => {
@@ -86,7 +68,6 @@ layer(HostedLive, { excludeTestServices: true })("Fixture removal settlement", (
               stalled_until timestamptz not null
             )`,
           });
-          // Bounded, so a case that dies here cannot hold the removal for the rest of the run.
           yield* locks.run({
             sql: `insert into e2e_organization_removal_stall (organization_id, stalled_until)
               values ($1, now() + interval '3 minutes')`,
@@ -103,8 +84,6 @@ layer(HostedLive, { excludeTestServices: true })("Fixture removal settlement", (
             "The scenario's clean-up returns while its removal cannot start",
             Effect.gen(function* () {
               const started = yield* Clock.currentTimeMillis;
-              // The lifecycle's own clean-up: closing the scenario's scope sends its `/remove`,
-              // which fails the case if the product does not accept or still answers the owner.
               yield* Scope.close(scope, Exit.void);
               return (yield* Clock.currentTimeMillis) - started;
             }),
@@ -148,9 +127,7 @@ layer(HostedLive, { excludeTestServices: true })("Fixture removal settlement", (
             phase: "wait-for-organization",
             status: "running",
           });
-          // Stuck in its first phase since the removal was accepted.
           expect(entry?.since).toBe(entry?.acceptedAt);
-          // The deployed runner saves the Workflow instance and Worker logs for this line.
           const stalls = (yield* fs.readFileString(files.stalls))
             .split("\n")
             .filter((line) => line.trim() !== "")
@@ -179,7 +156,6 @@ layer(HostedLive, { excludeTestServices: true })("Fixture removal settlement", (
           yield* evidence.json("clean-up.json", { cleanUpMs: cleanUp });
         }),
       ),
-    // The released start waits for the recovery alarm, at most 60 s apart, or the minute cron.
     { timeout: 150_000 },
   );
 
@@ -195,12 +171,9 @@ layer(HostedLive, { excludeTestServices: true })("Fixture removal settlement", (
           if (fixtures === undefined)
             return yield* Effect.die(new Error("A Cloud scenario has a fixture"));
           const locks = yield* cloudLocks;
-          // More removals than the fixture checks at once (6), with the first one blocked, so a
-          // check that took them one at a time in order would finish none.
           const ids = Array.from({ length: many }, () => randomBytes(16).toString("hex"));
           const [blocked] = ids;
           if (blocked === undefined) return yield* Effect.die(new Error("No removals"));
-          // Removed again if the case ends early, so the run's own check sees them accepted.
           yield* Effect.addFinalizer(() =>
             Effect.forEach(
               ids,
@@ -220,12 +193,6 @@ layer(HostedLive, { excludeTestServices: true })("Fixture removal settlement", (
               { concurrency: 4, discard: true },
             ),
           );
-          // The blocked removal's owner row stays locked against deletion and nothing else: `for
-          // key share` conflicts only with the lock a `DELETE` takes. The organization's team
-          // installation may still be setting up this owner, and its member setup reads the owner
-          // `for share` while it holds the organization row (organization-defaults.ts); a stronger
-          // lock here held that setup, and with it the erasure's delete of the organization row
-          // (CI #13622). The product's own erasure never deletes users, so it still finishes.
           const [owner] = yield* locks
             .hold({
               sql: `select id from "user" where email = $1 for key share`,
@@ -246,7 +213,6 @@ layer(HostedLive, { excludeTestServices: true })("Fixture removal settlement", (
             finished: number;
             blocked: { phase: string; status: string | null; checking: boolean } | null;
           }> = [];
-          /** The blocked removal as one look reports it: never finished while its users are locked. */
           const blockedIn = (look: typeof SettleLook.Type) => {
             expect(
               look.finished.map((removal) => removal.scenario),
@@ -257,16 +223,11 @@ layer(HostedLive, { excludeTestServices: true })("Fixture removal settlement", (
               ? null
               : { phase: pending.phase, status: pending.status, checking: pending.checking };
           };
-          // The product finishes the erasures in no promised order: one whose purge raced its
-          // organization's team installation is retried seconds later (`purge-owner-store`). So
-          // the looks go on until the other 23 have finished and the blocked one's erasure is done
-          // too, leaving it held only by its users' deletion.
           const others = yield* evidence.step(
             "Every look answers within its limit and the others finish while one is blocked",
             Effect.gen(function* () {
               while (true) {
                 const asked = yield* Clock.currentTimeMillis;
-                // A look that does not answer in 15 s fails the case: the request is never held.
                 const look = yield* fixtureRequest(fixtures, "/settle", { ids }, "15 seconds").pipe(
                   Effect.flatMap(Schema.decodeUnknownEffect(SettleLook)),
                 );
@@ -352,8 +313,6 @@ layer(HostedLive, { excludeTestServices: true })("Fixture removal settlement", (
           );
           yield* fixtureRequest(fixtures, "/actors", { id, label: "Dropped look removal" });
           yield* fixtureRequest(fixtures, "/remove", { id });
-          // A loopback proxy in front of the fixture that drops the first `/settle` request, as a
-          // connection lost mid-request would, and passes every other request through unchanged.
           const upstream = new URL(fixtures.origin);
           let drops = 0;
           const proxy = yield* Effect.acquireRelease(
@@ -453,10 +412,8 @@ layer(HostedLive, { excludeTestServices: true })("Fixture removal settlement", (
             sql: "delete from e2e_organization_removal_stall where organization_id = $1",
             params: [organization],
           });
-          // A removal left `done` is never started; put it back before the stall ends.
           yield* Effect.addFinalizer(() => Effect.ignore(Effect.andThen(running, release)));
           yield* Scope.close(scope, Exit.void);
-          // The erasure has not run: the organization row is still there. Its record says done.
           yield* locks.run({
             sql: `update hosted_organization_removal set status = 'done', finished_at = now()
               where organization_id = $1`,
@@ -470,7 +427,6 @@ layer(HostedLive, { excludeTestServices: true })("Fixture removal settlement", (
             "A removal recorded done with its organization row still there is not finished",
             settleRemovals(fixtures, files, { ids: [id], within: 5_000 }).pipe(Effect.exit),
           );
-          // The check must fail here: passing would take the record's word over the row.
           expect(Exit.isFailure(checked) ? "failed" : "passed").toBe("failed");
           const stuck = Exit.isFailure(checked)
             ? (Cause.squash(checked.cause) as { _tag?: string; message: string })
@@ -498,7 +454,6 @@ layer(HostedLive, { excludeTestServices: true })("Fixture removal settlement", (
           expect(settled.last?.finished.map((removal) => removal.scenario)).toEqual([id]);
         }),
       ),
-    // The released start waits for the recovery alarm, at most 60 s apart, or the minute cron.
     { timeout: 150_000 },
   );
 });

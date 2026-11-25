@@ -1,4 +1,3 @@
-/** Check every test/helper import using Effect's filesystem and scoped Node runtime. */
 import ts from "typescript-5";
 import { scenarios, type TestPlan } from "./test-plan.ts";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
@@ -34,7 +33,6 @@ const allowed = new Set([
   "react",
   "react-dom/client",
 ]);
-/** A collector's event files and its span and log search endpoints. */
 const collectorReads = /(?:sentry|analytics|flags)\.ndjson|\/api\/(?:spans|logs|traces)\/search/u;
 class BoundaryViolation extends Schema.TaggedError<BoundaryViolation>()("BoundaryViolation", {
   problems: Schema.Array(Schema.String),
@@ -81,38 +79,28 @@ const check = Effect.gen(function* () {
             allowed.has(specifier)
           )
             return;
-          // This adapter observes the real OS store, never an application implementation.
           if (label === `support${path.sep}os-credential.ts` && specifier === "@napi-rs/keyring")
             return;
-          // Node's fetch says whether a request's connection was reused only through the
-          // diagnostics channels its bundled HTTP client publishes (lost-connections.ts).
           if (
             label === `support${path.sep}lost-connections.ts` &&
             specifier === "node:diagnostics_channel"
           )
             return;
-          // The lost-connection cases stand a stage in over TLS, resetting the TCP connection under
-          // the TLS session as an edge would.
           if (label === `tests${path.sep}lost-connections.spec.ts` && specifier === "node:tls")
             return;
-          // This external MCP fixture needs a real TLS listener, not a product implementation.
           if (label === `support${path.sep}mcp-auth-patterns.ts` && specifier === "node:https")
             return;
-          // This scenario holds one kept-alive client connection to the target, a TLS one when a
-          // deployed stage serves it over HTTPS; `node:http` refuses an `https:` URL.
           if (
             label === `tests${path.sep}mcp-protocol-versions.spec.ts` &&
             specifier === "node:https"
           )
             return;
-          // This external upstream fixture generates its contract with Effect, not product code.
           if (
             label === `support${path.sep}openapi-error-upstream.ts` &&
             specifier === "effect/http-api"
           )
             return;
           if (label.startsWith(`viewer${path.sep}`) && specifier === "media-chrome/react") return;
-          // The only database driver: runner-applied legacy rows for declared scenarios.
           if (label === legacyStorage && specifier === "@electric-sql/pglite") return;
           if (
             specifier.startsWith(".") &&
@@ -120,7 +108,6 @@ const check = Effect.gen(function* () {
             !label.startsWith(`tests${path.sep}`) &&
             label !== `support${path.sep}managed-server.ts`
           ) {
-            // A wrapper would hide direct database writes from the scenario declaration check.
             problems.push(`${label}: only scenarios and the runner may use legacy storage`);
             return;
           }
@@ -131,8 +118,6 @@ const check = Effect.gen(function* () {
             return;
           problems.push(`${label}: forbidden E2E import ${specifier}`);
         };
-        // The host's apps release is data in the apps package manifest, imported as JSON: the
-        // fixtures declare the version the hosts ship. No implementation is imported.
         const appsManifest = (node: ts.ImportDeclaration) =>
           label === `support${path.sep}apps-release.ts` &&
           ts.isStringLiteral(node.moduleSpecifier) &&
@@ -144,7 +129,6 @@ const check = Effect.gen(function* () {
               ts.isStringLiteral(attribute.value) &&
               attribute.value.text === "json",
           ) === true;
-        // Names bound to legacy storage in this scenario file; each use needs a declaration.
         const legacyNames = new Set<string>();
         if (label.startsWith(`tests${path.sep}`))
           for (const statement of source.statements) {
@@ -178,7 +162,6 @@ const check = Effect.gen(function* () {
           }
           return undefined;
         };
-        /** Whether a comment before `node` or a node it starts, up to its statement, says `reason`. */
         const explained = (node: ts.Node, reason: string): boolean => {
           const text = source.getFullText();
           for (let current: ts.Node = node; ; current = current.parent) {
@@ -188,8 +171,6 @@ const check = Effect.gen(function* () {
           }
         };
         const visit = (node: ts.Node) => {
-          // Collector reads go through the scoped readers in support/, so a scenario cannot read
-          // another scenario's telemetry by accident.
           if (
             !label.startsWith(`support${path.sep}`) &&
             (ts.isStringLiteralLike(node) ||
@@ -230,7 +211,6 @@ const check = Effect.gen(function* () {
             ts.isIdentifier(node.expression) &&
             node.expression.text === "withHostedCase"
           ) {
-            // The case and native setup hook must agree before we start a server.
             const name = scenarioOf(node);
             if (name !== undefined && plan.get(name)?.fixtures !== "actors")
               problems.push(`${label}: scenarios.${name} must declare actor fixtures`);
@@ -254,10 +234,6 @@ const check = Effect.gen(function* () {
             problems.push(
               `${label}: scenarios must yield injected services instead of executing a Promise/runtime boundary`,
             );
-          // Playwright's `route.fetch()` (no URL, at most an options object) resends a request from
-          // the test process over a keep-alive pool that never retries a connection the server closed
-          // while idle. Use `replaceResponses` in support/browser-responses.ts, or say beside the call,
-          // in a comment starting "route.fetch() is safe here", why that cannot happen.
           if (
             ts.isCallExpression(node) &&
             ts.isPropertyAccessExpression(node.expression) &&

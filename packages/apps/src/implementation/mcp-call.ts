@@ -151,7 +151,6 @@ export const mcpCall = (
         const callback = Effect.runPromiseWith(runtime)(interaction, { signal }).catch(() => {
           if (!lifetime.signal.aborted)
             Effect.runSync(Deferred.fail(failed, new ElicitationFailed({ reason: "transport" })));
-          // Never send a host error, credential, stack or callback exception to the upstream server.
           throw new ProtocolError(ErrorCode.InternalError, "User input could not be delivered");
         });
         callbacks.add(callback);
@@ -162,9 +161,6 @@ export const mcpCall = (
       return yield* Effect.tryPromise({
         try: (signal) =>
           client.callTool({ name, arguments: input }, undefined, {
-            // Only this request's own signal, which Effect aborts when the call is interrupted, as
-            // a failed prompt or an expired budget does. The SDK never removes its abort listener,
-            // so `lifetime`, aborted at release, would cancel a call the server already answered.
             signal,
             timeout: mcpSdkTimerCeilingMs,
           }),

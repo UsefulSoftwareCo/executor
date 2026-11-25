@@ -1,14 +1,7 @@
-/**
- * The operator's own OAuth clients (`notes/oauth.md`, "First-party clients"). What each client is,
- * its authorization server, scope menu and placement, is reviewed here in code. Only its
- * credentials are settings, `EXECUTOR_OAUTH_<ID>_CLIENT_ID` and `EXECUTOR_OAUTH_<ID>_CLIENT_SECRET`
- * (the ID in upper case, `-` as `_`), and a client is offered only when both are set.
- */
 import { FirstPartyOAuthClient } from "@executor-js/sdk/core";
 import { Config, Effect, Option, Redacted, Schema, Struct } from "effect";
 import { FirstPartyOAuthClientsInvalid } from "../contracts/oauth-client-metadata.ts";
 
-/** A first-party client without its credentials: everything about it that code reviews. */
 export const FirstPartyOAuthClientDefinition = FirstPartyOAuthClient.mapFields(
   Struct.omit(["clientId", "clientSecret"]),
 );
@@ -94,14 +87,6 @@ const googleHeldScopes = [
   },
 ];
 
-/**
- * The user scopes Executor for Slack may ask for and a grant may hold: v1's `slackMcpUserScopes`
- * (`packages/react/src/lib/slack-mcp-oauth.ts` in UsefulSoftwareCo/executor), the user scopes
- * approved on v1's Slack MCP app, and the ones Slack granted v1's connections of that app beyond
- * them (`im:read`, `lists:read`, `lists:write`, `files:write`), which the app is therefore
- * configured for. Slack's MCP resource advertises more, which a sign-in with this client leaves
- * out, as v1 did.
- */
 const slackMcpUserScopes = [
   "search:read.public",
   "search:read.private",
@@ -169,13 +154,7 @@ export const firstPartyOAuthClientDefinitions: readonly FirstPartyOAuthClientDef
     tokenEndpointAuthMethod: "client_secret_post",
     defaultScopes: [],
     placement: {
-      hosts: [
-        "api.github.com",
-        // GitHub's release asset upload host; v1 sent the token there too.
-        "uploads.github.com",
-        // GitHub's MCP server accepts GitHub App user tokens; v1 sent this client's tokens there.
-        "api.githubcopilot.com",
-      ],
+      hosts: ["api.github.com", "uploads.github.com", "api.githubcopilot.com"],
     },
   },
   {
@@ -209,28 +188,19 @@ export const firstPartyOAuthClientDefinitions: readonly FirstPartyOAuthClientDef
   },
 ];
 
-/** The two settings that hold the credentials of the client `id`. */
 export const firstPartyOAuthCredentialSettings = (id: string) => {
   const prefix = `EXECUTOR_OAUTH_${id.toUpperCase().replaceAll("-", "_")}`;
   return { clientId: `${prefix}_CLIENT_ID`, clientSecret: `${prefix}_CLIENT_SECRET` };
 };
 
-/**
- * Client definitions an E2E host adds to the reviewed ones, as a JSON array of
- * `FirstPartyOAuthClientDefinition`, so scenarios can sign in at a loopback authorization server.
- * They carry no credentials: those are the same settings as every client's. Any other host refuses
- * to start with it set.
- */
 export const testDefinitionsSetting = "EXECUTOR_TEST_OAUTH_CLIENT_DEFINITIONS";
 
-/** The settings were rejected for `problems`, which name settings and clients, never a value. */
 const invalid = (problems: ReadonlyArray<string>) =>
   new FirstPartyOAuthClientsInvalid({
     message: `The operator's OAuth client settings are invalid. ${problems.join(" ")}`,
     problems,
   });
 
-/** GitHub Actions passes an unset secret as an empty string, so empty means unset. */
 const setting = (name: string) =>
   Config.Redacted(name).pipe(
     Config.option,
@@ -247,7 +217,6 @@ const testDefinitions = (allowed: boolean) =>
       return yield* invalid([
         `${testDefinitionsSetting} is set, but only E2E test hosts read it. Unset it.`,
       ]);
-    // Definitions hold no credentials, so the parser's message can be repeated.
     return yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Definitions))(
       Redacted.value(value.value),
     ).pipe(
@@ -257,16 +226,8 @@ const testDefinitions = (allowed: boolean) =>
     );
   });
 
-/**
- * Whose OAuth registrations the reviewed clients' credentials are. Cloud's are Executor's own,
- * which a service may approve for only some scopes, as Google approved Executor for Google: their
- * held scopes are never asked for. A self-host operator sets the credentials of its own
- * registrations, which no approval of Executor's limits, so each reviewed client asks for its held
- * scopes as allowed ones, as it did before they were held.
- */
 export type FirstPartyRegistrations = "executor" | "operator";
 
-/** A reviewed definition as `registrations` may use it. */
 const forRegistrations = (
   definition: FirstPartyOAuthClientDefinition,
   registrations: FirstPartyRegistrations,
@@ -282,14 +243,6 @@ const forRegistrations = (
   };
 };
 
-/**
- * The operator's clients whose credentials are set, checked at startup. A client ID without its
- * secret, or a secret without its ID, stops the host and names the missing setting; no value is
- * ever repeated. `registrations` says whose registrations the reviewed clients are (see
- * `FirstPartyRegistrations`); test definitions are used as declared. `testDefinitions` lets an E2E
- * host add `EXECUTOR_TEST_OAUTH_CLIENT_DEFINITIONS`; every other host passes `false` and refuses
- * to start with it set.
- */
 export const firstPartyOAuthClients = (options: {
   readonly testDefinitions: boolean;
   readonly registrations: FirstPartyRegistrations;
@@ -329,8 +282,6 @@ export const firstPartyOAuthClients = (options: {
         problems.push(`${names.clientId} is set without ${names.clientSecret}.`);
         continue;
       }
-      // The client's own checks, such as every default scope being allowed. A failure names the
-      // client only: the parser's message could quote a credential.
       const client = yield* Schema.decodeUnknownEffect(Schema.toType(FirstPartyOAuthClient))({
         ...definition,
         clientId: Redacted.value(clientId.value),

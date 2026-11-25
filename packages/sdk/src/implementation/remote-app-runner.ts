@@ -1,10 +1,3 @@
-/**
- * The app runner behind a Workers RPC boundary. A host whose own Worker cannot run app code calls
- * the runner in another Worker: the invocation and results cross as JSON, and the invocation's
- * capabilities cross as RPC callbacks. Effect-based workflow capabilities become callbacks that
- * return encoded `WorkflowRpcResult`s, and are rebuilt on the runner's side. The invocation names
- * its build, and the runner's Worker reads it from its own store.
- */
 import { Cause, Data, Effect, Redacted, Schema } from "effect";
 import { withRemoteSpan } from "@executor-js/telemetry";
 import {
@@ -41,31 +34,22 @@ import { errorClassOf } from "./runtime-hop.ts";
 
 type Callback = (input: unknown) => Promise<unknown>;
 
-/** One workflow run's capabilities as RPC callbacks. Each returns an encoded `WorkflowRpcResult`. */
 export interface RemoteWorkflow {
   readonly runId: string;
   do(name: string, options: unknown, run: () => Promise<unknown>): Promise<unknown>;
   sleep(name: string, duration: unknown): Promise<unknown>;
   sleepUntil(name: string, timestamp: number): Promise<unknown>;
-  /** The run's current accounts, resolved by the host. */
   context(): Promise<unknown>;
   invoke(input: unknown): Promise<unknown>;
 }
 
-/** An invocation's capabilities as RPC callbacks; see {@link AppCapabilities}. */
 export interface RemoteCapabilities {
-  /**
-   * The invocation's encoded build. Runners that read builds by ID never call it; callers still
-   * send it so that an older runner, which reads builds only through it, keeps working during a
-   * rollout or rollback. A later release stops sending it.
-   */
   readonly load?: () => Promise<string>;
   readonly elicit: Callback | null;
   readonly controls: Callback | null;
   readonly workflow: RemoteWorkflow | null;
 }
 
-/** What the runner's Worker serves. Arguments and results other than callbacks are JSON. */
 export type RemoteAppRunner<Result> = {
   readonly invoke: (invocation: string, capabilities: RemoteCapabilities) => Result;
   readonly declare: (bundle: string, headers: Readonly<Record<string, string>>) => Result;
@@ -76,34 +60,22 @@ const RemoteResult = Schema.fromJsonString(
     Schema.Struct({
       ok: Schema.Literal(true),
       value: Schema.Json,
-      /**
-       * The host API revision the runner bound the call's cache and network to. A runner from
-       * before that check sends none, and its caller refuses the result; see `remoteAppRunner`.
-       */
       hostApi: Schema.optionalKey(Schema.NonEmptyString),
     }),
     Schema.Struct({
       ok: Schema.Literal(false),
       reason: Schema.optionalKey(RuntimeFailure),
-      /** Only a declaration failure's text, for the deployer. */
       message: Schema.optionalKey(Schema.String),
-      /** The build's protocol is one this runner does not run; only its load finds that out. */
       unsupported: Schema.optionalKey(RuntimeProtocolUnsupported),
     }),
   ]),
 );
 const encodedInvocation = Schema.fromJsonString(WorkerInvocation);
 const encodedBuild = Schema.fromJsonString(LoadedWorkerBuild);
-/**
- * A build's code as one string for a runner, written in ASCII: a single non-ASCII character in any
- * module would otherwise store the whole text, a large app's source included, at two bytes per
- * character on both sides of the call. It decodes to the same modules.
- */
 export const encodeLoadedBuild = (build: LoadedWorkerBuild) =>
   asciiJson(Schema.encodeSync(encodedBuild)(build));
 const engine = () => new WorkflowFailure({ reason: "engine", retryable: true });
 
-/** Release a callback stub once the invocation is done with it, rather than at garbage collection. */
 const release = (value: unknown) => {
   if (
     (typeof value === "function" || (typeof value === "object" && value !== null)) &&
@@ -128,7 +100,6 @@ const releaseCapabilities = (remote: RemoteCapabilities) => {
       release(callback);
 };
 
-/** Encode a workflow capability's outcome; any failure that is not a WorkflowFailure is engine's. */
 const reply = <A>(effect: Effect.Effect<A, unknown>) =>
   effect.pipe(
     Effect.matchCause({
@@ -141,9 +112,7 @@ const reply = <A>(effect: Effect.Effect<A, unknown>) =>
     Effect.flatMap(Schema.encodeUnknownEffect(WorkflowRpcResult)),
   );
 
-/** Read an encoded `WorkflowRpcResult` back into the workflow's own outcome. */
 const settle = (call: () => Promise<unknown>) =>
-  // An RPC result is a pipelining proxy, not a Promise; await it into one before Effect reads it.
   Effect.tryPromise({ try: async () => await call(), catch: engine }).pipe(
     Effect.flatMap(Schema.decodeUnknownEffect(WorkflowRpcResult)),
     Effect.mapError((error) => (Schema.is(WorkflowFailure)(error) ? error : engine())),
@@ -152,10 +121,6 @@ const settle = (call: () => Promise<unknown>) =>
     ),
   );
 
-/**
- * A sleep sent to the host that runs the engine. The host's own answer passes through; a call the
- * host never answered, or answered unreadably, is an engine call failure at the host hop.
- */
 const settleSleep = (call: () => Promise<unknown>) =>
   Effect.tryPromise({
     try: async () => await call(),
@@ -171,7 +136,6 @@ const settleSleep = (call: () => Promise<unknown>) =>
     ),
   );
 
-/** The caller's side: callbacks over this invocation's capabilities, released with `signal`. */
 export const remoteCapabilities = (capabilities: AppCapabilities, signal: AbortSignal) =>
   Effect.gen(function* () {
     const services = yield* Effect.context<never>();
@@ -226,7 +190,6 @@ export const remoteCapabilities = (capabilities: AppCapabilities, signal: AbortS
     } satisfies RemoteCapabilities;
   });
 
-/** The runner's side: the invocation's capabilities over the caller's callbacks and its build. */
 const localCapabilities = (remote: RemoteCapabilities, load: () => Promise<LoadedWorkerBuild>) =>
   Effect.gen(function* () {
     const services = yield* Effect.context<never>();
@@ -266,10 +229,6 @@ const localCapabilities = (remote: RemoteCapabilities, load: () => Promise<Loade
     } satisfies AppCapabilities;
   });
 
-/**
- * A failure the caller can name. Anything that is not already a runtime failure is classified here,
- * where its text is: past the boundary the caller would see only that the call failed.
- */
 const refused = (error: unknown) =>
   Schema.is(RuntimeProtocolUnsupported)(error)
     ? { ok: false as const, unsupported: error }
@@ -282,11 +241,6 @@ const refused = (error: unknown) =>
       : { ok: false as const, reason: classify(error) };
 const encodeResult = Schema.encodeUnknownEffect(RemoteResult);
 
-/**
- * The runner's reply as JSON: its value, or the failure it can name. A rejected RPC loses an error's
- * fields, and Cap'n Web replaces its text, so a failure crosses inside the reply instead. `hostApi`
- * is the revision the runner bound the call to; see `RemoteResult`.
- */
 export const runnerReply = (
   effect: Effect.Effect<{ readonly value: unknown; readonly hostApi?: string }, unknown>,
 ) =>
@@ -295,17 +249,12 @@ export const runnerReply = (
     Effect.catchCause((cause) => Effect.succeed(refused(Cause.squash(cause)))),
     Effect.flatMap((result) =>
       encodeResult(result).pipe(
-        // A value that is not JSON cannot cross; say so instead of failing the RPC without a reason.
         Effect.catch(() => encodeResult({ ok: false, reason: "invalid-reply" })),
       ),
     ),
     Effect.orDie,
   );
 
-/**
- * Serve the runner's Worker side of the boundary. `read` loads a build from this Worker's own
- * store, so a build never crosses the boundary from the caller.
- */
 export const serveAppRunner = (
   runner: AppRunner,
   read: (build: BuildId) => Effect.Effect<LoadedWorkerBuild, RuntimeBuildUnavailable>,
@@ -314,7 +263,6 @@ export const serveAppRunner = (
     runnerReply(
       Effect.scoped(
         Effect.gen(function* () {
-          // The runner's part starts here, so decoding the call and reading its build count too.
           const ingress = yield* runnerIngress;
           const {
             elicitation: _elicitation,
@@ -322,7 +270,6 @@ export const serveAppRunner = (
             ...decoded
           } = yield* Schema.decodeUnknownEffect(encodedInvocation)(invocation);
           const build = yield* Schema.decodeUnknownEffect(BuildId)(decoded.build);
-          // The caller's trace context travels in the invocation's headers; the runner's spans join it.
           return yield* Effect.gen(function* () {
             const loader = yield* invocationBuildLoader(decoded, read(build));
             const value = yield* loader.refused(
@@ -350,12 +297,6 @@ export const serveAppRunner = (
     ),
 });
 
-/**
- * Decode a runner's reply: its value, or the runtime failure it names. A call bound to a host API
- * revision (`hostApi`) succeeds only when the runner says it bound the call's cache and network to
- * that revision: a runner deployed before that check ignores it, and would fill the revision's
- * cache with whichever document it read.
- */
 const replyResult =
   (hostApi?: string) =>
   (reply: string): Effect.Effect<unknown, RuntimeProtocolFailed | RuntimeProtocolUnsupported> =>
@@ -378,24 +319,13 @@ const replyResult =
       ),
     );
 
-/** The runner's reply, or the failure of a call it rejected; see `replyResult`. */
 export const runnerResult = <E>(effect: Effect.Effect<string, E>, hostApi?: string) =>
-  effect.pipe(
-    // A rejected RPC carries the platform's text, such as a size or memory limit, only here.
-    Effect.catch(failedFrom(false, "runner")),
-    Effect.flatMap(replyResult(hostApi)),
-  );
+  effect.pipe(Effect.catch(failedFrom(false, "runner")), Effect.flatMap(replyResult(hostApi)));
 
-/**
- * A call to the runner that failed without a reply, such as a lost connection. The runner answers
- * every call it handled, an app's failure included (`runnerReply`), so this says nothing about the
- * app: its code may never have run. `failure` is the call's failure as `runnerResult` reports it.
- */
 export class RunnerUnanswered extends Data.TaggedError("RunnerUnanswered")<{
   readonly failure: RuntimeProtocolFailed;
 }> {}
 
-/** The caller's side: the runner's operations over the runner Worker's service. */
 export const remoteAppRunner = <E>(remote: RemoteAppRunner<Effect.Effect<string, E>>) => ({
   invoke: (invocation: AppInvocation, capabilities: AppCapabilities) =>
     Effect.scoped(
@@ -424,7 +354,6 @@ export const remoteAppRunner = <E>(remote: RemoteAppRunner<Effect.Effect<string,
     }).pipe(
       Effect.flatMap((encoded) =>
         remote.declare(encoded, headers).pipe(
-          // Told apart here, where the rejection is known to be the call's, never from its text.
           Effect.catch((cause) =>
             failedFrom(
               false,

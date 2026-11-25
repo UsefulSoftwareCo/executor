@@ -1,4 +1,3 @@
-/** Effect HTTP adapter with independent cookie jars, bounded requests, and safe evidence. */
 import { Cause, Clock, Context, Effect, Layer, Redacted, Ref, Schema } from "effect";
 import { Cookies, HttpClient, HttpClientRequest } from "effect/http";
 import { randomBytes } from "node:crypto";
@@ -18,7 +17,6 @@ import { isMcpPath, targetHosts } from "./role-hosts.ts";
 import { BrowserCookies } from "../sdk/contracts.ts";
 export { BrowserCookies } from "../sdk/contracts.ts";
 type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
-/** Each actor owns its cookie jar; no session state can bleed into another actor. */
 export interface Session {
   readonly cookies: Effect.Effect<Redacted.Redacted<BrowserCookies>>;
   readonly send: (
@@ -28,14 +26,8 @@ export interface Session {
     headers?: Record<string, string>,
   ) => Effect.Effect<Response, RequestFailed>;
 }
-/**
- * The wire revision this tree's clients state, sent on every request. A scenario acting as a
- * client released before revisions overrides it with {@link releasedClient}, which reads the same
- * as stating none.
- */
 export const currentClient = { "executor-wire-revision": "1" } as const;
 export const releasedClient = { "executor-wire-revision": "0" } as const;
-/** Request failures expose safe context; underlying errors remain redacted. */
 export class RequestFailed extends Schema.TaggedError<RequestFailed>()("RequestFailed", {
   method: Schema.String,
   path: Schema.String,
@@ -48,9 +40,7 @@ export class RequestFailed extends Schema.TaggedError<RequestFailed>()("RequestF
     }),
   ),
   reason: Schema.Literals(["origin", "timeout", "request", "deployment"]),
-  /** The raw cause stays redacted; the message gives its masked text (see `failure-text.ts`). */
   cause: Schema.optional(Schema.Redacted(Schema.Unknown)),
-  /** How far the call went before it failed: see `request-failure.ts`. */
   failure: Schema.optional(RequestFailure),
 }) {
   override get message() {
@@ -59,8 +49,6 @@ export class RequestFailed extends Schema.TaggedError<RequestFailed>()("RequestF
     return `${signatureText(this.failure)}${this.method} ${this.path} ${this.status === undefined ? `failed (${this.reason}) before a JSON response was read` : `returned HTTP ${this.status} without a JSON response`}${this.response ? ` (${this.response.contentType}, ${this.response.characters} characters, final path ${this.response.path})` : ""}${failure}${detail === undefined ? "" : `\n  ${indented(detail)}`}`;
   }
 }
-/** A server response may be decoded only against its public contract. */
-/** A decode failure names the status and body it rejected, so a wrong-shape error page is visible. */
 export const body = <A>(schema: Schema.ConstraintDecoder<A, never>, response: Response) =>
   Schema.decodeUnknownEffect(schema)(response.body).pipe(
     Effect.tapError(() =>
@@ -80,7 +68,6 @@ interface Sessions {
     headers?: Record<string, string>,
   ) => Effect.Effect<Response, RequestFailed>;
 }
-/** Run/suite-scoped HTTP construction. Session setup does not depend on case evidence. */
 export class SessionClients extends Context.Service<SessionClients, Sessions>()(
   "e2e/SessionClients",
 ) {
@@ -89,14 +76,10 @@ export class SessionClients extends Context.Service<SessionClients, Sessions>()(
     Effect.gen(function* () {
       const target = yield* Target,
         client = yield* HttpClient.HttpClient;
-      // Sessions belong to the browser origin, Cloud's `app.` host: its cookies are host-only
-      // there, wherever the fixture that issued them ran.
       const origin = targetHosts(target).browser;
       const deployment = targetHosts(target).deployment;
       const session = (initial?: Redacted.Redacted<BrowserCookies>) =>
         Effect.gen(function* () {
-          // The jar sends a cookie only to a host its domain matches, so each seeded cookie names
-          // the browser origin's host.
           const jar = yield* Ref.make<ReadonlyArray<Cookies.Cookie>>(
             (initial ? reveal(initial) : []).map((cookie) =>
               Cookies.makeCookieUnsafe(cookie.name, decodeURIComponent(cookie.value), {
@@ -140,9 +123,6 @@ export class SessionClients extends Context.Service<SessionClients, Sessions>()(
             ) =>
               Effect.scoped(
                 Effect.gen(function* () {
-                  // Relative product URLs only. Never forward an actor's cookies to another origin.
-                  // MCP and its discovery are served at the resource origins, never the browser
-                  // origin; they go to the deployment origin, which serves both.
                   const base = isMcpPath(new URL(path, origin).pathname) ? deployment : origin;
                   const url = new URL(path, base);
                   if (url.origin !== base)
@@ -160,8 +140,6 @@ export class SessionClients extends Context.Service<SessionClients, Sessions>()(
                     http.execute(request),
                     "60 seconds",
                   );
-                  // Alchemy's temporary deployment Worker answers every path with
-                  // HTTP 200. Classify that exact response without retaining bodies.
                   const deploying =
                     response.status === 200 && text === "Alchemy worker is being deployed...";
                   const parsed = text.length
@@ -233,7 +211,6 @@ export class SessionClients extends Context.Service<SessionClients, Sessions>()(
     }),
   );
 }
-/** Case-scoped HTTP evidence decorates the injected session client. */
 export class Api extends Context.Service<Api, Sessions>()("e2e/Api") {
   static readonly layer = Layer.effect(
     Api,
@@ -246,8 +223,6 @@ export class Api extends Context.Service<Api, Sessions>()("e2e/Api") {
         session: clients.session,
         request: (actor, method, path, data, headers = {}) =>
           Effect.gen(function* () {
-            // A caller's `traceparent` puts the request in that trace, as one client operation
-            // spanning several requests would; each request still gets its own span.
             const traceId = headers.traceparent?.split("-")[1] ?? randomBytes(16).toString("hex"),
               spanId = randomBytes(8).toString("hex");
             yield* evidence.sending({

@@ -1,7 +1,3 @@
-/**
- * Retained builds store each `apps` framework release once. A build's record holds its own modules
- * and the identity of the framework it links; loading a build reads both and links them.
- */
 import { BlobKey, BlobStore, BlobStoreError } from "../contracts/blobs.ts";
 import { RuntimeBuildFailed, RuntimeBuildUnavailable } from "../contracts/runtime.ts";
 import type { BuildId } from "../contracts/shared.ts";
@@ -21,25 +17,16 @@ import {
   type WorkerFramework,
 } from "../contracts/worker-build.ts";
 
-/**
- * A failure of storage itself, which writing again later may not meet: no status, a rate limit, or
- * a server error. A store that answers another 4xx refused this write for what it carries (an
- * invalid key), and so does a key the key type rejects: those are the app's, and are not repeated.
- */
 export const storageFailure = (error: unknown): error is BlobStoreError =>
   Schema.is(BlobStoreError)(error) &&
   (error.status === undefined || error.status === 429 || error.status >= 500);
 
-/** Shared with the one-off framework migration, which reads and writes the same objects. */
 export const key = (value: string) => Schema.decodeUnknownEffect(BlobKey)(value);
-/** The release's label leads for operators; the hash alone decides which object a build links. */
 export const frameworkKey = ({ version, sha256 }: FrameworkIdentity) =>
   key(`frameworks/${version}-${sha256}.json`);
 export const buildKey = (build: BuildId) => key(`${build}/worker.json`);
-/** Where builds with an inlined framework live. Removed with `InlinedWorkerBuild`. */
 export const inlinedBuildKey = (build: BuildId) => key(`${build}.json`);
 
-/** Written in ASCII, so a large record decodes to one-byte strings; see `asciiJson`. */
 export const encodeJson = <S extends Schema.Codec<unknown, unknown>>(schema: S, value: S["Type"]) =>
   Schema.encodeEffect(Schema.fromJsonString(schema))(value).pipe(
     Effect.map((text) => new TextEncoder().encode(asciiJson(text))),
@@ -47,7 +34,6 @@ export const encodeJson = <S extends Schema.Codec<unknown, unknown>>(schema: S, 
 export const decodeJson = <S extends Schema.Codec<unknown, unknown>>(schema: S, body: Uint8Array) =>
   Schema.decodeUnknownEffect(Schema.fromJsonString(schema))(new TextDecoder().decode(body));
 
-/** The SHA-256 of a framework's server modules, by name, independent of their stored encoding. */
 export const frameworkIdentity = (framework: WorkerFramework) =>
   Effect.promise(async () => {
     const canonical = JSON.stringify(
@@ -62,7 +48,6 @@ export const frameworkIdentity = (framework: WorkerFramework) =>
     return { version: framework.version, sha256 } satisfies FrameworkIdentity;
   });
 
-/** The complete Worker code: the app's modules with the framework's linked beside them. */
 export const assembleWorkerBundle = (
   bundle: WorkerBundle,
   framework: Pick<WorkerFramework, "modules">,
@@ -71,13 +56,6 @@ export const assembleWorkerBundle = (
   modules: { ...bundle.modules, ...framework.modules },
 });
 
-/**
- * Store the framework once at its content address. Concurrent deploys of the same release write
- * identical content, and each put publishes a complete object, so a lost race is harmless. A store
- * may refuse a write that loses the race (R2 takes one write a second to a key): the object then
- * being there means another build stored these same bytes, which is all this needs. The check is
- * repeated for up to 7 s, since the other build's write may still be in flight.
- */
 const retainFramework = (framework: WorkerFramework) =>
   Effect.gen(function* () {
     const blobs = yield* BlobStore;
@@ -92,11 +70,9 @@ const retainFramework = (framework: WorkerFramework) =>
     if (!stored)
       yield* blobs.put(location, yield* encodeJson(RetainedFramework, retained)).pipe(
         Effect.catchIf(storageFailure, (refused) =>
-          // A look that itself fails counts as not found, so the write's own failure is reported.
           blobs.exists(location).pipe(
             Effect.orElseSucceed(() => false),
             Effect.flatMap((found) => (found ? Effect.void : Effect.fail(refused))),
-            // At most 7 s: the other build's write, uncontended, takes under 2 s.
             Effect.retry({ times: 3, schedule: Schedule.exponential("1 second") }),
             Effect.tap(() =>
               Effect.annotateCurrentSpan("executor.build.framework_stored_by", "another"),
@@ -107,11 +83,6 @@ const retainFramework = (framework: WorkerFramework) =>
     return retained;
   });
 
-/**
- * A successful return makes the framework, the server code and every listed UI object available.
- * The build record is written last, so a failed publication yields no build reference. Returns
- * the stored record and framework, so a host can warm its caches without reading them back.
- */
 export const retainWorkerBuild = (
   build: BuildId,
   bundle: WorkerBundle & Pick<RetainedWorkerBuild, "database" | "protocol">,
@@ -149,18 +120,12 @@ export const retainWorkerBuild = (
     yield* blobs.put(yield* buildKey(build), body);
     return { record, framework: retained };
   }).pipe(
-    // A storage failure says nothing about the app and is reported as one; anything else here (a
-    // UI file name no key can hold, a key the store refuses) fails the build as it always has.
     Effect.mapError((error) =>
       storageFailure(error) ? error : new RuntimeBuildFailed({ stage: "retain" }),
     ),
     Effect.withSpan("runtime.cloud.retain"),
   );
 
-/**
- * A build's stored record: its own modules, UI manifest and framework identity. Until the
- * migration finishes, a build without a record may still be stored with its framework inlined.
- */
 export const loadStoredWorkerBuild = (build: BuildId) =>
   Effect.gen(function* () {
     const blobs = yield* BlobStore;
@@ -176,7 +141,6 @@ export const loadStoredWorkerBuild = (build: BuildId) =>
     Effect.withSpan("runtime.build.record"),
   );
 
-/** One stored framework. A record names only frameworks written before it, so absence is a fault. */
 export const loadWorkerFramework = (identity: FrameworkIdentity) =>
   Effect.gen(function* () {
     const blobs = yield* BlobStore;
@@ -192,7 +156,6 @@ export const loadWorkerFramework = (identity: FrameworkIdentity) =>
     }),
   );
 
-/** Link a stored record with its framework, read through the caller's own loader. */
 export const linkWorkerBuild = <E, R>(
   stored: StoredWorkerBuild,
   framework: (identity: FrameworkIdentity) => Effect.Effect<RetainedFramework, E, R>,
@@ -210,20 +173,16 @@ export const linkWorkerBuild = <E, R>(
         })),
       );
 
-/** The complete code a runner cold-starts: the build's record linked with its framework. */
 export const loadWorkerBuild = (build: BuildId) =>
   loadStoredWorkerBuild(build).pipe(
     Effect.flatMap((stored) => linkWorkerBuild(stored, loadWorkerFramework)),
   );
 
-/** The product authenticates access; this capability serves only assets listed in the immutable build. */
 export const workerBuildAsset = (build: BuildId, path: string) =>
   Effect.gen(function* () {
     const assetKey = Schema.decodeUnknownOption(BlobKey)(`${build}/ui/${path}`);
     if (Option.isNone(assetKey)) return undefined;
     const blobs = yield* BlobStore;
-    // Both immutable objects can load together. The manifest still authorizes
-    // the exact asset before any bytes leave this capability.
     const { retained, found } = yield* Effect.all(
       {
         retained: loadStoredWorkerBuild(build).pipe(
@@ -238,7 +197,6 @@ export const workerBuildAsset = (build: BuildId, path: string) =>
       if (Option.isNone(found)) return yield* new RuntimeBuildUnavailable();
       return { body: found.value, contentType: asset.contentType } satisfies RuntimeAsset;
     }
-    // Public files stay in the lineage's store; the build's listing names the ones it serves.
     const manifest = yield* readPublicManifest(blobs, build).pipe(
       Effect.withSpan("runtime.cloud.asset.public"),
     );

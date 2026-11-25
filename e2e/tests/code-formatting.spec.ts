@@ -1,4 +1,3 @@
-/** Format the real source viewer without rewriting retained source or numeric identifiers. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -12,7 +11,6 @@ import { appsManifest } from "../support/apps-release.ts";
 const Source = Schema.Struct({
   files: Schema.Array(Schema.Struct({ path: Schema.String, content: Schema.String })),
 });
-/** Display listings name every file; contents are inlined only within the budget. */
 const Display = Schema.Struct({
   files: Schema.Array(
     Schema.Struct({
@@ -30,7 +28,6 @@ const DisplayFile = Schema.Struct({
 const Revision = Schema.Struct({ revision: Schema.Struct({ commit: Schema.String }) });
 const Pinned = Schema.Struct({ id: Schema.String });
 const displayPaths = { source: "source/display", workspace: "workspace/display" } as const;
-/** A generated file above the inline budget, formatted only when read on its own. */
 const largeSnippet = {
   path: "large-demo.ts",
   content: `export const operations=[${Array.from(
@@ -58,7 +55,6 @@ const snippets = [
   { path: "widget.jsx", content: "export const Widget=()=> <button>Hi</button>" },
   { path: "command.sh", content: "#!/bin/sh\nprintf '%s\\n' 'stay   unchanged'\n" },
 ];
-/** Every stored file, including the app entry point and the apps manifest. */
 const files = [
   {
     path: "index.ts",
@@ -70,13 +66,11 @@ const files = [
   appsManifest,
 ];
 type Endpoint = keyof typeof displayPaths;
-/** The dashboard view that renders each endpoint's files. */
 const views = { source: "versions", workspace: "source" } as const satisfies Record<
   Endpoint,
   string
 >;
 
-/** Deploy the formatting app, pin its single-file reads and capture copies in the owner's browser. */
 const deployFormattingApp = Effect.gen(function* () {
   const api = yield* Api,
     actors = yield* Actors,
@@ -92,7 +86,6 @@ const deployFormattingApp = Effect.gen(function* () {
   yield* Effect.addFinalizer(() =>
     api.request(actors.owner, "DELETE", path).pipe(Effect.asVoid, Effect.orDie),
   );
-  // Single-file reads are pinned to the version or commit the listing came from.
   const pinned = yield* Effect.all(
     {
       source: api
@@ -109,7 +102,6 @@ const deployFormattingApp = Effect.gen(function* () {
     workspace: `${path}/commits/${pinned.workspace.revision.commit}/display/file`,
   };
   yield* browser.login(actors.owner);
-  // Observe the clipboard boundary without reading or replacing the machine's clipboard.
   yield* browser.use("Capture copied source at the browser boundary", (page) =>
     page.addInitScript(
       (rawScripts) => {
@@ -139,7 +131,6 @@ const deployFormattingApp = Effect.gen(function* () {
 });
 type FormattingApp = Effect.Success<typeof deployFormattingApp>;
 
-/** Run a check against a fresh formatting app, then prove the stored files were not rewritten. */
 const withFormattingApp = <E, R>(check: (fixture: FormattingApp) => Effect.Effect<void, E, R>) =>
   Effect.gen(function* () {
     const api = yield* Api,
@@ -162,7 +153,6 @@ const withFormattingApp = <E, R>(check: (fixture: FormattingApp) => Effect.Effec
     );
   });
 
-/** The display listing formats small files inline and lists the large file by size alone. */
 const formattedDisplay = ({ path }: FormattingApp, endpoint: Endpoint) =>
   Effect.gen(function* () {
     const api = yield* Api,
@@ -193,7 +183,6 @@ const formattedDisplay = ({ path }: FormattingApp, endpoint: Endpoint) =>
     expect(
       (yield* api.request(actors.member, "GET", `${path}/${displayPaths[endpoint]}`)).status,
     ).toBe(403);
-    // The large file is listed by path and stored size, then read on its own.
     expect(display.files.find((file) => file.path === largeSnippet.path)).toEqual({
       path: largeSnippet.path,
       size: new TextEncoder().encode(largeSnippet.content).byteLength,
@@ -201,7 +190,6 @@ const formattedDisplay = ({ path }: FormattingApp, endpoint: Endpoint) =>
     return display;
   });
 
-/** The large file is read on its own, formatted, and pinned to the listing's revision. */
 const formattedLargeFile = ({ filePaths }: FormattingApp, endpoint: Endpoint) =>
   Effect.gen(function* () {
     const api = yield* Api,
@@ -238,7 +226,6 @@ const readCode = Effect.gen(function* () {
   );
 });
 
-/** Every small file shows and copies its delivered display text, never its raw source. */
 const formatsSnippets = (endpoint: Endpoint) =>
   withFormattingApp((fixture) =>
     Effect.gen(function* () {
@@ -301,7 +288,6 @@ const formatsSnippets = (endpoint: Endpoint) =>
     }),
   );
 
-/** A file above the inline budget loads on selection with display formatting in both views. */
 const loadsLargeFile = withFormattingApp((fixture) =>
   Effect.gen(function* () {
     const browser = yield* Browser;

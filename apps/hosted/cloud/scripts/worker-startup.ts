@@ -1,33 +1,3 @@
-/**
- * How long each budgeted Worker takes to start, in workerd, for two builds side by side.
- *
- *   node apps/hosted/cloud/scripts/worker-startup.ts --base <dir> --head <dir> [--runs 21]
- *     [--workers mcp-server,api]
- *
- * Each directory is a built Cloud app (`apps/hosted/cloud` after `bun run hosted:cloud:worker-sizes`,
- * which leaves `.generated/worker-uploads/` and Alchemy's `.alchemy/bundles/`), or a directory
- * holding copies of those two as `worker-uploads/` and `bundles/`. A Worker is measured when both
- * builds have an upload record for it and an entry chunk in its bundle.
- *
- * For each Worker it loads the chunks the entry imports statically (what Cloudflare compiles and
- * evaluates when an isolate starts; a chunk only `import()` reaches is left out) into a fresh
- * isolate through the Worker Loader of the workerd the repository pins, with no bindings and no
- * network, and times two things from the loader's `get` to the first response:
- *
- * - `compile`: the chunks supplied, nothing imported. workerd compiles every module it is given.
- * - `evaluate`: the same, with a main module that imports the entry, so the entry's static graph
- *   is also instantiated and evaluated.
- *
- * Base and head alternate within every run, each run in a new workerd process, and one unrecorded
- * load warms each process first. It prints JSON: per Worker, every run's milliseconds, the median
- * and the minimum, per side and mode. This is workerd on the machine that runs it, not Cloudflare's
- * edge, and its noise is the machine's: pin it to idle cores (`taskset -c 2,3 node ...`) on a
- * shared host.
- *
- * The static graph comes from V8 itself (`vm.SourceTextModule`'s requests: static imports and
- * re-exports, never `import()` or text in strings), so the script needs Node's
- * `--experimental-vm-modules`, and starts itself again with it when it is missing.
- */
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -61,7 +31,6 @@ if (base === undefined || head === undefined || !Number.isInteger(runs) || runs 
   process.exit(2);
 }
 
-/** The upload records and the bundles of one build. */
 const layout = (directory: string) => {
   const nested = {
     uploads: join(directory, ".generated", "worker-uploads"),
@@ -76,17 +45,14 @@ const layout = (directory: string) => {
   return found;
 };
 
-/** A chunk name that looks content-hashed (`name-<8 characters>.js`); an entry's name has no hash. */
 const hashed = /-[A-Za-z0-9_-]{8}\.js$/;
 
-/** The relative chunks a chunk imports statically, as V8 reads them. */
 const staticImports = (file: string, code: string) =>
   new vm.SourceTextModule(code, { identifier: file }).moduleRequests
     .map(({ specifier }) => specifier)
     .filter((specifier) => specifier.startsWith("."))
     .map((specifier) => posix.normalize(posix.join(posix.dirname(file), specifier)));
 
-/** The relative chunks a chunk loads with `import()` of a literal. */
 const dynamicImports = (file: string, code: string) =>
   [...code.matchAll(/import\(\s*["'`](\.{1,2}\/[^"'`]+)["'`]\s*\)/g)].map((match) =>
     posix.normalize(posix.join(posix.dirname(file), match[1]!)),
@@ -94,11 +60,9 @@ const dynamicImports = (file: string, code: string) =>
 
 interface Graph {
   readonly entry: string;
-  /** The entry's static chunk set, by file name. */
   readonly modules: Readonly<Record<string, string>>;
 }
 
-/** The entry chunk of `worker` in a build's bundles, and the chunks it imports statically. */
 const staticGraph = (bundles: string, worker: string): Graph | undefined => {
   for (const folder of readdirSync(bundles)) {
     const directory = join(bundles, folder);
@@ -110,9 +74,6 @@ const staticGraph = (bundles: string, worker: string): Graph | undefined => {
     }
     const named = files.filter((file) => file.startsWith(`${worker}-`) || file === `${worker}.js`);
     if (named.length === 0) continue;
-    // The entry is the one chunk named for the Worker without a content hash. A name such as
-    // `app-data-app-data.js` looks hashed, so failing that it is the one such chunk no other chunk
-    // imports (shared chunks may import from the entry, so that test alone is not enough).
     const plain = named.filter((file) => !hashed.test(file));
     let entry = plain.length === 1 ? plain[0] : undefined;
     if (entry === undefined) {
@@ -168,7 +129,6 @@ for (const worker of names) {
   measured.push(worker);
 }
 
-/** The pinned workerd's binary: the package's CommonJS main exports its path as `default`. */
 const workerdPackage = createRequire(import.meta.url)("workerd") as { readonly default: string };
 const workerdBinary = workerdPackage.default;
 
@@ -177,7 +137,6 @@ const compatibility = {
   flags: ["nodejs_compat", "no_brotli_content_encoding"],
 };
 
-/** The Worker that loads each set through its Worker Loader and times it. */
 const harness = `import sets from "./sets.json";
 let loads = 0;
 export default {
@@ -225,7 +184,6 @@ const work = mkdtempSync(join(tmpdir(), "worker-startup-"));
 writeFileSync(join(work, "sets.json"), JSON.stringify(sets));
 writeFileSync(join(work, "harness.js"), harness);
 
-/** Start one workerd process serving the harness; resolves its origin once it answers. */
 const startWorkerd = async () => {
   const port = await freePort();
   writeFileSync(
@@ -282,7 +240,6 @@ try {
   for (let run = 0; run < runs; run++) {
     const server = await startWorkerd();
     try {
-      // The first load of a process also warms the harness itself; it is not recorded.
       const first = measured[0];
       if (first !== undefined) await load(server.origin, `${first}:base`, "compile");
       const order: Side[] = run % 2 === 0 ? ["base", "head"] : ["head", "base"];

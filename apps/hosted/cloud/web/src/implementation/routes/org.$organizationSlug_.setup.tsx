@@ -6,10 +6,6 @@ import { SetupPage } from "@executor-js/hosted-web/setup-page";
 import { CloudSetupSequence } from "../components/team-setup.tsx";
 import { setupSequenceAtom } from "../../contracts/onboarding.ts";
 
-/**
- * A new team's setup steps belong to it, outside the dashboard shell. Whether they can be skipped
- * is read with the team's access, so the first step renders with the right buttons.
- */
 export const Route = createFileRoute("/org/$organizationSlug_/setup")({
   codeSplitGroupings: [],
   staticData: { organizationReads: (organization) => [setupSequenceAtom(organization)] },

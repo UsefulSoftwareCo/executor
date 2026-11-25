@@ -31,11 +31,6 @@ const App = Schema.Struct({
   }),
 });
 
-/**
- * The storyboard's shared start: an app deployed against a loopback OAuth issuer, the signed-in
- * owner on a dark desktop viewport, and the helpers each part uses. Each part writes its own frame
- * manifest.
- */
 const storyboard = (part: string) =>
   Effect.gen(function* () {
     const api = yield* Api,
@@ -120,8 +115,6 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
         const bounds = yield* browser.use("Measure the stable connection action", (page) => {
           const dialog = page.getByRole("dialog");
           const action = dialog.getByRole(role, name === undefined ? {} : { name, exact: true });
-          // A max-width transition can have several identical bounds before it
-          // reaches the viewport width. Wait for the transition, not that plateau.
           return dialog
             .evaluate((element) =>
               Promise.allSettled(element.getAnimations().map((animation) => animation.finished)),
@@ -150,12 +143,7 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
       });
     const startPattern = /\/connections\/[^/]+\/oauth\/start$/;
     const completePattern = /\/connections\/[^/]+\/oauth\/complete$/;
-    /**
-     * Press Connect in the open connection dialog and wait for the provider's consent page. Once
-     * sign-in starts, the action stays busy until the provider page replaces it.
-     */
     const startSignIn = Effect.gen(function* () {
-      // A page with a pending navigation cannot be inspected, so it reports the action itself.
       const actionLabels: string[] = [];
       yield* browser.use("Record the Connect action until the page leaves", (page) => {
         page.on("console", (message) => {
@@ -302,7 +290,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth storyboard", (it) => {
         yield* issuer.configure({ discoveryFails: false });
         const retry = yield* holdQuery(setupPaths, "continue");
         yield* click("Try again");
-        // A click here once started no read. If it happens again, record what the button showed.
         yield* retry.requested.pipe(
           Effect.tapError(() =>
             browser
@@ -390,17 +377,14 @@ layer(HostedLive, { excludeTestServices: true })("OAuth storyboard", (it) => {
           page.getByRole("dialog").getByRole("alert").waitFor(),
         );
         yield* capture("Sign-in-start-failed");
-        // A failed start is tried again from the same dialog, and this time reaches the provider.
         yield* startSignIn;
         yield* issuer.configure({ registration: false });
-        // The organization's client registered for this server would serve another of its apps.
         yield* removeRegisteredClients(actors.owner, actors.organization.id, issuer.origin);
         const manual = yield* deploy("Manual service");
         yield* browser.use("Open a provider without automatic registration", (page) =>
           page.goto(`/org/${actors.organization.slug}/apps/${manual.id}?view=accounts`),
         );
         yield* click("Connect new account");
-        // No client is registered, so the administrator enters one and chooses who can use it.
         yield* browser.use("Wait for the client details", (page) =>
           page
             .getByRole("dialog")
@@ -498,7 +482,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth storyboard", (it) => {
           linkedChoice(page, "Sample service", "Work reports").waitFor({ state: "visible" }),
         );
         yield* capture("Account-connected");
-        // With an account linked, connecting another from the list would replace it.
         yield* click("Connect new account");
         yield* ready("Connect Sample service");
         expect(
@@ -520,7 +503,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth storyboard", (it) => {
         yield* chooseClient("Enter client details");
         yield* capture("Manual-client-dialog");
         yield* click("Close");
-        // The account connected after the callback's Try again is linked to the app it came from.
         const accountId = (yield* body(
           Schema.Struct({
             accounts: Schema.Array(Schema.Struct({ id: Schema.String, label: Schema.String })),
@@ -577,8 +559,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth storyboard", (it) => {
           yield* api.request(actors.owner, "GET", `${prefix}/inventory`),
         )).accounts.find((account) => account.label === "Work reports")?.id;
         if (accountId === undefined) return yield* Effect.die("The saved account is missing");
-        // Connecting from the app linked the account to it. Credentials are replaced only through
-        // an app the account is linked to.
         expect(yield* linkedAccountIds(actors.owner, `${prefix}/apps/${app.id}`)).toContain(
           accountId,
         );
@@ -601,7 +581,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth storyboard", (it) => {
             (response) => body(Resource, response),
           );
         const reconnect = yield* reconnectAccount();
-        // There is no reconnect outside an app.
         expect(
           (yield* api.request(actors.owner, "POST", `${prefix}/accounts/${accountId}/connections`))
             .status,
@@ -646,7 +625,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth storyboard", (it) => {
         ).toBe(0);
         yield* browser.use("Reopen the same connection link", (page) => page.goto(connectionUrl));
         yield* ready("Reconnect Sample service");
-        // A reconnect keeps its account's client without asking; replacing it is under Advanced.
         expect(
           yield* browser.use("A reconnect offers no client choice up front", (page) =>
             page.getByRole("combobox", { name: "OAuth client" }).count(),
@@ -786,10 +764,6 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools:router(
             )).account.label;
           });
         const appPath = `/org/${actors.organization.slug}/apps/${app.id}`;
-        /**
-         * Connect from the app's Accounts tab and return with the naming dialog open. With an
-         * account linked, connecting another replaces it.
-         */
         const connect = () =>
           Effect.gen(function* () {
             yield* browser.use("Connect a new account from the list", (page) =>
@@ -815,7 +789,6 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools:router(
               Schema.Struct({ id: Schema.String }),
             )(completed)).id;
             accounts.push(account);
-            // The prompt belongs to the dashboard layout, not to a URL the app has to carry.
             const search = yield* browser.use("Return to the app to name the account", (page) =>
               page
                 .waitForURL(
@@ -877,7 +850,6 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools:router(
         expect(yield* label(first)).toBe("Default");
         yield* browser.checkpoint("Named OAuth account in the app");
 
-        // Credentials are replaced from the app that selects the account, through its menu.
         yield* browser.use("Open the selected account's menu", (page) =>
           page.getByRole("button", { name: "Manage Work reports", exact: true }).click(),
         );
@@ -919,7 +891,6 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools:router(
         ).toBe(0);
         expect(yield* label(second)).toBe("Work reports");
         yield* browser.checkpoint("Reconnected account keeps its name");
-        // The Accounts page manages saved accounts but never takes credentials.
         yield* browser.use("Open the account's menu on Accounts", (page) =>
           page
             .goto(`/org/${actors.organization.slug}/accounts`)

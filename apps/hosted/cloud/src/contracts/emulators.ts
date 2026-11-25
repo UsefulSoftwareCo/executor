@@ -47,13 +47,11 @@ const GoogleProvider = Schema.Struct({ ...Provider.fields, discovery: GoogleDisc
   ),
 );
 
-/** External test services provisioned independently of Executor; never browser configuration. */
 export const EmulatedServices = Schema.Struct({
   google: GoogleProvider,
   github: Provider,
   mail: Schema.Struct({ baseUrl: BaseUrl, token: Schema.NonEmptyString }),
   company: Schema.Struct({ baseUrl: BaseUrl, token: Schema.NonEmptyString }),
   billing: Schema.Struct({ baseUrl: BaseUrl, token: Schema.NonEmptyString }),
-  /** Stands in for v1's WorkOS environment in the WorkOS API key check. */
   workos: Schema.Struct({ baseUrl: BaseUrl, token: Schema.NonEmptyString }),
 });

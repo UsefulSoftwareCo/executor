@@ -1,6 +1,5 @@
 import { CurrentPolicy } from "../contracts/authorization.ts";
 import { permittedAppIds } from "@executor-js/authorization";
-/** Sharing writes are atomic; metadata visibility and credential use remain separate. */
 import { Effect } from "effect";
 import { SqlClient } from "effect/sql";
 import { teamAppPending } from "./provisioning.ts";
@@ -25,7 +24,6 @@ import {
   requireAppAccess,
 } from "./resource-policy.ts";
 
-/** Shared resource listing for the normal app/account lists and an explicit management view. */
 export const resourceDirectory = (view: "available" | "managed" = "available") =>
   Effect.gen(function* () {
     const actor = yield* currentResourceAuthority;
@@ -47,7 +45,6 @@ export const resourceDirectory = (view: "available" | "managed" = "available") =
     });
     const usableApps = listedApps.filter(({ access }) => access.canUse).map(({ app }) => app.id);
     const links = yield* callerLinkedAccounts(usableApps);
-    // App links follow app access, so every usable app's are listed.
     const appLinks = yield* appLinkedAccounts(yield* policyDatabase, usableApps);
     const appEntries = listedApps.map(({ app, access }) => ({
       app,
@@ -73,7 +70,6 @@ export const resourceDirectory = (view: "available" | "managed" = "available") =
       (account) => policy.tools.kind === "all" || linked.has(account.id),
     );
     const providers = new Map<ProviderId, Provider>();
-    // Checks are reported for the apps each account is linked to, in either scope.
     const checked = [
       ...new Map(
         [...links, ...appLinks].map((link) => [
@@ -88,7 +84,6 @@ export const resourceDirectory = (view: "available" | "managed" = "available") =
         : yield* executor.accounts.listHealth({ owner, links: checked })
       ).map((entry) => [entry.account, entry]),
     );
-    // Owners both use and manage their accounts, so both views list the same ones.
     const owned = yield* ownedAccountIds(
       accounts.map((account) => account.id),
       actor,
@@ -116,7 +111,6 @@ export const resourceDirectory = (view: "available" | "managed" = "available") =
         : false;
     return { apps: appEntries, accounts: accountEntries.flat(), pendingApp };
   });
-/** The compare-and-swap revision protects settings and all group grants as one update. */
 export const shareApp = (
   app: AppId,
   audience: typeof AppAudience.Type,
@@ -146,7 +140,6 @@ export const shareApp = (
   }).pipe(
     Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new StorageError() }),
   );
-/** Both hosted products register the same authenticated policy handlers. */
 export const hostedResourceAccessHandlers = HttpApiBuilder.group(
   HostedApi,
   "resourceAccess",

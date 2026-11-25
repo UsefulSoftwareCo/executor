@@ -1,4 +1,3 @@
-/** Narrow adapter for worker-bundler's pinned esbuild plugin hook. No filesystem or Node runtime is needed. */
 import { InMemoryFileSystem } from "@cloudflare/worker-bundler";
 import { boundBuildMessage, describeBuildCause, RuntimeBuildFailed } from "../contracts/runtime.ts";
 import type { CodeFiles } from "../contracts/source.ts";
@@ -16,7 +15,6 @@ const namespace = "executor-browser";
 const assetUrl = "executor-asset-url";
 const scriptImports = new Set(["import-statement", "dynamic-import", "require-call"]);
 const browserAsset = /\.(?:svg|woff2)$/;
-/** Metafile inputs carry their plugin namespace, as in `virtual:node_modules/react/index.js`. */
 const packageInput = (input: string) =>
   input.slice(input.indexOf(":") + 1).startsWith("node_modules/");
 const sourceMapComment = /\n\/\/# sourceMappingURL=[^\n]*\n?$/;
@@ -24,7 +22,6 @@ const decodeAssetWrapper = Schema.decodeUnknownOption(
   Schema.Struct({ namespace: Schema.String, commonjs: Schema.Boolean }),
 );
 
-/** Collect every output because createApp 0.2.4 retains only outputFiles[0]; gate the complete browser import graph. */
 export const browserBuild = (
   files: CodeFiles,
   filesystem: InMemoryFileSystem,
@@ -60,14 +57,8 @@ export const browserBuild = (
           splitting: true,
           metafile: true,
           sourcemap: "linked",
-          // Mappings identify original file/line locations without publishing
-          // authored source text or tree-shaken values to every app viewer.
           sourcesContent: false,
         });
-        // A file-loader URL is relative to the asset root, which is not the page's URL. Script
-        // imports receive it resolved against their own module instead; CSS urls already are.
-        // Package specifiers are classified by the file they resolve to. `require` receives the
-        // URL string itself, as it did from the file loader.
         build.onResolve({ filter: /.*/, namespace: assetUrl }, (args) => {
           const wrapped = decodeAssetWrapper(args.pluginData);
           if (Option.isNone(wrapped)) return { errors: [{ text: "Browser asset missing." }] };
@@ -184,8 +175,6 @@ export const browserBuild = (
               return fail();
             outputs.push({ source: entry, path: output, ...(css === undefined ? {} : { css }) });
           }
-          // A chunk built only from installed packages keeps no source map: mapping vendor
-          // code locates nothing in the app, and the maps were most of a large build's assets.
           const packageChunks = new Set(
             Object.entries(result.metafile.outputs)
               .filter(

@@ -1,8 +1,3 @@
-/**
- * Local app accounts: the owner links saved accounts to an app's own requirements, and every call,
- * the app schedule, the app-account webhook and MCP use the app's linked account without a link of
- * the caller's.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Fiber, Redacted, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -51,13 +46,11 @@ import { scenarios } from "../test-plan.ts";
 
 type Files = ReadonlyArray<{ readonly path: string; readonly content: string }>;
 
-/** A keyed provider whose accounts carry a synthetic token. */
 const keyedProvider = (name: string) =>
   `defineProvider({ name: ${JSON.stringify(name)}, auth: { key: secrets({ label: "Key", fields: object({ token: string() }) }) } })`;
 const serviceProvider = keyedProvider("App service fixture");
 const mailProvider = keyedProvider("Linked mail fixture");
 
-/** The links in the dashboard's overview; the provider is left out. */
 const Overview = Schema.Struct({
   links: Schema.Array(Schema.Struct({ app: Schema.String, account: Schema.String })),
   appLinks: Schema.Array(
@@ -87,7 +80,6 @@ const AccountLinkedToApp = Schema.Struct({
   account: Schema.String,
   apps: Schema.Array(Schema.String),
 });
-/** One requirement as `GET /accounts/{app|user}/:requirement` returns it. */
 const Requirement = Schema.Struct({
   requirement: Schema.String,
   scope: Schema.Literals(["app", "user"]),
@@ -110,10 +102,6 @@ const Settings = Schema.Struct({
 });
 const Runs = Schema.Array(Schema.Struct({ name: Schema.String, status: Schema.String }));
 
-/**
- * Deploy an app as the local agent. The finalizer removes the app, then the accounts the case
- * saved through the dashboard route, which refuses an account that is still linked to an app.
- */
 const deployLocal = (name: string, files: Files) =>
   Effect.gen(function* () {
     const { api, agent, target } = yield* localAgent;
@@ -132,7 +120,6 @@ const deployLocal = (name: string, files: Files) =>
           yield* api.request(agent, "DELETE", `/dashboard/api/accounts/${account}`);
       }).pipe(Effect.orDie),
     );
-    /** Save keyed service accounts linked to no app, through a throwaway app. */
     const saveServiceAccounts = (...tokens: string[]) =>
       Effect.gen(function* () {
         const saved = yield* connectAccountsThroughOtherApp(agent, {
@@ -143,7 +130,6 @@ const deployLocal = (name: string, files: Files) =>
         accounts.push(...saved.map((account) => account.id));
         return saved.map((account) => account.id);
       });
-    /** Connect an account from this app for `requirement`. */
     const connect = (requirement: string, token: string) =>
       Effect.gen(function* () {
         const { id } = yield* connectLocalAccount(agent, {
@@ -156,21 +142,18 @@ const deployLocal = (name: string, files: Files) =>
         accounts.push(id);
         return id;
       });
-    /** Delete `account` with the case's other accounts. */
     const track = (account: string) => {
       accounts.push(account);
     };
     return { api, agent, target, app, saveServiceAccounts, connect, track };
   });
 
-/** Call a local tool through the SDK route, returning the raw response. */
 const callTool = (agent: Session, app: string, tool: string, kind: "query" | "mutation") =>
   Effect.gen(function* () {
     const api = yield* Api;
     return yield* api.request(agent, "POST", "/v1/tools/call", { app, tool, kind, input: {} });
   });
 
-/** An app with an app requirement and a user requirement, whose `who` names both accounts. */
 const appLinkFiles: Files = [
   {
     path: "index.ts",
@@ -187,7 +170,6 @@ export default defineApp(requirements, async () => ({
   appsManifest,
 ];
 
-/** An app whose app schedule records the linked app account and whether its context had a user. */
 const scheduleFiles: Files = [
   {
     path: "index.ts",
@@ -215,10 +197,6 @@ export default defineApp(requirements, async () => ({
   appsManifest,
 ];
 
-/**
- * An app whose webhook's source is its app-linked `svc` account. A user requirement shares the
- * provider, so the same accounts can also be linked for the local user.
- */
 const webhookFiles: Files = [
   {
     path: "index.ts",
@@ -283,14 +261,12 @@ layer(TestLive, { excludeTestServices: true })("Local app account app links", (i
             return yield* body(Requirement, response);
           });
 
-        // Connecting the user requirement links it for the local user, not as the app's account.
         const mine = yield* connect("mine", "synthetic-mine");
         expect(yield* localAccountLinks(agent, app.id)).toEqual([["mine", mine]]);
         const [first, second] = yield* saveServiceAccounts("synthetic-first", "synthetic-second");
         if (first === undefined || second === undefined)
           return yield* Effect.die("Account fixtures missing");
         expect(yield* localAccountLinks(agent, app.id, "app")).toEqual([]);
-        // Before one is linked, the call names the app requirement and who must link it.
         expect(yield* required).toMatchObject({
           message:
             "This app needs its own “svc” account, which someone who can edit the app links for everyone who uses it. None is linked yet.",
@@ -304,12 +280,9 @@ layer(TestLive, { excludeTestServices: true })("Local app account app links", (i
         expect(unlinked).toEqual(expect.arrayContaining([first, second]));
         expect(unlinked).not.toContain(mine);
 
-        // Linking fills the app requirement for every call.
         yield* linkLocal(agent, app.id, "svc", first, "app");
         expect(yield* localAccountLinks(agent, app.id, "app")).toEqual([["svc", first]]);
         expect(yield* who).toEqual({ app: first, user: mine });
-        // The dashboard's overview, which the Apps cards and the Accounts list read, lists the app
-        // link apart from the user's own links.
         const overview = yield* api.request(agent, "GET", "/dashboard/api/overview");
         expect(overview.status, JSON.stringify(overview.body)).toBe(200);
         const listed = yield* body(Overview, overview);
@@ -319,9 +292,6 @@ layer(TestLive, { excludeTestServices: true })("Local app account app links", (i
         expect(listed.links.filter((link) => link.app === app.id)).toEqual([
           { app: app.id, account: mine },
         ]);
-        // The requirement lists its linked account first, then the owner's other accounts of its
-        // provider, which could be linked; the user requirement's account of another provider is
-        // never offered.
         const linkedFirst = yield* requirement("app", "svc");
         expect(linkedFirst).toMatchObject({ requirement: "svc", scope: "app", cardinality: "one" });
         expect(linkedFirst.accounts[0]).toMatchObject({ account: { id: first }, linked: true });
@@ -334,7 +304,6 @@ layer(TestLive, { excludeTestServices: true })("Local app account app links", (i
         expect(
           linkedFirst.accounts.every((entry) => entry.account.provider === linkedFirst.provider),
         ).toBe(true);
-        // Linking another account to the plain requirement replaces it; the first stays saved.
         yield* linkLocal(agent, app.id, "svc", second, "app");
         expect(yield* localAccountLinks(agent, app.id, "app")).toEqual([["svc", second]]);
         expect(yield* who).toEqual({ app: second, user: mine });
@@ -348,7 +317,6 @@ layer(TestLive, { excludeTestServices: true })("Local app account app links", (i
             linked: false,
           }),
         );
-        // Unlinking leaves the requirement empty and keeps the account; linking again restores it.
         yield* unlinkLocal(agent, app.id, "svc", second, "app");
         expect(yield* localAccountLinks(agent, app.id, "app")).toEqual([]);
         yield* required;
@@ -357,7 +325,6 @@ layer(TestLive, { excludeTestServices: true })("Local app account app links", (i
         expect(yield* who).toEqual({ app: second, user: mine });
         expect(yield* localAccountLinks(agent, app.id)).toEqual([["mine", mine]]);
 
-        // A link must name a requirement of its own scope and an account of its provider.
         for (const [scope, name, account, reason] of [
           ["app", "mine", first, "requirement"],
           ["app", "missing", first, "requirement"],
@@ -383,7 +350,6 @@ layer(TestLive, { excludeTestServices: true })("Local app account app links", (i
         expect(yield* localAccountLinks(agent, app.id, "app")).toEqual([["svc", second]]);
         expect(yield* localAccountLinks(agent, app.id)).toEqual([["mine", mine]]);
 
-        // An account linked to an app for everyone cannot be deleted until it is unlinked.
         const blocked = yield* api.request(agent, "DELETE", `/dashboard/api/accounts/${second}`);
         expect(blocked.status, JSON.stringify(blocked.body)).toBe(409);
         expect(yield* body(AccountLinkedToApp, blocked)).toMatchObject({
@@ -395,14 +361,11 @@ layer(TestLive, { excludeTestServices: true })("Local app account app links", (i
         const removed = yield* api.request(agent, "DELETE", `/dashboard/api/accounts/${second}`);
         expect(removed.status, JSON.stringify(removed.body)).toBe(200);
 
-        // Connecting an account for the app requirement links it for everyone, not for the user.
         const connected = yield* connect("svc", "synthetic-connected");
         expect(yield* localAccountLinks(agent, app.id, "app")).toEqual([["svc", connected]]);
         expect(yield* localAccountLinks(agent, app.id)).toEqual([["mine", mine]]);
         expect(yield* who).toEqual({ app: connected, user: mine });
 
-        // The dashboard's connection for the app requirement saves the account and links it in
-        // place of the earlier one, which stays saved.
         const created = yield* api.request(
           agent,
           "POST",
@@ -417,7 +380,6 @@ layer(TestLive, { excludeTestServices: true })("Local app account app links", (i
         expect(yield* who).toEqual({ app: dashboard, user: mine });
         yield* saved(connected);
 
-        // Deleting an account linked only for the user removes its link.
         const deleted = yield* api.request(agent, "DELETE", `/dashboard/api/accounts/${mine}`);
         expect(deleted.status, JSON.stringify(deleted.body)).toBe(200);
         expect(yield* localLinks(agent, app.id)).toEqual([]);
@@ -490,7 +452,6 @@ export default defineApp({ app: { accounts: { x: service } }, user: { accounts: 
           return yield* Effect.die("Account fixtures missing");
         yield* linkLocal(agent, app.id, "svc", first, "app");
 
-        // The app schedule has no actor and starts paused until the owner enables it.
         const enabled = yield* api.request(agent, "PATCH", `${path}/tick`, {
           enabled: true,
           scope: "app",
@@ -502,13 +463,11 @@ export default defineApp({ app: { accounts: { x: service } }, user: { accounts: 
         expect((yield* settings)[0]?.accountRequired).toBeUndefined();
         const runNow = api.request(agent, "POST", `${path}/tick/copies/${schedule.id}/run`);
 
-        // A run uses the app's linked account and runs without a caller.
         const started = yield* runNow;
         expect(started.status, JSON.stringify(started.body)).toBe(200);
         yield* succeeded(1);
         expect(yield* callLocalQuery(agent, app.id, "ticks")).toEqual([[first, false]]);
 
-        // Without an app link the schedule waits for one and a run is refused.
         yield* unlinkLocal(agent, app.id, "svc", first, "app");
         expect(yield* settings).toMatchObject([
           { id: schedule.id, actor: null, enabled: true, accountRequired: "svc" },
@@ -517,7 +476,6 @@ export default defineApp({ app: { accounts: { x: service } }, user: { accounts: 
         expect(refused.status, JSON.stringify(refused.body)).toBe(409);
         expect(yield* body(AccountRequired, refused)).toMatchObject({ slot: "svc", scope: "app" });
 
-        // Linking another account resumes it with that account.
         yield* linkLocal(agent, app.id, "svc", second, "app");
         expect((yield* settings)[0]?.accountRequired).toBeUndefined();
         const again = yield* runNow;
@@ -557,7 +515,6 @@ export default defineApp({ app: { accounts: { x: service } }, user: { accounts: 
         );
         const evidence = yield* Evidence,
           telemetry = yield* Telemetry;
-        /** The tags of the last request's `sdk.webhooks.deliver` span, once it is delivered. */
         const deliveredSpan = Effect.gen(function* () {
           const trace = (yield* evidence.requests).at(-1)?.traceId;
           if (trace === undefined)
@@ -573,7 +530,6 @@ export default defineApp({ app: { accounts: { x: service } }, user: { accounts: 
               (row) => row.account === account && row.actor === actor && row.status === "ready",
             );
 
-        // Linking for everyone makes the account the app's webhook source, without an actor.
         yield* linkLocal(agent, app.id, "svc", shared, "app");
         const sources = yield* settleWebhookSources(
           agent,
@@ -587,7 +543,6 @@ export default defineApp({ app: { accounts: { x: service } }, user: { accounts: 
         expect(hook).toMatchObject({ name: "incoming", actor: null, sourceAccount: shared });
         if (hook === undefined) return yield* Effect.die("Missing subscription");
 
-        // A delivery runs without a caller, with the app's linked account.
         const delivered = yield* api.request(
           yield* api.session(),
           "POST",
@@ -596,10 +551,7 @@ export default defineApp({ app: { accounts: { x: service } }, user: { accounts: 
         );
         expect(delivered.status, JSON.stringify(delivered.body)).toBe(200);
         expect(delivered.body).toEqual({ hasUser: false, account: shared, source: shared });
-        // Its span records the app's answer by its status.
         expect(yield* deliveredSpan).toMatchObject({ "executor.webhook.response_status": "200" });
-        // A body over the transport limit is answered 413, as the callback declares, and the
-        // request's own span says why.
         const oversized = yield* api.request(
           yield* api.session(),
           "POST",
@@ -614,7 +566,6 @@ export default defineApp({ app: { accounts: { x: service } }, user: { accounts: 
           spans.some(({ tags }) => tags["executor.webhook.refusal"] === "body-too-large"),
         );
 
-        // An account linked only for the local user is its own source, running as the user.
         yield* linkLocal(agent, app.id, "mine", personal);
         const both = yield* settleWebhookSources(
           agent,
@@ -623,8 +574,6 @@ export default defineApp({ app: { accounts: { x: service } }, user: { accounts: 
             rows.length === 2 && ready(shared, null)(rows) && ready(personal, "local")(rows),
         );
         expect(both).toHaveLength(2);
-        // The same account may be linked in both scopes. Linking it for the user replaces the plain
-        // user requirement's earlier link, and it stays one source, serving as its app link.
         yield* linkLocal(agent, app.id, "mine", shared);
         expect(yield* localAccountLinks(agent, app.id)).toEqual([["mine", shared]]);
         expect(yield* localAccountLinks(agent, app.id, "app")).toEqual([["svc", shared]]);
@@ -635,8 +584,6 @@ export default defineApp({ app: { accounts: { x: service } }, user: { accounts: 
         );
         expect(one.map((source) => source.actor)).toEqual([null]);
 
-        // Unlinking the app link hands the source back to the local user, who still links it. The
-        // app's plain `svc` requirement now has no app link, so the user's source waits for one.
         yield* unlinkLocal(agent, app.id, "svc", shared, "app");
         const handed = yield* settleWebhookSources(
           agent,
@@ -653,7 +600,6 @@ export default defineApp({ app: { accounts: { x: service } }, user: { accounts: 
         );
         expect(handed.map((source) => source.account)).toEqual([shared]);
 
-        // Unlinking the last link unregisters the source and stops its subscription.
         yield* unlinkLocal(agent, app.id, "mine", shared);
         yield* settleWebhookSources(agent, appPath, (rows) => rows.length === 0);
         yield* settleWebhookSubscriptions(agent, appPath, (rows) =>
@@ -666,7 +612,6 @@ export default defineApp({ app: { accounts: { x: service } }, user: { accounts: 
           { id: "event-two" },
         );
         expect(late.status, JSON.stringify(late.body)).toBe(410);
-        // A refused delivery's span says why, by a fixed label.
         const refused = yield* deliveredSpan;
         expect(refused).toMatchObject({ "executor.webhook.refusal": "inactive" });
         expect(refused).not.toHaveProperty("executor.webhook.response_status");
@@ -687,7 +632,6 @@ export default defineApp({ app: { accounts: { x: service } }, user: { accounts: 
         const [service] = yield* saveServiceAccounts("synthetic-agent-service");
         if (service === undefined) return yield* Effect.die("Account fixture missing");
         const client = yield* mcp.connect(target.apiKey, "local-app-account-tools");
-        /** Run code with the Executor app's tools and return how its execution ended. */
         const run = (step: string, code: string) =>
           client
             .use(step, (client, signal) =>
@@ -738,8 +682,6 @@ export default defineApp({ app: { accounts: { x: service } }, user: { accounts: 
             Effect.map((links) => links.map((link) => [link.requirement, link.account.id])),
           );
 
-        // The Executor app names the link tools as hosted does, in both scopes. Connecting goes
-        // through them, so the old request tool is gone.
         const tools = ["app", "user"].flatMap((scope) =>
           ["List", "Get", "Link", "Unlink", "Connect"].map(
             (action) => `tools.executor.appAccounts.${scope}${action}`,
@@ -755,7 +697,6 @@ export default defineApp({ app: { accounts: { x: service } }, user: { accounts: 
         )(described);
         expect(missing.map((item) => item.path)).toEqual(["tools.executor.accountConnect.issue"]);
 
-        // The agent connects a user account through a browser link, which links it for the user.
         const ConnectLink = Schema.Struct({ connection: Schema.String, url: Schema.String });
         const issued = yield* Schema.decodeUnknownEffect(ConnectLink)(
           yield* execute(
@@ -782,8 +723,6 @@ export default defineApp({ app: { accounts: { x: service } }, user: { accounts: 
           ),
         ).toEqual([["mine", mine]]);
 
-        // It reads an app requirement's choices, links a saved account for every call, and calls
-        // with both links.
         const choices = yield* Schema.decodeUnknownEffect(Requirement)(
           yield* execute(
             "Read the app requirement",
@@ -809,8 +748,6 @@ export default defineApp({ app: { accounts: { x: service } }, user: { accounts: 
         ).toEqual([["svc", service]]);
         expect(yield* callLocalQuery(agent, app.id, "who")).toEqual({ app: service, user: mine });
 
-        // A connection for the app's own requirement needs the app scope, and a user connection
-        // naming it is refused before any link is issued.
         const refused = yield* run(
           "Connect the app requirement as a user one",
           `return await tools.executor.appAccounts.userConnect({ ...${at("svc")}, body: {} });`,
@@ -830,7 +767,6 @@ export default defineApp({ app: { accounts: { x: service } }, user: { accounts: 
           `return await tools.executor.accountConnections.cancel({ path: { connection: ${JSON.stringify(appLink.connection)} } });`,
         );
 
-        // Unlinking in each scope leaves the accounts saved and the app without links.
         yield* execute(
           "Unlink both accounts",
           `await tools.executor.appAccounts.appUnlink(${at("svc", service)});
@@ -864,7 +800,6 @@ return await tools.executor.appAccounts.userUnlink(${at("mine", mine)});`,
           return yield* Effect.die("The local Executor app has no linked account");
         expect(links).toEqual([["executor", account]]);
 
-        /** Each change to the Executor app's links is refused with the same typed error. */
         const blocked = (step: string, response: { status: number; body: unknown }) => {
           expect(response.status, `${step}: ${JSON.stringify(response.body)}`).toBe(409);
           expect(response.body, step).toMatchObject({
@@ -899,7 +834,6 @@ return await tools.executor.appAccounts.userUnlink(${at("mine", mine)});`,
         );
         expect(yield* localAccountLinks(agent, managed.id)).toEqual([["executor", account]]);
 
-        // An agent's own Executor tools are refused the same way, and keep working afterwards.
         const client = yield* mcp.connect(target.apiKey, "local-managed-app-links");
         const run = (step: string, code: string) =>
           client
@@ -1055,7 +989,6 @@ return { first, second };`,
             Effect.flatMap((called) => Schema.decodeUnknownEffect(Schema.Boolean)(called.value)),
           ),
         );
-        // The link is replaced while the execution is held; the grant still names only the first.
         yield* linkLocal(agent, app.id, "service", replacement);
         expect(yield* localLinks(agent, app.id)).toEqual([replacement]);
         yield* call("release", "mutation");
@@ -1074,8 +1007,6 @@ return { first, second };`,
           }),
         )(result.structuredContent);
         expect(execution.value.first).toBe("synthetic-granted");
-        // The grant does not target the replacement, so the call is refused for running with an
-        // account the connection may not use, and the replacement is never used.
         expect(
           yield* Schema.decodeUnknownEffect(Schema.fromJsonString(TargetRefusal))(
             execution.value.second.refused,
@@ -1102,7 +1033,6 @@ return { first, second };`,
             return operator.send(method, path, data, { ...rest, ...headers });
           },
         };
-        // One app uses only its app-linked account; the other also uses the caller's linked account.
         const solo = yield* deployLocal("Solo app account", [
           {
             path: "index.ts",
@@ -1137,7 +1067,6 @@ export default defineApp({ app: { accounts: { svc: service } }, user: { accounts
         const mine = yield* mixed.connect("mine", "synthetic-mine");
         const clients: string[] = [];
         yield* revokeClientGrants(operator, () => clients);
-        // A grant names the user accounts it runs with; app access covers the app's linked account.
         const created = yield* api.request(operator, "POST", "/dashboard/api/mcp/connections", {
           id: randomUUID(),
           name: "App accounts",
@@ -1182,7 +1111,6 @@ export default defineApp({ app: { accounts: { svc: service } }, user: { accounts
           both: { app: "synthetic-shared-service", user: "synthetic-mine" },
         });
 
-        // Discovery names the caller's linked account and never the app's.
         const Namespaces = Schema.Struct({
           namespaces: Schema.Array(
             Schema.Struct({

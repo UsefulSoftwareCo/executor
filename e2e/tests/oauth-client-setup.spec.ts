@@ -74,10 +74,7 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
               "clients",
             ]);
             const setup = yield* body(Setup, response);
-            // The provider declares no `resource`, so sign-in sends the one the server's
-            // protected-resource metadata names.
             expect(setup.resource).toEqual({ value: `${issuer.origin}/mcp`, source: "metadata" });
-            // No one registered a client for its server, so none is offered.
             expect(setup.clients).toEqual([]);
             return setup;
           });
@@ -105,21 +102,16 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
         expect((yield* start(app)).status).toBe(200);
         expect((yield* issuer.metrics).registrations).toBe(1);
         yield* issuer.configure({ registration: false });
-        // The organization's automatic client still signs in without registering again.
         expect((yield* inspect(provider)).mode).toBe("automatic");
         expect((yield* issuer.metrics).registrations).toBe(1);
         yield* issuer.configure({ scopes: ["write"] });
         expect((yield* inspect(provider)).mode).toBe("client-required");
         yield* issuer.configure({ scopes: ["read"] });
         const expired = yield* deploy("Expired setup fixture");
-        // Another app that signs in at the same server with the same callback and scopes finds
-        // the organization's registered client: the provider is not part of what it was
-        // registered for.
         expect((yield* inspect(expired.requirements.accounts.service.provider)).mode).toBe(
           "automatic",
         );
         expect((yield* issuer.metrics).registrations).toBe(1);
-        // A client registered for other scopes whose secret has expired is never automatic.
         yield* issuer.configure({ scopes: ["write"], registration: true, expiresAt: 1 });
         expect((yield* start(expired)).status).toBe(200);
         expect((yield* issuer.metrics).registrations).toBe(2);

@@ -1,4 +1,3 @@
-/** A stage-scoped workflow for new and regressed errors in the managed Sentry projects. */
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import * as Api from "@distilled.cloud/sentry/sentry";
@@ -10,7 +9,6 @@ import { Effect, Redacted, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
 import { SentryProvisioningFailed } from "./sentry-provider.ts";
 
-/** Project IDs and public DSNs come from managed resources. Test-stage alerts remain disabled. */
 export interface SentryErrorAlertProps {
   readonly organization: string;
   readonly team: string;
@@ -52,20 +50,17 @@ type AlertAttributes = typeof Response.Type & {
   readonly organization: string;
   readonly configuration: typeof Configuration.Type;
 };
-/** Own the workflow independently of projects and their automatic error monitors. */
 export type SentryErrorAlert = Resource<
   "Executor.SentryErrorAlert",
   SentryErrorAlertProps,
   AlertAttributes
 >;
-/** Declare one environment's new-error and regression notifications. */
 export const SentryErrorAlert = Resource<SentryErrorAlert>("Executor.SentryErrorAlert");
 const protect = (operation: string) =>
   Effect.mapError(
     (detail: unknown) => new SentryProvisioningFailed({ operation, detail: Redacted.make(detail) }),
   );
 
-/** Reconcile all owned alert fields; server-generated IDs are excluded from the comparison. */
 export const sentryErrorAlertProvider = () =>
   Provider.effect(
     SentryErrorAlert,
@@ -175,8 +170,6 @@ export const sentryErrorAlertProvider = () =>
               Effect.catchTag("NotFound", () => Effect.succeed(false)),
             );
           if (yield* exists()) continue;
-          // Sentry creates environments on first ingestion, not through a create-environment API.
-          // A deterministic info event makes retries safe and is explicitly marked as synthetic.
           const dsn = new URL(project.dsn);
           const eventId = createHash("sha256")
             .update(`executor-environment:${project.id}:${props.environment}`)

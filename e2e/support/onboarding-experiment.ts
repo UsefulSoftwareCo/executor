@@ -1,25 +1,12 @@
-/**
- * Cloud's onboarding experiments through the managed loopback collector: answer one person's flag
- * evaluations, and read the events and evaluations the collector received for them.
- */
 import { Effect, FileSystem, Schedule } from "effect";
 import { analyticsEvents, type AnalyticsEvent } from "./collector-events.ts";
 import { Target } from "./platform.ts";
 
-/**
- * The ended onboarding order experiment's flag. The product no longer asks for it; PostHog can
- * still answer it, so a scenario can prove the product ignores the answer.
- */
 export const onboardingOrderFlag = "onboarding-order-v1";
 export type OnboardingOrder = "accounts_first" | "assistant_first";
 export const onboardingSkipFlag = "onboarding-skip-v1";
 export type OnboardingSkip = "skippable" | "required";
 
-/**
- * What PostHog answers this person's flag evaluations with, whatever flags they ask for: a variant
- * of each onboarding flag named, or an unavailable service. A flag left out is not in the answer,
- * so its experiment serves its control. The collector answers everyone else with no flags.
- */
 export const answerOnboardingFlag = (
   userId: string,
   answer: { readonly order?: OnboardingOrder; readonly skip?: OnboardingSkip } | "unavailable",
@@ -52,10 +39,8 @@ export const answerOnboardingFlag = (
 
 export type Captured = AnalyticsEvent;
 
-/** Every event the collector received for this person, in delivery order. */
 export const personEvents = (userId: string) => analyticsEvents({ person: userId });
 
-/** This person's events once `ready` holds; the server flushes per request, the browser at once. */
 export const awaitPersonEvents = (
   userId: string,
   ready: (events: readonly Captured[]) => boolean,
@@ -65,10 +50,8 @@ export const awaitPersonEvents = (
     Effect.timeout("15 seconds"),
   );
 
-/** How many times the Worker asked PostHog for this person's flags, and which flags each asked. */
 export { flagEvaluations, flagRequests } from "./collector-events.ts";
 
-/** The onboarding `product_action` events this person's setup reported, in order. */
 export const onboardingActions = (events: readonly Captured[]) =>
   events.filter(
     (event) => event.event === "product_action" && event.properties.area === "onboarding",

@@ -1,8 +1,3 @@
-/**
- * A host that publishes an OAuth Client ID Metadata Document signs in to a server that accepts
- * one without registering a client, and still registers with a server that does not. Turning
- * the setting on keeps the clients owners already have.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
@@ -22,14 +17,12 @@ import {
 } from "../test-plan.ts";
 import { connectionsPath } from "../support/app-accounts.ts";
 
-/** The address the scenario's operator setting publishes; the issuer maps it to the product. */
 const publicOrigin = "https://executor.example";
 const documentPath = "/oauth/client-metadata.json";
 const clientId = `${publicOrigin}${documentPath}`;
 const SignIn = Schema.Struct({ authorizationUrl: Schema.String });
 const Setup = Schema.Struct({ mode: Schema.String });
 
-/** Deploy an MCP app whose service signs in on the issuer. */
 const deployApp = (issuerOrigin: string, name: string) =>
   Effect.gen(function* () {
     const api = yield* Api,
@@ -57,7 +50,6 @@ const deployApp = (issuerOrigin: string, name: string) =>
   });
 type App = Effect.Success<ReturnType<typeof deployApp>>;
 
-/** How the connection form will get a client for the app's service. */
 const setupMode = (app: App) =>
   Effect.gen(function* () {
     const api = yield* Api,
@@ -71,7 +63,6 @@ const setupMode = (app: App) =>
     return (yield* body(Setup, setup)).mode;
   });
 
-/** Start a new connection's sign-in through the hosted API. */
 const startSignIn = (app: App) =>
   Effect.gen(function* () {
     const api = yield* Api,
@@ -99,7 +90,6 @@ const startSignIn = (app: App) =>
     };
   });
 
-/** Follow the authorization request as the user's browser would, without following the callback. */
 const authorize = (url: URL) =>
   Effect.gen(function* () {
     const http = yield* HttpClient.HttpClient;
@@ -110,7 +100,6 @@ const authorize = (url: URL) =>
     Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
   );
 
-/** Consent and complete a started sign-in; the account is deleted when the scenario ends. */
 const finishSignIn = (signIn: Effect.Success<ReturnType<typeof startSignIn>>) =>
   Effect.gen(function* () {
     const api = yield* Api,
@@ -134,7 +123,6 @@ const finishSignIn = (signIn: Effect.Success<ReturnType<typeof startSignIn>>) =>
     return account;
   });
 
-/** Fetch a product path without a session, as an authorization server does. */
 const fetchProduct = (path: string, method: "GET" | "POST" = "GET") =>
   Effect.gen(function* () {
     const target = yield* Target,
@@ -172,13 +160,10 @@ layer(HostedLive, { excludeTestServices: true })("OAuth client metadata document
         expect(authorization.searchParams.get("client_id"), "the document is the client ID").toBe(
           clientId,
         );
-        // The operator's callback on the document's origin, serialized as a URL: the form the host
-        // sends and lists.
         const redirectUri = authorization.searchParams.get("redirect_uri");
         expect(redirectUri).toBe(new URL(configuredCallback).href);
         expect(redirectUri).not.toBe(configuredCallback);
 
-        // The document, exactly, as the authorization server reads it from the product.
         const served = yield* fetchProduct(documentPath);
         expect(served.status).toBe(200);
         expect(served.headers["content-type"]).toMatch(/^application\/json(;|$)/);
@@ -188,7 +173,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth client metadata document
           client_name: "Executor",
           client_uri: publicOrigin,
           logo_uri: `${publicOrigin}/favicon.png`,
-          // The callback the host sends, so the two cannot drift.
           redirect_uris: [redirectUri],
           grant_types: ["authorization_code", "refresh_token"],
           response_types: ["code"],
@@ -200,7 +184,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth client metadata document
           "the document is read-only",
         ).not.toBe(200);
 
-        // The server holds the redirect URI to the document.
         const foreign = new URL(authorization);
         foreign.searchParams.set("redirect_uri", "https://attacker.example/callback");
         expect((yield* authorize(foreign)).status).toBe(400);
@@ -241,7 +224,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth client metadata document
         expect(signedIn.registrations, "no dynamic registration at any point").toEqual([]);
         expect(yield* setupMode(app), "a document client is not saved").toBe("automatic");
 
-        // A server without document support still gets a registered client.
         yield* issuer.configure({ documents: false });
         const registered = yield* startSignIn(yield* deployApp(issuer.origin, "Registered client"));
         const registeredClient = registered.authorization.searchParams.get("client_id");
@@ -274,7 +256,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth client metadata document
         const { authorization, complete } = yield* startSignIn(app);
         expect(authorization.searchParams.get("client_id")).toBe(clientId);
 
-        // The server holds the sign-in to the document and to the document's origin.
         const consent = yield* authorize(authorization);
         expect(consent.status, JSON.stringify(yield* issuer.metrics)).toBe(302);
         const redirectUri = authorization.searchParams.get("redirect_uri");
@@ -290,7 +271,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth client metadata document
           "the document lists the callback the sign-in sent",
         ).toEqual([redirectUri]);
 
-        // The host serves that callback and sends the browser on to finish the sign-in.
         const callback = new URL(consent.location ?? "");
         expect(`${callback.origin}${callback.pathname}`).toBe(redirectUri);
         const returned = yield* fetchProduct(`${callback.pathname}${callback.search}`);
@@ -321,7 +301,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth client metadata document
         ]);
         expect(metrics.registrations, "no dynamic registration").toEqual([]);
 
-        // A registered client still uses the operator's callback, where the service allows it.
         yield* issuer.configure({ documents: false });
         const registered = yield* startSignIn(yield* deployApp(issuer.origin, "Relay client"));
         expect(registered.authorization.searchParams.get("redirect_uri")).toBe(
@@ -343,35 +322,28 @@ layer(HostedLive, { excludeTestServices: true })("OAuth client metadata document
         const issuer = yield* clientMetadataIssuer({
           publicOrigins: { [publicOrigin]: target.metadata.origin },
         });
-        // Without the setting the host registers, even where documents are accepted.
         const existing = yield* deployApp(issuer.origin, "Existing client");
         yield* finishSignIn(yield* startSignIn(existing));
         expect((yield* issuer.metrics).registrations).toHaveLength(1);
         expect(yield* setupMode(existing)).toBe("automatic");
 
-        // The operator turns the setting on, as Cloud's deploy does.
         yield* serverControl("stop");
         yield* serverControl("environment", 200, { EXECUTOR_OAUTH_CLIENT_METADATA_URL: clientId });
         yield* serverControl("start");
         expect((yield* fetchProduct(documentPath)).status, "the document is now served").toBe(200);
 
-        // A server without document support keeps the client registered before.
         yield* issuer.configure({ documents: false });
         expect(yield* setupMode(existing), "the registered client is still used").toBe("automatic");
         const kept = yield* startSignIn(existing);
         expect(kept.authorization.searchParams.get("client_id")).toBe("registered-client-1");
         yield* finishSignIn(kept);
 
-        // A registered client is used before the document, also where the server accepts documents.
         yield* issuer.configure({ documents: true });
         expect(yield* setupMode(existing)).toBe("automatic");
         const preferred = yield* startSignIn(existing);
         expect(preferred.authorization.searchParams.get("client_id")).toBe("registered-client-1");
         yield* finishSignIn(preferred);
 
-        // An owner without a client for a service uses the document. Clients belong to the
-        // service's authorization server, so this is another server: another app of the first
-        // one would find the client registered there.
         const other = yield* clientMetadataIssuer({
           publicOrigins: { [publicOrigin]: target.metadata.origin },
         });

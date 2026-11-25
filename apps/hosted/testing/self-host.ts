@@ -1,4 +1,3 @@
-/** Explicit local test server. Production's entry point never mounts these auth shortcuts or fixtures. */
 import * as BunCrypto from "@effect/platform-bun/BunCrypto";
 import * as BunHttpServer from "@effect/platform-bun/BunHttpServer";
 import * as BunRuntime from "@effect/platform-bun/BunRuntime";
@@ -18,11 +17,6 @@ import { statementHoldFixture } from "./statement-hold-fixture.ts";
 import { storageFaultFixture } from "./storage-fault-fixture.ts";
 import { apiDocumentFixture } from "./api-document-fixture.ts";
 
-/**
- * Zero-config defaults; explicit settings win. The hostname is per checkout so browser
- * cookies stay separate, the port is free for this run, and the self-host bootstrap keeps
- * generated keys in the data directory.
- */
 const testServerConfiguration = Effect.gen(function* () {
   const base = yield* ConfigProvider.ConfigProvider;
   const origin = yield* Config.String("BETTER_AUTH_URL").pipe(Config.option);
@@ -70,8 +64,6 @@ const command = Command.make("test-self-host", {
               BunHttpServer.layer({
                 hostname: target.hostname === "[::1]" ? "::1" : "127.0.0.1",
                 port: target.port,
-                // Longer than the dashboard's 10-second render deadline, so a document that
-                // waits for it is not cut off by the listener first.
                 idleTimeout: 30,
               }),
             ),
@@ -83,7 +75,6 @@ const command = Command.make("test-self-host", {
         Layer.provide(BunHttpServer.layerHttpServices),
       );
       yield* Console.log(`Starting local test server at ${target.origin}/login`);
-      // Fibers inherit the reference, so every statement the server runs reaches the fault.
       return yield* Layer.launch(server).pipe(
         Effect.provideService(Statement.CurrentTransformer, storageFault.transformer),
       );
@@ -99,7 +90,6 @@ BunRuntime.runMain(
         ? Effect.fail(error)
         : Console.error(
             "The test server could not start. Use dev/test mode, an HTTP loopback origin with a free port, and built self-host web assets. Stop any server using that data directory first.",
-            // The cause, such as the port being taken, which the advice above can only guess at.
             Cause.pretty(Cause.fail(error)),
           ).pipe(
             Effect.andThen(

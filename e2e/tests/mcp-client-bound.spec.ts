@@ -1,13 +1,3 @@
-/**
- * Self-host keeps protocol state for a bounded number of MCP clients, one per API key or OAuth grant
- * (`EXECUTOR_MCP_CLIENTS`), and for at most `EXECUTOR_MCP_CLIENTS_PER_USER` of one member's. These
- * scenarios run with a bound of three clients and two per member. Past the bound the least recently
- * used client that owns no work is forgotten to admit the new one, and the forgotten client's
- * session is told to initialize again. A client with a request in flight, such as a call whose
- * approval prompt waits for its client, or with a paused program, is never forgotten; when no
- * client may be, the new one is refused with `503` and `Retry-After: 1`. Before, a full list
- * refused every new client while its 30-minute idle entries stayed.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Exit, Redacted, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
@@ -39,7 +29,6 @@ const Completed = Schema.Struct({
   execution: Schema.Struct({ ok: Schema.Literal(true), value: Schema.Unknown }),
 });
 
-/** An API key of `role`, a client of its own, removed when the scenario ends. */
 const apiKey = (role: Role, name: string) =>
   Effect.gen(function* () {
     const api = yield* Api,
@@ -63,7 +52,6 @@ const apiKey = (role: Role, name: string) =>
     return key;
   });
 
-/** One JSON-RPC POST to /mcp: its status, `Retry-After`, session and reply. */
 const post = (key: Key, message: object, session?: string) =>
   Effect.gen(function* () {
     const target = yield* Target,
@@ -97,7 +85,6 @@ const initialize = (key: Key) =>
       clientInfo: { name: "executor-e2e-client-bound", version: "1" },
     },
   });
-/** A session of the key's client, opened and confirmed. */
 const open = (key: Key) =>
   Effect.gen(function* () {
     const opened = yield* initialize(key);
@@ -106,7 +93,6 @@ const open = (key: Key) =>
     expect((yield* post(key, { method: "notifications/initialized" }, session)).status).toBe(202);
     return session;
   });
-/** The status a ping in the session answers: 200 while its client is kept, 404 once forgotten. */
 const ping = (key: Key, session: string) =>
   post(key, { id: 2, method: "ping" }, session).pipe(Effect.map(({ status }) => status));
 
@@ -119,7 +105,6 @@ const checkIdleForgotten = Effect.gen(function* () {
   const owners = yield* open(owner);
   const admins = yield* open(admin);
   const members = yield* open(member);
-  // The owner's client is used again, so the admin's is now the least recently used.
   expect(yield* ping(owner, owners)).toBe(200);
   yield* evidence.step(
     "With three idle clients kept, a fourth is admitted",
@@ -159,7 +144,6 @@ const checkPerUser = Effect.gen(function* () {
   );
 });
 
-/** An app whose `approved` tool always asks for approval, removed when the scenario ends. */
 const deployApprovalApp = Effect.gen(function* () {
   const api = yield* Api,
     actors = yield* Actors;
@@ -202,7 +186,6 @@ const checkOwningWork = Effect.gen(function* () {
   let duringPrompt: Exit.Exit<void, unknown> = Exit.void;
 
   const model = yield* mcp.connect(paused.key, "paused-program", { organization, mode: "model" });
-  // Runs while the prompted client's call waits for its answer, its event stream open.
   const whilePrompted = Effect.gen(function* () {
     const pending = yield* model
       .use("Start a program that pauses for approval", (client, signal) =>
@@ -224,7 +207,6 @@ const checkOwningWork = Effect.gen(function* () {
     yield* evidence.step(
       "Other members' clients are admitted past the bound without forgetting either",
       Effect.gen(function* () {
-        // The second fills the third place; the next is admitted by forgetting it.
         forgotten.push(yield* open(admins[0]!));
         const kept = yield* open(admins[1]!);
         expect(yield* ping(admins[1]!, kept)).toBe(200);
@@ -252,7 +234,6 @@ const checkOwningWork = Effect.gen(function* () {
   const native = yield* mcp.connect(prompted.key, "prompted-call", {
     organization,
     mode: "native",
-    // The MCP SDK turns a failed approval hook into a declined prompt, so its failure is kept here.
     whileApproving: whilePrompted.pipe(
       Effect.exit,
       Effect.map((exit) => {

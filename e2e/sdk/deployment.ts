@@ -1,4 +1,3 @@
-/** Own one real Cloudflare environment for a suite, including cleanup on failure or interruption. */
 import { Clock, Config, Console, Effect, FileSystem, Path, Schedule, Schema } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { HttpClient, HttpClientRequest } from "effect/http";
@@ -17,7 +16,6 @@ import { heldValue, reveal, secretConfig } from "../support/failure-text.ts";
 class DeployedTestFailed extends Schema.TaggedError<DeployedTestFailed>()("DeployedTestFailed", {
   message: Schema.String,
 }) {}
-/** Provision one real stage for a caller-owned scope; cleanup also covers failed deployments. */
 export const startDeployment = ({
   database = "neon",
 }: { readonly database?: "neon" | "planetscale" } = {}) =>
@@ -26,8 +24,6 @@ export const startDeployment = ({
       path = yield* Path.Path;
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const started = yield* Clock.currentTimeMillis;
-    // Keep the full 64-bit identity while leaving room for an organization's
-    // 128-bit base-36 slug in Cloudflare's 64-character wildcard certificate name.
     const slug = `e2e-${BigInt(`0x${randomBytes(8).toString("hex")}`).toString(36)}`;
     const origin = `https://${slug}.executor.engineering`;
     const appUiBaseUrl = `https://${slug}.executor.website`;
@@ -76,7 +72,6 @@ export const startDeployment = ({
             message: `${phase} failed with exit ${code}.`,
           });
       });
-    // Register disposal before any deploy attempt. A failed build or provider call can leave resources.
     yield* Effect.addFinalizer(() =>
       run(
         "Environment cleanup",
@@ -86,7 +81,6 @@ export const startDeployment = ({
       ).pipe(
         Effect.andThen(fs.writeFileString(path.join(directory, "destroyed.json"), "{}")),
         Effect.timeout("12 minutes"),
-        // Whether or not the destroy succeeded, a branch it left must fail the run by name.
         Effect.ensuring(
           database === "planetscale"
             ? confirmBranchDeleted(slug).pipe(Effect.timeout("3 minutes"), Effect.orDie)
@@ -95,11 +89,6 @@ export const startDeployment = ({
         Effect.orDie,
       ),
     );
-    // Runs before the destroy above (finalizers run last-registered first), after the fixture
-    // process has stopped and so after the suite's end-of-run removal check
-    // (`removal-settlement.ts`), which runs inside the suite before this scope closes: a stalled
-    // organization removal's Workflow instance is deleted with the stage, so its record is read
-    // now. It never fails or holds up the teardown.
     yield* Effect.addFinalizer(() =>
       captureRemovalStalls(slug, directory).pipe(
         Effect.timeout("3 minutes"),
@@ -145,7 +134,6 @@ export const startDeployment = ({
         "temporary",
         "--background",
         "active",
-        // The scenarios read this stage's traces back from Axiom.
         "--telemetry",
         "export",
         "--owner",

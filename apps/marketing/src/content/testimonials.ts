@@ -1,10 +1,3 @@
-// Public posts about Executor on X, hand-picked. Text is quoted as written,
-// with @-mentions and links reduced to plain words so a card reads on its own.
-// Avatars live in src/assets/pfps/<handle>.<ext> and ship as hashed assets.
-//
-// Order is the display order; the marquee rows draw from this list in turn, so
-// the first twelve are what a reader sees before the rows start to move.
-
 export interface Testimonial {
   readonly handle: string;
   readonly name: string;

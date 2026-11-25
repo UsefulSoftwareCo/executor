@@ -1,14 +1,3 @@
-/**
- * The telemetry collector runs in its own process and shares the container's memory limit. glibc's
- * allocator keeps what a burst of exports freed resident unless it is asked to return it, so the
- * collector asks once it has been idle (its README, "Memory"). Under Motel, the collector earlier
- * images ran, a steady stream of scheduled apps' spans grew it by about 100 MB an hour to about
- * 430 MB until its workerd process was set to collect an idle isolate.
- *
- * On the Rust collector the 4 exports below raise it from about 7 MB to about 32 MB (25.5 MiB in
- * three runs) and it is back at 7 MB within a second of the last answer. A build that never
- * returns freed memory still held 26 of the 26 MB they used 20 seconds later, in two runs.
- */
 import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Config, Console, Effect, Exit, Schedule, Schema } from "effect";
@@ -19,17 +8,6 @@ const exportCount = 4;
 const spansPerExport = 12_000;
 const spansPerTrace = 30;
 
-/**
- * Runs in a container that shares the image's process namespace, as the user the server runs
- * as. It finds the collector's Unix socket through its process and sends it the exports one after
- * another. It reads the collector's resident memory, in KiB, before the first export, every 50 ms
- * while they are stored to keep the highest reading, and then until the collector has returned
- * half of what the exports took or 20 seconds have passed since the last was answered. It
- * prints how long after that answer its last reading was taken. Every reading is of the process
- * that was the collector at the start: a collector that exits or restarts fails the run. Last, it
- * asks the collector for the traces it stored. It prints its readings, or the failure that
- * stopped it.
- */
 const burst = `const fs = require("node:fs");
 const http = require("node:http");
 const crypto = require("node:crypto");
@@ -117,7 +95,6 @@ const crypto = require("node:crypto");
   process.stdout.write(JSON.stringify({ before, peak, after, waitedMs, inserted, stored }));
 })().catch((cause) => { process.stdout.write(JSON.stringify({ failure: String(cause && cause.message || cause) })); });`;
 
-/** What the burst printed: its readings in KiB, or why it stopped. */
 const Burst = Schema.Union([
   Schema.Struct({ failure: Schema.String }),
   Schema.Struct({
@@ -162,7 +139,6 @@ it.live(
           ),
           () => run(["rm", "--force", "--volumes", id]).pipe(Effect.orDie),
         );
-        // The image logs to stderr. Read it with stdout: an unread pipe fills and `docker logs` waits.
         yield* Effect.addFinalizer((exit) =>
           Exit.isFailure(exit)
             ? processes
@@ -204,14 +180,9 @@ it.live(
         );
         expect(burstOutput.inserted).toBe(exportCount * spansPerExport);
         const used = burstOutput.peak - burstOutput.before;
-        // For half of it coming back to mean anything, the burst must raise the collector well
-        // above its own resting size, about 7 MB: 16 MiB, where it measures 25.5. Motel's bound
-        // here was 64 MiB, which the Rust collector does not reach with these exports.
         expect(used, "the exports raised the collector's resident memory").toBeGreaterThan(
           16 * 1024,
         );
-        // The collector returned all of it within about a second of the last export. A build that
-        // does not return freed memory held all of it for the 20 seconds allowed.
         expect(
           burstOutput.after,
           `${Math.round(burstOutput.waitedMs / 1000)} s after the exports the collector still held ${megabytes(burstOutput.after - burstOutput.before)} of the ${megabytes(used)} MB they used`,

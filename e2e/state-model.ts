@@ -1,20 +1,17 @@
 import { Schema, Tuple } from "effect";
 
-/** Viewport-relative CSS pixel rectangle. */
 export const ViewRect = Schema.Struct({
   x: Schema.Number,
   y: Schema.Number,
   width: Schema.Number,
   height: Schema.Number,
 });
-/** Semantic identity is matched across adjacent snapshots; repeated labels include an occurrence. */
 export const ViewLandmark = Schema.Struct({
   key: Schema.String,
   label: Schema.String,
   role: Schema.String,
   rect: ViewRect,
 });
-/** Browser diagnostics omit atom payloads, input contents and query strings. */
 export const ObservedView = Schema.Struct({
   route: Schema.String,
   viewport: Schema.Struct({
@@ -38,7 +35,6 @@ export const ObservedView = Schema.Struct({
   ),
   landmarks: Schema.Array(ViewLandmark),
 });
-/** Includes shifts after input; this is raw Layout Instability data, not a CLS score. */
 export const LayoutShift = Schema.Struct({
   value: Schema.Number,
   hadRecentInput: Schema.Boolean,
@@ -46,7 +42,6 @@ export const LayoutShift = Schema.Struct({
     Schema.Struct({ label: Schema.String, previous: ViewRect, current: ViewRect }),
   ),
 });
-/** Public development-only diagnostic protocol. */
 export const UIObservation = Schema.Struct({
   kind: Schema.Literals(["atom", "commit", "input", "audit", "view", "layout-shift"]),
   at: Schema.Number,
@@ -54,9 +49,7 @@ export const UIObservation = Schema.Struct({
   view: Schema.optional(ObservedView),
   shift: Schema.optional(LayoutShift),
 });
-/** Raw events retain commits without visible changes. */
 export const UIObservations = Schema.Array(UIObservation);
-/** Retain transition images; only matched captures support geometry overlays. */
 export const UIFrameImage = Schema.Union([
   Schema.Struct({
     status: Schema.Literals(["captured", "in-transition"]),
@@ -67,11 +60,9 @@ export const UIFrameImage = Schema.Union([
     screenshot: Schema.Null,
   }),
 ]);
-/** Every observed view receives an outcome, including work skipped before capture. */
 export const UIFrameCapture = UIFrameImage.mapMembers(
   Tuple.map(Schema.fieldsAssign({ at: Schema.Number, completedAt: Schema.Number })),
 );
-/** Explicit capture conditions keep deliberate holds out of performance interpretations. */
 export const UICaptures = Schema.Struct({
   requestHoldMs: Schema.Number,
   holds: Schema.Array(
@@ -83,7 +74,6 @@ export const UICaptures = Schema.Struct({
   ),
   frames: Schema.Array(UIFrameCapture),
 });
-/** Standalone storyboard; screenshots no longer depend on recording timestamps. */
 export const UIStateReport = Schema.Struct({
   version: Schema.Literal(2),
   signals: UIObservations,

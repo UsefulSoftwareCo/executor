@@ -1,4 +1,3 @@
-/** Tombstone storage: one row hides an organization from the moment removal is accepted. */
 import { Effect, Schema } from "effect";
 import type { SqlClient } from "effect/sql";
 import type { OrganizationId } from "../contracts/organization.ts";
@@ -30,7 +29,6 @@ const decode = (rows: unknown) =>
     ),
   );
 
-/** One store over the hosted database; the middleware and the workflow read the same rows. */
 export const makeOrganizationRemovals = (
   database: Effect.Effect<SqlClient.SqlClient, OrganizationRemovalUnavailable>,
 ) => {
@@ -46,7 +44,6 @@ export const makeOrganizationRemovals = (
   return {
     tombstones: (organization: OrganizationId) =>
       Effect.map(read(organization), (record) => record !== null),
-    /** The removed organizations among `organizations`, in one read for a whole list. */
     removed: (
       organizations: ReadonlyArray<OrganizationId>,
     ): Effect.Effect<ReadonlySet<OrganizationId>, OrganizationRemovalUnavailable> =>
@@ -65,8 +62,6 @@ export const makeOrganizationRemovals = (
           ),
     removals: OrganizationRemovals.of({
       read,
-      // Accepting the same removal twice must reuse the first instance, or a
-      // retried request would start a second workflow over the same records.
       begin: (organization, instance) =>
         database.pipe(
           Effect.flatMap(
@@ -81,8 +76,6 @@ export const makeOrganizationRemovals = (
             record === null ? Effect.fail(unavailable()) : Effect.succeed(record),
           ),
         ),
-      // Written by the step that deletes the organization row, so a replay of
-      // the icon step can still address an icon whose owning row is long gone.
       recordLogo: (organization, logo) =>
         database.pipe(
           Effect.flatMap(

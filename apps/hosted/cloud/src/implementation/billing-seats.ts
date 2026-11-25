@@ -1,8 +1,3 @@
-/**
- * Seat counts for billing. Accepted memberships are seats; pending invitations
- * are not. `cloud_billing_seats.synced_count` is the count Autumn last
- * confirmed, so an unchanged count needs no provider call.
- */
 import { OrganizationId } from "@executor-js/hosted-server";
 import { Effect, Schema } from "effect";
 import { SqlClient } from "effect/sql";
@@ -12,7 +7,6 @@ const Seats = Schema.Array(
 );
 const Live = Schema.Array(Schema.Struct({ count: Schema.NumberFromString }));
 
-/** The live member count and the last count confirmed in Autumn. Undefined when the organization is gone. */
 export const seatCounts = (organization: OrganizationId) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -24,11 +18,6 @@ export const seatCounts = (organization: OrganizationId) =>
     return (yield* Schema.decodeUnknownEffect(Seats)(rows))[0];
   });
 
-/**
- * Record the count Autumn now holds and whether the plan bills seats. Returns
- * the live count, read in the same statement, so a racing membership change is
- * seen; undefined when the organization is gone.
- */
 export const recordSeats = (organization: OrganizationId, count: number, seatPlan: boolean) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -41,7 +30,6 @@ export const recordSeats = (organization: OrganizationId, count: number, seatPla
     return (yield* Schema.decodeUnknownEffect(Live)(rows))[0]?.count;
   });
 
-/** A plan read outside a seat sync decides whether the daily reconcile checks this organization. */
 export const recordSeatPlan = (organization: OrganizationId, seatPlan: boolean) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -50,11 +38,6 @@ export const recordSeatPlan = (organization: OrganizationId, seatPlan: boolean) 
       on conflict (organization_id) do update set seat_plan = excluded.seat_plan`;
   });
 
-/**
- * Seat-billed organizations, organizations never confirmed in Autumn, and any
- * whose confirmed count differs from the live count. Free organizations with an
- * unchanged count cost no provider call.
- */
 export const seatReconcileCandidates = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const rows = yield* sql`select o.id as organization from organization o

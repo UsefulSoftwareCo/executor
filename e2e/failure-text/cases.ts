@@ -1,8 +1,3 @@
-/**
- * Cases that fail on purpose, each in one step whose cause carries planted secrets.
- * failure-text.spec.ts runs them in their own Vitest process and checks what their log, their
- * Vitest results and their evidence say about each failure.
- */
 import { layer } from "@effect/vitest";
 import { request } from "node:http";
 import { Effect, Redacted, Schema } from "effect";
@@ -23,9 +18,7 @@ import {
 } from "../sdk/prepare-scenarios.ts";
 import { failureTextCases, planted, shapes, webhookVariable } from "./titles.ts";
 
-/** The harness holds the revealed secret as it holds a session or a key. */
 const revealed = () => reveal(Redacted.make(planted.revealed));
-/** A driver step that fails with `message`, as an SDK whose error echoes its input does. */
 const echoing = (label: string, message: string) =>
   Effect.gen(function* () {
     const evidence = yield* Evidence;
@@ -42,7 +35,6 @@ layer(TestLive, { excludeTestServices: true })("Failure text cases", (it) => {
       Effect.gen(function* () {
         const evidence = yield* Evidence;
         const label = "POST /mcp on a kept-alive connection";
-        // `node:http` refuses an `https:` URL before it sends anything.
         yield* evidence.step(
           label,
           driver(
@@ -83,7 +75,6 @@ layer(TestLive, { excludeTestServices: true })("Failure text cases", (it) => {
       context,
       Effect.gen(function* () {
         const browser = yield* Browser;
-        // The planted failure's own timeout, so the case fails well inside its deadline.
         yield* browser.use("Click a button that never appears", (page) =>
           page
             .setContent("<p>Nothing to click</p>")
@@ -100,7 +91,6 @@ layer(TestLive, { excludeTestServices: true })("Failure text cases", (it) => {
         const browser = yield* Browser;
         const port = yield* freePort;
         const secret = revealed();
-        // Nothing listens on the port, so the request fails and its call log lists its headers.
         yield* browser.use("Request a refused port with credentials", (page) =>
           page.request.get(
             `http://agent:${planted.password}@127.0.0.1:${port}/refused?token=${planted.query}#${planted.query}`,
@@ -208,7 +198,6 @@ layer(TestLive, { excludeTestServices: true })("Failure text cases", (it) => {
       context,
       Effect.gen(function* () {
         const browser = yield* Browser;
-        // A disabled field is never editable, so the fill times out after logging its text.
         yield* browser.use("Fill a disabled field", (page) =>
           page
             .setContent('<input aria-label="Key" disabled>')
@@ -221,7 +210,6 @@ layer(TestLive, { excludeTestServices: true })("Failure text cases", (it) => {
   it.effect(failureTextCases.straddle, (context) =>
     Effect.gen(function* () {
       const secret = reveal(Redacted.make(planted.straddle));
-      // The line is cut at 400 characters, 14 characters into the secret.
       return yield* echoing(
         "Call an SDK with a long message",
         `${"x".repeat(385)} ${secret} and the rest of the line`,
@@ -245,7 +233,6 @@ layer(TestLive, { excludeTestServices: true })("Failure text cases", (it) => {
       Effect.gen(function* () {
         const api = yield* Api;
         const session = yield* api.session();
-        // A line break inside a header value makes it invalid, so the client refuses to send it.
         return yield* api.request(session, "GET", "/api/auth/self-host/config", undefined, {
           authorization: `Bearer ${planted.refusedHeader}\nnext`,
         });
@@ -264,7 +251,6 @@ layer(TestLive, { excludeTestServices: true })("Failure text cases", (it) => {
               `replacement rejected Bearer ${planted.replaced} for http://upstream.test/x?key=${planted.query}`,
             );
           });
-          // The page's fetch loses its response; the replacement's failure fails the scope.
           yield* browser.use("Read a replaced response", (page) =>
             page.goto("/").then(() =>
               page.evaluate(() =>
@@ -286,7 +272,6 @@ layer(TestLive, { excludeTestServices: true })("Failure text cases", (it) => {
       Effect.gen(function* () {
         const api = yield* Api;
         const session = yield* api.session();
-        // The product sets the session cookie; the harness never reveals it.
         yield* api.request(session, "POST", "/api/auth/self-host/setup", {
           name: "Failure Text Owner",
           email: "owner@example.test",
@@ -294,7 +279,6 @@ layer(TestLive, { excludeTestServices: true })("Failure text cases", (it) => {
           organizationName: "Failure text",
         });
         const cookies = yield* session.cookies;
-        // Reading the cookies registers them; a spec that echoes one without `reveal` is masked.
         const [first] = Redacted.value(cookies);
         return yield* echoing("Echo the session cookie", `session ${first?.value ?? "absent"}`);
       }),
@@ -308,7 +292,6 @@ layer(TestLive, { excludeTestServices: true })("Failure text cases", (it) => {
         const browser = yield* Browser;
         const target = yield* Target;
         const origin = new URL(targetHosts(target).browser);
-        // A session no other part of the harness has read: only signing the browser in reveals it.
         const session: Session = {
           cookies: Effect.succeed(
             Redacted.make([
@@ -385,7 +368,6 @@ layer(TestLive, { excludeTestServices: true })("Failure text cases", (it) => {
         const api = yield* Api;
         const evidence = yield* Evidence;
         const session = yield* api.session();
-        // A set-up request that fails in transport, its header quoted in the inner cause.
         const failed = yield* api
           .request(session, "GET", "/api/auth/self-host/config", undefined, {
             authorization: `Bearer ${planted.preparationHeader}\nnext`,
@@ -399,7 +381,6 @@ layer(TestLive, { excludeTestServices: true })("Failure text cases", (it) => {
             detail: preparationFailure(failed),
           },
         ];
-        // Preparation's own log line and record, written where this case's evidence is.
         yield* reportUnavailable(unavailable);
         yield* writePreparation(evidence.directory, {
           organizations: 0,

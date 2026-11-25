@@ -39,11 +39,6 @@ import { OperatorOAuthFixture, operatorOAuthFile, syntheticCloudGoogle } from ".
 import { reveal, secret } from "./failure-text.ts";
 import { cloudNotesFile, type CloudNotesSource } from "./cloud-release-notes.ts";
 
-/**
- * The operator settings for `fixture`: one test client, whose tokens go only to its own host, and
- * its credentials, which emulated Cloud adds to its reviewed clients; and synthetic credentials for
- * the reviewed Executor for Google client.
- */
 const operatorOAuthClients = (fixture: typeof OperatorOAuthFixture.Type) => {
   const origin = `http://127.0.0.1:${fixture.port}`;
   return {
@@ -63,7 +58,6 @@ const operatorOAuthClients = (fixture: typeof OperatorOAuthFixture.Type) => {
     ]),
     EXECUTOR_OAUTH_SYNTHETIC_CLOUD_MAIL_CLIENT_ID: fixture.clientId,
     EXECUTOR_OAUTH_SYNTHETIC_CLOUD_MAIL_CLIENT_SECRET: fixture.clientSecret,
-    // The reviewed Executor for Google client, as Cloud's own registration.
     EXECUTOR_OAUTH_GOOGLE_CLIENT_ID: syntheticCloudGoogle.clientId,
     EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET: syntheticCloudGoogle.clientSecret,
   };
@@ -77,21 +71,10 @@ class CloudStartFailed extends Schema.TaggedError<CloudStartFailed>()("CloudStar
   }
 }
 
-/**
- * Starts on this host took up to 324 s from `alchemy dev` to a ready API Worker, under load 60
- * with other local Clouds starting beside them.
- */
 const readinessDeadline = "10 minutes";
 
-/**
- * Collectors behind this Cloud's collector router. Six scenario workers provisioning organizations
- * at once export about 1,500 spans a second, as much as one Motel stored; four Motels kept up with
- * several times that. The Rust collector stores more than one Motel did; the count is unchanged
- * until one has been measured in this job (`serveShardedOtlpCollector`).
- */
 const collectorShards = 4;
 
-/** A complete local Cloud Worker, real Postgres and hosted emulators; no inherited credentials. */
 export const startCloudEnvironment = (input: {
   readonly directory: string;
   readonly origin: string;
@@ -99,48 +82,18 @@ export const startCloudEnvironment = (input: {
   readonly databasePort: number;
   readonly commit: string;
   readonly observeUI: boolean;
-  /**
-   * Every scenario's request comes from this machine's one address, so they would share Better
-   * Auth's per-address allowance. As on deployed test stages, the limit is on only for the
-   * scenarios that prove it.
-   */
   readonly authRateLimit: boolean;
-  /**
-   * Organization removal's revocation budget, 5 minutes deployed. Only the Cloud of the scenarios
-   * that run it out sets it (`e2e:cloud --removal-revocation-budget`), so every other scenario's
-   * removals revoke under the deployed budget. Only `alchemy dev` honours it.
-   */
   readonly removalRevocationBudgetMs?: number;
-  /**
-   * Build the dashboard with these notes instead of `cloudTestNotes` (`CloudNotesSource`): an empty
-   * file, as a deploy whose window has no notes writes, or notes the deploy's own script writes from
-   * commit messages. Only the Cloud of the scenarios that show them sets it
-   * (`e2e:cloud --release-notes <source>`).
-   */
   readonly releaseNotes?: CloudNotesSource;
-  /**
-   * Which host serves the dashboard and sign-in: `app.` of the origin, or, with the rollback
-   * switch (`CLOUD_BROWSER_ORIGIN=deployment`), the origin itself.
-   */
   readonly browserOrigin: "app" | "deployment";
-  /** Registry the local Cloud compiler resolves app packages from. */
   readonly npmRegistry?: string;
-  /** The run's synthetic official app feed (`public-catalogs.ts`), which Add app and setup list. */
   readonly catalogs?: string;
-  /**
-   * Better Auth's OAuth proxy is on, as in production. Without this, this Cloud is the proxy's
-   * production: its edge exchanges the codes of stages that sign in through it. With it, this
-   * Cloud is such a test stage: it names that production's edge and secret, and uses its emulated
-   * providers, whose clients return to that edge.
-   */
   readonly signInThrough?: {
     readonly productionUrl: string;
     readonly secret: Redacted.Redacted<string>;
     readonly services: typeof EmulatorFixture.Type.services;
   };
-  /** Another local Cloud of this run built the Worker; a second build would rewrite its files. */
   readonly prebuilt?: true;
-  /** Origins beside the SSO issuer that this Cloud trusts, such as a stage proxying through it. */
   readonly trustedOrigins?: ReadonlyArray<string>;
 }) =>
   Effect.gen(function* () {
@@ -184,7 +137,6 @@ export const startCloudEnvironment = (input: {
     yield* fs.writeFileString(emulators, JSON.stringify(reveal(fixture)), { mode: 0o600 });
     yield* Effect.addFinalizer(() => fs.remove(emulators).pipe(Effect.orDie));
     const analyticsPort = yield* startAnalyticsCollector(directory);
-    // Every scenario of this Cloud exports to these collectors; see `serveShardedOtlpCollector`.
     const collector = yield* serveShardedOtlpCollector(directory, collectorShards);
     const databasePassword = randomBytes(24).toString("hex");
     const operatorOAuth = OperatorOAuthFixture.make({
@@ -204,14 +156,12 @@ export const startCloudEnvironment = (input: {
       { mode: 0o600 },
     );
     yield* Effect.addFinalizer(() => fs.remove(ssoDatabase).pipe(Effect.orDie));
-    // The secret the synthetic v1 signs forwarded MCP bearers with; scenarios read it from here.
     const v1ForwardSecret = randomBytes(32).toString("hex");
     const v1Forward = `${directory}/${v1McpForwardFile}`;
     yield* fs.writeFileString(v1Forward, JSON.stringify({ secret: v1ForwardSecret }), {
       mode: 0o600,
     });
     yield* Effect.addFinalizer(() => fs.remove(v1Forward).pipe(Effect.orDie));
-    // The secret the synthetic v1 signs session handoffs with; scenarios read it from here.
     const v1HandoffSecret = randomBytes(32).toString("hex");
     const v1Handoff = `${directory}/${v1SessionHandoffFile}`;
     yield* fs.writeFileString(v1Handoff, JSON.stringify({ secret: v1HandoffSecret }), {
@@ -225,17 +175,13 @@ export const startCloudEnvironment = (input: {
       ),
       ...(process.env.HOME === undefined ? {} : { HOME: process.env.HOME }),
       ...(process.env.TMPDIR === undefined ? {} : { TMPDIR: process.env.TMPDIR }),
-      // CI prevents Alchemy from inspecting personal profiles; its home is empty for every run.
       CI: "true",
-      // The CA of emulators.dev when CI serves it on the runner (scripts/ci/emulators.sh): Alchemy
-      // and miniflare's workerd trust it and still verify every certificate.
       ...(process.env.NODE_EXTRA_CA_CERTS === undefined
         ? {}
         : { NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS }),
       ALCHEMY_HOME: `${directory}/alchemy-home`,
       NODE_ENV: "development",
       VITE_UI_OBSERVE: input.observeUI ? "1" : "0",
-      // Local artifact addresses need an account-shaped ID, never a real cloud credential.
       CLOUDFLARE_ACCOUNT_ID: "00000000000000000000000000000000",
       BETTER_AUTH_URL: input.origin,
       BETTER_AUTH_SECRET: randomBytes(32).toString("hex"),
@@ -255,13 +201,10 @@ export const startCloudEnvironment = (input: {
       VITE_POSTHOG_KEY: "synthetic-ingestion-key",
       VITE_POSTHOG_PATH: "/api/0123456789abcdef",
       VITE_POSTHOG_HOST: `http://127.0.0.1:${analyticsPort}`,
-      // The site's own build reads the same synthetic project, so its pages run PostHog too.
       PUBLIC_POSTHOG_KEY: "synthetic-ingestion-key",
       PUBLIC_POSTHOG_PATH: "/api/0123456789abcdef",
       PUBLIC_POSTHOG_HOST: `http://127.0.0.1:${analyticsPort}`,
       VITE_EXECUTOR_ENVIRONMENT: "test-local",
-      // Serve the same built assets and routing as a deployed stage. Vite's
-      // on-demand source transforms must not compete with timed scenarios.
       CLOUD_DEV_DASHBOARD: "built",
       CLOUD_DEV_API_PORT: new URL(input.origin).port,
       CLOUD_DEV_APP_UI_PORT: String(input.appPort),
@@ -274,14 +217,10 @@ export const startCloudEnvironment = (input: {
       CLOUD_DEV_DATABASE_PASSWORD: databasePassword,
       CLOUD_DEV_EXTERNAL_DATABASE: "true",
       EXECUTOR_EMULATORS: JSON.stringify(reveal(fixture).services),
-      // The dashboard's notes input, as a deploy's build takes the notes it wrote: fixed notes, an
-      // empty file, or notes the deploy's script wrote (e2e/support/cloud-release-notes.ts).
       EXECUTOR_CLOUD_RELEASE_NOTES: notes,
-      // Fails only engine calls to steps the workflow engine calls scenario's app names.
       EXECUTOR_TEST_WORKFLOW_ENGINE_FAULTS: JSON.stringify(engineCallFaults),
       V1_MCP_FORWARD_SECRET: v1ForwardSecret,
       V1_SESSION_HANDOFF_SECRET: v1HandoffSecret,
-      // Serve the role hosts as production does, at `app.`, `mcp.` and `api.` of the origin's host.
       EXECUTOR_ROLE_HOSTS_DOMAIN: new URL(input.origin).hostname,
       CLOUD_BROWSER_ORIGIN: input.browserOrigin,
       EXECUTOR_EMULATED_OAUTH_PROXY_PRODUCTION_URL: oauthProxy.productionUrl,
@@ -302,7 +241,6 @@ export const startCloudEnvironment = (input: {
       DOCKER_CONFIG: `${directory}/docker-client`,
     };
     yield* fs.makeDirectory(dockerEnv.DOCKER_CONFIG, { recursive: true, mode: 0o700 });
-    // Lets the lock fixture stop and resume one of the database's backends.
     const postgresContainer = `${directory}/postgres-container.json`;
     yield* fs.writeFileString(
       postgresContainer,
@@ -314,8 +252,6 @@ export const startCloudEnvironment = (input: {
       { mode: 0o600 },
     );
     yield* Effect.addFinalizer(() => fs.remove(postgresContainer).pipe(Effect.orDie));
-    // `alchemy dev` keeps this stage's state, including the secrets it mints, in the Cloud
-    // package's local state store. Scenarios that sign with a minted key read it there.
     yield* fs.writeFileString(
       `${directory}/alchemy-state.json`,
       JSON.stringify({
@@ -343,8 +279,6 @@ export const startCloudEnvironment = (input: {
         2,
       ),
     );
-    // Every socket on `port`, with its process when this user owns it, and the range the OS hands
-    // out ephemeral ports from, which `freePort` assumes excludes its own.
     const portHolders = (port: number) =>
       Effect.gen(function* () {
         const sockets = yield* processes
@@ -383,14 +317,7 @@ export const startCloudEnvironment = (input: {
     const ssoIssuer = yield* processes.spawn(
       ChildProcess.make(
         "node",
-        [
-          "apps/hosted/testing/sso-idp.ts",
-          "--directory",
-          directory,
-          // SSO returns to the browser origin, where sign-in runs.
-          "--application",
-          browser,
-        ],
+        ["apps/hosted/testing/sso-idp.ts", "--directory", directory, "--application", browser],
         {
           env: { PATH: env.PATH, NODE_ENV: "test" },
           extendEnv: false,
@@ -445,13 +372,9 @@ export const startCloudEnvironment = (input: {
         forceKillAfter: "15 seconds",
       }),
     );
-    // A failed apply or run leaves `alchemy dev` running so healthy resources keep serving, but in a
-    // run nothing will edit the sources it waits on, so the Worker that failed never starts.
     const resourceFailures = yield* Ref.make<ReadonlyArray<{ resource: string; reason: string }>>(
       [],
     );
-    // Each runtime crash and its replacement, written beside cloud.log as it is seen, so the run's
-    // report can name it on the scenarios that failed while it lasted (`runtime-crashes.ts`).
     const crashes = yield* Ref.make<ReadonlyArray<RuntimeCrash>>([]);
     const noteCrash = (line: string) =>
       Effect.gen(function* () {
@@ -477,9 +400,6 @@ export const startCloudEnvironment = (input: {
         Effect.andThen(noteCrash(line)),
       ),
     );
-    // Each failed resource and why, and for a port another socket holds, that socket and its
-    // process while `alchemy dev` still runs: the error is in the job log even when the evidence
-    // artifact is not kept.
     const describeResourceFailures = Effect.gen(function* () {
       const failures = yield* Ref.get(resourceFailures);
       const holders = yield* Effect.forEach(failures, ({ reason }) => {
@@ -493,8 +413,6 @@ export const startCloudEnvironment = (input: {
         ...holders.flat(),
       ].join("; ");
     });
-    // A Worker that is still starting holds the request until it can answer, so each probe has its
-    // own deadline and the whole wait has one too.
     const ready = Effect.scoped(
       http.get(`${input.origin}/health`).pipe(
         Effect.flatMap((response) =>
@@ -529,7 +447,6 @@ export const startCloudEnvironment = (input: {
           ),
         ),
         dev.failed.pipe(
-          // While alchemy still runs, so a port's holder can still be named.
           Effect.andThen(describeResourceFailures),
           Effect.flatMap((failures) =>
             dev.report.pipe(

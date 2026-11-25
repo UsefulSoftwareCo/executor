@@ -1,4 +1,3 @@
-/** Shared HTML planning and output checks for Node and Worker browser compilers. */
 import { Effect, Path, Schema } from "effect";
 import { parse, serialize, type DefaultTreeAdapterMap } from "parse5";
 import { SourceFilePath } from "../contracts/version.ts";
@@ -15,23 +14,14 @@ const elements = (node: DefaultTreeAdapterMap["node"]): Element[] => [
 const failed = () => new RuntimeBuildFailed({ stage: "compile" });
 const browserExports = new Set(["apps", "apps/client", "apps/effect", "apps/react"]);
 
-/** Only these framework subpaths are browser APIs. */
 export const isBrowserAppImport = (specifier: string) => browserExports.has(specifier);
-/** Authored server implementation cannot enter the executable browser graph. */
 export const isServerUiImport = (path: string) => path === "index.ts" || path.startsWith("server/");
-/** Content types for compiled output, from the same table public files are served with. */
 export const uiContentType = (file: string) => publicFileContentType(file, "text/plain");
 
-/** A compiled file and a public file claim one path. */
 class PublicPathTaken extends Schema.TaggedError<PublicPathTaken>()("PublicPathTaken", {
   path: Schema.String,
 }) {}
 
-/**
- * Discover module/style entries without evaluating server code; finish adds the host context
- * marker. `publicPaths` are the public files served beside the build, relative to `ui/public/`:
- * the page may reference them as they are, and no compiled file may take one of their paths.
- */
 export const prepareUiBuild = (
   files: CodeFiles,
   publicPaths: ReadonlyArray<string> = [],
@@ -58,7 +48,6 @@ export const prepareUiBuild = (
       const location = path.resolve("/ui", value.replace(/^\//, ""));
       if (!location.startsWith("/ui/")) return yield* failed();
       if (!files.some((file) => file.path === location.slice(1))) {
-        // A prebuilt script or stylesheet among the public files is served as it is.
         if (served.has(location.slice("/ui/".length))) continue;
         return yield* failed();
       }

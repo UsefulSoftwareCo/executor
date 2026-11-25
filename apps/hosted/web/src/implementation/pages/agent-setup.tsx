@@ -57,37 +57,16 @@ import { SetupLink, useSetupSequence, useSetupViewed } from "../components/setup
 import { useDocumentationUrl } from "../documentation.ts";
 import { useMcpOrigin } from "../resource-origin.ts";
 
-/** Moves focus to a screen's heading when it replaces the previous one, without scrolling to it. */
 const focusHeading = (node: HTMLHeadingElement | null) => node?.focus({ preventScroll: true });
 
-/**
- * A reloadable handoff from the assistants to the first prompt. Each screen the member chooses is
- * a history entry named by the URL: the assistants, one assistant's guide, then the first prompt
- * for the agent that connected. Guides are static, so they render at once, also on the server;
- * only the connection status below them waits for data. The first prompt names the accounts the
- * organization connected, read with the page. Until an agent connects, the assistants and a guide
- * offer to skip setup instead.
- *
- * The assistants and a guide watch for an agent that is not in the screen's baseline, a read of
- * the agents already connected that starts as the screen is shown, or while the server renders a
- * guide opened directly, before its instructions reach the browser. The baseline is kept in the
- * entry's history state, so Back, Forward and reload compare with the same one. The first prompt
- * confirms that the member holds a usable MCP grant for its agent, so its URL alone never claims a
- * connection.
- */
 export function AgentSetupPage() {
   const endpoint = `${useMcpOrigin()}/mcp`;
-  // The screen and its saved baseline come from one location. The matched route's search can
-  // trail the location by a render, which would pair one entry's URL with another's state.
   const current = useLocation();
-  // Leaving setup changes the location before this page unmounts. Keep showing the last screen of
-  // this page meanwhile, rather than the assistants for another page's address.
   const here = current.pathname.endsWith("/setup/assistant");
   const [kept, keep] = useState(current);
   if (here && current.href !== kept.href) keep(current);
   const location = here ? current : kept;
   const search = parseAgentSetupSearch(location.search);
-  // History state is browser-only, so the server render and hydration see none.
   const hydrated = useHydrated();
   const saved = hydrated
     ? Option.getOrUndefined(Schema.decodeUnknownOption(AgentBaseline)(location.state.agentSetup))
@@ -104,7 +83,6 @@ export function AgentSetupPage() {
   return (
     <SetupPage organization={slug} onSignOut={() => sequence.report("leave_setup", "started")}>
       <section className="@container w-full" aria-labelledby="agent-setup-title">
-        {/* Keyed so a new screen mounts its own elements rather than moving the last screen's. */}
         {search.assistant === undefined ? (
           <ChooseStep key={screen} endpoint={endpoint} capture={capture} saved={saved} />
         ) : search.step === "prompt" ? (
@@ -128,12 +106,6 @@ export function AgentSetupPage() {
   );
 }
 
-/**
- * Names the baseline read for the screen shown. Each screen the page shows starts a new one, so a
- * guide reads the agents already connected when it is shown, including any connected while the
- * assistants were open. The server renders the document's own read with a guide opened
- * directly, so the agents connected before its instructions arrived are known with them.
- */
 function useBaselineCapture(screen: string) {
   const hydrated = useHydrated();
   const [capture, setCapture] = useState(() => (hydrated ? randomUuid() : "document"));
@@ -145,16 +117,11 @@ function useBaselineCapture(screen: string) {
   return capture;
 }
 
-/** The baseline of the screen shown: the entry's saved one, or the capture to read and save. */
 interface ScreenBaseline {
   readonly capture: string;
   readonly saved: AgentBaseline | undefined;
 }
 
-/**
- * The assistants, then any MCP client by its URL. Picking an assistant opens its guide; an agent
- * that connects from here, by the URL, leads on to its first prompt like a guide's.
- */
 function ChooseStep({ endpoint, ...baseline }: { readonly endpoint: string } & ScreenBaseline) {
   const navigate = useNavigate();
   const [found, setAgent] = useState<ConnectedAgent>();
@@ -201,11 +168,6 @@ function ChooseStep({ endpoint, ...baseline }: { readonly endpoint: string } & S
   );
 }
 
-/**
- * One assistant's static guide, as a card of numbered steps whose last row is its connection
- * status, with the way forward below. Connecting changes only the status row and turns Skip for
- * now into Next, which carries the agent to its first prompt.
- */
 function GuideStep({
   endpoint,
   assistant,
@@ -238,7 +200,6 @@ function GuideStep({
           )}
           <AssistantGuideSteps guide={guide} className="text-sm leading-6 text-foreground" />
         </div>
-        {/* The server renders the guide first; its status streams when the baseline is read. */}
         <Suspense fallback={<GuideStatus assistant={name} state={{ kind: "preparing" }} />}>
           <AgentConnection assistant={name} {...baseline} agent={agent} onConnected={setAgent} />
         </Suspense>
@@ -256,12 +217,6 @@ function GuideStep({
   );
 }
 
-/**
- * Until an agent connects, skips the assistant for the step after this one, or for the dashboard
- * when this is the last, since the first prompt is written for an assistant; a required step waits
- * instead. Once one connects, it carries the assistant and its agent on to the next step and its
- * first prompt. The choices screen has no assistant picked, so its skip reports none.
- */
 function AssistantNext({
   assistant,
   agent,
@@ -300,31 +255,19 @@ function AssistantNext({
   );
 }
 
-/**
- * In a required setup, an assistant the member already connected to this team over MCP, the most
- * recently active. The step is done, as the server's gate counts it, so a screen opened after
- * connecting, such as in a new tab, moves on with that agent instead of waiting for another.
- * Skippable steps wait for a new one.
- */
 function useAgentConnectedBefore(): ConnectedAgent | undefined {
   const { required } = useSetupSequence();
   const { organization } = useOrganizationRoute();
   const agents = useAtomValue(mcpAgentsAtom(organization));
   if (!required || !AsyncResult.isSuccess(agents)) return undefined;
-  // Agents are listed most recently active first.
   return agents.value.find((agent) => agent.access.kind !== "api");
 }
 
 interface AgentFound {
-  /** The new agent once found; it is kept, which stops the checks. */
   readonly agent: ConnectedAgent | undefined;
   readonly onConnected: (agent: ConnectedAgent) => void;
 }
 
-/**
- * A screen's connection status. The entry's saved baseline is used when it has one; otherwise
- * the current capture is read and saved to the entry, never replaced by a later read.
- */
 function AgentConnection({
   assistant,
   capture,
@@ -364,7 +307,6 @@ function AgentConnection({
   );
 }
 
-/** Progress the page learns by itself replaces the current entry; only the member's choices add one. */
 function CapturedBaseline({
   assistant,
   request,
@@ -377,10 +319,7 @@ function CapturedBaseline({
   const result = useAtomValue(agentBaselineAtom(request));
   const retry = useAtomRefresh(agentBaselineAtom(request));
   const baseline = AsyncResult.isSuccess(result) ? result.value : undefined;
-  // A screen that hydrates with the server's read has not seen its entry's state yet. If the entry
-  // already holds a baseline, the page shows that one once hydrated and this one is never saved.
   const hydrated = useHydrated();
-  // Saves each baseline once; saving changes the location, so it must not run on every render.
   const save = useEffectEvent((agentSetup: AgentBaseline) =>
     navigate({
       to: ".",
@@ -407,7 +346,6 @@ function CapturedBaseline({
   );
 }
 
-/** Waits for a new agent, then reports it once; the screen keeps it, which stops the checks. */
 function AgentWatch({
   assistant,
   attempt,
@@ -451,7 +389,6 @@ function NewAgentWatch({
   );
 }
 
-/** A card's last row while watching; only its text and colour change as the connection progresses. */
 function GuideStatus({
   assistant,
   state,
@@ -496,12 +433,6 @@ type ConnectionState =
 
 type ReservedState = "waiting" | "teams-failed" | "prepare-failed" | "check-failed";
 
-/**
- * States whose detail can wrap to more lines than the others' where the status appears. They stay
- * laid out, hidden, behind the current one, so the row keeps the height of the tallest at every
- * width and moving between them shifts nothing. Every state is a title over at most one line of
- * detail on wider screens, so the row hugs its text there; only phones wrap.
- */
 const guideStates: readonly ReservedState[] = [
   "waiting",
   "teams-failed",
@@ -510,7 +441,6 @@ const guideStates: readonly ReservedState[] = [
 ];
 const promptStates: readonly ReservedState[] = ["teams-failed", "check-failed"];
 
-/** One status cell: the current state over hidden copies of every reserved one. */
 function ConnectionStatus({
   assistant,
   state,
@@ -545,7 +475,6 @@ function StatusView({
 }: {
   readonly assistant: string;
   readonly state: ConnectionState;
-  /** A hidden copy that only reserves space keeps a still placeholder in place of the spinner. */
   readonly reserved?: boolean;
 }) {
   const spinner = reserved ? (
@@ -623,13 +552,11 @@ function StatusLine({
   readonly icon: ReactNode;
   readonly title: string;
   readonly detail?: string | undefined;
-  /** Keeps a detail of unknown length, such as an agent's name, to one line. */
   readonly singleLineDetail?: boolean;
   readonly children?: ReactNode;
 }) {
   return (
     <div className="flex min-w-0 items-center gap-3 [grid-area:1/1]">
-      {/* The icon sits on the title's line, and the two stay together, centred in the row. */}
       <div className="flex min-w-0 flex-1 gap-3">
         <span className="flex h-5 shrink-0 items-center">{icon}</span>
         <div className="min-w-0 flex-1 text-[13px] leading-5">
@@ -646,7 +573,6 @@ function StatusLine({
   );
 }
 
-/** The icon slot holds either the retry icon or the spinner, so retrying keeps the button's size. */
 function RetryButton({
   retrying,
   retry,
@@ -666,11 +592,6 @@ function RetryButton({
   );
 }
 
-/**
- * The first prompt names the exact MCP URL, the docs and the accounts the organization connected.
- * Below it, the page confirms the member still holds a usable MCP grant for the agent the URL
- * names; one that is not found, such as a revoked agent or an edited link, opens the guide instead.
- */
 function PromptStep({
   endpoint,
   assistant,
@@ -702,8 +623,6 @@ function PromptStep({
                 <HostedFailure cause={inventory.cause} retry={retry} layout="compact" />
               </div>
             ) : (
-              // The opening needs no data, so only the part naming the accounts waits, at the size
-              // it usually takes, above the copy button it will enable.
               <div aria-busy="true" aria-label="Loading your prompt">
                 <PromptText>
                   {promptOpening(endpoint)}
@@ -758,7 +677,6 @@ function PromptText({ children }: { readonly children: ReactNode }) {
   );
 }
 
-/** The prompt's copy row; disabled, at the same size, until the prompt is known. */
 function PromptCopy({ prompt }: { readonly prompt: string | undefined }) {
   return (
     <div className="flex items-center border-t bg-muted/40 px-4 py-2.5 max-sm:px-6">
@@ -776,10 +694,6 @@ function PromptCopy({ prompt }: { readonly prompt: string | undefined }) {
 
 type Inventory = Atom.Success<ReturnType<typeof inventoryAtom>>;
 
-/**
- * Each app with the caller's linked accounts, by name, in the inventory's order. Executor's own
- * app is how the assistant reaches the others, so it is not one of them.
- */
 function connectedAccounts(inventory: Inventory) {
   const apps = inventory.apps.flatMap((app) => {
     if (app.copiedFrom?.name === executorCatalogPackage) return [];
@@ -797,7 +711,6 @@ function connectedAccounts(inventory: Inventory) {
 
 const list = new Intl.ListFormat("en", { style: "long", type: "conjunction" });
 
-/** The prompt's first paragraph, which names only the MCP URL. */
 const promptOpening = (endpoint: string) =>
   `Use Executor, which I connected over MCP at ${endpoint}. If you cannot see its tools yet, connect to that server first.`;
 
@@ -862,7 +775,6 @@ function ConfirmedAgent({
   const result = useAtomValue(confirmedMcpAgentAtom(confirmation));
   const retry = useAtomRefresh(confirmedMcpAgentAtom(confirmation));
   const missing = AsyncResult.isSuccess(result) && Option.isNone(result.value);
-  // The prompt's URL named an agent the member does not hold, so its guide takes this entry.
   const openGuide = useEffectEvent(() =>
     navigate({ to: ".", search: { assistant }, replace: true, resetScroll: false }),
   );

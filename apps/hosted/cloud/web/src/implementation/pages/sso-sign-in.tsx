@@ -12,7 +12,6 @@ import { AsyncResult } from "effect/reactivity";
 import { useState } from "react";
 import { ssoSignInAtom } from "../../contracts/sso.ts";
 
-/** Discover the verified company connection from an email, then let its IdP authenticate. */
 export function SsoSignInForm({ redirect, error: callbackError }: LoginProps) {
   useDocumentTitle(productTitle("Sign in with SSO"));
   const [email, setEmail] = useState("");

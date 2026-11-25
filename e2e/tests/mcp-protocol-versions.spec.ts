@@ -1,13 +1,3 @@
-/**
- * MCP version negotiation and the MCP-Protocol-Version header, over raw Streamable HTTP. A client
- * that offers an older protocol gets the newest one the server supports, and a session keeps its
- * negotiated version when a request omits the header. Requests the MCP transport rejects explain
- * themselves, including an unknown session, wrong media types and a batch. A call the client
- * cancels ends its event stream without a result (self-host and managed Cloud: its app tool
- * signals a loopback listener, and the Sentry check reads the managed collector). Self-host keeps
- * each caller's most recently used sessions only, so clients that open a session per call or
- * never end theirs (the transport has no DELETE) no longer hold memory until restart.
- */
 import { expect, layer } from "@effect/vitest";
 import { Deferred, Effect, Fiber, Redacted, Schema, Stream } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
@@ -27,7 +17,6 @@ import { App } from "../support/contracts.ts";
 import { appsManifest } from "../support/apps-release.ts";
 import { awaitSentryEvents, sentryEvents, type SentryEvent } from "../support/sentry-events.ts";
 
-/** Every product serves these MCP versions, newest first. */
 const supported = ["2026-07-28", "2025-11-25", "2025-06-18", "2025-03-26"];
 
 const RpcError = Schema.Struct({
@@ -46,7 +35,6 @@ const Execution = Schema.Struct({
   status: Schema.Literal("completed"),
   execution: Schema.Struct({ ok: Schema.Literal(true), value: Schema.Unknown }),
 });
-// Every revision carries the result as JSON text; 2025-03-26 predates structured tool output.
 const CallResult = Schema.Struct({
   content: Schema.Tuple([
     Schema.Struct({ type: Schema.Literal("text"), text: Schema.fromJsonString(Execution) }),
@@ -54,13 +42,11 @@ const CallResult = Schema.Struct({
 });
 const SessionId = Schema.NonEmptyString;
 
-/** A trace of the scenario's own for one request, so what Cloud reports for it can be found. */
 const clientTrace = () => {
   const traceId = randomBytes(16).toString("hex");
   return { traceId, traceparent: `00-${traceId}-${randomBytes(8).toString("hex")}-01` };
 };
 
-/** One POST to /mcp. The session ID is kept for the next request, not in evidence. */
 const send = <E>(
   credentials: Readonly<Record<string, string>>,
   body: (
@@ -85,7 +71,6 @@ const send = <E>(
     );
     const response = yield* http.execute(request).pipe(Effect.timeout("30 seconds"));
     const text = yield* response.text;
-    // A streamed reply ends with the request's response after any notifications.
     const data = response.headers["content-type"]?.startsWith("text/event-stream")
       ? text
           .split("\n")
@@ -106,7 +91,6 @@ const send = <E>(
     };
   }).pipe(Effect.scoped, Effect.provideService(HttpClient.TracerPropagationEnabled, false));
 
-/** One JSON-RPC message per POST. */
 const post = (
   credentials: Readonly<Record<string, string>>,
   message: object,
@@ -114,10 +98,6 @@ const post = (
   path = "/mcp",
 ) => send(credentials, HttpClientRequest.bodyJson({ jsonrpc: "2.0", ...message }), headers, path);
 
-/**
- * An agent that keeps one connection to the target open: a TLS connection when the target is
- * served over HTTPS, as a deployed stage is behind Cloudflare's edge, and plain TCP otherwise.
- */
 const keptAliveAgent = Effect.gen(function* () {
   const tls = new URL((yield* Target).metadata.origin).protocol === "https:";
   return yield* Effect.acquireRelease(
@@ -130,10 +110,6 @@ const keptAliveAgent = Effect.gen(function* () {
   );
 });
 
-/**
- * POSTs `message` on `agent`'s one kept-alive connection, as a client that keeps its connection
- * does. Returns the answer's status and body, or what went wrong, and the socket it used.
- */
 const postOn = (agent: Agent, credentials: Readonly<Record<string, string>>, message: object) =>
   Effect.gen(function* () {
     const url = new URL("/mcp", (yield* Target).metadata.origin);
@@ -178,7 +154,6 @@ const postOn = (agent: Agent, credentials: Readonly<Record<string, string>>, mes
     );
   });
 
-/** A rejected request has its status, the invalid-request code and a message naming the fix. */
 const expectRejected = (
   rejected: Pick<Effect.Success<ReturnType<typeof send>>, "status" | "reply">,
   status: number,
@@ -212,7 +187,6 @@ const initialize = (
     path,
   );
 
-/** Protocol sessions one self-host caller keeps (`maxSessions` in apps/hosted/self-host/src/mcp.ts). */
 const keptSessions = 256;
 
 const openSession = (credentials: Readonly<Record<string, string>>) =>
@@ -222,11 +196,6 @@ const openSession = (credentials: Readonly<Record<string, string>>) =>
 const listWith = (credentials: Readonly<Record<string, string>>, session: string) =>
   post({ ...credentials, "mcp-session-id": session }, { id: 2, method: "tools/list" });
 
-/**
- * Past the bound the least recently used session is forgotten, not the oldest: a session the
- * client keeps using survives sessions opened after it. A forgotten session gets the same 404 a
- * restart gives, and the client continues after initializing again.
- */
 const checkSessionBound = (credentials: Readonly<Record<string, string>>) =>
   Effect.gen(function* () {
     const evidence = yield* Evidence;
@@ -246,7 +215,6 @@ const checkSessionBound = (credentials: Readonly<Record<string, string>>) =>
         expect((yield* listWith(credentials, first)).status).toBe(200);
       }),
     );
-    // The first was just used, so the second is now the least recently used.
     const newest = yield* openSession(credentials);
     yield* evidence.step(
       "Opening one more forgets the least recently used session, which is told to initialize again",
@@ -254,7 +222,6 @@ const checkSessionBound = (credentials: Readonly<Record<string, string>>) =>
         const rejected = yield* listWith(credentials, second);
         yield* expectRejected(rejected, 404, ["Mcp-Session-Id", "initialize"]);
         yield* evidence.json("forgotten-session.json", rejected.reply);
-        // Older than every session opened after it, but used since: kept.
         expect((yield* listWith(credentials, first)).status).toBe(200);
         expect((yield* listWith(credentials, newest)).status).toBe(200);
       }),
@@ -271,7 +238,6 @@ const checkSessionBound = (credentials: Readonly<Record<string, string>>) =>
     );
   });
 
-/** Open `count` more sessions for the caller in one elicitation mode, as other clients of it would. */
 const openSessions = (credentials: Readonly<Record<string, string>>, path: string, count: number) =>
   Effect.forEach(
     Array.from({ length: count }),
@@ -292,12 +258,6 @@ const Completed = Schema.Struct({
   execution: Schema.Struct({ ok: Schema.Literal(true), value: Schema.Unknown }),
 });
 
-/**
- * A session that owns work is never the one forgotten: not while its call waits for the client's
- * answer to an approval prompt, not while a call it can still cancel runs, and not while a browser
- * program it started waits for approval. Each case opens `keptSessions` newer sessions for the same
- * caller and mode while the work is pending, which forgot the session before.
- */
 const checkSessionsOwningWork = (
   key: Redacted.Redacted<string>,
   credentials: Readonly<Record<string, string>>,
@@ -310,7 +270,6 @@ const checkSessionsOwningWork = (
       evidence = yield* Evidence,
       mcp = yield* McpClient;
     const organization = actors.organization.id;
-    // The client calls its approval hook outside this scenario's services.
     const services = yield* Effect.context<HttpClient.HttpClient | Target>();
     const approve = `return await tools[${JSON.stringify(slug)}].approved({})`;
 
@@ -326,7 +285,6 @@ const checkSessionsOwningWork = (
             keptSessions,
           ).pipe(Effect.provideContext(services)),
         });
-        // A forgotten session dropped the answer, and the call waited for the prompt's own timeout.
         const answered = yield* native.use("Call a tool that asks for approval", (client, signal) =>
           client.callTool({ name: "execute", arguments: { code: approve } }, undefined, {
             signal,
@@ -373,7 +331,6 @@ const checkSessionsOwningWork = (
           params: { requestId: 1, reason: "The client stopped waiting" },
         });
         expect(cancelled.status).toBe(202);
-        // The app tool runs 25 seconds; a cancellation that reached the call ends it well before.
         const ended = yield* Fiber.join(call).pipe(Effect.timeout("15 seconds"));
         expect(ended.status).toBe(200);
         expect(frames.filter((frame) => frame.id === 1 && frame.method === undefined)).toEqual([]);
@@ -422,7 +379,6 @@ const checkSessionsOwningWork = (
     );
   });
 
-/** Negotiate, then use the session the way an older client does: without the version header. */
 const checkProtocolVersions = (credentials: Readonly<Record<string, string>>) =>
   Effect.gen(function* () {
     const evidence = yield* Evidence;
@@ -436,7 +392,6 @@ const checkProtocolVersions = (credentials: Readonly<Record<string, string>>) =>
           const { protocolVersion } = yield* Schema.decodeUnknownEffect(Initialized)(
             opened.reply?.result,
           );
-          // A supported version is echoed; an older one gets the newest initialize-based version.
           expect(protocolVersion).toBe(supported.includes(offered) ? offered : "2025-11-25");
           expect(opened.version).toBe(protocolVersion);
           negotiated[offered] = protocolVersion;
@@ -522,11 +477,6 @@ const checkProtocolVersions = (credentials: Readonly<Record<string, string>>) =>
     yield* evidence.step(
       "A request with an unknown session is told to initialize again, and its client keeps its connection",
       Effect.gen(function* () {
-        // A restart or deploy forgets every session; the client sees this for its old one. It
-        // keeps its connection, and the refusal must not cost it. The gateway answers without
-        // reading the body, and behind a binding workerd then closes its connection without
-        // `Connection: close`. Cloudflare's edge keeps the client's connection; on local Cloud
-        // the dev proxy must (`patches/cloudflare-runtime-keep-alive.md`).
         const agent = yield* keptAliveAgent;
         const refused = yield* postOn(
           agent,
@@ -568,7 +518,6 @@ const checkProtocolVersions = (credentials: Readonly<Record<string, string>>) =>
           ),
         );
         yield* expectRejected(contentType, 415, ["Content-Type", "application/json"]);
-        // Only 2025-03-26 accepted batches; this session negotiated 2025-11-25.
         const batch = yield* send(
           session,
           HttpClientRequest.bodyJson([
@@ -586,7 +535,6 @@ const checkProtocolVersions = (credentials: Readonly<Record<string, string>>) =>
     );
   });
 
-/** A loopback listener an app's tool calls when it starts, so the test knows its call is running. */
 const startSignals = Effect.gen(function* () {
   const calls = new Map<string, Deferred.Deferred<void>>();
   const signal = (call: string) => {
@@ -624,10 +572,6 @@ const startSignals = Effect.gen(function* () {
   };
 });
 
-/**
- * An app whose `wait` tool signals the loopback listener when it starts and then runs 25 seconds,
- * and whose `approved` tool always asks for approval. Removed when the scenario ends.
- */
 const deployWaitingApp = (name: string, signals: string) =>
   Effect.gen(function* () {
     const api = yield* Api,
@@ -660,7 +604,6 @@ export default defineApp({}, { tools: router({
     return app;
   });
 
-/** A POST whose event stream is read as it arrives: each `data` message, in order. */
 const stream = (
   credentials: Readonly<Record<string, string>>,
   message: object,
@@ -700,12 +643,6 @@ const Frame = Schema.Struct({
   error: Schema.optional(Schema.Unknown),
 });
 
-/**
- * A call the client cancels, such as at its own request timeout or when a person stops the agent,
- * ends its event stream without a result, and the session keeps serving. A cancellation POST is
- * accepted with 202; the call's own POST still answers with an event stream, as a POST carrying a
- * request must (MCP 2025-06-18 and 2025-11-25, Sending Messages to the Server).
- */
 const checkCancelledCalls = (
   credentials: Readonly<Record<string, string>>,
   slug: string,
@@ -714,14 +651,12 @@ const checkCancelledCalls = (
   Effect.gen(function* () {
     const evidence = yield* Evidence;
     const outcomes: Record<string, unknown> = {};
-    // The traces of the cancelled calls' requests, which a report about them would carry.
     const traces: Array<string> = [];
     const cancelledCall = (input: {
       readonly version: string;
       readonly path: string;
       readonly capabilities: object;
       readonly code: string;
-      // Wait until the call is running: its app tool started, or its first frame arrived.
       readonly running: (first: Deferred.Deferred<void>) => Effect.Effect<void>;
     }) =>
       Effect.gen(function* () {
@@ -762,8 +697,6 @@ const checkCancelledCalls = (
         );
         expect(cancelled.status).toBe(202);
         expect(cancelled.reply).toBeUndefined();
-        // The call's stream ends without its result. It used to fail with a 500, or, when only its
-        // empty end was trusted, end with an empty 202.
         const ended = yield* Fiber.join(call).pipe(Effect.timeout("30 seconds"));
         expect(ended.status).toBe(200);
         expect(ended.contentType).toMatch(/^text\/event-stream/);
@@ -808,7 +741,6 @@ const checkCancelledCalls = (
           const outcome = yield* cancelledCall({
             version,
             path: "/mcp?elicitation_mode=native",
-            // 2025-06-18 advertised form elicitation with an empty object.
             capabilities: { elicitation: version === "2025-06-18" ? {} : { form: {} } },
             code: `return await tools[${JSON.stringify(slug)}].approved({})`,
             running: (first) => Deferred.await(first),
@@ -819,10 +751,6 @@ const checkCancelledCalls = (
       );
     }
     yield* evidence.json("cancelled-calls.json", outcomes);
-    // Cloud reported the failed request to Sentry as `Done`. Cloud strips error messages before
-    // reporting, so match the exception type. A report arrives after its request finished, so
-    // wait for one before concluding there is none. Only the reports of these calls' own requests
-    // are read: other scenarios on the Cloud may rightly report a response that was not written.
     if ((yield* Target).metadata.target === "cloud") {
       const reported = (events: ReadonlyArray<SentryEvent>) =>
         events
@@ -837,8 +765,6 @@ const checkCancelledCalls = (
     }
   });
 
-/** An API key for the actors' organization, deleted when the case ends. */
-/** An API key of the owner, removed when the scenario ends, and the headers that present it. */
 const apiKey = (name: string) =>
   Effect.gen(function* () {
     const api = yield* Api,

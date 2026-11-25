@@ -48,7 +48,6 @@ const emailTeamName = (email: string) => {
 const teamSlug = (name: string) =>
   organizationHandle(name, organizationSlugMaxLength - 7) || "team";
 
-/** Retry an idempotent setup only after the failed SQL transaction has released its connection. */
 export const recoverSetupConnection = <A, E, R>(operation: Effect.Effect<A, E, R>) =>
   operation.pipe(
     Effect.retry({
@@ -59,7 +58,6 @@ export const recoverSetupConnection = <A, E, R>(operation: Effect.Effect<A, E, R
     }),
   );
 
-/** Prepare suggestions before confirmation; only create writes organization identity. */
 export const makeOnboarding = Effect.fn("onboarding.service")(function* (options: {
   readonly origin: string;
 }) {
@@ -78,7 +76,6 @@ export const makeOnboarding = Effect.fn("onboarding.service")(function* (options
       const key = Array.from(new Uint8Array(digest), (byte) =>
         byte.toString(16).padStart(2, "0"),
       ).join("");
-      // Content addressing makes retries safe. No SQL transaction stays open during R2 I/O.
       yield* blobs.put(iconKey(safeOwner, key), upload.bytes);
       return iconUrl(safeOwner, key);
     });
@@ -103,7 +100,6 @@ export const makeOnboarding = Effect.fn("onboarding.service")(function* (options
       );
       return null;
     });
-  /** The one entry decision: existing membership, a pending invitation, then earlier setup. */
   const standing = (userId: string) =>
     Effect.gen(function* () {
       const user = yield* store.user(userId);
@@ -141,8 +137,6 @@ export const makeOnboarding = Effect.fn("onboarding.service")(function* (options
         ...input,
         name: input.name.trim(),
       });
-      // Settle existing membership before storing an icon, and before the transaction: no SQL
-      // transaction stays open during R2 I/O.
       const entry = yield* standing(userId);
       if (entry.status !== "new") return entry;
       const details = {
@@ -151,7 +145,6 @@ export const makeOnboarding = Effect.fn("onboarding.service")(function* (options
           ? yield* saveIcon(userId, selected.logo)
           : selected.logo,
       };
-      // Whether this request created the team, rather than finding one an earlier one created.
       const { entry: confirmed, created } = yield* store
         .transaction(
           Effect.gen(function* () {
@@ -182,20 +175,12 @@ export const makeOnboarding = Effect.fn("onboarding.service")(function* (options
       if (created === undefined || selected.next !== "setup" || confirmed.status !== "ready")
         return confirmed;
       yield* assignSkip(userId, created);
-      // The browser opens the first step straight away, so the setup is read, and any exposure
-      // recorded, as that step is shown. A failed read leaves the step to read it.
       const sequence = yield* setup(userId, created).pipe(Effect.option);
       return Option.isSome(sequence) ? { ...confirmed, setup: sequence.value } : confirmed;
     }).pipe(
       Effect.mapError(() => new OnboardingUnavailable()),
       Effect.withSpan("onboarding.create"),
     );
-  /**
-   * Ask PostHog whether the new team's steps can be skipped, and keep the answer, so every later
-   * read shows the same setup. An unavailable flag, or a failure keeping its answer, leaves the
-   * member unassigned: they see the control and are not counted. Creating the team never waits on
-   * more than the evaluation's one-second deadline and never fails because of it.
-   */
   const assignSkip = (userId: string, organization: string) =>
     Effect.gen(function* () {
       const flags = yield* FeatureFlags;
@@ -214,7 +199,6 @@ export const makeOnboarding = Effect.fn("onboarding.service")(function* (options
     });
   const setup: typeof Onboarding.Service.setup = (userId, organization) =>
     Effect.gen(function* () {
-      // Exactly one read marks the assignment seen, so its exposure is recorded once.
       const exposed = yield* store.claimSkipExposure(userId, organization);
       if (exposed !== undefined)
         yield* recordFlagExposure({
@@ -246,8 +230,6 @@ export const makeOnboarding = Effect.fn("onboarding.service")(function* (options
         yield* store.completeSetup(userId, organization);
         return SetupGate.make({ status: "open" });
       }
-      // The next step is the first of `setupSteps` not done, so a member is never sent back to a
-      // step they did. The account step carries the connected assistant on to the first prompt.
       return done.agent === undefined
         ? SetupGate.make({ status: "setup", step: "assistant" })
         : SetupGate.make({ status: "setup", step: "accounts", agent: done.agent });

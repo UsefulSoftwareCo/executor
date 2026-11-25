@@ -1,9 +1,3 @@
-/**
- * Local and desktop run every app in one workerd process. When it exits on its own, as when V8
- * runs out of heap, the runtime starts a replacement on the same ports, and every call and build
- * in flight loses its connection. The product log records each replacement, a lost call says its
- * connection was lost, and a lost build tells its deployer the same instead of a class name.
- */
 import { randomBytes, randomUUID } from "node:crypto";
 import { expect, layer } from "@effect/vitest";
 import { Effect, Fiber, FileSystem, Queue, Schedule, Schema } from "effect";
@@ -17,7 +11,6 @@ import { stalledPackage } from "../support/npm-registry.ts";
 import { scenarios } from "../test-plan.ts";
 
 const App = Schema.Struct({ app: Schema.Struct({ id: Schema.String }) });
-/** A refused request's error body. */
 const Failure = Schema.Struct({
   _tag: Schema.String,
   reason: Schema.optionalKey(Schema.String),
@@ -50,11 +43,9 @@ layer(TestLive, { excludeTestServices: true })("Local app runtime restart", (it)
               Effect.repeat({ until: (url) => url.toLowerCase().includes(name) }),
               Effect.timeout("30 seconds"),
             );
-          /** Kill the product's workerd, as V8 aborting on heap exhaustion does. */
           const killRuntime = workerdProcess(local.directory).pipe(
             Effect.flatMap((pid) => Effect.sync(() => process.kill(pid, "SIGKILL"))),
           );
-          /** The product log's runtime replacements, once it has recorded `count` of them. */
           const restarts = (count: number) =>
             fs.readFileString(log).pipe(
               Effect.map((text) =>
@@ -70,7 +61,6 @@ layer(TestLive, { excludeTestServices: true })("Local app runtime restart", (it)
               ),
               Effect.retry({ schedule: Schedule.spaced("200 millis"), times: 150 }),
             );
-          // The exit a kill gives: a signal on POSIX, Windows' termination code elsewhere.
           const killed =
             process.platform === "win32" ? { exitCode: expect.any(Number) } : { signal: "SIGKILL" };
 
@@ -98,7 +88,6 @@ export default defineApp({}, {
             ],
           });
 
-          // A call whose tool is waiting inside workerd when workerd exits.
           const call = yield* local
             .request("POST", "/v1/tools/call", { app: app.id, tool: "held", input: {} })
             .pipe(Effect.forkScoped);
@@ -115,11 +104,7 @@ export default defineApp({}, {
           });
           const [first] = yield* restarts(1);
           expect(first).toMatchObject({ level: "WARN", annotations: { restarts: 1, ...killed } });
-          // The lost call's span says how far its session got (runtime-hop.ts): it opened, the
-          // call went out, and the socket closed under it before the runtime was replaced. The
-          // span is read from this scenario's own product's collector.
           const target = yield* Target;
-          /** Read this scenario's own product's collector. */
           const ownCollector = <A, E>(read: Effect.Effect<A, E, Telemetry>) =>
             read.pipe(
               Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 60 }),
@@ -145,9 +130,6 @@ export default defineApp({}, {
             "executor.runtime.failure": "disconnected",
             "executor.runtime.rpc.opened": "true",
           });
-          // The call fails as its socket closes and the replacement comes at least 250 ms later,
-          // but a stalled host may record the failure after it: the count and the time since the
-          // replacement go together either way.
           expect(
             lostSpan["executor.runtime.host.restarts"] === "0"
               ? lostSpan["executor.runtime.host.restarted_ms"] === undefined
@@ -157,7 +139,6 @@ export default defineApp({}, {
           ).toBe(true);
           expect(Number(lostSpan["executor.runtime.rpc.sent"])).toBeGreaterThan(0);
           expect(lostSpan["executor.runtime.rpc.closed_ms"]).toBeDefined();
-          // The replacement serves the next call.
           expect(
             yield* local.json(Schema.Unknown, "POST", "/v1/tools/call", {
               app: app.id,
@@ -166,7 +147,6 @@ export default defineApp({}, {
             }),
           ).toMatchObject({ status: "completed", value: "ready" });
 
-          // A build whose compiler is waiting on the registry when workerd exits.
           const build = yield* local
             .request("POST", "/v1/apps/deploy", {
               owner: "runtime-restart-e2e",
@@ -205,20 +185,12 @@ export default defineApp({}, { tools: router({
           const [, second] = yield* restarts(2);
           expect(second).toMatchObject({ level: "WARN", annotations: { restarts: 2, ...killed } });
 
-          // A workflow run's status read while workerd's port is closed. The runtime stops replacing
-          // workerd once it has exited three times within 60 seconds and logs that it stopped
-          // (`Runtime.ts` in @alchemy.run/cloudflare-runtime); its port then stays closed. Kill each
-          // replacement as soon as the log records it, until the log says the runtime stopped, and
-          // only then read: the read's request to the runtime finds nothing listening however long
-          // the runner takes, and the restart count it records is final. Its span says how far it
-          // got and how recently the runtime was replaced (runtime-hop.ts).
           const run = yield* local.json(
             Schema.Struct({ id: Schema.String }),
             "POST",
             `/v1/apps/${app.id}/workflow-runs`,
             { workflow: "hold", input: {}, key: randomUUID() },
           );
-          /** The log's runtime replacements, once it has more than `seen` or says it stopped. */
           const afterKill = (seen: number) =>
             fs.readFileString(log).pipe(
               Effect.map((text) => ({
@@ -235,7 +207,6 @@ export default defineApp({}, { tools: router({
               Effect.retry({ schedule: Schedule.spaced("200 millis"), times: 150 }),
             );
           let state = { stopped: false, restarts: 2 };
-          // Each kill in a minute counts toward the limit, so a few kills reach it.
           for (let kill = 0; kill < 8 && !state.stopped; kill++) {
             yield* killRuntime;
             state = yield* afterKill(state.restarts);
@@ -278,17 +249,12 @@ export default defineApp({}, { tools: router({
           });
           expect(readSpan["executor.runtime.http.code"]).toBeDefined();
           expect(readSpan["executor.runtime.host.restarted_ms"]).toBeDefined();
-          // Refused at connect, so nothing of it was sent: the host ran it once more, from its start,
-          // and that was refused too (runtime-connect.ts).
           expect(readSpan).toMatchObject({
             "executor.runtime.http.connect_attempts": "2",
             "executor.runtime.http.first_attempt.error_code": "ECONNREFUSED",
             "executor.runtime.http.connect_outcome": "failed",
           });
 
-          // A tool call while nothing listens: its session never opens, twice, so nothing was sent,
-          // and the call's only exchange with the app never left the host. It says so, may be
-          // repeated, and does not say it may have written.
           const unsent = yield* local.request("POST", "/v1/tools/call", {
             app: app.id,
             tool: "ready",

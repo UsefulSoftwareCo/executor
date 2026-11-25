@@ -10,8 +10,6 @@ import {
   Timed,
 } from "../support/docker-workflows.ts";
 
-// Runs sleep side by side, each in its own engine. A restart part way through their sleeps must
-// resume every one of them from its alarm, without repeating the step each finished before.
 it.live(
   "released image resumes concurrent sleeping workflow runs after a restart",
   () =>
@@ -51,7 +49,6 @@ export default defineApp({}, {
         for (const run of finished) {
           expect(run, "every run completes").toMatchObject({ status: "complete" });
           const output = yield* Schema.decodeUnknownEffect(Timed)(run.output);
-          // The first step ran once, before the restart; a repeated step would record a later time.
           expect(output.before).toBeGreaterThanOrEqual(created);
           expect(output.before).toBeLessThan(restarted);
           expect(output.after - output.before).toBeGreaterThanOrEqual(sleepSeconds * 1000);

@@ -1,10 +1,8 @@
-/** Account-dependent discovery is exercised through real app factories and public routes. */
 import { expect } from "@effect/vitest";
 import { Effect } from "effect";
 import { Browser } from "./browser.ts";
 import { holdQuery, refreshVisiblePage } from "./query-transition.ts";
 
-/** Distinct synthetic credentials expose different tools; a collection exposes their combined catalog. */
 export const accountToolSource = `import { defineApp, defineProvider, secrets, object, string, query, router } from "apps";
 const service = defineProvider({ name: "Workspace fixture", auth: { key: secrets({ label: "API key", fields: object({ token: string() }) }) } });
 export default defineApp({ user: { accounts: { workspaces: service.many() } } }, async ctx => {
@@ -16,18 +14,12 @@ export default defineApp({ user: { accounts: { workspaces: service.many() } } },
  }) };
 });`;
 
-/** A held replacement catalog must never display tools from the previous account under the new label. */
 export const checkToolAccountContext = <E, R>(input: {
   readonly url: string;
   readonly catalogs: readonly string[];
   readonly work: string;
   readonly personal: string;
   readonly select: (ids: readonly string[]) => Effect.Effect<unknown, E, R>;
-  /**
-   * The page arrives with its catalog rendered. The browser's own catalog read is then held from
-   * navigation, so the account change and the return to the page land while the page shows only
-   * the catalog it was rendered with.
-   */
   readonly renderedCatalog?: boolean;
 }) =>
   Effect.gen(function* () {

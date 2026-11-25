@@ -1,4 +1,3 @@
-/** Exercise the shared dialog with server-result fixtures; registry authorization is tested separately. */
 import { Effect, Schema } from "effect";
 import { Browser } from "./browser.ts";
 import { type ReceivedResponse, replaceResponses } from "./browser-responses.ts";
@@ -9,10 +8,6 @@ const WorkspaceDisplay = Schema.Struct({
 });
 const Fields = Schema.Record(Schema.String, Schema.Unknown);
 
-/**
- * Self-host does not publish; replace only that capability on real workspace reads for UI checks.
- * A function derives the result from the real revision, so saved repairs can change readiness.
- */
 export const publishingPreview = (
   app: string,
   publication: object | ((display: WorkspaceDisplay) => object),
@@ -21,7 +16,6 @@ export const publishingPreview = (
   Effect.gen(function* () {
     const browser = yield* Browser;
     const listings = (url: URL) => url.pathname.endsWith("/app-publications/published");
-    /** Add `fields` to the server's real answer for the reads whose path ends with `path`. */
     const extend = (
       path: string,
       unreadable: string,

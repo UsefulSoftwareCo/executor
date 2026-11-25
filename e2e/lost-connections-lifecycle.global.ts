@@ -1,9 +1,3 @@
-/**
- * Global set-up for `lost-connections-lifecycle.config.ts`: a stand-in stage that resets any
- * connection whose request is for `/lose` and answers every other, and a run directory whose
- * `run.json` names it as a Cloud target. The teardown fails the run unless the lifecycle saved the scenario's
- * lost request and the setup file saved the one made outside any scenario.
- */
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, FileSystem } from "effect";
 import { createServer, type Socket } from "node:net";
@@ -13,7 +7,6 @@ const run = ".local/lost-connections-lifecycle/run";
 
 class RecordsMissing extends Error {}
 
-// Vitest's global set-up is a Promise API.
 /* oxlint-disable executor/no-manual-effect-runtime-in-tests */
 export default function setup() {
   const sockets = new Set<Socket>();

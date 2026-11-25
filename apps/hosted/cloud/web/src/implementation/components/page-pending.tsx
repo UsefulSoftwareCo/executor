@@ -7,7 +7,6 @@ export function BillingPagePending() {
   return <PageSkeleton title="Billing" />;
 }
 
-/** Cloud lazy pages retain the same billing card as the organization settings page. */
 export function CloudPagePending() {
   const { pathname } = useLocation();
   if (/^\/org\/[^/]+\/billing\/?$/.test(pathname)) return <BillingPagePending />;

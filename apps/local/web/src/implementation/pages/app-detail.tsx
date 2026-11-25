@@ -65,10 +65,8 @@ const overviewToolsAtom = Atom.family((key: PreviewKey) =>
   ),
 );
 
-/** Views that read only the app. The others also read its linked accounts. */
 const appWideViews: ReadonlySet<AppView> = new Set(["settings", "versions", "source", "history"]);
 
-/** Links with their checks by this app, over the live inventory's sign-in details. */
 const withSummaries = (
   links: readonly AppAccountLink[],
   accounts: readonly DashboardAccount[],
@@ -85,7 +83,6 @@ const withSummaries = (
         ];
   });
 
-/** Views that run app code use the accounts linked to the app. */
 export function AppDetailPage({
   id,
   tab,
@@ -347,7 +344,6 @@ export function AppDetailPage({
   );
 }
 
-/** Local reads update through their existing storage subscriptions. */
 function AppRename({ app }: { readonly app: App }) {
   const rename = useAtomSet(renameAppAtom(app.id), { mode: "promiseExit" });
   return <RenameApp<DashboardError> app={app} Failure={Failure} rename={(name) => rename(name)} />;

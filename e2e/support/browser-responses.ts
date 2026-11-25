@@ -1,51 +1,24 @@
-/**
- * Replace a response the browser received for its own request.
- *
- * Playwright's `route.fetch()` sends the intercepted request again from the test process, over a
- * Node keep-alive pool that never resends. Local Cloud's workerd closes an idle connection after
- * five seconds without saying so in a `Keep-Alive` header, so a request sent on a pooled socket as
- * that close arrives fails with "socket hang up" and the page never gets a response. Here the
- * browser sends the request on its own connections, as a person's browser does, and Chromium
- * resends a request whose reused connection was closed under it. Only the response the page reads
- * is replaced, at the DevTools Fetch domain's response stage.
- *
- * A Playwright route that only continues the request stays registered meanwhile: the harness
- * splits a dashboard read out of its batch request only while a test route matches it
- * (`splitRoutedReads` in `read-batches.ts`).
- */
 import { Effect, Redacted, Schema } from "effect";
 import { Browser } from "./browser.ts";
 import { DriverFailed, driver, withCause } from "./platform.ts";
 
-/** What the browser sent and the server answered, before the page reads the answer. */
 export interface ReceivedResponse {
   readonly url: string;
   readonly method: string;
-  /** Request headers keyed by lower-case name. */
   readonly requestHeaders: Readonly<Record<string, string>>;
-  /** The request body the browser sent, empty when it sent none. */
   readonly requestBody: string;
   readonly status: number;
-  /** Response headers keyed by lower-case name. */
   readonly headers: Readonly<Record<string, string>>;
-  /** The server's whole response body, read only when asked for. */
   readonly body: () => Promise<string>;
 }
 
-/** The response the page reads instead. */
 export interface Replacement {
   readonly status: number;
   readonly body: string;
   readonly contentType: string;
-  /** Headers to set in place of the server's headers of the same names. */
   readonly headers?: Readonly<Record<string, string>>;
 }
 
-/**
- * What the page reads: a replacement, the server's own response, or a lost connection after the
- * server answered (`"failed"`, the browser's `net::ERR_FAILED`). A promise holds the response from
- * the page until it settles, while the server has already answered.
- */
 export type Answer = Replacement | "unchanged" | "failed";
 
 const Paused = Schema.Struct({
@@ -62,7 +35,6 @@ const Paused = Schema.Struct({
   ),
 });
 
-/** The URLs a DevTools Fetch pattern matches: `*` is any run of characters and `?` one character. */
 const fetchPatternMatcher = (urlPattern: string) => {
   const pattern = new RegExp(
     `^${[...urlPattern]
@@ -76,19 +48,8 @@ const fetchPatternMatcher = (urlPattern: string) => {
 
 const ResponseBody = Schema.Struct({ body: Schema.String, base64Encoded: Schema.Boolean });
 
-/** Headers that describe the original body's bytes, which the replacement does not keep. */
 const bodyHeaders = new Set(["content-length", "content-encoding", "content-type"]);
 
-/**
- * Until the scope closes, give the page `answer`'s response for each request whose URL matches
- * `urlPattern` (a DevTools Fetch pattern: `*` matches any run of characters). The server still
- * receives and answers the browser's real request, and the server's other headers, such as its
- * trace timing, reach the page unchanged. A failure inside `answer` loses that response and fails
- * the scope.
- *
- * This replaces `route.fetch()`, which resends the request from the test process. Other routes on
- * the same URL still see the request first: this one only falls back to them.
- */
 export const replaceResponses = (
   urlPattern: string,
   answer: (response: ReceivedResponse) => Answer | Promise<Answer>,
@@ -164,7 +125,6 @@ export const replaceResponses = (
         .then(() => respond(event))
         .catch((cause: unknown) => {
           failures.push(cause);
-          // The page sees a lost connection instead of waiting forever; the scope still fails.
           return lose(Schema.decodeUnknownSync(Paused)(event).requestId).catch(() => {});
         });
     });

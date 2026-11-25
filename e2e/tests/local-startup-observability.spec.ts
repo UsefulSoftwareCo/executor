@@ -1,4 +1,3 @@
-/** Start the actual local entry with failing resources and inspect its retained diagnostic. */
 import { expect, layer } from "@effect/vitest";
 import { Config, Effect, FileSystem, Option, Stream, Schema } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
@@ -37,7 +36,6 @@ layer(TestLive, { excludeTestServices: true })("Local startup diagnostics", (it)
               extendEnv: false,
               env: {
                 PATH: process.env.PATH ?? "",
-                // Release scenarios never send product analytics, even from a build with a baked key.
                 DO_NOT_TRACK: "1",
                 EXECUTOR_API_KEY: secret,
                 EXECUTOR_ENCRYPTION_KEY: randomBytes(32).toString("hex"),

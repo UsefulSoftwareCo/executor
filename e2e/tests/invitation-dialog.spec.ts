@@ -1,4 +1,3 @@
-/** Sending an invitation turns the dialog into a success view instead of leaving the form in place. */
 import { expect, layer } from "@effect/vitest";
 import { Effect } from "effect";
 import { randomUUID } from "node:crypto";
@@ -117,7 +116,6 @@ layer(HostedLive, { excludeTestServices: true })("Invitation dialog", (it) => {
         yield* browser.use("The invitation row is removed", (page) =>
           row(page).waitFor({ state: "detached" }),
         );
-        // The member is invited back and accepts while the list still shows the invitation.
         const api = yield* Api;
         const sent = yield* api.request(
           actors.owner,

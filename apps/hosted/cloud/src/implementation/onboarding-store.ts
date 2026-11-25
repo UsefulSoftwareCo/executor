@@ -25,8 +25,6 @@ const EntryState = Schema.Struct({
   provisioned: Schema.Boolean,
 });
 
-// Query mappings only. Better Auth owns its table; the cloud migration owns the
-// existing company table. Reading these mappings does not run either migrator.
 const onboardingSchema = schema({
   version: "1.0.0",
   tables: {
@@ -50,7 +48,6 @@ const onboardingSchema = schema({
 });
 const storage = fumadb({ namespace: "cloud-onboarding", schemas: [onboardingSchema] });
 
-/** Typed reads and cache writes; PostgreSQL-specific locking and batching stay at this boundary. */
 export const makeOnboardingStore = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const provide = <A, E>(operation: Effect.Effect<A, E, SqlClient.SqlClient>) =>
@@ -65,9 +62,6 @@ export const makeOnboardingStore = Effect.gen(function* () {
       Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(User))),
       Effect.map((rows) => rows[0]),
     );
-  // This statement must follow the user lock so a waiting request sees the
-  // previous transaction's committed membership under READ COMMITTED. The invitation is one that
-  // can still be accepted: its inviter still holds a role that may invite (`inviterMayInvite`).
   const state = (id: string, email: string) =>
     sql`select
     coalesce((select jsonb_agg(jsonb_build_object(
@@ -93,8 +87,6 @@ export const makeOnboardingStore = Effect.gen(function* () {
     Effect.gen(function* () {
       const id = yield* Effect.sync(() => crypto.randomUUID());
       const memberId = yield* Effect.sync(() => crypto.randomUUID());
-      // No preflight slug read: the unique constraint arbitrates concurrent names.
-      // A collision writes none of the three records, allowing a suffix retry.
       return yield* sql`with created as (
       insert into organization (id, name, slug, logo, "createdAt")
         values (${id}, ${details.name}, ${slug}, ${details.logo}, now())
@@ -153,7 +145,6 @@ export const makeOnboardingStore = Effect.gen(function* () {
         rows[0] ? Effect.succeed(rows[0].allowed) : Effect.fail(new OnboardingUnavailable()),
       ),
     );
-  /** Keep the first assignment: a retried creation never changes what was already shown. */
   const assignSkip = (userId: string, organizationId: string, variant: SetupSkip) =>
     sql`insert into cloud_setup_skip_assignment (user_id, organization_id, variant)
       values (${userId}, ${organizationId}, ${variant})
@@ -161,14 +152,12 @@ export const makeOnboardingStore = Effect.gen(function* () {
   const SkipAssignment = Schema.Array(
     Schema.Struct({ variant: SetupSkip, completed: Schema.Boolean }),
   );
-  /** The member's skip assignment for this team, and whether a required setup finished. */
   const skipAssignment = (userId: string, organizationId: string) =>
     sql`select variant, completed_at is not null as completed from cloud_setup_skip_assignment
       where user_id = ${userId} and organization_id = ${organizationId}`.pipe(
       Effect.flatMap(Schema.decodeUnknownEffect(SkipAssignment)),
       Effect.map((rows) => rows[0]),
     );
-  /** Marks the skip assignment seen; only the one request that marks it gets the variant back. */
   const claimSkipExposure = (userId: string, organizationId: string) =>
     sql`update cloud_setup_skip_assignment set exposed_at = now()
       where user_id = ${userId} and organization_id = ${organizationId} and exposed_at is null
@@ -178,7 +167,6 @@ export const makeOnboardingStore = Effect.gen(function* () {
       ),
       Effect.map((rows) => rows[0]?.variant),
     );
-  /** Setup finished: from now on the dashboard stays open, whatever later changes. */
   const completeSetup = (userId: string, organizationId: string) =>
     sql`update cloud_setup_skip_assignment set completed_at = now()
       where user_id = ${userId} and organization_id = ${organizationId}

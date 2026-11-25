@@ -38,7 +38,6 @@ const legacyRows = `${reservedTablePrefix}legacy_rows`;
 const materialize = <Row extends SqlRow>(
   cursor: ReturnType<AppSqlStorage["sql"]["exec"]>,
 ): SqlCursor<Row> => {
-  // SAFETY: SQLite returns plain rows of SqlValue; the author names the row type it selected.
   const rows = cursor.toArray() as Row[];
   return {
     columnNames: cursor.columnNames,
@@ -48,7 +47,6 @@ const materialize = <Row extends SqlRow>(
     one: () => {
       if (rows.length !== 1)
         throw new Error(`Expected exactly one row, but the statement returned ${rows.length}.`);
-      // SAFETY: the length check above guarantees the element.
       return rows[0] as Row;
     },
     [Symbol.iterator]: () => rows[Symbol.iterator](),
@@ -188,8 +186,6 @@ export const authorSql = (
         return cursor;
       };
       if (!open) return storage.transactionSync(statement);
-      // A statement that fails inside a transaction fails the transaction, even if the app
-      // catches the error: a failed statement can leave partial changes, as `INSERT OR FAIL` does.
       try {
         return statement();
       } catch (error) {
@@ -198,12 +194,8 @@ export const authorSql = (
       }
     }
     if (open) {
-      // Inside a transaction a read is an ordinary statement of it; the transaction's own
-      // rules decide whether it commits.
       return runStatement(query, bindings, "write");
     }
-    // A read runs in a transaction that is always rolled back, so whatever it would have
-    // changed, rows or schema, never commits. SQLite's own count of changed rows explains why.
     const before = changes();
     let read: SqlCursor<Row> | undefined;
     let changed = false;
@@ -266,13 +258,10 @@ export const authorSql = (
       try {
         const complete = () => {
           const value = work(handle.tx);
-          // An async callback would commit what ran before its first await; refuse it whole.
           if (isThenable(value))
             throw new Error(
               "ctx.sql.transaction(...) callbacks are synchronous and cannot await. Call outside services before or after the transaction.",
             );
-          // A failed statement inside the callback rolls the transaction back, even if it was
-          // caught.
           if (violation !== undefined) throw violation;
           return value;
         };
@@ -289,13 +278,11 @@ export const authorSql = (
         if (saved !== undefined) {
           if (saved.fingerprint !== step.fingerprint)
             throw new Error("This workflow step already ran with different input.");
-          // A retry after its events could not be saved emits them again, with their IDs.
           const replayed = storage.sql
             .exec(`SELECT events FROM ${stepEvents} WHERE id = ?`, step.key)
             .toArray()[0];
           if (replayed !== undefined && options.emitted !== undefined)
             options.emitted.push(...(JSON.parse(String(replayed.events)) as unknown[]));
-          // SAFETY: the receipt holds what this transaction returned, encoded below.
           return JSON.parse(String(saved.result)) as T;
         }
         const encoded = JSON.stringify(complete() ?? null);
@@ -312,15 +299,12 @@ export const authorSql = (
           step.fingerprint,
           encoded,
         );
-        // A step returns its result as JSON on every attempt, so a replay matches the first run.
-        // SAFETY: the receipt holds what this transaction returned, encoded above.
         return JSON.parse(encoded) as T;
       } finally {
         open = false;
         handle.end();
       }
     };
-    // A failure anywhere, including at commit, rolls back the writes and the events with them.
     try {
       return storage.transactionSync(body);
     } catch (error) {
@@ -329,7 +313,6 @@ export const authorSql = (
     }
   };
   const writer: Sql = {
-    // A step's writes go through its one transaction, which also records its receipt.
     exec: (query, ...bindings) => run(query, bindings, options.step ? "read" : "write"),
     transaction,
   };
@@ -414,7 +397,6 @@ const statementsOf = (script: string) => {
     const closing =
       char === "'" || char === '"' || char === "`" ? char : char === "[" ? "]" : undefined;
     if (closing !== undefined) {
-      // A doubled quote is an escaped quote; an unterminated one runs to the end, as SQLite reads it.
       let after = index + 1;
       while (true) {
         const found = script.indexOf(closing, after);
@@ -491,15 +473,12 @@ const History = Schema.Array(
 export const migrate = (storage: AppSqlStorage, files: readonly SkillFile[]) =>
   Effect.gen(function* () {
     const migrations = yield* migrationsOf(files);
-    // A migration may change connection settings while it runs, for example turning off foreign
-    // keys to rebuild a table; whatever happens, they are Executor's again afterwards.
     const baseline = readSettings(storage);
     return yield* Effect.sync(() =>
       storage.transactionSync(() => {
         storage.sql.exec(
           `CREATE TABLE IF NOT EXISTS ${migrationsTable} (id INTEGER PRIMARY KEY, path TEXT NOT NULL, hash TEXT NOT NULL, applied_at TEXT NOT NULL)`,
         );
-        // Rebuilt on every run: a retained older build may have created `app_rows` since.
         const stored =
           storage.sql
             .exec("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'app_rows'")
@@ -531,13 +510,10 @@ export const migrate = (storage: AppSqlStorage, files: readonly SkillFile[]) =>
         const pending = migrations.slice(history.length);
         const appliedAt = new Date().toISOString();
         for (const [offset, migration] of pending.entries()) {
-          // The hash covers the whole file; only the statements run. A file of only comments
-          // runs nothing.
           const statements = statementsOf(migration.content);
           try {
             if (statements !== "") storage.sql.exec(statements);
           } catch (error) {
-            // Throwing rolls back every migration of this run.
             throw new MigrationFailed({
               path: migration.path,
               reason: error instanceof Error ? error.message : String(error),
@@ -557,7 +533,6 @@ export const migrate = (storage: AppSqlStorage, files: readonly SkillFile[]) =>
         }));
       }),
     ).pipe(
-      // Both are thrown inside the transaction so that it rolls back; they are expected failures.
       Effect.catchDefect((defect) =>
         Schema.is(MigrationFailed)(defect) || Schema.is(MigrationHistoryChanged)(defect)
           ? Effect.fail(defect)

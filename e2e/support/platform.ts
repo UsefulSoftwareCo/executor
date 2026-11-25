@@ -1,4 +1,3 @@
-/** Shared test runtime: native services and a real clock, with no application imports. */
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Config, Context, Effect, FileSystem, Layer, Redacted, Schema } from "effect";
 import { FetchHttpClient } from "effect/http";
@@ -6,10 +5,8 @@ import { RunMetadata } from "../report-model.ts";
 import { FixtureControl, PreparedScenarios } from "../sdk/contracts.ts";
 import { indented, keepCause, keptCauseText, secretConfig } from "./failure-text.ts";
 
-/** Per-action capture delay; zero keeps unattended runs at full speed. */
 export const RecordingPaceMs = Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 3000 }));
 
-/** Runtime facts supplied once by the scoped runner, not inferred by scenarios. */
 export class Target extends Context.Service<
   Target,
   {
@@ -53,9 +50,6 @@ export class Target extends Context.Service<
       return {
         metadata,
         directory,
-        // The suite writes the Cloud organizations it prepared to the run's directory; a file,
-        // not an environment variable, since the list grows with the suite past the 128 KiB a
-        // variable may hold. A run with nothing prepared has none.
         preparedScenarios: yield* Schema.decodeUnknownEffect(
           Schema.fromJsonString(PreparedScenarios),
         )(
@@ -78,15 +72,9 @@ export class Target extends Context.Service<
     }),
   );
 }
-/** Runtime shared by Effect Vitest layers; target resources belong to the runner. */
 export const RuntimeLive = Target.layer.pipe(
   Layer.provideMerge(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer)),
 );
-/**
- * Boundary failure with its operation label and, when it is printed, the masked text of its cause
- * (see `failure-text.ts`). The raw SDK error stays redacted: it can hold headers, cookies and
- * tokens.
- */
 export class DriverFailed extends Schema.TaggedError<DriverFailed>()("DriverFailed", {
   operation: Schema.String,
   cause: Schema.Redacted(Schema.Unknown),
@@ -95,23 +83,17 @@ export class DriverFailed extends Schema.TaggedError<DriverFailed>()("DriverFail
     return `Driver operation failed: ${this.operation}\n  ${indented(keptCauseText(this) ?? "A redacted value")}`;
   }
 }
-/**
- * Keep a new failure's redacted cause beside it, so its message can name the cause after a test
- * runner's serializer has replaced the error's own `cause` property.
- */
 export const withCause = <E extends { readonly cause?: Redacted.Redacted<unknown> | undefined }>(
   error: E,
 ): E => {
   keepCause(error, error.cause);
   return error;
 };
-/** Lift exactly one third-party operation. Orchestration stays in Effect. */
 export const driver = <A>(operation: string, run: (signal: AbortSignal) => Promise<A>) =>
   Effect.tryPromise({
     try: run,
     catch: (cause) => withCause(new DriverFailed({ operation, cause: Redacted.make(cause) })),
   });
-/** Public wire response, fully consumed inside the request scope. */
 export interface Response {
   readonly status: number;
   readonly body: unknown;

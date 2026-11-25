@@ -1,4 +1,3 @@
-/** Product metadata commits with SDK resources using the same SQL transaction context. */
 import {
   AccountConnectionRefused,
   AccountConnectionTargetChanged,
@@ -36,45 +35,29 @@ type AppCreation =
 const AppCreation = Context.Reference<AppCreation>("hosted/AppCreation", {
   defaultValue: () => ({ kind: "member" }),
 });
-/** The member who owns a new account: the connecting member unless a system installer names one. */
 type AccountCreation =
   | { readonly kind: "member" }
   | { readonly kind: "attributed"; readonly user: string };
 const AccountCreation = Context.Reference<AccountCreation>("hosted/AccountCreation", {
   defaultValue: () => ({ kind: "member" }),
 });
-/**
- * A copy a data step makes of `from`, such as for a profile with other accounts, is shared exactly
- * as `from` is: the same creator, audience and groups.
- */
 export const copiedAppCreation =
   (from: AppId) =>
   <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     effect.pipe(Effect.provideService(AppCreation, { kind: "copy", from }));
-/** Only the explicit system installer may create an unattributed organization app. */
 export const organizationAppCreation = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   effect.pipe(Effect.provideService(AppCreation, { kind: "system" }));
-/**
- * An account a system installer saves for a named member, who owns it, such as a managed per-user
- * key. Every account is personal.
- */
 export const personalAccountCreation =
   (user: string) =>
   <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     effect.pipe(Effect.provideService(AccountCreation, { kind: "attributed", user }));
 
-/**
- * Who may use a stored OAuth client: the audience an administrator chose when registering it, or
- * everyone for a client Executor registered automatically or a data step moved, which has no
- * creator.
- */
 type OAuthClientCreation =
   | { readonly kind: "member"; readonly audience: typeof AppAudience.Type }
   | { readonly kind: "system" };
 const OAuthClientCreation = Context.Reference<OAuthClientCreation>("hosted/OAuthClientCreation", {
   defaultValue: () => ({ kind: "system" }),
 });
-/** The audience is recorded with the client's access record, in the client's transaction. */
 export const oauthClientAudience =
   (audience: typeof AppAudience.Type) =>
   <A, E, R>(effect: Effect.Effect<A, E, R>) =>
@@ -87,10 +70,6 @@ const organizationOf = (owner: OwnerId) =>
       )
     : Effect.fail(new StorageError());
 
-/**
- * The rows that let a subject use these apps now, as a member: exactly one for each app they may
- * use.
- */
 const appsUse = (
   sql: SqlClient.SqlClient,
   input: {
@@ -105,13 +84,11 @@ const appsUse = (
         or (p.audience = 'groups' and exists(select 1 from hosted_app_groups g
           join hosted_group_members gm on gm.group_id = g.group_id
           where g.app_id = p.id and gm.member_id = m.id)))`;
-/** The rows that let a subject use an app now, as a member: exactly one when they may. */
 const appUse = (
   sql: SqlClient.SqlClient,
   input: { readonly id: AppId; readonly organization: OrganizationId; readonly actor: string },
 ) => appsUse(sql, { ids: [input.id], organization: input.organization, actor: input.actor });
 
-/** Whether a subject is a member who may use the app now, as any of its operations requires. */
 export const actorUsesApp = (
   sql: SqlClient.SqlClient,
   input: { readonly id: AppId; readonly owner: OwnerId; readonly actor: string },
@@ -122,16 +99,13 @@ export const actorUsesApp = (
     return rows.length === 1;
   }).pipe(Effect.catchTag("SqlError", () => new StorageError()));
 
-/** What the account checks read of an account: its ID and the owner the SDK resolved it under. */
 type AccountOwner = Pick<Account, "id" | "owner">;
-// An account outside an organization is never authorized; it is refused in its turn.
 const organizationAccounts = <A extends AccountOwner>(accounts: readonly A[]) =>
   accounts.filter(
     (account) =>
       account.owner.startsWith("organization:") &&
       Schema.is(OrganizationId)(account.owner.slice("organization:".length)),
   );
-/** The accounts the user owns and may still use as a member, with the owner each belongs to. */
 const accountAccess = (sql: SqlClient.SqlClient, accounts: readonly AccountOwner[], user: string) =>
   sql`select p.account_id as id, 'organization:' || p.organization_id as owner
         from hosted_account_access p
@@ -150,7 +124,6 @@ const AppRecheck = Schema.Struct({
   accounts: Schema.fromJsonString(Schema.Array(AllowedAccount)),
   appLinks: Schema.fromJsonString(Schema.Array(AllowedUse)),
 });
-/** {@link AppRecheck} for several apps: the row of each app the actor may use, and each app link. */
 const AppsRecheck = Schema.Struct({
   access: Schema.fromJsonString(Schema.Array(AppId)),
   accounts: AppRecheck.fields.accounts,
@@ -158,18 +131,12 @@ const AppsRecheck = Schema.Struct({
     Schema.Array(Schema.Struct({ ...AllowedUse.fields, app: AppId })),
   ),
 });
-// Each account must still belong to the owner the invocation resolved it under.
 const allowedOf = (accounts: readonly AccountOwner[], allowed: ReadonlyArray<AllowedAccount>) => {
   const owners = new Map(accounts.map((account) => [account.id, account.owner]));
   return new Set(allowed.filter((row) => owners.get(row.id) === row.owner).map((row) => row.id));
 };
-/** An app requirement's account, as the SDK asks it to be checked. */
 type AppUse = Parameters<ResourceLifecycle["appResolving"]>[2][number];
 const useKey = (requirement: string, account: AccountId) => JSON.stringify([requirement, account]);
-/**
- * The accounts that passed every check asked of them: each user account by `users`, and each of an
- * account's app requirements by `uses`. An account in both lists must pass both.
- */
 const passedEvery = (
   accounts: readonly AccountOwner[],
   appUses: readonly AppUse[],
@@ -190,15 +157,8 @@ const passedEvery = (
     ),
   );
 };
-/** An empty JSON list, for a check with nothing to read. */
 const noRows = "'[]'::text";
 
-/**
- * Capture the host client, not a transaction or actor; both resolve on each resource write.
- * Hooks link webhook sources through the executor they belong to, in its tracked transaction
- * when called outside one, so they read it only once it exists. Pass the result to
- * `createExecutor` as `hooks`, then hand the created executor to `attach`.
- */
 export const hostedResourceLifecycle = Effect.gen(function* () {
   const created: { executor?: Executor; requireVerifiedEmail?: boolean | undefined } = {};
   const executor = Effect.suspend(() =>
@@ -226,9 +186,6 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
             linked.map((link) => ({ requirement: link.requirement, account: link.id })),
           ),
         ),
-      // Called outside resource transactions; the handover serializes with link and unlink. The
-      // source's new actor or its removal is saved intent; reconcile it once committed. A caller
-      // that supplies a wake gets it; background resolution leaves it to the next poll.
       sourceActorLost: (input) =>
         Effect.flatMap(webhooks, (sources) =>
           transaction(sourceActorLost(sql, sources, input)),
@@ -245,18 +202,11 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
             linked.map((link) => ({ requirement: link.requirement, account: link.id })),
           ),
         ),
-      // The actor must be a member who may use the app now: a member removed from the app's
-      // groups stops running it, including schedules, webhook callbacks and workflow steps. The
-      // actor's use of its user accounts, and each app requirement's app link, are rechecked in
-      // the same statement. App-scope work has no actor: the app must still be its organization's, and
-      // it has no user accounts.
       appResolving: (app, accounts, appUses) =>
         Effect.gen(function* () {
           const user = yield* CurrentUserId;
           const organization = yield* organizationOf(app.owner);
-          // The SDK resolved each account with its owner; only the product's policy is checked here.
           const owned = user === undefined ? [] : organizationAccounts(accounts);
-          // An app account is the app owner's; one resolved under another owner is refused.
           const uses = appUses.filter((use) => use.account.owner === app.owner);
           const access =
             user === undefined
@@ -299,9 +249,6 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
             SchemaError: () => new StorageError(),
           }),
         ),
-      // `appResolving` for every app a search reads, in one statement: the rows that let the actor
-      // use each app, the actor's use of every user account the apps run with, and the app links
-      // of every app requirement's account. Each app passes or is refused as it would be alone.
       appsResolving: (owner, apps) =>
         Effect.gen(function* () {
           if (apps.length === 0) return [];
@@ -310,7 +257,6 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
           const ids = [...new Set(apps.map((app) => app.id))];
           const owned =
             user === undefined ? [] : organizationAccounts(apps.flatMap((app) => app.accounts));
-          // An app account is the app owner's; one resolved under another owner is refused.
           const usesOf = (app: (typeof apps)[number]) =>
             app.appUses.filter((use) => use.account.owner === owner);
           const used = apps.filter((app) => usesOf(app).length > 0);
@@ -343,7 +289,6 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
           const checked = (yield* Schema.decodeUnknownEffect(Schema.Array(AppsRecheck))(rows))[0];
           if (checked === undefined) return yield* new StorageError();
           return apps.map((app): Result.Result<ReadonlySet<AccountId>, StorageError> => {
-            // Exactly one row lets the actor use the app, as `appResolving` requires.
             if (checked.access.filter((id) => id === app.id).length !== 1)
               return Result.fail(new StorageError());
             const uses = usesOf(app);
@@ -371,12 +316,6 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
             SchemaError: () => new StorageError(),
           }),
         ),
-      // Removing what the app registered needs no app access. User accounts are checked by the
-      // registration's actor's use; an app-account registration has none. An app account passes
-      // when the app could still use it if linked: it belongs to the app's organization under a
-      // valid access record and its owner is still a member. No current app link is
-      // required, since unlinking is what removes its registrations. A departed member's personal
-      // account is refused, as resolving it is, and its registrations wait for manual removal.
       removalResolving: (app, accounts, appUses) =>
         Effect.gen(function* () {
           const user = yield* CurrentUserId;
@@ -435,7 +374,6 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
           if (user === undefined) return yield* new StorageError();
           const owned = organizationAccounts(accounts);
           if (owned.length === 0) return new Set<AccountId>();
-          // The SDK resolved each account with its owner; only the product's policy is checked here.
           const rows = yield* accountAccess(sql, owned, user);
           return allowedOf(
             owned,
@@ -451,11 +389,6 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
         Effect.gen(function* () {
           const user = yield* CurrentUserId;
           if (user === undefined) return yield* new StorageError();
-          // The SDK supplies the connection's reconnect target and the app requirement it links
-          // to, so the product checks its own access rows only. Whether the requirement's scope
-          // lets this member complete it is checked by `appAccountConnected`, under the app's
-          // lock, against the version the SDK completes against. A member who lost the access
-          // the connection needs, such as ownership of the account it reconnects, is refused.
           const refused = new AccountConnectionRefused(connection.target);
           const reconnect = connection.reconnectAccount;
           const rows = yield* sql`select c.connection_id from hosted_connection_access c
@@ -493,7 +426,6 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
           yield* sql`insert into hosted_app_access (id, organization_id, creator_id, audience)
         values (${app.id}, ${organization}, ${creator}, ${intent.kind === "member" ? "private" : "everyone"})`;
         }).pipe(Effect.catchTag("SqlError", () => new StorageError())),
-      // Renewal mints keys with Better Auth's key plugin, so it loads only after a refusal.
       secretsRejected: (input) =>
         Effect.promise(() => import("./managed-executor-key.ts")).pipe(
           Effect.flatMap(({ renewManagedExecutorKey }) =>
@@ -536,8 +468,6 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
             OrganizationForbidden: () => new StorageError(),
           }),
         ),
-      // Whichever way a sign-in resolved the client, the caller must be in its audience now. A client
-      // without an access record, or a caller who is no longer a member, is refused.
       oauthClientResolving: (client) =>
         Effect.gen(function* () {
           const user = yield* CurrentUserId;
@@ -552,11 +482,6 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
               where g.client_id = p.client_id and gm.member_id = m.id)))`;
           return rows.length === 1;
         }).pipe(Effect.catchTag("SqlError", () => new StorageError())),
-      // Clients one owner held the same credentials in for one server become one. Whoever could use
-      // any of them may use the survivor: the union of their audiences, when one audience says it.
-      // Everyone, if any was everyone's; otherwise the union of their groups; otherwise one person's
-      // private client. A private client with groups, or two people's private clients, cannot be
-      // one audience without widening or narrowing who may use it, so the step leaves them.
       oauthClientsMerging: ({ survivor, merged, apply }) =>
         Effect.gen(function* () {
           const organization = yield* organizationOf(survivor.owner);
@@ -573,7 +498,6 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
           where organization_id = ${organization} and ${sql.in("client_id", ids)}`).map(
             (row) => row.group_id,
           );
-          // Clients without a record are usable by nobody, so they add nobody.
           if (rows.length === 0) return true;
           const privates = new Set(
             rows.filter((row) => row.audience === "private").map((row) => row.creator_id),
@@ -618,16 +542,8 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
         where p.account_id = ${account.id} and p.organization_id = ${organization}
         and p.personal_user_id = ${user} for update`;
           if (policy.length !== 1) return yield* new StorageError();
-          // An app uses an app link for every caller: it must be unlinked first. The route refuses
-          // with the apps that link it; this refuses an app link made since. The access row's lock
-          // above makes a concurrent link wait: inserting a link takes a key share lock on the
-          // account row, which deleting the account then holds exclusively.
           yield* sql`select id from executor_accounts where id = ${account.id} for update`;
           if ((yield* appLinkApps(sql, account.id)).length > 0) return yield* new StorageError();
-          // Unlink the account's user links now, before the SDK removes its webhook sources: link,
-          // unlink and app removal all take links before sources, so leaving this to the account
-          // row's cascade would take them in the opposite order and deadlock with removing an app
-          // that links the account. Deleting the SDK account removes its access policy and grants.
           yield* sql`delete from hosted_app_account_links where account = ${account.id}`;
         }).pipe(Effect.catchTag("SqlError", () => new StorageError())),
       appRemoving: (app) =>
@@ -635,22 +551,12 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
           Effect.asVoid,
           Effect.catchTag("SqlError", () => new StorageError()),
         ),
-      // An account connected for a user requirement is linked for its connecting member; one for
-      // an app requirement is linked for everyone. This runs under the app's lock, with the scope the
-      // active version gives the requirement now; `connectionCompleting` ran before the lock,
-      // so a version activated since may have changed it. The connection must have been
-      // started for this scope, or its target changed; and by its completing member, who for a
-      // user requirement may use the app, and for an app requirement manages the app and may use
-      // the account, now that the account's access record exists. Otherwise the member is refused.
-      // Managing an account is not using it.
       appAccountConnected: (input) =>
         Effect.gen(function* () {
           const user = yield* CurrentUserId;
           if (user === undefined) return yield* new StorageError();
           const target = { app: input.app, requirement: input.requirement };
           const organization = yield* organizationOf(input.account.owner);
-          // A system-created app has no creator, so the comparison is null; `is true` keeps the
-          // selected predicate a boolean.
           const authority =
             input.scope === "app"
               ? sql`(m.role in ('owner','admin') or a.creator_id = m."userId") is true`
@@ -704,11 +610,6 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
   });
   return {
     hooks,
-    /**
-     * Let the hooks reach the executor they were created for. `requireVerifiedEmail` is what the
-     * host's member setup requires of a managed key's member (default true), which renewing one
-     * requires too.
-     */
     attach: (instance: Executor, options?: { readonly requireVerifiedEmail?: boolean }) =>
       Effect.sync(() => {
         created.executor = instance;

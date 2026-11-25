@@ -1,4 +1,3 @@
-/** Edit a skill file in place from working source and save it as a Git commit. */
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { AlertCircleIcon, Settings05Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -34,11 +33,6 @@ import {
   withSkillDescription,
 } from "./skill-document.ts";
 
-/**
- * Readers never download the editor; it loads when an editable file opens. `SkillFileEditor`
- * renders it only in a browser, after hydration, so a server build drops each import below:
- * every module a Worker uploads is compiled whenever one of its isolates starts.
- */
 const serverRender = () => Promise.reject(new Error("The skill editor renders only in a browser"));
 const VisualEditor = lazy(() =>
   (import.meta.env.SSR ? serverRender() : import("./markdown-editor.tsx")).then((module) => ({
@@ -53,10 +47,6 @@ const VimEditor = lazy(() =>
 
 const vimKey = "executor:skill-editor:vim";
 
-/**
- * A per-browser preference: people who use Vim keys want them in every file. The server cannot
- * see it, so it reads as off until the page has hydrated.
- */
 function useVimMode(hydrated: boolean) {
   const [chosen, setChosen] = useState<boolean>();
   const enabled = chosen ?? (hydrated && localStorage.getItem(vimKey) === "on");
@@ -67,7 +57,6 @@ function useVimMode(hydrated: boolean) {
   return [enabled, set] as const;
 }
 
-/** A settings menu row with a switch; the menu stays open so several settings can change. */
 function SwitchItem({
   checked,
   onToggle,
@@ -98,27 +87,17 @@ function SwitchItem({
   );
 }
 
-/** A commit made by the editor, and whether the person asked to deploy it. */
 export interface Committed {
   readonly commit: string;
   readonly deploy: boolean;
 }
 
-/** Hosts that can write app source pass their management atoms; others render skills read-only. */
 export interface SkillEditing<E> {
   readonly atoms: AppManagementAtoms<E>;
   readonly onApp: AppAcknowledgement;
-  /** Report draft state to the host navigation guard. */
   readonly onDirty: (dirty: boolean) => void;
 }
 
-/**
- * The file is the editor: it renders like the reader and is always editable. The header shows
- * the save controls. `reader` stands in while the editor code loads, so the page never jumps.
- * The editor reads this browser's settings and loads its code in the browser, so the server and
- * the hydrating render show the header, description and reader, and the editor then replaces
- * only the reader.
- */
 export function SkillFileEditor<E>({
   app,
   path,
@@ -132,10 +111,8 @@ export function SkillFileEditor<E>({
   onCommitted,
 }: {
   readonly app: App;
-  /** Path in app source, for example `skills/<name>/SKILL.md`. */
   readonly path: string;
   readonly skill: string;
-  /** Exact working-source content. A later read never replaces an open draft's base. */
   readonly stored: string;
   readonly editing: SkillEditing<E>;
   readonly Failure: ComponentType<FailureProps<E>>;
@@ -153,9 +130,7 @@ export function SkillFileEditor<E>({
   const hydrated = useHydrated();
   const [vimMode, setVimMode] = useVimMode(hydrated);
   const [chosenMode, setMode] = useState<"visual" | "markdown">();
-  // Vim keys edit the Markdown source, so Vim users open files there.
   const mode = chosenMode ?? (markdown && !vimMode ? "visual" : "markdown");
-  // Each visual session keeps bytes relative to the text it loaded.
   const [session, setSession] = useState({ id: 0, original: parts.body });
   const commit = useAtomSet(editing.atoms.commitFile(app.id), { mode: "promiseExit" });
   const version = useAtomValue(editing.atoms.deploy(app.id));
@@ -208,7 +183,6 @@ export function SkillFileEditor<E>({
     if (Exit.isFailure(result)) setError(result.cause);
     else if (result.value._tag === "FileChanged") setChanged(true);
     else {
-      // Keep any text typed while saving; only the saved snapshot becomes the new base.
       setBase(content);
       onCommitted({ commit: result.value.commit, deploy: true });
     }
@@ -260,14 +234,12 @@ export function SkillFileEditor<E>({
               size="sm"
               disabled={saving}
               onClick={() => {
-                // `stored` is the latest read, which may be newer than this draft's base.
                 if (window.confirm("Discard your changes to this file?")) load(stored);
               }}
             >
               Discard
             </Button>
           )}
-          {/* Spins until the saved commit is deployed; see `SkillDeployStatus`. */}
           <Button
             size="sm"
             loading={saving || version.waiting}
@@ -350,10 +322,6 @@ export function SkillFileEditor<E>({
   );
 }
 
-/**
- * Deploy a commit made by the editor; the committed source is safe even if this fails. It renders
- * nothing: `SkillDeployStatus` shows the deploy in the editor's toolbar, so saving moves nothing.
- */
 export function SkillDeploy<E>({
   app,
   commit,
@@ -363,15 +331,12 @@ export function SkillDeploy<E>({
 }: {
   readonly app: App;
   readonly commit: string;
-  /** Start deploying on mount, independently of the selected editor. */
   readonly deployNow: boolean;
-  /** The owner clears its request so a remount never deploys twice. */
   readonly onStarted: () => void;
   readonly editing: SkillEditing<E>;
 }) {
   const deploy = useAtomSet(editing.atoms.deploy(app.id), { mode: "promise" });
   const started = useRef(false);
-  // Before paint, so the Save button's spinner runs on from the commit into the deploy.
   useLayoutEffect(() => {
     if (!deployNow || started.current) return;
     started.current = true;
@@ -381,11 +346,6 @@ export function SkillDeploy<E>({
   return null;
 }
 
-/**
- * The deploy of a commit made by the editor, inside the toolbar. The Save button's spinner shows
- * the deploy in progress, so only screen readers hear it start and finish. A deploy that did not
- * happen shows a compact control whose popover holds the failure and Retry, opened when it fails.
- */
 export function SkillDeployStatus<E>({
   app,
   commit,
@@ -402,14 +362,12 @@ export function SkillDeployStatus<E>({
   const state = useAtomValue(editing.atoms.deploy(app.id));
   const deploy = useAtomSet(editing.atoms.deploy(app.id), { mode: "promise" });
   const failure = !state.waiting && AsyncResult.isFailure(state) ? state.cause : undefined;
-  // A new failure opens the popover; opening another file remounts this closed and does not reopen it.
   const [seen, setSeen] = useState(failure);
   const [open, setOpen] = useState(false);
   if (failure !== seen) {
     setSeen(failure);
     if (failure !== undefined) setOpen(true);
   }
-  // The deploy atom is shared with the Source view; only a deploy of this commit counts.
   const deployed = AsyncResult.isSuccess(state) && state.value.version.sourceCommit === commit;
   const deploying = state.waiting || deployNow;
   return (

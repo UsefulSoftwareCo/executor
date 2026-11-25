@@ -1,10 +1,8 @@
-/** Atomic filesystem objects through Effect platform services. */
 import { Effect, FileSystem, Option, Path, Predicate, Schema, Stream } from "effect";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { BlobKey, BlobStoreError, type BlobStorage } from "../contracts/blobs.ts";
 import { pageOf, rangeWindow, removeEach } from "./blob-streams.ts";
 
-/** Keep objects under a caller-owned directory. Symlinks may not escape that root. Construction performs no I/O. */
 export const filesystemBlobStore = (options: { readonly directory: string }): BlobStorage => {
   const location = (key: BlobKey, write: boolean) =>
     Effect.gen(function* () {
@@ -18,7 +16,6 @@ export const filesystemBlobStore = (options: { readonly directory: string }): Bl
       const target = path.resolve(root, key);
       if (!target.startsWith(root + path.sep))
         return yield* Effect.fail(new BlobStoreError({ operation: write ? "put" : "get" }));
-      // Verify existing ancestors before creating any directories through a symlink.
       let parent = path.dirname(target);
       while (!(yield* fs.exists(parent))) parent = path.dirname(parent);
       const actualParent = yield* fs.realPath(parent);
@@ -92,7 +89,6 @@ export const filesystemBlobStore = (options: { readonly directory: string }): Bl
         if (found === undefined || !(yield* found.fs.exists(found.target)))
           return { names: [], truncated: false };
         const names = yield* found.fs.readDirectory(found.target);
-        // Temporary `.blob-` directories of writes in progress are not objects.
         const files = yield* Effect.filter(names, (name) =>
           found.fs
             .stat(found.path.join(found.target, name))

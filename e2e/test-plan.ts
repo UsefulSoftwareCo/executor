@@ -1,8 +1,6 @@
-/** A target's applicability is explicit. Missing evidence never implies N/A. */
 import { Schema } from "effect";
 import type { Target } from "./report-model.ts";
 
-/** Scheduled tests need a real result; other dispositions explain why none is expected. */
 export const TargetPlan = Schema.Union([
   Schema.Struct({
     status: Schema.Literal("scheduled"),
@@ -29,24 +27,15 @@ export const TargetPlan = Schema.Union([
     reason: Schema.NonEmptyString,
   }),
 ]);
-/** Snapshot this plan in a report so later configuration changes cannot rewrite its meaning. */
 export const TestPlan = Schema.Struct({
   file: Schema.String,
   title: Schema.String,
   fixtures: Schema.optional(Schema.Literals(["actors", "cli"])),
   appOrigin: Schema.optional(Schema.Literal(true)),
-  /** Opt in to writing legacy/upgrade-era rows into the stopped product's own database. */
   legacyStorage: Schema.optional(Schema.Literal(true)),
   managementApps: Schema.optional(Schema.Array(Schema.Literals(["owner", "admin", "member"]))),
-  /**
-   * Setup waits for an actors scenario's organization to finish its own provisioning (its
-   * Executor app and the owner's and admin's managed keys). `observed` skips that wait for a
-   * scenario whose subject is the provisioning itself, so it still sees it in progress.
-   */
   provisioning: Schema.optional(Schema.Literal("observed")),
-  /** Labels of extra Testing SDK scenarios created during setup; each has its own closeable scope. */
   sdkScenarios: Schema.optional(Schema.Array(Schema.NonEmptyString)),
-  /** Operator settings the scenario's own product process starts with. */
   serverEnvironment: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   targets: Schema.Struct({
     "self-host": TargetPlan,
@@ -56,48 +45,16 @@ export const TestPlan = Schema.Struct({
 });
 const scheduled = { status: "scheduled" } as const;
 const managedCloud = { status: "scheduled", runtime: "managed" } as const;
-/** Reads or writes app source, which needs Cloudflare Artifacts: managed local Cloud has none. */
 const sourceStorageCloud = { status: "scheduled", runtime: "attached" } as const;
-/**
- * Registers Executor's OAuth callback with a service that accepts only HTTPS or bare loopback
- * redirects: managed local Cloud's callback is plain HTTP on a named `.localhost` host.
- */
 const httpsCallbackCloud = { status: "scheduled", runtime: "attached" } as const;
-/**
- * Installs an app from the official app feed production publishes, which deployed stages read:
- * managed local Cloud reads no feed and lists only the built-in Executor app.
- */
 const officialFeedCloud = { status: "scheduled", runtime: "attached" } as const;
-/**
- * Reads the OAuth client metadata document a deployed stage publishes: managed local Cloud has no
- * public HTTPS origin, so it publishes none.
- */
 const publicDocumentCloud = { status: "scheduled", runtime: "attached" } as const;
-/** Runs alone on a managed local Cloud started with Better Auth's per-address limit on. */
 const rateLimitedCloud = { status: "scheduled", runtime: "rate-limited" } as const;
 const rolledBackCloud = { status: "scheduled", runtime: "rolled-back" } as const;
-/** Runs on a managed test stage that signs in through a second local Cloud's OAuth proxy. */
 const oauthProxyPreviewCloud = { status: "scheduled", runtime: "oauth-proxy-preview" } as const;
-/**
- * Runs alone on a managed local Cloud whose organization removal revocation budget is shortened to
- * `removalRevocationBudgetMs`; every other local Cloud keeps the deployed budget.
- */
 const revocationBudgetCloud = { status: "scheduled", runtime: "revocation-budget" } as const;
-/**
- * Runs alone on a managed local Cloud whose dashboard is built with an empty notes file, as a deploy
- * whose window has no notes builds it; every other local Cloud builds it with fixed notes.
- */
 const emptyReleaseNotesCloud = { status: "scheduled", runtime: "empty-release-notes" } as const;
-/**
- * Runs alone on a managed local Cloud whose dashboard is built with notes the deploy's notes script
- * writes from commit messages that hold only fixes (`cloudChanges` in
- * e2e/support/cloud-release-notes.ts).
- */
 const fixReleaseNotesCloud = { status: "scheduled", runtime: "fix-release-notes" } as const;
-/**
- * Runs alone on a managed local Cloud whose dashboard is built with notes the deploy's notes script
- * writes from commit messages whose newest is a feature.
- */
 const featureReleaseNotesCloud = { status: "scheduled", runtime: "feature-release-notes" } as const;
 const na = (reason: string) => ({ status: "not-applicable", reason }) as const;
 const cloudOnboarding = {
@@ -108,58 +65,28 @@ const cloudOnboarding = {
   local: na("Local uses device pairing instead of Cloud account onboarding."),
 };
 
-/** The self-host update check's scenarios: only self-host has an update to offer. */
 const updateCheckTargets = {
   "self-host": scheduled,
   cloud: na("Cloud always runs the newest code; it has no update to offer."),
   local: na("The CLI prints its own update notice and the desktop app updates itself."),
 };
 
-/** App Workers the budget scenarios keep loaded; their spec asserts this limit. */
 export const appWorkerBudgetLimit = 2;
-/**
- * The execute budget of the lazy stall scenario: longer than execute's 10 s discovery wait, so a
- * stalled app reached during the program is told apart from one discovery gave up on.
- */
 export const lazyStallTimeoutMs = 15_000;
-/** The MCP client bound the client bound scenarios run with: three clients, two per member. */
 const mcpClientBoundEnvironment = {
   EXECUTOR_MCP_CLIENTS: "3",
   EXECUTOR_MCP_CLIENTS_PER_USER: "2",
 };
-/**
- * Seconds after which the aged search rows scenarios' server renews the rows a search serves
- * (`EXECUTOR_TOOL_LISTING_RENEW_SECONDS`), in place of the default day: MCP readers never renew
- * the rows they read, so every app's rows age past it together.
- */
 export const agedRowsRenewSeconds = 30;
-/** Seconds an idle app Worker stays loaded in the idle unloading scenario. */
 export const appWorkerIdleSeconds = 4;
-/** A relay callback in a valid form other than its serialization, which the SDK sends. */
 export const oauthRelayCallback =
   "https://Relay.Executor.example:443/api/oauth/callback?tenant=fixture";
-/** The same, on the origin of the client metadata document the scenarios publish. */
 export const oauthDocumentOriginCallback =
   "https://Executor.example:443/api/oauth/callback?tenant=fixture";
 
-/**
- * Keeps each scenario name but gives every value the plan type. A literal type per scenario makes
- * any expression over all of them a union that grows with the plan, and TypeScript refuses one past
- * about a thousand members (TS2590). Values are still checked against the plan, extra keys included.
- */
 const plan = <Name extends string>(scenarios: { readonly [_ in Name]: typeof TestPlan.Type }) =>
   scenarios;
 
-/** Scenario names and applicability used by both test declarations and test selection. */
-/**
- * The engine call faults the workflow engine calls scenario's servers run with
- * (`EXECUTOR_TEST_WORKFLOW_ENGINE_FAULTS`, `engine-faults.ts`): each sleep of `napOnce` fails once,
- * every call of `nap-never` fails, `count-once`'s write runs before its answer fails once,
- * `waited-out` fails only after the engine waited, four times, the three `*-once` sleeps get the
- * engine's own answer once, the three `*-until` sleepUntils get an answer once after their time,
- * and `late-until` reaches the engine three seconds late, after its time. Each names a step only that scenario's app uses, so managed Cloud,
- * whose one Worker serves every scenario, can carry the list for all of them.
- */
 export const engineCallFaults = [
   { call: "sleep", step: "nap-once", failures: 1, when: "before", answer: "internal" },
   { call: "until", step: "wake-once", failures: 1, when: "before", answer: "internal" },
@@ -193,7 +120,6 @@ export const scenarios = plan({
     title:
       "cloud role hosts serve only their own routes and discovery, and browser pages move to app.",
     targets: {
-      // A new stage orders the role hosts' certificate as it deploys; local Cloud has none to wait for.
       cloud: managedCloud,
       "self-host": na("Role hosts are Cloud's; self-host serves one origin."),
       local: na("Role hosts are Cloud's; local serves one origin."),
@@ -288,7 +214,6 @@ export const scenarios = plan({
     title:
       "The site's Apps pages on the edge list a publication and show its source from the API host",
     targets: {
-      // Publishing needs app Git storage, which a local Cloud Worker cannot reach.
       cloud: { status: "scheduled", runtime: "attached" },
       "self-host": na("Self-host does not serve the marketing site."),
       local: na("Local does not serve the marketing site."),
@@ -322,7 +247,6 @@ export const scenarios = plan({
     title:
       "Package names follow the organization's current slug, and a rename releases the old one to its next holder",
     targets: {
-      // Publishing needs app Git storage, which a local Cloud Worker cannot reach.
       cloud: { status: "scheduled", runtime: "attached" },
       "self-host": na("Self-host does not publish apps."),
       local: na("Local does not publish apps."),
@@ -334,7 +258,6 @@ export const scenarios = plan({
     title:
       "Git clones and pushes through the remote the host names, with the session the CLI signed in with, streams a 42 MiB push, accepts a shallow push, refuses protected refs as Git reports them, and reads source and history that is larger than one Git response a Worker holds",
     targets: {
-      // Managed local Cloud has no Git storage; deployed stages have Cloudflare's.
       cloud: { status: "scheduled", runtime: "attached" },
       "self-host": scheduled,
       local: na("Local signs the CLI in with an API key, not a saved session."),
@@ -424,7 +347,6 @@ export const scenarios = plan({
     file: "cloud-role-hosts.spec.ts",
     title: "a grant is for its one resource and works at the deployment origin and its role host",
     targets: {
-      // A new stage orders the role hosts' certificate as it deploys; local Cloud has none to wait for.
       cloud: managedCloud,
       "self-host": na("Role hosts are Cloud's; self-host serves one origin."),
       local: na("Role hosts are Cloud's; local serves one origin."),
@@ -447,7 +369,6 @@ export const scenarios = plan({
     title:
       "Cloud invocation records name each request's host role, route group and client family, never its URL or user agent",
     targets: {
-      // Records come from the Tail receiver. Alchemy's local runtime delivers no tail events to it.
       cloud: { status: "scheduled", runtime: "attached" },
       "self-host": na("The Tail receiver and role hosts are Cloud's."),
       local: na("The Tail receiver and role hosts are Cloud's."),
@@ -468,7 +389,6 @@ export const scenarios = plan({
     file: "cloud-oauth-proxy.spec.ts",
     title: "Cloud's own social sign-ins on app. return through the edge without its OAuth proxy",
     targets: {
-      // Only local Cloud runs as the proxy's production; an emulated test stage has no proxy.
       cloud: managedCloud,
       "self-host": na("The OAuth proxy and role hosts are Cloud's."),
       local: na("The OAuth proxy and role hosts are Cloud's."),
@@ -914,9 +834,6 @@ export const scenarios = plan({
       local: na("Hosted version API scenario"),
     },
   },
-  // The Cloud listing scenarios read a running listing or a remembered timeout, which live only
-  // in the isolate that ran the listing. The local Worker serves every search from one isolate; a
-  // deployed one may not.
   mcpBackgroundListingCloud: {
     fixtures: "actors",
     file: "mcp-catalog-scale.spec.ts",
@@ -1589,8 +1506,6 @@ export const scenarios = plan({
     },
   },
   failureEvidence: {
-    // The cases it runs in their own process start their own products. It tests the harness, so
-    // CI runs it only when the harness changes: see `harnessScenarios` in e2e/ci-selection.ts.
     fixtures: "cli",
     file: "failure-evidence.spec.ts",
     title: "Failed cases keep the trace of every request they sent",
@@ -1601,9 +1516,6 @@ export const scenarios = plan({
     },
   },
   failureText: {
-    // The cases it runs in their own process fail on purpose with planted secrets. It tests the
-    // harness, so CI runs it only when the harness changes: see `harnessScenarios` in
-    // e2e/ci-selection.ts.
     fixtures: "cli",
     file: "failure-text.spec.ts",
     title: "A failed step reports its cause without the secrets it carried",
@@ -1614,8 +1526,6 @@ export const scenarios = plan({
     },
   },
   workerEnvironment: {
-    // Runs in every worker the runner starts; failure-text.spec.ts also runs it with
-    // infrastructure-style variables set in the runner's own environment.
     fixtures: "cli",
     file: "failure-text.spec.ts",
     title: "The scenario worker holds only the variables the runner passes it",
@@ -2225,7 +2135,6 @@ export const scenarios = plan({
     },
   },
   localServiceSharedStart: {
-    // The CLI starts and stops its own servers; an outer managed server would compete with them.
     fixtures: "cli",
     file: "local-service.spec.ts",
     title:
@@ -2714,7 +2623,6 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "empty-states.spec.ts",
     title: "Empty states guide first use and recover from filters",
-    // Account searches filter the provisioned Executor account.
     managementApps: ["owner"],
     targets: {
       "self-host": scheduled,
@@ -2766,7 +2674,6 @@ export const scenarios = plan({
   },
   sdkQueryBudgets: {
     fixtures: "actors",
-    // Statement budgets compare reads against the provisioned personal account, so setup waits for it.
     managementApps: ["owner"],
     file: "sdk-query-budgets.spec.ts",
     title: "SDK batches invocation accounts and finished workflow history",
@@ -3180,7 +3087,6 @@ export const scenarios = plan({
   },
   cloudAppFrameworkPin: {
     fixtures: "actors",
-    // The restarted report's first pass must find the organization's Executor app installed.
     managementApps: ["owner"],
     file: "app-framework-pin.spec.ts",
     title: "Cloud reports the framework pin data step from the Worker's cron",
@@ -3228,8 +3134,6 @@ export const scenarios = plan({
     title: "Ten concurrent calls in one execute each wait one answer time for a slow service",
     targets: {
       "self-host": scheduled,
-      // Only Cloudflare limits how many connections one request may have waiting, so only a
-      // deployed stage shows calls queueing; managed local Cloud still sends them through the relay.
       cloud: scheduled,
       local: na("Exercises the hosted app deploy, account and MCP execute APIs."),
     },
@@ -3241,8 +3145,6 @@ export const scenarios = plan({
       "Requests sent while five others wait keep every outbound check and carry no Executor header",
     targets: {
       "self-host": scheduled,
-      // Managed local Cloud sends them through the relay; a deployed stage also shows they did not
-      // wait for the five.
       cloud: scheduled,
       local: na("Exercises the hosted app deploy, account and MCP execute APIs."),
     },
@@ -3256,7 +3158,6 @@ export const scenarios = plan({
       "self-host": na(
         "The self-host scenarios reach their loopback fixtures, so private fetch is on.",
       ),
-      // The local test Worker lets apps reach the scenarios' loopback fixtures.
       cloud: { status: "scheduled", runtime: "attached" },
       local: na("Local lets app code reach private addresses by design."),
     },
@@ -3431,7 +3332,6 @@ export const scenarios = plan({
     file: "app-framework-upgrade.spec.ts",
     title: "Single-file apps keep their framework across host upgrades",
     targets: {
-      // #843 added this entry without its spec file; CI's runs on main showed it never ran.
       "self-host": {
         status: "not-run",
         reason: "e2e/tests/app-framework-upgrade.spec.ts does not exist yet.",
@@ -3547,7 +3447,6 @@ export const scenarios = plan({
     title:
       "Cloud links the site's anonymous visitor to the account they sign up for, then clears it",
     targets: {
-      // The server's events are read from the managed run's loopback collector.
       cloud: managedCloud,
       "self-host": na("Self-host does not serve the marketing site or export product analytics."),
       local: na("Local does not serve the marketing site or export product analytics."),
@@ -4120,7 +4019,6 @@ export const scenarios = plan({
     serverEnvironment: { EXECUTOR_APPS_ALLOW_PRIVATE_FETCH: "false" },
     targets: {
       "self-host": scheduled,
-      // The local test Worker lets apps reach the scenarios' loopback fixtures.
       cloud: { status: "scheduled", runtime: "attached" },
       local: na("Local lets app code reach private addresses by design."),
     },
@@ -4132,7 +4030,6 @@ export const scenarios = plan({
       "an app request Executor's network failed to send fails every fetch the app can reach, and only Executor's own failures are reported",
     targets: {
       "self-host": scheduled,
-      // Reads the local Sentry collector; the scenario reaches loopback fixtures.
       cloud: managedCloud,
       local: na(
         "Hosted app routes; local runs apps with the same runner and has no outbound network in front of it.",
@@ -4146,7 +4043,6 @@ export const scenarios = plan({
       "an app's fetch receives a Brotli-encoded response as the bytes the service sent, never decoded by the runtime",
     targets: {
       "self-host": scheduled,
-      // The scenario reaches a loopback fixture.
       cloud: managedCloud,
       local: na(
         "Hosted app routes; local runs apps with the same runner and the same compatibility flags.",
@@ -6123,7 +6019,6 @@ export const scenarios = plan({
     file: "oauth-client-metadata.spec.ts",
     title:
       "a host whose callback is on another origin than its client metadata document signs in where the server accepts redirect URIs only on the document's origin",
-    // Cloud's layout: the deployment serves the document while sign-ins return through the edge.
     serverEnvironment: {
       EXECUTOR_OAUTH_CLIENT_METADATA_URL: "https://executor.example/oauth/client-metadata.json",
       EXECUTOR_OAUTH_CALLBACK_URL: oauthRelayCallback,
@@ -7166,7 +7061,6 @@ export const scenarios = plan({
       "an OpenAPI app with an 11 MB document builds within the compiler's memory and calls its API",
     targets: {
       "self-host": scheduled,
-      // Only a deployed compiler Worker has Cloudflare's memory limit.
       cloud: { status: "scheduled", runtime: "attached" },
       local: na("Local builds and runs apps through the same workerd compiler as self-host."),
     },
@@ -7178,7 +7072,6 @@ export const scenarios = plan({
       "an OpenAPI app with a 13.6 MB document whose prose goes beyond Latin-1, written as ASCII JSON as imported apps write it, builds and calls its API",
     targets: {
       "self-host": scheduled,
-      // Only deployed Workers have Cloudflare's memory limit.
       cloud: { status: "scheduled", runtime: "attached" },
       local: na("Local builds and runs apps through the same workerd compiler as self-host."),
     },
@@ -7190,7 +7083,6 @@ export const scenarios = plan({
       "an OpenAPI app with a 13.6 MB ASCII document beside source files whose text goes beyond Latin-1, such as a provider's display name, builds, reads back its files exactly and calls its API",
     targets: {
       "self-host": scheduled,
-      // Only deployed Workers have Cloudflare's memory limit.
       cloud: { status: "scheduled", runtime: "attached" },
       local: na("Local builds and runs apps through the same workerd compiler as self-host."),
     },
@@ -7202,8 +7094,6 @@ export const scenarios = plan({
       "an OpenAPI app whose resources expand into one another lists its tools in bounded pages, each tool's schema complete, and MCP search ranks them",
     targets: {
       "self-host": scheduled,
-      // The attached run checks that a deployed Worker holds the catalog within Cloudflare's
-      // memory limit, as it must Stripe's.
       cloud: { status: "scheduled", runtime: "attached" },
       local: na("Local builds and runs apps through the same workerd compiler as self-host."),
     },
@@ -7215,8 +7105,6 @@ export const scenarios = plan({
       "an OpenAPI app whose resources expand into one another, linked through several accounts, lists each tool once with one branch for every account and its schemas complete",
     targets: {
       "self-host": scheduled,
-      // Each target bounds the JSON a cold listing writes, which merging every tool's definitions
-      // exceeded; the attached run also lists cold within a deployed app Worker's CPU time.
       cloud: { status: "scheduled", runtime: "attached" },
       local: na("Local builds and runs apps through the same workerd compiler as self-host."),
     },
@@ -7846,7 +7734,6 @@ export const scenarios = plan({
   },
   teamInstallationFromRequest: {
     fixtures: "actors",
-    // Its bounded wait proves the write request installs the team, before any cron would.
     provisioning: "observed",
     file: "team-installation.spec.ts",
     title: "A new Cloud team's Executor app is installed with nothing left pending",
@@ -8458,10 +8345,6 @@ export const scenarios = plan({
     title:
       "Cloud MCP tool calls made at once with a key whose last use is stale all answer, also the calls that read the key again",
     targets: {
-      // Not run until its contention is certain on a shared database: its round releases the key
-      // row's lock once two key checks wait on it, and other scenarios' sessions queued on the
-      // `apikey` table behind the hold were counted as waiters (#4420). The production hang
-      // count and the `commit-unanswered` and `commit-rollback` pool probe cases cover the fix.
       cloud: na(
         "Its round's contention is not yet certain on a database other scenarios share; see #4420.",
       ),
@@ -8642,8 +8525,6 @@ export const scenarios = plan({
       local: na("Hosted self-host covers the shared execution driver."),
     },
   },
-  // The held call waits on a loopback gate. Deployed app Workers refuse loopback destinations, so
-  // the call never reaches it there; the local Worker shares the runner's network.
   mcpResumeReasons: {
     fixtures: "actors",
     file: "mcp-execute-failures.spec.ts",
@@ -9026,8 +8907,6 @@ export const scenarios = plan({
       local: na("Local keeps one protocol server for the process and sets no session bound."),
     },
   },
-  // The app tool signals a loopback listener when it starts, and the Sentry check reads the managed
-  // Cloud collector; a deployed Worker can reach neither.
   mcpCancelledCalls: {
     fixtures: "actors",
     file: "mcp-protocol-versions.spec.ts",
@@ -9429,8 +9308,6 @@ export const scenarios = plan({
       "self-host": na(
         "The query plans are read from Cloud's Postgres; self-host's PGlite runs inside its server.",
       ),
-      // It seeds and plans through cloudLocks, which reaches only managed local Cloud's database:
-      // a deployed stage gives the suite no connection to its own.
       cloud: managedCloud,
     },
   },
@@ -9973,7 +9850,6 @@ export const scenarios = plan({
     targets: {
       local: na("Hosted managers and app links; Local has no organization roles."),
       "self-host": scheduled,
-      // Deployed Cloud refuses the loopback provider fixture; the local Cloud Worker reaches it.
       cloud: managedCloud,
     },
   },
@@ -10791,8 +10667,6 @@ export const scenarios = plan({
       "Cloud onboarding can skip a passkey and returning email sign-in keeps the existing team",
     targets: cloudOnboarding,
   },
-  // The flag stub and the collector that receives the exposure exist only in a managed local
-  // Cloud; deployed stages evaluate the stage project's draft flag and serve the control.
   onboardingAssistantFirst: {
     file: "cloud-onboarding-experiment.spec.ts",
     title:
@@ -10892,7 +10766,6 @@ export const scenarios = plan({
       "Cloud validates a v1 WorkOS API key it does not hold against v1's WorkOS on its first use, stores it as a native key of its owner pinned to the organization it moved to, and then serves it on v1's URLs, v2's MCP and v2's API with WorkOS refusing every call; an unknown key is refused and not asked about again soon, an unanswered WorkOS is a retryable 503, and a key of an organization that did not move, or one its owner deleted in v2, is not stored",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
-  // Autumn faults match every caller of a route, so this runs on its own managed local Cloud.
   slowAutumnDeadlines: {
     file: "cloud-autumn-slow.spec.ts",
     title:
@@ -10955,7 +10828,6 @@ export const scenarios = plan({
     title: "hosted wildcard routes trace their template, not the path under it",
     targets: {
       "self-host": scheduled,
-      // Reads the local collector; probes Cloud's SSO, analytics and site routes too.
       cloud: managedCloud,
       local: na("localWildcardRouteTelemetry covers Local's wildcard routes."),
     },
@@ -11792,7 +11664,6 @@ export const scenarios = plan({
   toolCallLogAgentReads: {
     fixtures: "actors",
     file: "tool-call-log.spec.ts",
-    // The admin's agent reads the log with the admin's managed Executor key.
     managementApps: ["admin"],
     title:
       "An agent signed in over MCP reads the tool call log through the Executor app with each call's running time: a member's agent sees only that member's calls, an admin's agent sees everyone's",
@@ -12101,8 +11972,6 @@ export const scenarios = plan({
     title:
       "Removing an organization whose service never answers revocations finishes within its revocation budget and records how many OAuth grants it did not revoke",
     targets: {
-      // Only a local Cloud of its own shortens the budget to fit a scenario; every other local
-      // Cloud and every deployed stage keep 5 minutes.
       cloud: revocationBudgetCloud,
       "self-host": na("Self-host has a single instance organization and no organization removal."),
       local: na("Local has no hosted organizations."),
@@ -12209,8 +12078,6 @@ export const scenarios = plan({
     },
   },
   productPortReserved: {
-    // It tests the harness, so CI runs it only when the harness changes: see `harnessScenarios`
-    // in e2e/ci-selection.ts.
     file: "product-port.spec.ts",
     title: "A stopped product's port stays reserved, so it starts again on its own origin",
     targets: {
@@ -12272,17 +12139,6 @@ export const scenarios = plan({
   },
 });
 
-/**
- * How the run reaches Cloud. Managed Cloud is local and turns the per-address auth limit off, as
- * deployed test stages do; a rate-limited run starts it with the limit on for the scenarios that
- * prove it, and runs only those. A rolled-back run starts it with its rollback switch on, sign-in
- * on the deployment origin, and runs only the scenarios that prove the switch. A revocation-budget
- * run starts it with organization removal's revocation budget shortened, and runs only the
- * scenarios that run that budget out. An empty-release-notes run builds its dashboard with an
- * empty notes file, and a fix-release-notes or feature-release-notes run with notes the deploy's
- * notes script writes from commit messages (`cloudChanges`), and each runs only the scenarios that
- * show its notes.
- */
 export type CloudMode =
   | "managed"
   | "attached"
@@ -12313,18 +12169,11 @@ const cloudRuntimeReasons = {
     "Requires a managed local Cloud whose dashboard is built with notes whose newest is a feature: e2e:cloud --release-notes feature.",
 } as const;
 
-/**
- * The deployed suite's default `--test-name`, which Cloud tests on main runs after every merge.
- * Claude Code's scenario needs a model API key. Exhausting the shared compiler can interrupt other
- * scenarios' builds, so the compiler memory scenario runs alone, by hand (see e2e/README.md).
- */
 export const deployedSuitePattern =
   "^(?!.*(?:Claude Code connects|Cloud compiler memory failures))";
 
-/** Every scenario's plan, typed as plans rather than as the union of each scenario's literal. */
 const plans: ReadonlyArray<typeof TestPlan.Type> = Object.values(scenarios);
 
-/** Hosted parity includes every scenario scheduled on both hosted products. */
 export const scenariosForSuite = (
   suite: "all" | "hosted",
   cloudMode: CloudMode = "managed",
@@ -12374,7 +12223,6 @@ export const scenariosForSuite = (
           };
     });
 
-/** Select only explicitly scheduled files for a target; cloud scale stays disabled. */
 export const filesForTarget = (
   target: typeof Target.Type,
   suite: "all" | "hosted",
@@ -12392,7 +12240,6 @@ export const filesForTarget = (
   ),
 ];
 
-/** Keep scenario-level target declarations when several targets share one test file. */
 export const patternForTarget = (
   target: typeof Target.Type,
   suite: "all" | "hosted",

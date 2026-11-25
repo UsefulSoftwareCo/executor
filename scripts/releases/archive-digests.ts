@@ -1,27 +1,3 @@
-/**
- * The `local` job packages the archive that is published. The jobs that test the CLI each package
- * the archive they test: every part of the installed CLI suite (`cli`), and the launcher, install
- * script and credential store checks (`checks`). Packaging is reproducible, so every archive a job
- * tested must be the bytes `local` publishes for its target.
- *
- * Except on macOS: every Developer ID signature carries its own secure timestamp, so two signed
- * archives of one commit differ in their signatures. There the jobs record the digest of what they
- * signed instead, which packaging writes beside the archive before signing (`payload.sha256`, see
- * scripts/releases/standalone.ts): the archive `local` publishes and the one `checks` tests must
- * hold the same files apart from their signatures.
- *
- * Usage:
- *   `node scripts/releases/archive-digests.ts record <archive> <file>` writes the archive's
- *   SHA-256 to `<file>`.
- *   `node scripts/releases/archive-digests.ts record-payload <archive> <file>` writes the digest
- *   of the archive's files before signing to `<file>`.
- *   `node scripts/releases/archive-digests.ts compare <directory>` reads the digest artifacts as
- *   actions/download-artifact lays them out, one directory per artifact, and the metadata job's
- *   matrices from RELEASE_MATRIX, CHECKS_MATRIX and CLI_MATRIX. Each release target needs one
- *   `local` digest and one `checks` digest, and each part of each `cli` job one more, every one a
- *   single SHA-256 equal to the target's `local` digest. Every target with a CLI suite needs a
- *   `cli` job building the same archive. Any other artifact fails the comparison.
- */
 import { createHash } from "node:crypto";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -38,20 +14,14 @@ const Target = Schema.Struct({
   archive: Schema.String,
   cliWorkers: Schema.Number,
   packagedTests: Schema.optional(Schema.Boolean),
-  /** A `cli` job's part of the suite, `i/n`. */
   part: Schema.optional(Schema.String.check(Schema.isPattern(/^[1-9]\d*\/[1-9]\d*$/u))),
 });
 type Target = typeof Target.Type;
 const Matrix = Schema.fromJsonString(Schema.Struct({ include: Schema.Array(Target) }));
 
 const sha256 = /^[0-9a-f]{64}$/;
-/**
- * Linux and Windows recovery parts build the unpacked desktop app themselves; macOS parts on a
- * build run test an unsigned app, and on a notarizing run the notarized app itself.
- */
 const unpackedApp = (target: { readonly platform: string }) => target.platform !== "darwin";
 const targetName = (target: Target) => `${target.platform}-${target.arch}`;
-/** The digest artifact a job uploads for its target: `local`, `checks` or `cli-<part index>`. */
 const side = (job: "local" | "checks" | "cli", target: Target) =>
   job === "cli" ? `cli-${target.part?.split("/")[0] ?? "1"}` : job;
 const artifactName = (job: "local" | "checks" | "cli", target: Target) =>
@@ -66,12 +36,6 @@ const record = (archive: string, file: string) =>
     yield* fs.writeFileString(file, createHash("sha256").update(bytes).digest("hex"));
   });
 
-/** Copy the payload digest packaging wrote beside `archive` to `file`, after checking its form. */
-/**
- * Files of an unpacked desktop app that differ between two builds of one commit and so are not
- * digested: the target-only files electron-builder writes into it for the .deb and AppImage, and
- * the runtime manifest's `build` field, which every build sets at random (scripts/releases/desktop.ts).
- */
 const appContent = (relative: string, bytes: Uint8Array): Uint8Array | undefined => {
   if (relative === "resources/apparmor-profile" || relative === "resources/package-type")
     return undefined;
@@ -83,10 +47,6 @@ const appContent = (relative: string, bytes: Uint8Array): Uint8Array | undefined
   return new TextEncoder().encode(JSON.stringify(manifest));
 };
 
-/**
- * Write the digest of the unpacked desktop app that holds `executable` (Linux and Windows), and,
- * when `files` is given, the per-file lines it hashes, so a mismatch can name the files.
- */
 const recordApp = (executable: string, file: string, files?: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -100,7 +60,6 @@ const recordApp = (executable: string, file: string, files?: string) =>
     }
   });
 
-/** The paths whose bytes differ between two per-file lists, or that only one of them has. */
 const differingFiles = (left: string, right: string) => {
   const parse = (text: string) =>
     new Map(
@@ -270,7 +229,6 @@ const compare = (directory: string) =>
       if (digest !== local && !name.startsWith("app-"))
         problems.push(`${name}: the tested archive is not the published archive.`);
       if (digest !== local && name.startsWith("app-") && target !== undefined) {
-        // Name the files that differ when both jobs uploaded their per-file lists.
         const lists = yield* Config.String("APP_FILES").pipe(Config.option);
         const read = (artifact: string) =>
           Option.isNone(lists)

@@ -1,7 +1,3 @@
-/**
- * Deleting your own Executor user. A host composes it only where people can sign up on their
- * own; self-host users are managed by the operator.
- */
 import { Schema } from "effect";
 import { ApiError } from "@executor-js/utils/api-error";
 import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
@@ -16,12 +12,6 @@ import { AuthenticationUnavailable, RequireBrowserSession } from "./auth.ts";
 import { OrganizationId } from "./organization.ts";
 import { OrganizationRemovalUnavailable } from "./organization-removal.ts";
 
-/**
- * What deleting the user does to one of their organizations. `delete`: they are its only
- * member, so it is deleted with everything it owns. `leave`: their personal accounts there are
- * deleted and their membership ends; the organization keeps what it shares. `blocked`: they are
- * its only owner and others remain, so they must delete it first.
- */
 export const UserRemovalOutcome = Schema.Literals(["delete", "leave", "blocked"]);
 export type UserRemovalOutcome = typeof UserRemovalOutcome.Type;
 
@@ -33,22 +23,18 @@ export const UserRemovalOrganization = Schema.Struct({
 });
 export type UserRemovalOrganization = typeof UserRemovalOrganization.Type;
 
-/** Everything deleting the user would touch, read before they confirm. */
 export const UserRemovalPreview = Schema.Struct({
   organizations: Schema.Array(UserRemovalOrganization),
-  /** Personal accounts in the organizations the user leaves; the others go with their organization. */
   personalAccounts: Schema.Int,
 });
 export type UserRemovalPreview = typeof UserRemovalPreview.Type;
 
-/** The user is gone; these organizations are being erased by their removal workflows. */
 export const UserRemoved = Schema.Struct({
   organizations: Schema.Array(OrganizationId),
   personalAccounts: Schema.Int,
 });
 export type UserRemoved = typeof UserRemoved.Type;
 
-/** The only owner of an organization that has other members cannot leave it ownerless. */
 export const UserRemovalBlocked = ApiError.define({
   tag: "UserRemovalBlocked",
   status: 409,
@@ -59,7 +45,6 @@ export const UserRemovalBlocked = ApiError.define({
 });
 export type UserRemovalBlocked = typeof UserRemovalBlocked.Type;
 
-/** Browser-session only and irreversible. */
 export const HostedUserRemoval = HttpApiGroup.make("userRemoval")
   .add(
     HttpApiEndpoint.get("preview", "/api/user/removal", {

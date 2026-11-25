@@ -1,7 +1,3 @@
-/**
- * The official MCP client over stdio, starting a command as MCP clients such as Claude Code do.
- * The scope closes the client, which ends the command's standard input.
- */
 import { Client as LatestClient, ProtocolError } from "@modelcontextprotocol/client";
 import { SkillsClient } from "@modelcontextprotocol/client/ext/skills";
 import { StdioClientTransport as LatestStdioClientTransport } from "@modelcontextprotocol/client/stdio";
@@ -11,23 +7,16 @@ import { ElicitRequestSchema, type ElicitResult } from "@modelcontextprotocol/sd
 import { Effect, Schema } from "effect";
 import { failureText } from "./failure-text.ts";
 
-/** A failed MCP request: the SDK error's name, message and causes, masked (support/failure-text.ts). */
 export class StdioMcpFailed extends Schema.TaggedError<StdioMcpFailed>()("StdioMcpFailed", {
   message: Schema.String,
 }) {}
 const failed = (error: unknown) => new StdioMcpFailed({ message: failureText(error) });
 
-/** A form the server asked the client to fill in, as the client received it. */
 export interface Elicitation {
   readonly message: string;
   readonly requestedSchema: unknown;
 }
 
-/**
- * Start `command` with `env` only and connect to it, closed with the caller's scope. With `elicit`,
- * the client declares elicitation and answers each form request with what it returns; every request
- * it received is in `elicitations`.
- */
 export const stdioMcp = (input: {
   readonly command: string;
   readonly args: ReadonlyArray<string>;
@@ -68,13 +57,11 @@ export const stdioMcp = (input: {
     );
     return {
       instructions: client.getInstructions(),
-      /** The form requests the server sent, in order. */
       elicitations: elicitations as ReadonlyArray<Elicitation>,
       tools: Effect.tryPromise({
         try: () => client.listTools(),
         catch: failed,
       }).pipe(Effect.map(({ tools }) => tools.map((tool) => tool.name))),
-      /** A tool's structured result. */
       call: (name: string, input: Record<string, unknown>) =>
         Effect.tryPromise({
           try: () => client.callTool({ name, arguments: input }),
@@ -83,11 +70,6 @@ export const stdioMcp = (input: {
     };
   });
 
-/**
- * Start `command` with `env` only and connect to it with the official MCP SDK 2 client pinned to
- * the stateless 2026-07-28, as Claude Code connects: `server/discover` instead of `initialize`, and
- * the revision claimed in every request. Closed with the caller's scope.
- */
 export const stdioMcpStateless = (input: {
   readonly command: string;
   readonly args: ReadonlyArray<string>;
@@ -118,10 +100,8 @@ export const stdioMcpStateless = (input: {
       revision: client.getNegotiatedProtocolVersion(),
       instructions: client.getInstructions(),
       capabilities: client.getServerCapabilities(),
-      /** Run one request with the client or its skills extension. */
       use: <A>(action: (client: LatestClient, skills: SkillsClient) => Promise<A>) =>
         Effect.tryPromise({ try: () => action(client, skills), catch: failed }),
-      /** The JSON-RPC error code the server refuses a request with; any other outcome fails. */
       refusal: (action: (client: LatestClient) => Promise<unknown>) =>
         Effect.tryPromise({
           try: () => action(client),

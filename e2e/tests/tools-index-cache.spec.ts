@@ -1,8 +1,3 @@
-/**
- * A new organization's first Tools index loads the Executor catalog without redundant cache round
- * trips, later browsing reads the kept tool listing instead of evaluating the app again, and another
- * account set evaluates it again.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schedule, Schema } from "effect";
 import { scenarios } from "../test-plan.ts";
@@ -19,7 +14,6 @@ const Detail = Schema.Struct({
   inputSchema: Schema.Record(Schema.String, Schema.Unknown),
 });
 
-/** One Tools index request through the actor's linked Executor key. */
 const indexTools = (actor: Session, app: string, label: string) =>
   Effect.gen(function* () {
     const api = yield* Api,
@@ -34,12 +28,10 @@ const indexTools = (actor: Session, app: string, label: string) =>
     return { label, request, names: index.items.map((tool) => tool.name).sort() };
   });
 
-/** The app's cache round trips, read from the index request's delivered trace. */
 const cacheTrips = (index: Effect.Success<ReturnType<typeof indexTools>>, app: string) =>
   Effect.gen(function* () {
     const evidence = yield* Evidence,
       telemetry = yield* Telemetry;
-    // The app's spans arrive as one batch returned with the invocation's result.
     const spans = yield* telemetry.query(index.request.traceId).pipe(
       Effect.map((result) => result.data.map((row) => row.span)),
       Effect.flatMap((spans) =>
@@ -52,7 +44,6 @@ const cacheTrips = (index: Effect.Success<ReturnType<typeof indexTools>>, app: s
     );
     const commands = spans.filter((span) => span.operationName === "app.cache.command");
     const host = spans.filter((span) => span.operationName === "runtime.cloud.cache");
-    // Each host-side command names the app whose supervisor it reached.
     for (const span of host) expect(span.tags["executor.app.id"], index.label).toBe(app);
     const result = spans.find((span) => span.operationName === "app.cache.get")?.tags[
       "cache.result"
@@ -64,7 +55,6 @@ const cacheTrips = (index: Effect.Success<ReturnType<typeof indexTools>>, app: s
         operation: span.tags["cache.operation"],
         ms: span.durationMs,
       })),
-      // Cloud also reports each command from the host side of the RPC when it has arrived.
       host: host.map((span) => ({ operation: span.tags["cache.operation"], ms: span.durationMs })),
     });
     return {
@@ -74,7 +64,6 @@ const cacheTrips = (index: Effect.Success<ReturnType<typeof indexTools>>, app: s
     };
   });
 
-/** One tool's schemas through the actor's linked account. */
 const toolDetail = (actor: Session, app: string, name: string) =>
   Effect.gen(function* () {
     const api = yield* Api,
@@ -90,12 +79,6 @@ const toolDetail = (actor: Session, app: string, name: string) =>
     return request;
   });
 
-/**
- * How a request read the tool listing, and whether it invoked the app, from its trace. A trace
- * arrives in pieces: the app's spans (`app.dispatch`) are exported by the app's Worker, apart from
- * the host's. So the read waits until every span in `reads` has arrived, as `Telemetry.settled`
- * asks: name `app.dispatch` there when the check expects the app to have been invoked.
- */
 const listingRead = (traceId: string, label: string, reads: ReadonlyArray<string>) =>
   Effect.gen(function* () {
     const evidence = yield* Evidence,
@@ -131,7 +114,6 @@ layer(HostedLive, { excludeTestServices: true })("Tools index cache", (it) => {
         const { app, account } = yield* managementApp(actors.owner);
         yield* managementApp(actors.admin);
         const cold = yield* indexTools(actors.owner, app.id, "cold-index");
-        // Browsing again reads the listing the first index kept instead of evaluating the app.
         const kept = yield* indexTools(actors.owner, app.id, "kept-index");
         expect(cold.names.length).toBeGreaterThan(0);
         expect(kept.names).toEqual(cold.names);
@@ -141,13 +123,9 @@ layer(HostedLive, { excludeTestServices: true })("Tools index cache", (it) => {
         expect(keptIndex.cache).toBe("hit");
         expect(keptIndex.dispatched).toBe(false);
 
-        // Another account context runs in its own Worker and reads the shared stored revision.
         const other = yield* indexTools(actors.admin, app.id, "other-account-index");
         expect(other.names).toEqual(cold.names);
 
-        // Another linked account is another account set and so another listing: connecting it
-        // from the app replaces the linked key, and the app is evaluated again and reuses the
-        // catalog revision already stored.
         const prefix = `/api/organizations/${actors.organization.id}`;
         const connection = yield* body(
           Schema.Struct({ id: Schema.String }),
@@ -158,7 +136,6 @@ layer(HostedLive, { excludeTestServices: true })("Tools index cache", (it) => {
             {},
           ),
         );
-        // Connecting checks the key against Executor's API, so it is a real token of the owner's.
         const secondToken = yield* body(
           Schema.Struct({ id: Schema.String, key: Schema.String }),
           yield* api.request(actors.owner, "POST", "/api/auth/api-key/create", {
@@ -204,13 +181,11 @@ layer(HostedLive, { excludeTestServices: true })("Tools index cache", (it) => {
         );
 
         expect(first.result).toBe("miss");
-        // One acquire reads and claims the catalog pointer; publishing ends the load's lease.
         expect(first.count("acquire")).toBe(1);
         expect(first.count("write")).toBeGreaterThan(0);
         expect(first.count("publish")).toBe(1);
         expect(first.count("claim")).toBe(0);
         expect(first.count("release")).toBe(0);
-        // The loader keeps the revision it stored instead of reading it straight back.
         expect(first.count("read")).toBe(0);
 
         expect(second.result).toBe("fresh");
@@ -221,8 +196,6 @@ layer(HostedLive, { excludeTestServices: true })("Tools index cache", (it) => {
         expect(third.count("read")).toBeGreaterThan(0);
         expect(third.count("write") + third.count("publish") + third.count("claim")).toBe(0);
 
-        // Linking the first key again replaces the second; opening one tool reads its schemas
-        // from that key's kept listing.
         yield* linkAccount(actors.owner, appPath, "service", account);
         expect(yield* linkedAccountIds(actors.owner, appPath)).toEqual([account]);
         const tool = yield* toolDetail(actors.owner, app.id, cold.names[0] ?? "");

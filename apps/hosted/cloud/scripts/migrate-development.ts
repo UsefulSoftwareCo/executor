@@ -1,4 +1,3 @@
-/** Wait for the local database, then run the real hosted migrations before serving traffic. */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import { PgClient } from "@effect/sql-pg";
 import { Config, Effect, Schedule, Schema } from "effect";

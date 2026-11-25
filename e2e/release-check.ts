@@ -1,34 +1,3 @@
-/**
- * Decide whether main needs the paced release check. `.github/workflows/release-check.yml` runs
- * this on every push to main and on an hourly backstop, and starts the check, a repository dispatch
- * of Executor releases, unless this writes `run=false`.
- *
- * The comparison runs from the last check that tested main, or will: the newest check, the
- * repository dispatch runs of Executor releases, that is queued, pacing or building, or that
- * finished having built, its pace job passed and its matrix ran. A cancelled check, or one whose
- * pace job failed or whose matrix did not run, tested nothing, so its commits stay in the
- * comparison. So a push with many commits, several pushes while a check waits, or a change that
- * came with a `[skip ci]` commit count every commit since the last tested one, not since the
- * previous push.
- *
- * The paths are what each release lane builds or runs, computed now from this checkout by
- * e2e/release-lanes.ts (`mainPushPaths`), so a file a release suite starts importing counts
- * without anyone editing a list. A renamed file counts by its old name too. File names come from
- * commits, so they are written quoted, with nothing in them read as Markdown or a workflow command.
- *
- * It writes `run=false` only when it is sure: no earlier check, a comparison GitHub cuts short or
- * cannot make, or any failure leaves `run` unwritten or `true`, and the workflow then starts the
- * check. Reads GitHub with `gh`, so e2e/tests/ci-selection.spec.ts drives it with a stub.
- *
- * The paced check builds Linux x64 and the image only. Windows has a decision of its own, written as
- * `windows`: the installed CLI suite on Windows, a narrowed build dispatched on the
- * `ci/windows-check` branch (`windowsBranch`). Its comparison runs from the last Windows check that
- * tested a commit, or will, by the same rule, never from the Linux check: a commit the Linux check
- * covered may still be one no Windows check has. It starts at most once every
- * WINDOWS_PACE_SECONDS; a decision inside that pace writes `windows=false` and keeps the base where
- * it was, so the first decision after the pace, a push or the hourly backstop, starts it for every
- * commit since. A failure leaves `windows` unwritten, and the workflow then starts it.
- */
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { runMain } from "./run-main.ts";
 import { Config, Console, Effect, FileSystem, Option, Schema, Stream } from "effect";
@@ -39,12 +8,9 @@ class ReleaseCheckFailed extends Schema.TaggedError<ReleaseCheckFailed>()("Relea
   message: Schema.String,
 }) {}
 
-/** GitHub's comparison lists at most this many files. */
 const compareFileLimit = 300;
 
-/** The branch the Windows check is dispatched on, which release-check.yml sets to main's commit. */
 export const windowsBranch = "ci/windows-check";
-/** The Windows check's title (release-artifacts.yml's `run-name` for that narrowed build). */
 export const windowsTitle = "Executor releases (build, cli on win32-x64)";
 
 const Run = Schema.Struct({
@@ -72,10 +38,6 @@ const Comparison = Schema.fromJsonString(
   Schema.Struct({ status: Schema.String, files: Schema.Array(Schema.String) }),
 );
 
-/**
- * A file name as JSON, which escapes quotes, newlines and every control character, with backticks
- * escaped too, so it cannot end a code span, start a line or form a workflow command.
- */
 const quoted = (file: string) => `\`${JSON.stringify(file).replaceAll("`", "\\u0060")}\``;
 
 const gh = (args: ReadonlyArray<string>) =>
@@ -122,7 +84,6 @@ runMain(
               jobs.find((job) => job.name === name)?.conclusion,
         ),
       );
-    /** Whether the changes since `base`, which `url` tests, hold a file a release lane reads. */
     const changedSince = (base: string, url: string) =>
       Effect.gen(function* () {
         const comparison = yield* gh([
@@ -191,7 +152,6 @@ runMain(
           : yield* changedSince(base.headSha, base.url);
     yield* decide("run", "Release check", linux.run, linux.reason);
 
-    // The Windows check: its own runs on its own branch, its own base and its own pace.
     const windowsRuns = (yield* gh([
       "run",
       "list",
@@ -223,7 +183,6 @@ runMain(
         : windowsBase.headSha === head
           ? { run: false, reason: `${windowsBase.url} tests this commit already.` }
           : yield* changedSince(windowsBase.headSha, windowsBase.url);
-    // The newest Windows check of any outcome but a cancellation sets the pace.
     const newest = windowsRuns[0];
     const now = Date.now();
     const next = newest === undefined ? 0 : Date.parse(newest.createdAt) + pace * 1000;

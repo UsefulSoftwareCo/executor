@@ -27,7 +27,6 @@ layer(TestLive, { excludeTestServices: true })("Local shutdown", (it) => {
         const session = yield* api.session();
         const headers = { authorization: `Bearer ${Redacted.value(target.apiKey)}` };
         yield* Effect.addFinalizer(() => serverControl("start").pipe(Effect.orDie));
-        // The last write before the stop must survive it.
         const deployed = yield* session.send(
           "POST",
           "/v1/apps/deploy",
@@ -40,11 +39,6 @@ layer(TestLive, { excludeTestServices: true })("Local shutdown", (it) => {
         );
         expect(deployed.status).toBe(200);
         const { app } = yield* body(Schema.Struct({ app: App }), deployed);
-        // The runner asks the product alone to stop, as a terminal's Ctrl+C and the desktop's quit
-        // do; the product stops the telemetry collector it started. The time runs until the product
-        // writes its exit line, after its final telemetry flush: a flush that waited out its
-        // export budget on a collector already gone took over 3 seconds. It excludes the coverage
-        // the suite collects as the product exits, which no user waits for.
         const milliseconds = yield* stopProductTimed;
         yield* evidence.json("shutdown.json", { milliseconds });
         yield* evidence.measure("Product stop", milliseconds);
@@ -69,14 +63,12 @@ layer(TestLive, { excludeTestServices: true })("Local shutdown", (it) => {
         const fs = yield* FileSystem.FileSystem,
           evidence = yield* Evidence,
           target = yield* Target;
-        // Slower than the bound for the bundled loopback collector, well inside the default.
         const collector = yield* delayedCollector("1 second");
         const directory = yield* fs.makeTempDirectory({
           directory: target.directory,
           prefix: "remote-metrics-",
         });
         const origin = `http://127.0.0.1:${yield* freePort}`;
-        // Only metrics go to the operator's collector; traces and logs stay with the bundled one.
         const product = yield* Scope.make();
         yield* Effect.addFinalizer(() => Scope.close(product, Exit.void));
         yield* startManagedServer(
@@ -100,7 +92,6 @@ layer(TestLive, { excludeTestServices: true })("Local shutdown", (it) => {
           milliseconds: Duration.toMillis(elapsed),
           exports: exports.map(({ path, outcome }) => ({ path, outcome })),
         });
-        // Metrics export every 30 seconds, so the batch sent while stopping is the last one.
         const final = exports.filter(({ path }) => path === "/v1/metrics").at(-1);
         expect(final, "the final metrics batch reached the collector").toBeDefined();
         expect(final?.outcome, "the collector acknowledged it before the product exited").toBe(

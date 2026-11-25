@@ -1,13 +1,3 @@
-/**
- * A stage's teardown reads its PlanetScale branch, `test-<slug>`, for any test stage's slug, and
- * a deployed E2E stage's teardown removes it by that exact name when Alchemy's destroy left it (a create that never became ready is "not owned by this stack"), and keeps the
- * stage's lease unless PlanetScale then answers 404 (`test-stage-branch.ts`). These cases run the
- * removal as a process (`apps/hosted/cloud/scripts/test-stage-branch.ts`, the same
- * `removeStageBranch` the destroy calls) against a local server standing in for PlanetScale's API.
- * The stand-in holds the stage's branch beside branches that must never be touched: a production
- * branch, the test database's index-lock branch, and names that only start with or contain the
- * stage's. Every request is recorded; anything but a read or delete of one branch is answered 500.
- */
 import { expect, layer } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, Stream } from "effect";
@@ -20,26 +10,18 @@ const database = "executor-test";
 const branchPath = (name: string) =>
   `/v1/organizations/${organization}/databases/${database}/branches/${name}`;
 
-/** How the stand-in answers for one branch. */
 type Held = {
   readonly production: boolean;
   readonly ready: boolean;
-  /** What a delete answers; a 2xx removes the branch unless `stays`. */
   readonly deleteStatus: number;
   readonly stays?: boolean;
-  /** The name the branch's read answers with, when it is not its own. */
   readonly answersAs?: string;
-  /** Reads answer 200 this many times, then 404: the destroy's own delete landing. */
   readonly goneAfterReads?: number;
-  /** A delete gets no answer: the connection is dropped. */
   readonly dropDelete?: boolean;
-  /** A read answers this status with the branch's body. */
   readonly readStatus?: number;
-  /** A read never answers. */
   readonly hangRead?: boolean;
 };
 
-/** Branches no teardown may touch, whatever the slug. */
 const bystanders: Record<string, Held> = {
   main: { production: true, ready: true, deleteStatus: 500 },
   "idx-lock-38132096340-1": { production: true, ready: true, deleteStatus: 500 },
@@ -117,7 +99,6 @@ const environment = {
   PLANETSCALE_API_TOKEN: "synthetic-token",
 };
 
-/** Remove `slug`'s branch against the stand-in; the printed outcome and the exit code. */
 const remove = (slug: string, origin: string) =>
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -173,7 +154,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Test stage branch remo
         expect(run.message).toBe(
           "PlanetScale branch test-e2e-stuck1 was left by the destroy; a delete was sent (PlanetScale answered 204) and it is gone (404).",
         );
-        // A read, seven more while the destroy's own delete could land (one now, six spaced), one delete, one read.
         const at = branchPath("test-e2e-stuck1");
         expect(seen.map(({ method, path }) => `${method} ${path}`)).toEqual([
           ...Array.from({ length: 8 }, () => `GET ${at}`),
@@ -235,7 +215,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Test stage branch remo
       expect(run.message).toContain(
         "A delete was sent and accepted (204), but PlanetScale still lists it after",
       );
-      // Eight reads before, one delete, then the first check and 24 more.
       expect(seen.map(({ method }) => method)).toEqual([
         ...Array(8).fill("GET"),
         "DELETE",
@@ -366,7 +345,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Test stage branch remo
           expect(run.outcome, slug).toEqual({ _tag: "Absent" });
           expect(run.leaseKept, slug).toBe(false);
         }
-        // One read of each slug's own branch, and nothing else.
         expect(seen.map(({ method, path }) => `${method} ${path}`)).toEqual(
           ["eapps-step1", "pr-4120", "main", "idx-lock-38132096340-1", "e2e-abcdefghijklmn"].map(
             (slug) => `GET ${branchPath(`test-${slug}`)}`,

@@ -1,4 +1,3 @@
-/** OAuth discovery for ordinary API clients, independent of browser sessions. */
 import { Effect } from "effect";
 import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import { requestResourceOrigin } from "@executor-js/mcp-auth";
@@ -18,7 +17,6 @@ export const apiProtectedResource = Effect.gen(function* () {
   });
 });
 
-/** API discovery starts with a standard bearer challenge; this is not an API operation. */
 export const apiChallenge = Effect.gen(function* () {
   const { resourceOrigins } = yield* BearerAuthentication;
   const request = yield* HttpServerRequest.HttpServerRequest;
