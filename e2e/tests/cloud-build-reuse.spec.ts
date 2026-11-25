@@ -238,7 +238,7 @@ layer(HostedLive, { excludeTestServices: true })("Cloud build reuse", (it) => {
           earliest?.span.tags["executor.build.cache"],
           "The runner reads the record the deploy cached",
         ).toBe("hit");
-        expect(["hit", "memory", "shared"], "The runner reads a cached framework").toContain(
+        expect(["hit", "memory"], "The runner reads a cached framework").toContain(
           earliest?.span.tags["executor.build.framework_cache"],
         );
         expect(

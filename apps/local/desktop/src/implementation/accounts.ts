@@ -1,4 +1,5 @@
 import {
+  app,
   BrowserWindow,
   ipcMain,
   type IpcMainEvent,
@@ -782,6 +783,17 @@ export const makeAccounts = (options: {
         const clickedBeside = (_event: Electron.Event, mouse: Electron.MouseInputEvent) => {
           if (mouse.type === "mouseDown") open.finish(null);
         };
+        const appInactive = () => open.finish(null);
+        const otherWindowFocused = (_event: Electron.Event, focused: BrowserWindow) => {
+          if (focused !== window && focused !== parent) open.finish(null);
+        };
+        const parentBlurred = () =>
+          setImmediate(() => {
+            if (done || window.isDestroyed()) return;
+            const focused = BrowserWindow.getFocusedWindow();
+            if (focused !== window && focused !== parent) open.finish(null);
+          });
+        const parentHidden = () => open.finish(null);
         const followParent = () => {
           if (!window.isDestroyed() && window.isVisible())
             placeMenu(open, window.getContentBounds().height);
@@ -798,11 +810,15 @@ export const makeAccounts = (options: {
           finish: (chosen) => {
             if (done) return;
             done = true;
+            app.off("did-resign-active", appInactive);
+            app.off("browser-window-focus", otherWindowFocused);
             if (!parent.isDestroyed()) {
               parent.webContents.off("before-input-event", escapeFrom);
               parent.webContents.off("before-mouse-event", clickedBeside);
               parent.off("move", followParent);
               parent.off("resize", followParent);
+              parent.off("blur", parentBlurred);
+              parent.off("hide", parentHidden);
             }
             if (menu === open) menu = undefined;
             if (!window.isDestroyed()) window.destroy();
@@ -823,6 +839,10 @@ export const makeAccounts = (options: {
         parent.webContents.on("before-mouse-event", clickedBeside);
         parent.on("move", followParent);
         parent.on("resize", followParent);
+        parent.on("blur", parentBlurred);
+        parent.on("hide", parentHidden);
+        app.on("did-resign-active", appInactive);
+        app.on("browser-window-focus", otherWindowFocused);
         window.webContents.on("context-menu", (_event, params) =>
           fork(menuContextAction(open, params.x, params.y)),
         );
