@@ -15,6 +15,7 @@ import {
 } from "@executor-js/utils/release-notes";
 import { notDeployInputs } from "../../apps/hosted/cloud/src/infrastructure/deploy-inputs.ts";
 import { type NotesHistory, notesHistoryProblem } from "./notes-history.ts";
+import { cloudLead } from "./cloud-lead.ts";
 import { noteAudience, noteHash } from "./note-audiences.ts";
 import { earlierNoteKind } from "./note-kinds.ts";
 
@@ -302,7 +303,10 @@ const checkBranch = (
         const [subject = "", body = ""] = entry.split("\x1f");
         return { subject, body: body.trimEnd() };
       });
-    if (commits.length === 0) return yield* Console.log(`No commits since ${base}.`);
+    if (commits.length === 0) {
+      yield* Console.log(`No commits since ${base}.`);
+      return [];
+    }
     const message = squashed(title, commits);
     const { notes, ignored, refused, hiddenBy } = notesOf(message);
     const ported = port(message).number !== undefined;
@@ -393,6 +397,9 @@ const checkBranch = (
         ].join("\n"),
       });
     if (notes.length === 0) yield* Console.log("No Release-note: line in the branch's commits.");
+    return notes
+      .filter(({ text }) => (noteAudience(text) ?? reached).includes("cloud"))
+      .map(({ text }) => text);
   });
 
 const parseArguments = (argv: ReadonlyArray<string>) =>
@@ -442,8 +449,6 @@ NodeRuntime.runMain(
         "self-host": builtFrom(shipped.image),
       };
     };
-    if (options.check !== undefined)
-      return yield* checkBranch(options.check, options.title ?? "Pull request title", reachOf);
     const version = yield* Schema.decodeUnknownEffect(ReleaseVersion)(
       options.version ?? release.version,
     ).pipe(
@@ -615,46 +620,86 @@ NodeRuntime.runMain(
         return { listed, plain, other, length };
       });
 
+    const pin =
+      process.env.EXECUTOR_CLOUD_LEAD === undefined
+        ? cloudLead[0]?.hash
+        : process.env.EXECUTOR_CLOUD_LEAD || undefined;
+    const cloudWindow = (end: string, report: typeof warn) =>
+      Effect.gen(function* () {
+        const endDate = new Date((yield* gitOk(["log", "-1", "--format=%cI", end])).trim());
+        const start = new Date(endDate.getTime() - cloudWindowDays * 24 * 60 * 60 * 1000);
+        const grafts = (yield* gitOk(["rev-parse", "--git-path", "info/grafts"])).trim();
+        const replaced = (yield* gitOk(["replace", "--list"])).trim();
+        if ((yield* fs.exists(grafts)) || replaced !== "")
+          return yield* new ReleaseNotesFailed({
+            message: `This checkout ${replaced !== "" ? "replaces commits (git replace)" : `grafts its history (${grafts})`}, so it cannot show main's history as it is. Write Cloud's notes from a checkout without them.`,
+          });
+        const before = (yield* gitOk([
+          "rev-list",
+          "-1",
+          "--first-parent",
+          `--before=${start.toISOString()}`,
+          end,
+        ])).trim();
+        if (before === "") {
+          const oldest = (yield* gitOk(["rev-list", "--first-parent", end]))
+            .trim()
+            .split("\n")
+            .at(-1)!;
+          return yield* new ReleaseNotesFailed({
+            message: `This checkout's history holds no commit of main from before ${start.toISOString()}, the start of the ${cloudWindowDays} days before ${endDate.toISOString()} that Cloud's notes cover; its oldest is from ${(yield* gitOk(["log", "-1", "--format=%cI", oldest])).trim()}. Write them from a checkout with main's whole history (fetch-depth: 0).`,
+          });
+        }
+        const { plain } = yield* listChanges(before, end, report, "cloud");
+        const changes: Array<typeof plain> = [];
+        for (const note of plain)
+          if (changes.at(-1)?.[0]?.sha === note.sha) changes.at(-1)!.push(note);
+          else changes.push([note]);
+        return changes.toReversed().flat();
+      });
+
+    if (options.check !== undefined) {
+      const branch = yield* checkBranch(
+        options.check,
+        options.title ?? "Pull request title",
+        reachOf,
+      );
+      if (pin === undefined) return;
+      const window = yield* cloudWindow(options.check, () => Effect.void).pipe(
+        Effect.map((notes) => notes.map(({ text }) => text)),
+        Effect.catchTag("ReleaseNotesFailed", (error) => Effect.succeed(error.message)),
+      );
+      if (typeof window === "string")
+        return yield* Console.log(
+          `Warning: cannot tell whether the note pinned in scripts/releases/cloud-lead.ts (hash ${pin}) is among Cloud's notes: ${window}`,
+        );
+      const found = [...window, ...branch].some((text) => noteHash(text) === pin);
+      return yield* Console.log(
+        found
+          ? `Cloud's What's new leads with the note pinned in scripts/releases/cloud-lead.ts (hash ${pin}).`
+          : `Warning: the note pinned in scripts/releases/cloud-lead.ts (hash ${pin}) is not among Cloud's notes of the ${cloudWindowDays} days before ${options.check} or this branch's notes for Cloud, so What's new leads with its newest feature or improvement. Remove the pin.`,
+      );
+    }
+
     const cloudFile = options.cloud;
     if (cloudFile !== undefined) {
-      const end = new Date((yield* gitOk(["log", "-1", "--format=%cI", to])).trim());
-      const start = new Date(end.getTime() - cloudWindowDays * 24 * 60 * 60 * 1000);
-      const grafts = (yield* gitOk(["rev-parse", "--git-path", "info/grafts"])).trim();
-      const replaced = (yield* gitOk(["replace", "--list"])).trim();
-      if ((yield* fs.exists(grafts)) || replaced !== "")
-        return yield* new ReleaseNotesFailed({
-          message: `This checkout ${replaced !== "" ? "replaces commits (git replace)" : `grafts its history (${grafts})`}, so it cannot show main's history as it is. Write Cloud's notes from a checkout without them.`,
-        });
-      const before = (yield* gitOk([
-        "rev-list",
-        "-1",
-        "--first-parent",
-        `--before=${start.toISOString()}`,
-        to,
-      ])).trim();
-      if (before === "") {
-        const oldest = (yield* gitOk(["rev-list", "--first-parent", to]))
-          .trim()
-          .split("\n")
-          .at(-1)!;
-        return yield* new ReleaseNotesFailed({
-          message: `This checkout's history holds no commit of main from before ${start.toISOString()}, the start of the ${cloudWindowDays} days before ${end.toISOString()} that Cloud's notes cover; its oldest is from ${(yield* gitOk(["log", "-1", "--format=%cI", oldest])).trim()}. Write them from a checkout with main's whole history (fetch-depth: 0).`,
-        });
-      }
-      const { plain } = yield* listChanges(before, to, warn, "cloud");
-      const changes: Array<typeof plain> = [];
-      for (const note of plain)
-        if (changes.at(-1)?.[0]?.sha === note.sha) changes.at(-1)!.push(note);
-        else changes.push([note]);
-      const notes = changes
-        .toReversed()
-        .flat()
-        .slice(0, cloudMaxNotes)
-        .map((note) => ({
-          date: new Date(note.date).toISOString().slice(0, 10),
-          text: note.text,
-          kind: note.kind,
-        }));
+      const newest = yield* cloudWindow(to, warn);
+      const pinned = newest.find((note) => noteHash(note.text) === pin);
+      if (pin !== undefined && pinned === undefined)
+        yield* Console.warn(
+          `::warning title=Release notes::The note pinned in scripts/releases/cloud-lead.ts (hash ${pin}) is not among Cloud's notes of the ${cloudWindowDays} days before ${to}, so What's new leads with its newest feature or improvement. Remove the pin.`,
+        );
+      const shown = newest.slice(0, cloudMaxNotes);
+      const kept =
+        pinned === undefined || shown.includes(pinned)
+          ? shown
+          : [...shown.slice(0, cloudMaxNotes - 1), pinned];
+      const notes = kept.map((note) => ({
+        date: new Date(note.date).toISOString().slice(0, 10),
+        text: note.text,
+        kind: note.kind,
+        ...(note === pinned ? { lead: true as const } : {}),
+      }));
       const json = `${JSON.stringify({ notes }, null, 2)}\n`;
       if (cloudFile === "-") return yield* Effect.sync(() => process.stdout.write(json));
       yield* fs.makeDirectory(path.dirname(cloudFile), { recursive: true });

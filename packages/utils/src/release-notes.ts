@@ -58,11 +58,14 @@ export const CloudReleaseNotes = Schema.Struct({
       date: Schema.String.check(Schema.isPattern(/^\d{4}-\d{2}-\d{2}$/u)),
       text: Schema.String,
       kind: Schema.Literals(noteKinds),
+      lead: Schema.optional(Schema.Literal(true)),
     }),
   ),
 });
 export type CloudReleaseNotes = typeof CloudReleaseNotes.Type;
 
-export const whatsNewHeadline = <Note extends { readonly kind: NoteKind }>(
+export const whatsNewHeadline = <
+  Note extends { readonly kind: NoteKind; readonly lead?: true | undefined },
+>(
   notes: ReadonlyArray<Note>,
-) => notes.find((note) => note.kind !== "fix");
+) => notes.find((note) => note.lead === true) ?? notes.find((note) => note.kind !== "fix");

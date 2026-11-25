@@ -413,6 +413,13 @@ could be written its kind by hand, since a commit message on main cannot change;
 it is a stopgap, so never add to it, and delete it once that commit leaves
 Cloud's 30 days (the file says when).
 
+`scripts/releases/cloud-lead.ts` can pin the note What's new leads with, by the
+hash `--check` prints, whatever its kind and however many newer notes there are;
+the pinned note stays in the panel, in its dated place, while it is pinned. When
+the pinned note is not among Cloud's notes of the last 30 days, the lead falls
+back to the rule above, and `--check` and the deploy warn. Delete the pin's line
+to remove it.
+
 A note is published only when it is plain prose, and then exactly as written.
 It may hold only ASCII letters, digits, spaces and these punctuation marks:
 `.` `,` `;` `:` `!` `?` `'` `"` `(` `)` `-`. It must also:

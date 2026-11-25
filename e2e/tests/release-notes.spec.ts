@@ -1958,6 +1958,186 @@ layer(NodeServices.layer, { excludeTestServices: true })("Release notes", (it) =
   );
 
   it.effect(
+    "Cloud's notes lead with the note scripts/releases/cloud-lead.ts pins, through newer features and improvements, keep it in the panel past the ten-note cap, and lead by the newest feature or improvement with a warning when it is not in the window",
+    () =>
+      Effect.gen(function* () {
+        const skills = "MCP clients list and load every app's skills.";
+        const lead = createHash("sha256").update(skills).digest("hex").slice(0, 16);
+        const old = new Date(Date.now() - 40 * 24 * 60 * 60 * 1000).toISOString();
+        const today = new Date().toISOString().slice(0, 10);
+        const offline = (main: string) => ({ main, publicRepo: "file:///nonexistent/public" });
+        const pinned = { date: today, text: skills, kind: "feature", lead: true };
+        const later: ReadonlyArray<Merge> = [
+          {
+            title: "Order skills by use (#5501)",
+            body: "Release-note: Improvement: Skills list in the order you use them most.",
+            files: ["apps/hosted/server/src/skill-order.ts"],
+          },
+          {
+            title: "Rename teams (#5502)",
+            body: "Release-note: Feature: Teams can be renamed.",
+            files: ["apps/hosted/cloud/src/teams.ts"],
+          },
+          {
+            title: "Fix the apps page (#5503)",
+            body: "Release-note: Fix: The apps page no longer flickers.",
+            files: ["apps/hosted/cloud/web/src/apps.ts"],
+          },
+        ];
+        const repos = yield* repositories([
+          {
+            title: "Change Cloud long ago (#5400)",
+            files: ["apps/hosted/cloud/src/old.ts"],
+            date: old,
+          },
+          {
+            title: "Serve a feature (#5407)",
+            body: `Release-note: Feature: ${skills}`,
+            files: ["apps/hosted/server/src/mcp.ts", "apps/local/server/src/mcp.ts"],
+          },
+          ...later,
+        ]);
+        const led = yield* notes(offline(repos.main), ["--cloud", "-"], lead);
+        expect(led.exitCode, led.stdout + led.stderr).toBe(0);
+        expect(led.stderr).not.toContain("cloud-lead.ts");
+        expect(JSON.parse(led.stdout)).toEqual({
+          notes: [
+            { date: today, text: "The apps page no longer flickers.", kind: "fix" },
+            { date: today, text: "Teams can be renamed.", kind: "feature" },
+            {
+              date: today,
+              text: "Skills list in the order you use them most.",
+              kind: "improvement",
+            },
+            pinned,
+          ],
+        });
+
+        const crowded = yield* repositories([
+          {
+            title: "Change Cloud long ago (#5400)",
+            files: ["apps/hosted/cloud/src/old.ts"],
+            date: old,
+          },
+          {
+            title: "Serve a feature (#5407)",
+            body: `Release-note: Feature: ${skills}`,
+            files: ["apps/hosted/server/src/mcp.ts"],
+          },
+          ...Array.from({ length: 10 }, (_, index) => ({
+            title: `Improve Cloud ${index + 1} (#${5510 + index})`,
+            body: `Release-note: Improvement: Cloud improvement number ${index + 1}.`,
+            files: [`apps/hosted/cloud/src/improvement-${index + 1}.ts`],
+          })),
+        ]);
+        const full = yield* notes(offline(crowded.main), ["--cloud", "-"], lead);
+        expect(full.exitCode, full.stdout + full.stderr).toBe(0);
+        expect(JSON.parse(full.stdout)).toEqual({
+          notes: [
+            ...Array.from({ length: 9 }, (_, index) => ({
+              date: today,
+              text: `Cloud improvement number ${10 - index}.`,
+              kind: "improvement",
+            })),
+            pinned,
+          ],
+        });
+
+        const stale = yield* repositories([
+          {
+            title: "Change Cloud long ago (#5400)",
+            files: ["apps/hosted/cloud/src/old.ts"],
+            date: old,
+          },
+          ...later,
+        ]);
+        const unpinned = yield* notes(offline(stale.main), ["--cloud", "-"], lead);
+        expect(unpinned.exitCode, unpinned.stdout + unpinned.stderr).toBe(0);
+        expect(unpinned.stderr).toContain(
+          `::warning title=Release notes::The note pinned in scripts/releases/cloud-lead.ts (hash ${lead}) is not among Cloud's notes of the 30 days before`,
+        );
+        expect(unpinned.stdout).not.toContain("lead");
+
+        const fs = yield* FileSystem.FileSystem;
+        const branchCommit = (file: string) =>
+          Effect.gen(function* () {
+            yield* fs.makeDirectory(`${stale.main}/${file.slice(0, file.lastIndexOf("/"))}`, {
+              recursive: true,
+            });
+            yield* fs.writeFileString(`${stale.main}/${file}`, `${file}\n`);
+            yield* git(stale.main, "add", "--all");
+            yield* git(
+              stale.main,
+              "commit",
+              "--quiet",
+              "-m",
+              "Serve a feature",
+              "-m",
+              `Release-note: Feature: ${skills}`,
+            );
+          });
+        const desktopBase = yield* git(stale.main, "rev-parse", "HEAD");
+        yield* branchCommit("apps/local/desktop/src/skills.ts");
+        const desktopOnly = yield* notes(stale, ["--check", desktopBase], lead);
+        expect(desktopOnly.exitCode, desktopOnly.stdout + desktopOnly.stderr).toBe(0);
+        expect(desktopOnly.stdout).toContain(
+          `Warning: the note pinned in scripts/releases/cloud-lead.ts (hash ${lead}) is not among Cloud's notes of the 30 days before ${desktopBase} or this branch's notes for Cloud`,
+        );
+        const base = yield* git(stale.main, "rev-parse", "HEAD");
+        yield* branchCommit("apps/hosted/server/src/skills.ts");
+        const checked = yield* notes(stale, ["--check", base], lead);
+        expect(checked.exitCode, checked.stdout + checked.stderr).toBe(0);
+        expect(checked.stdout).toContain(
+          `Cloud's What's new leads with the note pinned in scripts/releases/cloud-lead.ts (hash ${lead}).`,
+        );
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "the note scripts/releases/cloud-lead.ts pins is a note of a change on this checkout's first-parent line",
+    () =>
+      Effect.gen(function* () {
+        const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const path = yield* Path.Path;
+        const child = yield* processes.spawn(
+          ChildProcess.make(
+            "node",
+            [
+              "--input-type=module",
+              "--eval",
+              "const { cloudLead } = await import(process.argv[1]); process.stdout.write(JSON.stringify(cloudLead));",
+              path.resolve("scripts/releases/cloud-lead.ts"),
+            ],
+            { stdout: "pipe", stderr: "pipe" },
+          ),
+        );
+        const [stdout, stderr, exitCode] = yield* Effect.all(
+          [
+            child.stdout.pipe(Stream.decodeText(), Stream.mkString),
+            child.stderr.pipe(Stream.decodeText(), Stream.mkString),
+            child.exitCode,
+          ],
+          { concurrency: "unbounded" },
+        );
+        expect(Number(exitCode), stderr).toBe(0);
+        const pins: ReadonlyArray<{ hash: string }> = JSON.parse(stdout);
+        expect(pins.length).toBeLessThanOrEqual(1);
+        if (pins.length === 0) return;
+        expect(yield* git(process.cwd(), "rev-parse", "--is-shallow-repository")).toBe("false");
+        const hashes = (yield* git(process.cwd(), "log", "--first-parent", "--format=%B", "HEAD"))
+          .split("\n")
+          .flatMap((line) => {
+            const note =
+              /^Release-note:[ \t]*(?:(?:feature|improvement|fix): )?(.*?)[ \t]*$/iu.exec(line);
+            return note === null
+              ? []
+              : [createHash("sha256").update(note[1]!).digest("hex").slice(0, 16)];
+          });
+        expect(hashes).toContain(pins[0]!.hash);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
     "--cloud keeps the ten newest of many long notes, reads them from a checkout of main's whole history without file contents however long before the window the last change was, and refuses a checkout that stops inside the window or grafts or replaces its history",
     () =>
       Effect.gen(function* () {

@@ -122,6 +122,7 @@ export const repositories = (after: ReadonlyArray<Merge>, before: ReadonlyArray<
 export const notes = (
   repos: { readonly main: string; readonly publicRepo: string },
   args: ReadonlyArray<string>,
+  cloudLead = "",
 ) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -146,7 +147,7 @@ export const notes = (
     const child = yield* processes.spawn(
       ChildProcess.make("node", [path.resolve("scripts/releases/release-notes.ts"), ...written], {
         cwd: repos.main,
-        env: { ...process.env, PUBLIC_REPO: repos.publicRepo },
+        env: { ...process.env, PUBLIC_REPO: repos.publicRepo, EXECUTOR_CLOUD_LEAD: cloudLead },
         stdout: "pipe",
         stderr: "pipe",
       }),
