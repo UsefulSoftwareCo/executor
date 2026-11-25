@@ -290,7 +290,7 @@ export const appStatePage = (options: {
 };
 
 const menuStyle = `
-  body { min-height: 0; background: var(--card); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  body { min-height: 0; background: var(--card); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; user-select: none; -webkit-user-select: none; cursor: default; }
   main { padding: 5px; }
   .label { padding: 8px; min-width: 0; }
   .label .name { font-size: 13px; font-weight: 500; }

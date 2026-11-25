@@ -2254,8 +2254,6 @@ it.live(scenarios.desktopHostedInstallLink.title, () =>
       );
       expect(yield* shownDialogs(`Install ${first.name}`)).toHaveLength(1);
 
-      const local = yield* localDashboard(electron, home.origin);
-      yield* switchAccount(electron, local, "switch to the team to sign out", acmeKey);
       yield* signOutCurrent(
         electron,
         yield* hostedDashboard(electron, server.origin, server.actors.organization.slug),
