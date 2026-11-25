@@ -118,6 +118,10 @@ const newWindow = (browserSession: Electron.Session) =>
     },
   });
 
+// external: Electron destroys a closing window's page, and fails its pending load, before the window reports isDestroyed().
+const windowGone = (window: BrowserWindow) =>
+  window.isDestroyed() || window.webContents.isDestroyed();
+
 const FailedLoad = Schema.Struct({ url: Schema.String });
 const LoadError = Schema.Struct({ code: Schema.String, errno: Schema.Number });
 type LoadError = typeof LoadError.Type;
@@ -427,7 +431,7 @@ const desktop = Effect.gen(function* () {
               try: () => loading,
               catch: Schema.decodeUnknownOption(LoadError),
             }).pipe(Effect.timeoutOption(dashboardLoadTimeout), Effect.result);
-            const replaced = () => current.isDestroyed() || generation !== loads;
+            const replaced = () => windowGone(current) || generation !== loads;
             if (replaced()) return;
             if (Result.isSuccess(outcome) && Option.isSome(outcome.success)) {
               dashboardFailures = 0;
@@ -471,7 +475,7 @@ const desktop = Effect.gen(function* () {
             return;
           }
           void loading.catch((error: unknown) => {
-            if (current.isDestroyed() || generation !== loads) return;
+            if (windowGone(current) || generation !== loads) return;
             if (Schema.is(FailedLoad)(error) && error.url !== url) return;
             failed("window");
           });
