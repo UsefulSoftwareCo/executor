@@ -2,6 +2,8 @@
 export {
   appDocument,
   appAsset,
+  appIcon,
+  appUiPages,
   appFile,
   assetPath,
   storedAppFile,

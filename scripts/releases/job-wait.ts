@@ -1,5 +1,7 @@
-import { Config, Console, Duration, Effect, Redacted, Schema } from "effect";
+import { createHash } from "node:crypto";
+import { Config, Console, Duration, Effect, FileSystem, Path, Redacted, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
+import { unzipSync } from "fflate";
 
 const Job = Schema.Struct({
   id: Schema.Number,
@@ -7,12 +9,27 @@ const Job = Schema.Struct({
   name: Schema.String,
   status: Schema.String,
   conclusion: Schema.NullOr(Schema.String),
+  started_at: Schema.optionalKey(Schema.NullOr(Schema.String)),
   html_url: Schema.optionalKey(Schema.String),
 });
 
 const Jobs = Schema.Struct({
   total_count: Schema.Number,
   jobs: Schema.Array(Job),
+});
+
+const Artifacts = Schema.Struct({
+  total_count: Schema.Number,
+  artifacts: Schema.Array(
+    Schema.Struct({
+      id: Schema.Number,
+      name: Schema.String,
+      size_in_bytes: Schema.Number,
+      expired: Schema.Boolean,
+      digest: Schema.optionalKey(Schema.NullOr(Schema.String)),
+      created_at: Schema.NullOr(Schema.String),
+    }),
+  ),
 });
 
 export class JobWaitFailed extends Schema.TaggedError<JobWaitFailed>()("JobWaitFailed", {
@@ -85,10 +102,12 @@ export type JobWait = {
   readonly ended: (conclusion: string, url: string | undefined) => string;
   readonly late: (reason: string, limit: string) => string;
   readonly succeeded: string;
+  readonly artifact?: { readonly name: string; readonly into: string } | undefined;
 };
 
 const attemptSeconds = 30;
 const pollSeconds = 10;
+const fetchSeconds = 300;
 
 const seconds = (name: string, fallback: number) =>
   Config.Number(name).pipe(
@@ -119,41 +138,148 @@ export const waitForJob = (options: JobWait) =>
     const limit = yield* seconds("JOB_WAIT_LIMIT_SECONDS", options.minutes * 60);
     const attempt = yield* seconds("JOB_WAIT_ATTEMPT_SECONDS", attemptSeconds);
     const poll = yield* seconds("JOB_WAIT_POLL_SECONDS", pollSeconds);
+    const fetchLimit = yield* seconds("JOB_WAIT_FETCH_SECONDS", fetchSeconds);
     const http = yield* HttpClient.HttpClient;
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
     const url = `${api}/repos/${repository}/actions/runs/${run}/attempts/${runAttempt}/jobs?per_page=100`;
 
-    const page = (number: number) =>
+    const request = (target: string, what: string) =>
       Effect.gen(function* () {
         const response = yield* http
           .execute(
-            HttpClientRequest.get(number === 1 ? url : `${url}&page=${number}`).pipe(
+            HttpClientRequest.get(target).pipe(
               HttpClientRequest.bearerToken(Redacted.value(token)),
               HttpClientRequest.setHeader("accept", "application/vnd.github+json"),
             ),
           )
-          .pipe(Effect.mapError(() => new NotFinished({ reason: "the jobs API did not answer" })));
+          .pipe(
+            Effect.mapError(() => new NotFinished({ reason: `the ${what} API did not answer` })),
+          );
         if (response.status !== 200) {
           const body = yield* response.text.pipe(Effect.orElseSucceed(() => ""));
           const message = apiMessage(body);
           const retryAfter = retryAfterSeconds(response.headers["retry-after"]);
           return yield* new NotFinished({
-            reason: `the jobs API answered ${response.status}${message === undefined ? "" : `: ${message}`}`,
+            reason: `the ${what} API answered ${response.status}${message === undefined ? "" : `: ${message}`}`,
             ...(retryAfter === undefined ? {} : { retryAfter }),
           });
         }
-        return yield* response.json.pipe(
-          Effect.flatMap(Schema.decodeUnknownEffect(Jobs)),
-          Effect.mapError(() => new NotFinished({ reason: "the jobs API answered unreadably" })),
+        return response;
+      });
+    const get = <S extends Schema.Top>(target: string, schema: S, what: string) =>
+      request(target, what)
+        .pipe(
+          Effect.flatMap((response) => response.json),
+          Effect.flatMap(Schema.decodeUnknownEffect(schema)),
+          Effect.mapError((error) =>
+            error._tag === "NotFinished"
+              ? error
+              : new NotFinished({ reason: `the ${what} API answered unreadably` }),
+          ),
+        )
+        .pipe(
+          Effect.timeoutOrElse({
+            duration: Duration.seconds(attempt),
+            orElse: () =>
+              Effect.fail(
+                new NotFinished({ reason: `the ${what} API did not answer within ${attempt} s` }),
+              ),
+          }),
         );
-      }).pipe(
-        Effect.timeoutOrElse({
-          duration: Duration.seconds(attempt),
-          orElse: () =>
-            Effect.fail(
-              new NotFinished({ reason: `the jobs API did not answer within ${attempt} s` }),
+    const page = (number: number) =>
+      get(number === 1 ? url : `${url}&page=${number}`, Jobs, "jobs");
+    const acquired = (
+      artifact: { readonly name: string; readonly into: string },
+      job: typeof Job.Type,
+    ) =>
+      Effect.gen(function* () {
+        const name = artifact.name;
+        const from = Date.parse(job.started_at ?? "");
+        if (Number.isNaN(from))
+          return yield* new NotFinished({
+            reason: `the ${options.job} job succeeded, but run ${run} does not list when it started yet`,
+          });
+        const found = yield* get(
+          `${api}/repos/${repository}/actions/runs/${run}/artifacts?name=${encodeURIComponent(name)}&per_page=100`,
+          Artifacts,
+          "artifacts",
+        );
+        const usable = found.artifacts.filter((each) => {
+          const created = each.created_at === null ? Number.NaN : Date.parse(each.created_at);
+          return (
+            each.name === name &&
+            !each.expired &&
+            each.size_in_bytes > 0 &&
+            /^sha256:[0-9a-f]{64}$/u.test(each.digest ?? "") &&
+            created >= from
+          );
+        });
+        const chosen = usable[0];
+        if (
+          chosen === undefined ||
+          usable.length !== 1 ||
+          found.total_count !== found.artifacts.length
+        )
+          return yield* new NotFinished({
+            reason: `the ${options.job} job succeeded, and run ${run} lists ${usable.length} usable artifacts named ${name} uploaded since it started yet`,
+          });
+        const response = yield* request(
+          `${api}/repos/${repository}/actions/artifacts/${chosen.id}/zip`,
+          `artifact ${chosen.id} download`,
+        ).pipe(
+          Effect.flatMap((answer) =>
+            answer.arrayBuffer.pipe(
+              Effect.mapError(
+                () => new NotFinished({ reason: `artifact ${chosen.id}'s download broke off` }),
+              ),
             ),
-        }),
-      );
+          ),
+          Effect.timeoutOrElse({
+            duration: Duration.seconds(fetchLimit),
+            orElse: () =>
+              Effect.fail(
+                new NotFinished({
+                  reason: `artifact ${chosen.id} did not download within ${fetchLimit} s`,
+                }),
+              ),
+          }),
+        );
+        const bytes = new Uint8Array(response);
+        const digest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+        if (digest !== chosen.digest)
+          return yield* new NotFinished({
+            reason: `artifact ${chosen.id} downloaded as ${bytes.length} bytes whose SHA-256 is not the one listed for its ${chosen.size_in_bytes} bytes`,
+          });
+        const unreadable = new JobWaitFailed({
+          message: `Artifact ${chosen.id} (${name}) matches its listed SHA-256 but is not a zip of plain relative paths, so it cannot be unpacked into ${artifact.into}.`,
+        });
+        const entries = yield* Effect.try({ try: () => unzipSync(bytes), catch: () => unreadable });
+        const files = Object.entries(entries).filter(([entry]) => !entry.endsWith("/"));
+        if (
+          files.length === 0 ||
+          files.some(
+            ([entry]) =>
+              entry.includes("\\") ||
+              entry.split("/").some((part) => part === "" || part === "." || part === ".."),
+          )
+        )
+          return yield* unreadable;
+        const unwritable = (cause: unknown) =>
+          new JobWaitFailed({
+            message: `Artifact ${chosen.id} (${name}) could not be written into ${artifact.into}: ${String(cause)}`,
+          });
+        for (const [entry, data] of files) {
+          const target = path.join(artifact.into, ...entry.split("/"));
+          yield* fs
+            .makeDirectory(path.dirname(target), { recursive: true })
+            .pipe(Effect.mapError(unwritable));
+          yield* fs.writeFile(target, data).pipe(Effect.mapError(unwritable));
+        }
+        yield* Console.log(
+          `Fetched artifact ${chosen.id} (${name}, ${bytes.length} bytes, SHA-256 as listed) into ${artifact.into}: ${files.length} file${files.length === 1 ? "" : "s"}.`,
+        );
+      });
 
     let duplicatedBefore = false;
     const look = Effect.gen(function* () {
@@ -204,6 +330,7 @@ export const waitForJob = (options: JobWait) =>
         return yield* new JobWaitFailed({
           message: options.ended(job.conclusion ?? "without a conclusion", job.html_url),
         });
+      if (options.artifact !== undefined) yield* acquired(options.artifact, job);
       return job;
     });
 

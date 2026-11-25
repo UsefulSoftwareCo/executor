@@ -1,9 +1,16 @@
 import { ApiKeyId } from "../contracts/api-keys.ts";
 import { browserPersonalTokenAccess, apiKeyAccess, requirePinnedOrganization } from "./api-keys.ts";
-import { ApprovalMode, ConnectionId, GrantId, mcpOAuthResources } from "@executor-js/mcp-auth";
+import {
+  ApprovalMode,
+  ConnectionId,
+  GrantId,
+  desktopResource,
+  mcpOAuthResources,
+} from "@executor-js/mcp-auth";
 
 import type { BetterAuthPlugin, GenericEndpointContext } from "@better-auth/core";
 import { APIError, createAuthEndpoint, isAPIError } from "better-auth/api";
+import { desktopSessions } from "./desktop-sessions.ts";
 import { Effect, Option, Schema } from "effect";
 import {
   grantOAuthPlugins,
@@ -82,14 +89,17 @@ const hostedGrantOAuth = ({
     onRefreshRejected,
     onGrantCreated,
     resolveResource,
-    scopes: ["mcp", "executor", "offline_access"],
+    scopes: ["mcp", "executor", "desktop", "offline_access"],
     deviceAuthorization: true,
     resources: [
       ...mcpOAuthResources(resourceOrigins.mcp),
-      ...resourceOrigins.api.map((resourceOrigin) => ({
-        identifier: `${resourceOrigin}/api`,
-        allowedScopes: ["executor", "offline_access"],
-      })),
+      ...resourceOrigins.api.flatMap((resourceOrigin) => [
+        { identifier: `${resourceOrigin}/api`, allowedScopes: ["executor", "offline_access"] },
+        {
+          identifier: desktopResource(resourceOrigin),
+          allowedScopes: ["desktop", "offline_access"],
+        },
+      ]),
     ],
     selectResource: (ctx, userId, required) =>
       Effect.gen(function* () {
@@ -216,7 +226,12 @@ export const mcpOAuthPlugins = (options: HostedOAuthOptions) => {
       ),
     },
   } satisfies BetterAuthPlugin;
-  return [...oauth.plugins, hosted] as const;
+  const desktop = desktopSessions({
+    origin: options.origin,
+    authenticate: (ctx) => oauth.authenticate(ctx, "desktop"),
+    bindSession: oauth.bindSession,
+  });
+  return [...oauth.plugins, hosted, desktop] as const;
 };
 
 export const mcpBrowserGrantError = (cause: unknown) =>

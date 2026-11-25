@@ -99,9 +99,11 @@
       "files": [
         "packages/apps/src/implementation/authoring.ts",
         "packages/apps/src/browser/**",
+        "packages/apps/src/implementation/desktop.ts",
         "packages/apps/src/implementation/live.ts",
         "packages/apps/src/implementation/optimistic.ts",
         "packages/apps/src/implementation/ui-client.ts",
+        "packages/apps/src/react.ts",
         "packages/telemetry/src/browser*.ts",
       ],
       "rules": { "executor/authored-code-through-adapter": "off" },

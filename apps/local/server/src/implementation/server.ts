@@ -51,10 +51,12 @@ import { catalogFeedSetting } from "@executor-js/catalog";
 import {
   Config,
   Effect,
+  FileSystem,
   Layer,
   Option,
   Path,
   Ref,
+  Schema,
   Result,
   Deferred,
   Schedule,
@@ -73,7 +75,14 @@ import { installExecutorApp } from "./executor-app.ts";
 import { localSkills } from "./app-browser.ts";
 import { localMcp } from "./mcp.ts";
 import { dashboard } from "./dashboard.ts";
-import { makeLocalAuth, authHandlers, localBearer, type LocalAuth } from "./auth.ts";
+import {
+  makeLocalAuth,
+  authHandlers,
+  localBearer,
+  localRequest,
+  requestOrigin,
+  type LocalAuth,
+} from "./auth.ts";
 import { LocalWebhookSetupApi } from "../contracts/webhook-setup.ts";
 import { localWebhookSetupHandlers } from "./webhook-setup.ts";
 import { DesktopReturnApi } from "../contracts/desktop-return.ts";
@@ -83,10 +92,21 @@ import { localOwner, localOwners } from "./owners.ts";
 import { appUi } from "./app-ui.ts";
 import { appAuthentication, appRequest } from "./app-auth.ts";
 import { appFromHost } from "../contracts/app-ui.ts";
-import { AppUiApi } from "apps/ui/contracts";
+import {
+  AppUiApi,
+  appIconRoute,
+  appMenuBarRoute,
+  executorServerIdentityPath,
+  type ExecutorServerIdentity,
+} from "apps/ui/contracts";
+import {
+  sameOrigins,
+  serverIdentity,
+  serverIdentityResponse,
+} from "@executor-js/utils/server-identity";
 import { appSignInCallbackPath } from "apps/ui/auth";
 import { DashboardApi, OAuthCallbackPath } from "../contracts/dashboard.ts";
-import { LocalAuthApi } from "../contracts/auth.ts";
+import { LocalAuthApi, LocalConfigurationError, LocalInstallation } from "../contracts/auth.ts";
 import { AccountConnectApi } from "../contracts/account-connections.ts";
 import { browserTelemetry } from "./telemetry.ts";
 import { webFiles } from "./web.ts";
@@ -110,6 +130,28 @@ const annotatedSkillReads = (skills: Executor["skills"]): Executor["skills"] => 
   read: (input) => skills.read(input).pipe(Effect.tap(annotateSkillRead)),
 });
 
+const installationIdentity = (directory: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const installation = yield* fs.readFileString(path.join(directory, "installation.json")).pipe(
+      Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(LocalInstallation))),
+      Effect.mapError(
+        () =>
+          new LocalConfigurationError({
+            reason: "io",
+            message:
+              "Executor could not read its installation record, which identifies this server to the desktop app. Check the data directory permissions.",
+          }),
+      ),
+    );
+    const identity: Omit<ExecutorServerIdentity, "origins"> = yield* serverIdentity(
+      "local",
+      installation.id,
+    );
+    return identity;
+  });
+
 export const localApi = (
   config: ServerConfig,
   crypto: Crypto,
@@ -121,6 +163,7 @@ export const localApi = (
       const auth = existingAuth ?? (yield* makeLocalAuth(crypto, config.directory));
       const path = yield* Path.Path;
       const directory = path.resolve(config.directory);
+      const serverId = yield* installationIdentity(directory);
       const { storage, sql } = yield* openStorage(directory);
       const httpClient = yield* safeHttpClient(config.urlPolicy);
       const egress: HostEgress = { policy: config.urlPolicy, client: httpClient };
@@ -402,6 +445,8 @@ export const localApi = (
         HttpRouter.add("GET", appSignInCallbackPath, signIn.callback),
         HttpRouter.add("GET", "/_executor/version", ui.versions),
         HttpRouter.add("GET", "/_executor/assets/:version/*", ui.asset),
+        HttpRouter.add("GET", appMenuBarRoute, ui.menuBar),
+        HttpRouter.add("GET", appIconRoute, ui.icon),
         HttpRouter.add("GET", "/_executor/*", notFound),
         HttpRouter.add("GET", "/dashboard/*", notFound),
         HttpRouter.add("GET", "/auth/*", notFound),
@@ -422,6 +467,8 @@ export const localApi = (
           managedAccount: managed.account,
           ownerMigration: Ref.get(ownerMigration),
           wakeWebhookSources,
+          uiPages: ui.pages,
+          uiIcon: ui.dashboardIcon,
         },
       );
       const web = options.web ?? (yield* webFiles);
@@ -454,6 +501,29 @@ export const localApi = (
         HttpRouter.add("*", "/mcp", mcp.http),
         HttpRouter.add("GET", mcpWhoamiPath, mcp.whoami),
         HttpRouter.add("*", "/api/auth/*", oauth.handler),
+        HttpRouter.add(
+          "GET",
+          executorServerIdentityPath,
+          localRequest(config.port, config.browserOrigin).pipe(
+            Effect.map((request) =>
+              serverIdentityResponse(
+                serverId,
+                sameOrigins(
+                  config.browserOrigin !== undefined &&
+                    requestOrigin(config, request) === config.browserOrigin
+                    ? config.browserOrigin
+                    : `http://${request.headers.host}`,
+                ),
+                "no-store",
+              ),
+            ),
+            Effect.catchTag("AuthForbidden", () =>
+              Effect.succeed(
+                HttpServerResponse.empty({ status: 403, headers: { "cache-control": "no-store" } }),
+              ),
+            ),
+          ),
+        ),
         HttpRouter.add("GET", "/.well-known/oauth-protected-resource", oauth.protectedResource),
         HttpRouter.add("GET", "/.well-known/oauth-protected-resource/mcp", oauth.protectedResource),
         HttpRouter.add("GET", "/.well-known/oauth-authorization-server", oauth.metadata),

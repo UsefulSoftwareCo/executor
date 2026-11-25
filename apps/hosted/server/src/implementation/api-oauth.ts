@@ -1,6 +1,6 @@
 import { Effect } from "effect";
 import { HttpServerRequest, HttpServerResponse } from "effect/http";
-import { requestResourceOrigin } from "@executor-js/mcp-auth";
+import { desktopResource, requestResourceOrigin } from "@executor-js/mcp-auth";
 import { BearerAuthentication } from "../contracts/auth.ts";
 
 /** RFC 9728 metadata for the organization management API. */
@@ -14,6 +14,19 @@ export const apiProtectedResource = Effect.gen(function* () {
     scopes_supported: ["executor", "offline_access"],
     bearer_methods_supported: ["header"],
     resource_name: "Executor API",
+  });
+});
+
+export const desktopProtectedResource = Effect.gen(function* () {
+  const { issuer, resourceOrigins } = yield* BearerAuthentication;
+  const request = yield* HttpServerRequest.HttpServerRequest;
+  const resourceOrigin = requestResourceOrigin(resourceOrigins.api, request.headers.host);
+  return HttpServerResponse.jsonUnsafe({
+    resource: desktopResource(resourceOrigin),
+    authorization_servers: [issuer],
+    scopes_supported: ["desktop", "offline_access"],
+    bearer_methods_supported: ["header"],
+    resource_name: "Executor desktop",
   });
 });
 

@@ -18,6 +18,7 @@ import {
   McpConsentLoading,
   McpConsentSummary,
   consentDestination,
+  desktopSignInNote,
 } from "@executor-js/ui/dashboard/mcp-consent";
 import { McpConnectionFailed, mcpClientAtom, mcpConsentAtom } from "../../contracts/mcp.ts";
 import { organizationsAtom, type OrganizationSummary } from "../../contracts/organization.ts";
@@ -119,7 +120,19 @@ function McpConsent({
       ) : (
         <McpConsentSummary
           note={
-            destination === undefined ? undefined : <McpConsentDestination origin={destination} />
+            target.kind === "desktop" ? (
+              <>
+                {desktopSignInNote}
+                {destination !== undefined && (
+                  <>
+                    {" "}
+                    <McpConsentDestination origin={destination} />
+                  </>
+                )}
+              </>
+            ) : destination === undefined ? undefined : (
+              <McpConsentDestination origin={destination} />
+            )
           }
         >
           {choices.rows}

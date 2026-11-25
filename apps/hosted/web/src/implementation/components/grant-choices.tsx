@@ -107,7 +107,7 @@ export function useGrantChoices({
     </McpConsentRow>
   );
   const rows =
-    target.kind === "api" ? (
+    target.kind !== "mcp" ? (
       <>
         {organizationRow}
         <McpConsentTargetRows target={target} />
@@ -141,7 +141,7 @@ export function useGrantChoices({
     decision: {
       organization: fixedOrganization ? undefined : organization,
       settings:
-        target.kind === "api" || mode === undefined
+        target.kind !== "mcp" || mode === undefined
           ? undefined
           : legacy?.toolkit !== undefined
             ? { mode }

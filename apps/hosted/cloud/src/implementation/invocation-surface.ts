@@ -1,4 +1,5 @@
 import { Option } from "effect";
+import { appIconRoute, appMenuBarRoute } from "apps/ui/contracts";
 import { isBrowserPage, isMcpPath } from "../contracts/browser-pages.ts";
 import { retainedAssetFolders } from "../contracts/retained-assets.ts";
 import { agentSkills, isSitePage, matchesSitePattern, siteFiles } from "../contracts/site-paths.ts";
@@ -29,7 +30,8 @@ const siteTelemetryPath = /^\/api\/[0-9a-f]{16}\//;
 const routeGroup = (pathname: string, ownHost: boolean): RouteGroup => {
   if (pathname.startsWith("/_executor/")) {
     if (pathname.startsWith("/_executor/api/telemetry/")) return "telemetry";
-    if (pathname.startsWith("/_executor/assets/")) return "assets";
+    if (pathname.startsWith("/_executor/assets/") || pathname === appIconRoute) return "assets";
+    if (pathname === appMenuBarRoute) return "other";
     return "api";
   }
   if (!ownHost) return "other";

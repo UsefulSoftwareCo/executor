@@ -260,7 +260,9 @@ function useAgentConnectedBefore(): ConnectedAgent | undefined {
   const { organization } = useOrganizationRoute();
   const agents = useAtomValue(mcpAgentsAtom(organization));
   if (!required || !AsyncResult.isSuccess(agents)) return undefined;
-  return agents.value.find((agent) => agent.access.kind !== "api");
+  return agents.value.find(
+    (agent) => agent.access.kind !== "api" && agent.access.kind !== "desktop",
+  );
 }
 
 interface AgentFound {

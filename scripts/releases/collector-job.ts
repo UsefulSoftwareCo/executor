@@ -20,7 +20,8 @@ NodeRuntime.runMain(
         `The ${job} job ended ${conclusion}, so this job has no ${target} collector for its ${use}; this failure follows from that one. Rerun the ${job} job, then this one.${url === undefined ? "" : ` ${url}`}`,
       late: (reason, limit) =>
         `The ${job} job did not finish within ${limit} (${reason}). Rerun this job once it has.`,
-      succeeded: `The ${job} job succeeded; fetching its build.`,
+      succeeded: `The ${job} job succeeded, and its build is fetched whole.`,
+      artifact: { name: `collector-${target}`, into: "packages/telemetry/dist/collector" },
     });
   }).pipe(Effect.provide([FetchHttpClient.layer, NodeServices.layer])),
 );

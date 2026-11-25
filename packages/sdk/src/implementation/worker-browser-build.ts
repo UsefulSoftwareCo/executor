@@ -206,7 +206,7 @@ export const browserBuild = (
       finish: () =>
         compileUiTailwind(
           assets,
-          plan.html,
+          plan.documents.map((document) => document.html).join("\n"),
           Effect.tryPromise(() => import("tailwindcss-iso/oxide.wasm")).pipe(
             Effect.map((module) => module.default),
           ),
