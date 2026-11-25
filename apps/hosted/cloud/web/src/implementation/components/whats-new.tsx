@@ -3,7 +3,12 @@ import bundled from "virtual:cloud-release-notes";
 import { isPlainNote, type NoteKind, whatsNewHeadline } from "@executor-js/utils/release-notes";
 import { ReleaseNotesDialog, SidebarNews } from "@executor-js/ui/dashboard/sidebar-news";
 
-type CloudNote = { readonly date: string; readonly text: string; readonly kind: NoteKind };
+type CloudNote = {
+  readonly date: string;
+  readonly text: string;
+  readonly kind: NoteKind;
+  readonly lead?: true | undefined;
+};
 
 export const cloudNotes: ReadonlyArray<CloudNote> =
   bundled === null ? [] : bundled.notes.filter((note) => isPlainNote(note.text));
