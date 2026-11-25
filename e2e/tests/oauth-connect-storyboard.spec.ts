@@ -764,7 +764,7 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools:router(
             )).account.label;
           });
         const appPath = `/org/${actors.organization.slug}/apps/${app.id}`;
-        const connect = () =>
+        const connect = (sharedClient = false) =>
           Effect.gen(function* () {
             yield* browser.use("Connect a new account from the list", (page) =>
               page.getByRole("button", { name: "Connect new account", exact: true }).click(),
@@ -775,6 +775,13 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools:router(
                 .getByRole("button", { name: "Connect Sample service", exact: true })
                 .click(),
             );
+            if (sharedClient)
+              yield* browser.use("Continue with the client the service issued again", (page) =>
+                page
+                  .getByRole("dialog")
+                  .getByRole("button", { name: "Continue to Sample service", exact: true })
+                  .click(),
+              );
             const completed = yield* browser.use("Allow access and complete sign-in", (page) =>
               Promise.all([
                 page.waitForResponse(
@@ -829,7 +836,7 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools:router(
         );
         expect(yield* label(first)).toBe("Default");
 
-        const second = yield* connect();
+        const second = yield* connect(true);
         expect(second).not.toBe(first);
         expect(yield* prefilled()).toBe("Default 2");
         yield* browser.use("Name the second account", (page) =>

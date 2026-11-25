@@ -108,6 +108,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth saved client rejection",
               return location;
             }),
           ).pipe(Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }));
+        const connected: Array<string> = [];
         const complete = (started: { readonly connection: string; readonly callback: string }) =>
           Effect.gen(function* () {
             const response = yield* api.request(
@@ -116,7 +117,10 @@ layer(HostedLive, { excludeTestServices: true })("OAuth saved client rejection",
               `${prefix}/connections/${started.connection}/oauth/complete`,
               { callbackUrl: started.callback },
             );
-            if (response.status === 200) return "connected";
+            if (response.status === 200) {
+              connected.push((yield* body(Resource, response)).id);
+              return "connected";
+            }
             expect(response.status, JSON.stringify(response.body)).toBe(400);
             return (yield* body(Failure, response)).reason;
           });
@@ -131,6 +135,10 @@ layer(HostedLive, { excludeTestServices: true })("OAuth saved client rejection",
         const app = (yield* deploy).id;
         expect(yield* complete(yield* signIn(app))).toBe("connected");
         const registered = yield* registrations;
+        for (const account of connected.splice(0))
+          expect(
+            (yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`)).status,
+          ).toBe(200);
 
         const older = yield* signIn(app);
         const newer = yield* signIn(app);

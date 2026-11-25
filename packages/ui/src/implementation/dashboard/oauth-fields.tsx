@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { ArrowDown01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { Cause, Exit, Option, Redacted } from "effect";
+import { Cause, Exit, Option, Redacted, Schema } from "effect";
 import {
+  OAuthOwnClientUnavailable,
   OAuthSetupFailed,
   type Account,
   type OAuthClientId,
@@ -12,6 +13,7 @@ import type { OAuthSubmission } from "../../contracts/credentials.ts";
 import type { FailureProps, Query } from "../../contracts/dashboard.ts";
 import type { ComponentType, ReactNode } from "react";
 import { Button } from "../components/button.tsx";
+import { Checkbox } from "../components/checkbox.tsx";
 import { Input } from "../components/input.tsx";
 import {
   Select,
@@ -70,6 +72,8 @@ export function OAuthSetup<E extends UserFacingError>({
     </div>
   );
 }
+
+const OwnClientNotice = Schema.Struct({ ownClientUnavailable: OAuthOwnClientUnavailable });
 
 type ClientChoice =
   | { readonly kind: "current" }
@@ -180,6 +184,14 @@ export function OAuthFields<A, E>({
   const [shared, setShared] = useState(!manualClient);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<Cause.Cause<E>>();
+  const [chooseAgain, setChooseAgain] = useState(false);
+  const [noticed, setNoticed] = useState<{ readonly value: A }>();
+  const offersChooseAgain =
+    account !== undefined &&
+    setup !== "unresolved" &&
+    setup.grant === "authorization_code" &&
+    setup.chooseAgain === true &&
+    (choice?.kind === "current" || choice?.kind === "automatic");
   const blocked =
     disabled ||
     setupAction !== undefined ||
@@ -235,11 +247,14 @@ export function OAuthFields<A, E>({
           : choice.kind === "automatic"
             ? { client: { automatic: true } }
             : {};
-    const operation = start(submission);
+    const operation = start(
+      offersChooseAgain && chooseAgain ? { ...submission, chooseAgain: true } : submission,
+    );
     void operation.then((exit) => {
       if (Exit.isSuccess(exit)) {
         setClientSecret("");
-        if (onAuthorized(exit.value) === "navigating") return;
+        if (Schema.is(OwnClientNotice)(exit.value)) setNoticed({ value: exit.value });
+        else if (onAuthorized(exit.value) === "navigating") return;
       } else {
         if (requiresClient(exit.cause)) setPicked({ kind: "manual" });
         setError(exit.cause);
@@ -259,6 +274,7 @@ export function OAuthFields<A, E>({
           disabled={pending || disabled}
           onValueChange={(value) => {
             setPicked(choices.find((offered) => choiceKey(offered) === value));
+            setNoticed(undefined);
             setError(undefined);
           }}
         >
@@ -375,19 +391,48 @@ export function OAuthFields<A, E>({
       <div className="form-actions flex flex-col gap-3 pt-1">
         {access}
         <div role="group" aria-label="Connection options" className="relative flex flex-col gap-4">
+          {noticed !== undefined && (
+            <div role="status" className="space-y-1 rounded-md border bg-muted/60 p-3 text-[13px]">
+              <p className="font-medium">{providerName} may reuse your earlier choice</p>
+              <p className="text-pretty text-muted-foreground">
+                Executor couldn’t give this connection its own sign-in at {providerName}, so{" "}
+                {providerName} may skip asking which account or organization to use. To choose
+                again, revoke Executor’s access in {providerName}’s settings, then continue; your
+                other {providerName} connections may then need reconnecting.
+              </p>
+            </div>
+          )}
           <div className="flex min-h-9 flex-col max-[740px]:min-h-11">
-            {setupAction ?? (
-              <Button type="button" className="w-full" disabled={blocked} onClick={connect}>
-                {pending
-                  ? machine
-                    ? "Connecting…"
-                    : "Preparing sign-in…"
-                  : `${account === undefined ? "Connect" : "Reconnect"} ${providerName}`}
+            {noticed !== undefined ? (
+              <Button
+                type="button"
+                className="w-full"
+                disabled={pending}
+                onClick={() => {
+                  setPending(true);
+                  onPendingChange?.(true);
+                  if (onAuthorized(noticed.value) === "navigating") return;
+                  setNoticed(undefined);
+                  setPending(false);
+                  onPendingChange?.(false);
+                }}
+              >
+                Continue to {providerName}
               </Button>
+            ) : (
+              (setupAction ?? (
+                <Button type="button" className="w-full" disabled={blocked} onClick={connect}>
+                  {pending
+                    ? machine
+                      ? "Connecting…"
+                      : "Preparing sign-in…"
+                    : `${account === undefined ? "Connect" : "Reconnect"} ${providerName}`}
+                </Button>
+              ))
             )}
           </div>
           {missing ? null : setup !== "unresolved" &&
-            (requested > 0 || (!prominent && clientSelect !== undefined)) ? (
+            (requested > 0 || (!prominent && clientSelect !== undefined) || offersChooseAgain) ? (
             <details className="group/advanced min-w-0 border-t pt-3">
               <summary className="flex w-fit cursor-pointer list-none items-center gap-1.5 rounded-sm text-xs font-medium text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
                 <HugeiconsIcon
@@ -407,6 +452,20 @@ export function OAuthFields<A, E>({
                 {!prominent && clientSelect}
                 <Permissions label="Requested permissions" scopes={setup.scopes} />
                 <Permissions label="User token permissions" scopes={userScopes} />
+                {offersChooseAgain && (
+                  <label className="flex items-start gap-2 text-xs">
+                    <Checkbox
+                      className="mt-px"
+                      checked={chooseAgain}
+                      disabled={pending || disabled}
+                      onCheckedChange={(checked) => {
+                        setChooseAgain(checked === true);
+                        setNoticed(undefined);
+                      }}
+                    />
+                    <span>Let me choose the {providerName} account or organization again</span>
+                  </label>
+                )}
               </div>
             </details>
           ) : (

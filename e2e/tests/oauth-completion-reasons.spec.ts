@@ -15,7 +15,7 @@ import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
 import { enterClientDetails } from "../support/oauth-client-entry.ts";
 import { removeRegisteredClients } from "../support/registered-oauth-clients.ts";
-import { connectionsPath } from "../support/app-accounts.ts";
+import { connectionsPath, requirementPath } from "../support/app-accounts.ts";
 import { linkedChoice, linkedLabels } from "../support/account-choices.ts";
 
 const AppProvider = Schema.Struct({ id: Schema.String });
@@ -29,6 +29,10 @@ const Failure = Schema.Struct({
   reason: Schema.optional(Schema.String),
 });
 const client = { clientId: "confidential-client", clientSecret: "synthetic-manual-secret" };
+
+const Linked = Schema.Struct({
+  accounts: Schema.Array(Schema.Struct({ account: Schema.Struct({ id: Schema.String }) })),
+});
 
 layer(HostedLive, { excludeTestServices: true })("OAuth completion reasons", (it) => {
   it.effect(scenarios.oauthCompletionReasons.title, (context) =>
@@ -301,6 +305,19 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
         yield* addAccount(reusedApp, "First");
         yield* nameAccount("First");
         yield* linked(reusedApp, ["First"]);
+        const firstLinked = yield* body(
+          Linked,
+          yield* api.request(
+            actors.owner,
+            "GET",
+            requirementPath(`${prefix}/apps/${reusedApp.id}`, "user", "service"),
+          ),
+        );
+        for (const entry of firstLinked.accounts)
+          expect(
+            (yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${entry.account.id}`))
+              .status,
+          ).toBe(200);
         yield* issuer.configure({ tokenError: { status: 401, body: { error: "invalid_client" } } });
         const registrations = (yield* issuer.metrics).registrations;
         yield* addAccount(reusedApp, "Second");
@@ -321,7 +338,7 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
         );
         yield* connectInDialog(reusedApp, "Second");
         yield* nameAccount("Second");
-        yield* linked(reusedApp, ["First", "Second"]);
+        yield* linked(reusedApp, ["Second"]);
         expect((yield* issuer.metrics).registrations).toBe(registrations + 1);
 
         yield* removeRegisteredClients(actors.owner, actors.organization.id, issuer.origin);

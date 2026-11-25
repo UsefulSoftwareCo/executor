@@ -106,4 +106,5 @@ export interface OAuthSubmission {
   readonly client?: OAuthClientSelection;
   readonly register?: boolean;
   readonly update?: OAuthClientId;
+  readonly chooseAgain?: true;
 }

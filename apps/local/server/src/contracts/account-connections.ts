@@ -74,6 +74,7 @@ export const ConnectionOAuthStart = Schema.Struct({
   method: Schema.NonEmptyString,
   label: Schema.optional(Schema.NonEmptyString),
   client: Schema.optional(OAuthClientSelection),
+  chooseAgain: Schema.optional(Schema.Literal(true)),
 });
 
 const errors = [

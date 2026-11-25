@@ -315,6 +315,7 @@ const startOAuth = Atom.family((key: ConnectionKey) =>
       payload: {
         readonly method: string;
         readonly client?: OAuthClientSelection;
+        readonly chooseAgain?: true;
       },
       get,
     ) =>

@@ -142,6 +142,7 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
   readonly start: (input: {
     readonly method: string;
     readonly client?: OAuthClientSelection;
+    readonly chooseAgain?: true;
   }) => Promise<
     Exit.Exit<A | Extract<HostedOAuthStartResult, { status: "completed" }>, HostedError>
   >;
@@ -282,6 +283,7 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
                     : input.client !== undefined
                       ? { client: input.client }
                       : {}),
+                  ...(input.chooseAgain === true ? { chooseAgain: true } : {}),
                 });
                 return Exit.map(exit, (value) => ({
                   ...value,

@@ -176,10 +176,11 @@ export const dashboard = (
       readonly method: typeof AuthMethodName.Type;
       readonly label?: string | undefined;
       readonly client?: OAuthClientSelection | undefined;
+      readonly chooseAgain?: true | undefined;
     },
   ) =>
     Effect.gen(function* () {
-      const { method, label, client, ...target } = payload;
+      const { method, label, client, chooseAgain, ...target } = payload;
       const request = yield* localRequest(config.port, config.browserOrigin).pipe(
         Effect.mapError(() => new DashboardForbidden()),
       );
@@ -190,6 +191,7 @@ export const dashboard = (
         method,
         ...(label === undefined ? {} : { label }),
         ...(chosen === undefined ? {} : { client: chosen }),
+        ...(chooseAgain === true ? { chooseAgain } : {}),
         redirectUri: new URL(OAuthCallbackPath, requestOrigin(config, request)).href,
       });
       return { ...signIn, connection: connection.id };

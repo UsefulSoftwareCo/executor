@@ -310,6 +310,7 @@ const scopeEndpoints = <const S extends AccountScope>(scope: S) => {
         method: AuthMethodName,
         label: Schema.optional(Schema.NonEmptyString),
         client: Schema.optional(OAuthClientSelection),
+        chooseAgain: Schema.optional(Schema.Literal(true)),
       }),
       success: ConnectionSignIn,
       error: [

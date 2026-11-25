@@ -54,6 +54,7 @@ export function appConnectionAtoms(key: {
           readonly method: string;
           readonly label?: string;
           readonly client?: OAuthClientSelection;
+          readonly chooseAgain?: true;
         },
         get,
       ) =>

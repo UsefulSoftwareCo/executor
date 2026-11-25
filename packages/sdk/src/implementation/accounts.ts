@@ -114,6 +114,7 @@ export const lockedAccount = (tx: Query, input: Parameters<Executor["accounts"][
 
 export interface RemovedGrant {
   readonly account: AccountId;
+  readonly owner: OwnerId;
   readonly provider: string;
   readonly encrypted: Uint8Array;
 }
@@ -282,7 +283,12 @@ export const makeAccounts = (
             );
             return grant === null
               ? undefined
-              : { account: row.id, provider: row.provider, encrypted: grant.encrypted };
+              : {
+                  account: row.id,
+                  owner: row.owner,
+                  provider: row.provider,
+                  encrypted: grant.encrypted,
+                };
           }
           return undefined;
         }),

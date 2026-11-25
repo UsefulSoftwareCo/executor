@@ -21,6 +21,7 @@ import {
   OAuthRegistration,
   type OAuthOptions,
   type OAuthClientAuth,
+  OAuthConnectionClient,
   ResourceMetadataSignal,
   type ResourceMetadataLocation,
   ResourceOAuth,
@@ -449,6 +450,7 @@ const failure = (error: unknown): OAuthProtocolFailed => {
 export type OAuthClientKind =
   | { readonly kind: "first_party"; readonly id: FirstPartyOAuthClientId }
   | { readonly kind: "stored" }
+  | { readonly kind: "connection" }
   | { readonly kind: "entered" };
 
 export const clientSpanAttributes = (
@@ -513,7 +515,8 @@ const protocolStage =
       | "exchange"
       | "clientCredentials"
       | "refresh"
-      | "revoke",
+      | "revoke"
+      | "deleteClient",
     attributes: Readonly<Record<string, string>> = {},
   ) =>
   <A, R>(program: Effect.Effect<A, OAuthProtocolFailed, R>) =>
@@ -639,6 +642,24 @@ const clientAuth = (client: OAuthRegistration) => {
 };
 
 /** Fill a missing client_secret_expires_at with RFC 7591's "does not expire" value. */
+const publishedPromptValues = <A extends object>(server: A) => {
+  if (!("prompt_values_supported" in server)) return server;
+  const { prompt_values_supported: values, ...rest } = server;
+  return Array.isArray(values)
+    ? {
+        ...rest,
+        prompt_values_supported: values.filter(
+          (value): value is string => typeof value === "string",
+        ),
+      }
+    : rest;
+};
+
+const RegistrationManagement = Schema.Struct({
+  registration_client_uri: Schema.NonEmptyString,
+  registration_access_token: Schema.NonEmptyString,
+});
+
 const registrationBody = (text: string) => {
   const parsed: unknown = (() => {
     try {
@@ -981,7 +1002,10 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
           answered(answer);
           const body = yield* response.arrayBuffer.pipe(Effect.withSpan("oauth.response.read"));
           answered({ ...answer, body });
-          return new Response(body, { status: response.status, headers: response.headers });
+          return new Response([101, 204, 205, 304].includes(response.status) ? null : body, {
+            status: response.status,
+            headers: response.headers,
+          });
         }).pipe(
           Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
           Effect.mapError(failure),
@@ -1145,7 +1169,7 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
       Effect.flatMap((found): Effect.Effect<IssuerDiscovery, OAuthProtocolFailed> =>
         "missing" in found
           ? Effect.succeed(found)
-          : decode(OAuthTokenServer, found.server).pipe(
+          : decode(OAuthTokenServer, publishedPromptValues(found.server)).pipe(
               Effect.map((server) => ({
                 server,
                 audienceFromScopes: scopedAudience(found.server),
@@ -1560,19 +1584,45 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
           },
           { sent: [] },
         );
+        const management = yield* decode(RegistrationManagement, registered).pipe(
+          Effect.flatMap((issued) =>
+            decode(OAuthConnectionClient, {
+              registrationClientUri: issued.registration_client_uri,
+              registrationAccessToken: issued.registration_access_token,
+            }),
+          ),
+          Effect.orElseSucceed(() => undefined),
+        );
         const issued = registered.token_endpoint_auth_method;
         if (issued === undefined || issued === advertised)
-          return yield* decode(OAuthRegistration, {
-            ...registered,
-            token_endpoint_auth_method: method,
-          });
+          return {
+            client: yield* decode(OAuthRegistration, {
+              ...registered,
+              token_endpoint_auth_method: method,
+            }),
+            management,
+          };
         // RFC 7591 section 3.2.1: the server may replace requested metadata, and the client
         // uses what was issued. Vercel registers a public client when asked for a secret one.
         // A method the app configured is a requirement, so a replacement there is a mismatch.
         if (configured !== undefined)
           return yield* new OAuthProtocolFailed({ reason: "invalid_response" });
-        return yield* decode(OAuthRegistration, registered);
+        return { client: yield* decode(OAuthRegistration, registered), management };
       }).pipe(protocolStage("register")),
+    deleteClient: (management: {
+      readonly registrationClientUri: string;
+      readonly registrationAccessToken: string;
+    }) =>
+      request(async (settings) => {
+        const response = await settings[oauth.customFetch](management.registrationClientUri, {
+          method: "DELETE",
+          headers: { authorization: `Bearer ${management.registrationAccessToken}` },
+          redirect: "manual",
+          signal: settings.signal,
+          body: undefined,
+        });
+        return response.status;
+      }).pipe(protocolStage("deleteClient")),
     authorize: (input: {
       server: OAuthServer;
       client: OAuthRegistration;
@@ -1582,6 +1632,7 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
       authorizationParams?: Readonly<Record<string, string>>;
       scopeSeparator?: string;
       pkce?: false;
+      prompt?: string;
     }) =>
       Effect.gen(function* () {
         if (input.pkce === false && input.client.token_endpoint_auth_method === "none")
@@ -1598,6 +1649,8 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
           if (!url.searchParams.has(key)) url.searchParams.set(key, value);
         for (const [key, value] of Object.entries(input.authorizationParams ?? {}))
           url.searchParams.set(key, value);
+        if (input.prompt !== undefined && !url.searchParams.has("prompt"))
+          url.searchParams.set("prompt", input.prompt);
         for (const [key, value] of Object.entries({
           response_type: "code",
           client_id: input.client.client_id,

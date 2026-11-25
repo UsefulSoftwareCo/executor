@@ -58,7 +58,7 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
         const app = yield* deploy("Setup fixture");
         const setupPath = (provider: string) => `${prefix}/providers/${provider}/oauth/oauth/setup`;
         const provider = app.requirements.accounts.service.provider;
-        const inspect = (target: string) =>
+        const inspect = (target: string, registers: boolean) =>
           Effect.gen(function* () {
             const response = yield* api.request(actors.owner, "GET", setupPath(target));
             expect(response.status).toBe(200);
@@ -71,6 +71,7 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
               "grant",
               "issuer",
               "tokenEndpointAuthMethod",
+              ...(registers ? ["chooseAgain"] : []),
               "clients",
             ]);
             const setup = yield* body(Setup, response);
@@ -78,7 +79,7 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
             expect(setup.clients).toEqual([]);
             return setup;
           });
-        expect((yield* inspect(provider)).mode).toBe("automatic");
+        expect((yield* inspect(provider, true)).mode).toBe("automatic");
         expect((yield* issuer.metrics).registrations).toBe(0);
         expect((yield* api.request(actors.member, "GET", setupPath(provider))).status).toBe(403);
         const start = (target: typeof AppProvider.Type) =>
@@ -102,13 +103,13 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
         expect((yield* start(app)).status).toBe(200);
         expect((yield* issuer.metrics).registrations).toBe(1);
         yield* issuer.configure({ registration: false });
-        expect((yield* inspect(provider)).mode).toBe("automatic");
+        expect((yield* inspect(provider, false)).mode).toBe("automatic");
         expect((yield* issuer.metrics).registrations).toBe(1);
         yield* issuer.configure({ scopes: ["write"] });
-        expect((yield* inspect(provider)).mode).toBe("client-required");
+        expect((yield* inspect(provider, false)).mode).toBe("client-required");
         yield* issuer.configure({ scopes: ["read"] });
         const expired = yield* deploy("Expired setup fixture");
-        expect((yield* inspect(expired.requirements.accounts.service.provider)).mode).toBe(
+        expect((yield* inspect(expired.requirements.accounts.service.provider, false)).mode).toBe(
           "automatic",
         );
         expect((yield* issuer.metrics).registrations).toBe(1);
@@ -116,7 +117,7 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
         expect((yield* start(expired)).status).toBe(200);
         expect((yield* issuer.metrics).registrations).toBe(2);
         yield* issuer.configure({ registration: false });
-        expect((yield* inspect(expired.requirements.accounts.service.provider)).mode).toBe(
+        expect((yield* inspect(expired.requirements.accounts.service.provider, false)).mode).toBe(
           "client-required",
         );
         yield* issuer.configure({ scopes: ["read"] });

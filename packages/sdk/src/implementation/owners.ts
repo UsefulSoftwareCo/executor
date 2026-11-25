@@ -175,7 +175,12 @@ export const makeOwners = (
             for (const account of accounts) {
               const bytes = encrypted.get(account.id);
               if (bytes !== undefined)
-                grants.push({ account: account.id, provider: account.provider, encrypted: bytes });
+                grants.push({
+                  account: account.id,
+                  owner,
+                  provider: account.provider,
+                  encrypted: bytes,
+                });
             }
             yield* query(() =>
               tx.deleteMany("oauthGrants", { where: (b) => b("id", "in", accountIds) }),

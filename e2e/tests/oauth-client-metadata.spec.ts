@@ -323,7 +323,23 @@ layer(HostedLive, { excludeTestServices: true })("OAuth client metadata document
           publicOrigins: { [publicOrigin]: target.metadata.origin },
         });
         const existing = yield* deployApp(issuer.origin, "Existing client");
-        yield* finishSignIn(yield* startSignIn(existing));
+        const earlier = yield* startSignIn(existing);
+        const earlierConsent = yield* authorize(earlier.authorization);
+        const api = yield* Api,
+          actors = yield* Actors;
+        const earlierAccount = yield* body(
+          Resource,
+          yield* api.request(actors.owner, "POST", earlier.complete, {
+            callbackUrl: earlierConsent.location,
+          }),
+        );
+        expect(
+          (yield* api.request(
+            actors.owner,
+            "DELETE",
+            `/api/organizations/${actors.organization.id}/accounts/${earlierAccount.id}`,
+          )).status,
+        ).toBe(200);
         expect((yield* issuer.metrics).registrations).toHaveLength(1);
         expect(yield* setupMode(existing)).toBe("automatic");
 

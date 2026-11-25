@@ -138,6 +138,7 @@ export type HostedAccountConnection = typeof HostedAccountConnection.Type;
 export const HostedOAuthSignIn = Schema.Struct({
   status: Schema.Literal("redirect"),
   ...OAuthSignIn.fields,
+  ownClientUnavailable: OAuthStartResult.members[0].fields.ownClientUnavailable,
 });
 export type HostedOAuthSignIn = typeof HostedOAuthSignIn.Type;
 export const HostedOAuthStartResult = Schema.Union([
@@ -262,6 +263,7 @@ export const HostedAccounts = HttpApiGroup.make("accounts")
         method: Schema.NonEmptyString,
         label: Schema.optional(Schema.NonEmptyString),
         client: Schema.optional(OAuthClientSelection),
+        chooseAgain: Schema.optional(Schema.Literal(true)),
       }),
       success: HostedOAuthStartResult,
       error: [

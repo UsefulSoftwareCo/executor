@@ -6141,6 +6141,52 @@ export const scenarios = plan({
       local: na("Hosted organization roles and client audiences."),
     },
   },
+  oauthConnectionClients: {
+    fixtures: "actors",
+    file: "oauth-connection-clients.spec.ts",
+    title:
+      "A person's further connection to an OAuth service that remembers consent per client registers a client of its own, so the service asks again and the connection acts in the organization chosen, while a first connection and a teammate's keep the shared client, a reconnect keeps its client, and choosing again registers another",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a scoped loopback OAuth service with controlled consent."),
+      local: na("Hosted organization members are the people the clients are kept apart for."),
+    },
+  },
+  oauthConnectionClientsFallback: {
+    fixtures: "actors",
+    file: "oauth-connection-clients.spec.ts",
+    title:
+      "When a service refuses a client of its own for a further connection, or the organization holds as many as Executor keeps there, the connection signs in with the shared client and says the service may skip its chooser until its access is revoked there",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a scoped loopback OAuth service with controlled registration."),
+      local: na("Hosted organization members are the people the clients are kept apart for."),
+    },
+  },
+  oauthConnectionClientsRefresh: {
+    fixtures: "actors",
+    file: "oauth-connection-clients.spec.ts",
+    title:
+      "A connection on a client of its own renews its token with that client and keeps working, after choosing again with the new client and never the superseded one, while a connection on the shared client beside it renews with the shared client",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Uses a scoped loopback OAuth service whose tokens expire within the renewal window.",
+      ),
+      local: na("Hosted organization members are the people the clients are kept apart for."),
+    },
+  },
+  oauthConnectionClientsRemoval: {
+    fixtures: "actors",
+    file: "oauth-connection-clients.spec.ts",
+    title:
+      "Removing a connection deletes the client registered for it alone at the service, never the shared client, and a service that cannot or will not delete it never blocks the removal",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a scoped loopback OAuth service with controlled client deletion."),
+      local: na("Hosted organization members are the people the clients are kept apart for."),
+    },
+  },
   oauthClientRemovedPending: {
     fixtures: "actors",
     file: "oauth-clients.spec.ts",
