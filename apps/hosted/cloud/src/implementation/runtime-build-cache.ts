@@ -8,7 +8,7 @@ import {
   RetainedWorkerBuild,
   type StoredWorkerBuild,
 } from "@executor-js/sdk/workerd";
-import { Clock, Effect, FiberSet, Option, Schema, Semaphore, Struct } from "effect";
+import { Clock, Effect, FiberSet, Schema, Struct } from "effect";
 import {
   isolateBuildCacheBytes,
   isolateBuildCacheEntries,
@@ -111,11 +111,9 @@ const remember = (key: string, entry: Entry) => {
   }
 };
 
-type Flight = { readonly permit: Semaphore.Semaphore; callers: number };
-const flights = new Map<string, Flight>();
-const readCheck = { min: 10, max: 200 };
 const readTimeout = 10_000;
 
+// external: Workers drop a cancelled invocation's pending work, so nothing in isolate scope may be awaited across invocations; only decoded values are shared.
 const readOnce = <A, R>(
   key: string,
   part: { readonly value: (entry: Entry) => A | undefined; readonly entry: (value: A) => Entry },
@@ -126,59 +124,23 @@ const readOnce = <A, R>(
   >,
   deadline: number,
 ) =>
-  Effect.acquireUseRelease(
-    Effect.sync(() => {
-      const flight = flights.get(key) ?? { permit: Semaphore.makeUnsafe(1), callers: 0 };
-      flight.callers += 1;
-      flights.set(key, flight);
-      return flight;
-    }),
-    (flight) =>
-      Effect.gen(function* () {
-        const since = yield* Clock.currentTimeMillis;
-        let waited = false;
-        for (;;) {
-          const owned = yield* flight.permit.withPermitsIfAvailable(1)(
-            Effect.gen(function* () {
-              const memorized = recall(key);
-              const held = memorized === undefined ? undefined : part.value(memorized);
-              if (memorized !== undefined && held !== undefined)
-                return {
-                  value: held,
-                  source: waited ? ("shared" as const) : ("memory" as const),
-                  bytes: memorized.bytes,
-                };
-              const left = deadline - (yield* Clock.currentTimeMillis);
-              if (left <= 0) return yield* new RuntimeBuildUnavailable();
-              const { value, source } = yield* read.pipe(
-                Effect.timeoutOrElse({
-                  duration: left,
-                  orElse: () => Effect.fail(new RuntimeBuildUnavailable()),
-                }),
-              );
-              const entry = part.entry(value);
-              remember(key, entry);
-              return { value, source, bytes: entry.bytes };
-            }),
-          );
-          if (Option.isSome(owned)) return owned.value;
-          const now = yield* Clock.currentTimeMillis;
-          if (now >= deadline) return yield* new RuntimeBuildUnavailable();
-          waited = true;
-          yield* Effect.sleep(
-            Math.min(
-              deadline - now,
-              Math.max(readCheck.min, Math.min(readCheck.max, (now - since) / 4)),
-            ),
-          );
-        }
+  Effect.gen(function* () {
+    const memorized = recall(key);
+    const held = memorized === undefined ? undefined : part.value(memorized);
+    if (memorized !== undefined && held !== undefined)
+      return { value: held, source: "memory" as const, bytes: memorized.bytes };
+    const left = deadline - (yield* Clock.currentTimeMillis);
+    if (left <= 0) return yield* new RuntimeBuildUnavailable();
+    const { value, source } = yield* read.pipe(
+      Effect.timeoutOrElse({
+        duration: left,
+        orElse: () => Effect.fail(new RuntimeBuildUnavailable()),
       }),
-    (flight) =>
-      Effect.sync(() => {
-        flight.callers -= 1;
-        if (flight.callers === 0) flights.delete(key);
-      }),
-  );
+    );
+    const entry = part.entry(value);
+    remember(key, entry);
+    return { value, source, bytes: entry.bytes };
+  });
 
 const recordUrl = (origin: string, build: BuildId) =>
   new URL(`/_executor/runtime-build-cache/${encodeURIComponent(build)}`, origin).href;
@@ -358,7 +320,6 @@ export const cachedRuntimeBuilds = <R>(
         Effect.annotateCurrentSpan({
           "executor.build.isolate_accounted_bytes": accounted,
           "executor.build.isolate_entries": memory.size,
-          "executor.build.isolate_reads": flights.size,
         }),
       ),
       Effect.withSpan("runtime.cloud.build.cached"),
