@@ -71,6 +71,91 @@ func randomUUID() string {
 	b[8] = b[8]&0x3f | 0x80
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
+
+// privateAppOrigins checks a JSON array of exact HTTP(S) origins, written as a browser writes an
+// origin: lowercase, without a path, credentials or a default port. It returns the array as JSON.
+func privateAppOrigins(value string) (string, error) {
+	invalid := errors.New("EXECUTOR_APPS_ALLOW_PRIVATE_ORIGINS must be a JSON array of exact HTTP(S) origins, such as [\"https://my-mac.example-tailnet.ts.net\"]")
+	if value == "" {
+		return "[]", nil
+	}
+	var origins []string
+	if json.Unmarshal([]byte(value), &origins) != nil || origins == nil {
+		return "", invalid
+	}
+	for _, origin := range origins {
+		if !canonicalOrigin(origin) {
+			return "", invalid
+		}
+	}
+	encoded, err := json.Marshal(origins)
+	if err != nil {
+		return "", invalid
+	}
+	return string(encoded), nil
+}
+
+// canonicalOrigin accepts exactly the strings a browser URL parser returns as an origin: lowercase scheme
+// and host, canonical IP literals, and only a non-default port without leading zeros.
+func canonicalOrigin(origin string) bool {
+	scheme, rest, ok := strings.Cut(origin, "://")
+	defaultPort := map[string]string{"http": "80", "https": "443"}[scheme]
+	if !ok || defaultPort == "" {
+		return false
+	}
+	host, port, hasPort := rest, "", false
+	if strings.HasPrefix(rest, "[") {
+		end := strings.Index(rest, "]")
+		if end < 0 {
+			return false
+		}
+		host = rest[1:end]
+		after := rest[end+1:]
+		if after != "" {
+			if !strings.HasPrefix(after, ":") {
+				return false
+			}
+			port, hasPort = after[1:], true
+		}
+		address, err := netip.ParseAddr(host)
+		if err != nil || !address.Is6() || address.Zone() != "" || address.Is4In6() || address.String() != host {
+			return false
+		}
+	} else {
+		host, port, hasPort = strings.Cut(rest, ":")
+		if !canonicalDomain(host) {
+			return false
+		}
+	}
+	if hasPort {
+		number, err := strconv.Atoi(port)
+		if err != nil || strconv.Itoa(number) != port || number < 1 || number > 65535 || port == defaultPort {
+			return false
+		}
+	}
+	return true
+}
+
+func canonicalDomain(host string) bool {
+	if host == "" {
+		return false
+	}
+	for _, character := range host {
+		if !(character >= 'a' && character <= 'z' || character >= '0' && character <= '9' || strings.ContainsRune("-._", character)) {
+			return false
+		}
+	}
+	labels := strings.Split(strings.TrimSuffix(host, "."), ".")
+	last := labels[len(labels)-1]
+	numeric := last != "" && strings.Trim(last, "0123456789") == ""
+	hexadecimal := strings.HasPrefix(last, "0x") && strings.Trim(last[2:], "0123456789abcdef") == ""
+	if !numeric && !hexadecimal {
+		return true
+	}
+	address, err := netip.ParseAddr(host)
+	return err == nil && address.Is4() && address.String() == host
+}
+
 func exists(path string) bool { _, err := os.Stat(path); return err == nil }
 func saveKey(path, value string) error {
 	file, err := os.CreateTemp(filepath.Dir(path), ".key-")
@@ -567,7 +652,7 @@ func serve(mode string) error {
 	if err != nil {
 		return err
 	}
-	// The generated file contains paths, the dashboard origin, the npm registry and a network-policy boolean, never keys.
+	// The generated file contains paths, the dashboard origin, the npm registry and the app network policy, never keys.
 	// App requests for the dashboard origin reach the product through a service binding, so the
 	// bundled Executor app never needs private fetch. Other private destinations are an explicit opt-in.
 	privateFetch := values["EXECUTOR_APPS_ALLOW_PRIVATE_FETCH"]
@@ -578,6 +663,14 @@ func serve(mode string) error {
 		return errors.New("EXECUTOR_APPS_ALLOW_PRIVATE_FETCH must be true or false")
 	}
 	config = bytes.ReplaceAll(config, []byte("@@APPS_PRIVATE_FETCH@@"), []byte(privateFetch))
+	// Exact origins apps may reach even though they resolve to private addresses.
+	privateOrigins := "[]"
+	if mode != "export" {
+		if privateOrigins, err = privateAppOrigins(values["EXECUTOR_APPS_ALLOW_PRIVATE_ORIGINS"]); err != nil {
+			return err
+		}
+	}
+	config = bytes.ReplaceAll(config, []byte("@@APPS_PRIVATE_ORIGINS@@"), []byte(strconv.Quote(privateOrigins)))
 	// The most app Workers workerd keeps loaded; the apps Worker applies its default for null.
 	appWorkers := "null"
 	if value := values["EXECUTOR_APP_WORKERS"]; value != "" {

@@ -46,6 +46,7 @@ import {
 import { RuntimeBuildFailed, RuntimeProtocolFailed } from "../contracts/runtime.ts";
 import type { Executor } from "../contracts/executor.ts";
 import type { DurableDeclarations } from "../contracts/declarations.ts";
+import type { HttpOrigin } from "@executor-js/utils/url-policy";
 import { runtimeAdapter } from "./runtime.ts";
 
 import {
@@ -154,6 +155,7 @@ export const workerdApps = (options: {
   readonly executor: Effect.Effect<Executor>;
   readonly legacyDataDirectories?: readonly string[];
   readonly allowPrivateAppFetch?: boolean;
+  readonly privateAppOrigins?: ReadonlyArray<HttpOrigin>;
   readonly selfOrigin?: { readonly origin: string; readonly address: string };
   readonly npmRegistry?: string;
   readonly encryptionKey: Redacted.Redacted<string>;
@@ -245,6 +247,7 @@ export const workerdApps = (options: {
             yield* credentialHandleSecret(options.encryptionKey),
           ),
           JsonBinding.local("APPS_PRIVATE_FETCH", privateAppFetch),
+          JsonBinding.local("APPS_PRIVATE_ORIGINS", [...(options.privateAppOrigins ?? [])]),
           JsonBinding.local("APP_WORKERS", Option.getOrNull(yield* appWorkerLimit)),
           JsonBinding.local(
             "APP_WORKER_IDLE_SECONDS",

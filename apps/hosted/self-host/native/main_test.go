@@ -702,3 +702,58 @@ func TestHealthFailsWhileTheProductIsStarting(t *testing.T) {
 		t.Fatalf("checkHealth while starting = %v, want Executor is not ready", err)
 	}
 }
+
+func TestPrivateAppOriginsAcceptsOnlyExactOrigins(t *testing.T) {
+	for value, want := range map[string]string{
+		"":   "[]",
+		"[]": "[]",
+		`["https://my-mac.example-tailnet.ts.net","http://192.168.1.20:8080","http://[fd00::1]:3000"]`: `["https://my-mac.example-tailnet.ts.net","http://192.168.1.20:8080","http://[fd00::1]:3000"]`,
+		`["http://allowed.example.test:8091","https://printer_1.lan","http://10.0.0.1:65535"]`:         `["http://allowed.example.test:8091","https://printer_1.lan","http://10.0.0.1:65535"]`,
+	} {
+		got, err := privateAppOrigins(value)
+		if err != nil || got != want {
+			t.Fatalf("privateAppOrigins(%q) = %q, %v; want %q", value, got, err, want)
+		}
+	}
+	for _, value := range []string{
+		"null",
+		"true",
+		`"https://my-mac.example-tailnet.ts.net"`,
+		`[1]`,
+		`["my-mac.example-tailnet.ts.net"]`,
+		`["ftp://my-mac.example-tailnet.ts.net"]`,
+		`["https://my-mac.example-tailnet.ts.net/"]`,
+		`["https://my-mac.example-tailnet.ts.net/mcp"]`,
+		`["https://my-mac.example-tailnet.ts.net?x=1"]`,
+		`["https://My-Mac.example-tailnet.ts.net"]`,
+		`["https://my-mac.example-tailnet.ts.net:443"]`,
+		`["http://192.168.1.20:80"]`,
+		`["https://user@my-mac.example-tailnet.ts.net"]`,
+		`["https://*.example-tailnet.ts.net"]`,
+		`["https://"]`,
+		"  ",
+		`["https://my-mac.example-tailnet.ts.net:"]`,
+		`["https://my-mac.example-tailnet.ts.net:0443"]`,
+		`["https://my-mac.example-tailnet.ts.net:0"]`,
+		`["https://my-mac.example-tailnet.ts.net:99999"]`,
+		`["https://my-mac.example-tailnet.ts.net:+8443"]`,
+		`["http://[fd00:0::1]:3000"]`,
+		`["http://[FD00::1]:3000"]`,
+		`["http://[::ffff:10.0.0.1]:3000"]`,
+		`["http://[fe80::1%25en0]:3000"]`,
+		`["http://[fd00::1]3000"]`,
+		`["http://127.1:8080"]`,
+		`["http://010.0.0.1:8080"]`,
+		`["http://0x7f.0.0.1:8080"]`,
+		`["http://10.0.0.1.:8080"]`,
+		`["http://my-mac.123"]`,
+		`["http://my-mac.0x1"]`,
+		`["http://<>]"]`,
+		`["https://my-mac.example-tailnet.ts.net\\x"]`,
+		`["https://mäc.example-tailnet.ts.net"]`,
+	} {
+		if got, err := privateAppOrigins(value); err == nil {
+			t.Fatalf("privateAppOrigins(%q) = %q; want an error", value, got)
+		}
+	}
+}

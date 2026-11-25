@@ -22,6 +22,8 @@ services:
       # JSON array of exact HTTP(S) origins allowed to resolve to private addresses.
       EXECUTOR_URL_ALLOW_HTTP_ORIGINS:
       EXECUTOR_APPS_ALLOW_PRIVATE_FETCH:
+      # JSON array of exact HTTP(S) origins app code may reach although they are private addresses.
+      EXECUTOR_APPS_ALLOW_PRIVATE_ORIGINS:
       # Comma-separated addresses of reverse proxies in front of the host; a CIDR range only if it
       # holds proxies and nothing else. Requests from them take the client's address, which rate
       # limits count, from X-Forwarded-For, so anything at a listed address can choose its own.

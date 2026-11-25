@@ -25,6 +25,7 @@ export const noteAudiences: ReadonlyArray<{
   { hash: "966908651694cc43", audience: ["local"] },
   { hash: "1c270e1f24b795c5", audience: ["local"] },
   { hash: "db729314eefb75fc", audience: ["local"] },
+  { hash: "1a11ba91f327dd31", audience: ["self-host"] },
 ];
 
 export const noteAudience = (text: string): ReadonlyArray<NoteProduct> | undefined => {

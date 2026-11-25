@@ -53,6 +53,11 @@ export const credentialUpstream = Effect.gen(function* () {
         stored = bytes;
         return HttpServerResponse.empty({ status: 204 });
       }
+      if (pathname === "/redirect")
+        return HttpServerResponse.empty({
+          status: 302,
+          headers: { location: url.searchParams.get("to") ?? "/" },
+        });
       if (request.method === "GET" && pathname === "/stored")
         return HttpServerResponse.uint8Array(stored, { contentType: "application/octet-stream" });
       if (issued.length > 0 && !entry.authenticated)

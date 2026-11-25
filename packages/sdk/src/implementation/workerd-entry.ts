@@ -34,7 +34,7 @@ import {
 import { EvaluatedCommandJson, EvaluatedReplyJson } from "@executor-js/app-data/evaluated";
 import { makeAppRunner } from "./app-runner.ts";
 import { runnerReply } from "./remote-app-runner.ts";
-import { credentialFetch, credentialKey } from "./credential-handles.ts";
+import { allowedPrivateOrigin, credentialFetch, credentialKey } from "./credential-handles.ts";
 import {
   defaultAppWorkerLimit,
   defaultAppWorkerIdleSeconds,
@@ -118,6 +118,7 @@ interface Environment {
   readonly AUTH: string;
   readonly CREDENTIAL_SECRET: string;
   readonly APPS_PRIVATE_FETCH: boolean;
+  readonly APPS_PRIVATE_ORIGINS?: ReadonlyArray<string> | null;
   readonly PUBLIC_FETCH: HttpService;
   readonly SELF_ORIGIN: string;
   readonly SELF?: HttpService;
@@ -189,15 +190,25 @@ export class AppOutbound extends WorkerEntrypoint<Environment> {
   async fetch(request: Request): Promise<Response> {
     const self = this.env.SELF === undefined ? undefined : URL.parse(this.env.SELF_ORIGIN)?.origin;
     const props = Schema.decodeUnknownSync(OutboundProps)(this.ctx.props);
+    const egress = {
+      refusePrivateAddresses: !this.env.APPS_PRIVATE_FETCH,
+      selfOrigin: self,
+      privateOrigins: this.env.APPS_PRIVATE_ORIGINS ?? [],
+    };
     return credentialFetch(request, {
       app: props.app,
       ...(props.hostApi === undefined ? {} : { hostApi: props.hostApi }),
       key: await Effect.runPromise(credentials(this.env)),
-      egress: { refusePrivateAddresses: !this.env.APPS_PRIVATE_FETCH, selfOrigin: self },
+      egress,
       send: (request) => {
-        if (this.env.SELF !== undefined && new URL(request.url).origin === self)
-          return this.env.SELF.fetch(request);
-        return this.env.APPS_PRIVATE_FETCH ? fetch(request) : this.env.PUBLIC_FETCH.fetch(request);
+        const url = new URL(request.url);
+        if (this.env.SELF !== undefined && url.origin === self) return this.env.SELF.fetch(request);
+        if (this.env.APPS_PRIVATE_FETCH) return fetch(request);
+        // external: this fetch can reach every private address, so it must not follow a redirect
+        // itself; manual returns each one to the app, whose next hop comes back through this check.
+        if (allowedPrivateOrigin(url, egress))
+          return fetch(new Request(request, { redirect: "manual" }));
+        return this.env.PUBLIC_FETCH.fetch(request);
       },
     });
   }

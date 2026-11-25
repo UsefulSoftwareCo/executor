@@ -2,7 +2,12 @@ import { nativeRepositories, systemGit } from "@executor-js/app-source/node";
 import { filesystemBlobStore, workerdApps } from "@executor-js/sdk/node/workerd";
 import type { HostEgress } from "@executor-js/utils/url-policy";
 import { Config, Effect, Option, Path } from "effect";
-import { allowPrivateAppFetch, dataDirectory, npmRegistry } from "./contracts/config.ts";
+import {
+  allowPrivateAppFetch,
+  allowedPrivateAppOrigins,
+  dataDirectory,
+  npmRegistry,
+} from "./contracts/config.ts";
 import { selfHostExecutorServices } from "./implementation/executor-services.ts";
 
 export const selfHostExecutor = (egress: HostEgress) =>
@@ -24,6 +29,7 @@ export const selfHostExecutor = (egress: HostEgress) =>
           path.resolve(directory, "workflow-engine"),
         ],
         allowPrivateAppFetch: yield* allowPrivateAppFetch,
+        privateAppOrigins: yield* allowedPrivateAppOrigins,
         encryptionKey: yield* Config.Redacted("EXECUTOR_ENCRYPTION_KEY"),
         ...Option.match(yield* npmRegistry, {
           onNone: () => ({}),
