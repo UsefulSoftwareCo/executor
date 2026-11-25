@@ -1,4 +1,5 @@
 import { readSiteVisitor, siteVisitorCookie } from "@executor-js/marketing/site-visitor";
+import { readSignInOrigin } from "@executor-js/hosted-server/sign-in-origin";
 import { recordRoute, TelemetryDrainScope, TelemetryWaitReport } from "@executor-js/telemetry";
 import { FeedbackUnavailable } from "@executor-js/telemetry/product-analytics";
 import {
@@ -36,7 +37,9 @@ type EventName =
   | "cloud_login_completed"
   | "analytics_events_dropped"
   | "$feature_flag_called"
-  | "$identify";
+  | "$identify"
+  | McpFunnelEvent;
+export type McpFunnelEvent = "mcp_client_initialized" | "mcp_tools_listed";
 type Properties = Readonly<Record<string, string | number | boolean>>;
 interface Event {
   readonly event: EventName;
@@ -66,7 +69,7 @@ export const recordCloudSignup = (userId: string) =>
       event: "cloud_signup_completed",
       distinct_id: userId,
       timestamp: new Date().toISOString(),
-      properties: {},
+      properties: { signup_origin: readSignInOrigin(request.headers.cookie ?? "") },
     });
   });
 
@@ -119,6 +122,30 @@ export const recordCloudLogin = (userId: string) =>
         distinct_id: userId,
         timestamp: new Date().toISOString(),
         properties: {},
+      }),
+    ),
+  );
+
+export const recordMcpFirstUse = (first: {
+  readonly event: "mcp_client_initialized" | "mcp_tools_listed";
+  readonly userId: string;
+  readonly organizationId: string;
+  readonly clientId: string;
+  readonly properties: Properties;
+}) =>
+  Effect.flatMap(Analytics, (analytics) =>
+    Effect.sync(() =>
+      analytics.add({
+        event: first.event,
+        distinct_id: first.userId,
+        timestamp: new Date().toISOString(),
+        properties: {
+          ...first.properties,
+          source: "mcp",
+          client_id: first.clientId,
+          organization_id: first.organizationId,
+          event_id: crypto.randomUUID(),
+        },
       }),
     ),
   );

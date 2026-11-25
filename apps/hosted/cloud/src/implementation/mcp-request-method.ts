@@ -63,6 +63,8 @@ const isResponse = Schema.is(
   ]),
 );
 
+export const mcpMethodHeader = "x-executor-mcp-method";
+
 const Json = Schema.fromJsonString(Schema.Unknown);
 export const parseMcpBody = (body: string | undefined): Option.Option<unknown> =>
   body === undefined ? Option.none() : Schema.decodeUnknownOption(Json)(body);

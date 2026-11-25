@@ -25,6 +25,7 @@
     "./migrations": "./src/implementation/migrations.ts",
     "./organization-icon": "./src/contracts/organization-icon.ts",
     "./setup": "./src/contracts/setup.ts",
+    "./sign-in-origin": "./src/contracts/sign-in-origin.ts",
     "./browser": "./src/browser.ts",
     "./browser/contracts": "./src/contracts/browser.ts",
     "./app-management": "./src/app-management.ts",

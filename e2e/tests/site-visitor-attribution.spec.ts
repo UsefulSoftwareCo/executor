@@ -106,6 +106,7 @@ layer(TestLive, { excludeTestServices: true })("Site visitor attribution", (it) 
         );
         expect(events.map((event) => event.event)).toEqual(["$identify", "cloud_signup_completed"]);
         expect(events[0]?.properties.$anon_distinct_id).toBe(anonymousId);
+        expect(events[1]?.properties.signup_origin).toBe("web");
       }).pipe(Effect.provide(Onboarding.layer)),
     ),
   );

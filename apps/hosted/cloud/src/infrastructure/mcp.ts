@@ -17,7 +17,11 @@ import {
   forwardMcpRequest,
   refuseTooDeep,
 } from "../implementation/mcp-forward.ts";
-import { mcpRequestAttributes, parseMcpBody } from "../implementation/mcp-request-method.ts";
+import {
+  mcpMethodHeader,
+  mcpRequestAttributes,
+  parseMcpBody,
+} from "../implementation/mcp-request-method.ts";
 import {
   mcpSessionNotFound,
   sessionOrganizationHeader,
@@ -78,8 +82,10 @@ export const cloudMcp = Effect.gen(function* () {
               )
             : undefined,
         );
+        let method: string | undefined;
         if (carries === "json-rpc" && request.method === "POST") {
           const attributes = mcpRequestAttributes(body);
+          method = attributes["rpc.method"];
           yield* Effect.annotateCurrentSpan(attributes);
           if (Option.isSome(server))
             for (const [key, value] of Object.entries(attributes))
@@ -87,7 +93,14 @@ export const cloudMcp = Effect.gen(function* () {
         }
         return yield* Effect.gen(function* () {
           const headers = yield* traceHeaders;
-          const traced = request.modify({ headers: { ...request.headers, ...headers } });
+          const { [mcpMethodHeader]: _sent, ...received } = request.headers;
+          const traced = request.modify({
+            headers: {
+              ...received,
+              ...headers,
+              ...(method === undefined ? {} : { [mcpMethodHeader]: method }),
+            },
+          });
           const response = yield* refuseTooDeep(
             forwardMcpRequest(traced, (attempt) => timedForward(fetch(attempt))),
           );

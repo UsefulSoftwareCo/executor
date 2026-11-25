@@ -14,6 +14,7 @@ const steps: ReadonlyArray<readonly [name: string, command: string]> = [
   ["host protocols", "bun run apps:protocols"],
   ["app telemetry", "bun run apps:telemetry"],
   ["API errors", "bun run api:errors"],
+  ["client families", "node scripts/check-client-families.ts"],
   ["auth rate limit", "bun run auth:rate-limit"],
   ["browser scripts", "node packages/apps/scripts/browser-scripts.mjs --check"],
   ["Executor skill texts", "node packages/app-templates/scripts/executor-intro.ts --check"],

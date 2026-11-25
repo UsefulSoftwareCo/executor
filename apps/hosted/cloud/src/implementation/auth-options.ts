@@ -5,6 +5,7 @@ import { authOptions, type GrantObservers } from "@executor-js/hosted-server";
 import { cloudHosts } from "../infrastructure/stage.ts";
 import { passkey } from "@better-auth/passkey";
 import { emailOTP } from "better-auth/plugins/email-otp";
+import { signInOriginCookie } from "@executor-js/hosted-server/sign-in-origin";
 import { organization } from "better-auth/plugins/organization";
 import { oAuthProxy } from "better-auth/plugins/oauth-proxy";
 import { oauthProxyLocationGuard, oauthProxyProductionGuard } from "./oauth-proxy-guard.ts";
@@ -260,6 +261,12 @@ export const cloudAuthOptions = (
                 onNone: () => ({}),
                 onSome: (domain) => ({ domain }),
               }),
+            });
+            context.setCookie(signInOriginCookie, "", {
+              path: "/",
+              maxAge: 0,
+              sameSite: "lax",
+              secure: new URL(settings.url).protocol === "https:",
             });
           },
           before: async (session, context) => {

@@ -131,7 +131,7 @@ export const cloudAuth = (send: SendAuthEmail) =>
         onRefreshRejected: observation.refreshRejected,
         onGrantCreated: (grant) =>
           runCallback(
-            recordUsage("agent_connected", { grant_kind: grant.kind }).pipe(
+            recordUsage("agent_connected", { grant_kind: grant.kind }, grant.organization).pipe(
               Effect.provideService(CurrentUserId, grant.userId),
               Effect.provideService(CurrentUsage, {
                 source: "dashboard",

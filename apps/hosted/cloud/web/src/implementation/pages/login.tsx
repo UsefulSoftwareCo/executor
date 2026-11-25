@@ -22,6 +22,7 @@ import {
   beginEmailSignInAtom,
   verifyCodeAtom,
 } from "../../contracts/auth.ts";
+import { rememberSignInOrigin } from "../../contracts/sign-in-origin.ts";
 
 export function CloudLoginPage(
   props: LoginProps & {
@@ -92,6 +93,7 @@ function CompleteSignIn({
 
 function CloudSignInForm(props: LoginProps & { readonly mode?: "signin" | "signup" }) {
   const signingUp = props.mode === "signup";
+  useEffect(() => rememberSignInOrigin(props.redirect), [props.redirect]);
   const begin = useAtomSet(beginEmailSignInAtom, { mode: "promiseExit" });
   const verify = useAtomSet(verifyCodeAtom, { mode: "promiseExit" });
   const passkey = useAtomSet(passkeySignInAtom, { mode: "promiseExit" });

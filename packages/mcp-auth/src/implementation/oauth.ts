@@ -132,6 +132,7 @@ export interface CreatedGrant {
   readonly userId: string;
   readonly clientId: string;
   readonly kind: "mcp" | "api";
+  readonly organization: string;
 }
 const resolveBinding = (
   resolve: NonNullable<GrantOAuthOptions["resolveResource"]>,
@@ -1055,7 +1056,12 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
       const observe = settings.onGrantCreated;
       if (observe !== undefined)
         yield* Effect.tryPromise(() =>
-          observe({ userId, clientId, kind: target.kind === "mcp" ? "mcp" : "api" }),
+          observe({
+            userId,
+            clientId,
+            kind: target.kind === "mcp" ? "mcp" : "api",
+            organization,
+          }),
         ).pipe(
           Effect.catchCause((cause) => Effect.logWarning("Agent grant was not observed", cause)),
         );

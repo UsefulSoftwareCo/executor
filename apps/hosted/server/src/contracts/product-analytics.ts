@@ -86,13 +86,22 @@ export const ProductAnalytics = Context.Reference<{
   }),
 });
 
-export const recordUsage = (event: UsageEvent, properties: UsageProperties = {}) =>
+export const recordUsage = (
+  event: UsageEvent,
+  properties: UsageProperties = {},
+  organizationId?: string,
+) =>
   Effect.gen(function* () {
     const sink = yield* ProductAnalytics;
     if (!sink.enabled) return;
     const userId = yield* CurrentUserId;
     if (userId === undefined) return;
-    const organization = yield* Effect.serviceOption(CurrentOrganization);
+    const current = yield* Effect.serviceOption(CurrentOrganization);
+    const organization = Option.isSome(current)
+      ? Option.some(current.value)
+      : organizationId === undefined
+        ? Option.none()
+        : Option.some({ organization: organizationId });
     const span = yield* Effect.currentSpan.pipe(Effect.option);
     sink.capture({
       event,

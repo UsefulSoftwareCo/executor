@@ -30,6 +30,7 @@ import {
 } from "../implementation/mcp-session-id.ts";
 import { isolateTelemetryFlushes } from "@executor-js/telemetry/isolate";
 import { makeAnswer } from "../implementation/mcp-session-timing.ts";
+import { makeMcpFirstUse } from "../implementation/mcp-first-use.ts";
 import { observeMcpStream } from "../implementation/mcp-stream-observability.ts";
 import { cloudAnalytics } from "../implementation/product-analytics.ts";
 import type { cloudServingProduct } from "./serving-product.ts";
@@ -75,6 +76,7 @@ export const makeMcpSession = Effect.fn(function* ({
     const callState = new Map<string, CallState>();
     const clock = yield* Clock.Clock;
     const faults = interactionFaults(state.storage.kv);
+    const firstUse = makeMcpFirstUse(state.storage);
     const handler = yield* makeHostedMcp(
       undefined,
       undefined,
@@ -122,7 +124,7 @@ export const makeMcpSession = Effect.fn(function* ({
     const http = authenticatedMcp((access, address) =>
       bound(
         access,
-        dispatchHostedMcp(access, address, handler.http).pipe(
+        firstUse(access, dispatchHostedMcp(access, address, handler.http)).pipe(
           Effect.provideService(CurrentUserId, access.userId),
           Effect.provideService(ConcurrentStatements, { group: PgPool.grouped }),
           Effect.provideService(StatementBatch, (leaves, { outside }) =>

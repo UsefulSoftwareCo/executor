@@ -3472,6 +3472,36 @@ export const scenarios = plan({
       local: na("Local does not export product analytics or replay."),
     },
   },
+  mcpFunnelFirstUse: {
+    fixtures: "actors",
+    file: "mcp-connection-funnel.spec.ts",
+    title:
+      "Cloud records a connection's first initialize and first tool listing once, however often the client repeats them",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Self-host does not export product analytics."),
+      local: na("Local does not export product analytics."),
+    },
+  },
+  mcpFunnelAgentOrganization: {
+    fixtures: "actors",
+    file: "mcp-connection-funnel.spec.ts",
+    title: "Cloud names the organization an agent approved on the consent page reaches",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Self-host does not export product analytics."),
+      local: na("Local does not export product analytics."),
+    },
+  },
+  mcpFunnelSignupOrigin: {
+    file: "mcp-connection-funnel.spec.ts",
+    title: "Cloud names a sign-up that started from an MCP client's authorization as such",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Self-host has no Cloud sign-up and does not export product analytics."),
+      local: na("Local has no Cloud sign-up and does not export product analytics."),
+    },
+  },
   productAnalyticsMcpClient: {
     fixtures: "actors",
     file: "product-analytics.spec.ts",
