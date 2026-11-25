@@ -12,7 +12,6 @@ import { acceptedToken, accountCheckUpstream } from "../support/account-check-up
 import { appsManifest } from "../support/apps-release.ts";
 import { scenarios } from "../test-plan.ts";
 
-/** The synthetic photo the identity check reports; the browser request is answered locally. */
 const avatar = "https://avatars.example.test/u/4242.png";
 const pixel =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
@@ -57,7 +56,6 @@ const App = Schema.Struct({
   }),
 });
 
-/** Every app declares the same provider, so one account serves all three. */
 const provider = (health: string) => `const service = defineProvider({
   name: "Checked service",
   auth: { apiKey: secrets({ label: "API key", fields: object({ token: string() }) }) },
@@ -73,7 +71,6 @@ export default defineApp({ user: { accounts: { service } } }, {
   tools: router({ ping: query({ input: object({}) }, async () => ({ ok: true })) }),
 });`;
 
-/** Reads the service's current user; an explicit insufficient-scope answer is a permission gap. */
 const identityCheck = (origin: string) => `async health({ account, fetch, signal }) {
     const response = await fetch(${JSON.stringify(`${origin}/me`)}, {
       signal,
@@ -111,7 +108,6 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
             expect(created.status, JSON.stringify(created.body)).toBe(200);
             return yield* body(App, created);
           });
-        // Two apps check the same account differently; the third defines no check.
         const identity = yield* deploy("Identity check", identityCheck(upstream.origin));
         const plain = yield* deploy("Plain check", "async health() { return {}; },");
         const unchecked = yield* deploy("Without check", "");
@@ -129,7 +125,6 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
           }).pipe(Effect.orDie),
         );
 
-        // Identical declarations share a provider even though each app checks differently.
         const providers = new Set(apps.map((app) => app.requirements.accounts.service?.provider));
         expect(providers.size).toBe(1);
         expect(identity.requirements.accounts.service?.health).toBe(true);
@@ -153,7 +148,6 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
         expect(saved.status, JSON.stringify(saved.body)).toBe(200);
         const accountId = (yield* body(Resource, saved)).id;
         account = accountId;
-        // Connecting from the identity app linked the account to it; link it to the other two.
         for (const path of [plainPath, uncheckedPath])
           yield* linkAccount(actors.owner, path, "service", accountId);
 
@@ -174,7 +168,6 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
           return found;
         };
 
-        // Reading never checks, and nothing is reported as healthy by default.
         const initial = yield* read();
         expect(initial.info).toBeNull();
         expect(apps.map((app) => entry(initial, app))).toEqual([
@@ -183,7 +176,6 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
           { app: unchecked.id, checkable: false, check: null },
         ]);
 
-        // A passing identity check reports the upstream account without changing the label.
         const healthy = yield* check();
         expect(entry(healthy, identity)?.check).toMatchObject({ status: "healthy", current: true });
         expect(entry(healthy, plain)?.check).toMatchObject({ status: "healthy", current: true });
@@ -197,10 +189,6 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
         const reportedAt = healthy.infoCheckedAt;
         expect(reportedAt).not.toBeNull();
 
-        // Failures are classified per app. The plain app's check does not call the service, so it
-        // still passes, and the identity reported earlier is kept with its original time. A check
-        // that fails without a status naming the cause keeps the reason, including running out of
-        // time.
         for (const [answer, status, message] of [
           [{ kind: "status", status: 401 }, "credentials_rejected", undefined],
           [
@@ -224,7 +212,6 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
             current: true,
             ...(message === undefined ? {} : { message }),
           });
-          // The reason is kept with the result, not only returned by the check.
           expect(entry(yield* read(), identity)?.check?.message).toBe(message);
           expect(entry(failed, plain)?.check?.status).toBe("healthy");
           expect(failed.info?.displayName).toBe("Synthetic Person");
@@ -234,7 +221,6 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
         expect(JSON.stringify(rejected)).not.toContain("synthetic failure");
         expect(JSON.stringify(rejected)).not.toContain(acceptedToken);
 
-        // The account's health shows why the last check failed.
         yield* browser.login(actors.owner);
         yield* browser.use("Serve the reported photo from its external origin", (page) =>
           page
@@ -264,7 +250,6 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
           page.getByRole("button", { name: "Close", exact: true }).first().click(),
         );
 
-        // New credentials make every earlier result outdated rather than current.
         yield* upstream.answer({ kind: "user" });
         const reconnect = yield* body(
           Resource,
@@ -287,7 +272,6 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
         const outdated = yield* read();
         expect(entry(outdated, identity)?.check).toMatchObject({ current: false });
         expect(entry(outdated, plain)?.check).toMatchObject({ current: false });
-        // The rotated token is refused by the service, and only this app's check says so.
         const refused = yield* check();
         expect(entry(refused, identity)?.check).toMatchObject({
           status: "credentials_rejected",
@@ -295,7 +279,6 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
         });
         expect(entry(refused, plain)?.check).toMatchObject({ status: "healthy", current: true });
 
-        // Recovery replaces the failure, and a redeploy makes the result outdated again.
         const restore = yield* body(
           Resource,
           yield* api.request(
@@ -315,7 +298,6 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
         ).toBe(200);
         const recovered = entry(yield* check(), identity)?.check;
         expect(recovered).toMatchObject({ status: "healthy", current: true });
-        // A passing check clears the earlier failure's reason.
         expect(recovered?.message).toBeUndefined();
         const redeployed = yield* api.request(actors.owner, "POST", `${identityPath}/deploy`, {
           files: [
@@ -332,7 +314,6 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
           current: false,
         });
 
-        // The account list marks the outdated result and shows the reported identity.
         yield* browser.use("Open the accounts", (page) =>
           page
             .goto(`/org/${actors.organization.slug}/accounts`)
@@ -343,7 +324,6 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
             page.locator('[data-check-status="healthy"][data-check-current="false"]').count(),
           ),
         ).toBe(1);
-        // Opening the account's health rechecks it and lists each app's result.
         yield* browser.use("Open account health", (page) =>
           page
             .getByRole("button", { name: "Manage Default" })
@@ -369,7 +349,6 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
         yield* browser.use("The list shows the new result", (page) =>
           page.locator('[data-check-status="healthy"][data-check-current="true"]').nth(1).waitFor(),
         );
-        // The reported photo stands beside the identity in the list.
         expect(
           yield* browser.use("The list shows the reported photo", (page) => {
             const photo = page.locator(".account-identity [data-slot='avatar-image']").first();
@@ -378,8 +357,6 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
         ).toBe(avatar);
         yield* browser.checkpoint("Account list with check results");
 
-        // Another redeploy makes the result outdated; viewing the app's accounts shows it at once
-        // and checks it again in the background, without any action.
         const again = yield* api.request(actors.owner, "POST", `${identityPath}/deploy`, {
           files: [
             {
@@ -392,7 +369,6 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
         expect(again.status, JSON.stringify(again.body)).toBe(200);
         expect(entry(yield* read(), identity)?.check).toMatchObject({ current: false });
 
-        // The app's accounts show each account with its reported photo.
         yield* browser.use("Open the app's accounts", (page) =>
           page.goto(`/org/${actors.organization.slug}/apps/${identity.id}?view=accounts`),
         );
@@ -422,9 +398,6 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
           current: true,
         });
 
-        // A redeploy while the page stays open outdates the result it already rechecked. Returning
-        // to the tab reads the accounts again, and the open page checks the account once more,
-        // showing the check in progress instead of the outdated result until it finishes.
         yield* upstream.answer({ kind: "hang" });
         const third = yield* api.request(actors.owner, "POST", `${identityPath}/deploy`, {
           files: [
@@ -466,7 +439,6 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
             .locator('[data-check-status="check_failed"][data-check-current="true"]')
             .waitFor({ timeout: 30_000 }),
         );
-        // The finished check shows its result at once; the row never falls back to the outdated one.
         const states = yield* browser.use("Read the states the row showed", (page) =>
           page.evaluate(() => Reflect.get(window, "checkStates") as string[]),
         );
@@ -476,8 +448,6 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
         ).toEqual([]);
         yield* upstream.answer({ kind: "user" });
 
-        // A recheck that cannot reach the server leaves the outdated result, so the row says the
-        // check could not run and offers to try again instead of showing the outdated result.
         const lost = yield* holdQuery(/\/accounts\/[^/]+\/health$/, "fail", { method: "POST" });
         const fourth = yield* api.request(actors.owner, "POST", `${identityPath}/deploy`, {
           files: [

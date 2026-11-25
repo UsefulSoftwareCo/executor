@@ -1,27 +1,3 @@
-/**
- * Local-only probe of what a deploy says when its build's retain stage meets a store that refuses
- * writes to one key faster than a limit, through the SDK's own deploy path: `executor.apps.deploy`,
- * the real `appRuntime` and the real `retainWorkerBuild`, PGlite in memory, and a stub in place of
- * the compiler only. Every build links the same framework, so concurrent deploys write the same
- * framework object, as Cloud's builds did on 17 Nov (17 writes in 2 s, one refused with R2's
- * `r2.10058`, its deploy answered 422).
- *
- * The stand-in store refuses a put to a key while another put to that key is in flight or finished
- * under a second ago, as R2 does (one write a second per key), and otherwise stores it after
- * 300 ms. Prints, as JSON, each deploy's outcome and what the store saw, for
- * `build-retain-storage.spec.ts` to judge.
- *
- * - `concurrent`: 17 deploys at once.
- * - `refused`: the store refuses every write to the framework's key: the deploy fails.
- * - `source`: the app's own code does not compile: the deploy fails once, unrepeated.
- * - `ui-name`: a UI file's name holds a control character, which source paths allow and no
- *   storage key does: the deploy fails once as the app's, unrepeated.
- * - `invalid-key`: the store refuses the framework's key as invalid (HTTP 400, as R2's 10020 for
- *   a key over 1,024 bytes): the deploy fails once as the app's, unrepeated.
- * - `spans`: one deploy under a tracer that keeps every span: each write the deploy makes through
- *   the executor's own store (its version source and initial source) has a `storage.blob.put`
- *   span with its kind, size and outcome.
- */
 import { Effect, Layer, Redacted, Schema, Stream, Tracer } from "effect";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { pgliteLayer } from "fumadb-effect/pglite";
@@ -43,11 +19,9 @@ if (!cases.includes(name)) throw new Error(`--case must be one of ${cases.join("
 
 const writeMs = 300;
 const spacingMs = 1_000;
-/** What the stand-in saw of writes to the framework's key. */
 const framework = { stored: 0, refused: 0, existsAnswers: [] as boolean[] };
 let builds = 0;
 
-/** A store over memory that refuses a key's writes faster than one a second, as R2 does. */
 const limitedStore = (inner: BlobStorage): BlobStorage => {
   const lastWrite = new Map<string, number>();
   const isFramework = (key: string) => key.startsWith("frameworks/");
@@ -76,7 +50,6 @@ const limitedStore = (inner: BlobStorage): BlobStorage => {
           if (isFramework(key)) framework.refused += 1;
           return yield* new BlobStoreError({ operation: "put", status: 429 });
         }
-        // The write holds the key from its start to a second after it lands.
         lastWrite.set(key, now + writeMs);
         yield* Effect.sleep(`${writeMs} millis`);
         yield* inner.put(key, body);
@@ -87,13 +60,11 @@ const limitedStore = (inner: BlobStorage): BlobStorage => {
 };
 
 const blobs = limitedStore(memoryBlobStore());
-/** The same framework for every build, as one host release links one. */
 const sharedFramework = {
   version: "0.0.1-fixture",
   modules: { "apps.js": "export const apps = 1;" },
 };
 
-/** The compiler stub: compiles instantly, then retains through the real retain stage. */
 const transport = {
   name: "runtime.stub",
   loadBuild: () => Effect.die(new Error("The stub runtime keeps no builds")),
@@ -137,7 +108,6 @@ const transport = {
   invoke: () => Effect.die(new Error("The stub runtime runs no tools")),
 };
 
-/** Every span the deploy opens, kept to read their attributes once they end. */
 const spans: Array<Tracer.NativeSpan> = [];
 const keepingTracer = Tracer.make({
   span: (options) => {
@@ -197,7 +167,6 @@ const program = Effect.gen(function* () {
     deploy,
     { concurrency: "unbounded" },
   );
-  // The bytes the deploy's two source writes carry: its files as JSON.
   const sourceBytes = new TextEncoder().encode(
     JSON.stringify([
       { path: "index.ts", content: "export default {}" },

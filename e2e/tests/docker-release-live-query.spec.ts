@@ -1,9 +1,3 @@
-/**
- * A live app query runs only while a page holds it. The image serves its product from a Durable
- * Object, and workerd never cancelled a response body the object streamed after its client went
- * away. Every live query a page opened kept running its query every 15 seconds until the server
- * restarted, so the work of pages long closed piled up on the instance's one JavaScript thread.
- */
 import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, Schedule, Schema } from "effect";
@@ -99,7 +93,6 @@ it.live(
           if (new URL(request.url()).pathname === "/_executor/api/subscribe") subscribes++;
         });
         yield* driver("open the app page", () => page.goto(location));
-        // The second run comes from the open subscription's own 15-second refresh.
         yield* driver("the page's live query runs again while the page is open", () =>
           page
             .getByRole("status")
@@ -109,10 +102,8 @@ it.live(
         expect(subscribes, "one subscription stays open while the page does").toBe(1);
         yield* driver("close the browser", () => browser.close());
 
-        // The server finds the client gone on a heartbeat write a few seconds later; give it time.
         yield* Effect.sleep("30 seconds");
         const settled = yield* runs;
-        // Two of the subscription's 15-second refreshes would fall in this window.
         yield* Effect.sleep("35 seconds");
         const later = yield* runs;
         expect(later - settled, "runs of the live query after its page closed").toBe(0);

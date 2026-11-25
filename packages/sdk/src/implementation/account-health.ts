@@ -1,8 +1,3 @@
-/**
- * Account checks run by the apps that use an account, as the product names them. Each app's active
- * version runs its provider's check with the account's current credentials; results are kept
- * per account and app.
- */
 import { Clock, Effect, Match, Option, Redacted, Result, Schema } from "effect";
 import type { HostApi } from "../contracts/executor.ts";
 import { versionHostApi } from "./declarations.ts";
@@ -33,22 +28,10 @@ import { inOrder, query, type Query } from "./database.ts";
 import type { makeOAuth } from "./oauth.ts";
 import type { FirstPartyOAuthClient } from "../contracts/oauth.ts";
 
-/** The one account an account check binds, in its requirement's scope. */
 const checkedAccounts = (scope: AccountScope, slot: string, account: HostAccount): HostAccounts =>
   scope === "app" ? { app: { [slot]: account } } : { app: {}, user: { [slot]: account } };
 
-/**
- * A check answers an interactive request, so the whole check, including credential renewal and
- * one retry, has a fixed limit. It leaves room for servers that are slow to start a session: in
- * production, one MCP connection in twenty takes over 2.5 seconds to list its tools. Self-host's
- * listener allows 30 seconds without a response.
- */
 const checkMillis = 15_000;
-/**
- * The app's own deadline, shared by its attempts, ends this long before the whole check. The
- * provider's `health` receives it as `deadline`, so a check such as `mcpHealth` can give up in time
- * to say why before the host stops waiting.
- */
 const reportMillis = 1_000;
 
 type OAuth = Pick<ReturnType<typeof makeOAuth>, "resolve" | "renewRejected">;
@@ -60,7 +43,6 @@ type HealthAccount = Pick<StoredAccount, "id" | "provider" | "credentialGenerati
 type CheckRow = {
   readonly account: string;
   readonly app: string;
-  /** The version the check ran on; storage keeps the column's former name. */
   readonly deployment: string;
   readonly credentialGeneration: number;
   readonly status: string;
@@ -70,7 +52,6 @@ type CheckRow = {
   readonly message: string | null;
 };
 
-/** The slot whose provider check covers this account in the app's active version. */
 const checkedSlot = (app: App, account: Pick<HealthAccount, "provider">) =>
   Object.entries(app.requirements.accounts)
     .filter(([, required]) => required.provider === account.provider && required.health === true)
@@ -78,7 +59,6 @@ const checkedSlot = (app: App, account: Pick<HealthAccount, "provider">) =>
     .sort((a, b) => (a.slot < b.slot ? -1 : a.slot > b.slot ? 1 : 0))[0];
 
 const sameFields = Schema.toEquivalence(JsonObject);
-/** Unsaved credentials have no account yet; checks see this placeholder ID. */
 const unsavedAccount = AccountId.make("acc_unsaved");
 const decodeFields = (fields: Redacted.Redacted<unknown>) =>
   Schema.decodeUnknownEffect(JsonObject)(Redacted.value(fields)).pipe(
@@ -101,12 +81,6 @@ const statusOf = (error: unknown): AccountCheckStatus =>
           )
         : "check_failed";
 
-/**
- * Why a check failed: the message of an error the app's check threw, the answer of a service that
- * refused it without a recognized reason, or, once the app's deadline passed, that it ran out of
- * time. The host reports an app that outlasts its deadline as an engine failure, so the time is what
- * tells. Other failures keep their causes private.
- */
 const messageOf = (error: unknown, late: boolean): string | undefined => {
   if (Schema.is(HostOperationFailed)(error) && error.message !== undefined && error.message !== "")
     return error.message;
@@ -128,7 +102,6 @@ export const makeAccountHealth = (
   listApps: ListApps,
   hostApi: HostApi | undefined,
 ) => {
-  /** One account's health from the apps that use it and its recorded checks. */
   const project = (account: HealthAccount, apps: readonly App[], rows: readonly CheckRow[]) =>
     Effect.gen(function* () {
       const latest = rows
@@ -162,7 +135,6 @@ export const makeAccountHealth = (
       } satisfies AccountHealth;
     });
 
-  /** The account's health, read beside `account`'s own read, which fails first. */
   const report = <E>(
     account: Effect.Effect<StoredAccount, E>,
     id: AccountId,
@@ -172,8 +144,6 @@ export const makeAccountHealth = (
       const [stored, [apps, rows]] = yield* inOrder(
         account,
         inOrder(
-          // The product names the apps; their owner can differ from the account's, as in local,
-          // where apps belong to the host and accounts to its user.
           ids.length === 0 ? Effect.succeed<readonly App[]>([]) : listApps({ ids }),
           query(() => db.findMany("accountChecks", { where: (b) => b("account", "=", id) })),
         ),
@@ -181,11 +151,6 @@ export const makeAccountHealth = (
       return yield* project(stored, apps, rows);
     });
 
-  /**
-   * Every account's health with a fixed number of reads, for account lists. An owner filter
-   * limits the accounts read to that owner, as for a hosted organization. `links` names the apps
-   * each account is linked to.
-   */
   const listHealth = (input: Parameters<Executor["accounts"]["listHealth"]>[0]) =>
     Effect.gen(function* () {
       const accounts = yield* query(() =>
@@ -213,7 +178,6 @@ export const makeAccountHealth = (
       );
     }).pipe(Effect.withSpan("sdk.accounts.listHealth"));
 
-  /** Run one app's check and record it, unless a check that started later already finished. */
   const checkApp = (app: App, account: StoredAccount) =>
     Effect.gen(function* () {
       const target = checkedSlot(app, account);
@@ -229,8 +193,6 @@ export const makeAccountHealth = (
       const startedAt = yield* Clock.currentTimeMillis;
       const deadline = startedAt + checkMillis - reportMillis;
       const definition = target.required.definition;
-      // Each attempt binds the credential as resolved, so whether it is managed is read with its
-      // values, even if a reconnect replaced it since this check read the account.
       const attempt = (credential: AccountCredential) =>
         runtime.checkAccount({
           app: app.id,
@@ -253,15 +215,12 @@ export const makeAccountHealth = (
         const refused = first.failure;
         if (!Schema.is(ProviderError)(refused) || refused.reason !== "unauthorized")
           return yield* Effect.fail(refused);
-        // Renew once when the service refused the credentials, as tool calls do. Secrets accounts
-        // and grants without a refresh token return the same fields, so there is nothing to retry.
         const fields = Redacted.value(credential.fields);
         const renewed = yield* oauth.renewRejected({ kind: "check" }, account, definition, fields);
         if (sameFields(Redacted.value(renewed.fields), fields)) return yield* Effect.fail(refused);
         return yield* attempt(renewed);
       }).pipe(Effect.timeout(checkMillis), Effect.result);
       const late = (yield* Clock.currentTimeMillis) >= deadline;
-      // Authorization and storage failures belong to the caller, not the account.
       if (Result.isFailure(outcome) && Schema.is(StorageError)(outcome.failure))
         return yield* Effect.fail(outcome.failure);
       const status = Result.isSuccess(outcome) ? "healthy" : statusOf(outcome.failure);
@@ -287,9 +246,6 @@ export const makeAccountHealth = (
         }),
       );
       if (existing !== null && existing.checkedAt.getTime() > startedAt) return;
-      // Matched on its ID, the one row per account and app, so the database arbitrates two first
-      // checks that write at once (`INSERT … ON CONFLICT (id) DO UPDATE`). Matching on the account
-      // and app columns reads first and then inserts, and the second insert fails.
       const id = `${account.id}:${app.id}`;
       yield* query(() =>
         db.upsert("accountChecks", {
@@ -307,10 +263,6 @@ export const makeAccountHealth = (
       }),
     );
 
-  /**
-   * Check credentials that are not saved yet, with the app's check for their provider, so a form
-   * can confirm them before saving. Nothing is recorded. Null when the app defines no check.
-   */
   const checkCredentials = (input: Parameters<Executor["apps"]["checkCredentials"]>[0]) =>
     Effect.gen(function* () {
       const [app] = yield* listApps({

@@ -1,8 +1,3 @@
-/**
- * A scoped MCP authorization server that accepts OAuth Client ID Metadata Documents beside
- * dynamic registration, as Linear, Sentry and Notion do. A URL-formatted `client_id` is fetched
- * and checked the way draft-ietf-oauth-client-id-metadata-document asks of a public server.
- */
 import { createServer } from "node:http";
 import { createHash, randomUUID } from "node:crypto";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
@@ -16,7 +11,6 @@ import {
   HttpServerResponse,
 } from "effect/http";
 
-/** Why the server refused a client; each is a check the draft or OAuth 2.1 requires. */
 export type ClientRefusal =
   | "client_id_url"
   | "unreachable"
@@ -31,7 +25,6 @@ export type ClientRefusal =
   | "redirect_uri_origin"
   | "pkce";
 
-/** The members a public server reads from a document; anything else passes through. */
 const Document = Schema.Struct({
   client_id: Schema.String,
   client_name: Schema.String,
@@ -42,25 +35,15 @@ const Document = Schema.Struct({
   logo_uri: Schema.optional(Schema.String),
 });
 
-/** Read the document as a public server would: the recommended 5 KB, no redirects, 200 only. */
 const documentReadLimit = 5 * 1024;
 
 export const clientMetadataIssuer = (options: {
-  /**
-   * Where this server's requests to a public HTTPS origin land, standing in for DNS and TLS.
-   * The product listens on loopback but names a public origin in its client ID.
-   */
   readonly publicOrigins: Readonly<Record<string, string>>;
-  /**
-   * Accept a document client's redirect URIs only on the document's own origin, a restriction
-   * section 6 of the draft lets a server add and some services enforce.
-   */
   readonly documentOriginRedirects?: boolean;
 }) =>
   Effect.gen(function* () {
     const http = yield* HttpClient.HttpClient;
     const address = yield* Deferred.make<string>();
-    /** Whether the metadata advertises `client_id_metadata_document_supported`. */
     let documents = true;
     const registrations: Array<{ readonly redirectUris: readonly string[] }> = [];
     const fetches: Array<{
@@ -87,7 +70,6 @@ export const clientMetadataIssuer = (options: {
     const clients = new Map<string, readonly string[]>();
     const codes = new Map<string, { clientId: string; redirect: string; challenge: string }>();
 
-    /** GET a public URL through its mapped origin. Redirects are answers, never followed. */
     const fetchPublic = (url: URL) =>
       Effect.gen(function* () {
         const target = options.publicOrigins[url.origin];
@@ -107,7 +89,6 @@ export const clientMetadataIssuer = (options: {
         Effect.orElseSucceed(() => Option.none()),
       );
 
-    /** Section 4 of the draft: fetch the client ID, then hold the document to its own URL. */
     const documentClient = (clientId: string) =>
       Effect.gen(function* () {
         const url = URL.parse(clientId);
@@ -143,7 +124,6 @@ export const clientMetadataIssuer = (options: {
           )
         )
           return { refused: "shared_secret" as const };
-        // Section 6.7: prefetch the logo so it can be checked and cached.
         const logo = URL.parse(document.value.logo_uri ?? "");
         if (logo !== null) {
           const fetchedLogo = yield* fetchPublic(logo);
@@ -251,7 +231,6 @@ export const clientMetadataIssuer = (options: {
           const clientId = params.get("client_id") ?? "",
             redirect = params.get("redirect_uri") ?? "",
             challenge = params.get("code_challenge");
-          // A URL-formatted client ID is a document only where the server advertises support.
           const kind = documents && clientId.includes("://") ? "document" : "registered";
           const client =
             kind === "document"
@@ -289,7 +268,6 @@ export const clientMetadataIssuer = (options: {
           const code = input.get("code") ?? "";
           const issued = codes.get(code);
           const clientId = input.get("client_id") ?? "";
-          // A public client presents its client ID and no secret.
           const clientAuthentication =
             request.headers.authorization !== undefined || input.has("client_secret");
           const verifier = input.get("code_verifier") ?? "";
@@ -328,7 +306,6 @@ export const clientMetadataIssuer = (options: {
     yield* Deferred.succeed(address, origin);
     return {
       origin,
-      /** Advertise, or stop advertising, Client ID Metadata Document support. */
       configure: (input: { readonly documents: boolean }) =>
         Effect.sync(() => {
           documents = input.documents;

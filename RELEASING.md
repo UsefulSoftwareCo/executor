@@ -447,24 +447,34 @@ but the notes' headings, list and paragraph. It also renders the refused corpus
 and checks that the forms review found active still render as links, mentions,
 an emoji image or markup. The corpora are in `e2e/release-notes-repositories.ts`.
 
-A change with a line is listed when it changed a package the CLI, the desktop
-app or the self-host image is built from, other than its scripts, tests,
-fixtures and Markdown, under All installs, CLI and desktop, or Self-host by the
-packages it changed. A line on a change to nothing a release ships, such as
-Cloud-only code, CI or tooling, is not listed, and the job log warns with the
-commit. A port of a public pull request with a line links it and thanks its
-contributors by GitHub handle. That credit is the one place the notes hold a
-link and a mention, and it is safe because it is built only from a `Public-PR:`
-line that names `UsefulSoftwareCo/executor#<number>` exactly and from handles
-in `users.noreply.github.com` co-author addresses that match GitHub's handle
-rule, never from free text, so it can only point at a public pull request and
-the people who wrote it. Anything else gets no credit and a warning in the job
-log, and the note is listed as if the change were no port. A revert and the change it reverts cancel when
-both are in the release, newest first, so a reverted revert cancels nothing and
-the change it restored is listed. Every change not listed is counted in one
-line. A release with no line at all says "No release notes were written for
-this release." and still publishes. The notes link nothing else: no compare
-view, commit or private pull request.
+A note is shown to every product its change reaches: Cloud when it changed a
+file a Cloud deploy reads that is not only another product's, and the CLI and
+desktop app or the self-host image when it changed a package that one is built
+from, other than its scripts, tests, fixtures and Markdown. When the users of a
+product it reaches would not notice the change, or users of one it does not
+reach would, add an entry to `scripts/releases/note-audiences.ts` in the same
+pull request: the note's hash and the products it is for. `--check`, which
+`bun run pr:check` runs, prints each note's audience, why, its hash and how to
+change it.
+
+A release lists a line under All installs, CLI and desktop, or Self-host by that
+audience. A line on a change to nothing a release ships, such as Cloud-only
+code, CI or tooling, that no entry names is not listed, and the job log warns
+with the commit. A port of a public pull request with a line is listed whatever
+it changed, unless an entry names an audience without the CLI and desktop app or
+the self-host image, and it links it and thanks its contributors by GitHub
+handle. That credit is the one place the notes hold a link and a mention, and it
+is safe because it is built only from a `Public-PR:` line that names
+`UsefulSoftwareCo/executor#<number>` exactly and from handles in
+`users.noreply.github.com` co-author addresses that match GitHub's handle rule,
+never from free text, so it can only point at a public pull request and the
+people who wrote it. Anything else gets no credit and a warning in the job log,
+and the note is listed as if the change were no port. A revert and the change it
+reverts cancel when both are in the release, newest first, so a reverted revert
+cancels nothing and the change it restored is listed. Every change not listed is
+counted in one line. A release with no line at all says "No release notes were
+written for this release." and still publishes. The notes link nothing else: no
+compare view, commit or private pull request.
 
 Warnings go to the publishing run's job log and its annotations in this
 private repository, and name commits only, never a title or a note's text. The
@@ -472,15 +482,14 @@ notes themselves reach the public repository only as the release's body: the
 `release-notes` artifact is downloaded outside `.local/publish`, so it is never
 uploaded as a release asset.
 
-Write the line for a change a user of the CLI, the desktop app or the self-host
-image would notice: one plain sentence saying what changed for them, in the
-words above. Name no
-customer, organization or reporter, use no internal names, and say nothing about
-a security problem not yet fixed and disclosed. Put it in the body of a commit
-message on the pull request's branch, not only in the pull request's
-description: this repository squashes with the commits' messages as the body
-(`squash_merge_commit_message: COMMIT_MESSAGES`), so the description never
-reaches main.
+Write the line for a change a user of Cloud, the CLI, the desktop app or the
+self-host image would notice: one plain sentence saying what changed for them,
+in the words above. Name no customer, organization or reporter, use no internal
+names, and say nothing about a security problem not yet fixed and disclosed. Put
+it in the body of a commit message on the pull request's branch, not only in the
+pull request's description: this repository squashes with the commits' messages
+as the body (`squash_merge_commit_message: COMMIT_MESSAGES`), so the description
+never reaches main.
 
 To see a release's notes without publishing, run
 `node scripts/releases/release-notes.ts --version <version> --to <its Release commit>`

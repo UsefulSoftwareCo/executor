@@ -1,12 +1,3 @@
-/**
- * The released image's host watches workerd once the product first answers, and notices when its
- * main thread stops answering: busy for EXECUTOR_HOST_STALL_SECONDS one-second ticks, or sleeping
- * or stopped for five times as many. By default it only logs; EXECUTOR_HOST_STALL_RESTART=true
- * makes it stop workerd and exit with an error, so the container's restart policy starts it again.
- *
- * These scenarios stop workerd with SIGSTOP as root in the container, which leaves its thread
- * stopped and silent, and use a short setting so no scenario waits minutes.
- */
 import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Clock, Effect, Schedule, Schema } from "effect";
@@ -47,8 +38,6 @@ it.live(
         expect(line).toMatch(
           /^Executor stopped responding: its main thread was sleeping or stopped for 25 one-second ticks with no answer \(rule idle, limit 25; \d+ silent ticks: 0 busy, 25 sleeping or stopped; main thread used \d+\.\d\d CPU-seconds; states (S \d+, )?T \d+\); log only, workerd left running/,
         );
-        // Ten more ticks: still one line, and workerd was not signalled. A stopped process holds
-        // a signal pending, so the pending mask shows one that the state alone would hide.
         yield* Effect.sleep("10 seconds");
         expect(yield* containerState(server)).toEqual({ running: true, restarts: 0 });
         expect(yield* logLines(server, stalledLine)).toHaveLength(1);
@@ -56,7 +45,6 @@ it.live(
         yield* awaitThreadState(server, pid, "T");
         const pending = yield* pendingSignals(server, pid);
         expect(pending & (signalBit(SIGTERM) | signalBit(SIGKILL)), "signals pending").toBe(0n);
-        // Once workerd runs again, the same process answers and the host says so.
         yield* server.execRoot(`kill -CONT ${pid}`);
         yield* server.ready;
         expect(yield* workerdPid(server)).toBe(pid);
@@ -73,7 +61,6 @@ it.live(
   () =>
     Effect.scoped(
       Effect.gen(function* () {
-        // on-failure restarts only a non-zero exit, so a restart proves the host's exit status.
         const server = yield* releasedServerWith({
           environment: { EXECUTOR_HOST_STALL_SECONDS: "5", EXECUTOR_HOST_STALL_RESTART: "true" },
           docker: ["--restart", "on-failure"],
@@ -93,7 +80,6 @@ export default defineApp({}, { tools: router({ kept: query({ input: object({}) }
         const since = Math.floor((yield* Clock.currentTimeMillis) / 1000) - 1;
         yield* server.execRoot(`kill -STOP ${pid}`);
         yield* awaitThreadState(server, pid, "T");
-        // 25 idle ticks, then SIGTERM, which a stopped process holds, then SIGKILL 5 s later.
         const restarted = yield* containerState(server).pipe(
           Effect.flatMap((state) =>
             state.restarts >= 1 ? Effect.succeed(state) : Effect.fail(state),
@@ -127,7 +113,6 @@ export default defineApp({}, { tools: router({ kept: query({ input: object({}) }
           ),
         ]);
         expect(yield* logLines(server, /^Executor: workerd stopped responding/)).toHaveLength(1);
-        // The app deployed before the stall is still there and runs.
         const app = yield* server.json(App, `${server.prefix}/apps/${kept.id}`);
         expect(app.name).toBe("Kept across a stall");
         expect(
@@ -146,22 +131,14 @@ it.live(
   () =>
     Effect.scoped(
       Effect.gen(function* () {
-        // The idle rule fires after 40 ticks; the container is paused for 60 seconds.
         const server = yield* releasedServerWith({
           environment: { EXECUTOR_HOST_STALL_SECONDS: "8", EXECUTOR_HOST_STALL_RESTART: "true" },
         });
         yield* awaitLogLine(server, armedLine, 30);
         const pid = yield* workerdPid(server);
-        // A smoke check that pausing a container, for longer than either rule's limit, causes no
-        // stall line and no restart. That the check counts the ticks it handled, not the time that
-        // passed, is proved by TestTheCheckCountsHandledTicksNotElapsedTime in the host's Go tests;
-        // this scenario cannot prove it, as it cannot see the host handle a tick. workerd is stopped
-        // first and stays stopped across the pause, so no answer is expected around it, and the
-        // host usually counts the 8 seconds before the freeze as stopped ticks.
         yield* server.execRoot(`kill -STOP ${pid}`);
         yield* awaitThreadState(server, pid, "T");
         yield* Effect.sleep("8 seconds");
-        // The host is frozen with workerd and handles at most one tick when it wakes.
         yield* server.docker(["pause", server.id]);
         yield* Effect.sleep("60 seconds");
         yield* server.docker(["unpause", server.id]);
@@ -181,14 +158,11 @@ it.live(
   () =>
     Effect.scoped(
       Effect.gen(function* () {
-        // Docker's own health check is off here: it asks /health through the public port every 30
-        // seconds, and each of those requests is traced as any public request is.
         const server = yield* releasedServerWith({
           environment: { EXECUTOR_HOST_STALL_SECONDS: "60" },
           docker: ["--no-healthcheck"],
         });
         yield* awaitLogLine(server, armedLine, 30);
-        // Nothing else asks the instance anything while the check asks every second.
         yield* Effect.sleep("5 seconds");
         const since = yield* Clock.currentTimeMillis;
         yield* Effect.sleep("25 seconds");
@@ -206,7 +180,6 @@ it.live(
             Date.parse(trace.startedAt) >= since,
         );
         expect(requests, "request traces while the instance was idle").toEqual([]);
-        // The check was running: it still answers itself and logs nothing else.
         expect(yield* logLines(server, stalledLine)).toEqual([]);
       }),
     ).pipe(Effect.provide(NodeServices.layer)),

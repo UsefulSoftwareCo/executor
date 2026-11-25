@@ -1,23 +1,3 @@
-/**
- * Local-only probe of which R2 write failures Cloud's blob store repeats (`persistR2Object`), with a
- * stand-in for the R2 binding's put that fails with R2's own error shapes, its code last in the
- * message as the binding reports it, before succeeding. Prints, as JSON, each case's attempts and
- * outcome, for `build-retain-storage.spec.ts` to judge.
- *
- * - `rate-limited`: 10058 (one write a second per key), then stored.
- * - `internal`: 10001 (internal error), then stored.
- * - `unavailable`: 10043 (temporarily unavailable), then stored.
- * - `precondition`: 10031 (a failed condition): not repeated.
- * - `persistent`: 10058 on every attempt: three attempts, then the failure.
- * - `invalid-key`: 10020 (an invalid key): not repeated; Cloud's blob store keeps R2's 400 on its
- *   failure (`statuses`), and nothing on a rate limit or internal error.
- * - `framework`: 17 builds keep their shared framework at once through the SDK's retain stage
- *   and this write (`writeR2Object`), against a stand-in put that refuses a key's writes faster
- *   than one a second with 10058: the write retry and the retain stage's look-again together.
- *   Counts are of writes to the framework's key only.
- * - `attempts`: the attempts a write took, as its `storage.blob.put` span records them: one for a
- *   write stored at once, two after one rate-limit refusal, three for a persistent refusal.
- */
 import { BlobStore, BuildId, type BlobStorage } from "@executor-js/sdk/core";
 import { retainWorkerBuild } from "@executor-js/sdk/workerd";
 import { Effect, Schema, Tracer } from "effect";
@@ -51,8 +31,6 @@ const run = (failures: ReadonlyArray<number>) =>
     };
   });
 
-/** 17 retains at once, each through `writeR2Object` over a put that refuses fast same-key writes. */
-/** Each write in a span of its own, under a tracer that keeps the span to read its attempts. */
 const attempts = Effect.forEach(
   [
     ["stored-at-once", []],
@@ -83,7 +61,6 @@ const attempts = Effect.forEach(
   },
 ).pipe(Effect.map((entries) => Object.fromEntries(entries)));
 
-/** The status Cloud's blob store keeps on a write's failure: R2's 400 for an invalid key only. */
 const statuses = Effect.forEach([10020, 10058, 10001], (code) =>
   writeR2Object(Effect.fail(r2Error(code))).pipe(
     Effect.flip,

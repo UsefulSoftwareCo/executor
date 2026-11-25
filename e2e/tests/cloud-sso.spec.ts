@@ -100,8 +100,6 @@ const enableEnterprise = (team: { readonly id: string; readonly slug: string }, 
         planId: `${free.id}-pay-as-you-go`,
         status: "active",
       });
-      // Checkout synchronizes seats first. PAYG has no seats to synchronize and
-      // must still reach the plan policy instead of failing with billing unavailable.
       expect(
         (yield* api.request(actors.owner, "POST", `${billingPath}/checkout`, {
           plan: enterprise.id,
@@ -624,7 +622,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud customer SSO", (it) => {
         const user = yield* browserSession;
         expect(user.user.email).toBe(email);
         expect(user.user.emailVerified).toBe(true);
-        // The identity provider owns this address; leaving the domain would also break SSO.
         for (const path of ["request-email-change", "change-email"])
           expect(
             yield* browser.use(`An SSO user cannot ${path.replaceAll("-", " ")}`, (page) =>
@@ -794,7 +791,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud customer SSO", (it) => {
         yield* browser.checkpoint("Verified SAML setup");
         yield* signOut;
         const email = `saml-${randomUUID().slice(0, 8)}@sso.example.test`;
-        // An invitation from someone who cannot invite to this team does not hold back joining.
         const { userId: outsider } = yield* body(
           Schema.Struct({ userId: Schema.String }),
           yield* api.request(actors.member, "GET", "/api/viewer"),

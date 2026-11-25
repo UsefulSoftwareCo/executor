@@ -16,26 +16,19 @@ import { dashboardAuthClientOptions } from "@executor-js/ui/contracts/http";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { acknowledgedQuery } from "@executor-js/ui/contracts/mutations";
 
-/**
- * Keep library methods private; organization calls below require explicit targets. Server
- * rendering has no page origin, so it addresses the host in-process; see `authRequest`.
- */
 const authClient = createAuthClient({
   ...dashboardAuthClientOptions,
   plugins: [organizationClient(), oauthProviderClient()],
 });
 
-/** Safe auth diagnostics retain the provider code/status, never its raw message or response. */
 export class AuthFailed extends Schema.TaggedError<AuthFailed>()("AuthFailed", {
   code: Schema.optional(Schema.String),
   status: Schema.optional(Schema.Number),
   message: Schema.String,
 }) {}
 
-/** Shown for an address the server cannot accept, whether the form or the server notices first. */
 export const invalidEmailMessage = "Enter a valid email address, such as name@example.com.";
 
-/** Whether an address has a mailbox and a dotted domain, as the server requires. */
 export const plausibleEmail = (email: string) => /^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/u.test(email);
 
 const authMessage = (code: string | undefined, status: number): string => {
@@ -55,16 +48,11 @@ const authMessage = (code: string | undefined, status: number): string => {
   return "Something went wrong. Check your details and try again.";
 };
 
-/**
- * Options for every Better Auth call: trace propagation, and the runtime's fetch so a server
- * render reaches the API in-process with the page request's identity.
- */
 export const authCallOptions = Effect.gen(function* () {
   return { headers: yield* traceHeaders, customFetchImpl: yield* FetchHttpClient.Fetch };
 });
 export type AuthCallOptions = Effect.Success<typeof authCallOptions>;
 
-/** Convert library responses to Effect failures while preserving safe machine-readable fields. */
 export const authRequest = <A>(
   run: (
     options: AuthCallOptions,
@@ -98,20 +86,16 @@ export const authRequest = <A>(
       ),
     );
 
-/** Browser identity deliberately excludes library session preferences and tokens. */
 export const HostedSession = BrowserSession;
 
-/** A server-verified session; server-rendered documents send it to the browser with the page. */
 const entrySession = Atom.make<Option.Option<BrowserSession>>(Option.none()).pipe(
   Atom.serializable({ key: "hosted:session", schema: Schema.Option(BrowserSession) }),
   Atom.keepAlive,
 );
 
-/** Revalidate in the background; only the HTTP endpoint can renew the real session cookie. */
 const liveSessionQuery = BrowserAtoms.atom(
   authRequest((options) => authClient.getSession({}, options)).pipe(
     Effect.flatMap(Schema.decodeUnknownEffect(HostedSession)),
-    // A confirmed missing session also forgets where that person last worked.
     Effect.tap((session) => Effect.sync(() => session === null && clearLastOrganization())),
     Effect.withSpan("ui.auth.session"),
   ),
@@ -128,20 +112,16 @@ const sessionQuery = Atom.readable(
     refresh(liveSessionQuery);
   },
 ).pipe(revalidated);
-/** The server-verified session, revalidated by the browser; APIs enforce authorization. */
 export const sessionAtom = acknowledgedQuery(sessionQuery);
-/** Server rendering starts from the session it verified for this request. */
 export const sessionInitialValues = (verified: BrowserSession) => [
   Atom.initialValue(entrySession, Option.some(verified)),
 ];
 
-/** Where this person last worked, read by the server for this document. */
 export const lastOrganizationAtom = Atom.make<LastOrganization | null>(null).pipe(
   Atom.serializable({ key: "hosted:last-organization", schema: Schema.NullOr(LastOrganization) }),
   Atom.keepAlive,
 );
 
-/** Better Auth creates the OAuth state and redirects to the chosen provider. */
 export const signInAtom = BrowserAtoms.fn(
   (input: { provider: "google" | "github" | "openai"; redirect: string }) =>
     authRequest((options) =>
@@ -158,12 +138,9 @@ export const signInAtom = BrowserAtoms.fn(
     ).pipe(Effect.withSpan("ui.auth.signIn"), Effect.asVoid),
 );
 
-/** Revoke the session, then load the public root without an auth-return URL. */
 export const signOutAtom = BrowserAtoms.fn(() =>
   authRequest((options) => authClient.signOut({}, options)).pipe(
     Effect.withSpan("ui.auth.signOut"),
-    // The root response selects the public document after the cookie is cleared.
-    // Refreshing the private route first would send it back to login with a return URL.
     Effect.tap(() =>
       Effect.sync(() => {
         clearLastOrganization();
@@ -174,7 +151,6 @@ export const signOutAtom = BrowserAtoms.fn(() =>
   ),
 );
 
-/** Personal account operations; every one of them acts on the signed-in user only. */
 export const accountOperations = (options: AuthCallOptions) => ({
   rename: (name: string) => authClient.updateUser({ name }, options),
   current: () => authClient.getSession({}, options),
@@ -185,7 +161,6 @@ export const accountOperations = (options: AuthCallOptions) => ({
     authClient.changePassword({ ...input, revokeOtherSessions: false }, options),
 });
 
-/** Only explicit organization operations are available to dashboard contracts. */
 export const organizationOperations = (options: AuthCallOptions) => ({
   list: () => authClient.organization.list({}, options),
   create: (input: { readonly name: string; readonly slug: string }) =>
@@ -228,12 +203,10 @@ export const organizationOperations = (options: AuthCallOptions) => ({
     readonly memberId: string;
     readonly role: "admin" | "member";
   }) => authClient.organization.updateMemberRole(input, options),
-  // The verified invitation identifies its organization.
   acceptInvitation: (invitationId: string) =>
     authClient.organization.acceptInvitation({ invitationId }, options),
 });
 
-/** The organization and grant settings an approval carries. A denial carries neither. */
 const decisionHeaders = (
   options: AuthCallOptions,
   input: {
@@ -251,14 +224,9 @@ const decisionHeaders = (
     : { [grantSettingsHeader]: JSON.stringify(input.settings) }),
 });
 
-/** Consent uses its explicit selected organization, never a shared session field. */
 export const mcpAuthorization = (options: AuthCallOptions) => ({
   client: (clientId: string) =>
     authClient.oauth2.publicClient({ query: { client_id: clientId } }, options),
-  /**
-   * Approve with the organization, access and approval mode the page shows, or decline. A
-   * connection names its organization, so a page that has not found it yet omits the choice.
-   */
   consent: (input: {
     readonly accept: boolean;
     readonly organization: string | undefined;
@@ -269,14 +237,12 @@ export const mcpAuthorization = (options: AuthCallOptions) => ({
       { accept: input.accept, oauth_query: input.query },
       { ...options, headers: decisionHeaders(options, input) },
     ),
-  /** The pending device sign-in a user code names. */
   deviceRequest: (userCode: string) =>
     authClient.$fetch<unknown>("/device/request", {
       ...options,
       method: "GET",
       query: { user_code: userCode },
     }),
-  /** Approve a device sign-in with what the page shows, as consent does, or deny it. */
   decideDevice: (input: {
     readonly userCode: string;
     readonly accept: boolean;
@@ -291,5 +257,4 @@ export const mcpAuthorization = (options: AuthCallOptions) => ({
     }),
 });
 
-/** Discard the previous identity and destination before a full-page session switch. */
 export const clearSessionDisplay = clearLastOrganization;

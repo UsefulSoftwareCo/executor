@@ -1,4 +1,3 @@
-/** Deploy isolated previews with explicit database, retention and background policies. */
 import { createHash } from "node:crypto";
 import {
   Clock,
@@ -72,10 +71,6 @@ const runChild = (command: ChildProcess.Command) =>
     const code = Number(yield* spawner.exitCode(command));
     if (code !== 0) return yield* failure(`The child command exited with status ${code}.`);
   });
-/**
- * Run a child, passing its output through as it comes, and return its exit status with the lines
- * of Alchemy's outcome (its failed resources and summary) that a retry is decided on.
- */
 const runChildReading = (command: ChildProcess.Command) =>
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -94,11 +89,6 @@ const runChildReading = (command: ChildProcess.Command) =>
     );
     return { code: Number(code), lines: [...out, ...err] };
   }).pipe(Effect.scoped);
-/**
- * Deploy a stage this run created. A deploy that fails only with one of `retrySignatures` runs
- * once more, after a short wait for the Hyperdrive origin. Any other failure, a release guard's
- * refusal and a second failure stop it as before, with every attempt's output in the log.
- */
 const deployNewStage = (command: ChildProcess.Command, report: string) =>
   Effect.gen(function* () {
     const stopped = (code: number) =>
@@ -123,7 +113,6 @@ const deployNewStage = (command: ChildProcess.Command, report: string) =>
     const second = yield* runChildReading(command);
     if (second.code !== 0) return yield* stopped(second.code);
   });
-/** A release guard's refusal recorded by the Alchemy process, if it stopped the deploy. */
 const releaseRefusal = (report: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -133,11 +122,6 @@ const releaseRefusal = (report: string) =>
     );
   });
 const PackedApps = Schema.fromJsonString(Schema.Struct({ version: Schema.NonEmptyString }));
-/**
- * Build and pack this checkout's `apps` package for the stage's compiler, which serves the package
- * files as its own assets and uses them wherever an app declares the same version. Apps on the
- * stage then run the unpublished framework. The directory is named by the package's content.
- */
 const stageAppsFramework = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -170,20 +154,11 @@ const stageAppsFramework = Effect.gen(function* () {
   yield* Console.log(`Apps on this stage that declare apps@${version} use this checkout's build.`);
   return { EXECUTOR_APPS_FRAMEWORK: directory, EXECUTOR_APPS_VERSION: version };
 }).pipe(Effect.scoped);
-/** How a destroy may proceed; only an explicit `test-stage destroy --by-name` sets `byName`. */
 interface DestroyOptions {
-  /** Scheduled cleanup: only a lease whose deadline has passed. */
   readonly automatic: boolean;
   readonly expectedOwner: Option.Option<string>;
-  /** Remove a stage whose records the state store cannot read by its names and tags. */
   readonly byName: boolean;
 }
-/**
- * `expectedOwner` destroys the stage only while the registry names exactly that owner. It is
- * checked under the stage lock, so no deploy can reassign the stage between the check and removal.
- * A stage whose records predate the state store's key is removed only by name, which eviction and
- * scheduled cleanup never ask for: they fail and say which command removes it.
- */
 const destroy = (stageSlug: string, options: DestroyOptions) =>
   withStageAdmin((admin) =>
     Effect.gen(function* () {
@@ -233,10 +208,6 @@ const destroy = (stageSlug: string, options: DestroyOptions) =>
           },
         ),
       ).pipe(Effect.timeout("10 minutes"));
-      // Alchemy deletes the branch only when its state records it. A create that stopped before
-      // Alchemy recorded it leaves the branch "not owned by this stack"; remove it by its exact
-      // name (test-stage-branch.ts). The lease stays until the branch is confirmed gone, so the
-      // next scheduled run retries what this one could not finish.
       if (lease?.database === "planetscale") {
         const outcome = yield* removeStageBranch(stageSlug).pipe(
           Effect.catch((error) =>
@@ -253,27 +224,17 @@ const destroy = (stageSlug: string, options: DestroyOptions) =>
           yield* Console.log(message);
         }
       }
-      // Failed destruction retains the lease, so the next scheduled run retries it.
       yield* admin.remove(stageSlug);
     }),
   );
-/** Free text such as an owner's name, on one line, so it cannot start a workflow command. */
 const oneLine = (text: string) => text.replaceAll(/[\r\n]+/gu, " ");
-/** A workflow command's message: GitHub reads `%`, CR and LF in it as escapes. */
 const annotation = (text: string) =>
   text.replaceAll("%", "%25").replaceAll("\r", "%0D").replaceAll("\n", "%0A");
-/** Account, zone and project identifiers do not belong in a job summary others read. */
 const withoutIds = (text: string) =>
   text.replaceAll(/\/(accounts|zones|projects)\/[^/\s]+/gu, "/$1/…");
-/**
- * A stage the limit should have removed is still there. Say so in the deploy's log and, in GitHub
- * Actions, as a warning annotation and a line in the job summary, so neither the person deploying
- * nor the stage's owner reads it as evicted.
- */
 const reportEvictionFailure = (stage: TestStageLease, reason: string, total: number) =>
   Effect.gen(function* () {
     const message = `Could not evict ${stage.slug} (${stage.owner}): ${reason.replace(/\.?$/u, ".")} Its record remains, so a later destroy retries it, and this deploy continues with ${total} test stages, over the limit of ${testStageLimit}.`;
-    // A line break in the owner's free text must not start a workflow command of its own.
     const line = oneLine(withoutIds(message));
     yield* Console.error(line);
     const actions = yield* Config.String("GITHUB_ACTIONS").pipe(Config.withDefault(""));
@@ -296,12 +257,9 @@ const operation = (name: "deploy" | "plan") =>
       database: Flag.Literals("database", ["neon", "planetscale"]).pipe(Flag.optional),
       retention: Flag.Literals("retention", ["retained", "temporary"]).pipe(Flag.optional),
       background: Flag.Literals("background", ["active", "paused"]).pipe(Flag.optional),
-      // Each deploy chooses again; a redeploy without the flag stops the export.
       telemetry: Flag.Literals("telemetry", ["export", "off"]).pipe(Flag.withDefault("off")),
       noInput: Flag.Boolean("no-input").pipe(Flag.withDefault(false)),
       yes: Flag.Boolean("yes").pipe(Flag.withDefault(false)),
-      // `deploy` only: refuse, rather than evict, a deploy that would replace another test stage.
-      // `plan` has no such flag, as before.
       ...(name === "deploy"
         ? { noEvict: Flag.Boolean("no-evict").pipe(Flag.withDefault(false)) }
         : {}),
@@ -333,21 +291,12 @@ const operation = (name: "deploy" | "plan") =>
             return yield* failure(
               "A preview's database and retention cannot change on redeploy. Use a new slug.",
             );
-          // A new stage replaces the oldest ones beyond the limit, before it creates resources.
-          // An eviction that fails does not stop this deploy, whose author did not cause it, but
-          // it is reported where they look: the log, a run annotation and the job summary.
           const evictions =
             existing === undefined ? stagesToEvict(yield* admin.list, input.slug) : [];
-          // With `--no-evict`, the same list at the same instant refuses the deploy instead, before
-          // it reserves, builds, deploys or destroys anything.
           if ("noEvict" in input && input.noEvict === true && evictions.length > 0)
             return yield* failure(
               `Deploying ${input.slug} would evict ${evictions.length} test stage${evictions.length === 1 ? "" : "s"} to stay within ${testStageLimit}: ${evictions.map((stage) => `${stage.slug} (${oneLine(stage.owner)})`).join(", ")}. --no-evict refuses it, so nothing was reserved, deployed or destroyed. Destroy test stages you own, then deploy again.`,
             );
-          // A new stage adds Workers and Durable Object classes, both account quotas. One past a
-          // configured quota is refused here rather than failing part way through Alchemy's apply;
-          // past only Cloudflare's documented figure, it warns and goes on. The stages it evicts are
-          // counted as freed, and checked again below with only the evictions that succeeded.
           const usage = existing === undefined ? yield* accountUsage : undefined;
           const limits = yield* accountLimits;
           const capacity =
@@ -449,9 +398,6 @@ const operation = (name: "deploy" | "plan") =>
                   stderr: output,
                 },
               );
-            // Only a stage this run created is retried; a redeploy and a plan run as before. Its
-            // output is read only when it is not a terminal, where Alchemy is non-interactive
-            // already (CI), so reading it changes nothing Alchemy shows or asks.
             if (name === "deploy" && existing === undefined && process.stdout.isTTY !== true)
               yield* deployNewStage(alchemy("pipe"), report);
             else
@@ -521,7 +467,6 @@ const cleanup = Command.make("cleanup", {}, () =>
     const discovery = yield* discoverTestStages.pipe(Effect.result);
     const stages = yield* withStageAdmin((admin) =>
       Effect.gen(function* () {
-        // A failed discovery must not prevent known expired leases from being removed.
         if (Result.isSuccess(discovery))
           yield* Effect.forEach(discovery.success, (stage) => admin.observe(stage), {
             discard: true,
@@ -548,8 +493,6 @@ const cleanup = Command.make("cleanup", {}, () =>
       { concurrency: 4 },
     );
     const failures = results.filter((success) => !success).length;
-    // Leases as read before this pass destroyed anything: a stage removed just now may still be
-    // deleting its branch, and is looked at again next pass, when its lease is gone.
     const orphans = yield* findOrphanBranches(new Set(stages.map((stage) => stage.slug)), now).pipe(
       Effect.result,
     );
@@ -566,7 +509,6 @@ const cleanup = Command.make("cleanup", {}, () =>
     yield* Console.log("Preview cleanup complete.");
   }),
 );
-/** Ordinary previews use Neon and remain until deleted; CI explicitly requests a temporary lease. */
 export const testStageCommand = Command.make("test-stage").pipe(
   Command.withDescription(
     "Deploy isolated Neon previews or disposable PlanetScale release checks.",

@@ -1,10 +1,3 @@
-/**
- * Hold the telemetry exports a managed local Cloud sends to this suite's collector, as an export
- * endpoint that hangs: each export is accepted and left unanswered until the scope that held them
- * closes (`serveShardedOtlpCollector`). Every scenario of that Cloud exports to the same collector,
- * so only a scenario with a local Cloud of its own may hold them. A scenario can also watch a trace
- * and read back how many of its spans the collector received, and how many it received twice.
- */
 import { Effect, FileSystem, Schema } from "effect";
 import { HttpClient, HttpClientResponse } from "effect/http";
 import { Collector } from "./contracts.ts";
@@ -35,10 +28,6 @@ export const holdExports = Effect.gen(function* () {
   yield* Effect.acquireRelease(control("hold"), () => control("release"));
 });
 
-/**
- * Refuse every export with 503 and `Retry-After: retryAfterSeconds` until the scope closes, as a
- * collector shedding load does.
- */
 export const refuseExports = (retryAfterSeconds: number) =>
   Effect.gen(function* () {
     const http = yield* HttpClient.HttpClient;
@@ -57,7 +46,6 @@ export const refuseExports = (retryAfterSeconds: number) =>
     );
   });
 
-/** Count the spans the collector receives for `trace` from now on. */
 export const watchTrace = (trace: string) =>
   Effect.gen(function* () {
     const http = yield* HttpClient.HttpClient;
@@ -76,7 +64,6 @@ export const watchTrace = (trace: string) =>
 
 const Received = Schema.Struct({ spans: Schema.Number, duplicated: Schema.Number });
 
-/** The spans of a watched trace the collector received, and how many of them more than once. */
 export const receivedSpans = (trace: string) =>
   Effect.gen(function* () {
     const http = yield* HttpClient.HttpClient;

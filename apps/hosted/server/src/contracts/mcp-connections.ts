@@ -1,4 +1,3 @@
-/** A member's own scoped MCP connections and connected agents in one organization. Browser sessions only. */
 import {
   AccountNotFound,
   AccountSelectionInvalid,
@@ -31,7 +30,6 @@ const organization = { organization: OrganizationReference };
 const connection = { ...organization, connection: ConnectionId };
 const agentsPath = "/api/organizations/:organization/mcp-agents";
 const errors = [AuthenticationUnavailable, OrganizationForbidden] as const;
-/** Saving may link accounts to apps, so it reports account failures. */
 const saveErrors = [
   ...errors,
   ConnectionAccessInvalid,
@@ -40,10 +38,6 @@ const saveErrors = [
   AccountNotFound,
   AccountSelectionInvalid,
 ] as const;
-/**
- * Agents may list the member's connections. Bearer credentials, including a connection's own
- * grants, cannot change them or the connected agents: that would let an agent widen its own access.
- */
 export const HostedMcpConnections = HttpApiGroup.make("mcpConnections")
   .add(
     HttpApiEndpoint.get("list", path, {

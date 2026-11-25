@@ -34,6 +34,15 @@ export type OAuthSignIn = typeof OAuthSignIn.Type;
 export const OAuthClientId = Schema.NonEmptyString.pipe(Schema.brand("OAuthClientId"));
 export type OAuthClientId = typeof OAuthClientId.Type;
 
+/**
+ * Why a sign-in that needed a client of its own signs in with one it already had: the service
+ * refused to register another, or the organization already holds as many clients of one connection
+ * each as Executor registers at one service. The service may then skip its account or organization
+ * chooser.
+ */
+export const OAuthOwnClientUnavailable = Schema.Literals(["registration_refused", "limit_reached"]);
+export type OAuthOwnClientUnavailable = typeof OAuthOwnClientUnavailable.Type;
+
 /** Authorization code needs a redirect; client credentials completes the same connection immediately. */
 export const OAuthStartResult = Schema.Union([
   Schema.Struct({
@@ -41,6 +50,11 @@ export const OAuthStartResult = Schema.Union([
     ...OAuthSignIn.fields,
     /** The stored client this sign-in uses, such as the automatic client it found or created. */
     oauthClient: Schema.optional(OAuthClientId),
+    /**
+     * This sign-in needed a client of its own and could not register one, so the service may skip
+     * its account or organization chooser and reuse an earlier choice.
+     */
+    ownClientUnavailable: Schema.optionalKey(OAuthOwnClientUnavailable),
   }),
   Schema.Struct({ status: Schema.Literal("completed"), account: Account }),
 ]);
@@ -130,6 +144,12 @@ export const OAuthClientSetup = Schema.Union([
      * authorization parameter, beside `scopes`. Omitted when the provider sends none.
      */
     userScopes: Schema.optional(Schema.Array(Schema.String)),
+    /**
+     * A reconnect may pass `chooseAgain` to sign in with a client registered for it alone, so the
+     * service asks again which account or organization to use. Present only where the service
+     * registers clients.
+     */
+    chooseAgain: Schema.optionalKey(Schema.Literal(true)),
   }),
   Schema.Struct({
     ...clientSetup,
@@ -668,7 +688,6 @@ export const OAuthSetupFailed = UserFacingError.define({
   },
   recorded: ({ reason, cause }) => oauthRecorded("OAuth setup failed", reason, cause),
   presentation: ({ reason, callbackUrl, cause, serviceError, retryAfter, operatorScopes }) => {
-    // Forms that open client entry already show the callback, so only the fix prompt repeats it.
     const callback = callbackUrl === undefined ? "" : ` Executor’s callback URL is ${callbackUrl}.`;
     return withCause(
       (
@@ -842,7 +861,6 @@ export type OAuthSetupFailed = typeof OAuthSetupFailed.Type;
  * failures recorded with it.
  */
 export const OAuthCompletionReason = Schema.Literals([
-  // Executor matches the callback to the sign-in it started.
   "callback_malformed",
   "sign_in_not_found",
   "sign_in_replaced",
@@ -850,15 +868,12 @@ export const OAuthCompletionReason = Schema.Literals([
   "sign_in_expired",
   "sign_in_used",
   "account_unavailable",
-  // The stored client the sign-in started with is no longer one the caller may use.
   "client_unavailable",
-  // The service's authorization response, validated before its `error` is read.
   "issuer_mismatch",
   "denied",
   "invalid_scope",
   "invalid_client",
   "authorization_rejected",
-  // The token exchange.
   "authorization_code_rejected",
   "registered_client_rejected",
   "registered_client_incompatible",
@@ -871,7 +886,6 @@ export const OAuthCompletionReason = Schema.Literals([
   "incompatible_response",
   "unsupported",
   "oauth_unavailable",
-  // The operator's client was granted scopes it does not allow.
   "scope_exceeded",
 ]);
 export type OAuthCompletionReason = typeof OAuthCompletionReason.Type;
@@ -1155,7 +1169,6 @@ export const OAuthCompletionFailed = UserFacingError.define({
             },
             retryable: false,
           },
-          // The sign-in was claimed before the token request, so only a new one can finish.
           rate_limited: rateLimited(retryAfter, {
             description: "The service asked Executor to wait before sending more sign-in requests.",
             action: "Start the connection again",
@@ -1184,8 +1197,6 @@ export const OAuthCompletionFailed = UserFacingError.define({
             },
             agentFixable: false,
           },
-          // Revocation runs beside the answer and the service may refuse or not support it, so the
-          // text does not say it happened.
           scope_exceeded: {
             title: "The service granted more access than allowed",
             description:
@@ -1431,6 +1442,11 @@ export const OAuthTokenServer = Schema.Struct({
   authorization_response_iss_parameter_supported: Schema.optional(Schema.Boolean),
   client_id_metadata_document_supported: Schema.optional(Schema.Boolean),
   code_challenge_methods_supported: Schema.optional(Schema.Array(Schema.String)),
+  /**
+   * The `prompt` values the server says it honours (OpenID Connect Prompt Create). Discovery keeps
+   * only the string entries of a published list and drops any other value, as main ignores it.
+   */
+  prompt_values_supported: Schema.optional(Schema.Array(Schema.String)),
   token_endpoint_auth_methods_supported: Schema.optional(Schema.Array(Schema.String)),
   /** RFC 8414 grant types. Registration requests only advertised ones when present. */
   grant_types_supported: Schema.optional(Schema.Array(Schema.String)),
@@ -1552,6 +1568,23 @@ export const OAuthClientUse = Schema.Struct({
   fresh: Schema.Boolean,
 });
 export type OAuthClientUse = typeof OAuthClientUse.Type;
+/**
+ * A client Executor registered for one connection alone, so the service keeps that connection's
+ * consent apart from every other. RFC 7592 lets Executor delete it when the connection goes, with
+ * the URI and token the registration answered; a service that gave neither keeps it.
+ */
+export const OAuthConnectionClient = Schema.Struct({
+  registrationClientUri: Schema.optionalKey(HttpUrl),
+  registrationAccessToken: Schema.optionalKey(Schema.NonEmptyString),
+  /** The service refused this client on a reconnect, so the next one registers another. */
+  rejected: Schema.optionalKey(Schema.Literal(true)),
+});
+export type OAuthConnectionClient = typeof OAuthConnectionClient.Type;
+/**
+ * At most this many clients registered for one connection each are kept alive per organization and
+ * authorization server. A further connection past it signs in with the shared client.
+ */
+export const connectionClientsPerServer = 20;
 /** What every sign-in attempt keeps, whichever client it uses. */
 const attemptFields = {
   connection: AccountConnectionId,
@@ -1577,6 +1610,8 @@ export const OAuthAttempt = Schema.Struct({
   storedClient: Schema.optionalKey(OAuthClientUse),
   /** An entered client registered under the attempt's owner once it completes. */
   saveClient: Schema.optionalKey(Schema.Literal(true)),
+  /** `client` was registered for this connection alone. */
+  connectionClient: Schema.optionalKey(OAuthConnectionClient),
   resource: Schema.optional(HttpUrl),
   /** Where `resource` came from, so a refusal can say. Attempts started before it was kept lack it. */
   resourceSource: Schema.optional(OAuthResourceSource),
@@ -1630,6 +1665,8 @@ export const OAuthGrant = Schema.Union([
     client: OAuthRegistration,
     /** The stored client signed in with. The grant keeps its own copy for renewal. */
     oauthClient: Schema.optionalKey(OAuthClientId),
+    /** `client` was registered for this connection alone; a reconnect keeps it. */
+    connectionClient: Schema.optionalKey(OAuthConnectionClient),
     refreshToken: Schema.optional(Schema.NonEmptyString),
     /**
      * The callback the sign-in sent, sent again on each refresh for servers that require it.

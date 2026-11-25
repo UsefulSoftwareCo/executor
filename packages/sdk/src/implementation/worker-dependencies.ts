@@ -1,4 +1,3 @@
-/** Install declared npm packages only when the authored import graph reaches them. */
 import { installDependencies, type InMemoryFileSystem } from "@cloudflare/worker-bundler";
 import { captureTelemetry } from "@executor-js/telemetry";
 import { Effect, Schema, Semaphore } from "effect";
@@ -12,18 +11,6 @@ const Package = Schema.Struct({
   dependencies: Schema.optional(Schema.Record(Schema.String, Schema.String)),
 });
 
-/**
- * Framework archives are loaded alone; direct npm imports retain their authored declarations and
- * dependency graphs. `registry` replaces the public npm registry when the host configures one.
- * The installer's errors quote the URLs it fetched, which start with that registry. An operator's
- * registry URL can carry credentials or a token, and the deployer reading a failed build is not
- * always the operator, so a failure loses each URL's userinfo, query and fragment. A token the
- * registry takes as a path segment is kept and reaches the deployer: it cannot be told from a path.
- * Requests off the registry's origin, including where its redirects land, use the host's
- * `tarballFetch`. The installer words every failure itself: it names the declared package, an
- * HTTP status or a fixed reason, never a dependency's name, a URL a server chose, or anything a
- * server or an archive sent.
- */
 export const workerDependencies = (filesystem: InMemoryFileSystem, host: WorkerHost) =>
   Effect.gen(function* () {
     const { registry, tarballFetch } = host;
@@ -43,7 +30,6 @@ export const workerDependencies = (filesystem: InMemoryFileSystem, host: WorkerH
             try: () =>
               installDependencies(
                 {
-                  // The installer sees one declaration; bundling still sees the unmodified manifest.
                   read: (path) =>
                     path === "package.json"
                       ? JSON.stringify({ dependencies: { [name]: version } })
@@ -108,7 +94,6 @@ export const workerDependencies = (filesystem: InMemoryFileSystem, host: WorkerH
           const version = dependencies[name];
           if (version === undefined) return undefined;
           await Effect.runPromiseWith(context)(install(name, version));
-          // Let the existing resolver apply package exports, conditions, and asset handling.
           return undefined;
         });
       },

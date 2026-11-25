@@ -1,4 +1,3 @@
-/** How images, audio and files in an execution result reach the MCP client. */
 import { Option, Schema } from "effect";
 import { McpSchema, type McpServer } from "effect/ai";
 
@@ -16,10 +15,6 @@ const isBlobResource = Schema.decodeUnknownOption(
   Schema.Struct({ type: Schema.Literal("resource"), resource: McpSchema.BlobResourceContents }),
 );
 
-/**
- * Standard padded base64 for data in any common base64 form. Services and programs return base64url
- * (Gmail, JWTs), unpadded or line-wrapped data; MCP content takes only the standard form.
- */
 const standardBase64 = (data: string) => {
   const compact = data.replaceAll(/\s/gu, "").replaceAll("-", "+").replaceAll("_", "/");
   return compact.length % 4 === 0
@@ -30,18 +25,12 @@ const standardBase64 = (data: string) => {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-/** One media block, the key that identifies its bytes, and what the JSON keeps in its place. */
 interface Lifted {
   readonly block: MediaBlock;
   readonly key: string;
   readonly placeholder: (contentIndex: number) => Record<string, unknown>;
 }
 
-/**
- * An MCP image or audio block, or an embedded resource holding a blob, whose data decodes as
- * base64, with its data in the standard form. A text resource is already readable and stays in the
- * JSON.
- */
 const mediaBlock = (value: Record<string, unknown>): Lifted | undefined => {
   if ((value.type === "image" || value.type === "audio") && typeof value.data === "string") {
     const block = { ...value, data: standardBase64(value.data) };
@@ -69,12 +58,6 @@ const mediaBlock = (value: Record<string, unknown>): Lifted | undefined => {
   };
 };
 
-/**
- * An execution result as JSON text and `structuredContent`, with each MCP image, audio or blob
- * resource block it holds moved into its own content block. The JSON keeps the block without its
- * bytes, plus `contentIndex`, the block's index in `content`, so the bytes reach the client as
- * media or a file instead of base64 text, once even when the result repeats them.
- */
 export const executionResultContent: McpServer.ResultContent["Service"] = (encoded) => {
   const media: Array<MediaBlock> = [];
   const indexes = new Map<string, number>();

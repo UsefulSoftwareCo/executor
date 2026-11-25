@@ -48,7 +48,6 @@ const accountBranches = (
 ): JsonObject => {
   const groups = new Map<string, { schema: JsonObject; first: string; rest: string[] }>();
   for (const [accountId, schema] of variants) {
-    // One account has one branch; only several need a key, which names definitions by number.
     const key = variants.length === 1 ? "" : schemaIdentity(schema, memo);
     const group = groups.get(key);
     if (group === undefined) groups.set(key, { schema, first: accountId, rest: [] });
@@ -131,7 +130,6 @@ const combineOperation = (
       Schema.Struct({ accountId: Schema.Literal(accountId), input: Schema.Unknown }),
     ),
   ]);
-  // Combined schemas are built when a tool is described, not on every evaluation for a call.
   const inputSchema = () =>
     accountBranches(
       [...accounts].map(([accountId, operation]) => [accountId, decoderDocument(operation.input)]),
@@ -152,7 +150,6 @@ const combineOperation = (
       : { _meta: first._meta }),
     input: withLazyJsonSchemaDocument(input, inputSchema),
     approval: (context) => {
-      // A failed account's call fails before it reaches the service, so it has nothing to approve.
       if (failed.has(context.toolInput.accountId)) return Effect.succeed("approved" as const);
       const operation = select(context.toolInput);
       return operation.approval === undefined
@@ -252,7 +249,6 @@ const merge = (
     ...(outputs.length === variants.length ? { outputSchema: outputBranches(outputs, memo) } : {}),
     ...sameAcross("_meta", variants),
   };
-  // A tool that does not fit fails its source here, as before, so its router reports it.
   Schema.decodeUnknownSync(MergedTool)(merged);
   return merged;
 };
@@ -319,7 +315,6 @@ const combineDynamic = (sources: ReadonlyMap<string, DynamicRouter>): DynamicRou
     });
   return {
     kind: "dynamic",
-    // Accounts share one source, so the first account that can describe it describes the router.
     ...(first?.meta === undefined
       ? {}
       : {
@@ -336,7 +331,6 @@ const combineDynamic = (sources: ReadonlyMap<string, DynamicRouter>): DynamicRou
             }),
         }),
     ...(first?.overrides === undefined ? {} : { overrides: first.overrides }),
-    // One memo per listing: its tools share definition objects, which it reads once.
     list: () =>
       Effect.suspend(() => {
         const memo = schemaMemo();
@@ -360,7 +354,6 @@ const combineDynamic = (sources: ReadonlyMap<string, DynamicRouter>): DynamicRou
           const variants = [...values].flatMap(([accountId, tool]) =>
             tool === undefined ? [] : [[accountId, tool] as const],
           );
-          // No account that answered has it; it may be a failed account's.
           if (variants.length === 0)
             return failed.size > 0 ? Effect.fail(firstFailure(failed)) : Effect.succeed(undefined);
           return Effect.succeed(merge(name, variants, schemaMemo()));

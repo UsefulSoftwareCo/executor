@@ -1,11 +1,3 @@
-/**
- * Apps with a database deployed and called in a burst, past the app Worker limit, leave the app
- * runtime's memory bounded by the Workers it keeps loaded. The limit unloads each app's data
- * facet, and the runtime releases that Worker only when it drops the app's data supervisor, so the
- * supervisor resets itself once it has nothing else to do. Without that, a burst of a few hundred
- * apps with a database ran the runtime out of memory: it aborted, and every app's calls in flight
- * failed.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
@@ -18,7 +10,6 @@ import { workerdProcess } from "../support/local-workflow-engines.ts";
 import { Target } from "../support/platform.ts";
 import { scenarios } from "../test-plan.ts";
 
-/** Apps in the burst, deployed eight at a time, then each called once. The first eight write a row first. */
 const apps = 64;
 const source = (
   tag: string,
@@ -45,11 +36,6 @@ interface RuntimeMemory {
   readonly virtualMb: number;
 }
 
-/**
- * The resident memory and address space of this scenario's apps runtime: the workerd process
- * among its product's descendants (`workerdProcess`, which fails unless exactly one matches).
- * Read with `ps` on Linux and macOS, and with PowerShell on Windows.
- */
 const runtimeMemory = (directory: string) =>
   Effect.gen(function* () {
     const pid = yield* workerdProcess(directory);
@@ -148,12 +134,8 @@ layer(TestLive, { excludeTestServices: true })("App data burst memory", (it) => 
             yield* Effect.addFinalizer(() =>
               api.request(agent, "DELETE", `/v1/apps/${app}`).pipe(Effect.ignore),
             );
-          // Every app answers, in a burst too.
           yield* Effect.forEach(ids, (app) => probe(app), { concurrency: 8 });
           const late = yield* runtimeMemory(target.directory);
-          // The first eight apps' facets were unloaded by the burst. Their next call starts the
-          // supervisor afresh, and the row each wrote before the burst, and its version, are kept.
-          // The call right after it finds the facet loaded.
           const pairs = yield* Effect.forEach(ids.slice(0, 8), (app) =>
             Effect.all([probe(app), probe(app)]),
           );
@@ -171,8 +153,6 @@ layer(TestLive, { excludeTestServices: true })("App data burst memory", (it) => 
           expect(early, "measured once 16 apps were deployed").toBeDefined();
           const before = early!;
           expect(late.pid, "the app runtime was not restarted").toBe(before.pid);
-          // Each loaded data facet reserves about 1.8 GB of address space. 48 more apps past the
-          // limit of 4 would add about 86 GB if unloaded facets stayed; they must not stay.
           expect(late.virtualMb - before.virtualMb, JSON.stringify({ early, late })).toBeLessThan(
             20_000,
           );

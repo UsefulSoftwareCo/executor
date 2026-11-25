@@ -1,9 +1,3 @@
-/**
- * A fixture process that does not come up says why (`startFixtureControl`, e2e/sdk/fixtures.ts):
- * whether it exited or was still running when the wait ran out, with the end of what it printed,
- * masked, and its whole output in `fixtures.log`. On a slow disk the real fixture once took 12 s
- * to write its address, past the 10 s wait, and the run said only that the file was not found.
- */
 import { expect, layer } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, Exit, FileSystem, Path, Schema } from "effect";
@@ -11,7 +5,6 @@ import { startFixtureControl, FixtureFailed } from "../sdk/fixtures.ts";
 
 const origin = "http://localhost:1";
 
-/** A fixture stand-in written to its own directory, and a directory for the run's files. */
 const setup = (source: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -29,7 +22,6 @@ const failure = <A, E>(exit: Exit.Exit<A, E>) => {
   return error;
 };
 
-// No test services: the wait and its retries run on the real clock, as in a run.
 layer(NodeServices.layer, { excludeTestServices: true })("Fixture process start", (it) => {
   it.effect("a fixture that exits first says so, with its exit code and what it printed", () =>
     Effect.gen(function* () {
@@ -106,8 +98,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Fixture process start"
   it.effect("no piece of the control token survives where the quote or a line is cut", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
-      // The token at the start of a long last line, after a long prefix on a line cut at its
-      // length limit, and on a line far above the quoted tail.
       for (const [label, print] of [
         ["before a long line", 'say(token + "\\n" + ".".repeat(3978))'],
         ["at a cut line", 'say("x".repeat(390) + token)'],
@@ -142,7 +132,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Fixture process start"
         const { directory, script } = yield* setup(
           'console.error("startup failed");\nprocess.exit(3);\n',
         );
-        // Every write of output to fixtures.log takes 1.5 s, longer than the 1 s wait.
         const slow: FileSystem.FileSystem = {
           ...fs,
           writeFileString: (file, data, options) =>

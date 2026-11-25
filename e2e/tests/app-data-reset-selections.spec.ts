@@ -1,14 +1,3 @@
-/**
- * A data supervisor's reset after one unload is not undone by a later unload. One app is used
- * with three account selections, and each selection's data Worker is held and unloaded on its
- * own by the app Worker limit (two here). The run delays each reset's checks with the input open
- * (`EXECUTOR_TEST_SUPERVISOR_RESET_DELAY_MS`, e2e only). The first selection's unload decides to
- * reset; a call of the third selection then starts and stays in the facet; an unload of the
- * second selection comes while it runs and finds nothing to unload. The first unload's reset must
- * still see the call that arrived after it, and leave it to finish: it is never sent again. The
- * call is a read, because a write arms the supervisor's alarm every second, and each alarm would
- * also hold the reset off and hide what this checks.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Fiber, Redacted, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -21,10 +10,6 @@ import { linkLocal } from "../support/local-links.ts";
 import { Target } from "../support/platform.ts";
 import { scenarios } from "../test-plan.ts";
 
-/**
- * Longer than the reset's delay (25 s), so the call is still in the facet at its checks, and short
- * enough that a call cut off and sent again still answers within the client's 60 s.
- */
 const slow = 30_000;
 const busyApp = (
   name: string,
@@ -107,8 +92,6 @@ layer(TestLive, { excludeTestServices: true })("App data reset selections", (it)
                 yield* api.request(agent, "DELETE", `/v1/accounts/${account}`);
             }).pipe(Effect.ignore),
           );
-          // Linking an account sets it up as the app's webhook source, which calls the app in the
-          // background; wait until that is done, so it does not change which Workers were used last.
           const settled = (account: string) =>
             api.request(agent, "GET", `/v1/apps/${busy}/webhook-sources`).pipe(
               Effect.flatMap((response) => body(Schema.Array(SourceStatus), response)),
@@ -148,24 +131,18 @@ layer(TestLive, { excludeTestServices: true })("App data reset selections", (it)
               },
             );
 
-          // Selection 1 writes; two other apps' calls then make the limit unload its data
-          // Worker, and that unload decides to reset (its checks run 25 s later).
           yield* select(1);
           expect(yield* call(busy, "add", "mutation")).toBe(1);
           yield* call(others[0]!, "ping", "query");
           yield* call(others[1]!, "ping", "query");
-          // Selection 2 writes, and its data Worker is left idle.
           yield* select(2);
           expect(yield* call(busy, "add", "mutation")).toBe(2);
-          // Selection 3's read starts and stays in the facet.
           yield* select(3);
           const late = yield* Effect.forkChild(call(busy, "slowCount", "query"));
           yield* Effect.sleep("3 seconds");
-          // Another app's call makes the limit unload selection 2, while the write runs.
           yield* call(others[2]!, "ping", "query");
           expect(yield* Fiber.join(late), "the third selection's read answered").toBe(2);
           expect(yield* call(busy, "count", "query"), "each write ran once").toBe(2);
-          // No call of the app met a reset: the read was never cut off and sent again.
           yield* Effect.sleep("3 seconds");
           const resent = yield* telemetry.spans(
             "runtime.workerd.call",

@@ -1,14 +1,3 @@
-/**
- * Build every budgeted Worker the way `alchemy deploy` does, without credentials or a deploy.
- *
- * The deploy enforces each Worker's upload budget inside its Rolldown build
- * (`src/infrastructure/worker-build.ts`), which also writes what the Worker uploads. This runs
- * that same build for `scripts/worker-sizes.ts`. A stage's name is compiled into every Worker and
- * only production reports to Sentry, so production and a pull request's preview build differently.
- *
- * The dashboard Worker bundles the site, so each stage's site is built first, with the
- * environment the stack's `Site` resource gives that stage's deploy.
- */
 import { fileURLToPath } from "node:url";
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
@@ -49,11 +38,6 @@ interface WorkerProps {
   readonly build?: { readonly output?: { readonly plugins?: ReadonlyArray<unknown> } };
 }
 
-/**
- * Alchemy bundles Workers with this function and these compatibility rules when it deploys. They
- * are not public exports, so they are loaded from the installed package: a renamed module fails
- * here instead of drifting from what the deploy builds.
- */
 const alchemyEntry = import.meta.resolve("alchemy");
 const alchemyModule = (name: string) =>
   import(
@@ -85,12 +69,6 @@ const {
   readonly getCompatibility: (props: WorkerProps) => { date: string; flags: Array<string> };
 } = await alchemyModule("Cloudflare/Workers/Compatibility");
 
-/**
- * Worker props read deploy configuration, but each value becomes a binding, not uploaded
- * JavaScript. These stand-ins only satisfy each setting's validation; this job holds no secrets
- * and never contacts Cloudflare or Sentry. They are read through Effect's configuration, not
- * set in the environment, so the site build sees only what the deploy passes it.
- */
 const deployConfiguration = {
   NODE_ENV: "production",
   CLOUDFLARE_ACCOUNT_ID: "00000000000000000000000000000000",
@@ -126,37 +104,27 @@ const deployConfiguration = {
   AUTH_TRUSTED_ORIGINS: "https://executor.sh",
 };
 
-/** A stage whose deploy builds these Workers, with the configuration that deploy reads. */
 export interface Target {
   readonly stage: string;
   readonly configuration: Readonly<Record<string, string>>;
 }
 
-/** Production reports to Sentry and PostHog, so its site build injects Sentry's release code. */
 export const production: Target = {
   stage: productionStage,
   configuration: {
     ...deployConfiguration,
-    // v1's WorkOS key runs only on production; previews do not receive it.
     V1_WORKOS_API_KEY: "unused",
-    // Production requires the GitHub App's credentials; previews have no operator clients.
     EXECUTOR_OAUTH_GITHUB_CLIENT_ID: "unused",
     EXECUTOR_OAUTH_GITHUB_CLIENT_SECRET: "unused",
     SENTRY_ENABLED: "true",
     POSTHOG_ENABLED: "true",
     SENTRY_URL: "https://sentry.io",
-    // A production deploy builds only with Cloud's notes file (src/infrastructure/release-notes.ts).
-    // This build publishes nothing, so it stands in one with no notes: no "What's new" block.
     EXECUTOR_CLOUD_RELEASE_NOTES_FILE: fileURLToPath(
       new URL("./no-release-notes.json", import.meta.url),
     ),
   },
 };
 
-/**
- * A pull request's preview reports to neither, as its workflow sets neither switch. It is a
- * retained test stage on a Neon database, as `bun run test-stage deploy` gives it.
- */
 export const preview = (number: number): Target => ({
   stage: `${testStagePrefix}${previewSlug(number)}`,
   configuration: {
@@ -175,12 +143,6 @@ export const preview = (number: number): Target => ({
   },
 });
 
-/**
- * Stand-ins for the site settings the deploy reads from the Sentry and PostHog stacks, which this
- * job cannot read. Each passes the site build's validation, and none reaches the dashboard
- * Worker's code: its server build leaves out browser-only settings, `PUBLIC_` settings belong to
- * the marketing and docs builds, and Sentry's organization and project only address uploads.
- */
 const otherStackSettings = {
   VITE_SENTRY_DSN: "https://0@o0.ingest.us.sentry.io/0",
   PUBLIC_SENTRY_DSN: "https://0@o0.ingest.us.sentry.io/0",
@@ -205,11 +167,9 @@ class SiteBuildFailed extends Schema.TaggedError<SiteBuildFailed>()("SiteBuildFa
   message: Schema.String,
 }) {}
 
-/** The Worker resources whose build enforces an upload budget, declared as the stack declares them. */
 const budgetedWorkers = Alchemy.Stack(
   "executor-next-hosted",
   {
-    // Declaring resources needs only the providers for their types; nothing is planned or applied.
     providers: Layer.mergeAll(Cloudflare.providers(), Command.providers()),
     state: Alchemy.localState(),
   },
@@ -237,10 +197,6 @@ interface SiteProps {
   readonly env?: Readonly<Record<string, unknown>>;
 }
 
-/**
- * Run the stage's `Site` build as Alchemy's `Command.Build` does: its command and directory, with
- * its environment over this process's. The deploy's job also exports the build version.
- */
 const buildSite = (props: SiteProps, buildVersion: string) =>
   Effect.gen(function* () {
     const path = yield* Path.Path;
@@ -257,7 +213,6 @@ const buildSite = (props: SiteProps, buildVersion: string) =>
               "Give it a stand-in in scripts/worker-builds.ts if it stays out of the dashboard " +
               "Worker's code, as web/browser-only-settings.ts does for browser settings.",
           });
-        // Set, as in the deploy, so the browser build splits its chunks the same way.
         env[name] = standIn;
         continue;
       }
@@ -279,10 +234,6 @@ const buildSite = (props: SiteProps, buildVersion: string) =>
       });
   });
 
-/**
- * Build the stage's site, then each budgeted Worker, and return what failed. A Worker over
- * budget still writes its upload before failing.
- */
 export const buildWorkers = (target: Target) =>
   evalStack(
     budgetedWorkers,
@@ -300,7 +251,6 @@ export const buildWorkers = (target: Target) =>
           const props = resource.Props as WorkerProps | undefined;
           if (resource.Type !== "Cloudflare.Worker" || props === undefined) continue;
           if (!hasUploadBudget(props)) continue;
-          // The same call Alchemy's Worker provider makes for a Rolldown-built Worker.
           const exit = yield* Effect.exit(
             bundler.build({
               id: resource.LogicalId,

@@ -1,4 +1,3 @@
-/** Invocation-owned RPC capabilities preserve the Effect context across Dynamic Worker calls. */
 import { Cause, Effect, Redacted, Schema, SchemaIssue } from "effect";
 import {
   WorkflowFailure,
@@ -31,7 +30,6 @@ const reply = <A>(effect: Effect.Effect<A, unknown>) =>
     }),
     Effect.flatMap(Schema.encodeUnknownEffect(WorkflowRpcResult)),
   );
-/** A run's step dispatcher cannot change its run or app identity. */
 export const invocationWorkflow = (
   execution: WorkflowExecution,
   signal: AbortSignal,
@@ -62,8 +60,6 @@ export const invocationWorkflow = (
                   ),
                 );
               }
-              // A sleep is repeated when the call to the engine failed in transit; see
-              // `workflow-engine-calls.ts`. `signal` interrupts it, its calls and its waits.
               case "sleep":
                 return yield* repeatedSleep(
                   execution.runId,
@@ -88,8 +84,6 @@ export const invocationWorkflow = (
                 return Redacted.value(context.accounts);
               }
               case "invoke":
-                // RPC Promise cancellation cannot interrupt its remote callee. Apply
-                // the attempt deadline on the host that owns the storage transaction.
                 return yield* execution.invoke(command).pipe(
                   Effect.timeout(command.timeout),
                   Effect.catchTag("TimeoutError", () =>
@@ -104,10 +98,6 @@ export const invocationWorkflow = (
   });
 const issues = SchemaIssue.makeFormatterStandardSchemaV1();
 const controlOperations = ["start", "get", "list", "terminate"] as const;
-/**
- * A control call the host refused before it reached the engine. Names each invalid field and the
- * rule it broke; the messages describe the schema, not the value.
- */
 const invalidControl = (input: unknown, error: Schema.SchemaError) => {
   const operation =
     typeof input === "object" && input !== null && "operation" in input
@@ -125,10 +115,6 @@ const invalidControl = (input: unknown, error: Schema.SchemaError) => {
     message: `${operation === undefined ? "The workflow call" : `ctx.workflows.${operation}`} was refused before Executor started or changed any run. ${fields.join("; ")}.`,
   });
 };
-/**
- * App-scoped lifecycle management uses the same private callback transport as step execution.
- * Runs are sent in their encoded form, so apps built before a field's rename read its former name.
- */
 export const invocationWorkflowControls = (controls: WorkflowHostControls, signal: AbortSignal) =>
   Effect.gen(function* () {
     const services = yield* Effect.context<never>();

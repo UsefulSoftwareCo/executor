@@ -1,21 +1,10 @@
-/**
- * Two guards for a disk shared by many workspaces.
- *
- * - `scripts/disk-floor.ts`: `bun run e2e:*` and `bun run release:cli`/`release:desktop` refuse to
- *   start below `EXECUTOR_DISK_FLOOR_GB` free. These cases set a floor no disk meets, so the
- *   commands stop before they write anything.
- * - `scripts/releases/prune-builds.ts`: `release:cli` first removes the workspace's builds of the
- *   same platform at other versions. These cases run it in a fake workspace and read what remains.
- */
 import { expect, layer } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, FileSystem, Path, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
-/** A floor no disk meets: 1 EB. */
 const unreachable = "1000000000";
 
-/** Runs a command and returns its exit code and combined output. */
 const run = (
   command: string,
   args: ReadonlyArray<string>,
@@ -41,7 +30,6 @@ const run = (
     return { exitCode, output: `${stdout}${stderr}` };
   }).pipe(Effect.scoped);
 
-/** Names in `directory`, or none when it does not exist. */
 const listing = (directory: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -49,7 +37,6 @@ const listing = (directory: string) =>
     return (yield* fs.readDirectory(directory)).toSorted();
   });
 
-/** Free decimal GB on the disk holding `directory`, from POSIX `df`. */
 const freeGb = (directory: string) =>
   Effect.gen(function* () {
     const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -62,12 +49,6 @@ const Manifest = Schema.fromJsonString(Schema.Struct({ version: Schema.String })
 const otherPlatform = process.platform === "linux" ? "darwin" : "linux";
 const kind = `${process.platform}-${process.arch}`;
 
-/**
- * A workspace whose `.local/releases` holds: this version's build for this platform, two older
- * builds for it (one with a link to a directory outside), an older build a running process has as
- * its working directory, an older build for another platform, a link named like a build pointing
- * outside, a wrapper folder, `sources` and a log. A sibling workspace holds an old build too.
- */
 const releases = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -112,7 +93,6 @@ const releases = Effect.gen(function* () {
   return { root, workspace, builds, outside, sibling, names };
 });
 
-/** Runs the pruning step of `release:cli` in `workspace`, as on a workstation unless `env` says. */
 const prune = (workspace: string, env: Record<string, string> = {}) =>
   Effect.gen(function* () {
     const path = yield* Path.Path;
@@ -135,8 +115,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("local disk guards", (i
           { env: { CI: "true", EXECUTOR_DISK_FLOOR_GB: unreachable } },
         );
         expect(exitCode).not.toBe(0);
-        // Besides Bun's own `$ command` echo and exit line, one line: what did not start, how much
-        // is free, the floor and how to get past it. The command after the floor never ran.
         const own = output
           .trim()
           .split("\n")
@@ -181,7 +159,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("local disk guards", (i
       const workstation = yield* run("node", [floor, "e2e:local"], {
         env: { CI: "", EXECUTOR_DISK_FLOOR_GB: "" },
       });
-      // A runner has about 14 GB free and a workstation usually more; either answer is checked.
       if (free < 20) expect(workstation.output).toContain("below the 20 GB floor");
       else expect(workstation).toEqual({ exitCode: 0, output: "" });
     }),
@@ -195,7 +172,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("local disk guards", (i
         const path = yield* Path.Path;
         const input = yield* releases;
         const n = input.names;
-        // A process working in the held build, as a desktop started from it would be.
         const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
         const holder = yield* processes.spawn(
           ChildProcess.make("sleep", ["60"], { cwd: path.join(input.builds, n.held) }),
@@ -210,7 +186,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("local disk guards", (i
         expect(output).toMatch(
           new RegExp(`release: removed 2 old ${kind} builds \\(\\d+ MB freed\\) from `),
         );
-        // Nothing outside the workspace, nor any link's target, was touched.
         expect(yield* fs.readFileString(path.join(input.outside, "keep.txt"))).toBe("outside\n");
         expect(yield* fs.readLink(path.join(input.builds, n.link))).toBe(input.outside);
         expect(yield* fs.readFileString(path.join(input.sibling, "bin.mjs"))).toBe("build\n");
@@ -233,7 +208,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("local disk guards", (i
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const input = yield* releases;
-      // Move the builds outside and link `.local/releases` to them.
       const moved = path.join(input.root, "moved-releases");
       yield* fs.rename(input.builds, moved);
       yield* fs.symlink(moved, input.builds);

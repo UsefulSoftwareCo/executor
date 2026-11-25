@@ -1,11 +1,3 @@
-/**
- * What GitHub itself makes of a release's notes. `scripts/releases/release-notes.ts` accepts a note
- * only when it is plain prose (an allow-list) and prints it as written, so these cases send what it
- * writes to GitHub's Markdown API (`POST /markdown`, GFM, in the public repository's context, as a
- * release body is rendered) and read the HTML back: every accepted note must come back as its text
- * alone. The refused notes go too, to show that what the check looks for is what GitHub makes of
- * them. It needs a token in GH_TOKEN (CI passes the job's own); rendering needs no permission.
- */
 import { expect, layer } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Config, Console, Effect, Layer, Schedule } from "effect";
@@ -21,7 +13,6 @@ import {
 
 const render = (text: string) =>
   Effect.gen(function* () {
-    // The job's token in CI, or any gh login's locally (`GH_TOKEN=$(gh auth token)`).
     const token = yield* Config.Redacted("GH_TOKEN").pipe(
       Config.orElse(() => Config.Redacted("GITHUB_TOKEN")),
     );
@@ -42,11 +33,9 @@ const render = (text: string) =>
     return yield* response.text;
   });
 
-/** The list items of rendered HTML, as HTML. */
 const items = (html: string) =>
   [...html.matchAll(/<li>([\s\S]*?)<\/li>/gu)].map((match) => match[1]!);
 
-/** Text from HTML that holds no element. */
 const text = (html: string) =>
   html
     .replace(/&quot;/gu, '"')
@@ -59,7 +48,6 @@ const text = (html: string) =>
     .replace(/&#(\d+);/gu, (_, decimal: string) => String.fromCodePoint(Number(decimal)))
     .replace(/&amp;/gu, "&");
 
-/** The only elements the notes' own Markdown makes: their headings, the list and a paragraph. */
 const structure = new Set([
   '<h2 dir="auto">',
   "</h2>",
@@ -73,22 +61,11 @@ const structure = new Set([
   "</p>",
 ]);
 
-/** The credit the notes give a port, as GitHub renders it: the public pull request and a handle. */
 const credit =
   / \(<a href="https:\/\/github\.com\/UsefulSoftwareCo\/executor\/pull\/2436"[^>]*>#2436<\/a>, thanks <a class="user-mention notranslate"[^>]*href="https:\/\/github\.com\/danizord">@danizord<\/a>\)$/u;
 
 const portNote = "A self-hosted Executor limits each client behind trusted proxies on its own.";
 
-/**
- * Messages whose only `<` and `[` are on whole `Co-authored-by:` lines in their middle, as a squash
- * joins a port's commits, in the shapes that still match the script's strict pattern but could make
- * Markdown out of the trailer: names of dashes or equals signs (a setext underline), emphasis, a
- * table's pipes, an entity, a closing backslash, a local part and host of hyphens, a bot with
- * trailing spaces (a hard break), and a trailer right above or below its note with no blank line
- * between, where Markdown joins them into one paragraph. Each `note` must be listed by the script,
- * and each line of `shown` must render as text in a plain paragraph, so no trailer can hide, quote,
- * indent or swallow what follows it.
- */
 const trailerProbes: ReadonlyArray<{ readonly body: string; readonly note: string }> = [
   {
     note: "A note after a trailer line in the middle is shown.",
@@ -132,10 +109,8 @@ const trailerProbes: ReadonlyArray<{ readonly body: string; readonly note: strin
   },
 ].map(({ note, body }) => ({ note, body: body.replace("NOTE", note) }));
 
-/** Void elements, which open nothing. */
 const voidElements = new Set(["br", "hr", "img", "input", "wbr"]);
 
-/** The elements open in rendered HTML where `at` starts, outermost first. */
 const openAt = (html: string, at: number) => {
   const open: Array<string> = [];
   for (const match of html.slice(0, at).matchAll(/<(\/?)([A-Za-z][A-Za-z0-9-]*)[^>]*?(\/?)>/gu)) {
@@ -170,7 +145,6 @@ layer(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer), { excludeTestSe
           ]);
           const result = yield* notes(repos, ["--version", "2.0.0-beta.5"]);
           expect(result.exitCode, result.stderr).toBe(0);
-          // What follows is the README's install section, which no commit writes.
           const [changes = ""] = result.stdout.split("\n## Install\n");
           const html = yield* render(changes);
           const listed = items(html);
@@ -179,11 +153,9 @@ layer(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer), { excludeTestSe
             expect(listed[index], note).not.toContain("<");
             expect(text(listed[index]!), note).toBe(note);
           }
-          // The port's line: its note as text, then the credit the script writes, and nothing else.
           const port = listed.at(-1)!;
           expect(port, port).toMatch(credit);
           expect(text(port.replace(credit, ""))).toBe(portNote);
-          // Outside the items, nothing but the headings, the list and its paragraph.
           const outside = html.replace(/<li>[\s\S]*?<\/li>/gu, "<li></li>");
           for (const [tag] of outside.matchAll(/<[^>]*>/gu)) expect(structure, tag).toContain(tag);
         }),
@@ -238,8 +210,6 @@ layer(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer), { excludeTestSe
           yield* Console.log(
             `${active.has(note) ? "active" : "inert "}  ${JSON.stringify(note)}  (${reason})`,
           );
-        // The values review found GitHub turning into a mention, a reference, a link or an emoji,
-        // and the earlier review's links, image, HTML, emphasis, URLs and heading.
         for (const note of [
           "\\@someone",
           "gh-123 is fixed",

@@ -1,4 +1,3 @@
-/** Alchemy provisions Axiom; its event scope owns the shared safe Effect exporters. */
 import { TelemetryConfig, telemetryConfig } from "@executor-js/telemetry";
 import { isolateTelemetry } from "@executor-js/telemetry/isolate";
 import { CurrentRuntimeContext } from "alchemy/RuntimeContext";
@@ -17,11 +16,6 @@ import { sqlTracing } from "../implementation/sql-tracing.ts";
 
 const binding = "EXECUTOR_TELEMETRY";
 
-/**
- * Configured stages own their datasets and never adopt the original Executor's telemetry.
- * Test stages share one retained set and are told apart by the environment field, so a
- * destroyed test stage removes only its ingest token.
- */
 export const telemetryDatasets = Effect.gen(function* () {
   const shared = Option.isSome(yield* testStage.pipe(Effect.orDie));
   const owner = shared ? "test" : yield* Stage;
@@ -35,12 +29,6 @@ export const telemetryDatasets = Effect.gen(function* () {
   };
 });
 
-/**
- * Whether this stage exports telemetry to Axiom. Production and every other configured stage
- * always do. A test stage exports only when its deploy asks for it
- * (`test-stage deploy --telemetry export`), as deployed E2E runs do to read their traces back.
- * Other previews keep Cloudflare's own logs and traces, which cost no Axiom ingest.
- */
 export const telemetryExport = Effect.gen(function* () {
   if (Option.isNone(yield* testStage)) return true;
   const telemetry = yield* Config.Literals(["export", "off"], "TEST_STAGE_TELEMETRY").pipe(
@@ -52,7 +40,6 @@ export const telemetryExport = Effect.gen(function* () {
 export const telemetryResources = Effect.gen(function* () {
   const stage = yield* Stage;
   const { shared, names } = yield* telemetryDatasets;
-  // Axiom marks ownership per stage; every test stage takes the shared datasets over on deploy.
   const dataset = (
     id: string,
     name: string,
@@ -61,8 +48,6 @@ export const telemetryResources = Effect.gen(function* () {
   const traces = yield* dataset("TelemetryTraces", names.traces, "otel:traces:v1");
   const logs = yield* dataset("TelemetryLogs", names.logs, "otel:logs:v1");
   const metrics = yield* dataset("TelemetryMetrics", names.metrics, "otel:metrics:v1");
-  // Health monitors stay in Axiom. Notification routing requires a separately
-  // chosen destination; an observability deploy must not start messaging people.
   for (const monitor of [
     {
       id: "AppTelemetryRejected",
@@ -80,15 +65,11 @@ export const telemetryResources = Effect.gen(function* () {
       query: `['${names.traces}'] | where ['resource.deployment.environment.name'] == '${stage}' | where name == 'ui.app.result.receive' and ['attributes.custom']['executor.trace.context_valid'] == false | summarize count()`,
     },
     {
-      // A database call reached an AppData without the supervisor's `run` (mixed versions) and
-      // used the shared runner instead. Expected only while an older AppData still serves.
       id: "RunnerFallback",
       title: "database call runner fallback",
       query: `['${names.traces}'] | where ['resource.deployment.environment.name'] == '${stage}' | where isnotempty(tostring(['attributes.custom']['executor.runner.fallback'])) | summarize count()`,
     },
     {
-      // A data supervisor refused a call for another app, or a call that is not a database call.
-      // The product never sends one, so any refusal is a routing bug.
       id: "SupervisorRefusals",
       title: "data supervisor refusals",
       query: `['${names.traces}'] | where ['resource.deployment.environment.name'] == '${stage}' | where isnotempty(tostring(['attributes.custom']['executor.runner.refused'])) or isnotempty(tostring(['attributes.custom']['executor.supervisor.refused'])) | summarize count()`,
@@ -123,27 +104,17 @@ export const telemetryResources = Effect.gen(function* () {
   return { names, traces, logs, metrics, ingest };
 });
 
-/**
- * Native invocation logs with query strings removed: request URLs can carry unsubscribe links,
- * sign-in codes and the searches apps send through their outbound Worker.
- */
 const platformLogs = {
   enabled: true,
   redactQueryString: true,
   logs: { enabled: true, invocationLogs: true, persist: true },
 };
 
-/** Props for a Worker that keeps only its native logs, with no tail consumer or trace export. */
 export const platformObservability = Effect.gen(function* () {
   if ((yield* AlchemyContext).dev) return {};
   return { observability: platformLogs };
 });
 
-/**
- * Export invocation summaries and supplementary platform spans, joined by Ray ID.
- * Tail delivery supplies timings independently of native trace sampling.
- * This does not register a second Effect tracer.
- */
 export const cloudObservability = Effect.gen(function* () {
   if ((yield* AlchemyContext).dev) return {};
   const native = {
@@ -171,7 +142,6 @@ export const cloudObservability = Effect.gen(function* () {
   };
 }).pipe(Effect.orDie);
 
-/** Worker props own provisioning; local workerd uses only explicit local OTLP settings. */
 export const telemetryBindings = Effect.gen(function* () {
   if ((yield* AlchemyContext).dev) {
     const config = yield* telemetryConfig("executor-cloud");
@@ -181,7 +151,6 @@ export const telemetryBindings = Effect.gen(function* () {
   const version = yield* Config.NonEmptyString("EXECUTOR_BUILD_VERSION");
   const environment = yield* Stage;
   if (!(yield* telemetryExport)) {
-    // The isolate still runs its tracer and meters; with no targets nothing leaves it.
     const config = {
       service: "executor-cloud",
       clock: "cloudflare-io" as const,
@@ -220,13 +189,6 @@ export const telemetryBindings = Effect.gen(function* () {
   };
 }).pipe(Effect.orDie);
 
-/**
- * The isolate's safe exporters, built once here. Alchemy builds the returned Layer in each
- * Worker/DO event scope, which flushes them through waitUntil.
- * Provide it once, on a Worker's initialization. Each build adds another exporter to the
- * isolate, so a Durable Object constructor must not provide it: every later event in that
- * isolate would export its metrics once more per constructed object.
- */
 export const cloudTelemetry = Layer.unwrap(
   Effect.gen(function* () {
     if (!globalThis.__ALCHEMY_RUNTIME__) return Layer.empty;
@@ -234,14 +196,10 @@ export const cloudTelemetry = Layer.unwrap(
     if (context === undefined)
       return yield* Effect.die(new Error("Telemetry requires an Alchemy runtime"));
     const bound = yield* context.get<unknown>(binding);
-    // Alchemy env props may arrive JSON-decoded; RuntimeContext.set uses a redacted marker.
     const value = Redacted.isRedacted(bound) ? Redacted.value(bound) : bound;
     const config = yield* Schema.decodeUnknownEffect(
       Schema.Union([Schema.fromJsonString(TelemetryConfig), TelemetryConfig]),
     )(value).pipe(Effect.catch(() => Effect.die(new Error("Invalid telemetry configuration"))));
-    // Each event exports what is buffered when it closes, including after a streamed body. Between
-    // closes, the first item buffered arms one flush a second later, which keeps the event that
-    // buffered it alive until it has exported, so long-lived streams remain observable.
     const { waitUntil } = yield* Effect.promise(() => import("cloudflare:workers"));
     const exporters = yield* isolateTelemetry({ ...config, clock: "cloudflare-io" }, waitUntil);
     return Telemetry.layer(Layer.mergeAll(exporters, sqlTracing));

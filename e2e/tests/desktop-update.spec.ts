@@ -1,12 +1,3 @@
-/**
- * The desktop app's own update path, from its updater's feed to its restart, on a development
- * build of the desktop (`node apps/local/desktop/scripts/build.mjs`) on macOS. The scenario serves
- * the feed from a loopback server and names it with EXECUTOR_DESKTOP_DEV_UPDATE_CONFIG, which a
- * release build does not contain. electron-updater downloads and verifies each version as it would from
- * the release feed; only Squirrel.Mac, which installs the download and refuses an app that is not
- * Executor's signed one, is played by the scenario through Electron's `autoUpdater`, which records
- * the install it is asked for and ends the desktop as Squirrel.Mac would.
- */
 import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Config, Effect, FileSystem, Layer, Path, Schedule } from "effect";
@@ -28,23 +19,13 @@ import {
 } from "../support/desktop.ts";
 import { scenarios } from "../test-plan.ts";
 
-/**
- * What the feed offers: a version, whether its download's bytes fail verification, and the notes
- * the release feed lists in electron-updater's `releaseNotes` (scripts/releases/desktop-feed.ts).
- */
 interface Offer {
   readonly version: string;
   readonly corrupt: boolean;
   readonly notes?: ReadonlyArray<{ readonly version: string; readonly note: string | null }>;
-  /** The release after which `notes` lists every one, as `releaseNotesSince`. */
   readonly since?: string;
 }
 
-/**
- * A generic electron-updater feed on loopback that offers `offer.version`. The update's file is
- * random bytes the feed lists with their SHA-512, or, when the offer is corrupt, other bytes of
- * the same size, so electron-updater's verification of the download fails.
- */
 const updateFeed = Effect.gen(function* () {
   const port = yield* freePort;
   let offer:
@@ -75,7 +56,6 @@ const updateFeed = Effect.gen(function* () {
               `path: ${file(offer.version)}`,
               `sha512: ${sha512}`,
               `releaseDate: '2026-11-17T00:00:00.000Z'`,
-              // JSON strings are YAML strings, as the release feed writes them.
               ...(offer.notes === undefined
                 ? []
                 : [
@@ -127,10 +107,6 @@ const updateFeed = Effect.gen(function* () {
   };
 });
 
-/**
- * Play Squirrel.Mac in the desktop's main process: it accepts electron-updater's download as
- * fetched and, asked to install, writes `marker` and ends the desktop as an install does.
- */
 const standInForSquirrel = (electron: ElectronApplication, marker: string) =>
   driver("stand in for Squirrel.Mac", () =>
     electron.evaluate(({ app, autoUpdater }, marker) => {
@@ -153,7 +129,6 @@ const sidebar = (page: Page) => page.locator("aside.sidebar");
 const restartLink = (page: Page, version: string) =>
   sidebar(page).getByRole("link", { name: `Restart Executor to install v${version}` });
 
-/** The sidebar block's lines of text, top to bottom. */
 const blockLines = (page: Page) =>
   driver("read the sidebar's update block", () =>
     sidebar(page)
@@ -162,7 +137,6 @@ const blockLines = (page: Page) =>
       .then((text) => text.split("\n").filter((line) => line.trim() !== "")),
   );
 
-/** Resize the desktop's window. */
 const resizeWindow = (electron: ElectronApplication, width: number, height: number) =>
   driver(`resize the window to ${width}x${height}`, () =>
     electron.evaluate(
@@ -179,7 +153,6 @@ const dashboard = (page: Page) =>
     page.getByRole("heading", { name: /^Apps/ }).waitFor({ state: "visible", timeout: 60_000 }),
   );
 
-/** The labels of the Updates menu, once `ready` says they are what the scenario waits for. */
 const updatesMenu = (electron: ElectronApplication, ready: (labels: Array<string>) => boolean) =>
   menuLabels(electron, "Updates").pipe(
     Effect.flatMap((labels) =>
@@ -190,7 +163,6 @@ const updatesMenu = (electron: ElectronApplication, ready: (labels: Array<string
     Effect.retry({ schedule: Schedule.spaced("200 millis"), times: 300 }),
   );
 
-/** Wait for a native message box whose message starts with `message`. */
 const dialogShown = (electron: ElectronApplication, message: string) =>
   answeredDialogs(electron).pipe(
     Effect.flatMap((boxes) =>
@@ -201,7 +173,6 @@ const dialogShown = (electron: ElectronApplication, message: string) =>
     Effect.retry({ schedule: Schedule.spaced("200 millis"), times: 300 }),
   );
 
-/** Wait until the Squirrel.Mac stand-in wrote `marker`, as it does when asked to install. */
 const installed = (marker: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -222,8 +193,6 @@ const screenshot = (page: Page, name: string) =>
 it.live(scenarios.desktopUpdate.title, () =>
   Effect.scoped(
     Effect.gen(function* () {
-      // A stand-in for Squirrel.Mac only means something on macOS, and a release build does not
-      // contain the setting that names the feed the scenario serves.
       if (process.platform !== "darwin")
         return yield* Effect.fail(
           new Error("The desktop update scenario stands in for Squirrel.Mac, so it runs on macOS."),
@@ -245,8 +214,6 @@ it.live(scenarios.desktopUpdate.title, () =>
         `provider: generic\nurl: ${feed.url}\nchannel: latest\nupdaterCacheDirName: executor-desktop-update-e2e\n`,
       );
       const registry = yield* localNpmRegistry;
-      // macOS has no variable for its cache directory, where the updater downloads, only the
-      // home it is in.
       const env: Record<string, string> = {
         ...runnerSession(),
         DO_NOT_TRACK: "1",
@@ -263,9 +230,6 @@ it.live(scenarios.desktopUpdate.title, () =>
       };
       yield* Effect.addFinalizer(() => stopBackgroundServers(data, () => []));
 
-      // The first check, shortly after the desktop starts, downloads the version the feed offers.
-      // Once it is ready the sidebar offers its restart, and so does the Updates menu, for
-      // someone who keeps no window open.
       yield* feed.offer({ version: "2.0.0-beta.122", corrupt: false });
       const first = path.join(home, "installed-from-menu");
       yield* Effect.scoped(
@@ -288,8 +252,6 @@ it.live(scenarios.desktopUpdate.title, () =>
             "Check for updates…",
           ]);
 
-          // A newer version whose download fails verification leaves nothing to restart into:
-          // the block and the menu's restart go, and the menu's check says it failed.
           yield* feed.offer({ version: "2.0.0-beta.123", corrupt: true });
           yield* clickMenuItem(electron, "Updates", "Check for updates…");
           yield* dialogShown(electron, "The update could not be completed.");
@@ -305,10 +267,6 @@ it.live(scenarios.desktopUpdate.title, () =>
             ),
           ).toBe("");
 
-          // Checking again downloads it whole. The menu's check offers the restart in a dialog,
-          // which is declined here; the block and the menu keep offering it with the long version.
-          // This time the feed lists notes, as the release feed does: one line is HTML, which the
-          // release notes' allow-list refuses, and a release newer than the offer is left out.
           yield* feed.offer({
             version: "2.0.0-beta.123",
             corrupt: false,
@@ -337,7 +295,6 @@ it.live(scenarios.desktopUpdate.title, () =>
             "v2.0.0-beta.123 Apps open from the sidebar.",
             "Restart to update",
           ]);
-          // The updater passes on how far back the feed says its notes are whole.
           expect(
             yield* driver("read the update the desktop sent", () =>
               page.evaluate(
@@ -348,8 +305,6 @@ it.live(scenarios.desktopUpdate.title, () =>
             ),
           ).toBe("2.0.0-beta.121");
           yield* screenshot(page, "desktop-update-ready");
-          // The block opens the notes: a development build runs no release version, so every
-          // release up to the ready one is listed, each with its notes as text.
           yield* driver("open the notes", () =>
             sidebar(page)
               .getByRole("button", { name: "See what's new in v2.0.0-beta.123" })
@@ -379,8 +334,6 @@ it.live(scenarios.desktopUpdate.title, () =>
             "Check for updates…",
           ]);
 
-          // The shortest window still shows the block and its restart, in place of the resource
-          // links, and the Updates menu keeps offering the same restart.
           yield* resizeWindow(electron, 1180, 540);
           yield* driver("the window is 540 px tall", () =>
             page.waitForFunction(() => window.innerHeight === 540),
@@ -399,14 +352,11 @@ it.live(scenarios.desktopUpdate.title, () =>
           ]);
           yield* screenshot(page, "desktop-update-short-window");
 
-          // The menu's restart installs it, as the block's link does.
           yield* clickMenuItem(electron, "Updates", "Restart to update (v2.0.0-beta.123)");
           expect(yield* installed(first)).toBe("installed");
         }),
       );
 
-      // A restart that did not install, as here, leaves the update to the next start's check,
-      // which makes it ready again; the block's link, which the desktop intercepts, installs it.
       const second = path.join(home, "installed-from-sidebar");
       const electron = yield* launchDesktop({ cwd: home, env });
       yield* standInForSquirrel(electron, second);

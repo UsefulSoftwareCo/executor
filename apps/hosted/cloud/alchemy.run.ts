@@ -1,4 +1,3 @@
-/** Cloud deployment: native API runtime, dashboard, and static marketing assets. */
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Command from "alchemy/Command";
@@ -47,7 +46,6 @@ import {
   executorShHostname,
 } from "./src/infrastructure/executor-sh.ts";
 
-/** Every Worker the stack deploys. `scripts/worker-builds.ts` builds the same layers. */
 export const cloudWorkers = Layer.mergeAll(
   ApiLive,
   AppCompilerLive,
@@ -71,7 +69,6 @@ export default Alchemy.Stack(
       Command.providers(),
       AppDomainLifecycleProvider(),
       ExecutorShHostnameProvider(),
-      // No PlanetScale resources or credentials are needed for local cloud development.
       Docker.providers(),
       Layer.unwrap(
         AlchemyContext.pipe(
@@ -86,22 +83,16 @@ export default Alchemy.Stack(
     state: stackState,
   },
   Effect.gen(function* () {
-    // Stops the deploy before anything changes when a setting would stop the Worker at startup.
     yield* productionOAuthProxyCheck.pipe(Effect.orDie);
-    // Stops the deploy before anything changes when the release before this one is not live.
     yield* mcpSessionRetirementGate.pipe(Effect.orDie);
-    // Provisioning settings resolve outside Worker initialization and are not bound into it.
     yield* databaseInfrastructure;
     yield* authEmailInfrastructure.pipe(Effect.orDie);
     const api = yield* Api;
     if (!(yield* AlchemyContext).dev) {
       const marketing = yield* Marketing;
       yield* testStageRoleHostRecords;
-      // Production serves the official app feed every deployed stage reads.
       if (Option.getOrUndefined(yield* stageName) === productionStage) yield* AppCatalog;
-      // A test stage plays v1's edge itself; production's edge is v1's.
       const edge = Option.isSome(yield* testStageEdge) ? yield* Edge : undefined;
-      // Who serves `executor.sh` (`CLOUD_EXECUTOR_SH`): v1 unless switched to the gateway.
       yield* executorShHostname({ gateway: marketing.workerName, edge: edge?.workerName });
     }
     const appBase = yield* cloudAppUiBase.pipe(Effect.orDie);

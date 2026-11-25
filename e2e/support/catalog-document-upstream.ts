@@ -1,14 +1,8 @@
-/** Executor's catalog operation, served as an Executor app reads its document. */
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Effect, Layer, Ref } from "effect";
 import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { createServer } from "node:http";
 
-/**
- * Serve an OpenAPI document holding Executor's catalog operation on loopback, with the operation
- * itself. `publish` replaces the document, as a deploy does. Catalog calls list no entries, and
- * each call's query string is recorded.
- */
 export const catalogDocumentUpstream = (document: (origin: string) => unknown) =>
   Effect.gen(function* () {
     const current = yield* Ref.make(document);
@@ -47,9 +41,7 @@ export const catalogDocumentUpstream = (document: (origin: string) => unknown) =
     return {
       origin: `http://127.0.0.1:${server.address.port}`,
       publish: (next: (origin: string) => unknown) => Ref.set(current, next),
-      /** How many times the document was read. */
       downloads: Ref.get(downloads),
-      /** The query string of each catalog call, in order. */
       queries: Ref.get(queries),
     };
   });

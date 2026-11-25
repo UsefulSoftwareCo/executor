@@ -3,11 +3,6 @@ import { HttpServerError, HttpServerRequest, HttpServerResponse } from "effect/h
 
 import { staticDocument } from "./homepage.ts";
 
-/**
- * A browser navigation that no route or asset matches gets the site's 404 document,
- * still with a 404 status. The documentation build has its own, which keeps the docs
- * navigation. Other requests, such as API and MCP clients, keep an empty 404.
- */
 export const notFoundDocument = Effect.gen(function* () {
   const request = yield* HttpServerRequest.HttpServerRequest;
   const navigation =
@@ -24,7 +19,6 @@ export const notFoundDocument = Effect.gen(function* () {
   );
 });
 
-/** Replaces the router's empty response for an unmatched route. */
 export const withNotFoundDocument = <A, E, R>(handler: Effect.Effect<A, E, R>) =>
   handler.pipe(
     Effect.catchIf(

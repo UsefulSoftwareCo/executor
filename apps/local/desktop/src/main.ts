@@ -1,8 +1,3 @@
-/**
- * Electron composition root. The desktop shares the CLI's background Executor: it starts or joins
- * the server for the CLI's data directory and shows its dashboard. No Electron or Node capability
- * is exposed to the renderer.
- */
 import { resolve } from "node:path";
 import { app, BrowserWindow, dialog, Menu, nativeTheme, session, shell } from "electron";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -74,29 +69,16 @@ else
       : resolve(root, ".local/desktop-shell"),
   );
 
-/**
- * The desktop's record of its quit. Its uncaught exceptions are recorded for the whole life of the
- * process, also while the desktop's scope closes, after its own logger has stopped.
- */
 const quitting = makeQuitRecord();
 process.on("uncaughtExceptionMonitor", quitting.exception);
 
-/** Renderer crashes reload the window this many times per window before the app gives up. */
 const rendererReloads = 3;
 const rendererReloadWindowMillis = 60_000;
 
-/**
- * The dashboard is loaded this many times in a row, each time with a fresh pairing link, before
- * the window shows recovery. A load that has not finished within `dashboardLoadTimeout`, from a
- * server on this machine, is stuck. Each attempt after the first waits `dashboardRetryDelay`, so
- * a server that stopped answering, which the connection notices within three seconds, is followed
- * there instead of being reported here.
- */
 const dashboardAttempts = 3;
 const dashboardLoadTimeout = Duration.seconds(30);
 const dashboardRetryDelay = Duration.seconds(2);
 
-/** The dashboard's `--background` token for the system appearance, painted before content loads. */
 const windowBackground = () => (nativeTheme.shouldUseDarkColors ? "#0a0a0a" : "#ffffff");
 
 const newWindow = (browserSession: Electron.Session) =>
@@ -118,19 +100,10 @@ const newWindow = (browserSession: Electron.Session) =>
     },
   });
 
-/** Electron's `loadURL` rejection names the URL whose main-frame load failed. */
 const FailedLoad = Schema.Struct({ url: Schema.String });
-/**
- * Why a main-frame load failed, as Electron's `loadURL` rejection says it. `ERR_ABORTED` is also
- * how it reports a load that another navigation of the window replaced.
- */
 const LoadError = Schema.Struct({ code: Schema.String, errno: Schema.Number });
 type LoadError = typeof LoadError.Type;
 
-/**
- * The application menu, with the desktop's own items in it. Updates and Help are left out while
- * they have none; File always ends with Quit (Close on macOS).
- */
 const applicationMenu = (items: {
   readonly file: ReadonlyArray<Electron.MenuItemConstructorOptions>;
   readonly updates: ReadonlyArray<Electron.MenuItemConstructorOptions>;
@@ -153,26 +126,17 @@ const applicationMenu = (items: {
     ...(items.help.length === 0 ? [] : [{ role: "help" as const, submenu: [...items.help] }]),
   ]);
 
-/** A page the window that opens before the data moves was asked to show, and that load. */
 interface EarlyPage {
   readonly url: string;
   readonly loading: Promise<void>;
   failed: boolean;
 }
 
-/** What the window shows. A pairing link is one-use, so it is cleared once loaded. */
 type View =
   | { readonly kind: "starting" }
   | { readonly kind: "ready"; readonly origin: string; readonly pairing: string | undefined }
   | { readonly kind: "recovery"; readonly recovery: DesktopRecovery };
 
-/**
- * The data directories. The desktop uses the CLI's, so both share one background server: the
- * CLI's default when packaged, and `bun run executor`'s in development. EXECUTOR_DESKTOP_DATA_DIR
- * chooses another. Desktops before the background service kept their own data, which only the
- * migration reads; a chosen directory migrates only an old one chosen with
- * EXECUTOR_DESKTOP_LEGACY_DATA_DIR, so a throwaway directory never takes a real one's data.
- */
 const dataDirectories = Effect.gen(function* () {
   const path = yield* Path.Path;
   const chosen = yield* Config.String("EXECUTOR_DESKTOP_DATA_DIR").pipe(Config.option);
@@ -204,13 +168,11 @@ const desktop = Effect.gen(function* () {
   const services = yield* Effect.context<FileSystem.FileSystem | Path.Path>();
   const { directory, legacy } = yield* dataDirectories;
   const diagnostics = path.join(directory, "diagnostics");
-  // Beside the data directory, so a reset or the migration is a same-volume rename.
   const backups = path.join(path.dirname(directory), "backups");
   const stop = (reason: string) => {
     quitting.began(reason);
     Effect.runSync(Deferred.succeed(quit, undefined));
   };
-  // From before the data moves: quitting meanwhile ends the app once the move is done.
   const beforeQuit = (event: Electron.Event) => {
     event.preventDefault();
     stop("before-quit");
@@ -231,20 +193,12 @@ const desktop = Effect.gen(function* () {
     catch: () => new DesktopFailed({ stage: "window" }),
   });
   const browserSession = session.fromPartition("executor-desktop");
-  // The app's own menu is in place before its first window opens. Until the desktop is set up it
-  // has none of the desktop's items, which need its data.
   Menu.setApplicationMenu(applicationMenu({ file: [], updates: [], help: [] }));
-  // The window opens on the startup page before the data moves, which can take a while, and says
-  // so meanwhile. It becomes the app's window once the desktop is set up (see `createWindow`). If
-  // the app's first page is the one it was last asked to show, that load becomes the window's own
-  // instead of loading the page again, unless it already failed; a failure before then is not
-  // reported.
   let early: BrowserWindow | undefined = newWindow(browserSession);
   const opening = early;
   opening.once("ready-to-show", () => {
     if (!opening.isDestroyed()) opening.show();
   });
-  // Nothing it shows until then may navigate it or open another window.
   const stay = (event: Electron.Event) => event.preventDefault();
   opening.webContents.on("will-navigate", stay);
   opening.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
@@ -258,7 +212,6 @@ const desktop = Effect.gen(function* () {
     earlyPage = page;
   };
   showEarly(startupUrl);
-  // Before anything uses the shared directory, the desktop's old data moves into it, once.
   let movingSince = Option.none<DateTime.Utc>();
   const migration = yield* Option.match(legacy, {
     onNone: () => Effect.succeed({ kind: "none" as const }),
@@ -278,8 +231,6 @@ const desktop = Effect.gen(function* () {
         }),
       ),
   }).pipe(
-    // The desktop's log is in the shared directory, which the move must find as it was, so until
-    // the move is done its lines go to stderr only. The log records it once the move is done.
     Effect.provide(Logger.layer([Logger.withConsoleError(Logger.formatJson)])),
     Effect.result,
   );
@@ -291,13 +242,10 @@ const desktop = Effect.gen(function* () {
         seconds: Duration.toSeconds(DateTime.distance(since, now)),
       })),
   });
-  // A failed migration may resume next launch, so it must find the shared directory as it was.
   const log = Result.isSuccess(migration)
     ? Option.some(yield* rotatingJsonLogger(diagnostics, "executor-desktop"))
     : Option.none();
   if (Option.isSome(log)) quitting.useLog(path.join(diagnostics, "executor-desktop.jsonl"));
-  // Finalizers run in reverse, so each marker runs just before the finalizers of what was set up
-  // before it, and a quit that does not finish says which ones it waits on.
   const closing = (name: string) =>
     Effect.addFinalizer(() => Effect.sync(() => quitting.closing(name)));
   yield* closing("its log and quit listeners");
@@ -305,7 +253,6 @@ const desktop = Effect.gen(function* () {
   return yield* Effect.gen(function* () {
     yield* startProcessMetrics("executor-desktop");
     yield* closing("its process metrics");
-    // Menu, window and recovery actions run in the desktop's scope, with its platform services.
     const run = yield* FiberSet.makeRuntime<
       FileSystem.FileSystem | Path.Path | ChildProcessSpawner.ChildProcessSpawner
     >();
@@ -319,8 +266,6 @@ const desktop = Effect.gen(function* () {
       yield* Effect.logInfo("Moved the desktop's data").pipe(
         Effect.annotateLogs({ ...migration.success, ...moved }),
       );
-    // Installing an update or relaunching runs once every window has closed. Each is the final
-    // synchronous step that ends this process; the background server keeps running.
     const afterStop = yield* Ref.make(Option.none<() => void>());
     const after = (step: () => void) => {
       Effect.runSync(Ref.set(afterStop, Option.some(step)));
@@ -334,7 +279,6 @@ const desktop = Effect.gen(function* () {
       quitting.began(`failed at ${stage}`);
       Effect.runSync(Deferred.fail(quit, new DesktopFailed({ stage })));
     };
-    // Quitting while the data moved ends the app now, before any server starts.
     if (yield* Deferred.isDone(quit)) return Option.none<() => void>();
     yield* Effect.raceFirst(
       Effect.gen(function* () {
@@ -342,7 +286,6 @@ const desktop = Effect.gen(function* () {
         let everReady = false;
         let window: BrowserWindow | undefined;
         const origin = () => (view.kind === "ready" ? view.origin : undefined);
-        // The dashboard's copy buttons need clipboard writes; every other permission stays denied.
         browserSession.setPermissionRequestHandler((_contents, permission, callback, details) =>
           callback(
             permission === "clipboard-sanitized-write" &&
@@ -363,23 +306,9 @@ const desktop = Effect.gen(function* () {
             }
           }
         };
-        // A newer load supersedes an older one; only the current load's failure matters.
         let loads = 0;
-        /** The page the window was last asked to show. */
         let requested: string | undefined;
-        /** Dashboard loads that failed in a row, since one loaded or a server was joined. */
         let dashboardFailures = 0;
-        /**
-         * Follow the window's load `generation` of the dashboard. One that fails, or does not
-         * finish in time, while it is still the window's current load is tried again with a fresh
-         * pairing link, since the one it used is spent; after `dashboardAttempts` the window shows
-         * the dashboard recovery page with the failure, whose Restart joins the server and loads
-         * the dashboard again. Its failure can name its normalized or redirected URL, so any
-         * failure counts, except a load that another navigation of the window replaced, such as an
-         * OAuth return, which shows its own page, also while a retry waits. A server that stops
-         * meanwhile is the connection's to follow (see `dashboardRetryDelay`). The failure's URL is
-         * never logged: it holds the link.
-         */
         const followDashboard = (
           current: BrowserWindow,
           generation: number,
@@ -425,7 +354,6 @@ const desktop = Effect.gen(function* () {
               failure = "the background Executor did not give the window a pairing link";
             }
           });
-        /** `loading` is the window's load of `url`, which it now shows. */
         const follow = (current: BrowserWindow, url: string, loading: Promise<void>) => {
           const generation = ++loads;
           requested = url;
@@ -435,13 +363,6 @@ const desktop = Effect.gen(function* () {
           }
           void loading.catch((error: unknown) => {
             if (current.isDestroyed() || generation !== loads) return;
-            // The app's own documents must load. Electron rejects a load when any main-frame load
-            // fails before it finishes, also the replaced document's: on Windows a dashboard still
-            // loading when its server exits reports its abort after this page has committed, and
-            // so can a status page this one replaced before it finished. A data: document never
-            // redirects, so a failure naming another URL is not its own. Loading the same page
-            // again while it loads would make that abort name this URL, so a status page the
-            // window was last asked to show is never loaded again (see `showView`).
             if (Schema.is(FailedLoad)(error) && error.url !== url) return;
             failed("window");
           });
@@ -451,7 +372,6 @@ const desktop = Effect.gen(function* () {
         const showView = () => {
           if (window === undefined || window.isDestroyed()) return;
           const url = viewUrl();
-          // A status page the window already shows, or still loads, is not loaded again.
           if (url.startsWith("data:") && url === requested) return;
           load(window, url);
         };
@@ -472,10 +392,6 @@ const desktop = Effect.gen(function* () {
             announceReplaced();
           });
 
-        // When the migration replaced the CLI's data, or changed its settings, say where they went,
-        // once, over the first page the window settles on: the dashboard, or recovery if no server
-        // runs. The migration's record keeps the notice until it has been shown, so a launch that
-        // ends first, as one quit while the data moved, leaves it for the next.
         let replacedNotice =
           Option.isSome(legacy) && Result.isSuccess(migration)
             ? yield* pendingNotice(legacy.value).pipe(
@@ -528,7 +444,6 @@ const desktop = Effect.gen(function* () {
           );
         };
 
-        // The server, and the actions that use its data, exist once the data is in place.
         const runtime = app.isPackaged
           ? yield* packagedRuntime({
               source: root,
@@ -545,7 +460,6 @@ const desktop = Effect.gen(function* () {
                 view = { kind: "starting" };
                 showView();
               }),
-              // Shown in the window if one is open; a stop on purpose opens none.
               onStopped: Effect.sync(() => {
                 view = { kind: "recovery", recovery: { stage: "stopped" } };
                 showView();
@@ -572,9 +486,6 @@ const desktop = Effect.gen(function* () {
                     current.isDestroyed()
                   )
                     return;
-                  // It replaces the window's load, so a dashboard load waiting to be tried again
-                  // leaves it. With the header the server completes the callback, in the window's
-                  // session.
                   loads += 1;
                   requested = callback.href;
                   yield* Effect.tryPromise({
@@ -595,10 +506,6 @@ const desktop = Effect.gen(function* () {
             });
         yield* closing("its background server connection");
 
-        /**
-         * The server keeps the callback of an OAuth authorization that returns to this window's
-         * origin for the desktop, so it must expect that callback before the browser opens.
-         */
         const openExternal = (value: string) => {
           const url = externalUrl(value);
           if (url === undefined) return;
@@ -649,7 +556,6 @@ const desktop = Effect.gen(function* () {
 
         const recover = (current: BrowserWindow, url: string) => {
           const action = recoveryAction(url);
-          // Only the recovery page itself can trigger its actions, and only those it offered.
           if (
             Option.isNone(action) ||
             view.kind !== "recovery" ||
@@ -660,7 +566,6 @@ const desktop = Effect.gen(function* () {
           switch (action.value) {
             case "start":
             case "restart":
-              // A failed migration runs again when the app starts again.
               return connection === undefined ? after(relaunch) : run(connection.start);
             case "logs":
               return showLogs();
@@ -671,13 +576,11 @@ const desktop = Effect.gen(function* () {
           }
         };
 
-        /** The page `current` shows is the dashboard, not the startup or recovery page. */
         const showsDashboard = (current: BrowserWindow) => {
           const dashboard = origin();
           if (current.isDestroyed() || dashboard === undefined) return false;
           return URL.parse(current.webContents.getURL())?.origin === dashboard;
         };
-        /** The update the dashboard's sidebar shows while it downloads and once it is ready. */
         let update = Option.none<DesktopUpdate>();
         const showUpdate = (current: BrowserWindow) => {
           if (!showsDashboard(current)) return;
@@ -688,11 +591,6 @@ const desktop = Effect.gen(function* () {
             ),
           );
         };
-        /**
-         * The application menu, set once the desktop's actions exist. Its Updates menu also
-         * offers the ready update's restart, as the sidebar does, for someone who keeps no
-         * window open.
-         */
         let menu: ((update: Option.Option<DesktopUpdate>) => Menu) | undefined;
         const updater = yield* makeUpdater({
           restart: after,
@@ -719,7 +617,6 @@ const desktop = Effect.gen(function* () {
             window.focus();
             return;
           }
-          // The window that opened before the data moved, if it is still open, is set up first.
           const adopted = early !== undefined && !early.isDestroyed() ? early : undefined;
           const current = adopted ?? newWindow(browserSession);
           const shownEarly = adopted === undefined ? undefined : earlyPage;
@@ -731,7 +628,6 @@ const desktop = Effect.gen(function* () {
           current.once("ready-to-show", () => {
             if (!current.isDestroyed()) current.show();
           });
-          // Each document the dashboard loads is told about the update.
           current.webContents.on("dom-ready", () => showUpdate(current));
           current.webContents.on("did-finish-load", () => {
             if (!current.isDestroyed() && origin() !== undefined)
@@ -739,7 +635,6 @@ const desktop = Effect.gen(function* () {
           });
           current.once("closed", () => {
             if (window === current) window = undefined;
-            // Closing the window before the dashboard was ever ready ends the launch.
             if (!everReady) stop("window closed before ready");
           });
           current.webContents.on("will-attach-webview", (event) => event.preventDefault());
@@ -749,7 +644,6 @@ const desktop = Effect.gen(function* () {
               recover(current, url);
               return;
             }
-            // The sidebar's "Restart to update" link; only the dashboard can follow it.
             if (url === desktopUpdateRestartUrl) {
               event.preventDefault();
               if (showsDashboard(current)) run(updater.install);
@@ -792,13 +686,11 @@ const desktop = Effect.gen(function* () {
               ),
             );
           });
-          // A page the early window already shows or still loads is not loaded again.
           const url = viewUrl();
           if (shownEarly !== undefined && shownEarly.url === url && !shownEarly.failed)
             follow(current, url, shownEarly.loading);
           else load(current, url);
         };
-        // Closing the last window quits the app on Windows and Linux; the server keeps running.
         const allClosed = () => {
           if (process.platform !== "darwin") stop("last window closed");
         };
@@ -901,7 +793,6 @@ const desktop = Effect.gen(function* () {
     return yield* Ref.get(afterStop);
   }).pipe(
     Effect.tapCause((cause) => Effect.logError("Desktop stopped", cause)),
-    // Said before the scope closes, while the diagnostics location is known.
     Effect.tapErrorTag("DesktopFailed", (error) =>
       error.stage === "renderer"
         ? Effect.sync(() =>
@@ -933,7 +824,6 @@ else
             ? error.value.stage
             : "configuration";
         console.error(`Executor desktop failed at ${stage}.`);
-        // Server failures show the recovery page and a renderer crash loop has its own box.
         if (stage !== "renderer")
           dialog.showErrorBox(
             "Executor could not continue",
@@ -942,7 +832,6 @@ else
               : "The Executor window stopped. Restart with bun run desktop:dev.",
           );
       }
-      // The step runs after the desktop scope closed, once every window is gone.
       if (Exit.isSuccess(result) && Option.isSome(result.value)) result.value.value();
       else app.exit(Exit.isFailure(result) ? 1 : 0);
     },

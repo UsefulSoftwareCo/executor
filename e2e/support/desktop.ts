@@ -29,10 +29,6 @@ import { captureOutput, closeDesktop, redactLinks } from "./desktop-quit.ts";
 import { driver } from "./platform.ts";
 import { reveal } from "./failure-text.ts";
 
-/**
- * What a desktop scenario's own environment keeps of the runner's: its display and session bus,
- * and on Windows the Windows directory, which every Windows process's environment names.
- */
 export const runnerSession = () =>
   Object.fromEntries(
     [
@@ -49,7 +45,6 @@ export const runnerSession = () =>
     }),
   );
 
-/** Request a browser link across Electron's real session boundary, without an API key. */
 export const requestBrowserPairing = (electron: ElectronApplication, origin: string) =>
   driver("pair from the native desktop session", () =>
     electron.evaluate(({ session }, origin) => {
@@ -65,10 +60,6 @@ export const requestBrowserPairing = (electron: ElectronApplication, origin: str
     }, origin),
   );
 
-/**
- * Launch the packaged desktop named by EXECUTOR_E2E_DESKTOP_EXECUTABLE, or else this checkout's
- * built development entry (`node apps/local/desktop/scripts/build.mjs`) with its Electron.
- */
 export const launchDesktop = (options: {
   readonly cwd: string;
   readonly env: Readonly<Record<string, string>>;
@@ -77,7 +68,6 @@ export const launchDesktop = (options: {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const packaged = yield* Config.String("EXECUTOR_E2E_DESKTOP_EXECUTABLE").pipe(Config.option);
-    // Hosted runners have no usable GPU; software rendering avoids repeated GPU startup failures.
     let launch: { readonly executablePath: string; readonly args: ReadonlyArray<string> };
     if (Option.isSome(packaged))
       launch = { executablePath: packaged.value, args: ["--disable-gpu"] };
@@ -95,8 +85,6 @@ export const launchDesktop = (options: {
       };
     }
     const data = options.env.EXECUTOR_DESKTOP_DATA_DIR;
-    // A quit that does not end the desktop fails the scenario with what it was doing (see
-    // `closeDesktop`), instead of hanging until the test limit.
     const electron = yield* Effect.acquireRelease(
       driver("launch desktop", () =>
         _electron.launch({
@@ -111,9 +99,6 @@ export const launchDesktop = (options: {
           Effect.orDie,
         ),
     ).pipe(Effect.map(({ electron }) => electron));
-    // A failed or timed-out scenario, as one whose dashboard never shows, prints the desktop's
-    // own record of its connections, losses and recoveries before the window closes, which shows
-    // the step it stopped at, and keeps what its windows show and its logs (see `keepEvidence`).
     if (data !== undefined)
       yield* Effect.addFinalizer((exit) =>
         Exit.isSuccess(exit)
@@ -127,12 +112,6 @@ export const launchDesktop = (options: {
     return electron;
   });
 
-/**
- * Keep a failed scenario's evidence, which would go with its directory: a screenshot of each
- * desktop window, and the desktop's and its servers' logs from `data`, in a new folder under
- * EXECUTOR_E2E_DESKTOP_SCREENSHOTS (by default `.local/desktop-recovery`), which it names, with a
- * `scenario.json` naming the scenario (`e2e/release-evidence.ts` reads it).
- */
 const keepEvidence = (electron: ElectronApplication, data: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -143,7 +122,6 @@ const keepEvidence = (electron: ElectronApplication, data: string) =>
     const stamp = DateTime.formatIso(yield* DateTime.now).replace(/[:.]/g, "-");
     const directory = path.resolve(screenshots, `failed-${stamp}-${process.pid}`);
     yield* fs.makeDirectory(directory, { recursive: true });
-    // Which scenario failed, so the release workflow's evidence step files the folder under it.
     const { currentTestName, testPath } = expect.getState();
     yield* fs.writeFileString(
       path.join(directory, "scenario.json"),
@@ -174,7 +152,6 @@ const keepEvidence = (electron: ElectronApplication, data: string) =>
     yield* Console.error(`The failed scenario's desktop windows and logs are in ${directory}`);
   });
 
-/** Messages the desktop writes itself as it connects to, loses and recovers its server. */
 const lifecycleMessages = new Set([
   "Starting Executor desktop",
   "Moved the desktop's data",
@@ -199,11 +176,6 @@ const lifecycleMessages = new Set([
   "Desktop uncaught exception",
 ]);
 
-/**
- * The lifecycle events as the desktop's structured fields only. What a server said and the other
- * events' messages, such as the renderer's console, may hold anything a process printed, so they
- * are counted rather than shown.
- */
 const lifecycleLog = (events: ReadonlyArray<DesktopEvent>) => {
   const lifecycle = events.filter((event) => lifecycleMessages.has(event.message));
   const lines = lifecycle.map(({ annotations: { detail, error, ...annotations }, ...event }) =>
@@ -212,7 +184,6 @@ const lifecycleLog = (events: ReadonlyArray<DesktopEvent>) => {
       annotations: {
         ...annotations,
         ...(detail === undefined ? {} : { detailCharacters: detail.length }),
-        // An uncaught exception's first line names it; its stack stays in the kept logs.
         ...(error === undefined ? {} : { error: redactLinks(error.split("\n")[0] ?? "") }),
       },
     }),
@@ -224,8 +195,6 @@ const lifecycleLog = (events: ReadonlyArray<DesktopEvent>) => {
   ].join("\n");
 };
 
-// A failed assertion prints the whole event, so keep what tells runs apart: when it was logged,
-// which server it names and how the desktop lost or recovered it.
 const LogLine = Schema.fromJsonString(
   Schema.Struct({
     timestamp: Schema.String,
@@ -246,7 +215,6 @@ const LogLine = Schema.fromJsonString(
       kind: Schema.optional(Schema.String),
       archived: Schema.optional(Schema.String),
       backup: Schema.optional(Schema.String),
-      /** What a move changed of the CLI's settings: names only. */
       settings: Schema.optional(
         Schema.Struct({
           port: Schema.optional(Schema.Struct({ from: Schema.Number, to: Schema.Number })),
@@ -256,20 +224,17 @@ const LogLine = Schema.fromJsonString(
       ),
       failure: Schema.optional(Schema.String),
       attempt: Schema.optional(Schema.Number),
-      /** How the desktop quit: why, which finalizers ran, for how long and how it ended. */
       reason: Schema.optional(Schema.String),
       closing: Schema.optional(Schema.String),
       seconds: Schema.optional(Schema.Number),
       outcome: Schema.optional(Schema.String),
       resources: Schema.optional(Schema.Array(Schema.String)),
-      /** An uncaught exception the desktop recorded, as it described the thrown value. */
       error: Schema.optional(Schema.String),
     }),
   }),
 );
 export type DesktopEvent = typeof LogLine.Type;
 
-/** The desktop's own diagnostics log, oldest first. Unreadable lines are not events. */
 export const desktopEvents = (directory: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -281,7 +246,6 @@ export const desktopEvents = (directory: string) =>
       const entry = Schema.decodeUnknownOption(LogLine)(line);
       if (Option.isNone(entry)) return [];
       const { detail } = entry.value.annotations;
-      // A failed assertion prints this. Redact pairing links as managed-server.ts does.
       return detail === undefined
         ? [entry.value]
         : [
@@ -296,7 +260,6 @@ export const desktopEvents = (directory: string) =>
     });
   });
 
-/** Wait until the log has `count` events with `message`, and return those events. */
 export const eventsNamed = (directory: string, message: string, count: number) =>
   desktopEvents(directory).pipe(
     Effect.map((events) => events.filter((event) => event.message === message)),
@@ -308,7 +271,6 @@ export const eventsNamed = (directory: string, message: string, count: number) =
     Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 300 }),
   );
 
-/** How many times the desktop has started a background server for its data directory. */
 export const serverStarts = (directory: string) =>
   desktopEvents(directory).pipe(
     Effect.map(
@@ -319,21 +281,17 @@ export const serverStarts = (directory: string) =>
 
 const RegistrationJson = Schema.fromJsonString(ServiceRegistration);
 
-/** The server `server.json` names for `directory`, if any. */
 export const registeredServer = (directory: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const file = path.join(directory, "server.json");
     if (!(yield* fs.exists(file))) return Option.none<ServiceRegistration>();
-    return yield* fs.readFileString(file).pipe(
-      Effect.flatMap(Schema.decodeUnknownEffect(RegistrationJson)),
-      // A server replacing the file between the check and the read is no registration yet.
-      Effect.option,
-    );
+    return yield* fs
+      .readFileString(file)
+      .pipe(Effect.flatMap(Schema.decodeUnknownEffect(RegistrationJson)), Effect.option);
   });
 
-/** Whether `server` answers on its address as that process, ready to serve every route. */
 export const answersReady = (server: ServiceRegistration) =>
   Effect.gen(function* () {
     const http = yield* HttpClient.HttpClient;
@@ -350,10 +308,6 @@ export const answersReady = (server: ServiceRegistration) =>
     Effect.orElseSucceed(() => false),
   );
 
-/**
- * The PowerShell program behind `windowsSuspender`. It reads one command per line and answers each
- * with one line, or with `error <message>`.
- */
 const suspenderScript = `
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -416,15 +370,6 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
 Release
 `;
 
-/**
- * Suspend processes on Windows, where Node cannot stop one, as a debugger does: one PowerShell
- * process suspends each with NtSuspendProcess, so starting PowerShell, which takes seconds, happens
- * once. It takes `suspend <pid>`; `stall <pid>`, which waits for the server starter of the desktop
- * `<pid>` started to start an attempt and suspends both, as `stallStarter` does on POSIX; and
- * `resume`, which resumes every process it suspended. It keeps each suspended process's handle, so
- * an ID cannot name another process before it is resumed, and resumes them all when its input ends
- * with the caller's scope.
- */
 const windowsSuspender = Effect.gen(function* () {
   const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
   const commands = yield* Queue.unbounded<string, Cause.Done>();
@@ -446,7 +391,6 @@ const windowsSuspender = Effect.gen(function* () {
       },
     ),
   );
-  // Ending its input resumes what it suspended before it exits.
   yield* Effect.addFinalizer(() =>
     Queue.end(commands).pipe(
       Effect.andThen(child.exitCode),
@@ -474,10 +418,6 @@ const windowsSuspender = Effect.gen(function* () {
     );
 });
 
-/**
- * Suspend `pid`, as a hung process stops, until `resume` or until the caller's scope closes. POSIX
- * stops it with SIGSTOP; Windows suspends it (see `windowsSuspender`).
- */
 export const suspendProcess = (pid: number) =>
   Effect.gen(function* () {
     if (process.platform === "win32") {
@@ -491,16 +431,6 @@ export const suspendProcess = (pid: number) =>
     return { resume };
   });
 
-/**
- * Make the desktop's server starter, an Electron utility process, stop answering as soon as it has
- * spawned its first start attempt, before that attempt can serve: both are stopped, as hung
- * processes, until `resume` or until the caller's scope closes. On POSIX `ps` finds them among the
- * desktop's descendants and SIGSTOP stops them. On Windows Playwright starts Electron through
- * `cmd.exe`, so the desktop's main process is a child of the process Playwright reports; there the
- * PowerShell suspender looks for them, since starting PowerShell for each look would be too slow,
- * and suspends them. Ending the starter instead would not do on Windows: Electron notices that
- * within a second, although the attempt it started holds the starter's channel.
- */
 export const stallStarter = (electron: ElectronApplication) =>
   Effect.gen(function* () {
     const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -524,7 +454,6 @@ export const stallStarter = (electron: ElectronApplication) =>
               ? []
               : [{ pid: Number(match[1]), parent: Number(match[2]), command: match[3] ?? "" }];
           });
-          // The starter is one of the desktop's descendants; its attempt is its own child.
           const ours = new Set([app]);
           for (let grew = true; grew;) {
             grew = false;
@@ -560,19 +489,12 @@ export const stallStarter = (electron: ElectronApplication) =>
     return { ...found, resume };
   });
 
-/** Signal 0 checks that a process exists; EPERM means it exists under another user. */
 export const processAlive = (pid: number) =>
   Effect.try({
     try: () => process.kill(pid, 0),
     catch: (error) => Schema.is(Schema.Struct({ code: Schema.Literal("EPERM") }))(error),
   }).pipe(Effect.match({ onSuccess: () => true, onFailure: (exists) => exists }));
 
-/**
- * Wait until `directory`'s registered server is a server other than those in `seen` and answers
- * ready, and return it. A desktop or CLI that starts one detaches it, so it is found by its file.
- * Servers are told apart by the id each registers: Windows soon gives a new server the pid of one
- * that has exited.
- */
 export const nextServer = (directory: string, seen: ReadonlyArray<ServiceRegistration>) =>
   registeredServer(directory).pipe(
     Effect.flatMap((found) =>
@@ -588,7 +510,6 @@ export const nextServer = (directory: string, seen: ReadonlyArray<ServiceRegistr
       }),
     ),
     Effect.retry({ schedule: Schedule.spaced("50 millis"), times: 1200 }),
-    // Say when the new server has an earlier one's pid, so a passing run shows the reuse it met.
     Effect.tap((server) => {
       const earlier = seen.find((other) => other.pid === server.pid);
       return earlier === undefined
@@ -597,7 +518,6 @@ export const nextServer = (directory: string, seen: ReadonlyArray<ServiceRegistr
             `Server ${server.id} has process ID ${server.pid}, which earlier server ${earlier.id} had`,
           );
     }),
-    // It just answered as itself, so its pid names it: record when it started, for `serverExited`.
     Effect.tap((server) =>
       process.platform === "win32"
         ? windowsStartTime(server.pid).pipe(
@@ -607,32 +527,18 @@ export const nextServer = (directory: string, seen: ReadonlyArray<ServiceRegistr
     ),
   );
 
-/** On Windows, when each server `nextServer` returned started, by its id. */
 const windowsStarts = new Map<string, string>();
 
-/**
- * Whether `server`, one `nextServer` returned, has exited: its pid names no process or, on Windows,
- * names a process that started after it did. Windows soon gives a freed pid to the next server.
- * When the start time cannot be read, only the pid naming no process counts as exited.
- */
 export const serverExited = (server: ServiceRegistration) =>
   Effect.gen(function* () {
     if (!(yield* processAlive(server.pid))) return true;
     const start = windowsStarts.get(server.id);
     if (process.platform !== "win32" || start === undefined) return false;
-    // A start time that cannot be read is no proof of another process: the pid's liveness decides.
     const now = yield* windowsStartTime(server.pid);
     if (Option.isNone(now)) return !(yield* processAlive(server.pid));
     return now.value !== start;
   });
 
-/**
- * Stop every background server this scenario's desktop or CLI left for `directory`: the one
- * `server.json` names, and any in `seen`, while it still answers as itself. A server outlives the
- * desktop that started it, so a scenario's scope ends it before its directory is removed. One that
- * does not answer as itself is left alone, as `executor service stop` leaves it: its pid, as after
- * a crash, may name another program by now, and the directory goes with the scope.
- */
 export const stopBackgroundServers = (
   directory: string,
   seen: () => ReadonlyArray<ServiceRegistration>,
@@ -655,16 +561,10 @@ export const stopBackgroundServers = (
           headers: { authorization: `Bearer ${reveal(server.password)}` },
         })
         .pipe(Effect.timeout("5 seconds"), Effect.ignore);
-      // It proved itself just before, so a pid still running is still that server.
       if (!(yield* exited(server.pid))) yield* crashServer(server.pid);
     }
   }).pipe(Effect.ignore);
 
-/**
- * Replace the main process's native message boxes so a scenario can answer them. Each call is
- * recorded; `answers` maps a box title to the chosen button index, or to `unanswered` for a box
- * that is never answered, as one a person leaves open; otherwise the cancel button.
- */
 export const answerDialogs = (
   electron: ElectronApplication,
   answers: Readonly<Record<string, number | "unanswered">>,
@@ -699,12 +599,6 @@ export const answeredDialogs = (electron: ElectronApplication) =>
     ),
   );
 
-/**
- * Report a replaced document's failed load after the desktop's own page has committed, as
- * Windows does when the dashboard is still loading as its server exits: `did-fail-load` with the
- * dashboard's URL arrives between the startup page's `did-navigate` and `did-stop-loading`.
- * `lateLoadFailures` counts the reports.
- */
 export const reportReplacedLoadFailuresLate = (electron: ElectronApplication) =>
   driver("report replaced loads' failures late", () =>
     electron.evaluate(({ BrowserWindow }) => {
@@ -733,11 +627,6 @@ export const lateLoadFailures = (electron: ElectronApplication) =>
     ),
   );
 
-/**
- * Make the window's next `count` main-frame loads of `origin` fail, as Electron reports a load
- * that never reached the server, or every one with `all`; `0` lets them through again. It also
- * starts recording the one-use pairing links the window loads, which `dashboardLoads` counts.
- */
 export const failDashboardLoads = (
   electron: ElectronApplication,
   origin: string,
@@ -778,10 +667,6 @@ export const failDashboardLoads = (
     ),
   );
 
-/**
- * Since `failDashboardLoads` first ran: how many dashboard loads it failed, and how many distinct
- * pairing links the window loaded. The links themselves stay in the desktop.
- */
 export const dashboardLoads = (electron: ElectronApplication) =>
   driver("read the window's dashboard loads", () =>
     electron.evaluate(() => {
@@ -792,7 +677,6 @@ export const dashboardLoads = (electron: ElectronApplication) =>
     }),
   );
 
-/** Click an application menu item as the user would. */
 export const clickMenuItem = (electron: ElectronApplication, menu: string, item: string) =>
   driver(`click ${menu} → ${item}`, () =>
     electron.evaluate(
@@ -807,10 +691,6 @@ export const clickMenuItem = (electron: ElectronApplication, menu: string, item:
     ),
   );
 
-/**
- * The application menu bar: each menu by its role, or by its label when it has none, with its
- * items named the same way. Electron lowercases roles.
- */
 export const menuBar = (electron: ElectronApplication) =>
   driver("read the application menu", () =>
     electron.evaluate(
@@ -822,7 +702,6 @@ export const menuBar = (electron: ElectronApplication) =>
     ),
   );
 
-/** The labels in one application menu. */
 export const menuLabels = (electron: ElectronApplication, menu: string) =>
   driver(`read the ${menu} menu`, () =>
     electron.evaluate(
@@ -840,12 +719,6 @@ export interface CliResult {
   readonly stderr: string;
 }
 
-/**
- * The local CLI on a data directory, with a desktop scenario's environment. A packaged desktop's
- * CLI is the runtime it staged under its profile, which reports the desktop's own version, so it
- * can start a server the desktop joins; it exists once the desktop has launched. Otherwise, or
- * with `source`, this checkout's CLI runs from source, as the development desktop runs it.
- */
 export const desktopCli = (options: {
   readonly env: Readonly<Record<string, string>>;
   readonly cwd: string;

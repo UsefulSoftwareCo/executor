@@ -1,4 +1,3 @@
-/** Source snapshots and optimistic writes are verified through the real hosted API. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
@@ -51,7 +50,6 @@ layer(HostedLive, { excludeTestServices: true })("Workspace source", (it) => {
         const initial = yield* read(path);
         expect(initial.files).toEqual(files("initial"));
         expect(initial.revision.commit).toMatch(/^[a-f0-9]{40}$/);
-        // Preparation is asynchronous; later reads return the same snapshot.
         expect(yield* read(path)).toEqual(initial);
         expect(yield* read(path)).toEqual(initial);
 
@@ -116,7 +114,6 @@ layer(HostedLive, { excludeTestServices: true })("Workspace source", (it) => {
             }),
           );
 
-        // Exercise the native Git proxy's POST body and read its response after headers return.
         const want = `want ${winner.revision.commit}\n`;
         const upload = yield* http.execute(
           HttpClientRequest.post(`${target.metadata.origin}${git.path}/git-upload-pack`).pipe(
@@ -169,9 +166,6 @@ layer(HostedLive, { excludeTestServices: true })("Workspace source", (it) => {
             expect(response.status).toBe(200);
             return yield* body(Workspace, response);
           });
-        // Every first read of a new app initializes its repository, so these race. Cloud's Git
-        // storage serves one push per repository at a time and refuses the others as busy; many
-        // apps, each read by several callers at once, make those refusals likely on every run.
         const apps = [0, 1, 2, 3, 4, 5];
         for (const round of [0, 1]) {
           const pending = yield* Effect.forEach(

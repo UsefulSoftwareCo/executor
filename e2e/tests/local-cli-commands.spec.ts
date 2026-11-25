@@ -1,7 +1,3 @@
-/**
- * The local CLI's command names: help lists the Executor 2 commands, `pair` and `rotate-key` live
- * under `executor service`, and Executor 1's commands, and the old top-level names, are unknown.
- */
 import { expect, layer } from "@effect/vitest";
 import { Config, Effect, FileSystem, Option, Path, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
@@ -10,7 +6,6 @@ import { TestLive, withCase } from "../support/case.ts";
 import { Evidence } from "../support/evidence.ts";
 import { localEntryCommand } from "../support/local-entry.ts";
 
-/** The command names a help page lists. */
 const listed = (help: string) =>
   help.split("\n").flatMap((line) => /^ {2}([a-z][a-z-]*)\s/u.exec(line)?.slice(1, 2) ?? []);
 
@@ -98,7 +93,6 @@ layer(TestLive, { excludeTestServices: true })("Local CLI commands", (it) => {
           expect(apps.code, apps.stderr).toBe(0);
           expect(listed(apps.stdout)).not.toContain("skills");
 
-          // Executor 1's commands and the old names are plain unknown commands.
           for (const args of [["web"], ["daemon", "run"], ["tools"], ["pair"], ["rotate-key"]]) {
             const result = yield* run(args);
             expect(result.code, result.stderr).toBe(1);
@@ -109,7 +103,6 @@ layer(TestLive, { excludeTestServices: true })("Local CLI commands", (it) => {
           expect(removed.code).toBe(1);
           expect(removed.stderr).toContain("Unknown subcommand");
 
-          // None of these commands opened or created the data directory.
           expect(yield* fs.exists(data)).toBe(false);
         }),
       ),

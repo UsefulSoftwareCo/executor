@@ -1,11 +1,3 @@
-/**
- * `.github/workflows/beta.yml` runs `scripts/releases/beta-due.ts` on every push to main, on a
- * schedule and on manual dispatch to decide whether to publish a beta, and
- * `scripts/releases/beta-bump.sh` to push the version bump. These cases run the scripts in a
- * scratch repository whose history has a `Release <version>` commit, as main does, with stub `npm`
- * and `gh` first on PATH answering what the registry and the release runs say, and a scratch bare
- * repository standing in for GitHub's main.
- */
 import { expect, layer } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, FileSystem, Path, Stream } from "effect";
@@ -16,30 +8,18 @@ const version = "2.0.0-beta.5";
 const apps = "0.0.1-beta.3";
 const hour = 60 * 60 * 1000;
 
-/** The gate's `gh api` reads, without their `--jq`: pages of release runs and earlier attempts. */
 const apiReads = (calls: ReadonlyArray<string>) =>
   calls.filter((call) => call.startsWith("api ")).map((call) => call.split(" --jq ")[0]);
-/** One page of the release workflow's dispatched runs on main, newest first. */
 const runsPage = (page: number) =>
   `api repos/${repository}/actions/workflows/release-artifacts.yml/runs?event=workflow_dispatch&branch=main&per_page=100&page=${page}`;
-/** The read of one earlier attempt of a run. */
 const attemptRead = (run: number, attempt: number) =>
   `api repos/${repository}/actions/runs/${run}/attempts/${attempt}`;
 
-/** Answers `npm view <package> time dist-tags --json` from `$FAKE_NPM/<package>.json`. */
 const stubNpm = `#!/bin/sh
 [ "$1" = view ] && [ "$3 $4 $5" = "time dist-tags --json" ] || { echo "stub npm: unsupported: $*" >&2; exit 2; }
 cat "$FAKE_NPM/$2.json"
 `;
 
-/**
- * Answers `gh run list` as GitHub does: the runs of `$FAKE_GITHUB/runs.json`, newest first, with
- * the event `-e` names, at most `-L` of them. Fails it when `$FAKE_GITHUB/list-fails` exists.
- * Answers `gh run view <id> --json jobs` from `$FAKE_GITHUB/jobs-<id>.json`, the read of one
- * attempt of a run (`gh api .../runs/<id>/attempts/<n>`) from `$FAKE_GITHUB/attempt-<id>-<n>.json`,
- * and a page of the release workflow's dispatched runs (`gh api .../workflows/<file>/runs?...`)
- * from the same runs, newest first, 100 a page. Appends every call to `$FAKE_GITHUB/calls`.
- */
 const stubGh = `#!/bin/sh
 echo "$*" >> "$FAKE_GITHUB/calls"
 if [ "$1 $2" = "run list" ]; then
@@ -67,39 +47,24 @@ interface ReleaseRun {
   readonly hoursAgo: number;
   readonly headSha: string;
   readonly attempt?: number;
-  /**
-   * When each attempt ran, in hours ago, first to latest, one for each of `attempt`; every one ran
-   * when the run was created (`hoursAgo`) by default.
-   */
   readonly attemptsHoursAgo?: ReadonlyArray<number>;
-  /** The publish job's conclusion; it is skipped when a build or test job failed. */
   readonly publish?: "success" | "failure" | "skipped";
-  /** `build` builds and tests without publishing; a dispatch of Beta asks for `beta`. */
   readonly channel?: "beta" | "build";
-  /** The metadata job's conclusion. When it fails, the run's channel is unknown. */
   readonly metadata?: "success" | "failure";
-  /** Its title, when not the one its channel gives (`Executor releases (beta)` by default). */
   readonly title?: string;
-  /** The name of the metadata step that runs only when publishing, if the workflow renamed it. */
   readonly publishingStep?: string;
-  /** The docker job's architecture push: it publishes an image tag outside the publish job. */
   readonly dockerPush?: "success" | "failure" | "skipped";
-  /** Further failed jobs, by the name the run gives them, each with the step that failed. */
   readonly failedJobs?: ReadonlyArray<{ readonly name: string; readonly step: string }>;
 }
 
-/** A paced check on main, which the Release check workflow dispatches after a relevant push. */
 interface MatrixRun {
   readonly id: number;
   readonly status?: "queued" | "in_progress" | "completed";
   readonly conclusion?: "success" | "failure" | "cancelled";
   readonly hoursAgo: number;
   readonly headSha: string;
-  /** Its pace job; it fails before the matrix runs when, say, the API fails. Passed by default. */
   readonly pace?: "success" | "failure" | "cancelled";
-  /** Its releases job, which judges the matrix; by default as the run concluded. */
   readonly releases?: "success" | "failure" | "skipped" | "missing";
-  /** Its metadata job; skipped when the matrix did not run. Passed by default. */
   readonly metadata?: "success" | "skipped";
 }
 
@@ -123,13 +88,6 @@ const run = (
 
 const ago = (hours: number) => new Date(Date.now() - hours * hour).toISOString();
 
-/**
- * A scratch main whose commits are `Start`, where the previous beta's run built, `Release
- * 2.0.0-beta.5` and any merges after it. npm lists `executor@2.0.0-beta.5` when `published` gives
- * its age in hours. Main holds this checkout's release-artifacts.yml, whose push trigger names the
- * paths that start the release matrix, and that matrix passed on `Start` unless a case says
- * otherwise.
- */
 const world = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -192,7 +150,6 @@ const world = Effect.gen(function* () {
     path.join(main, "packages/apps/package.json"),
     JSON.stringify({ version: apps }),
   );
-  // The tick reads which release steps publish from these (scripts/releases/publishing-steps.ts).
   for (const workflow of ["release-artifacts.yml", "bun-runtime.yml"])
     yield* fs.copyFile(
       `.github/workflows/${workflow}`,
@@ -205,12 +162,10 @@ const world = Effect.gen(function* () {
   yield* git("commit", "--quiet", "--allow-empty", "-m", `Release ${version}`);
   const released = yield* git("rev-parse", "HEAD");
 
-  /** Lands a merge on main and returns its commit. */
   const merge = Effect.gen(function* () {
     yield* git("commit", "--quiet", "--allow-empty", "-m", "Change the product (#1)");
     return yield* git("rev-parse", "HEAD");
   });
-  /** Lands a merge on main committed `hoursAgo` hours ago, and returns its commit. */
   const mergeAt = (hoursAgo: number) =>
     Effect.gen(function* () {
       const date = new Date(Date.now() - hoursAgo * hour).toISOString();
@@ -223,7 +178,6 @@ const world = Effect.gen(function* () {
       expect(result.exitCode, result.output).toBe(0);
       return yield* git("rev-parse", "HEAD");
     });
-  /** Lands a commit on main that changes these files, and returns it. */
   const change = (files: ReadonlyArray<string>, subject = "Change the product (#2)") =>
     Effect.gen(function* () {
       for (const file of files) {
@@ -235,7 +189,6 @@ const world = Effect.gen(function* () {
       return yield* git("rev-parse", "HEAD");
     });
 
-  /** Lands the bun.lock refresh `lock-repair.sh` pushes, and returns its commit. */
   const lockRefresh = Effect.gen(function* () {
     yield* git(
       "commit",
@@ -249,19 +202,14 @@ const world = Effect.gen(function* () {
     return yield* git("rev-parse", "HEAD");
   });
 
-  /** Runs the script on this event, with npm and the release runs in this state. */
   const decide = (input: {
     readonly event?: "push" | "schedule" | "workflow_dispatch" | "workflow_run" | "pull_request";
-    /** Hours since npm published the committed version; npm lacks it when undefined. */
     readonly published?: number;
     readonly betaTag?: string;
     readonly appsPublished?: boolean;
     readonly runs?: ReadonlyArray<ReleaseRun>;
-    /** The paced checks on main; by default one that passed on `Start` just now. */
     readonly matrix?: ReadonlyArray<MatrixRun>;
-    /** GitHub fails the listing of release runs. */
     readonly listFails?: boolean;
-    /** Commits on main CI passed on, newest first, as pushes. */
     readonly green?: ReadonlyArray<{ readonly headSha: string; readonly hoursAgo: number }>;
   }) =>
     Effect.gen(function* () {
@@ -332,7 +280,6 @@ const world = Effect.gen(function* () {
         attempt: run.attempt ?? 1,
         url: `https://github.com/${repository}/actions/runs/${run.id}`,
       });
-      // A check's event is the one release-check.yml starts it with.
       const checkEvent = (yield* fs.readFileString(
         path.resolve(".github/workflows/release-check.yml"),
       )).includes("/dispatches")
@@ -448,14 +395,12 @@ const world = Effect.gen(function* () {
           .filter((line) => line !== "")
           .map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]),
       );
-      /** Each `gh` call this run made. */
       const calls = (yield* fs.readFileString(path.join(github, "calls")))
         .split("\n")
         .filter((line) => line !== "");
       return { ...result, outputs, calls };
     });
 
-  /** GitHub's main: a bare repository holding this main's history. */
   yield* run(root, "git", ["init", "--quiet", "--bare", remote], env);
   yield* git("push", "--quiet", remote, "HEAD:main");
   const remoteMain = Effect.gen(function* () {
@@ -463,13 +408,11 @@ const world = Effect.gen(function* () {
     expect(result.exitCode, result.output).toBe(0);
     return result.output.trim();
   });
-  /** Lands a merge on GitHub's main and checks it out, as the workflow's checkout does. */
   const land = Effect.gen(function* () {
     const merged = yield* merge;
     yield* git("push", "--quiet", remote, "HEAD:main");
     return merged;
   });
-  /** Lands a merge on GitHub's main that this checkout has not read, and returns it. */
   const mergeElsewhere = Effect.gen(function* () {
     const head = yield* git("rev-parse", "HEAD");
     const merged = yield* merge;
@@ -477,13 +420,11 @@ const world = Effect.gen(function* () {
     yield* git("reset", "--quiet", "--hard", head);
     return merged;
   });
-  /** Refuses every push to GitHub's main, as a ruleset would. */
   const refusePushes = Effect.gen(function* () {
     const hook = path.join(remote, "hooks/pre-receive");
     yield* fs.writeFileString(hook, "#!/bin/sh\necho 'push declined by a ruleset' >&2\nexit 1\n");
     yield* fs.chmod(hook, 0o755);
   });
-  /** Runs the bump script on this checkout of main, as the workflow does after `bump`. */
   const bump = Effect.gen(function* () {
     const output = path.join(root, "bump-output");
     yield* fs.writeFileString(output, "");
@@ -532,7 +473,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Beta publication gate"
       });
       expect(due.exitCode, due.output).toBe(0);
       expect(due.outputs).toMatchObject({ decision: "bump", version });
-      // The gate reads the jobs of the matrix run that decides, and of no run before it.
       expect(due.calls.filter((call) => call.startsWith("run view"))).toEqual([
         `run view 900 -R ${repository} --json jobs`,
       ]);
@@ -570,17 +510,14 @@ layer(NodeServices.layer, { excludeTestServices: true })("Beta publication gate"
         { id: 2, conclusion: "cancelled", hoursAgo: hoursAgo + 1, headSha },
         { id: 1, conclusion: "success", publish: "success", hoursAgo: 30, headSha: previous },
       ];
-      // A refresh after the last attempt's commit.
       yield* lockRefresh;
       const after = yield* decide({ runs: failed(6.5, released) });
       expect(after.outputs.decision, after.output).toBe("none");
       expect(after.outputs.reason).toContain("after two or more failed attempts in a row");
-      // The last attempt ran on a refresh, then another refresh landed.
       const refreshed = yield* lockRefresh;
       expect((yield* decide({ runs: failed(6.5, refreshed) })).outputs.decision).toBe("none");
       yield* lockRefresh;
       expect((yield* decide({ runs: failed(6.5, refreshed) })).outputs.decision).toBe("none");
-      // A merge moves it.
       yield* merge;
       const moved = yield* decide({ runs: failed(6.5, refreshed) });
       expect(moved.outputs.decision, moved.output).toBe("dispatch");
@@ -686,7 +623,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Beta publication gate"
           { id: 1, conclusion: "success", publish: "success", hoursAgo: 30, headSha: previous },
         ];
 
-        // A fix merged, but CI has not passed on it yet: the back-off holds.
         const fix = yield* merge;
         const waiting = yield* decide({
           runs: failed(2),
@@ -695,7 +631,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Beta publication gate"
         expect(waiting.outputs.decision, waiting.output).toBe("none");
         expect(waiting.outputs.reason).toContain("waits for CI to pass on a newer main commit");
 
-        // CI passed on the fix: the next tick, a CI completion included, publishes again.
         for (const event of ["schedule", "push", "workflow_run"] as const) {
           const green = yield* decide({
             event,
@@ -708,12 +643,10 @@ layer(NodeServices.layer, { excludeTestServices: true })("Beta publication gate"
           expect(green.outputs.reason).toContain("2 of 5 attempts today failed");
         }
 
-        // Five failed attempts in a day: a green main no longer retries early.
         const many = yield* decide({ runs: failed(5), green: [{ headSha: fix, hoursAgo: 0.1 }] });
         expect(many.outputs.decision, many.output).toBe("none");
         expect(many.output).toContain("::warning::");
 
-        // A failure in the publish job is never retried this way: it is re-run from its artifacts.
         const publishing = yield* decide({
           runs: [
             { id: 30, publish: "failure", attempt: 2, hoursAgo: 0.5, headSha: released },
@@ -731,8 +664,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Beta publication gate"
     () =>
       Effect.gen(function* () {
         const { decide, merge, released, previous } = yield* world;
-        // The review's probe: five failures in the last day, the newest more than six hours ago,
-        // and main moved since. The six-hour path dispatched a sixth.
         const five: ReadonlyArray<ReleaseRun> = [
           ...[6.5, 9, 12, 15, 18].map((hoursAgo, index) => ({
             id: 40 + index,
@@ -753,13 +684,11 @@ layer(NodeServices.layer, { excludeTestServices: true })("Beta publication gate"
           expect(held.output).toContain("::warning::");
           expect(held.outputs.reason).toContain("5 publishing attempts failed in the last day");
         }
-        // A re-run of a publish failure counts against the same bound.
         const rerun = yield* decide({
           runs: [{ id: 50, publish: "failure", hoursAgo: 0.5, headSha: released }, ...five],
         });
         expect(rerun.outputs.decision, rerun.output).toBe("none");
         expect(rerun.outputs.reason).toContain("6 publishing attempts failed in the last day");
-        // Once the oldest falls out of the last day, four remain, and the six-hour path runs again.
         const four = yield* decide({
           runs: [
             ...[6.5, 9, 12, 15, 25].map((hoursAgo, index) => ({
@@ -781,9 +710,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Beta publication gate"
       Effect.gen(function* () {
         const { decide, merge, released, previous } = yield* world;
         const fix = yield* merge;
-        // The fourth review's probes. One fresh failure, then builds, then a run created 70 hours ago whose four re-runs
-        // today failed: beyond the 30 runs the gate lists, it gave "1 of 5" and dispatched. With
-        // 120 builds the run is on the second page.
         for (const builds of [29, 120])
           for (const event of ["schedule", "workflow_dispatch"] as const) {
             const held = yield* decide({
@@ -820,8 +746,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Beta publication gate"
               attemptRead(440, 2),
             ]);
           }
-        // Two fresh failures and a run created 50 hours ago, re-run
-        // three times today, make five: two of its earlier attempts are read, then it stops.
         const mixed = yield* decide({
           runs: [
             { id: 301, hoursAgo: 0.5, headSha: released },
@@ -850,8 +774,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Beta publication gate"
   it.effect("when counting takes more than ten requests, the count is unknown and holds", () =>
     Effect.gen(function* () {
       const { decide, released } = yield* world;
-      // Ten runs from earlier days, each re-run in the last day and cancelled: whether a first
-      // attempt ran in the last day takes one request each, ten beside the page of runs.
       const rerun: ReadonlyArray<ReleaseRun> = Array.from({ length: 10 }, (_, index) => ({
         id: 100 + index,
         attempt: 2,
@@ -876,7 +798,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Beta publication gate"
           ...rerun.slice(0, 9).map((each) => attemptRead(each.id, 1)),
         ]);
       }
-      // Nine take ten requests in all, and the count is known: one failed, so one more starts.
       const nine = yield* decide({
         event: "workflow_dispatch",
         runs: [{ id: 99, hoursAgo: 0.2, headSha: released }, ...rerun.slice(0, 9)],
@@ -897,7 +818,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Beta publication gate"
           { id: 70, hoursAgo: 2, headSha: released },
           { id: 1, conclusion: "success", publish: "success", hoursAgo: 30, headSha: previous },
         ];
-        // The review's case: the push failed, so publish was skipped, and CI is green on a fix.
         const first = yield* decide({
           runs: [{ id: 71, dockerPush: "failure", hoursAgo: 0.5, headSha: released }, ...earlier],
           green: [{ headSha: fix, hoursAgo: 0.1 }],
@@ -916,8 +836,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Beta publication gate"
         });
         expect(again.outputs.decision, again.output).toBe("none");
         expect(again.outputs.reason).toContain("inspect it");
-        // A push that succeeded before a test failed elsewhere published nothing that failed: the
-        // early retry stands.
         const tested = yield* decide({
           runs: [
             {
@@ -962,7 +880,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Beta publication gate"
           expect(result.outputs.decision, `${job.name}: ${result.output}`).toBe("rerun");
           expect(result.outputs.reason).toContain(job.name);
         }
-        // Build and test failures, in any job, qualify as before.
         for (const job of [
           { name: "bun-runtime / build linux-x64", step: "Build" },
           { name: "collector (darwin-arm64)", step: "Run ./.github/actions/collector" },
@@ -988,8 +905,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Beta publication gate"
       Effect.gen(function* () {
         const { decide, merge, released, previous } = yield* world;
         const fix = yield* merge;
-        // beta.61's run 44248912608: GitHub listed the failed Windows CLI job with its matrix values
-        // cut off by an ellipsis, without the closing parenthesis.
         const truncated =
           "cli (win32, x64, true, blacksmith-16vcpu-windows-2025, win, exe, 8, .local/releases/2.0.0-beta.61...";
         const earlier: ReadonlyArray<ReleaseRun> = [
@@ -1016,7 +931,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Beta publication gate"
         expect(result.exitCode, result.output).toBe(0);
         expect(result.outputs.decision, result.output).toBe("dispatch");
         expect(result.outputs.reason).toContain(`CI passed on ${fix.slice(0, 9)} after it`);
-        // Cut short anywhere, a job keeps its id, and a step it does not have counts as publishing.
         for (const [name, step, decision] of [
           [
             "docker (blacksmith-16vcpu-ubuntu-2404-a...",
@@ -1057,8 +971,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Beta publication gate"
         hoursAgo: 30,
         headSha: previous,
       } as const;
-      // The review's probe: three runs, two of them on their second attempt, five failures in
-      // the last day. Counting runs saw three and dispatched a sixth.
       const five: ReadonlyArray<ReleaseRun> = [
         { id: 20, attempt: 2, hoursAgo: 1, headSha: released },
         { id: 21, attempt: 2, hoursAgo: 3, headSha: released },
@@ -1070,8 +982,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Beta publication gate"
         expect(held.outputs.decision, `${event}: ${held.output}`).toBe("none");
         expect(held.outputs.reason).toContain("5 publishing attempts failed in the last day");
       }
-      // An earlier attempt counts as failed whatever ended the latest, a cancellation included:
-      // two, one and one make four, so one more may start.
       const four = yield* decide({
         runs: [
           { id: 23, attempt: 2, hoursAgo: 1, headSha: released },
@@ -1097,9 +1007,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Beta publication gate"
         hoursAgo: 40,
         headSha: previous,
       } as const;
-      // The review's probe: a run created 25 hours ago, its first attempt then and four failed
-      // re-runs in the last day, beside one fresh failure. Dating attempts by the run's creation
-      // counted 1 of 5 and dispatched; five failed in the last day, so every path holds.
       const rerunToday = {
         id: 40,
         attempt: 5,
@@ -1116,8 +1023,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Beta publication gate"
         const held = yield* decide({ event, runs: five, green: [{ headSha: fix, hoursAgo: 0.1 }] });
         expect(held.outputs.decision, `${event}: ${held.output}`).toBe("none");
         expect(held.outputs.reason).toContain("5 publishing attempts failed in the last day");
-        // One page of runs, then its earlier attempts newest first, one request each, until five
-        // are known: attempt 1 is never read. The fresh run needs none.
         expect(apiReads(held.calls)).toEqual([
           runsPage(1),
           attemptRead(40, 4),
@@ -1125,9 +1030,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Beta publication gate"
           attemptRead(40, 2),
         ]);
       }
-      // Attempts that ran over a day ago do not count: the first two, at 25 and 24.5 hours, and
-      // none of a run whose latest attempt started over a day ago, so three of the old run's and
-      // the fresh one make four, and one more may start.
       const four = yield* decide({
         runs: [
           { id: 42, hoursAgo: 0.5, headSha: released },
@@ -1139,7 +1041,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Beta publication gate"
       });
       expect(four.outputs.decision, four.output).toBe("dispatch");
       expect(four.outputs.reason).toContain("4 of 5 attempts today failed");
-      // A run created and re-run within the day is counted without reading its attempts.
       const within = yield* decide({
         runs: [
           { id: 45, attempt: 3, hoursAgo: 6, attemptsHoursAgo: [6, 4, 2], headSha: released },
@@ -1337,7 +1238,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Beta publication gate"
           expect(held.output).toContain(
             `::warning::The newest finished release matrix run on main, https://github.com/${repository}/actions/runs/901, failed its releases job on ${previous}.`,
           );
-          // A run still going does not clear it, and nor does an older run that passed.
           const later = yield* decide({
             ...input,
             matrix: [
@@ -1407,7 +1307,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Beta publication gate"
               { id: 900, conclusion: "success", hoursAgo: 1, headSha: previous },
             ],
           });
-          // The publishing run tests this commit on every platform before it publishes.
           expect(green.outputs.decision, green.output).toBe("bump");
           const red = yield* decide({
             published: 7,
@@ -1451,7 +1350,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Beta publication gate"
         const result = yield* decide({
           published: 7,
           matrix: [red],
-          // As the runs before titles named their channel were.
           runs: [{ id: 5, title: "Executor releases", conclusion, hoursAgo: 1, headSha: head }],
         });
         expect(result.outputs.decision, result.output).toBe("none");
@@ -1465,7 +1363,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Beta publication gate"
       const { decide, change, previous } = yield* world;
       const head = yield* change(["apps/cli/src/main.ts"]);
       for (const pace of ["failure", "cancelled"] as const) {
-        // Red as a run, from its pace job alone: the matrix never ran.
         const untested: MatrixRun = {
           id: 905,
           pace,
@@ -1525,14 +1422,11 @@ layer(NodeServices.layer, { excludeTestServices: true })("Beta publication gate"
       Effect.gen(function* () {
         const { decide, mergeAt, released, previous } = yield* world;
         const redMatrix = [{ id: 901, hoursAgo: 1, headSha: previous }] as const;
-        // A beta due since a merge two hours ago, held by a red matrix: not yet.
         yield* mergeAt(2);
         const recent = yield* decide({ published: 30, matrix: redMatrix });
         expect(recent.outputs.decision, recent.output).toBe("none");
         expect(recent.output).toContain("::warning::");
         expect(recent.outputs.held).toBe("");
-        // Due since the first merge after the release, ten hours ago: npm published the last
-        // beta 30 hours ago, so that merge, not six hours after it, is when this one became due.
         const { decide: decideOld, mergeAt: mergeOld, git: gitOld } = yield* world;
         const first = yield* mergeOld(10);
         yield* mergeOld(1);
@@ -1542,7 +1436,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Beta publication gate"
         expect(old.outputs.held_since).toBe(
           new Date(yield* gitOld("log", "-1", "--format=%cI", first)).toISOString(),
         );
-        // Published seven hours ago with a merge since an hour before that: due one hour ago.
         const { decide: decideFresh, mergeAt: mergeFresh } = yield* world;
         yield* mergeFresh(8);
         const fresh = yield* decideFresh({ published: 7, matrix: redMatrix });
@@ -1550,7 +1443,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Beta publication gate"
         expect(fresh.outputs.held).toBe("");
         expect(Date.parse(fresh.outputs.held_since!)).toBeGreaterThan(Date.now() - 1.1 * hour);
 
-        // Five failed attempts in a day hold it at once, since the release commit.
         const five: ReadonlyArray<ReleaseRun> = [
           ...Array.from({ length: 5 }, (_, index) => ({
             id: 40 + index,
@@ -1571,7 +1463,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Beta publication gate"
     () =>
       Effect.gen(function* () {
         const { decide, merge, released, previous } = yield* world;
-        // Out, and nothing due: the held part goes.
         const out = yield* decide({ published: 5.5 });
         expect(out.outputs.decision).toBe("none");
         expect(out.outputs.held).toBe("clear");
@@ -1579,8 +1470,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Beta publication gate"
         const bump = yield* decide({ published: 30 });
         expect(bump.outputs.decision).toBe("bump");
         expect(bump.outputs.held).toBe("clear");
-        // Not out: a retry dispatched or running, or a hold under six hours, leaves it as it is,
-        // so a release that keeps failing neither closes the issue nor opens it again.
         const failedOnce = yield* decide({
           runs: [
             { id: 2, hoursAgo: 0.2, headSha: released },
@@ -1597,8 +1486,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Beta publication gate"
         });
         expect(running.outputs.decision).toBe("none");
         expect(running.outputs.held).toBe("");
-        // A build dispatched from main to clear a red matrix, while npm lists the last beta and
-        // the next is held: the tick waits on it and reads no matrix, so it clears nothing.
         const building = yield* decide({
           published: 30,
           matrix: [{ id: 901, hoursAgo: 1, headSha: previous }],
@@ -1698,7 +1585,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Beta publication gate"
     Effect.gen(function* () {
       const { decide, merge, released } = yield* world;
       const head = yield* merge;
-      // 120 checks, every one after the publishing run that failed after its re-run.
       const checks = Array.from({ length: 120 }, (_, index): MatrixRun => ({
         id: 2000 + index,
         conclusion: index % 2 === 0 ? "success" : "cancelled",
@@ -1712,7 +1598,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Beta publication gate"
       expect(held.exitCode, held.output).toBe(0);
       expect(held.outputs.decision, held.output).toBe("none");
       expect(held.outputs.reason).toContain("runs/7 failed to publish");
-      // And the two-failure back-off still sees both failed attempts.
       const backOff = yield* decide({
         matrix: checks,
         runs: [
@@ -1832,11 +1717,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Beta publication gate"
   );
 });
 
-/**
- * Answers `gh api <path> --jq <filter>` by applying the filter to `$FAKE_GITHUB/<path with every
- * character but letters and digits as _>.json` with jq, as gh does, and records `gh run cancel`.
- * `sleep` records how long it was asked to wait and returns at once.
- */
 const stubPaceGh = `#!/bin/sh
 echo "$*" >> "$FAKE_GITHUB/calls"
 if [ "$1 $2" = "run cancel" ]; then exit 0; fi
@@ -1847,16 +1727,12 @@ const stubSleep = `#!/bin/sh
 echo "$1" >> "$FAKE_GITHUB/sleeps"
 `;
 
-/** A push run of Executor releases on main, as the runs list reports it. */
 interface PushRun {
   readonly id: number;
-  /** Hours since the run was created. */
   readonly created: number;
   readonly status?: "completed" | "in_progress" | "pending";
   readonly conclusion?: "success" | "failure" | "cancelled";
-  /** Hours since its pace job passed, when it did. */
   readonly built?: number;
-  /** Its title, when it is not a check. */
   readonly title?: string;
 }
 
@@ -1879,7 +1755,6 @@ const pace = (self: number, runs: ReadonlyArray<PushRun>) =>
     const file = (api: string) => path.join(github, `${api.replace(/[^A-Za-z0-9]/g, "_")}.json`);
     const iso = (hours: number) =>
       new Date(Date.now() - hours * hour).toISOString().replace(/\.\d+/, "");
-    // The repository dispatches: the checks alone, as GitHub filters by event.
     const listed = runs
       .filter((push) => push.title === undefined)
       .map((push) => ({
@@ -1890,7 +1765,6 @@ const pace = (self: number, runs: ReadonlyArray<PushRun>) =>
           (push.status ?? "completed") === "completed" ? (push.conclusion ?? "success") : null,
       }));
     const list = `repos/${repository}/actions/workflows/release-artifacts.yml/runs?branch=main&event=repository_dispatch`;
-    // The script reads finished runs for the last build, and every run for a newer check.
     yield* fs.writeFileString(
       file(`${list}&status=completed&per_page=100`),
       JSON.stringify({ workflow_runs: listed.filter((push) => push.status === "completed") }),
@@ -1973,7 +1847,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Release matrix pacing"
         { id: 9, created: 0.6, built: 0.5 },
       ]);
       expect(result.calls).toContain(`run cancel 10 --repo ${repository}`);
-      // Still running after its cancellation, it fails rather than pass having tested nothing.
       expect(result.exitCode, result.output).toBe(1);
       expect(result.output).toContain(
         "::error::This run asked to be cancelled, yet is still running",
@@ -2009,16 +1882,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Release matrix pacing"
   );
 });
 
-/**
- * A `gh` for `scripts/releases/matrix-issue.sh`. `gh api <path>` answers from
- * `$FAKE_GITHUB/<path with every character but letters and digits as _>`: `.json`
- * through the call's `--jq` filter, `.txt` as a job's log, and a 404 when neither exists, as for a
- * deleted run. As the real gh does, it refuses to print a log holding terminal escape sequences
- * unless the call passes `--allow-escape-sequences`. The open issues are `open.json`; `issue view N`
- * reads `issue-N.json` through its `--jq`; `issue edit` and `issue create` copy their body file to
- * `edited-N.md` and `created.md` and their title to `title-N` and `created-title`; `issue close`
- * adds the number to `closed`. Every call goes to `calls`.
- */
 const stubIssueGh = `#!/bin/sh
 dir="$FAKE_GITHUB"
 echo "$*" >> "$dir/calls"
@@ -2063,33 +1926,25 @@ if [ -n "$filter" ]; then exec jq -r "$filter" "$file.json"; fi
 exec cat "$file.json"
 `;
 
-/** A finished Executor releases run on main, as the runs list and its jobs report it. */
 interface MainRun {
   readonly id: number;
-  /** Hours before this run was created; negative when created after it. */
   readonly created: number;
-  /** A check by default; a build or a publication was dispatched by hand or by Beta. */
   readonly kind?: "check" | "build" | "beta";
   readonly sha: string;
   readonly conclusion?: "success" | "failure" | "cancelled";
-  /** Its pace job, for a check. */
   readonly pace?: "success" | "failure";
-  /** Its releases job; by default as the run concluded. */
   readonly releases?: "success" | "failure";
 }
 
 const issueWorld = (input: {
-  /** Each job's result, as the report job's needs give it. */
   readonly needs: Readonly<Record<string, string>>;
   readonly runs?: ReadonlyArray<MainRun>;
-  /** This run's failed jobs and their logs. */
   readonly failed?: ReadonlyArray<{
     readonly id: number;
     readonly name: string;
     readonly log: string;
   }>;
   readonly issue?: { readonly number: number; readonly body: string };
-  /** The commits GitHub's compare lists from the last green run to the first failure. */
   readonly compare?: {
     readonly base: string;
     readonly head: string;
@@ -2224,7 +2079,6 @@ const passed = {
   docker: "success",
 };
 const runUrl = (id: number) => `https://github.com/${repository}/actions/runs/${id}`;
-/** The C0 and C1 controls in a text but tab and newline, as code points. */
 const controlsIn = (text: string) =>
   [...text]
     .map((character) => character.codePointAt(0)!)
@@ -2274,7 +2128,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red matrix issue", (it
       expect(body).toContain(
         "  - `e2e/tests/docker-release.spec.ts > setup opens the account step`",
       );
-      // Each scenario is one code span: two backticks, and no @ to mention anyone.
       for (const line of body.split("\n").filter((entry) => entry.startsWith("  - `")))
         expect(line.match(/[`@]/g), line).toEqual(["`", "`"]);
       expect(body).toContain(`<!-- first-red: ${"c".repeat(40)} ${runUrl(50)} -->`);
@@ -2316,7 +2169,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red matrix issue", (it
           {
             id: 7004,
             name: "local (linux, x64)",
-            // ESC ] ended by the one-byte ST, and the one-byte OSC ended by ESC \ (review of #5051).
             log: [
               `2026-11-12T10:00:00.0000000Z  FAIL  e2e/tests/osc.spec.ts > OSC > before ${esc}]0;title\u009c ordinary after`,
               `2026-11-12T10:00:00.0000000Z  FAIL  e2e/tests/osc.spec.ts > OSC > first \u009d0;title${esc}\\ kept after`,
@@ -2474,7 +2326,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red matrix issue", (it
         });
         const cli = path.resolve("scripts/releases/publishing-steps-check.ts");
         const artifacts = yield* fs.readFileString(".github/workflows/release-artifacts.yml");
-        /** The check's problems with a release-artifacts.yml of this text. */
         const problems = (text: string) =>
           Effect.gen(function* () {
             const file = path.join(directory, `release-artifacts-${text.length}.yml`);
@@ -2485,9 +2336,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red matrix issue", (it
         const current = yield* run(".", "node", [cli, "check"], {});
         expect(current.exitCode, current.output).toBe(0);
         expect(current.output).toBe("");
-        // The review's cases: a step that pushes with docker buildx, and a Docker action with
-        // push: true, in a job that publishes nothing yet. Neither command is guessed at: each
-        // lacks a declaration, and that fails.
         const anchor = "      - name: Check the tested and published archives are the same bytes\n";
         expect(artifacts).toContain(anchor);
         for (const step of [
@@ -2500,7 +2348,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red matrix issue", (it
               /^release-artifacts\.yml: job archives's step \d+ \(.+\) does not say whether it publishes: give it env PUBLISHES "yes" or "no"$/,
             ),
           ]);
-        // Declared, it passes, whichever it says.
         expect(
           yield* problems(
             artifacts.replace(
@@ -2510,7 +2357,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red matrix issue", (it
             ),
           ),
         ).toEqual([]);
-        // A job named so that its id does not start the name GitHub shows fails too.
         const renamed = artifacts.replace(
           "\n  archives:\n",
           "\n  archives:\n    name: Compare archives\n",
@@ -2519,8 +2365,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red matrix issue", (it
         expect(yield* problems(renamed)).toEqual([
           `release-artifacts.yml: job archives is named "Compare archives", which does not start with its id; a run's job is found by its id at the start of its name`,
         ]);
-        // How a run names each job, cut short or not, finds it: a matrix job, a named one, a
-        // called one. Failed jobs with no failed step publish nothing; the publish job always does.
         const classify = (jobs: ReadonlyArray<{ name: string; step?: string }>) =>
           Effect.gen(function* () {
             const input = path.join(directory, "jobs.json");
@@ -2585,26 +2429,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red matrix issue", (it
   );
 });
 
-/**
- * A `gh` for `scripts/ci/main-health.ts` that serves a repository from two files in
- * `$FAKE_GITHUB`: `world.json`, the facts the script reads (finished workflow runs, their jobs and
- * logs, artifacts, compares), and `state.json`, the issues and their comments, which writes change.
- * It answers `gh api` as GitHub's REST API does, with `per_page` and `page` on every list (30 a
- * page unless told) and `--paginate` reading every page, so the script before this change runs
- * against it too. It refuses a log holding terminal escape sequences unless the call passes
- * `--allow-escape-sequences`, as gh does.
- *
- * Every invocation goes to `calls`, every request (a page of a list is one) to `requests` as
- * `<method> <path>` (a GraphQL query as `QUERY graphql <what>`; the fake serves no mutation), and
- * every change to an issue or label to `mutations` as `<what> <issue number or label>`. A request
- * whose number (counting from 1) is in `faults.json` fails as an outage does, after the pages before
- * it were printed; `{"short": n}` serves request n's page one item short, and `{"shift": n}` serves
- * it starting one item early, as a list that moved between two pages would, each with the count
- * unchanged. `{"edit": n, "ops": [...]}` serves request n's JSON answer with each op's path set to
- * its value or deleted, as a malformed answer would be; every JSON answer is kept unedited in
- * `answers/<n>.json`. Each answer holds only the fields Main health reads. The issue list GraphQL
- * serves says how many issues match; REST's does not.
- */
 const fakeGitHub = String.raw`#!/usr/bin/env node
 const fs = require("fs");
 const path = require("path");
@@ -2917,15 +2741,10 @@ const crc32 = (bytes: Uint8Array) => {
   for (const byte of bytes) c = crcTable[(c ^ byte) & 0xff]! ^ (c >>> 8);
   return (c ^ 0xffffffff) >>> 0;
 };
-/**
- * A zip archive of one file, stored without compression, as GitHub serves an artifact. Its comment
- * holds an escape byte, as any zip's bytes can, which gh refuses to print unless told to.
- */
 const zipOf = (name: string, text: string) => {
   const data = new TextEncoder().encode(text);
   const file = new TextEncoder().encode(name);
   const crc = crc32(data);
-  // 1 January 1980, the first date a zip can hold.
   const date = (1 << 5) | 1;
   const local = new DataView(new ArrayBuffer(30));
   local.setUint32(0, 0x04034b50, true);
@@ -2964,7 +2783,6 @@ const zipOf = (name: string, text: string) => {
   return out;
 };
 
-/** A finished workflow run, as the fake lists it; `created` is hours before now. */
 interface FakeRun {
   readonly id: number;
   readonly workflow: string;
@@ -2975,10 +2793,8 @@ interface FakeRun {
   readonly sha: string;
   readonly conclusion: string;
   readonly attempt?: number;
-  /** Set while a later attempt runs: the run then has no conclusion, and `previous` is how the attempt before it ended. */
   readonly status?: "in_progress" | "queued";
   readonly previous?: string;
-  /** How each attempt before `attempt` ended, oldest first, when they differ from `previous`. */
   readonly attempts?: ReadonlyArray<string>;
 }
 type Conclusion = "success" | "failure" | "cancelled" | "skipped" | "timed_out";
@@ -3004,7 +2820,6 @@ const windowsRun = (id: number, created: number, sha: string, conclusion: Conclu
   conclusion,
 });
 
-/** A held-beta decision a Beta tick uploaded, as beta.yml writes it. */
 interface Decision {
   readonly state: "held" | "clear";
   readonly reason: string;
@@ -3019,13 +2834,10 @@ interface FakeArtifact {
   readonly expired?: boolean;
   readonly branch?: string;
   readonly fork?: boolean;
-  /** The workflow that uploaded it, beta.yml by default. */
   readonly workflow?: string;
-  /** Listed, not expired, but its zip answers HTTP 410, as one that expires between the two does. */
   readonly gone?: boolean;
 }
 
-/** A failed or passed job of a run, with its log as text, bytes, or GitHub having none. */
 interface FakeJob {
   readonly id: number;
   readonly name: string;
@@ -3033,28 +2845,18 @@ interface FakeJob {
   readonly log?: string | Uint8Array | 404 | 410;
 }
 
-/** The facts a run of the script reads. */
 interface Facts {
   readonly runs?: ReadonlyArray<FakeRun>;
-  /** By run id, or by `<run id>:<attempt>` for one attempt's jobs. */
   readonly jobs?: Readonly<Record<number | string, ReadonlyArray<FakeJob>>>;
-  /** Beta's decisions; when not given, one current `clear` (`currentClear`), so nothing is held. */
   readonly artifacts?: ReadonlyArray<FakeArtifact>;
   readonly compare?: Readonly<
     Record<string, ReadonlyArray<{ readonly sha: string; readonly message: string }>>
   >;
-  /** Runs still in their first attempt until read by id this many times, by run id. */
   readonly completeAfter?: Readonly<Record<number, number>>;
-  /**
-   * `none`: no Windows check has run. Otherwise, when `runs` holds no Windows check, one passed
-   * two days ago (`passedWindows`), so the Windows check is known green.
-   */
   readonly windows?: "none";
-  /** The order runs created at the same time are listed in: higher id first unless `ascending`. */
   readonly tieOrder?: "ascending";
 }
 
-/** An issue as the fake gh keeps it; a comment given as text was written by github-actions. */
 interface FakeIssue {
   readonly number: number;
   readonly title?: string;
@@ -3084,11 +2886,8 @@ const mainTitle = "Main is red or a beta release is held";
 const bot = "github-actions[bot]";
 const mainLabel = "main-health";
 const marker = "<!-- main-issue: main-health -->";
-/** The labels every Main health before main-health.yml took `mainLabel` found its issues by. */
 const oldLabels = ["main-red", "windows-check-red"];
-/** The Windows check when a case gives none: passed two days ago. */
 const passedWindows: FakeRun = windowsRun(57, 48, "9".repeat(40), "success");
-/** The env main-health.yml passes. */
 const mainHealthEnv = {
   LABEL: mainLabel,
   TITLE: mainTitle,
@@ -3103,22 +2902,13 @@ const mainHealthEnv = {
   BETA_BRANCH: "main",
   BETA_EVENTS: "push schedule workflow_dispatch workflow_run",
   BETA_ARTIFACT: "beta-hold",
-  // What the script before this change read as CI's source, which it ran as with no RUN_ID, so it
-  // runs against the same facts.
   WORKFLOW: "ci.yml",
   BRANCH: "main",
   EVENT: "push",
 };
 
-/** A value of a GitHub Actions expression context. */
 type ContextValue = string | number | boolean | null | { readonly [key: string]: ContextValue };
 
-/**
- * Evaluates a GitHub Actions expression of the forms these workflows use: `||`, `&&`, `!`, `==`,
- * `!=`, parentheses, single-quoted strings, property paths and the status functions `always()`,
- * `success()` and `cancelled()`, as GitHub's expression docs define them. `==` ignores case between
- * strings and compares mixed types as numbers (null and '' are 0), so a missing input equals ''.
- */
 const evaluate = (
   expression: string,
   context: Readonly<Record<string, ContextValue>>,
@@ -3208,10 +2998,6 @@ const evaluate = (
   return value;
 };
 
-/**
- * Whether a job or step whose `if` is `condition` runs: GitHub adds `success() &&` to a condition
- * that calls no status function, and a missing one is `success()`.
- */
 const admits = (
   condition: string | undefined,
   context: Readonly<Record<string, ContextValue>>,
@@ -3225,7 +3011,6 @@ const admits = (
   return !(value === false || value === null || value === "" || value === 0);
 };
 
-/** A workflow file as YAML gives it, with the parts these cases read. */
 interface WorkflowStep {
   readonly name?: string;
   readonly if?: string;
@@ -3248,10 +3033,6 @@ interface Workflow {
   readonly concurrency?: unknown;
   readonly jobs: Readonly<Record<string, WorkflowJob>>;
 }
-/**
- * Workflow files as YAML reads them (`scripts/ci/workflow-yaml.ts`, the repository's `yaml`
- * package): the parsed workflow of each, by path, or the problems that make one not valid YAML.
- */
 const workflowYaml = (files: ReadonlyArray<string>) =>
   Effect.gen(function* () {
     const result = yield* run(".", "node", ["scripts/ci/workflow-yaml.ts", ...files], {});
@@ -3259,7 +3040,6 @@ const workflowYaml = (files: ReadonlyArray<string>) =>
       ? { ok: true as const, workflows: JSON.parse(result.output) as Record<string, Workflow> }
       : { ok: false as const, problems: result.output };
   });
-/** One workflow of this checkout, its text and what YAML reads, failing the case if it is not valid. */
 const workflowFile = (file: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -3269,7 +3049,6 @@ const workflowFile = (file: string) =>
     return { text, workflow: parsed.workflows[`.github/workflows/${file}`]! };
   });
 
-/** What started a run of main-health.yml. */
 type Trigger =
   | {
       readonly event: "workflow_run";
@@ -3281,7 +3060,6 @@ type Trigger =
   | { readonly event: "schedule" }
   | { readonly event: "workflow_dispatch"; readonly inputs?: Readonly<Record<string, string>> };
 
-/** The expression contexts GitHub gives main-health.yml's job for `trigger`. */
 const mainHealthContext = (trigger: Trigger): Readonly<Record<string, ContextValue>> => ({
   github: {
     event_name: trigger.event,
@@ -3302,11 +3080,9 @@ const mainHealthContext = (trigger: Trigger): Readonly<Record<string, ContextVal
           }
         : {},
   },
-  // GitHub fills a dispatch's inputs with their defaults; other events have none.
   inputs: trigger.event === "workflow_dispatch" ? { windows_run: "", ...trigger.inputs } : {},
 });
 
-/** A step's env, its `${{ }}` expressions evaluated in `context`. */
 const stepEnv = (step: WorkflowStep, context: Readonly<Record<string, ContextValue>>) =>
   Object.fromEntries(
     Object.entries(step.env ?? {}).map(([key, value]) => [
@@ -3318,11 +3094,6 @@ const stepEnv = (step: WorkflowStep, context: Readonly<Record<string, ContextVal
     ]),
   );
 
-/**
- * Runs main-health.yml's `issue` job from this checkout for `trigger`, in `runner`'s environment:
- * the job's `if`, then each `run` step its `if` admits, as `bash -e` does, stopping at the first
- * that fails. The checkout step is this checkout.
- */
 const mainHealthJob = (trigger: Trigger, runner: Readonly<Record<string, string>>) =>
   Effect.gen(function* () {
     const { workflow } = yield* workflowFile("main-health.yml");
@@ -3331,7 +3102,6 @@ const mainHealthJob = (trigger: Trigger, runner: Readonly<Record<string, string>
     if (!admits(job.if, context)) return { output: "", exitCode: 0, ran: false };
     let output = "";
     for (const step of job.steps) {
-      // The checkout is this checkout, set up already.
       if (step.uses !== undefined) {
         expect(step.uses).toMatch(
           /^actions\/checkout@[0-9a-f]{40}$|^\.\/\.github\/actions\/setup$/,
@@ -3350,28 +3120,18 @@ const mainHealthJob = (trigger: Trigger, runner: Readonly<Record<string, string>
     return { output, exitCode: 0, ran: true };
   });
 
-/** A change to a JSON answer: the value at `path` set to `value`, or deleted. */
 type Edit =
   | { readonly path: ReadonlyArray<string | number>; readonly value: unknown }
   | { readonly path: ReadonlyArray<string | number>; readonly delete: true };
-/**
- * A request the fake fails (its number), serves one item short or one item early, or answers with
- * `ops` made to its answer.
- */
 type Fault =
   | number
   | { readonly short: number }
   | { readonly shift: number }
   | { readonly edit: number; readonly ops: ReadonlyArray<Edit> };
 
-/**
- * A repository behind the fake gh holding `issues`, where each `call` runs the script once against
- * `facts`, failing the requests numbered in `faults`, and returns what it did.
- */
 const issueRepository = (
   facts: Facts,
   issues: ReadonlyArray<FakeIssue> = [],
-  /** The repository's labels; `mainLabel` by default, as once the first issue opened. */
   labels: ReadonlyArray<string> = [mainLabel, ...oldLabels],
 ) =>
   Effect.gen(function* () {
@@ -3384,7 +3144,6 @@ const issueRepository = (
     yield* fs.makeDirectory(github);
     yield* fs.writeFileString(path.join(bin, "gh"), fakeGitHub);
     yield* fs.chmod(path.join(bin, "gh"), 0o755);
-    // A step's waits return at once, and are counted.
     yield* fs.writeFileString(
       path.join(bin, "sleep"),
       '#!/bin/sh\necho "sleep $*" >> "$FAKE_GITHUB/sleeps"\n',
@@ -3497,10 +3256,6 @@ const issueRepository = (
     const script = path.resolve("scripts/ci/main-health.ts");
     let calls = 0;
 
-    /**
-     * Runs the script once, or with a `trigger`, main-health.yml's own job as GitHub would for that
-     * event: its `if`, then each step its `if` admits, with the env the workflow gives it.
-     */
     const call = (faults: ReadonlyArray<Fault> = [], trigger?: Trigger) =>
       Effect.gen(function* () {
         const temp = path.join(root, `runner-temp-${calls++}`);
@@ -3532,13 +3287,10 @@ const issueRepository = (
           calls: lines(yield* read("calls")),
           requests: lines(yield* read("requests")),
           mutations: lines(yield* read("mutations")),
-          /** The waits a step slept, as `sleep <seconds>`. */
           sleeps: lines(yield* read("sleeps")),
           summary: yield* read(path.join(`../${path.basename(temp)}`, "summary.md")),
           issues,
-          /** The open issues, whoever opened them. */
           open,
-          /** The open issues this script owns, lowest first. */
           owned: open
             .filter(
               (issue) =>
@@ -3547,17 +3299,14 @@ const issueRepository = (
                 issue.body.includes(marker),
             )
             .sort((a, b) => a.number - b.number),
-          /** An issue's body. */
           body: (number: number) => issues.find((each) => each.number === number)?.body,
           labels: state.labels,
-          /** The JSON answer to request N (counting from 1), as served before any edit. */
           answer: (number: number) =>
             read(`answers/${number}.json`).pipe(
               Effect.map((text) => (text === "" ? undefined : (JSON.parse(text) as unknown))),
             ),
         };
       });
-    /** Runs this repository's fake gh with ARGS, as a script would. */
     const gh = (args: ReadonlyArray<string>) =>
       run(root, path.join(bin, "gh"), args, {
         FAKE_GITHUB: github,
@@ -3566,22 +3315,15 @@ const issueRepository = (
     return { call, initial, gh };
   });
 
-/** Runs the script once against `facts` and a repository holding `issues`. */
 const reconcile = (facts: Facts, issues: ReadonlyArray<FakeIssue> = []) =>
   Effect.gen(function* () {
     const repository = yield* issueRepository(facts, issues);
     return yield* repository.call();
   });
 
-/** A request that reads: a REST GET, or a GraphQL query (the fake serves no mutation). */
 const reads = (request: string) => request.startsWith("GET ") || request.startsWith("QUERY ");
 const writes = (requests: ReadonlyArray<string>) => requests.filter((request) => !reads(request));
 
-/**
- * The cloud-product job log of CI run 44315383027 on main (18 Nov 2026), cut to the lines that
- * name its failed scenario, as GitHub serves it: each line timestamped, Vitest's colors as
- * terminal escape sequences. The red-main issue it opened said no scenario was in its log.
- */
 const esc = "\u001b";
 const cloudProductLog = [
   `2026-11-18T13:40:46.6008956Z ${esc}[90mstdout${esc}[2m | e2e/tests/workflow-engine-calls.spec.ts${esc}[2m > ${esc}[22m${esc}[2mWorkflow engine calls${esc}[2m > ${esc}[22m${esc}[2ma run's sleep whose engine call failed is called again, a run whose sleep keeps failing records why for its owner, and neither an app's own failure nor a step whose answer was lost is repeated${esc}[22m${esc}[39m`,
@@ -3607,9 +3349,7 @@ const clear = (run = 701): Decision => ({
   since: "",
   run: runUrl(run),
 });
-/** Beta's decision when a case gives none: `clear`, an hour ago. */
 const currentClear: FakeArtifact = { id: 9000, created: 1, decision: clear(709) };
-/** CI red in run 60 after green 59, with one failed job naming one scenario. */
 const redCi = {
   runs: [ciRun(60, 0, sha("c"), "failure"), ciRun(59, 1, sha("a"), "success")],
   jobs: { 60: [{ id: 95, name: "checks / e2e-local (1/2)", log: cloudProductLog }] },
@@ -3621,11 +3361,9 @@ const ownedIssue = (number: number, extra: Omit<FakeIssue, "number"> = {}): Fake
   body: `${marker}\nAn earlier run wrote this.`,
   ...extra,
 });
-/** A source comment as the script before this change kept it. */
 const sourceComment = (source: string, text: string) =>
   `<!-- main-issue-source: ${source} -->\n${text}`;
 
-/** A source's facts for each health it can have, as the 54-case table builds them. */
 type Health = "bad" | "good" | "unknown";
 const ciFor: Readonly<Record<Health, Facts>> = { bad: redCi, good: greenCi, unknown: {} };
 const windowsFor: Readonly<Record<Health, Facts>> = {
@@ -3642,12 +3380,6 @@ const betaFor: Readonly<Record<Health, ReadonlyArray<FakeArtifact>>> = {
   unknown: [],
 };
 
-/**
- * The 18 cases of the table with CI `ci`: each Windows and Beta health, with an owned issue open
- * or not. The expectation is the rule itself, restated here from the facts: anything bad opens the
- * issue or keeps the open one, everything good closes it, and otherwise an open issue stays open and
- * is rewritten, and none opens.
- */
 const healthTable = (ci: Health) =>
   Effect.gen(function* () {
     const healths = ["bad", "good", "unknown"] as const;
@@ -3692,7 +3424,6 @@ const healthTable = (ci: Health) =>
         result.owned.map((issue) => issue.number),
         row,
       ).toEqual(bad || (open && !good) ? [1] : []);
-      // What the issue (or, with none, the run's summary) says of each source.
       const text = result.body(1) ?? result.summary;
       const said = { bad: "red", good: "green", unknown: "unknown, no finished run that counts" };
       expect(text, row).toContain(`- CI on main: ${said[c]}\n`);
@@ -3708,7 +3439,6 @@ const healthTable = (ci: Health) =>
     }
   }).pipe(Effect.scoped);
 
-/** VALUE with EDITS made, as the fake makes them to an answer. */
 const applyEdits = (value: unknown, edits: ReadonlyArray<Edit>) => {
   const edited = JSON.parse(JSON.stringify(value)) as Record<string | number, unknown>;
   for (const edit of edits) {
@@ -3726,7 +3456,6 @@ const applyEdits = (value: unknown, edits: ReadonlyArray<Edit>) => {
   return edited;
 };
 
-/** What kind of answer a request gets, by the request; undefined for bytes (a log, a zip) and writes. */
 type AnswerKind =
   | "runs"
   | "attempt"
@@ -3754,13 +3483,6 @@ const kindOf = (request: string): AnswerKind | undefined =>
                 : request.startsWith("GET labels/")
                   ? "label"
                   : undefined;
-/**
- * The string fields of each answer whose every value is a valid answer: names, titles and text, a
- * Windows run's title (another title is a run that does not count), an artifact's branch (another
- * branch is a decision that is not Beta's) and a cursor on the last page. Every other string is a
- * value GitHub documents or this script expects (a status, an event, a sha, a time, a URL), and
- * "nonsense" in it is malformed.
- */
 const freeText: Readonly<Record<AnswerKind, ReadonlyArray<string>>> = {
   runs: ["display_title"],
   attempt: [],
@@ -3772,24 +3494,12 @@ const freeText: Readonly<Record<AnswerKind, ReadonlyArray<string>>> = {
   label: [],
 };
 
-/** One way to spoil an answer, and what it does. */
 interface Spoiling {
   readonly what: string;
   readonly ops: ReadonlyArray<Edit>;
-  /** `same`: an order GitHub does not promise, which must change nothing. Otherwise a failed read. */
   readonly expect: "fail" | "same";
 }
 
-/**
- * Every way to spoil ANSWER that this generator knows, each a failed read: every field missing,
- * every field of another type, every documented or expected string an unknown value, every count
- * one more, and of every list (its first and last items visited in turn), the list emptied while
- * its count stays, an item missing, an item twice and two items swapped. A swap is a failed read
- * for runs, which GitHub lists newest first and which are read only as far as needed; for jobs,
- * artifacts, issues and labels, whose order GitHub does not promise and which are read whole and
- * sorted, it must change nothing. Commits are listed as GitHub orders them, oldest first, which
- * nothing in the answer lets this script check, so they are not swapped.
- */
 const spoilings = (answer: unknown, kind: AnswerKind): ReadonlyArray<Spoiling> => {
   const out: Array<Spoiling> = [];
   const other = (value: unknown) =>
@@ -3868,11 +3578,6 @@ const spoilings = (answer: unknown, kind: AnswerKind): ReadonlyArray<Spoiling> =
   return out;
 };
 
-/**
- * A world in which every kind of answer Main health reads comes once, each list holding two items:
- * CI red and being re-run (its earlier attempt read), the Windows check red, each with jobs and
- * commits since its last green run, two Beta decisions, and two open issues with the label.
- */
 const everyAnswer: Facts = {
   runs: [
     {
@@ -3911,11 +3616,6 @@ const everyIssue: ReadonlyArray<FakeIssue> = [
   { number: 2, body: "Not this script's.", labels: [mainLabel, "other"] },
 ];
 
-/**
- * Spoils each answer of KIND in `everyAnswer` every way `spoilings` knows, one run each, and checks
- * each run: a failed read that writes nothing, or, for an order GitHub does not promise, the same
- * writes and issues as the unspoilt run.
- */
 const spoilEach = (
   kind: AnswerKind,
   world: Facts = everyAnswer,
@@ -3985,7 +3685,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
             { id: 134844880128, name: "checks / check", conclusion: "success", log: "" },
           ],
         },
-        // No Beta decision at all, as before Beta's first upload, and no Windows check yet.
         artifacts: [],
         windows: "none",
         compare: {
@@ -4031,7 +3730,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
       );
       expect(body).not.toContain("checks / check");
       expect(body).not.toContain("Body text");
-      // Red CI opens it; what is unknown is said, and is not what opened it.
       expect(body).toContain(
         "- CI on main: red\n- The Windows check: unknown, no finished run that counts\n",
       );
@@ -4042,7 +3740,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
       expect(body).toContain(
         "## The beta release\n\nUnknown: no Beta tick in the last six days left a decision (the beta-hold artifact beta.yml uploads when it decides held or clear, kept for seven days), and none is kept at all. So whether a beta is held cannot be read, and unknown neither opens nor closes this issue.",
       );
-      // The run's summary shows the same text.
       expect(result.summary).toBe(`${body}\n`);
     }).pipe(Effect.scoped),
   );
@@ -4051,8 +3748,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
     "the first failure is the oldest red run since the last green one, read across pages",
     () =>
       Effect.gen(function* () {
-        // 230 red runs after a green one, with cancelled and skipped runs among them, which decide
-        // nothing.
         const runs = [
           ...Array.from({ length: 230 }, (_, n) => ciRun(1000 - n, n, sha("c"), "failure")),
           ciRun(700, 230, sha("f"), "cancelled"),
@@ -4070,13 +3765,11 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
         expect(body).toContain(`- Latest failure: ${runUrl(1000)} on ${sha("c")}`);
         expect(body).toContain(`- First failure: ${runUrl(699)} on ${sha("b")}`);
         expect(body).toContain(`- Last green run before it: ${runUrl(698)} on ${sha("a")}.`);
-        // Three pages: the green run is on the third.
         expect(
           result.requests.filter((request) => request.includes("/workflows/ci.yml/runs")),
         ).toEqual(
           [1, 2, 3].map((page) => expect.stringContaining(`event=push&per_page=100&page=${page}`)),
         );
-        // With no green run in five pages, it says so and names the oldest red run it read.
         const never = yield* reconcile({
           runs: Array.from({ length: 600 }, (_, n) => ciRun(2000 - n, n, sha("c"), "failure")),
           jobs: { 2000: [] },
@@ -4101,12 +3794,10 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
         };
         const facts: Facts = {
           runs: [
-            // Pushed after the red run, its first attempt still running.
             { ...ciRun(62, 0, sha("d"), "failure"), status: "in_progress" },
             rerun,
             ciRun(59, 1, sha("a"), "success"),
           ],
-          // The jobs of the attempt that ended, not of the one running.
           jobs: {
             "60:1": [{ id: 95, name: "checks / e2e-local (1/2)", log: cloudProductLog }],
             "60:2": [{ id: 96, name: "checks / e2e-local (2/2)", log: "" }],
@@ -4122,7 +3813,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
         expect(body).toContain(cloudProductScenario);
         expect(body).not.toContain("e2e-local (2/2)");
         expect(result.requests).toContain("GET actions/runs/60/attempts/1");
-        // A re-run of a green run stays green, and with nothing else to report the issue closes.
         const green = yield* reconcile(
           { runs: [{ ...rerun, previous: "success" }, ciRun(59, 1, sha("a"), "failure")] },
           [ownedIssue(1)],
@@ -4154,7 +3844,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
         `- [checks / e2e-local (2/2)](${runUrl(60)}/job/82)\n  - GitHub no longer has its log; see the job.`,
       );
       expect(body).not.toContain("No failed scenario");
-      // A compare GitHub cannot make is said so, not left out.
       expect(body).toContain(
         "GitHub cannot compare those two commits (HTTP 404), so they are not listed.",
       );
@@ -4176,7 +3865,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
                 id: 82,
                 name: `checks / e2e ${esc}]0;a title\u0007(1/2)\u0008`,
                 log: [
-                  // A hyperlink (OSC 8, ended by ST) around the file, and a CR from a progress line.
                   `2026-11-18T13:41:27.0565796Z ${esc}[41m FAIL ${esc}[49m ${esc}]8;;https://example.com/a${esc}\\e2e/tests/osc.spec.ts${esc}]8;;${esc}\\ > OSC > a link around the file\r`,
                   `2026-11-18T13:41:27.0565796Z ${esc}P1$r0m${esc}\\${esc}(B${esc}=AssertionError: expected 1 to be 2`,
                 ].join("\n"),
@@ -4184,13 +3872,11 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
               {
                 id: 83,
                 name: "checks / e2e (2/2)",
-                // A window title (OSC 0, ended by BEL), a one-byte CSI and a charset designation.
                 log: `2026-11-18T13:41:27.0565796Z  \u009b31m×\u009b39m ${esc}]0;tab title\u0007e2e/tests/osc.spec.ts > OSC > a title set by the log${esc}(B\u0007 120ms`,
               },
               {
                 id: 84,
                 name: "checks / e2e (3/3)",
-                // A byte that is not UTF-8 is replaced, and stops nothing.
                 log: new Uint8Array([
                   ...new TextEncoder().encode(
                     `2026-11-18T13:41:27.0565796Z ${esc}[31m FAIL ${esc}[39m e2e/tests/osc.spec.ts > OSC > a byte that is not text `,
@@ -4202,8 +3888,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
               {
                 id: 85,
                 name: "checks / e2e (4/4)",
-                // OSC opened by ESC and ended by the one-byte ST, and opened by the one-byte OSC and
-                // ended by ESC \: the text after each stays (review of #5051).
                 log: [
                   `2026-11-18T13:41:27.0565796Z  FAIL  e2e/tests/osc.spec.ts > OSC > before ${esc}]0;title\u009c ordinary after`,
                   `2026-11-18T13:41:27.0565796Z  FAIL  e2e/tests/osc.spec.ts > OSC > first \u009d0;title${esc}\\ kept after`,
@@ -4239,13 +3923,11 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
           ...greenCi.runs,
           windowsRun(62, 1, sha("c"), "failure"),
           windowsRun(58, 5, sha("a"), "success"),
-          // Another narrowing from the same branch, and a cancelled check, are no Windows check.
           {
             ...windowsRun(63, 0, sha("d"), "success"),
             title: "Executor releases (build, cli on linux-x64)",
           },
           windowsRun(64, 0, sha("d"), "cancelled"),
-          // A narrowed build from another branch is not the paced check.
           { ...windowsRun(65, 0, sha("d"), "success"), branch: "win-runtime-restart-limits" },
         ],
         jobs: {
@@ -4279,7 +3961,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
       expect(body).toContain(
         `- [cli (win32, x64)](${runUrl(62)}/job/91)\n  - \`local  e2e/tests/local-app-runtime-restart.spec.ts > Local app runtime restart > a scenario\``,
       );
-      // Green again, with CI green and nothing held: the issue closes, saying so.
       const passed = yield* reconcile(
         {
           runs: [
@@ -4309,8 +3990,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
           artifacts: [
             { id: 1, created: 30, decision: clear(690) },
             { id: 2, created: 2, decision: held() },
-            // Newer, but from another branch, from a fork or under another name: none counts. (A
-            // newer one that expired is a failed read: review 3 below.)
             { id: 4, created: 1, decision: clear(703), branch: "beta-fix" },
             { id: 5, created: 1, decision: clear(704), fork: true },
             { id: 6, created: 1, decision: clear(705), name: "beta-hold-copy" },
@@ -4324,12 +4003,10 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
             "",
             `Held. A beta has been due since 2026-11-18T06:00:00.000Z and is not out. The latest Beta tick that decided, ${runUrl(700)}, held it:`,
             "",
-            // One code span: its own backticks go, and an @ in it mentions nobody.
             "> `executor@2.0.0-beta.5 is not on npm, and at least 5 publishing attempts failed in the last day; see RELEASING.md @someone`",
           ].join("\n"),
         );
         expect(heldIssue.body(heldIssue.owned[0]!.number)).toContain(`Green: ${runUrl(61)}`);
-        // A newer tick found the release out: the issue closes.
         const cleared = yield* reconcile(
           {
             ...greenCi,
@@ -4345,7 +4022,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
         expect(cleared.body(1)).toContain(
           `## The beta release\n\nNot held: the latest Beta tick that decided, ${runUrl(701)}, found it on npm with nothing holding the next.`,
         );
-        // A held beta of unknown start says so.
         const unknown = yield* reconcile({
           ...greenCi,
           artifacts: [{ id: 2, created: 2, decision: { ...held(), since: "" } }],
@@ -4413,7 +4089,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
         expect(green.exitCode, green.output).toBe(0);
         expect(green.mutations).toEqual([]);
         expect(green.open.map((issue) => issue.number)).toEqual([40, 41, 42, 43]);
-        // A red run opens an issue of its own rather than writing to any of them.
         const red = yield* reconcile(redCi, others);
         expect(red.exitCode, red.output).toBe(0);
         expect(red.mutations).toEqual(["create 44"]);
@@ -4421,16 +4096,10 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
       }).pipe(Effect.scoped),
   );
 
-  // The reproductions of the second review of #5051 (each fails against the script before this
-  // change, run as CI's source with the same facts):
-
   it.effect(
     "a read that fails, each in turn, writes nothing, closes nothing and fails the run (review 1)",
     () =>
       Effect.gen(function* () {
-        // Review 1: CI green while a held beta keeps the issue open, and the issue holds the
-        // earlier script's comments. Then everything at once: CI and the Windows check red over
-        // three pages of runs with commits to list, many jobs, a held beta and two open issues.
         const worlds: ReadonlyArray<readonly [Facts, ReadonlyArray<FakeIssue>]> = [
           [
             { ...greenCi, artifacts: [{ id: 2, created: 2, decision: held() }] },
@@ -4446,7 +4115,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
           [
             {
               runs: [
-                // The newest being re-run, so its previous attempt is read too.
                 {
                   ...ciRun(500, 0, sha("c"), "failure"),
                   attempt: 2,
@@ -4484,7 +4152,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
           const clean = yield* (yield* issueRepository(facts, issues)).call();
           expect(clean.exitCode, clean.output).toBe(0);
           expect(writes(clean.requests).length).toBeGreaterThan(0);
-          // Every read comes before the first write.
           const firstWrite = clean.requests.findIndex((request) => !reads(request));
           expect(clean.requests.slice(firstWrite).filter(reads)).toEqual([]);
           const readAt = clean.requests.flatMap((request, index) =>
@@ -4509,7 +4176,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
     "two open issues with stale reports leave nothing open once every source is fine (review 2)",
     () =>
       Effect.gen(function* () {
-        // Review 2: #1 held CI's report and #2 a held beta's; CI is green and the beta released.
         const result = yield* reconcile(
           { ...greenCi, artifacts: [{ id: 7, created: 0, decision: clear() }] },
           [
@@ -4521,7 +4187,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
         );
         expect(result.exitCode, result.output).toBe(0);
         expect(result.owned).toEqual([]);
-        // Nothing reads the comments an earlier script left.
         expect(result.requests.filter((request) => request.includes("/comments"))).toEqual([]);
       }).pipe(Effect.scoped),
   );
@@ -4545,8 +4210,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
 
   it.effect("a clear the issue did not see still removes the hold it shows (review 3)", () =>
     Effect.gen(function* () {
-      // Review 3: a clear came while the issue was closed, so the reopened issue still showed the
-      // hold. Here the issue shows a hold, Beta's newest decision is clear and CI is red.
       const shown = [
         marker,
         "## CI on main",
@@ -4595,8 +4258,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
 
   it.effect("lists of 250 issues, jobs and artifacts are read to their ends (review 5)", () =>
     Effect.gen(function* () {
-      // Review 5: the owned issue behind 249 newer unmarked bot issues with the label. The
-      // failed jobs on the third page of 250, and the newest decision last of 250 as served.
       const unmarked = Array.from({ length: 249 }, (_, n) => ({
         number: n + 2,
         body: "Not this script's.",
@@ -4691,7 +4352,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
           results.push(first.owned.map((issue) => [issue.title, issue.body, issue.labels]));
         }
         for (const each of results) expect(each).toEqual(results[0]);
-        // Nothing to report: every owned issue closes, whatever it said.
         for (const issues of earlier) {
           const result = yield* reconcile(
             { ...greenCi, artifacts: [{ id: 7, created: 0, decision: clear() }] },
@@ -4703,15 +4363,10 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
       }).pipe(Effect.scoped),
   );
 
-  // The reproductions of the third review of #5051 (/tmp/review5051-round3/evidence.md). Each fails
-  // against ea739cd29, the script before this change.
-
   it.effect(
     "a run is green only if its latest completed attempt passed, and a cancelled attempt never hides an earlier failure (review 3, 1)",
     () =>
       Effect.gen(function* () {
-        // Run 60, newest, in each case; run 59 before it green. "nothing" is run 60 counting for
-        // nothing, so 59 decides. `deciding_attempt` in the script has the same table.
         const cells: ReadonlyArray<
           readonly [ReadonlyArray<string>, "running" | string | undefined, string]
         > = [
@@ -4722,7 +4377,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
           [["failure"], "running", "red 1"],
           [["failure"], "success", "green 2"],
           [["failure"], "failure", "red 2"],
-          // The review's case: the earlier failure stands.
           [["failure"], "cancelled", "red 1"],
           [["failure"], "skipped", "red 1"],
           [["cancelled"], "running", "nothing"],
@@ -4731,7 +4385,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
           [["cancelled"], "cancelled", "nothing"],
           [[], "running", "nothing"],
           [[], "cancelled", "nothing"],
-          // Three attempts.
           [["failure", "cancelled"], "cancelled", "red 1"],
           [["failure", "cancelled"], "running", "red 1"],
           [["success", "failure"], "cancelled", "red 2"],
@@ -4777,16 +4430,12 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
               `## CI on main\n\nGreen: ${runUrl(state === "green" ? 60 : 59)} on ${sha(state === "green" ? "c" : "a")}.`,
             );
           }
-          // Earlier attempts are read only as far as the rule needs, newest first.
           const attemptReads = result.requests.filter(
             (request) => request.includes("/attempts/") && !request.includes("/jobs"),
           );
           for (const read of attemptReads)
             expect(read, cell).toMatch(/^GET actions\/runs\/60\/attempts\/[0-9]+$/);
         }
-        // 500 runs of which none counts yet: what CI says is not known, so nothing is written.
-        // Fewer, read to the end of the list, are a workflow with no finished run that counts: CI
-        // is unknown, which neither closes the open issue nor leaves it saying CI is red.
         const cancelled = (count: number) =>
           Array.from({ length: count }, (_, n) => ciRun(3000 - n, n, sha("c"), "cancelled"));
         const unknown = yield* issueRepository({ runs: cancelled(600) }, [ownedIssue(1)]);
@@ -4809,7 +4458,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
     "a page that holds less than its list's count says, or moved between two reads, fails the run with nothing written (review 3, 2)",
     () =>
       Effect.gen(function* () {
-        // The review's case: one held decision, its page served empty with total_count 1.
         const reviewedWorld = () =>
           issueRepository({ ...greenCi, artifacts: [{ id: 1, created: 0, decision: held() }] }, [
             ownedIssue(1, { body: `${marker}\nHeld.` }),
@@ -4824,9 +4472,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
         expect(writes(emptied.requests)).toEqual([]);
         expect(emptied.issues).toEqual(reviewed.initial);
 
-        // Every list the script reads, each over two pages: CI's runs (the green run on the
-        // second page), the failed run's jobs, the Windows check's runs, Beta's artifacts, the open
-        // issues (GraphQL) and the compare.
         const facts: Facts = {
           runs: [
             ...Array.from({ length: 120 }, (_, n) => ciRun(500 - n, n, sha("c"), "failure")),
@@ -4848,7 +4493,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
               { sha: sha("2"), message: "Break it more" },
             ],
           },
-          // The newest an hour ago: a decision stamped in the future is a failed read (review 4).
           artifacts: Array.from({ length: 110 }, (_, n) => ({
             id: n + 1,
             created: 110 - n,
@@ -4868,7 +4512,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
         const pages = clean.requests.flatMap((request, index) =>
           listed(request) ? [{ request, at: index + 1 }] : [],
         );
-        // Two pages of each list but the compare, which lists its first 50 commits.
         expect(pages.map(({ request }) => request.replace(/&page=.*|\?.*| after=.*/, ""))).toEqual([
           "GET actions/workflows/ci.yml/runs",
           "GET actions/workflows/ci.yml/runs",
@@ -4884,8 +4527,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
         ]);
         const faults: ReadonlyArray<Fault> = [
           ...pages.map(({ at }) => ({ short: at })),
-          // A page served from one item early, as after an item was added before it: the second
-          // page of each list read in pages.
           ...pages
             .filter(({ request }, index) => {
               const base = (each: string) => each.replace(/\?.*| after=.*/, "");
@@ -4894,8 +4535,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
             .map(({ at }) => ({ shift: at })),
         ];
         expect(faults.length).toBe(pages.length + 4);
-        // The count one more on a later page than on the first, as after an item was added
-        // between two reads (review 4): the second page of each list read in pages.
         const counted: Array<Fault> = [];
         for (const [index, { request, at }] of pages.entries()) {
           const base = (each: string) => each.replace(/\?.*| after=.*/, "");
@@ -4927,7 +4566,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
     "Beta's newest decision expired, gone, or not exactly one decision is a failed read, and no older one stands in for it (review 3, 3)",
     () =>
       Effect.gen(function* () {
-        // An issue open for a held beta, CI green: a run that closed it would be a false green.
         const shown = ownedIssue(1, { body: `${marker}\n## The beta release\n\nHeld.` });
         const broken: ReadonlyArray<readonly [string, ReadonlyArray<FakeArtifact>]> = [
           ["expired, alone", [{ id: 1, created: 0, decision: held(), expired: true }]],
@@ -4991,8 +4629,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
           expect(writes(result.requests), what).toEqual([]);
           expect(result.issues, what).toEqual(repository.initial);
         }
-        // What Beta's own step writes (beta.yml, "Record the held beta decision") is read as one
-        // decision, held and clear, whatever its reason holds.
         const fs = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
         const { workflow: beta } = yield* workflowFile("beta.yml");
@@ -5036,7 +4672,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
         );
         expect(clearedByBeta.exitCode, clearedByBeta.output).toBe(0);
         expect(clearedByBeta.owned).toEqual([]);
-        // An older decision that expired does not matter once a newer one is read.
         const newer = yield* reconcile(
           {
             ...greenCi,
@@ -5060,11 +4695,8 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
           "- The beta release: unknown, no Beta decision in the last six days could be read";
         const unknownSection =
           "## The beta release\n\nUnknown: no Beta tick in the last six days left a decision";
-        // Open for a hold whose decisions are gone: it stays open, saying the state is unknown.
         for (const artifacts of [
           [],
-          // Older than six days, though not expired (the review's eight-day-old one), and older
-          // than six days by an hour.
           [{ id: 1, created: 192, decision: clear() }],
           [{ id: 1, created: 145, decision: held() }],
         ] satisfies ReadonlyArray<ReadonlyArray<FakeArtifact>>) {
@@ -5081,14 +4713,11 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
           expect(result.body(1), what).toContain(unknownSection);
           expect(result.body(1), what).not.toContain("Not held");
         }
-        // With none open it opens none: unknown is not known to be wrong (review 4). The run's
-        // summary still says what it read.
         const quiet = yield* reconcile({ ...greenCi, artifacts: [] });
         expect(quiet.exitCode, quiet.output).toBe(0);
         expect(writes(quiet.requests)).toEqual([]);
         expect(quiet.issues).toEqual([]);
         expect(quiet.summary).toContain(unknownLine);
-        // A clear decision five days old still counts, and closes it.
         const recent = yield* reconcile(
           { ...greenCi, artifacts: [{ id: 1, created: 120, decision: clear() }] },
           [ownedIssue(1)],
@@ -5103,12 +4732,9 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
     "Main health's issue carries a label no earlier Main health finds, and an issue an older one opened is left alone (review 3, 6)",
     () =>
       Effect.gen(function* () {
-        // The first issue makes the label it needs: main-health.yml's job, with the label it passes.
         const first = yield* issueRepository(redCi, [], oldLabels);
         const opened = yield* first.call([], { event: "schedule" });
         expect(opened.exitCode, opened.output).toBe(0);
-        // How the Main health before this one found its issue, for CI and for the Windows check
-        // (a3e9bdb7c's scripts/ci/main-issue.sh). It finds nothing, so it can close nothing.
         for (const label of oldLabels) {
           const lookup = yield* first.gh([
             "issue",
@@ -5128,7 +4754,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
           expect(lookup.output, label).toBe("");
         }
         expect(opened.mutations).toEqual([`label ${mainLabel}`, "create 1"]);
-        // The label's read failing stops the run before the issue opens; only a 404 means none.
         const labelRead = opened.requests.indexOf(`GET labels/${mainLabel}`);
         expect(labelRead).toBeGreaterThan(-1);
         const unlabelled = yield* issueRepository(redCi, [], oldLabels);
@@ -5139,8 +4764,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
         expect(opened.labels).toContain(mainLabel);
         expect(opened.open.map((issue) => issue.labels)).toEqual([[mainLabel]]);
         expect(marker).not.toContain("main-red");
-        // An issue an older run opened afterwards (main-red, by github-actions, its body as that
-        // script wrote it) is never this script's: red or green, it is left as it is.
         const old: FakeIssue = {
           number: 7,
           title: "CI is failing on main",
@@ -5223,8 +4846,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
       expect(again.body(1)).toBe(body);
     }).pipe(Effect.scoped),
   );
-  // The reproductions of the fourth review of #5051 (/tmp/review5051-round4/evidence.md), and the
-  // rule it led to: each source is bad, good or unknown, and unknown never opens or closes the issue.
 
   for (const ci of ["bad", "good", "unknown"] as const)
     it.effect(
@@ -5234,7 +4855,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
 
   it.effect("with a source unknown and nothing bad, no duplicate is closed either (review 4)", () =>
     Effect.gen(function* () {
-      // No finished CI run at all, the Windows check green and the beta clear: two open issues.
       const result = yield* reconcile({ artifacts: [{ id: 7, created: 0, decision: clear() }] }, [
         ownedIssue(1),
         ownedIssue(2),
@@ -5246,7 +4866,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
       expect(result.body(1)).toContain(
         "Nothing is known to be red or held. CI on main cannot be read (below), so this issue stays as it was",
       );
-      // A second run writes nothing.
       const again = yield* (yield* issueRepository(
         { artifacts: [{ id: 7, created: 0, decision: clear() }] },
         result.issues.map((issue) => ({ ...issue, comments: [] })),
@@ -5259,7 +4878,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
     "no finished CI run, a decision older than six days or none at all opens nothing and closes nothing (review 4)",
     () =>
       Effect.gen(function* () {
-        // ci-never-finished: an issue open, a clear beta, no CI run ever finished. It stays open.
         const never = yield* reconcile({ artifacts: [{ id: 7, created: 0, decision: clear() }] }, [
           ownedIssue(1, { body: `${marker}\n## CI on main\n\nRed.` }),
         ]);
@@ -5268,9 +4886,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
         expect(never.owned.map((issue) => issue.number)).toEqual([1]);
         expect(never.body(1)).toContain("- CI on main: unknown, no finished run that counts\n");
         expect(never.body(1)).not.toContain("Red.");
-        // unknown-first-merge and unknown-after-retention: CI and the Windows check green, no
-        // decision kept or only one older than six days, and no issue. Nothing is written; the
-        // older decision is named.
         for (const artifacts of [[], [{ id: 1, created: 144.01, decision: clear() }]]) {
           const quiet = yield* reconcile({ ...greenCi, artifacts });
           const what = `${JSON.stringify(artifacts)}\n${quiet.output}`;
@@ -5286,7 +4901,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
         expect(aged.summary).toContain(
           `/actions/runs/900001, is older than that. So whether a beta is held cannot be read`,
         );
-        // Inside the window by half a minute it still counts: a hold opens the issue.
         const inside = yield* reconcile({
           ...greenCi,
           artifacts: [{ id: 1, created: 143.99, decision: held() }],
@@ -5299,7 +4913,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
     "a Beta producer whose event is missing, a number or not Beta's, or a CI run of an unknown status, is a failed read (review 4)",
     () =>
       Effect.gen(function* () {
-        // The issue is open for a hold; the newest decision is clear, so a false read closes it.
         const shown = ownedIssue(1, { body: `${marker}\n## The beta release\n\nHeld.` });
         const facts: Facts = {
           ...greenCi,
@@ -5327,8 +4940,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
           expect(writes(result.requests), what).toEqual([]);
           expect(result.issues, what).toEqual(repository.initial);
         }
-        // malformed-ci-status: the newest CI run failed, an older one passed, Beta clear, an issue
-        // open. A status GitHub does not list on the failed run would have left it uncounted.
         const ciFacts: Facts = {
           ...redCi,
           artifacts: [{ id: 7, created: 0, decision: clear() }],
@@ -5342,7 +4953,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
           expect(writes(result.requests)).toEqual([]);
           expect(result.issues).toEqual(repository.initial);
         }
-        // A completed run with no conclusion, or a run in progress with one, is no answer either.
         for (const ops of [
           [{ path: ["workflow_runs", 0, "conclusion"], value: null }],
           [{ path: ["workflow_runs", 0, "status"], value: "in_progress" }],
@@ -5359,7 +4969,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
     () =>
       Effect.gen(function* () {
         const shown = ownedIssue(1, { body: `${marker}\n## The beta release\n\nHeld.` });
-        // future-clear: a clear 30 days ahead outranked a current hold and closed the issue.
         for (const facts of [
           {
             ...greenCi,
@@ -5397,17 +5006,14 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
     () =>
       Effect.gen(function* () {
         const shown = ownedIssue(1);
-        /** COUNT cancelled CI runs, ids down from FROM, 36 seconds apart from HOURS ago. */
         const cancelled = (count: number, from: number, hours: number) =>
           Array.from({ length: count }, (_, n) =>
             ciRun(from - n, hours + n / 100, sha("0"), "cancelled"),
           );
-        /** The pages of CI's runs a run read. */
         const ciPages = (requests: ReadonlyArray<string>) =>
           requests
             .filter((request) => request.includes("/workflows/ci.yml/runs"))
             .map((request) => Number(/&page=(\d+)$/u.exec(request)![1]));
-        /** The same world with the tie listed higher id first, then lower id first. */
         const bothOrders = (facts: Facts) =>
           Effect.forEach(["descending", "ascending"] as const, (order) =>
             reconcile(order === "ascending" ? { ...facts, tieOrder: order } : facts, [shown]).pipe(
@@ -5415,9 +5021,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
             ),
           );
 
-        // tied-boundary: 99 newer cancelled runs, then a success (200) and a failure (201) created
-        // at the same time. The failure ranks above the success. Listed lower id first, page 1
-        // ended on the success, the reader stopped there, read CI as green and closed the issue.
         for (const result of yield* bothOrders({
           runs: [
             ...cancelled(99, 1000, 0),
@@ -5442,8 +5045,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
           expect(ciPages(result.requests), result.order).toEqual([1, 2]);
         }
 
-        // Reversed: the success (201) ranks above the failure (200), so CI is green either way,
-        // and the page after a green run that ends page 1 at its time is read before it decides.
         for (const result of yield* bothOrders({
           runs: [
             ...cancelled(99, 1000, 0),
@@ -5460,10 +5061,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
           expect(ciPages(result.requests), result.order).toEqual([1, 2]);
         }
 
-        // A tie across three pages: the last of the 99 newer runs, then 102 runs at one time (a
-        // success 300, a failure 301 above it, and 100 cancelled), the whole of page 2 among them,
-        // then 100 older green runs. Page 3 is read, and reading stops once a run older than the
-        // tie is listed, so page 4 is not.
         for (const result of yield* bothOrders({
           runs: [
             ...cancelled(99, 1000, 0),
@@ -5491,8 +5088,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
           expect(ciPages(result.requests), result.order).toEqual([1, 2, 3]);
         }
 
-        // A tie at the very end of the list: 198 newer cancelled runs, then the success and the
-        // failure, the last two of exactly 200. The list has ended, so no third page is asked for.
         for (const result of yield* bothOrders({
           runs: [
             ...cancelled(198, 1000, 0),
@@ -5510,8 +5105,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
           expect(ciPages(result.requests), result.order).toEqual([1, 2]);
         }
 
-        // A tie of cancelled runs only decides nothing: the older green run past it decides, and
-        // with no run past it, CI is unknown and the issue stays open, rewritten.
         const tie = [
           ...cancelled(99, 1000, 0),
           ciRun(200, 1, sha("0"), "cancelled"),
@@ -5539,8 +5132,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
           ).toEqual([1]);
         }
 
-        // A tie split by the end of the fifth page, the last one read: what ranks first is not
-        // known, so it is a failed read that writes nothing, in either order.
         for (const order of ["descending", "ascending"] as const) {
           const repository = yield* issueRepository(
             {
@@ -5569,9 +5160,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
       Effect.gen(function* () {
         const shown = ownedIssue(1, { body: `${marker}\n## The beta release\n\nHeld.` });
         const second = 1000;
-        // since-one-minute-future was accepted under the five minutes GitHub's stamps get. The
-        // script reads its clock after this one, so the case inside is accepted however late it
-        // starts, and the cases outside stay outside unless it starts a minute late.
         for (const [ahead, accepted] of [
           [45 * second, true],
           [2 * 60 * second, false],
@@ -5617,10 +5205,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
         expect(upload.uses).toMatch(/^actions\/upload-artifact@/);
         const fs = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
-        /**
-         * One Beta tick: beta-due.ts's outputs, then the record step if its `if` admits them, which
-         * writes the artifact the upload step (run only when the record step succeeded) uploads.
-         */
         const decisions: Array<FakeArtifact> = [];
         const run_ = (script: string, env: Readonly<Record<string, string>>) =>
           run(".", "bash", ["-e", "-c", script], env);
@@ -5652,7 +5236,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
             });
             return { held: decided.outputs.held, uploaded: true };
           });
-        /** Main health on the decisions uploaded so far, against the issues it left. */
         let issues: ReadonlyArray<FakeIssue> = [];
         const health = Effect.gen(function* () {
           const result = yield* reconcile({ ...greenCi, artifacts: [...decisions] }, issues);
@@ -5661,7 +5244,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
           return result;
         });
 
-        // Five failed attempts in a day: held at once, uploaded, and the issue opens.
         const five: ReadonlyArray<ReleaseRun> = [
           ...Array.from({ length: 5 }, (_, index) => ({
             id: 40 + index,
@@ -5674,8 +5256,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
         const opened = yield* health;
         expect(opened.mutations).toEqual(["create 1"]);
         expect(opened.body(1)).toContain(`## The beta release\n\nHeld. A beta has been due since `);
-        // Someone dispatches the release by hand; while it runs the tick decides neither and
-        // uploads nothing, so the hold it last recorded stands and the issue stays as it is.
         const running: ReadonlyArray<ReleaseRun> = [
           { id: 50, status: "in_progress", hoursAgo: 0.1, headSha: released },
           ...five,
@@ -5684,8 +5264,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
         const waiting = yield* health;
         expect(waiting.mutations).toEqual([]);
         expect(waiting.owned.map((issue) => issue.number)).toEqual([1]);
-        // The release is out: the next tick finds it on npm with nothing pending, decides clear and
-        // uploads it, and the issue closes.
         expect(yield* betaTick({ published: 0.5 }, 1, 803)).toEqual({
           held: "clear",
           uploaded: true,
@@ -5695,8 +5273,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
         expect(closed.body(1)).toContain(
           `Not held: the latest Beta tick that decided, ${runUrl(803)}`,
         );
-        // And every later tick of the steady state, waiting six hours or bumping, decides clear and
-        // uploads it, so the clear stays positively known.
         expect(yield* betaTick({ published: 2 }, 0.5, 804)).toEqual({
           held: "clear",
           uploaded: true,
@@ -5738,7 +5314,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
       Effect.gen(function* () {
         const shown = ownedIssue(1, { body: `${marker}\n## The beta release\n\nHeld.` });
         const decision = clear();
-        // The reason is text Beta wrote; any string is a reason.
         const spoilt = [
           ...spoilings(decision, "attempt").filter(
             (each) => each.what !== "reason an unknown value",
@@ -5788,7 +5363,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red main issue", (it) 
 });
 
 layer(NodeServices.layer, { excludeTestServices: true })("Main health triggers", (it) => {
-  /** CI green, the newest Windows check red (run 70), the one before it green (58), no hold. */
   const windowsRed = (completeAfter?: Readonly<Record<number, number>>): Facts => ({
     runs: [
       ...greenCi.runs,
@@ -5823,8 +5397,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Main health triggers",
           ["Beta", windowsRed(), { event: "workflow_run", workflow: "Beta" }],
           ["the schedule", windowsRed(), { event: "schedule" }],
           ["a person", windowsRed(), { event: "workflow_dispatch" }],
-          // The Windows check's last job dispatches while its own run is still in progress: the
-          // first two reads of run 70 find it running.
           [
             "the Windows check",
             windowsRed({ 70: 2 }),
@@ -5850,8 +5422,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Main health triggers",
           ).toEqual([[1, mainTitle]]);
           expect(result.body(1), result.who).toBe(body);
         }
-        // Only the dispatch that names a run waits for it: two waits, three reads of it, all
-        // before the script's first read.
         const dispatched = results[4]!;
         expect(dispatched.sleeps).toEqual(["sleep 10", "sleep 10"]);
         expect(dispatched.requests.slice(0, 3)).toEqual([pollOf(70), pollOf(70), pollOf(70)]);
@@ -5860,8 +5430,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Main health triggers",
           expect(result.sleeps, result.who).toEqual([]);
           expect(result.requests, result.who).not.toContain(pollOf(70));
         }
-        // Without that wait the same moment reads the check before it, green, and opens nothing:
-        // the script alone, at once, against the run still in progress.
         const unwaited = yield* reconcile(windowsRed({ 70: 2 }));
         expect(unwaited.exitCode, unwaited.output).toBe(0);
         expect(unwaited.open).toEqual([]);
@@ -5902,7 +5470,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Main health triggers",
         expect(odd.requests).not.toContain(pollOf(70));
         expect(odd.mutations).toEqual(["create 1"]);
 
-        // A read of the run that fails is a warning too; the script's own reads then decide.
         const unread = yield* (yield* issueRepository(windowsRed())).call([1], {
           event: "workflow_dispatch",
           inputs: { windows_run: "70" },
@@ -5931,19 +5498,14 @@ layer(NodeServices.layer, { excludeTestServices: true })("Main health triggers",
         });
         expect(Object.keys(workflow.jobs)).toEqual(["issue"]);
         const job = workflow.jobs["issue"]!;
-        // One group for every run, whatever started it: a literal, with no expression in it.
         expect(workflow.concurrency).toBeUndefined();
         expect(job.concurrency).toEqual({ group: "main-health", "cancel-in-progress": false });
-        // No token that starts a workflow: not itself, not the Windows check.
         expect(workflow.permissions).toEqual({});
         expect(job.permissions).toEqual({ contents: "read", actions: "read", issues: "write" });
-        // Nothing it runs dispatches or calls a workflow (comments aside, which YAML drops).
         expect(JSON.stringify(workflow)).not.toMatch(
           /"actions":"write"|gh workflow run|gh run rerun|\/dispatches|workflow_call/,
         );
         expect(text).toContain("permissions: {}\n");
-        // Who starts the job: completions on main of this repository's own CI and Beta runs that
-        // ran, the schedule and dispatches.
         const runsFor = (trigger: Trigger) => admits(job.if, mainHealthContext(trigger));
         expect(runsFor({ event: "workflow_run", workflow: "CI" })).toBe(true);
         expect(runsFor({ event: "workflow_run", workflow: "CI", conclusion: "failure" })).toBe(
@@ -5960,17 +5522,14 @@ layer(NodeServices.layer, { excludeTestServices: true })("Main health triggers",
         expect(runsFor({ event: "workflow_run", workflow: "Beta", conclusion: "skipped" })).toBe(
           false,
         );
-        // The reconcile step's env is the same on every trigger: literals and the token only.
         const reconcileStep = job.steps.find(
           (step) => step.run === "bun scripts/ci/main-health.ts",
         )!;
-        // A decision counts only from a run for an event Beta runs on: beta.yml's own triggers.
         const { workflow: beta } = yield* workflowFile("beta.yml");
         expect(reconcileStep.env!["BETA_EVENTS"]!.split(" ")).toEqual(Object.keys(beta.on));
         expect(reconcileStep.if).toBeUndefined();
         const { WORKFLOW: _w, BRANCH: _b, EVENT: _e, ...env } = mainHealthEnv;
         expect(reconcileStep.env).toEqual({ GH_TOKEN: "${{ github.token }}", ...env });
-        // Only the wait reads the dispatch's input, and only on a dispatch that names a run.
         const waits = job.steps.filter((step) => JSON.stringify(step).includes("inputs."));
         expect(waits.map((step) => step.name)).toEqual([
           "Wait for the Windows check that started this run to end",
@@ -5988,7 +5547,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Main health triggers",
         const { workflow } = yield* workflowFile("release-artifacts.yml");
         const job = workflow.jobs["main-health"]!;
         const others = Object.keys(workflow.jobs).filter((id) => id !== "main-health");
-        // Last: it needs every other job, and none needs it.
         expect([...(job.needs as ReadonlyArray<string>)].sort()).toEqual([...others].sort());
         for (const id of others)
           expect([workflow.jobs[id]!.needs ?? []].flat(), id).not.toContain("main-health");
@@ -6000,7 +5558,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Main health triggers",
         expect(step.uses).toBeUndefined();
         expect(step.if).toBeUndefined();
         expect(step.env).toEqual({ PUBLISHES: "no", GH_TOKEN: "${{ github.token }}" });
-        // Only in a Windows check (a dispatch on ci/windows-check), and however it ended.
         const context = (event: string, ref: string) => ({
           github: { event_name: event, ref, repository },
         });
@@ -6014,7 +5571,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Main health triggers",
         expect(admits(job.if, context("repository_dispatch", "refs/heads/main"))).toBe(false);
         expect(admits(job.if, context("workflow_dispatch", "refs/heads/main"))).toBe(false);
         expect(admits(job.if, context("workflow_dispatch", "refs/heads/some-branch"))).toBe(false);
-        // The input it passes is the one Main health waits on.
         const { workflow: health } = yield* workflowFile("main-health.yml");
         expect(health.on["workflow_dispatch"]).toHaveProperty("inputs.windows_run");
         expect(step.run).toContain(
@@ -6035,11 +5591,9 @@ layer(NodeServices.layer, { excludeTestServices: true })("Main health triggers",
         const all = yield* workflowYaml(files);
         if (!all.ok) expect.fail(all.problems);
         expect(Object.keys(all.workflows).sort()).toEqual([...files].sort());
-        // An alias reads as what it names: local-macos-arm64 runs local's steps.
         const artifacts = all.workflows[".github/workflows/release-artifacts.yml"]!;
         expect(artifacts.jobs["local-macos-arm64"]!.steps).toEqual(artifacts.jobs["local"]!.steps);
         expect(artifacts.jobs["local"]!.steps.length).toBeGreaterThan(3);
-        // A flow mapping reads as a mapping.
         const runtime = all.workflows[".github/workflows/bun-runtime.yml"] as unknown as {
           readonly jobs: Readonly<
             Record<
@@ -6060,8 +5614,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Main health triggers",
           expect.objectContaining({ target: "linux-x64", os: "linux", arch: "x64" }),
         );
 
-        // The review's mutation: the first line of the wait's run block two spaces deeper, which
-        // GitHub cannot parse. Then a duplicated key, and a tab where indentation belongs.
         const { text } = yield* workflowFile("main-health.yml");
         const line = '          if [[ ! "$WINDOWS_RUN" =~ ^[0-9]+$ ]]; then\n';
         expect(text).toContain(line);
@@ -6085,8 +5637,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Main health triggers",
           expect(result.ok, what).toBe(false);
         }
 
-        // The exact lines: Main health's triggers, its one concurrency group and its token; the
-        // Windows check's dispatch job's condition, token and continue-on-error.
         const comments = "(?:\\s*#.*\\n)*";
         for (const block of [
           [

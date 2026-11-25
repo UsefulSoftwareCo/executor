@@ -34,7 +34,6 @@ import { SkillWorkspace } from "./skill-workspace.tsx";
 
 type Skill = AppSkillBundle["skills"][number];
 
-/** All skill documents and references load together; selection never starts another request. */
 export function AppSkills<E>({
   app,
   bindings,
@@ -46,13 +45,9 @@ export function AppSkills<E>({
   readonly canEdit: boolean;
   readonly bindings: SkillBindings<E>;
   readonly Failure: ComponentType<FailureProps<E>>;
-  /** Present when this viewer may manage app source; the server still authorizes each commit. */
   readonly editing?: SkillEditing<E> | undefined;
 }) {
-  // Outside the catalog query, so the status and its deploy survive the catalog reloading.
   const [committed, setCommitted] = useState<Committed>();
-  // Editable skills read the working source, then the deployed catalog. Neither depends on the
-  // other, so both start here instead of the catalog waiting for the source.
   const catalog: Atom.Atom<AsyncResult.AsyncResult<AppSkillBundle | undefined, E>> =
     app.activeVersion === null ? undeployedCatalog : bindings.bundle;
   const editable = editing !== undefined && canEdit;
@@ -142,17 +137,12 @@ function EditableSkills<E>({
   const { result, data, refresh } = useQuery<AppSkillBundle | undefined, E>(
     app.activeVersion === null ? undeployedCatalog : bindings.bundle,
   );
-  // The catalog atom is keyed by version, so every deploy (including the one after Save)
-  // starts a new atom at Initial. Keep the last loaded catalog until the new one arrives;
-  // replacing the workspace with the skeleton would remount the open editor.
   const loaded = AsyncResult.isInitial(result)
     ? undefined
     : { catalog: Option.getOrUndefined(data) };
   const [settled, setSettled] = useState(loaded);
   if (loaded !== undefined && (settled === undefined || loaded.catalog !== settled.catalog))
     setSettled(loaded);
-  // Deployed skills may exist only in the catalog. Until it first arrives, the list is incomplete
-  // and an app with only remote skills would look empty.
   const shown = loaded ?? settled;
   if (shown === undefined) return <SkillBrowserLoading />;
   const catalog = shown.catalog;
@@ -190,7 +180,6 @@ function SkillCatalog<E>({
   readonly onCommitted: (result: Committed) => void;
 }) {
   const [selected, setSelected] = useState<string>();
-  // An open draft asks before another skill or file replaces it.
   const [dirty, setDirty] = useState(false);
   const leave = () => !dirty || window.confirm("Discard your unsaved changes?");
   const current = catalog.skills.find((skill) => skill.name === selected) ?? catalog.skills[0];
@@ -362,7 +351,6 @@ function SkillFiles<E>({
           >
             {(source) => {
               const stored = source.files.find((item) => item.path === path);
-              // Skills from code or remote sources, and apps this person cannot change, stay read-only.
               if (stored === undefined || !isTextFile(stored) || !source.canEdit)
                 return (
                   <>

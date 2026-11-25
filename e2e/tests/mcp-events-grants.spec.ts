@@ -1,10 +1,3 @@
-/**
- * Who may receive an app's events. A grant selects an app's events beside its tools: all of them,
- * including later ones, when it omits the choice, or exact names. Selecting none refuses new
- * subscriptions to them and stops the deliveries it already subscribed to. `events/list` is the
- * same for every grant. A selection of every app drops the occurrences of an app whose events the
- * grant leaves out, and keeps delivering the others.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
 import { scenarios } from "../test-plan.ts";
@@ -84,9 +77,7 @@ layer(HostedLive, { excludeTestServices: true })("MCP event grants", (it) => {
           const tokenOf = (issued: typeof grant) =>
             Redacted.make(Redacted.value(issued.tokens).access_token);
 
-          // Every grant lists the same one event, whatever apps' events it includes.
           expect(yield* listed).toEqual([appEvent]);
-          // A grant of everything includes the app's events.
           const subscription = yield* ok(Granted, yield* subscribe(token, "oauth"));
           const first = yield* emit("acme/widgets", 1);
           yield* awaitDeliveries((all) =>
@@ -95,8 +86,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP event grants", (it) => {
             ),
           );
 
-          // Events are chosen beside tools, not derived from them: naming one tool and omitting
-          // the event scope keeps every event.
           expect((yield* narrow({ tools: { kind: "selected", names: ["open"] } })).status).toBe(
             200,
           );
@@ -108,7 +97,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP event grants", (it) => {
             ),
           );
 
-          // A grant that names the event includes it even with no tools.
           const named = yield* oauth.authorize;
           expect(
             (yield* narrow(
@@ -121,8 +109,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP event grants", (it) => {
           ).toBe(200);
           expect(yield* listedWith(tokenOf(named))).toEqual([appEvent]);
           yield* ok(Granted, yield* subscribe(tokenOf(named), "named"));
-          // The event grant can resolve and subscribe to the app, but it must not expose the app
-          // namespace to CodeMode's tool inventory when its tool selection is empty.
           const eventOnlyResponse = (yield* rpcAs(tokenOf(named), "tools/call", {
             name: "execute",
             arguments: {
@@ -144,8 +130,6 @@ return { names: Object.keys(tools), callable };`,
           expect(eventOnlyValue.callable).toBe(false);
           expect(eventOnlyValue.names).not.toContain(emitter.slug);
 
-          // A grant that selects no events refuses subscribing to them, and narrowing can never add
-          // them back.
           const none = yield* oauth.authorize;
           expect(
             (yield* narrow(
@@ -162,9 +146,6 @@ return { names: Object.keys(tools), callable };`,
               .status,
           ).not.toBe(200);
 
-          // Narrowing the subscribed grant to no events refuses new subscriptions, and stops its
-          // existing one at its next delivery. Another token's subscription marks
-          // when it would have arrived.
           expect(
             (yield* narrow({
               tools: { kind: "selected", names: ["open"] },
@@ -188,8 +169,6 @@ return { names: Object.keys(tools), callable };`,
             ),
           ).toHaveLength(0);
 
-          // A selection of every app, under a grant that later leaves out one app's events, drops
-          // that app's occurrences and keeps delivering the other's: the subscription continues.
           const other = yield* deploy(`Other issue events ${suffix}`, emitterFiles);
           const mixed = yield* oauth.authorize;
           const selection = yield* ok(
@@ -223,7 +202,6 @@ return { names: Object.keys(tools), callable };`,
           ).toBe(200);
           const excluded = yield* emit("acme/widgets", 4);
           const included = yield* emitFrom(other, "acme/widgets", 5);
-          // The marker subscription receives the excluded app's event, so it would have arrived.
           const both = yield* awaitDeliveries(
             (all) =>
               events(all).some(

@@ -1,4 +1,3 @@
-/** Build the platform's release install and its npm package. Nothing is published. */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Config, Console, Effect, FileSystem, Path, Stream } from "effect";
@@ -43,10 +42,6 @@ const build = Effect.gen(function* () {
         ),
       );
   yield* run("bun", ["run", "apps:build"], root);
-  // The collector is not built here. A release run's collector job builds it once per target and
-  // every packaging job downloads those bytes into dist/collector, so every archive of a target
-  // holds the same executable; a build here could differ with the runner's tools. Locally,
-  // `bun run collector:build` makes it.
   const collector = path.join(
     root,
     "packages/telemetry/dist/collector",
@@ -56,8 +51,6 @@ const build = Effect.gen(function* () {
     return yield* Effect.die(
       new Error(`${collector} is missing. Run bun run collector:build first.`),
     );
-  // It must be this target's build, whole: the platform checks and its recorded SHA-256 and size,
-  // without the Rust toolchain a packaging runner may not have.
   const checked = yield* processes.exitCode(
     ChildProcess.make(
       process.execPath,
@@ -123,8 +116,6 @@ const build = Effect.gen(function* () {
     imports: { "#cloudflare-runtime-core-worker/*": "./alchemy-workers/*.mjs" },
   };
   yield* fs.writeFileString(path.join(stage, "package.json"), JSON.stringify(manifest, null, 2));
-  // Node's compile cache keeps the runtime's compiled code in the user's cache directory, so every
-  // launch after the first skips recompiling the bundled server (about 150 ms).
   yield* fs.writeFileString(
     path.join(stage, "bin.mjs"),
     `#!/usr/bin/env node\nimport { flushCompileCache } from "node:module";\nimport { homedir } from "node:os";\nimport { join } from "node:path";\nimport { enablePrivateCompileCache } from "./compile-cache.mjs";\nimport { useBundledGit } from "./runtime-env.mjs";\nuseBundledGit();\nprocess.env.EXECUTOR_DATA_DIR ??= join(homedir(), ".executor", "v2", "cli");\nprocess.env.EXECUTOR_BUILD_VERSION = ${JSON.stringify(version)};\n${yield* launcherAnalytics}enablePrivateCompileCache();\nawait import("./runtime/cli.mjs");\nflushCompileCache();\n`,
@@ -133,7 +124,6 @@ const build = Effect.gen(function* () {
   yield* fs.copyFile(path.join(root, "scripts/releases/README.md"), path.join(stage, "README.md"));
   yield* fs.copyFile(path.join(root, "apps/cli/LICENSE"), path.join(stage, "LICENSE"));
   yield* installWindowsGitHttpBackend(stage);
-  // The bundled Git runs with no other Git on PATH and answers Git's HTTP protocol.
   const git = bundledGit(path.join(stage, "node_modules/dugite/git"));
   const inherited = Object.fromEntries(
     Object.entries(process.env).filter(
@@ -179,10 +169,6 @@ const build = Effect.gen(function* () {
         "The bundled Git HTTP backend did not return the expected missing-repository response",
       ),
     );
-  // The npm package is the release install: the executable and the files beside it. The staged
-  // runtime stays for the desktop app, which runs it with its own Node.
-  // Signing is a deliberate choice per build, and notarizing implies signing. A published macOS
-  // build must be notarized.
   const notarize = process.argv.includes("--notarize");
   const signing = notarize ? "notarize" : process.argv.includes("--sign") ? "sign" : "unsigned";
   if (
@@ -191,7 +177,6 @@ const build = Effect.gen(function* () {
     (yield* Config.String("EXECUTOR_RELEASE_PUBLISH").pipe(Config.withDefault(""))) === "true"
   )
     return yield* Effect.die(new Error("A published macOS build must be signed and notarized."));
-  // `--submission=<file>`: notarize without waiting; `macos-notarization.ts <file>` waits.
   const submission = process.argv
     .find((argument) => argument.startsWith("--submission="))
     ?.slice("--submission=".length);

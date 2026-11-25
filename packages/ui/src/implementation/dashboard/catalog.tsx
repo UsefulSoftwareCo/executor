@@ -32,10 +32,6 @@ import { Alert, AlertDescription, AlertTitle } from "../components/alert.tsx";
 import { ErrorNotice } from "./error-notice.tsx";
 import { useIncrementalList } from "./incremental-list.tsx";
 
-/**
- * The installed copy of each catalog package, by package name. Installs record the catalog package
- * as their copy origin, so the most recent copy of a package is the one a catalog row leads to.
- */
 export function installedCatalogApps(apps: readonly App[] | undefined): ReadonlyMap<string, App> {
   const installed = new Map<string, App>();
   for (const app of apps ?? []) {
@@ -47,10 +43,6 @@ export function installedCatalogApps(apps: readonly App[] | undefined): Readonly
   return installed;
 }
 
-/**
- * Why Executor's official apps are missing from a listing: this instance turned its catalog off, or
- * the server could not read the feed. Renders nothing when the feed was listed.
- */
 export function CatalogFeedNotice({
   feed,
   retry,
@@ -59,7 +51,6 @@ export function CatalogFeedNotice({
 }: {
   readonly feed: CatalogFeedState;
   readonly retry: () => void;
-  /** The listing is being read again, so Try again shows that it is checking. */
   readonly retrying: boolean;
   readonly layout?: "inline" | "compact";
 }) {
@@ -96,7 +87,6 @@ export function CatalogFeedNotice({
   }
 }
 
-/** Runs one catalog entry's install and resolves with that entry's own result. */
 export function useCatalogInstall<IE>(
   mutation: (entry: string) => MutationProps<InstallApp, DeployedApp, IE>["mutation"],
 ) {
@@ -115,14 +105,6 @@ export function useCatalogInstall<IE>(
   };
 }
 
-/**
- * Official apps available to add, in the feed's order. Published registry apps are not listed here.
- * Catalog apps are vetted, so each row installs its own source under the catalog name. Only a name
- * conflict asks for another one. The page stays put after an add; a row whose app is installed, now
- * or in an earlier visit, offers Open instead of Add. Installs record the catalog package name as
- * their copy origin, so the most recent copy of that package is the one Open leads to. The user
- * then connects an account through the app's own providers.
- */
 export function CatalogPage<E, IE>({
   query,
   Failure,
@@ -134,17 +116,12 @@ export function CatalogPage<E, IE>({
   inventory,
   open,
 }: QueryProps<CatalogListing, E> & {
-  /** The install command for one catalog entry; each row has its own. */
   readonly mutation: (entry: string) => MutationProps<InstallApp, DeployedApp, IE>["mutation"];
   readonly InstallFailure: MutationProps<InstallApp, DeployedApp, IE>["Failure"];
   readonly back: ReactNode;
-  /** The heading's action, beside the title. */
   readonly action?: ReactNode;
-  /** Offers the ways to make an app when nothing here fits. */
   readonly create?: ReactNode;
-  /** The apps already installed; a failed read just leaves every row on Add. */
   readonly inventory: Query<Inventory, unknown>;
-  /** A link to the installed app, rendered inside the row's Open button. */
   readonly open: (app: App) => ReactNode;
 }) {
   const result = useAtomValue(query);
@@ -158,7 +135,6 @@ export function CatalogPage<E, IE>({
     readonly entry: CatalogEntry;
     readonly name: string;
   }>();
-  /** Installs under `name`; a taken name reopens the prompt, any other failure is shown above the list. */
   const add = async (entry: CatalogEntry, name: string) => {
     if (adding.has(entry.id) || !name.trim()) return;
     setAdding((current) => new Set(current).add(entry.id));
@@ -189,7 +165,6 @@ export function CatalogPage<E, IE>({
   const listing = AsyncResult.value(result);
   const feed = Option.isSome(listing) ? listing.value.feed : undefined;
   const term = search.trim().toLowerCase();
-  // Name matches come first; the rest keep the feed's order.
   const entries = (Option.isSome(listing) ? listing.value.apps : [])
     .filter((entry) =>
       `${entry.name} ${entry.package} ${entry.category ?? ""} ${entry.description}`

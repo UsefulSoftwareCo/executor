@@ -73,8 +73,6 @@ layer(FetchHttpClient.layer, { excludeTestServices: true })("ChatGPT preview sig
         );
         callback.searchParams.set("error", "access_denied");
         const browserCallback = new URL(`${callback.pathname}${callback.search}`, origin);
-        // Both supported stable callback hosts preserve the entire transaction while returning
-        // to the browser host. Neither redirect consumes state or creates a session on that host.
         for (const [at, status] of [
           [callbackOrigin, 308],
           [edgeOrigin, 302],

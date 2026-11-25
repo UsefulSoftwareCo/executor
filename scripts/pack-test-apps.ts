@@ -1,7 +1,3 @@
-/**
- * Pack the `apps` package staged by `apps:build` for the e2e registry, which serves it as the
- * version the hosts ship. Nothing is published.
- */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, FileSystem, Path, Schema } from "effect";
@@ -15,7 +11,6 @@ NodeRuntime.runMain(
     const path = yield* Path.Path;
     const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
     const directory = yield* fs.makeTempDirectoryScoped();
-    // Windows npm is a shell wrapper. Invoke its JavaScript entry with Node, without a shell.
     const npm =
       process.platform === "win32"
         ? {

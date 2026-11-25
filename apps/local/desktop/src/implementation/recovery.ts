@@ -1,8 +1,3 @@
-/**
- * Isolated, script-free recovery document shown when the background server cannot run. Its buttons are
- * links to `executor-recovery:<action>`, which the main process intercepts in `will-navigate`;
- * the window keeps no preload or IPC bridge.
- */
 import { Option, Schema } from "effect";
 import { RecoveryAction, type DesktopRecovery } from "../contracts/desktop.ts";
 
@@ -14,10 +9,6 @@ interface Page {
   readonly actions: ReadonlyArray<RecoveryAction>;
 }
 
-/**
- * Reset is offered only when moving the data aside can help. Never for an unavailable or denied
- * store, or for key settings the user must change: the data may be intact.
- */
 const page = (recovery: DesktopRecovery): Page => {
   switch (recovery.stage) {
     case "start":
@@ -135,7 +126,6 @@ const escape = (value: string) =>
       character,
   );
 
-/** What the server or the migration said, at most this many characters from its end. */
 const messageLimit = 2000;
 
 export const recoveryUrl = (recovery: DesktopRecovery) => {
@@ -174,11 +164,9 @@ export const recoveryUrl = (recovery: DesktopRecovery) => {
 </html>`)}`;
 };
 
-/** `Some(action)` for a well-formed recovery link, `None` for any other URL. */
 export const recoveryAction = (url: string): Option.Option<RecoveryAction> =>
   url.startsWith(scheme)
     ? Schema.decodeUnknownOption(RecoveryAction)(url.slice(scheme.length))
     : Option.none();
 
-/** Links using the recovery scheme never leave the app, even when malformed. */
 export const isRecoveryLink = (url: string) => url.startsWith(scheme);

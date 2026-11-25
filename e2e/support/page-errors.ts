@@ -1,8 +1,6 @@
-/** The errors a page raised, as a scenario that expects none reports them. */
 import { Effect, Schema } from "effect";
 import { indented, safeText } from "./failure-text.ts";
 
-/** A scenario expected a page to raise no errors; each one is listed, masked. */
 export class PageErrorsRaised extends Schema.TaggedError<PageErrorsRaised>()("PageErrorsRaised", {
   expectation: Schema.String,
   errors: Schema.Array(Schema.String),
@@ -15,11 +13,6 @@ export class PageErrorsRaised extends Schema.TaggedError<PageErrorsRaised>()("Pa
   }
 }
 
-/**
- * Fails when a scenario's collected page or console errors are not empty, with every message in
- * the failure (and so in the job log, the Vitest message and `result.json`), masked by
- * `failure-text.ts`. `expect(errors).toEqual([])` shows only how many there were.
- */
 export const noPageErrors = (
   errors: ReadonlyArray<string>,
   expectation = "The page raises no errors",

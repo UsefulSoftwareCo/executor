@@ -1,17 +1,3 @@
-/**
- * The release workflow splits the installed CLI suite and the desktop crash recovery scenarios into
- * parts on separate runners. Vitest passes a part whose name filter matched nothing, so each part
- * records the scenarios it ran, and the archives job requires the parts of each platform to have
- * run every scenario of their suite exactly once.
- *
- * Usage:
- *   `node e2e/part-results.ts record <results.json> <file>` writes the titles of the scenarios a
- *   Vitest JSON report says ran (passed or failed) to `<file>`, and fails when there are none.
- *   `node e2e/part-results.ts compare <directory>` reads the recorded parts as
- *   actions/download-artifact lays them out, one `parts-<suite>-<part>-<platform>-<arch>`
- *   directory each holding `titles.json`, with the matrices from CLI_MATRIX, RECOVERY_MATRIX and
- *   NOTARIZED_RECOVERY_MATRIX and the CLI suite's `--test-name` from CLI_SUITE_PATTERN.
- */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Config, Console, Effect, FileSystem, Path, Schema } from "effect";

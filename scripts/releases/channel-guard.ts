@@ -1,53 +1,3 @@
-/**
- * Refuse to move a release channel backwards. Each step of the publish job that moves a channel
- * runs this first, for its own surface:
- *
- *   node scripts/releases/channel-guard.ts image          # IMAGE:CHANNEL on GHCR
- *   node scripts/releases/channel-guard.ts npm            # npm's CHANNEL dist-tag for executor
- *   node scripts/releases/channel-guard.ts homebrew <tap> # the cloned tap's formula for CHANNEL
- *   node scripts/releases/channel-guard.ts desktop-feed   # each executor-v2-CHANNEL*.yml
- *   node scripts/releases/channel-guard.ts preflight      # all four, before anything moves
- *
- A channel that names a version newer than VERSION (`2.0.0-beta.10` is newer than `2.0.0-beta.9`;
- * `2.0.0` is newer than its betas) stops it, exit 1, saying which channel names what, before
- * anything changes: that is what re-running an old publication after a newer one would find. The
- * same version, an older one or nothing yet lets it go on.
- *
- * A moving step's own check, in the middle of a publication, reads patiently (public-state.ts:
- * about two minutes) and stops when it still cannot read the channel or cannot order what it
- * names. A stop is loud and re-running the failed jobs finishes it; a backward move is silent.
- *
- * `preflight` is the publish job's first step after setup, so a stale run stops before anything
- * moves and says why at once:
- * - It refuses when any surface it could read names a newer version. A newer release that was
- *   half published shows on the image first, so npm alone is not enough.
- * - npm decides whether to go on at all: it is read patiently, and a publication stops when npm
- *   cannot be read or names what cannot be ordered, since its npm step would fail later, after the
- *   release is public and the image moved.
- * - The image, the formula the tap publishes (TAP; the tap is not cloned yet) and the feed are
- *   read quickly. One that cannot be read or names what cannot be ordered is a `::warning` naming
- *   the surface and what was seen, and the publication goes on: its own step checks it again.
- *
- * - Before anything else: a version npm already holds is refused unless this is the resume of the
- *   same publication, which finds a published release for RELEASE_TAG (see the code for how the
- *   draft step and the launcher check make that exact). The message names the version, when npm
- *   published it and whether it is deprecated, and says the release needs another number.
- *
- *   node scripts/releases/channel-guard.ts launcher <archive> # after release:wrapper
- *
- * `launcher` refuses when npm already holds VERSION with an archive other than this run's launcher,
- * before the upload, the image and the release's publication; npm holding nothing, or this very
- * launcher (a resumed publication), lets the job go on.
- *
- * A first publication under a new image name is a warning in the preflight and a stop at the image
- * step: see public-state.ts for why and what to do.
- *
- * VERSION's own channel must be CHANNEL: a beta never moves the stable channel, whose tag, formula
- * and feed files a beta's steps never name, and a stable release never moves only the beta one.
- *
- * Reads VERSION, CHANNEL, IMAGE and PUBLIC_REPOSITORY, as the publish job sets them, and changes
- * nothing anywhere (public-state.ts).
- */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { createHash } from "node:crypto";
@@ -118,7 +68,6 @@ const program = Effect.gen(function* () {
     });
   const clonedFormula = (directory: string) =>
     Effect.gen(function* () {
-      // A missing tap is a missing input, not a channel that names nothing yet: stop.
       const tapExists = yield* fs.stat(directory).pipe(
         Effect.map((info) => info.type === "Directory"),
         Effect.orElseSucceed(() => false),
@@ -156,7 +105,6 @@ const program = Effect.gen(function* () {
         : `${where} names ${current}; ${version} may move it.`,
     );
 
-  /** What npm holds as `executor@VERSION`, read patiently; a read that fails stops the step. */
   const held = npmArchive(patient, "executor", version).pipe(
     Effect.catchTag("PublicReadFailed", (error) =>
       Effect.fail(
@@ -170,9 +118,6 @@ const program = Effect.gen(function* () {
     archive.deprecated === undefined ? "not deprecated" : `deprecated: "${archive.deprecated}"`;
 
   if (surface === "launcher") {
-    // After release:wrapper, before the upload, the image and the release's publication: npm must
-    // not already hold this version with another archive. On a version npm does not hold this is
-    // one read; on a resumed publication npm holds this very launcher.
     if (tap === undefined)
       return yield* new ChannelGuardFailed({ message: "launcher needs the launcher archive" });
     const bytes = yield* fs.readFile(tap);
@@ -186,10 +131,6 @@ const program = Effect.gen(function* () {
       return yield* Console.log(
         `npm already serves this launcher as executor@${version}, byte for byte: a resumed publication.`,
       );
-    // Two causes, told apart by the release: a published release for this tag that targets this
-    // run's export commit means this release was published from this source, so the likely cause
-    // is a re-run of the whole workflow, whose rebuilt archives differ from the ones it published;
-    // anything else means npm's archive is not this source's, and the version cannot be used.
     const repository = yield* Config.String("PUBLIC_REPOSITORY");
     const tag = yield* Config.String("RELEASE_TAG");
     const token = yield* Config.String("GH_TOKEN").pipe(Config.withDefault(""));
@@ -217,8 +158,6 @@ const program = Effect.gen(function* () {
   }
 
   if (surface !== "preflight") {
-    // In the middle of a publication: read patiently, and stop when it cannot read or order what
-    // the channel names. A stop is loud and a re-run finishes it; a backward move is silent.
     const named: ReadonlyArray<Seen> = yield* Effect.gen(function* () {
       switch (surface) {
         case "image":
@@ -255,12 +194,6 @@ const program = Effect.gen(function* () {
     return;
   }
 
-  // Before anything moves, and before anything else is read: a version npm already holds is only
-  // published again as the resume of this same publication. A publication makes its release
-  // public before npm gets the launcher, so a resume finds a published release for RELEASE_TAG;
-  // the draft step then checks that release targets this run's export commit, and the launcher
-  // step that npm's archive is this build's. Without a published release, npm's archive is not
-  // this pipeline's, and npm never accepts a version twice.
   const stray = yield* held;
   if (stray !== undefined) {
     const repository = yield* Config.String("PUBLIC_REPOSITORY");
@@ -288,8 +221,6 @@ const program = Effect.gen(function* () {
     );
   }
 
-  // npm decides whether to go on: it is read patiently, and a publication whose npm step
-  // would fail later, after the release is public and the image moved, stops here instead.
   const npmSeen = yield* npm(patient).pipe(
     Effect.catchTag("PublicReadFailed", (error) =>
       Effect.fail(
@@ -304,8 +235,6 @@ const program = Effect.gen(function* () {
       return yield* new ChannelGuardFailed({
         message: `${unorderedMessage(seen)} Nothing was changed; inspect it.`,
       });
-  // The others are read quickly. One that cannot be read, or names what cannot be ordered, is a
-  // warning: its own step checks it again, patiently, before moving it.
   const warn = (line: string) => Console.log(`::warning title=Channel guard::${line}`);
   const others: Array<Seen> = [];
   const tryRead = <E, R>(label: string, read: Effect.Effect<ReadonlyArray<Seen>, E, R>) =>
@@ -329,8 +258,6 @@ const program = Effect.gen(function* () {
     }
     readable.push(seen);
   }
-  // Any channel it could read naming a newer version refuses: a newer release half published
-  // shows on the image first.
   const newer = readable.filter(
     (seen) => seen.current !== undefined && newerThan(seen.current, version) === true,
   );

@@ -1,9 +1,3 @@
-/**
- * A self-host or local process keeps at most its configured number of app Workers loaded, however
- * many apps and accounts are called. Each Worker is named by app, build and the accounts a call
- * uses; an authored module reports a per-isolate identifier from module state, so a Worker
- * the runtime unloaded and loaded again reports a new identifier and no earlier calls.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Fiber, Redacted, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -23,15 +17,7 @@ import { requestGate } from "../support/request-gate.ts";
 import { appsManifest, databaseFiles } from "../support/apps-release.ts";
 import { appWorkerBudgetLimit as limit, appWorkerIdleSeconds, scenarios } from "../test-plan.ts";
 
-/** Apps and accounts beyond the limit: two apps with three accounts each. */
 const beyondLimit = { apps: 2, accountsPerApp: 3, database: false };
-/**
- * Apps with databases beyond the limit, each running its queries in its own data facet. A tool
- * call of such an app takes its kind from the kept tool listing, so it loads only its facet and
- * takes one of the limit's slots. The first call of each selection also evaluates that listing in
- * the app Worker; the sweeps after it would leave room for only half as many recent selections if
- * a call loaded the app Worker as well.
- */
 const facetsBeyondLimit = { apps: limit + 2, accountsPerApp: 1, database: true };
 const facetCallWorkers = 1;
 
@@ -64,17 +50,9 @@ const Completed = Schema.Struct({
 interface Workload {
   readonly apps: number;
   readonly accountsPerApp: number;
-  /** An app with a database runs its queries in a data facet. */
   readonly database: boolean;
 }
 
-/**
- * A key-account app whose probe reports its isolate, after an optional request it waits for. Its
- * other queries build a chain of cache refreshes that keeps a call's release running: `chain`
- * returns a stale value and refreshes it in the background once the `first` flag is set; that
- * refresh reads a second stale key, whose own refresh waits for the `second` flag and then
- * stores "refreshed".
- */
 const budgetApp = (
   name: string,
 ) => `import { defineApp, defineProvider, secrets, object, string, boolean, query, router } from "apps";
@@ -140,17 +118,9 @@ interface Selection {
   readonly label: string;
   readonly token: string;
   readonly observe: (gate?: string) => Effect.Effect<Observation, unknown, never>;
-  /** Call one of the app's queries and return its value. */
   readonly query: (name: string, input?: object) => Effect.Effect<unknown, unknown, never>;
 }
 
-/**
- * Wait until the organization's own setup stops calling app Workers. Once the actors join, member
- * setup installs the default Executor app and links a managed key to it for the owner and for the
- * admin. Each link sets that key up as the app's webhook source, which calls the app's Workers in
- * the background. They count against the same limit as the scenario's Workers and unload whichever
- * of those is idle, so the scenario starts once both sources are set up.
- */
 const organizationSetUp = Effect.gen(function* () {
   const api = yield* Api,
     actors = yield* Actors;
@@ -188,7 +158,6 @@ const organizationSetUp = Effect.gen(function* () {
   }
 });
 
-/** Self-host: apps and the accounts connected from them through one organization's routes. */
 const hostedSelections = ({ apps, accountsPerApp, database }: Workload) =>
   Effect.gen(function* () {
     const api = yield* Api,
@@ -214,7 +183,6 @@ const hostedSelections = ({ apps, accountsPerApp, database }: Workload) =>
       const path = `${prefix}/apps/${app.id}`;
       for (let account = 0; account < accountsPerApp; account++) {
         const token = `synthetic-budget-${index}-${account}`;
-        // Connecting from the app links the new account to it for the owner.
         const pending = yield* api.request(
           actors.owner,
           "POST",
@@ -233,8 +201,6 @@ const hostedSelections = ({ apps, accountsPerApp, database }: Workload) =>
         yield* Effect.addFinalizer(() =>
           api.request(actors.owner, "DELETE", `${prefix}/accounts/${created}`).pipe(Effect.orDie),
         );
-        // Linking sets the account up as a webhook source in the background, which discovers the
-        // app; wait so it is done before the calls.
         const setup = api.request(actors.owner, "GET", `${path}/webhook-sources`).pipe(
           Effect.flatMap((response) => body(Schema.Array(SourceStatus), response)),
           Effect.map((sources) => sources.find((source) => source.account === created)?.status),
@@ -249,9 +215,6 @@ const hostedSelections = ({ apps, accountsPerApp, database }: Workload) =>
           }),
         );
         yield* setup;
-        // Calls cannot choose accounts: a call uses the account linked to the app, and linking
-        // another replaces it. Link this selection's account, which changes nothing when it is
-        // linked already, and wait for its webhook source as above.
         const query = (name: string, input: object = {}) =>
           linkAccount(actors.owner, path, "service", created)
             .pipe(
@@ -284,7 +247,6 @@ const hostedSelections = ({ apps, accountsPerApp, database }: Workload) =>
     return selections;
   });
 
-/** Local: apps and accounts through the agent API, each account linked to its app before a call. */
 const localSelections = ({ apps, accountsPerApp, database }: Workload) =>
   Effect.gen(function* () {
     const api = yield* Api,
@@ -317,7 +279,6 @@ const localSelections = ({ apps, accountsPerApp, database }: Workload) =>
       const { app } = yield* body(App, deployed);
       const path = `/v1/apps/${app.id}`;
       const accounts: string[] = [];
-      // Remove the app before the accounts linked to it.
       yield* Effect.addFinalizer(() =>
         Effect.gen(function* () {
           expect((yield* api.request(agent, "DELETE", path)).status).toBe(200);
@@ -329,7 +290,6 @@ const localSelections = ({ apps, accountsPerApp, database }: Workload) =>
       );
       for (let account = 0; account < accountsPerApp; account++) {
         const token = `synthetic-budget-${index}-${account}`;
-        // Connecting the account from the app links it there.
         const connected = yield* connectLocalAccount(agent, {
           app: app.id,
           requirement: "service",
@@ -339,9 +299,6 @@ const localSelections = ({ apps, accountsPerApp, database }: Workload) =>
         });
         const id = connected.id;
         accounts.push(id);
-        // Connecting from the app sets the account up as the app's webhook source, which calls its
-        // Worker in the background. Wait until it is done, so its calls cannot change which Workers
-        // were used most recently while the scenario runs.
         const setup = api.request(agent, "GET", `${path}/webhook-sources`).pipe(
           Effect.flatMap((response) => body(Schema.Array(SourceStatus), response)),
           Effect.map((sources) => sources.find((source) => source.account === id)?.status),
@@ -358,9 +315,6 @@ const localSelections = ({ apps, accountsPerApp, database }: Workload) =>
         expect(yield* setup, `webhook source setup of app ${index} account ${account}`).toBe(
           "ready",
         );
-        // Calls cannot choose accounts: a call uses the account linked to the app, and linking
-        // another replaces it. Link this selection's account, which changes nothing when it is
-        // linked already, and wait for its webhook source as above.
         const query = (name: string, input: object = {}) =>
           linkLocal(agent, app.id, "service", id)
             .pipe(
@@ -395,7 +349,6 @@ const localSelections = ({ apps, accountsPerApp, database }: Workload) =>
     return selections;
   });
 
-/** Call a selection and check it ran with its own credential. */
 const observe = (selection: Selection, gate?: string) =>
   selection
     .observe(gate)
@@ -405,18 +358,11 @@ const observe = (selection: Selection, gate?: string) =>
       ),
     );
 
-/**
- * More apps and accounts than the limit: after every selection has been called, a
- * sweep over all of them finds at most `limit` still loaded, the most recently used ones stay
- * loaded, and every Worker that was unloaded loads again with the right credential. A call that
- * loads `workersPerCall` Workers leaves room for `limit / workersPerCall` recent selections.
- */
 const boundedByConfiguration = (selections: ReadonlyArray<Selection>, workersPerCall = 1) =>
   Effect.gen(function* () {
     expect(selections.length).toBeGreaterThan(limit);
     const first: Observation[] = [];
     for (const selection of selections) first.push(yield* observe(selection));
-    // Every selection has its own Worker.
     expect(new Set(first.map((entry) => entry.isolate)).size).toBe(selections.length);
 
     const swept: Observation[] = [];
@@ -426,11 +372,9 @@ const boundedByConfiguration = (selections: ReadonlyArray<Selection>, workersPer
       stillLoaded.length,
       `selections still loaded after calling ${selections.length}: ${stillLoaded.length}`,
     ).toBeLessThanOrEqual(limit);
-    // An unloaded Worker starts again with no module state from its earlier isolate.
     for (const [index, entry] of swept.entries())
       if (entry.isolate !== first[index]!.isolate) expect(entry.calls).toBe(1);
 
-    // The most recently used Workers stay loaded: calling them again, newest first, loads none.
     const kept = Math.floor(limit / workersPerCall);
     expect(kept, "the limit leaves room for a recent selection").toBeGreaterThan(0);
     const recent = selections.slice(-kept).reverse();
@@ -442,20 +386,14 @@ const boundedByConfiguration = (selections: ReadonlyArray<Selection>, workersPer
     }
   });
 
-/** Three accounts of one app, each with its own Worker. */
 const inFlight = { apps: 1, accountsPerApp: 3, database: false };
 
-/**
- * With a limit of one, a Worker with a call in flight is never unloaded while other Workers load
- * beside it and exceed the limit; each of them is unloaded once its own call finishes.
- */
 const inFlightKept = (selections: ReadonlyArray<Selection>) =>
   Effect.gen(function* () {
     const [busy, second, third] = selections as [Selection, Selection, Selection];
     const before = yield* observe(busy);
     const gate = yield* requestGate;
     const pending = yield* observe(busy, `${gate.origin}/wait`).pipe(Effect.forkChild);
-    // The busy call is inside its Worker, waiting for the gate, before the others load.
     yield* gate.arrived;
     const secondFirst = yield* observe(second);
     const thirdFirst = yield* observe(third);
@@ -465,7 +403,6 @@ const inFlightKept = (selections: ReadonlyArray<Selection>) =>
       before.isolate,
     );
     expect(during.calls).toBe(before.calls + 1);
-    // The busy Worker was released last, so it stays; the others were unloaded above the limit.
     const after = yield* observe(busy);
     expect(after.isolate).toBe(before.isolate);
     const secondAgain = yield* observe(second);
@@ -480,27 +417,17 @@ const inFlightKept = (selections: ReadonlyArray<Selection>) =>
     expect(thirdAgain.calls).toBe(1);
   });
 
-/** Two apps with one account each, whose Workers take turns under a limit of one. */
 const releaseHeld = { apps: 2, accountsPerApp: 1, database: false };
 
-/**
- * A call's release drains its cache refreshes in the Worker for up to 35 seconds before its
- * caller stops waiting. A release still running past that limit keeps its Worker loaded until it
- * settles: another Worker loading above the limit does not unload it, and its last refresh
- * completes and stores its value.
- */
 const releaseKeptPastItsLimit = (selections: ReadonlyArray<Selection>) =>
   Effect.gen(function* () {
     const [refreshing, other] = selections as [Selection, Selection];
     const before = yield* observe(refreshing);
     yield* refreshing.query("seed");
-    // Returns the stale value; its release now waits for the refresh chain.
     expect(yield* refreshing.query("chain")).toBe("seed");
-    // The second refresh starts here and must still be running when the release limit passes.
     yield* Effect.sleep("12 seconds");
     yield* refreshing.query("flag", { name: "first-flag" });
     yield* Effect.sleep("25 seconds");
-    // Past the release limit: loading another Worker above the limit must not unload this one.
     yield* observe(other);
     const during = yield* observe(refreshing);
     expect(during.isolate, "the Worker with an unfinished release stayed loaded").toBe(
@@ -517,28 +444,13 @@ const releaseKeptPastItsLimit = (selections: ReadonlyArray<Selection>) =>
     expect(chained, "the refresh that outlived the release limit completed").toBe("refreshed");
   });
 
-/** One app with a database and two accounts, whose queries alternate between them. */
 const replacedFacets = { apps: 1, accountsPerApp: 2, database: true };
 
-/**
- * How long the data supervisor stays idle so the runtime evicts it and builds a new one for the
- * next call. The pinned workerd evicts an idle Durable Object after about ten seconds.
- */
 const supervisorEvicted = "20 seconds";
 
-/**
- * An app with a database runs one data facet at a time. When a call uses other accounts, because
- * another was linked in place of the first, the facet it replaces is unloaded rather than kept for
- * the rest of the process, so linking the first account again starts a fresh Worker with its own
- * credential. This holds first with the data supervisor in memory, then with it evicted between
- * calls: the runtime evicts an idle supervisor but keeps the facet Workers it loaded, and each
- * replaced facet is still unloaded, so the app keeps one facet Worker rather than one per account
- * ever used.
- */
 const replacedFacetUnloaded = (selections: ReadonlyArray<Selection>) =>
   Effect.gen(function* () {
     const [first, second] = selections as [Selection, Selection];
-    // With the supervisor in memory: calls follow each other well inside its eviction time.
     const initial = yield* observe(first);
     const again = yield* observe(first);
     expect(again.isolate, "calls of one selection share its facet Worker").toBe(initial.isolate);
@@ -548,7 +460,6 @@ const replacedFacetUnloaded = (selections: ReadonlyArray<Selection>) =>
     expect(before.isolate, "the replaced facet Worker was unloaded").not.toBe(initial.isolate);
     expect(before.calls).toBe(1);
 
-    // With the supervisor evicted before each call.
     yield* Effect.sleep(supervisorEvicted);
     const other = yield* observe(second);
     expect(other.isolate).not.toBe(before.isolate);
@@ -564,18 +475,10 @@ const replacedFacetUnloaded = (selections: ReadonlyArray<Selection>) =>
     expect(otherAgain.calls).toBe(1);
   });
 
-/** One app with two accounts, one called and left idle and one kept busy, and an app with a database. */
 const idleWorkers = { apps: 1, accountsPerApp: 2, database: false };
 const idleFacet = { apps: 1, accountsPerApp: 1, database: true };
-/** Longer than the idle time, with room for the sweep to unload what expired. */
 const idleLongEnough = `${appWorkerIdleSeconds * 2 + 2} seconds` as const;
 
-/**
- * Below the limit, an app Worker and a data facet left idle for the configured idle time are
- * unloaded while the scenario makes no requests, so the next call starts a fresh isolate. A Worker
- * with a call in flight for longer than the idle time stays loaded, and so does one released just
- * now.
- */
 const idleUnloaded = (workers: ReadonlyArray<Selection>, facets: ReadonlyArray<Selection>) =>
   Effect.gen(function* () {
     const [idle, busy] = workers as [Selection, Selection];
@@ -586,7 +489,6 @@ const idleUnloaded = (workers: ReadonlyArray<Selection>, facets: ReadonlyArray<S
     const gate = yield* requestGate;
     const pending = yield* observe(busy, `${gate.origin}/wait`).pipe(Effect.forkChild);
     yield* gate.arrived;
-    // No requests reach the product while the idle time passes; only the busy call is in flight.
     yield* Effect.sleep(idleLongEnough);
     yield* gate.release;
     const during = yield* Fiber.join(pending);
@@ -605,17 +507,10 @@ const idleUnloaded = (workers: ReadonlyArray<Selection>, facets: ReadonlyArray<S
     expect(facetAgain.calls).toBe(1);
   });
 
-/** One app with one account, with or without a database. */
 const collectedWorker = { apps: 1, accountsPerApp: 1, database: false };
 const collectedFacet = { apps: 1, accountsPerApp: 1, database: true };
-/** How long an isolate waits after one collection before the next. */
 const collectionInterval = "11 seconds";
 
-/**
- * An old-generation object only a WeakRef holds is freed once its isolate runs a major
- * collection. Its small heap would not start one by itself, so the object is gone only because the
- * isolate collected its garbage after a call made once the collection interval had passed.
- */
 const garbageCollected = (selections: ReadonlyArray<Selection>) =>
   Effect.gen(function* () {
     const [selection] = selections as [Selection];

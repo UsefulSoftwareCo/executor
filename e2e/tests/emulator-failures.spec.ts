@@ -1,10 +1,3 @@
-/**
- * An emulator call that fails names the endpoint, the emulator and emulators.dev's diagnostic
- * report, and nothing else. The instance URL is the only access control for its emulator, and an
- * error body can quote provider tokens, sign-in codes and addresses, so none of them may reach the
- * error, its rendering in result.json (`Cause.pretty`), or any span: attributes, events or status.
- * A local server stands in for emulators.dev and answers with synthetic secrets.
- */
 import { expect, layer } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
@@ -42,12 +35,10 @@ const instance = `report-${suffix}`;
 const token = "emu_resend_SYNTHETICtoken0001";
 const code = "SYNTH-CODE-482913";
 const email = "pat.synthetic@example.test";
-// Secrets shaped like diagnostic values: each passes a format check for the field it is in.
 const named = "SYNTHETICtoken482913";
 const secrets = [suffix, token, code, email, named, named.toUpperCase(), "482913482913"];
 const ray = "8f1d2c3b4a5e6f70-PHX";
 
-/** emulate's instance hash: the first 12 hex digits of SHA-256(`service:instance`). */
 const instanceId = (name: string) =>
   createHash("sha256").update(`resend:${name}`).digest("hex").slice(0, 12);
 
@@ -63,10 +54,8 @@ const report = {
   remote: false,
 };
 
-/** Answers with the response named by the instance's prefix (`/resend/<case>-<suffix>/...`). */
 const responses: Record<string, { status: number; headers: Record<string, string>; body: string }> =
   {
-    // A report with the diagnostic fields plus everything an older or broken server might add.
     report: {
       status: 503,
       headers: { "content-type": "application/json", "cf-ray": ray },
@@ -80,7 +69,6 @@ const responses: Record<string, { status: number; headers: Record<string, string
         token,
       }),
     },
-    // Every field holds a secret that passes its format check; only the flags survive.
     tainted: {
       status: 500,
       headers: { "content-type": "application/json", "cf-ray": code },
@@ -94,13 +82,11 @@ const responses: Record<string, { status: number; headers: Record<string, string
         ray: code,
       }),
     },
-    // A dynamic segment's name is the server's to choose, so it is not repeated.
     param: {
       status: 503,
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ ...report, instanceId: undefined, route: `/:${named}` }),
     },
-    // Cloudflare's opaque error page.
     opaque: {
       status: 500,
       headers: { "content-type": "text/html" },
@@ -123,7 +109,6 @@ const stub = Effect.acquireRelease(
   ({ close }) => Effect.sync(close),
 );
 
-/** Records every span the program starts, as an exporter would receive them. */
 const recording = () => {
   const spans: Array<Tracer.NativeSpan> = [];
   const tracer = Tracer.make({
@@ -150,10 +135,6 @@ const recording = () => {
 
 const leaked = (text: string) => secrets.filter((secret) => text.includes(secret));
 
-/**
- * Calls the stub as the harness calls emulators.dev, inside a caller's span. A send is a provider
- * write the harness never repeats, so each case sees exactly one answer.
- */
 const failingCall = (origin: string, name: string, tracer: Tracer.Tracer) =>
   emulatorRequest(`${origin}/resend/${name}-${suffix}`, "/emails", { to: email }, token).pipe(
     Effect.withSpan("harness step"),
@@ -173,17 +154,12 @@ const json = (status: number, body: unknown, headers: Record<string, string> = {
   body: JSON.stringify(body),
 });
 const rays = ["0a1b2c3d4e5f6071-LAX", "1a1b2c3d4e5f6071-LAX", "2a1b2c3d4e5f6071-LAX"];
-/** emulators.dev's opaque answer to an uncaught exception, as CI saw it. */
 const workerError = (attempt: number): Answer => ({
   status: 500,
   headers: { "content-type": "text/html", "cf-ray": rays[attempt]! },
   body: `<html>Worker threw exception for ${instance} ${token}</html>`,
 });
 
-/**
- * Answers each path with its script, one answer per request, repeating the last, and counts the
- * requests each path received. Paths are `/<service>/<case>-<suffix>/<route>`.
- */
 const scripted = (scripts: Record<string, ReadonlyArray<Answer>>) =>
   Effect.acquireRelease(
     Effect.callback<{
@@ -198,7 +174,6 @@ const scripted = (scripts: Record<string, ReadonlyArray<Answer>>) =>
         hits.set(key, seen + 1);
         const script = scripts[key] ?? [];
         const answer = script[Math.min(seen, script.length - 1)] ?? { status: 404 };
-        // Read the request body before answering, as a real server does.
         request.resume();
         request.on("end", () =>
           response.writeHead(answer.status, answer.headers ?? {}).end(answer.body ?? ""),
@@ -214,10 +189,8 @@ const scripted = (scripts: Record<string, ReadonlyArray<Answer>>) =>
     ({ close }) => Effect.sync(close),
   );
 
-/** Short spacing so the cases run in seconds; the attempts and their order are the harness's. */
 const fastPolicy = { attempts: 3, attemptDeadlineMs: 1_000, spacingMs: [100, 200] } as const;
 
-/** A directory for the run's retry records, removed with the scope. */
 const recordsDirectory = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   return yield* fs.makeTempDirectoryScoped({ prefix: "emulator-retries-" });
@@ -235,7 +208,6 @@ const records = (directory: string) =>
     );
   });
 
-/** Calls the scripted stub as the harness does, recording retries in `directory`. */
 const harnessCall = (
   directory: string,
   base: string,
@@ -249,7 +221,6 @@ const harnessCall = (
     Effect.provide(FetchHttpClient.layer),
   );
 
-/** A server that never answers, counting the requests each path received. */
 const stalling = Effect.acquireRelease(
   Effect.callback<{
     readonly origin: string;
@@ -279,7 +250,6 @@ const stalling = Effect.acquireRelease(
   ({ close }) => Effect.sync(close),
 );
 
-/** The test clock `@effect/vitest` provides, which a case moves by hand. */
 interface ControlledClock extends Clock.Clock {
   adjust(duration: Duration.Input): Effect.Effect<void>;
   withLive<A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R>;
@@ -290,10 +260,6 @@ const controlledClock = Effect.clockWith((clock) =>
     : Effect.die(new Error("This case needs the test clock")),
 );
 
-/**
- * Runs a call on the test clock, moving it 250 ms at a time and letting real I/O run between
- * steps, and returns how it ended and the clock time it took.
- */
 const onTestClock = <A, E>(call: Effect.Effect<A, E>) =>
   Effect.gen(function* () {
     const clock = yield* controlledClock;
@@ -307,17 +273,11 @@ const onTestClock = <A, E>(call: Effect.Effect<A, E>) =>
     return { exit: yield* Effect.exit(Fiber.join(fiber)), elapsed };
   });
 
-/** One request a call sent, when it started on the call's clock, and how it ended. */
 interface TimedAttempt {
   readonly route: string;
   readonly start: number;
   ended?: "answered" | "failed" | "cut off";
 }
-/**
- * An HTTP client that notes when each request starts on the call's clock and how it ends. A
- * request starts in the same synchronous step in which the policy decided to send it, so its start
- * is the time of that decision.
- */
 const timedClient = (attempts: Array<TimedAttempt>) =>
   Layer.effect(
     HttpClient.HttpClient,
@@ -345,13 +305,6 @@ const timedClient = (attempts: Array<TimedAttempt>) =>
     ),
   ).pipe(Layer.provide(FetchHttpClient.layer));
 
-/**
- * The clock a call runs on, noting the call's first reading of the time and every sleep it
- * schedules, with when and for how long. The policy reads the time first as it starts (its 30 s
- * runs from there), and each attempt's time-out is a sleep scheduled as the attempt starts, for
- * the time-out the policy chose. So both are read where the policy decides them, not after any
- * work that takes real time while the test clock moves on.
- */
 const notingClock = (clock: Clock.Clock) => {
   const noted = {
     first: undefined as number | undefined,
@@ -382,13 +335,6 @@ const notingClock = (clock: Clock.Clock) => {
   };
 };
 
-/**
- * The deadline as facts the policy decided: it runs from the call's own start, every attempt
- * started before it, and as each attempt started a time-out of exactly the smaller of 10 s and
- * what was left was scheduled for it. Every attempt was then cut off by it. And every sleep the
- * call scheduled, time-outs and the spacing between attempts alike, ends by the deadline, so the
- * call itself does: nothing the policy waits for runs past it.
- */
 const withinDeadline = (
   attempts: ReadonlyArray<TimedAttempt>,
   noted: {
@@ -424,7 +370,6 @@ const withinDeadline = (
   }
 };
 
-// The retry cases run on the real clock: the spacing between attempts is real time.
 layer(NodeServices.layer, { excludeTestServices: true })("Emulator failures", (it) => {
   it.effect("a failure report keeps only emulate's diagnostic fields", () =>
     Effect.gen(function* () {
@@ -486,7 +431,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Emulator failures", (i
   it.effect("a request that never gets a response does not carry its URL", () =>
     Effect.gen(function* () {
       const { tracer, exported } = recording();
-      // Nothing listens on port 9 (discard) here; the connection is refused.
       const error = yield* failingCall("http://localhost:9", "unreachable", tracer);
       expect(error.reason).toBe("request");
       expect(leaked(JSON.stringify(error))).toEqual([]);
@@ -499,7 +443,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Emulator failures", (i
     Effect.gen(function* () {
       const { origin } = yield* stub;
       const { tracer, exported } = recording();
-      // The control: Effect's client span records `url.full`, which is why emulator calls turn it off.
       yield* HttpClient.get(`${origin}/resend/opaque-${suffix}/emails`).pipe(
         Effect.withTracer(tracer),
         Effect.provide(FetchHttpClient.layer),
@@ -555,7 +498,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Emulator failures", (i
           "u",
         ),
       );
-      // Callers that match on the last answer still can.
       expect(error.status).toBe(500);
       for (const text of [error.message, JSON.stringify(error), Cause.pretty(Cause.fail(error))])
         expect(leaked(text)).toEqual([]);
@@ -568,7 +510,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Emulator failures", (i
   it.effect("a refused connection and a time-out are retried", () =>
     Effect.gen(function* () {
       const directory = yield* recordsDirectory;
-      // Nothing listens on port 3 (see request-failures.spec.ts), so every attempt is refused.
       const refused = yield* harnessCall(
         directory,
         `http://localhost:3/github/gone-${suffix}`,
@@ -584,7 +525,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Emulator failures", (i
           let seen = 0;
           const server = createServer((request, response) => {
             seen += 1;
-            // The first request never answers; the second does.
             if (seen > 1) response.writeHead(200).end(JSON.stringify({ list: [] }));
             else request.resume();
           });
@@ -615,10 +555,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Emulator failures", (i
 
   it.effect("a read whose body is cut off by a reset is read again, and a send is not", () =>
     Effect.gen(function* () {
-      /**
-       * Answers 200 with headers and part of the body, then resets the connection, the first time
-       * each path is requested; answers whole after that. Counts the requests each path received.
-       */
       const cutting = Effect.acquireRelease(
         Effect.callback<{
           readonly origin: string;
@@ -641,7 +577,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Emulator failures", (i
                 "content-type": "application/json",
                 "content-length": String(whole.length),
               });
-              // The headers and half the body reach the client before the reset.
               response.write(whole.slice(0, whole.length / 2), () =>
                 setTimeout(() => request.socket.resetAndDestroy(), 20),
               );
@@ -678,7 +613,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Emulator failures", (i
       ]);
       expect(leaked(JSON.stringify(saved))).toEqual([]);
 
-      // A send cut off the same way may have been delivered, so it is not sent again.
       const sent = yield* harnessCall(directory, `${origin}${base}`, "/emails", {
         to: email,
       }).pipe(Effect.flip);
@@ -694,17 +628,13 @@ layer(NodeServices.layer, { excludeTestServices: true })("Emulator failures", (i
       const answers = (service: string, name: string, route: string, answer: Answer) =>
         [`${service}/${name}-${suffix}`, route, answer] as const;
       const cases = [
-        // Refusals are the emulator's answer, not an outage.
         answers("github", "conflict", "POST /_emulate/credentials", json(409, { error: "x" })),
         answers("workos", "missing", "GET /user_management/users", json(404, { error: "x" })),
-        // A second fault would fail one more call.
         answers("autumn", "fault", "POST /_emulate/faults", workerError(0)),
-        // Harness writes through a provider's own API, and the seed of a service not checked.
         answers("workos", "vault", "POST /vault/v1/kv", workerError(0)),
         answers("workos", "invite", "POST /user_management/invitations", workerError(0)),
         answers("autumn", "usage", "POST /v1/balances.update", workerError(0)),
         answers("mcp", "seed", "POST /_emulate/seed", workerError(0)),
-        // A read answered by the scenario's own armed fault.
         answers(
           "autumn",
           "armed",
@@ -755,7 +685,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Emulator failures", (i
           users: [{ email }],
           organizations: [{ name: "V1 synthetic", members: [email] }],
         };
-        // The 500 came after the seed applied: reading back finds it, so it is not sent again.
         yield* harnessCall(directory, `${origin}${base}`, "/_emulate/seed", seed, {
           applied: Effect.succeed(true),
         });
@@ -763,20 +692,17 @@ layer(NodeServices.layer, { excludeTestServices: true })("Emulator failures", (i
         expect(yield* records(directory)).toEqual([
           expect.objectContaining({ outcome: "found applied", attempts: 1 }),
         ]);
-        // Without a way to read back, it is sent once.
         hits.clear();
         const once = yield* harnessCall(directory, `${origin}${base}`, "/_emulate/seed", seed).pipe(
           Effect.flip,
         );
         expect(hits.get(route)).toBe(1);
         expect(once.status).toBe(500);
-        // The first copy did not apply: it is sent again.
         hits.clear();
         yield* harnessCall(directory, `${origin}${base}`, "/_emulate/seed", seed, {
           applied: Effect.succeed(false),
         });
         expect(hits.get(route)).toBe(2);
-        // A seed of users alone matches them by email, so it is simply sent again.
         const users = `POST /workos/users-${suffix}/_emulate/seed`;
         const second = yield* scripted({ [users]: [workerError(0), json(200, { ok: true })] });
         yield* harnessCall(directory, `${second.origin}/workos/users-${suffix}`, "/_emulate/seed", {
@@ -793,7 +719,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Emulator failures", (i
       const { origin, hits } = yield* scripted({
         [`POST ${base}/_emulate/faults`]: [json(200, { fault: { id: "fault_1" } })],
         [`POST ${base}/_emulate/reset`]: [json(200, { ok: true })],
-        // An outage-shaped answer: retried unless a fault may be waiting for the product.
         [read]: [workerError(0)],
       });
       const directory = yield* recordsDirectory;
@@ -822,7 +747,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Emulator failures", (i
         const read = `POST ${base}/v1/customers.get`;
         const { origin, hits } = yield* scripted({
           [`POST ${base}/_emulate/faults`]: [json(200, { fault: { id: "fault_1" } })],
-          // The control plane is never faulted; this is the emulator itself failing to answer.
           [clear]: [workerError(0), json(200, { ok: true, removed: true })],
           [read]: [workerError(0)],
           [`DELETE ${base}/_emulate/faults`]: [workerError(0)],
@@ -850,15 +774,11 @@ layer(NodeServices.layer, { excludeTestServices: true })("Emulator failures", (i
         expect(yield* records(directory)).toMatchObject([
           { operation: "DELETE /_emulate/faults/fault_1", outcome: "answered", attempts: 2 },
         ]);
-        // A provider route of the same emulator may still meet a delayed fault: sent once.
         const once = yield* call("/v1/customers.get", { customer_id: "c" }).pipe(Effect.flip);
         expect(hits.get(read)).toBe(1);
         expect(once.earlier).toBeUndefined();
-        // A late copy of these could undo a fault armed after them: each is sent once while a
-        // fault is armed, even when the emulator does not answer.
         for (const [path, verb, payload, sent = path] of [
           ["/_emulate/faults", "DELETE", undefined],
-          // Not an id emulate issues: the URL normalizes to the route that clears every fault.
           ["/_emulate/faults/.", "DELETE", undefined, "/_emulate/faults/"],
           ["/_emulate/reset", undefined, {}],
           ["/_emulate/seed", undefined, { plans: [] }],
@@ -871,7 +791,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Emulator failures", (i
   );
 });
 
-// The shipped retry policy, on the test clock: its 30 s of attempts run in well under a second.
 layer(NodeServices.layer)("Emulator retry policy", (it) => {
   it.effect("the shipped policy ends every call inside its 30 s deadline, read back included", () =>
     Effect.gen(function* () {
@@ -890,7 +809,6 @@ layer(NodeServices.layer)("Emulator retry policy", (it) => {
           applied === undefined ? undefined : { applied },
         ).pipe(Effect.provideService(EmulatorRetryRecords, { directory }), Effect.provide(client));
 
-      // Three attempts of 10, 10 and the 6 s left, 1 s then 3 s apart: 30 s in all.
       const google = `/google/stalled-${suffix}`;
       const plainClock = notingClock(clock);
       const plain = yield* onTestClock(plainClock.run(shipped(google, { users: [{ email }] })));
@@ -903,8 +821,6 @@ layer(NodeServices.layer)("Emulator retry policy", (it) => {
       expect(error.message).toContain("after 3 attempts");
       expect(error.reason).toBe("timeout");
 
-      // The read back has only the 19 s left after the first attempt and its spacing; it stalls
-      // too, so whether the seed applied stays unknown and it is not sent again.
       attempts.length = 0;
       const workos = `/workos/stalled-${suffix}`;
       const readBack = emulatorRequest(`${origin}${workos}`, "/user_management/users").pipe(
@@ -935,7 +851,6 @@ layer(NodeServices.layer)("Emulator retry policy", (it) => {
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
-      // Node's default on the pinned Node, which made a slow two-address connect fail in ~500 ms.
       const read = (code: string) =>
         Effect.gen(function* () {
           const child = yield* processes.spawn(
@@ -950,8 +865,6 @@ layer(NodeServices.layer)("Emulator retry policy", (it) => {
       const value = `import net from "node:net"; console.log(net.getDefaultAutoSelectFamilyAttemptTimeout());`;
       expect(yield* read(value)).toBe(250);
       expect(yield* read(`import "./e2e/support/connect-timeout.ts"; ${value}`)).toBe(2_500);
-      // Each entry point that makes outbound calls imports it before anything else, and so does
-      // every setup file of the Vitest config the targets run under, so each worker has it.
       const first = (text: string) => text.match(/^import (?:[^;]*? from )?"([^"]+)";/m)?.[1];
       const callers: Array<string> = [];
       for (const name of (yield* fs.readDirectory("e2e")).toSorted()) {

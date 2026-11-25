@@ -1,31 +1,7 @@
 /* oxlint-disable no-control-regex -- terminal controls in log text are removed on purpose */
-/**
- * What Main health does with the facts `main-health-read.ts` decoded: `decide`, a pure function
- * of the three sources' health and whether an owned issue is open, and `body`, the whole issue
- * text, a function of the facts alone. Nothing here reads GitHub or the clock.
- */
 
-/**
- * One source's health. `bad`: positively known red, or a beta known to be held. `good`:
- * positively known green, or a beta known not to be held. `unknown`: no evidence either way (no
- * run that counts yet, no Beta decision in the window). A read that fails, or an answer that does
- * not decode, is none of these: the run stops before it gets here.
- */
 export type Health = "bad" | "good" | "unknown";
 
-/**
- * What a run does, from the three healths and whether an issue this script owns is open now (read
- * afresh on this run, not trusted from an earlier write):
- *
- * - `open`: something is bad and none is open: open one.
- * - `keep`: something is bad and one is open: write the lowest numbered, close any other.
- * - `close`: every source is good and one is open: close every one.
- * - `rewrite`: nothing is bad, something is unknown, and one is open: write each open one with
- *   the current facts, and open or close none.
- * - `none`: nothing to open, and nothing open: write nothing.
- *
- * Unknown never opens an issue and never closes one.
- */
 export type Outcome = "open" | "keep" | "close" | "rewrite" | "none";
 
 export const decide = (
@@ -38,14 +14,12 @@ export const decide = (
   return open ? "rewrite" : "none";
 };
 
-/** A run of a workflow, as the issue names it. */
 export interface RunRef {
   readonly id: number;
   readonly url: string;
   readonly sha: string;
 }
 
-/** A failed job of a red run: its log read for scenarios, gone from GitHub, or past `logsRead`. */
 export interface FailedJob {
   readonly name: string;
   readonly url: string;
@@ -53,14 +27,12 @@ export interface FailedJob {
   readonly scenarios: ReadonlyArray<string>;
 }
 
-/** The commits from the last green run to the first red one, or GitHub unable to compare them. */
 export interface Commits {
   readonly gone: boolean;
   readonly total: number;
   readonly commits: ReadonlyArray<{ readonly sha: string; readonly subject: string }>;
 }
 
-/** CI or the Windows check. `unknown` when the whole list was read and no run counts. */
 export type WorkflowFact =
   | { readonly health: "unknown" }
   | { readonly health: "good"; readonly latest: RunRef }
@@ -69,16 +41,11 @@ export type WorkflowFact =
       readonly latest: RunRef;
       readonly first: RunRef;
       readonly green: RunRef | undefined;
-      /** How many runs that count were read, for a red run with no green one before it. */
       readonly read: number;
       readonly jobs: ReadonlyArray<FailedJob>;
       readonly commits: Commits;
     };
 
-/**
- * The held beta, from the newest Beta decision of the last six days. `unknown` when there is none:
- * `newest` is the newest one listed, older than that, or undefined when none is kept at all.
- */
 export type BetaFact =
   | {
       readonly health: "bad";
@@ -98,17 +65,9 @@ export interface Facts {
   readonly beta: BetaFact;
 }
 
-/** How many failed jobs of a red run have their logs read for scenarios. */
 export const logsRead = 20;
-/** GitHub refuses a body over 65,536 characters; a longer one is cut at a line before this many bytes. */
 const bodyLimit = 60000;
 
-/**
- * Log text without terminal controls: CSI, OSC and the other string sequences (DCS, SOS, PM, APC)
- * opened by ESC or their one-byte C1 form and ended by BEL, ESC \ or ST in either form (or the
- * line), every other ESC sequence, the one-byte CSI and stray C0 and C1 controls, CR included; tab
- * and newline stay. Text that was not UTF-8 was decoded with U+FFFD in its place.
- */
 export const stripControls = (text: string) =>
   text
     .replace(/(?:\u001b\]|\u009d)[^\u0007\u001b\u009c\n]*(?:\u0007|\u001b\\|\u009c)?/gu, "")
@@ -121,14 +80,12 @@ export const stripControls = (text: string) =>
     .replace(/\u009b[0-?]*[ -/]*[@-~]/gu, "")
     .replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/gu, "");
 
-/** Text from logs, job names, commits and the Beta tick, safe inside a code span: no control, no backtick ends it, no @ mentions. */
 export const clean = (text: string) => stripControls(text).replace(/[`@]/gu, "");
 
 interface Names {
   readonly marker: string;
   /** `https://github.com/OWNER/NAME`. */
   readonly repository: string;
-  /** How the body names CI and the Windows check in a sentence. */
   readonly ci: string;
   readonly windows: string;
   readonly betaWorkflow: string;
@@ -206,7 +163,6 @@ const betaLines = (beta: BetaFact, names: Names) => {
       `Not held: the latest Beta tick that decided, ${beta.run}, found it on npm with nothing holding the next.`,
     ];
   const since = clean(beta.since);
-  // One code span, in which an @ mentions nobody, so the version names stay as they are.
   const reason = stripControls(`${beta.reason}\n`)
     .replace(/`/gu, "")
     .replace(/\n/gu, " ")
@@ -220,10 +176,6 @@ const betaLines = (beta: BetaFact, names: Names) => {
   ];
 };
 
-/**
- * The issue's whole body, from the facts alone. One line per source comes first, so a body cut at
- * the limit still says what each one is; it is cut at a line, so a code span is never left open.
- */
 export const body = (facts: Facts, names: Names) => {
   const unknown = [
     ...(facts.ci.health === "unknown" ? ["CI on main"] : []),

@@ -1,4 +1,3 @@
-/** Import descriptions and generated files; no product HTTP or installation policy. */
 export {
   CatalogAuth,
   CatalogEntry,

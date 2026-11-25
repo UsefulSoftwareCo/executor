@@ -1,10 +1,3 @@
-/**
- * The connect form stays inside its dialog whatever an app declares: a sign-in method label as
- * long as a paragraph, an unbroken field title and a long list of hosts wrap or truncate instead of
- * widening the form, and the submit button says "Validate" rather than repeating the label. While
- * the check runs, the button keeps an accessible name and the form announces the check once. The
- * line saying where hidden values go stays short and true for any list of hosts.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -32,11 +25,9 @@ const products = [
   "scrape",
   "images",
 ];
-/** 219 characters, as a catalog app once declared. */
 const longLabel = `API key for one Abstract product (product: ${products.join(", ")})`;
 const longTitle = "Product_identifier_written_as_one_unbroken_word_that_never_wraps_by_itself";
 
-/** A provider with a paragraph for a label, an unbroken field title and twelve long hosts. */
 const source = (name: string) => `
 import { defineApp, defineProvider, object, plain, router, secrets, string } from "apps";
 const service = defineProvider({
@@ -59,7 +50,6 @@ const service = defineProvider({
 export default defineApp({ user: { accounts: { service } } }, async () => ({ tools: router({}) }));
 `;
 
-/** A provider with one secret field that may be sent only to `hosts`. */
 const hostSource = (name: string, hosts: readonly string[]) => `
 import { defineApp, defineProvider, object, router, secrets, string } from "apps";
 const service = defineProvider({
@@ -71,15 +61,8 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
 `;
 
 const placeholder = "The app and your agent get a placeholder.";
-/** Ten exact hosts on one registrable domain. */
 const tenOnExample = products.slice(0, 10).map((product) => `${product}.example.com`);
 
-/**
- * Host lists as deployed (Executor sorts them), and what the form's line says for each. One or two
- * hosts are named. A longer list counts the exact hosts that share a registrable domain and names
- * every other entry: hosts on other domains, each `github.io` site (a public suffix, so each is its
- * own domain), wildcards with what they match, and hosts with a port.
- */
 const hostCases = [
   {
     label: "one host",
@@ -115,15 +98,9 @@ const hostCases = [
   },
 ] as const;
 
-/** How the expanded list reads a declared host: wildcards say what they match. */
 const listed = (host: string) =>
   host.startsWith("*.") ? `${host} (any host directly under ${host.slice(2)})` : host;
 
-/**
- * Whether a line is true to the declared hosts: each "N hosts on D" counts exactly the declared
- * hosts without a wildcard or port whose registrable domain is D, and every declared host left out
- * of a count is named in the line.
- */
 const truthful = (line: string, hosts: readonly string[]) => {
   const counts = [...line.matchAll(/(\d+) hosts on ([a-z0-9.-]+[a-z0-9])/g)].map(
     ([, count, domain]) => ({ count: Number(count), domain: domain ?? "" }),
@@ -143,13 +120,8 @@ const truthful = (line: string, hosts: readonly string[]) => {
   };
 };
 
-/** The local deploy route answers with the app under `app`. */
 const Deployed = Schema.Struct({ app: App });
 
-/**
- * Elements of the dialog that reach past its left or right edge, and how far its content scrolls
- * sideways. Vertical overflow is the dialog's own scrolling and is allowed.
- */
 const outside = (dialog: Locator) =>
   dialog.evaluate((element) => {
     const edge = element.getBoundingClientRect();
@@ -163,11 +135,6 @@ const outside = (dialog: Locator) =>
     return { sticking, sideways: element.scrollWidth - element.clientWidth };
   });
 
-/**
- * Each outermost live region in the dialog that holds text, with its politeness and its text, hidden
- * text included. A region inside another, such as a copy button's own feedback, is part of it.
- * `role="status"` is polite.
- */
 const liveRegions = (dialog: Locator) =>
   dialog.evaluate((element) => {
     const selector = "[aria-live], [role=status], [role=alert]";
@@ -186,10 +153,6 @@ const liveRegions = (dialog: Locator) =>
     });
   });
 
-/**
- * The open connect dialog fits at the browser's width and at a phone's, with a short submit button:
- * "Validate" for an app that checks credentials, "Connect account" for one that does not.
- */
 const fitsAtBothWidths = (dialog: Locator, submit = "Validate") =>
   Effect.gen(function* () {
     const browser = yield* Browser;
@@ -248,8 +211,6 @@ layer(HostedLive, { excludeTestServices: true })("Connect form layout", (it) => 
         });
         yield* fitsAtBothWidths(connect);
 
-        // The method menu is as wide as its field, and the long name wraps inside it.
-        // An open menu hides the dialog from the accessibility tree, so measure the field first.
         const field = yield* browser.use("Measure the sign-in method field", () =>
           connect.getByRole("combobox").boundingBox(),
         );
@@ -270,8 +231,6 @@ layer(HostedLive, { excludeTestServices: true })("Connect form layout", (it) => 
         yield* browser.checkpoint("The method menu wraps a long name");
         yield* browser.use("Close the menu", (page) => page.keyboard.press("Escape"));
 
-        // While the check runs, the button keeps its name and the form's one live region says
-        // "Validating…"; the result then replaces it there. The check is held until both are seen.
         let release = () => {};
         const held = new Promise<void>((resolve) => (release = resolve));
         yield* browser.use("Hold the account check", (page) =>
@@ -290,7 +249,6 @@ layer(HostedLive, { excludeTestServices: true })("Connect form layout", (it) => 
         yield* browser.use("The button is named Validating… while the check runs", () =>
           connect.getByRole("button", { name: "Validating…", exact: true }).waitFor(),
         );
-        // The spinner's own "Loading" name stays out of what the button announces.
         expect(
           yield* browser.use("The submit button as assistive technology reads it", () =>
             connect.locator("button[type=submit]").ariaSnapshot(),
@@ -404,7 +362,6 @@ layer(HostedLive, { excludeTestServices: true })("Connect form layout", (it) => 
           yield* browser.checkpoint(`Hosts line for ${label}`);
           const toggle = connect.getByRole("button", { name: "Show all", exact: true });
           if (!line.endsWith("Show all")) {
-            // Named hosts need no list, so there is nothing to expand.
             expect(yield* browser.use(`No list button for ${label}`, () => toggle.count())).toBe(0);
             yield* fitsAtBothWidths(connect, "Connect account");
             yield* browser.use(`Close the dialog for ${label}`, (page) =>
@@ -425,7 +382,6 @@ layer(HostedLive, { excludeTestServices: true })("Connect form layout", (it) => 
             ]),
           );
           expect(before).toEqual(["false", expect.any(String), true, 0]);
-          // The keyboard opens the list: Enter on the focused button.
           yield* browser.use(`Show every host with the keyboard, ${label}`, (page) =>
             toggle.focus().then(() => page.keyboard.press("Enter")),
           );
@@ -443,7 +399,6 @@ layer(HostedLive, { excludeTestServices: true })("Connect form layout", (it) => 
                 ]),
               ),
           );
-          // Every declared host, in the order declared, in the list the button controls.
           expect(after).toEqual(["true", before[1], before[1], hosts.map(listed)]);
           yield* browser.checkpoint(`Every host listed for ${label}`);
           yield* fitsAtBothWidths(connect, "Connect account");

@@ -1,9 +1,3 @@
-/**
- * Deleting your own user. Each organization the user belongs to is either deleted with them, when
- * they are its only member, or left: their personal accounts there are deleted and their
- * membership ends with the user row. The only owner of an organization that others still belong
- * to is refused, because the organization would be left with nobody able to administer it.
- */
 import { Effect, Option, Schema } from "effect";
 import { AccountId, StorageError } from "@executor-js/sdk/core";
 import { SessionAuthentication, CurrentPrincipal, CurrentUserId } from "../contracts/auth.ts";
@@ -44,10 +38,6 @@ const outcome = (membership: typeof Membership.Type): UserRemovalOutcome =>
       ? "blocked"
       : "leave";
 
-/**
- * The user's live organizations with what deleting the user does to each, and the personal
- * accounts they hold in the ones they leave. An organization already being removed is gone.
- */
 const plan = (user: string) =>
   Effect.gen(function* () {
     const sql = yield* policyDatabase;
@@ -85,7 +75,6 @@ const plan = (user: string) =>
     return { organizations: listed, accounts };
   });
 
-/** Show the signed-in user what deleting them would do, before they confirm. */
 export const previewUserRemoval = Effect.gen(function* () {
   const principal = yield* CurrentPrincipal;
   const planned = yield* plan(principal.userId);
@@ -95,15 +84,6 @@ export const previewUserRemoval = Effect.gen(function* () {
   };
 });
 
-/**
- * Delete the signed-in user. Every refusal a retry would clear is taken before anything is
- * deleted: an organization they cannot leave, or running work in one they are deleting. Their
- * personal accounts go next, while they are still a member, so each deletion is authorized and
- * revokes its OAuth grant exactly as deleting it by hand does. The organizations only they belong
- * to are then tombstoned, which hides them at once; the caller starts each removal workflow with
- * the returned ids. The user's own records go last. A failure before that leaves the user able to
- * sign in and try again, and a repeat skips what an earlier attempt finished.
- */
 export const removeUser = Effect.gen(function* () {
   const principal = yield* CurrentPrincipal;
   const user = principal.userId;
@@ -122,13 +102,11 @@ export const removeUser = Effect.gen(function* () {
     for (const { account } of planned.accounts.filter(
       (entry) => entry.organization === organization.id,
     )) {
-      // Leaving already stops the account serving its apps; deleting it removes those links.
       if (yield* removeAppLinksOf(executor, sql, account))
         yield* Effect.serviceOption(ScheduleWakeup).pipe(
           Effect.flatMap(Option.match({ onNone: () => Effect.void, onSome: (wake) => wake })),
         );
       yield* removeAccount({ owner, account }).pipe(
-        // Deleted since this request read the plan, by the user in another tab.
         Effect.catchTag("AccountNotFound", () => Effect.void),
         Effect.provideService(CurrentOrganization, {
           organization: organization.id,

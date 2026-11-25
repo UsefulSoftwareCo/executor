@@ -1,10 +1,3 @@
-/**
- * Desktop updater. The packaged build's app-update.yml names its channel feed;
- * builds without one (unsigned macOS, Linux packages other than AppImage) only
- * point people to the download page. A development build checks only a feed that
- * EXECUTOR_DESKTOP_DEV_UPDATE_CONFIG names, as the desktop update scenario does
- * (`development-updates.ts`); a release build does not contain that setting.
- */
 import { app, dialog } from "electron";
 import { autoUpdater } from "electron-updater";
 import { Duration, Effect, FileSystem, Option, Path, Ref, Schedule, Semaphore } from "effect";
@@ -21,11 +14,6 @@ const invoke = <A>(operation: () => Promise<A>) =>
 const firstCheck = Duration.seconds(15);
 const checkInterval = Duration.hours(4);
 
-/**
- * Check in the background and download quietly. The update is shown, never offered in a dialog:
- * `show` receives it while it downloads and once it is ready, and the dashboard's sidebar offers
- * the restart that `install` performs. The menu's check answers in dialogs, since it was asked.
- */
 export const makeUpdater = (options: {
   readonly restart: (install: () => void) => void;
   readonly show: (update: Option.Option<DesktopUpdate>) => void;
@@ -34,7 +22,6 @@ export const makeUpdater = (options: {
     const lock = yield* Semaphore.make(1);
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    // Release bundles define EXECUTOR_DESKTOP_DEV as "0", which leaves this import out of them.
     const development =
       process.env.EXECUTOR_DESKTOP_DEV !== "0" && !app.isPackaged
         ? yield* Effect.promise(() => import("./development-updates.ts")).pipe(
@@ -44,11 +31,10 @@ export const makeUpdater = (options: {
     const configured =
       (process.platform !== "linux" || process.env.APPIMAGE !== undefined) &&
       (development || (yield* fs.exists(path.join(process.resourcesPath, "app-update.yml"))));
-    // Assigning a channel at runtime would also allow downgrades, so the feed's channel stays in app-update.yml.
     autoUpdater.autoDownload = false;
     autoUpdater.autoInstallOnAppQuit = false;
     autoUpdater.allowDowngrade = false;
-    const onError = () => {}; // Promise failures are presented below, never provider payloads.
+    const onError = () => {};
     autoUpdater.on("error", onError);
     yield* Effect.addFinalizer(() =>
       Effect.sync(() => autoUpdater.removeListener("error", onError)),
@@ -57,7 +43,6 @@ export const makeUpdater = (options: {
     const set = (next: Option.Option<DesktopUpdate>) =>
       Ref.set(update, next).pipe(Effect.andThen(Effect.sync(() => options.show(next))));
 
-    /** Restart into the downloaded version, if one is ready. */
     const install = Effect.gen(function* () {
       const current = yield* Ref.get(update);
       if (Option.isSome(current) && current.value.state === "ready")
@@ -80,18 +65,11 @@ export const makeUpdater = (options: {
         if (confirmation.response === 0) yield* install;
       });
 
-    /**
-     * Download a newer version, shown as downloading meanwhile and as ready once it is. A failed
-     * download or verification shows nothing: electron-updater drops the installer it held
-     * before, so an older version shown as ready could no longer be installed. The next check,
-     * on the schedule, from the menu or at the next start, downloads it again.
-     */
     const download = (announce: boolean) =>
       Effect.gen(function* () {
         const result = yield* invoke(() => autoUpdater.checkForUpdates());
         if (result === null || !result.isUpdateAvailable) return Option.none<string>();
         const version = result.updateInfo.version;
-        // The notes come in the feed file this check already read; nothing else is fetched.
         const releases = feedReleases(result.updateInfo.releaseNotes, version);
         const releasesSince = feedReleasesSince(result.updateInfo);
         const running = app.getVersion();
@@ -102,7 +80,6 @@ export const makeUpdater = (options: {
           previous.value.version === version
         )
           return Option.some(version);
-        // The download can take a while; the restart prompt follows when it finishes.
         if (announce)
           void dialog.showMessageBox({
             type: "info",

@@ -1,8 +1,3 @@
-/**
- * App evaluation failures explain the likely cause and who can act, and every one reports on the
- * REST routes. Their fields come from the app's isolate, whose code can replace the fetch an answer
- * arrives through, so the copy never claims the cause and nothing skips reporting because of them.
- */
 import { expect, layer } from "@effect/vitest";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Effect, Layer, Redacted, Schedule, Schema } from "effect";
@@ -29,15 +24,6 @@ const JsonRpcRequest = Schema.Struct({
   params: Schema.optional(Schema.Struct({ protocolVersion: Schema.optional(Schema.String) })),
 });
 
-/**
- * MCP servers that fail at known points. `/lost` opens a session and then no longer recognizes
- * it, as one run on several instances without shared sessions does: every request after
- * initialize answers 404. `/stateless` issues no session and answers 404 the same way.
- * `/unsupported` answers initialize with a protocol version no client supports, a failure the
- * client raises itself without an HTTP status or JSON-RPC error. `/silent` never answers.
- * `/github/` answers every request 404, as GitHub answers a git request without credentials for a
- * repository that is not public. `initializations` counts the initialize requests each path received.
- */
 const failingMcpServer = Effect.gen(function* () {
   const initializations = { lost: 0, stateless: 0, unsupported: 0 };
   const handler = (path: keyof typeof initializations) =>
@@ -85,7 +71,6 @@ const failingMcpServer = Effect.gen(function* () {
   };
 });
 
-/** The manifest of an app that uses `apps/mcp`. */
 const mcpManifest = {
   path: "package.json",
   content: JSON.stringify({
@@ -93,7 +78,6 @@ const mcpManifest = {
   }),
 };
 
-/** An app whose tools come from the MCP server at `url`, waiting `timeoutMs` for it if given. */
 const mcpAppFiles = (url: string, timeoutMs?: number) => [
   mcpManifest,
   {
@@ -104,10 +88,6 @@ export default defineApp({}, async () => ({ tools: await mcpRouter({ url: ${JSON
   },
 ];
 
-/**
- * An app whose skills come from GitHub, with every request sent through `fetch`. `options` adds
- * loader options, such as a path.
- */
 const githubSkillsApp = (
   fetch: string,
   options = "",
@@ -122,16 +102,13 @@ export default defineApp({}, async (ctx) => ({
   }) }),
 }));`;
 
-/** A fetch that answers every request with `response`, whatever was asked. */
 const answering = (response: string) => `async () => ${response}`;
 
-/** A fetch that sends each request through Executor's `ctx.fetch` to `origin` instead. */
 const through = (origin: string) => `(input, init) => {
       const url = new URL(input instanceof Request ? input.url : input);
       return ctx.fetch(${JSON.stringify(origin)} + url.pathname + url.search, init);
     }`;
 
-/** An app whose skills come from the published index at `url`, read with `fetch` if given. */
 const wellKnownSkillsApp = (
   url: string,
   fetch = "",
@@ -148,7 +125,6 @@ const Failure = Schema.Struct({
   recovery: Schema.Struct({ action: Schema.String, instructions: Schema.String }),
 });
 
-/** What MCP execute reports for an app it could not load. */
 const Unavailable = Schema.Struct({
   unavailableApps: Schema.Array(Schema.Struct({ app: Schema.String, reason: Schema.String })),
 });
@@ -191,7 +167,6 @@ layer(HostedLive, { excludeTestServices: true })("App evaluation reporting", (it
             );
             return app;
           });
-        /** Read a failing endpoint; its error, status and trace. */
         const failing = (path: string) =>
           Effect.gen(function* () {
             const response = yield* api.request(actors.owner, "GET", path);
@@ -208,24 +183,18 @@ layer(HostedLive, { excludeTestServices: true })("App evaluation reporting", (it
           mcpAppFiles(server.url("unsupported")),
         );
         const silentApp = yield* deploy("Silent MCP", mcpAppFiles(server.url("silent"), 1_000));
-        // Nothing listens on this port, so the request fails before any server answers: the same
-        // failure a fault in Executor's own network would cause. The app's fetch rejects.
         const unanswered = yield* deploy(
           "Unanswered MCP",
           mcpAppFiles(`http://127.0.0.1:${yield* refusingPort}/mcp`),
         );
-        // A credential handle not sealed for this app: Executor's network refuses the request.
         const egress = yield* deploy(
           "Refused MCP egress",
           mcpAppFiles(`${server.url("lost")}?key=exsec_00_`),
         );
-        // GitHub's answer for a repository it does not show without credentials, through `ctx.fetch`
-        // to the fixture instead of github.com.
         const missing = yield* deploy("Missing skill repository", [
           { path: "index.ts", content: githubSkillsApp(through(server.url("github"))) },
           appsManifest,
         ]);
-        // The same 404, made up by the app's own fetch: the copy is the same, and it reports too.
         const madeUp = yield* deploy("Made-up skill answer", [
           {
             path: "index.ts",
@@ -233,8 +202,6 @@ layer(HostedLive, { excludeTestServices: true })("App evaluation reporting", (it
           },
           appsManifest,
         ]);
-        // The app's fetch replaces a request Executor's network could not complete, which rejects,
-        // with the 404 a missing repository gets.
         const replaced = yield* deploy("Replaced skill failure", [
           {
             path: "index.ts",
@@ -267,7 +234,6 @@ layer(HostedLive, { excludeTestServices: true })("App evaluation reporting", (it
           },
           appsManifest,
         ]);
-        // Executor's network cannot send this request, so the app's fetch rejects.
         const closedSkills = yield* deploy("Unanswered skill source", [
           {
             path: "index.ts",
@@ -278,7 +244,6 @@ layer(HostedLive, { excludeTestServices: true })("App evaluation reporting", (it
           },
           appsManifest,
         ]);
-        // The platform's own fetch: Executor's refusal arrives as its marked HTTP 421 response.
         const refusedSkills = yield* deploy("Refused skill egress", [
           {
             path: "index.ts",
@@ -286,8 +251,6 @@ layer(HostedLive, { excludeTestServices: true })("App evaluation reporting", (it
           },
           appsManifest,
         ]);
-        // Every field a lost session carries, thrown by the app's code: its caller reads the
-        // app's error, which reports like the others.
         const forged = yield* deploy("Thrown MCP error", [
           mcpManifest,
           {
@@ -310,7 +273,6 @@ export default defineApp({}, async () => {
           appsManifest,
         ];
         const throwing = yield* deploy("Throwing factory", throwingFactory);
-        // An execution that waits for approval and then searches an app that fails to load.
         const searchedLater = yield* deploy("Factory searched after approval", throwingFactory);
         const approval = yield* deploy("Approval before search", [
           {
@@ -324,7 +286,6 @@ export default defineApp({}, async () => ({ tools: router({
           appsManifest,
         ]);
 
-        // A 404 on the session the app reports: it may have expired, and a new listing can help.
         const lost = yield* failing(`${prefix}/apps/${mcpApp.id}/tools`);
         expect(lost.error.message).toBe(
           "The app reported HTTP 404 while listing tools with a session; the server may no longer recognize it.",
@@ -333,7 +294,6 @@ export default defineApp({}, async () => ({ tools: router({
           "check that the MCP server keeps its sessions",
         );
 
-        // Without a session the server issued, a 404 is a refusal, not a lost session.
         const stateless = yield* failing(`${prefix}/apps/${statelessApp.id}/tools`);
         expect(stateless.error.message).toBe(
           "The app’s MCP server refused the request while listing its tools (HTTP 404).",
@@ -342,14 +302,11 @@ export default defineApp({}, async () => ({ tools: router({
           "Check the app’s MCP server URL and access requirements.",
         );
 
-        // A server that does not answer in time.
         const silent = yield* failing(`${prefix}/apps/${silentApp.id}/tools`);
         expect(silent.error.message).toBe(
           "The app’s MCP server did not respond in time while connecting.",
         );
 
-        // A skill repository GitHub does not show without credentials: what to check and how to read
-        // a private one, without claiming the repository does not exist.
         const absent = yield* failing(`${prefix}/apps/${missing.id}/skill-bundle`);
         const absentCopy =
           "Reading GitHub repository synthetic/missing-skills without credentials returned HTTP 404: it may not exist, or it may be private. To read a private repository, pass a GitHub account and its token.";
@@ -363,8 +320,6 @@ export default defineApp({}, async () => ({ tools: router({
         expect(absent.error.recovery.instructions).toContain("may be private");
         expect(absent.error.recovery.instructions).not.toContain("retrying will not help");
 
-        // Settings the loader refuses get no claim about a missing repository, nor about whether a
-        // request was sent or refused.
         const refused = yield* failing(`${prefix}/apps/${invalid.id}/skill-bundle`);
         expect(refused.error.message).toBe("The GitHub skill source settings are not valid.");
         expect(refused.error.recovery.action).toBe(
@@ -376,7 +331,6 @@ export default defineApp({}, async () => ({ tools: router({
         expect(refused.error.recovery.instructions).not.toContain("refused");
         expect(refused.error.recovery.instructions).not.toContain("repository the skill source");
 
-        // Agents get the same explanations over MCP.
         const issued = yield* body(
           Schema.Struct({ id: Schema.String, key: Schema.RedactedFromValue(Schema.String) }),
           yield* api.request(actors.owner, "POST", "/api/auth/api-key/create", {
@@ -388,7 +342,6 @@ export default defineApp({}, async () => ({ tools: router({
             .request(actors.owner, "POST", "/api/auth/api-key/delete", { keyId: issued.id })
             .pipe(Effect.orDie),
         );
-        // Model mode, named in the URL, so an approval pauses for a resume.
         const client = yield* mcp.connect(issued.key, "app-evaluation-reporting", {
           organization: actors.organization.id,
           mode: "model",
@@ -423,8 +376,6 @@ export default defineApp({}, async () => ({ tools: router({
         expect(skills.isError).toBe(true);
         expect(agentSkills).toContain("it may not exist, or it may be private");
         expect(agentSkills).toContain("Check the repository the app’s skill source names");
-        // The program parks for approval, so the request that started it ends. Only the search
-        // after the resume discovers the failing app: the resume request reports it.
         const parked = yield* client.use(
           "Start an execution that waits for approval",
           (client, signal) =>
@@ -456,7 +407,6 @@ return await tools.search({ query: "anything", namespace: ${JSON.stringify(searc
         const resumedResult = yield* Schema.decodeUnknownEffect(Resumed)(resumed.structuredContent);
         expect(resumedResult.unavailableApps.map((entry) => entry.app)).toEqual([searchedLater.id]);
 
-        // The Tools page offers a retry, which opens a new session with the server.
         yield* browser.login(actors.owner);
         yield* browser.use("Open the session-losing app's Tools page", (page) =>
           page.goto(`/org/${actors.organization.slug}/apps/${mcpApp.id}?view=tools`),
@@ -467,7 +417,6 @@ return await tools.search({ query: "anything", namespace: ${JSON.stringify(searc
         expect(copy).toContain("the server may no longer recognize it");
         const retry = (page: Page) =>
           alert(page).getByRole("button", { name: "Try again", exact: true });
-        // Wait for any check the page started itself, so only the click below can start one.
         const enabled = yield* browser.use("Find the retry", (page) =>
           retry(page)
             .waitFor()
@@ -477,7 +426,6 @@ return await tools.search({ query: "anything", namespace: ${JSON.stringify(searc
         yield* browser.checkpoint("Lost-session-tools-error");
         const before = server.initializations.lost;
         yield* browser.use("Retry the listing", (page) => retry(page).click());
-        // The retry evaluated the app again, opening a new session with the server.
         yield* Effect.suspend(() =>
           server.initializations.lost > before
             ? Effect.void
@@ -485,12 +433,6 @@ return await tools.search({ query: "anything", namespace: ${JSON.stringify(searc
         ).pipe(Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 100 }));
         yield* browser.use("Read the error after the retry", (page) => retry(page).waitFor());
 
-        // Every failure reports, whatever its copy says: every MCP server and skill source
-        // answer, refusal and timeout, invalid settings, an unread git response, an MCP client
-        // failure without the server's answer, an MCP or skill request no server answered,
-        // Executor's network refusing an MCP or skill request, a skill answer the app's own fetch
-        // made up or put in place of a failed request, and the error an app's code threw. An agent's
-        // MCP `execute` or `skills` call answers with the failure and reports it like REST does.
         const garbled = yield* failing(`${prefix}/apps/${unreadable.id}/skill-bundle`);
         expect(garbled.error.message).toBe(
           "GitHub returned a git response Executor could not read.",
@@ -513,13 +455,10 @@ return await tools.search({ query: "anything", namespace: ${JSON.stringify(searc
         expect(closed.error.message).toBe("Could not reach 127.0.0.1 to load skills.");
         const refusedSkill = yield* failing(`${prefix}/apps/${refusedSkills.id}/skill-bundle`);
         expect(refusedSkill.error.message).toContain("NetworkRefused (credential_app)");
-        // A 404 the app's fetch returned, made up or in place of a failed request, reads the same as
-        // GitHub's: the copy never claims the repository is missing, and every one reports.
         const madeUpAnswer = yield* failing(`${prefix}/apps/${madeUp.id}/skill-bundle`);
         expect(madeUpAnswer.error.message).toBe(absentCopy);
         const replacedFailure = yield* failing(`${prefix}/apps/${replaced.id}/skill-bundle`);
         expect(replacedFailure.error.message).toBe(absentCopy);
-        // The app's caller still reads the error the app threw.
         const thrownMcp = yield* failing(`${prefix}/apps/${forged.id}/tools`);
         expect(thrownMcp.error.message).toBe(lost.error.message);
         const reported = [
@@ -547,8 +486,6 @@ return await tools.search({ query: "anything", namespace: ${JSON.stringify(searc
           { label: "app searched after an MCP execute resumed", trace: resumedTrace },
           { label: "MCP execute parked before the search", trace: parkedTrace, none: true },
         ];
-        // Cloud also reports a request Executor's network could not send as its own egress failure,
-        // on the same trace and before the app hears back.
         const expectedTypes = ({
           unsent,
           none,
@@ -561,8 +498,6 @@ return await tools.search({ query: "anything", namespace: ${JSON.stringify(searc
             : unsent === true
               ? ["AppEgressFailed", "AppEvaluationFailed"]
               : ["AppEvaluationFailed"];
-        // These reports arrive after every checked request finished. A missing one fails below,
-        // naming the request.
         const events = cloud
           ? yield* awaitSentryEvents(
               reported.map(({ trace }) => trace),

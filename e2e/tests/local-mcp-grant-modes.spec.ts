@@ -1,8 +1,3 @@
-/**
- * Local MCP grants approved before grant records held an approval mode have none stored. Until data step
- * `12_store_agent_grant_modes` stores one, such a grant serves the mode its consent's resource
- * names, at any address; the step stores exactly that mode and then serves it from the record.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
 import { scenarios } from "../test-plan.ts";
@@ -17,7 +12,6 @@ import { serverControl } from "../support/server-control.ts";
 
 const step = "12_store_agent_grant_modes";
 
-/** `GET /mcp/whoami` at the plain URL, which names model mode. */
 const whoamiMode = (token: Redacted.Redacted<string>) =>
   Effect.gen(function* () {
     const target = yield* Target;
@@ -39,7 +33,6 @@ layer(TestLive, { excludeTestServices: true })("Local MCP grant approval modes",
         const operator = yield* pairLocalOperator;
         const log = `${target.directory}/server.log`;
         const clients: string[] = [];
-        // Cleanup reads the grants through the product, so it must be running.
         yield* revokeClientGrants(operator, () => clients);
         yield* Effect.addFinalizer(() => serverControl("start").pipe(Effect.orDie));
         const consent = yield* consentTo(
@@ -51,8 +44,6 @@ layer(TestLive, { excludeTestServices: true })("Local MCP grant approval modes",
         const token = yield* consent.tokens;
         const grant = yield* clientGrantId(operator, consent.clientId);
         expect(yield* whoamiMode(token)).toBe("browser");
-        // The database as a server before grant records held a mode left it: no mode column.
-        // The next start adds it through Better Auth's migrator, empty for this grant.
         const dropped = yield* legacyStorage(
           [{ sql: `alter table "mcpGrant" drop column mode` }],
           "mcp-auth",
@@ -62,7 +53,6 @@ layer(TestLive, { excludeTestServices: true })("Local MCP grant approval modes",
         yield* serverControl("start");
         const report = yield* nextDataStepSummary(log, step, seen);
         expect(report).toMatchObject({ mode: "report", outcomes: { missing: 1 } });
-        // Without a stored mode it serves its consent's browser mode, not the plain URL's.
         expect(yield* whoamiMode(token)).toBe("browser");
         const mode = (rows: ReadonlyArray<ReadonlyArray<Record<string, unknown>>>) =>
           rows[0]?.[0]?.["mode"];
@@ -86,7 +76,6 @@ layer(TestLive, { excludeTestServices: true })("Local MCP grant approval modes",
           "mcp-auth",
         );
         expect(mode(after)).toBe("browser");
-        // The step is complete, so a later start does not run it again.
         const repeated = (yield* dataStepSummaries(log, step)).length;
         yield* serverControl("start");
         expect(yield* whoamiMode(token)).toBe("browser");

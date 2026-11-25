@@ -33,7 +33,6 @@ export default defineApp({}, {
         const settled = yield* server.loadedEngines.pipe(
           Effect.flatMap((loaded) => (loaded === 0 ? Effect.succeed(loaded) : Effect.fail(loaded))),
           Effect.retry({ schedule: Schedule.spaced("5 seconds"), times: 48 }),
-          // Report how many engines remain loaded rather than that polling ran out.
           Effect.catch((error) =>
             typeof error === "number" ? Effect.succeed(error) : Effect.fail(error),
           ),

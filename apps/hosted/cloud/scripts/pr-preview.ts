@@ -1,8 +1,3 @@
-/**
- * Composition root for PR lifecycle discovery and preview verification. `prepare` and `previewed`
- * import no package: the preview workflow runs them before it installs dependencies, and the other
- * commands load Effect only when they run.
- */
 import { runSelection } from "../src/implementation/pr-preview-decision.ts";
 
 const [command, ...args] = process.argv.slice(2);

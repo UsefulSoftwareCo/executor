@@ -16,10 +16,6 @@ import {
 } from "@executor-js/ui/dashboard/mcp-consent";
 import { localMcpClientAtom, localMcpConsentAtom } from "../../contracts/mcp.ts";
 
-/**
- * Pairing establishes the operator. The page approves the access the MCP URL names, and where
- * approvals are answered, which the URL only preselects.
- */
 export function LocalMcpAuthorizePage() {
   const page = usePageUrl();
   const query = page.search.slice(1),

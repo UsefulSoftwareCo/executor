@@ -1,4 +1,3 @@
-/** Workerd edge: one supervisor per configured app; code changes preserve the isolated facet database. */
 import { retireMethod, WorkerBundle, workerModules } from "./contracts/worker-bundle.ts";
 import type {
   DurableObjectState,
@@ -23,44 +22,22 @@ import type {
   EvaluatedWritten,
 } from "./contracts/evaluated.ts";
 
-/** Executable bytes, supplied by the trusted build store rather than a browser request. */
 export const FacetBundle = WorkerBundle;
-/** The outer host has already authorized this exact app invocation. No credentials are persisted here. */
 export const FacetInvocation = Schema.Struct({
   id: Schema.NonEmptyString,
-  /**
-   * The app, which binds the facet's outbound network to it. A supervisor serves only the app it is
-   * named for, so it refuses an invocation of any other.
-   */
   app: Schema.NonEmptyString,
   identity: Schema.NonEmptyString,
   body: Schema.String,
   cacheNamespace: Schema.optionalKey(Schema.String),
-  /**
-   * The host API revision `cacheNamespace` belongs to, for an app that reads its host's API. The
-   * facet Worker's network is bound to it, so `identity` names the revision too.
-   */
   hostApi: Schema.optionalKey(HostApiCheck),
   write: Schema.Boolean,
-  /**
-   * The bundle's calls may run alongside other calls of the same execution context. Bundles built
-   * before app SQL hold a transaction for a whole call, so their facet runs one call at a time.
-   */
   concurrent: Schema.Boolean,
   headers: Schema.Record(Schema.String, Schema.String),
 });
-/**
- * The supervisor attaches the revision the invocation observed, whether the invocation
- * invalidated app cache data, and its own part of the invocation on its own clock, queueing
- * included: how long it took and how much of that it waited on the facet; and what started for the
- * call (`started`): the supervisor's object and its isolate, before its clock began, and the facet
- * and its Worker, inside that wait.
- */
 export const FacetResult = Schema.Struct({
   value: Schema.Json,
   revision: Schema.Int,
   cacheChanged: Schema.optionalKey(Schema.Boolean),
-  /** The call met its supervisor resetting before it started, and was sent to the new instance. */
   resent: Schema.optionalKey(Schema.Literal(true)),
   timing: Schema.optionalKey(
     Schema.Struct({
@@ -74,17 +51,12 @@ export const FacetResult = Schema.Struct({
     }),
   ),
 });
-/**
- * What started for one facet call: the facet itself, and its Worker in the Worker Loader.
- * `recycled` marks a facet the supervisor restarted because the call found it idle.
- */
 interface FacetStarts {
   facet: boolean;
   worker: boolean;
   recycled: boolean;
 }
 const causes = new WeakMap<AppDatabaseError, unknown>();
-/** Internal diagnostics, deliberately absent from the serialized error. */
 export const facetFailureCause = (error: AppDatabaseError): unknown => causes.get(error);
 const failed = (cause?: unknown) => {
   const error = new AppDatabaseError({ reason: "storage" });
@@ -92,24 +64,13 @@ const failed = (cause?: unknown) => {
   return error;
 };
 
-/**
- * The name each Worker Loader name currently loads under. The runtime keeps a rejected cold-start
- * callback under its name for the rest of the process and never runs another callback for that
- * name, so a cold start that fails, for instance because its caller was cancelled or the build
- * could not be read, retires the name. Later calls load the same code under a fresh one.
- */
 const retired = new Map<string, string>();
 // oxlint-disable-next-line executor/no-module-level-mutable-state -- marks this isolate's cold-start failures; it carries no request data
 let coldStartToken: string | undefined;
-/** Marks this isolate's failed cold starts; authored code cannot produce it. */
 const coldStartFailure = () => (coldStartToken ??= `Worker cold start ${crypto.randomUUID()}`);
 const describe = (cause: unknown) =>
   cause instanceof Error ? `${cause.name}: ${cause.message}` : String(cause);
 
-/**
- * Get a Worker by name, loading its code only on a cold start. A failed load retires the name, so
- * the failure is not kept for later calls. Returns the name actually used.
- */
 export const loadWorker = (
   loader: Pick<WorkerLoader, "get">,
   name: string,
@@ -127,10 +88,8 @@ export const loadWorker = (
   });
   return { worker, current };
 };
-/** The name the next call of this Worker loads under. */
 export const workerName = (name: string) => retired.get(name) ?? name;
 
-/** Loaded only if a name being unloaded is not resident, so the unload leaves nothing behind. */
 const unloadedWorker = {
   mainModule: "retire.js",
   modules: {
@@ -147,15 +106,9 @@ const Retirable = Schema.declare(
     "retire" in value &&
     typeof value.retire === "function",
 );
-/** A Worker whose unload did not settle in time; later calls load its code under a fresh name. */
 export const replaceWorker = (name: string) => {
   retired.set(name, `${name}~${crypto.randomUUID()}`);
 };
-/**
- * Unload an idle named Worker from this process. Resolves true once the runtime has dropped it,
- * so the next call of the name cold-starts, and false when the runtime cannot unload it. The
- * caller must not unload a Worker with calls in flight: the runtime does not stop them.
- */
 export const unloadWorker = (loader: Pick<WorkerLoader, "get">, name: string) =>
   unloadLoaded(loader, workerName(name));
 const unloadLoaded = async (loader: Pick<WorkerLoader, "get">, loaded: string) => {
@@ -164,18 +117,12 @@ const unloadLoaded = async (loader: Pick<WorkerLoader, "get">, loaded: string) =
   try {
     return (await entry.retire()) !== false;
   } catch {
-    // The aborted isolate never answers; its caller sees the abort as an internal error.
     return true;
   }
 };
-/**
- * Whether a call failed because this isolate's cold start of its Worker failed. No authored code
- * ran, and the name is already retired, so the call can be made again under the fresh name.
- */
 export const failedColdStart = (cause: unknown) =>
   coldStartToken !== undefined && describe(cause).includes(coldStartToken);
 
-/** Private per-call cancellation; the facet never receives the supervisor storage or namespace. */
 const FacetEntrypoint = Schema.declare(
   (
     value,
@@ -199,73 +146,31 @@ const FacetEntrypoint = Schema.declare(
     typeof value.cancel === "function",
 );
 
-/**
- * The facet Worker each data supervisor in this isolate loaded last, by supervisor ID. The runtime
- * evicts an idle supervisor and builds a new one for its next call, but keeps the Workers it
- * loaded, so this record lives in the isolate rather than in the supervisor. It lets a new
- * supervisor unload the facet its evicted predecessor left loaded.
- */
 const loadedFacets = new Map<string, { readonly name: string; readonly loaded: string }>();
 
-/** When this isolate built its first supervisor, on its clock; supervisors report their isolate's age. */
 // oxlint-disable-next-line executor/no-module-level-mutable-state -- one timestamp per isolate; it carries no request data
 let isolateStartedAt: number | undefined;
 
-/** Use supervisor alarms: the pinned workerd cannot schedule alarms from a facet. */
 export const makeFacetSupervisor = (
   state: DurableObjectState,
   loader: Pick<WorkerLoader, "get">,
-  /**
-   * Network the facet's global `fetch` uses, bound to its app and to the host API revision its
-   * cache belongs to, when it reads its host's API. It substitutes credential handles and applies
-   * the host's routing rules.
-   */
   globalOutbound: (app: string, hostApi: HostApiCheck | undefined) => Fetcher,
-  /**
-   * Whether this object is the supervisor named for `app`, from its own ID (for example
-   * `state.id.equals(namespace.idFromName(app))`). Its storage is that app's, so it refuses an
-   * invocation of any other app.
-   */
   serves: (app: string) => boolean,
-  /**
-   * Unload the Worker of a facet replaced for another account selection. A workerd host whose
-   * process never unloads named Workers itself sets this; Cloudflare unloads them.
-   */
   unloadReplacedFacets = false,
 ) =>
   Effect.gen(function* () {
     const metadata = yield* Semaphore.make(1);
     const startedAt = yield* Clock.currentTimeMillis;
-    // The isolate's first supervisor: its start was the isolate's, so its wake started the isolate.
     const firstInIsolate = isolateStartedAt === undefined;
     const isolateStarted = (isolateStartedAt ??= startedAt);
-    /**
-     * Calls and events this instance has received, of every kind that can activate it: host RPCs,
-     * the socket upgrade, alarms and socket events. The first one woke it.
-     */
     let received = 0;
-    /**
-     * The trace of the call that woke this instance, when that call named one. A later command of
-     * the same trace was not the first, but the request it serves still paid for the wake.
-     */
     let wokenBy: string | undefined;
-    /**
-     * The invocation whose `wake` woke this instance, when one did. Only that invocation paid for
-     * the start: others of the same trace, such as the warm calls after it in one execution,
-     * report an earlier wake like any other.
-     */
     let wokenByWakeOf: string | undefined;
-    /** Count `effect` as one call or event the instance received. */
     const enter = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
       Effect.suspend(() => {
         received += 1;
         return effect;
       });
-    /**
-     * How this instance is running, for the caller's span. Counts the call it answers. `trace` is
-     * the caller's trace ID and `invocation` its runner invocation's opaque ID; both are only
-     * compared with the waking call's, never reported. `wake` marks the runner's wake.
-     */
     const runningIn = (trace?: string, invocation?: string, wake = false) =>
       Clock.currentTimeMillis.pipe(
         Effect.map((now) => {
@@ -280,42 +185,21 @@ export const makeFacetSupervisor = (
             isolateMs: now - isolateStarted,
           };
           const wokeEarlier = !woke && trace !== undefined && trace === wokenBy;
-          /** The caller's own invocation sent the `wake` that woke this instance. */
           const wokeByWake =
             !woke && !wake && invocation !== undefined && invocation === wokenByWakeOf;
           return {
             supervisor,
-            /** An earlier call of the caller's trace woke this instance. */
             wokeEarlier,
             wokeByWake,
-            /**
-             * The activation this call reports, its own or its invocation's wake, started the
-             * isolate's first supervisor, so the isolate started for the call.
-             */
             isolateWoke: (woke || wokeByWake) && firstInIsolate,
           };
         }),
       );
-    /**
-     * Which calls may run in the facet now. Calls of the loaded execution context run together when
-     * their bundle allows it, so a call waiting on an outside service never holds up the app's
-     * other calls, including that service's callbacks into the app. A call for another context, or
-     * one that needs the facet alone, waits until the running calls finish. Durable Objects share
-     * one I/O context, so waiters can be woken through a Deferred.
-     */
-    /**
-     * Calls of the running execution context always join it: a running call may be waiting for
-     * one of them, such as a provider's callback during webhook registration, so holding them
-     * back could deadlock. The cost is fairness: steady overlapping traffic for one context keeps
-     * another waiting until it pauses.
-     */
     const admission = { running: 0, identity: "", alone: false };
-    /** Successful calls whose release still runs in the facet after their reply, and when they end. */
     let finishing = 0;
     let finished = Promise.resolve();
     let settle = () => {};
     let wake = yield* Deferred.make<void>();
-    /** Enter now when allowed, or return the signal to wait on. Synchronous, so it cannot interleave. */
     const tryEnter = (identity: string, concurrent: boolean) => {
       const joins =
         concurrent && !admission.alone && admission.running > 0 && admission.identity === identity;
@@ -332,10 +216,6 @@ export const makeFacetSupervisor = (
       wake = yield* Deferred.make<void>();
       yield* Deferred.succeed(woken, undefined);
     });
-    /**
-     * Wait until the call may run in the facet. Waiting is interruptible, so cancelling a queued
-     * call ends it at once; an attempt that enters registers `leave` with the call's scope.
-     */
     const admit = (identity: string, concurrent: boolean) =>
       Effect.gen(function* () {
         for (;;) {
@@ -349,10 +229,6 @@ export const makeFacetSupervisor = (
       });
     const evaluated = evaluatedStore(state.storage);
     const cached = sqliteCache(state.storage);
-    // Every cache command, from the host or from an invocation, passes here, so a change is
-    // recorded for evaluated results before any caller can read them again: an invalidation, an
-    // explicit refresh, or any command that replaced a value with different data, such as a
-    // routine background refresh that found a changed MCP tool list.
     const store = (namespace: string, command: unknown) =>
       cached(namespace, command).pipe(
         Effect.tap(({ replaced }) =>
@@ -379,16 +255,10 @@ export const makeFacetSupervisor = (
       string,
       { cancel: Deferred.Deferred<void>; done: Deferred.Deferred<void> }
     >();
-    /**
-     * Unload the Worker of a facet this supervisor replaced. The runtime would otherwise keep it
-     * for the life of the process, one per account selection ever used. A call that selects it
-     * again waits for the unload and then loads it fresh.
-     */
     const unloadReplaced = (replaced: { readonly name: string; readonly loaded: string }) =>
       Effect.promise(() => unloadLoaded(loader, replaced.loaded)).pipe(
         Effect.timeoutOption("10 seconds"),
         Effect.flatMap((settled) =>
-          // The runtime may still hold the old Worker; a later call must not reach it.
           settled._tag === "None" && workerName(replaced.name) === replaced.loaded
             ? Effect.sync(() => replaceWorker(replaced.name))
             : Effect.void,
@@ -405,7 +275,6 @@ export const makeFacetSupervisor = (
         const supervisor = state.id.toString();
         const name = `${supervisor}:${invocation.identity}`;
         const loaded = workerName(name);
-        // Another execution context, or a retired name after a failed cold start, needs a new facet.
         if (active !== loaded) {
           state.facets.abort("data", "Execution context changed");
           active = loaded;
@@ -419,7 +288,6 @@ export const makeFacetSupervisor = (
           starts.recycled = true;
         }
         if (!unloadReplacedFacets) return yield* select(name, invocation, load, starts);
-        // Also covers a facet an evicted supervisor left loaded, which `active` never saw.
         const replaced = loadedFacets.get(supervisor);
         loadedFacets.set(supervisor, { name, loaded });
         if (replaced !== undefined && replaced.loaded !== loaded) yield* unloadReplaced(replaced);
@@ -433,10 +301,8 @@ export const makeFacetSupervisor = (
     ) =>
       Effect.try({
         try: () =>
-          // An abort invalidates stubs. Reacquire on every invocation.
           Schema.decodeUnknownSync(FacetEntrypoint)(
             state.facets.get("data", () => {
-              // The runtime asks for the class only when it starts the facet.
               starts.facet = true;
               const { worker } = loadWorker(loader, name, async () => {
                 starts.worker = true;
@@ -445,7 +311,6 @@ export const makeFacetSupervisor = (
                   ...bundle,
                   modules: workerModules(bundle.modules),
                   compatibilityDate: "2026-07-30",
-                  // The strictly-public flag would override this outbound and bypass it.
                   compatibilityFlags: ["nodejs_compat", "no_brotli_content_encoding"],
                   globalOutbound: globalOutbound(invocation.app, invocation.hostApi),
                 };
@@ -554,15 +419,12 @@ export const makeFacetSupervisor = (
             Effect.withSpan("runtime.app.data.admit"),
           );
           const entrypoint = yield* acquire(invocation, load, starts);
-          // Capture the revision before execution so a later write cannot make an old query
-          // look current. A write that commits while the query runs only causes a refetch.
           const observedRevision = yield* revision;
           let cacheChanged = false;
           if (invocation.write)
             yield* Effect.acquireRelease(begin, () => finish.pipe(Effect.catch(() => Effect.void)));
           const run = Effect.gen(function* () {
             const namespace = invocation.cacheNamespace;
-            // The invocation owns the leases it claims until it finishes, background refreshes included.
             const leases =
               namespace === undefined
                 ? undefined
@@ -608,10 +470,6 @@ export const makeFacetSupervisor = (
               ({ id, result }, exit) =>
                 Effect.promise(async () => {
                   if (Exit.isFailure(exit) && !invocation.concurrent) {
-                    // An older bundle's transaction closes the facet's input gate, so a cancel
-                    // RPC cannot enter until it commits. Abort the facet, which runs only this
-                    // call, to roll it back. Current bundles never hold a transaction across a
-                    // wait, so their cancel below reaches the call without touching others.
                     state.facets.abort("data", "App invocation cancelled");
                   }
                   if (Exit.isSuccess(exit) && entrypoint.finish !== undefined) {
@@ -630,7 +488,6 @@ export const makeFacetSupervisor = (
                     );
                     return;
                   }
-                  // Drain the invocation before the next caller acquires a fresh facet capability.
                   await Promise.allSettled([
                     Promise.resolve().then(() => entrypoint.cancel(id)),
                     result,
@@ -638,7 +495,6 @@ export const makeFacetSupervisor = (
                   await closeLeases();
                 }),
             );
-            // Waiting on the facet, which runs the app, is not the supervisor's own time.
             const from = yield* Clock.currentTimeNanos;
             const result = yield* Effect.promise(() => call.result).pipe(
               Effect.withSpan("runtime.app.data.facet"),
@@ -660,11 +516,6 @@ export const makeFacetSupervisor = (
     return {
       enter,
       cache: (namespace: string, command: unknown) => enter(cache(namespace, command)),
-      /**
-       * A cache command's reply, with how this supervisor was running when it answered: whether
-       * the command woke it, its `invocation`'s wake did, or an earlier call of the caller's
-       * `trace` did, and how long it and its isolate had been running.
-       */
       observedCache: (namespace: string, command: unknown, trace?: string, invocation?: string) =>
         runningIn(trace, invocation).pipe(
           Effect.flatMap(({ supervisor, wokeEarlier, wokeByWake, isolateWoke }) =>
@@ -673,20 +524,10 @@ export const makeFacetSupervisor = (
             ),
           ),
         ),
-      /**
-       * Nothing but activation, sent by a cold call's runner ahead of its first command so this
-       * supervisor starts while the app Worker does. Answers how it found the supervisor. When it
-       * woke the instance, the commands of the same `invocation` report `wokeByWake` and the
-       * start it paid for; other calls of the caller's `trace` report an earlier wake.
-       */
       wake: (trace?: string, invocation?: string) =>
         runningIn(trace, invocation, true).pipe(
           Effect.map(({ supervisor, isolateWoke }) => ({ supervisor, isolateWoke })),
         ),
-      /**
-       * Host-evaluated results, with how this supervisor was running when it answered. A command
-       * the store could not run is answered as missing, a miss; its writer ignores the answer.
-       */
       evaluated: (command: unknown, trace?: string) =>
         runningIn(trace).pipe(
           Effect.flatMap(({ supervisor }) =>
@@ -709,7 +550,6 @@ export const makeFacetSupervisor = (
         workflows: ((input: unknown) => Promise<unknown>) | null = null,
       ) =>
         Effect.suspend(() => {
-          // The first call or event an instance receives woke it, before its clock started.
           const cold = received === 0;
           return enter(
             Effect.scoped(
@@ -717,9 +557,6 @@ export const makeFacetSupervisor = (
                 const invocation = yield* Schema.decodeUnknownEffect(
                   Schema.toType(FacetInvocation),
                 )(input).pipe(Effect.mapError(failed));
-                // Each supervisor is named by its app's immutable ID (`getByName`). Its storage is
-                // that app's, so it never runs another app's code or outbound against it, whoever
-                // sent the invocation.
                 if (!serves(invocation.app)) {
                   yield* Effect.annotateCurrentSpan("executor.supervisor.refused", "other-app");
                   return yield* failed();
@@ -742,7 +579,6 @@ export const makeFacetSupervisor = (
                 const started = yield* Clock.currentTimeNanos;
                 let waitMs = 0;
                 const starts: FacetStarts = { facet: false, worker: false, recycled: false };
-                // Bounded attributes on the supervisor's span, when its host traces the call.
                 const annotate = () =>
                   Effect.annotateCurrentSpan({
                     "executor.supervisor.cold": cold,
@@ -778,7 +614,6 @@ export const makeFacetSupervisor = (
                   timing: {
                     elapsedMs,
                     waitMs,
-                    // Always sent, so a warm call is told apart from a supervisor that predates it.
                     started: startedParts,
                   },
                 };
@@ -819,13 +654,6 @@ export const makeFacetSupervisor = (
           ),
         ),
       recover: enter(recover),
-      /**
-       * Unload the facet Worker of one execution context, for a host that bounds the Workers its
-       * process keeps loaded. Its database stays. Releases still running after their replies
-       * finish first. A facet another call entered meanwhile is left loaded, as is one this
-       * supervisor no longer has loaded. True once the Worker is unloaded; the next call loads it
-       * again.
-       */
       unload: (identity: string) =>
         enter(
           Effect.gen(function* () {
@@ -852,15 +680,9 @@ export const makeFacetSupervisor = (
     };
   });
 
-/** A saved account as selected for one slot; only its stable identifier names a runtime. */
 interface SelectedAccount {
   readonly id: string;
 }
-/**
- * A version and its account selection define one warm execution context. Credential values
- * and workflow runs are delivered with each invocation: a renewed token or another run must not
- * load another Worker, which the runtime would keep for its lifetime.
- */
 export const facetIdentity = (
   build: string,
   accounts: Readonly<Record<string, SelectedAccount | ReadonlyArray<SelectedAccount>>>,

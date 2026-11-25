@@ -4,8 +4,6 @@ import { Effect, Schema, Schedule } from "effect";
 import { randomUUID } from "node:crypto";
 import { workflowServer, WorkflowRun } from "../support/docker-workflows.ts";
 
-// The engine of a run in progress may leave memory. A step longer than the idle window must run
-// once and finish, and a sleeping run whose engine has gone must resume from its durable alarm.
 it.live(
   "released image finishes workflow runs whose steps outlast the idle window and whose engines stop while they sleep",
   () =>
@@ -35,13 +33,9 @@ export default defineApp({}, {
           key: randomUUID(),
         });
         const current = server.json(WorkflowRun, `${server.runs}/${started.id}`);
-        // The step outlasts the idle window in which finished runs' engines unload. The call in
-        // progress holds its engine.
         yield* Effect.sleep(`${stepSeconds - 20} seconds`);
         expect((yield* current).status, "the long step is still running").toBe("running");
         expect(yield* server.loadedEngines, "a running step holds its engine").toBe(1);
-        // A sleep waits in the engine's memory, backed by a durable alarm. Stopping the process
-        // part way through the sleep removes the engine; only the alarm can resume the run.
         yield* Effect.sleep(`${20 + sleepSeconds / 4} seconds`);
         expect((yield* current).status, "the run is sleeping").not.toBe("complete");
         yield* server.restart;
@@ -57,10 +51,7 @@ export default defineApp({}, {
         const output = yield* Schema.decodeUnknownEffect(
           Schema.Struct({ long: Schema.Number, resumed: Schema.Number }),
         )(finished.output);
-        // The step ran once, from the start of the run: a step restarted by a reloaded engine
-        // would record a later start.
         expect(output.long - created).toBeLessThan(30_000);
-        // The run resumed after the whole sleep, in an engine loaded by its alarm.
         expect(output.resumed - output.long).toBeGreaterThanOrEqual(
           (stepSeconds + sleepSeconds) * 1000,
         );

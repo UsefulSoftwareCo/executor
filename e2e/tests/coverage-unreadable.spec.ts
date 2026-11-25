@@ -1,21 +1,11 @@
-/**
- * `node e2e/coverage.ts collect` fails on a JSON file it cannot decode and says what is needed to
- * diagnose it: the file's path, size, modification time and SHA-256, the parser's or the schema's
- * error with the byte it names, and a short excerpt of the file with every byte other than
- * printable ASCII escaped. It never copies the file: a failed job uploads its run folder's
- * `report/` as evidence. These cases run `collect` on run folders made here and read everything it
- * printed and every file it left.
- */
 import { expect, layer } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, FileSystem, Path, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { createHash, randomBytes } from "node:crypto";
 
-/** The most bytes of a file the record shows (`excerptBytes` in e2e/coverage.ts). */
 const excerptBytes = 256;
 
-/** Bytes as the record shows them: printable ASCII, a backslash doubled, else `\xNN`. */
 const escaped = (bytes: Uint8Array) =>
   Array.from(bytes, (byte) =>
     byte === 0x5c
@@ -25,7 +15,6 @@ const escaped = (bytes: Uint8Array) =>
         : `\\x${byte.toString(16).padStart(2, "0")}`,
   ).join("");
 
-/** Every file under `directory`, by path relative to it, with its size. */
 const listFiles = (
   directory: string,
 ): Effect.Effect<Record<string, number>, unknown, FileSystem.FileSystem | Path.Path> =>
@@ -40,10 +29,6 @@ const listFiles = (
     return found;
   });
 
-/**
- * A run folder holding one local scenario's coverage, with `report` as its V8 report, and what
- * `collect` printed and left when run on it from this checkout.
- */
 const collect = (
   report: string | Uint8Array,
   extra: Record<string, string> = {},
@@ -90,7 +75,6 @@ const collect = (
       output,
       before,
       after,
-      /** What collect printed and every file it added to the run folder, together. */
       everything: [output, ...left].join("\n"),
       collected: (yield* fs.exists(out)) ? yield* fs.readFileString(out) : undefined,
       relative: path.relative(root, file),
@@ -98,7 +82,6 @@ const collect = (
     };
   }).pipe(Effect.scoped);
 
-/** The length of the longest run of `token` found anywhere in `text`. */
 const longestRun = (text: string, token: string) => {
   let longest = 0;
   for (let start = 0; start < token.length; start++)
@@ -111,7 +94,6 @@ const longestRun = (text: string, token: string) => {
   return longest;
 };
 
-/** A random token shaped like a credential, far longer than the excerpt. */
 const secretToken = () =>
   `ghp_${Array.from(randomBytes(4096), (byte) => "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"[byte % 62]).join("")}`;
 
@@ -141,7 +123,6 @@ layer(NodeServices.layer)("Coverage collect on a JSON file it cannot read", (it)
       expect(result.output).toContain(
         `bytes ${bytes.length - 64}-${bytes.length}: ${"x".repeat(64)}`,
       );
-      // The record, its stack trace and the logger's prefix: a few lines, whatever the file's size.
       expect(result.output.length, result.output).toBeLessThan(2048);
     }),
   );
@@ -150,15 +131,10 @@ layer(NodeServices.layer)("Coverage collect on a JSON file it cannot read", (it)
     Effect.gen(function* () {
       const token = secretToken();
       const reports = {
-        // Not JSON from its first byte.
         start: `${token}{"result":[]}`,
-        // JSON, but the schema expects an array where the token is.
         "wrong type": JSON.stringify({ result: token }),
-        // The parser stops just after the token.
         "error position": `{"result":["${token}",]}`,
-        // Text after the JSON value, which is the token.
         end: `{"result":[]}${token}`,
-        // A control character inside the token.
         "inside a string": `{"result":["${token.slice(0, 2000)}\u0001${token.slice(2000)}"]}`,
       };
       for (const [where, report] of Object.entries(reports)) {
@@ -193,17 +169,14 @@ layer(NodeServices.layer)("Coverage collect on a JSON file it cannot read", (it)
       const ff = (count: number) => Buffer.alloc(count, 0xff);
       const pad = Buffer.from(` ${"p".repeat(300)}`);
       const reports: Record<string, [Buffer, number]> = {
-        // Each of 500 bytes that are not UTF-8 decodes to one replacement character.
         "not UTF-8 before the error": [
           Buffer.concat([Buffer.from('{"result":["'), ff(500), Buffer.from('",]}'), pad]),
           514,
         ],
-        // V8 names a position, in characters, after bytes that are not UTF-8.
         "not UTF-8 before a position V8 names": [
           Buffer.concat([Buffer.from('{"result":["'), ff(10), Buffer.from('\u0001"]}'), pad]),
           22,
         ],
-        // Two bytes of a cut three-byte character decode to one replacement character.
         "a cut character before the error": [
           Buffer.concat([
             Buffer.from('{"result":["'),
@@ -213,7 +186,6 @@ layer(NodeServices.layer)("Coverage collect on a JSON file it cannot read", (it)
           ]),
           214,
         ],
-        // A cut character at the very end: the error is the file's end, never past it.
         "not UTF-8 at the end": [Buffer.from('{"result":["\xe9', "latin1"), 13],
         "not UTF-8 at the error": [
           Buffer.concat([Buffer.from('{"result":['), ff(3), Buffer.from("]}"), pad]),
@@ -234,7 +206,6 @@ layer(NodeServices.layer)("Coverage collect on a JSON file it cannot read", (it)
         expect(result.exitCode, `${where}: ${result.output}`).toBe(1);
         expect(result.output, where).toContain(`; at byte ${at}).`);
         expect(at, where).toBeLessThanOrEqual(report.length);
-        // The excerpt is taken around that byte.
         expect(result.output, where).toContain(
           escaped(report.subarray(Math.max(0, at - 32), Math.min(report.length, at + 32))),
         );
@@ -244,7 +215,6 @@ layer(NodeServices.layer)("Coverage collect on a JSON file it cannot read", (it)
 
   it.effect("a file no larger than the excerpt is shown whole, and a larger one is not", () =>
     Effect.gen(function* () {
-      // Wrong-typed reports, which give the schema's error and so no byte to look around.
       const report = (size: number) => {
         const text = JSON.stringify({ result: "x" });
         return `${text.slice(0, -2)}${"y".repeat(size - text.length)}"}`;
@@ -255,7 +225,6 @@ layer(NodeServices.layer)("Coverage collect on a JSON file it cannot read", (it)
         expect(result.exitCode, `${size}: ${result.output}`).toBe(1);
         expect(result.output, `${size} bytes`).toContain(`  bytes 0-${size}: ${text}\n`);
       }
-      // A parser failure in a small file shows all of it too.
       const broken = `{"result":[${"1,".repeat(90)}]}`;
       const parsed = yield* collect(broken);
       expect(parsed.output).toContain(`  bytes 0-${broken.length}: ${broken}\n`);
@@ -276,7 +245,6 @@ layer(NodeServices.layer)("Coverage collect on a JSON file it cannot read", (it)
       expect(record, result.output).toContain(
         `${"n".repeat(100)}\\x1b[31m\\x0aINJECTED\\x09\\\\odd.json could not be read as JSON`,
       );
-      // Only the record's own line breaks: no other control byte, and no line the name began.
       expect(
         Array.from(result.output).filter((character) => {
           const code = character.charCodeAt(0);
@@ -285,7 +253,6 @@ layer(NodeServices.layer)("Coverage collect on a JSON file it cannot read", (it)
         "a control byte from the file's name reached the log",
       ).toEqual([]);
       expect(result.output).not.toContain("\nINJECTED");
-      // The path's escaped bytes, its middle cut: at most 256 of them and the cut's marker.
       const shown = record!.slice(0, record!.indexOf(" could not be read"));
       const units = shown.replace(/^.*?CoverageFailed: /u, "").match(/\\x[0-9a-f]{2}|\\\\|./gu);
       expect(units!.length, shown).toBeLessThanOrEqual(256 + "...(cut)...".length);
@@ -293,7 +260,6 @@ layer(NodeServices.layer)("Coverage collect on a JSON file it cannot read", (it)
     }),
   );
 
-  // Before and after this change, the same: it guards the decoding, which every report passes.
   it.effect("a good run's output is unchanged", () =>
     Effect.gen(function* () {
       const result = yield* collect(

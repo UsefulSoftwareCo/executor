@@ -1,12 +1,3 @@
-/**
- * A deploy serves only the current build's browser files, so a page still running the previous
- * build cannot load a file the deploy renamed. Two Cloud dashboard builds that differ only in their
- * build id must name every browser file the same. Only the server bundle carries the id; the
- * document hands it to the browser. Each build sets `SENTRY_RELEASE` as a deploy does, so the
- * Sentry plugin runs; without an auth token it uploads nothing.
- *
- * The same dashboard's builds take Cloud's notes as an input, or none, and read no git history.
- */
 import { expect, layer } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, FileSystem, Path, Stream } from "effect";
@@ -14,7 +5,6 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 const web = "apps/hosted/cloud/web";
 
-/** Builds the Cloud dashboard as `build` and reads which of its files name the build. */
 const buildAs = (build: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -54,10 +44,6 @@ const buildAs = (build: string) =>
     };
   }).pipe(Effect.scoped);
 
-/**
- * Builds the Cloud dashboard with `env` and no repository to read, `GIT_DIR` naming an empty
- * directory, and returns how the build ended and the text of its browser files.
- */
 const buildWithout = (env: Record<string, string>) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -106,16 +92,12 @@ layer(NodeServices.layer, { excludeTestServices: true })("Dashboard file names",
             },
           ],
         };
-        // Given notes, as a production deploy's build is: its browser files hold them.
         const given = yield* buildWithout({ EXECUTOR_CLOUD_RELEASE_NOTES: JSON.stringify(notes) });
         expect(given.exitCode, given.output).toBe(0);
         expect(notes.notes.map((note) => given.browser.includes(note.text))).toEqual([true, true]);
-        // Given none, as development, a checkout's own builds and the size checks are: it builds,
-        // with no repository to read, and holds no notes.
         const none = yield* buildWithout({});
         expect(none.exitCode, none.output).toBe(0);
         expect(notes.notes.map((note) => none.browser.includes(note.text))).toEqual([false, false]);
-        // Notes that are not Cloud's notes stop the build.
         const malformed = yield* buildWithout({
           EXECUTOR_CLOUD_RELEASE_NOTES: JSON.stringify({
             notes: [{ date: "yesterday", text: "" }],
@@ -135,7 +117,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Dashboard file names",
         expect(second.files).toEqual(first.files);
         expect(first.browserNamingBuild).toEqual([]);
         expect(second.browserNamingBuild).toEqual([]);
-        // The server still names the build in the document, where the browser reads it.
         expect(first.serverNamingBuild.length).toBeGreaterThan(0);
         expect(second.serverNamingBuild.length).toBeGreaterThan(0);
       }),

@@ -1,17 +1,10 @@
 import { useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 
-/** Warnings shown before the list is opened. */
 const PREVIEW_COUNT = 3;
 const ROW_HEIGHT = 22;
-/** The opened list's height in rows; it scrolls past that. */
 const OPEN_ROWS = 12;
 
-/**
- * A trace's warnings: the first few, cut to one line, how many there are, and all of them on
- * request. A trace can have tens of thousands (one per missing parent), so the opened list renders
- * only the rows in view, and its fixed height keeps the waterfall on the page.
- */
 export function TraceWarnings({ warnings }: { warnings: ReadonlyArray<string> }) {
   const [open, setOpen] = useState(false);
   const count = warnings.length;
@@ -39,7 +32,6 @@ export function TraceWarnings({ warnings }: { warnings: ReadonlyArray<string> })
       ) : (
         <ul className="mt-1">
           {warnings.slice(0, PREVIEW_COUNT).map((warning, index) => (
-            // Warnings can repeat, so their position is their key.
             // oxlint-disable-next-line react/no-array-index-key
             <li key={index} className="text-amber-400 truncate" title={warning}>
               {warning}
@@ -51,11 +43,6 @@ export function TraceWarnings({ warnings }: { warnings: ReadonlyArray<string> })
   );
 }
 
-/**
- * Every warning, one line each. The rows are in normal flow between two spacers, so the list is
- * as wide as its longest row in view and scrolls sideways to it; the list takes keyboard focus,
- * so the arrow keys scroll it both ways.
- */
 function WarningList({ warnings }: { warnings: ReadonlyArray<string> }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   // oxlint-disable-next-line react/incompatible-library -- this build does not run the React Compiler
@@ -72,7 +59,6 @@ function WarningList({ warnings }: { warnings: ReadonlyArray<string> }) {
   return (
     <div
       ref={scrollRef}
-      // Focusable so that keyboard users can scroll a long warning into view.
       // oxlint-disable-next-line jsx-a11y/no-noninteractive-tabindex
       tabIndex={0}
       role="region"

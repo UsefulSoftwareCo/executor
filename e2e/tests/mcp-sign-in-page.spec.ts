@@ -1,8 +1,3 @@
-/**
- * The hosted sign-in pages, as the person approving a client sees them: the organization, access
- * and approval rows, the choices they offer, and the credential that results. The grant record
- * rule itself is covered by the grant choice scenarios; these drive the pages that set it.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Layer, Redacted, Ref, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -53,7 +48,6 @@ const phone = { width: 390, height: 844 };
 const desktop = { width: 1280, height: 900 };
 const listFailure = "Could not load your connections.";
 
-/** An account-free app with a read tool, a write tool and a tool that always asks for approval. */
 const deployApp = Effect.gen(function* () {
   const api = yield* Api,
     actors = yield* Actors;
@@ -87,7 +81,6 @@ export default defineApp({}, async () => ({
   return { app, receipt, path: `tools[${JSON.stringify(app.slug)}]` };
 });
 
-/** A connection of the owner's in an organization, revoked when the scenario ends. */
 const createConnection = (
   session: Session,
   organization: string,
@@ -106,14 +99,12 @@ const createConnection = (
     return connection;
   });
 
-/** Every tool of one deployed app, run without an account. */
 const allTools = (app: { readonly id: string }) => ({
   app: app.id,
   runsAs: [{ kind: "app" }],
   tools: { kind: "all" },
 });
 
-/** The scenario organization's name, as the page shows it. */
 const organizationName = Effect.gen(function* () {
   const api = yield* Api,
     actors = yield* Actors;
@@ -126,7 +117,6 @@ const organizationName = Effect.gen(function* () {
   return found.name;
 });
 
-/** What `/mcp/whoami` says a bearer's grant holds. */
 const whoami = (token: Redacted.Redacted<string>) =>
   Effect.gen(function* () {
     const target = yield* Target;
@@ -138,12 +128,10 @@ const whoami = (token: Redacted.Redacted<string>) =>
   });
 const accessToken = (grant: Grant) => Redacted.make(Redacted.value(grant.tokens).access_token);
 
-/** Keep a screenshot of the page as evidence. */
 const shot = (name: string) =>
   Effect.gen(function* () {
     const browser = yield* Browser,
       evidence = yield* Evidence;
-    // Menus fade in and out; capture once those transitions end. Spinners repeat forever.
     const image = yield* browser.use(`Capture ${name}`, (page) =>
       page
         .evaluate(() =>
@@ -159,7 +147,6 @@ const shot = (name: string) =>
     yield* evidence.attach(`${name}.png`, "image/png", image);
   });
 
-/** Capture the page at phone width, then return to the desktop window. */
 const phoneShot = (name: string) =>
   Effect.gen(function* () {
     const browser = yield* Browser;
@@ -168,7 +155,6 @@ const phoneShot = (name: string) =>
     yield* browser.use("Return to a desktop window", (page) => page.setViewportSize(desktop));
   });
 
-/** The page's frame, heading and decision stay on screen, with Connect available. */
 const frameMounted = (page: Page) =>
   Promise.all([
     page.getByRole("heading", { name: "Connect to Executor", exact: true }).isVisible(),
@@ -283,7 +269,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP sign-in page", (it) => {
             chooseConsentOrganization(page, organization),
           );
           yield* browser.use("Open the Access menu", (page) => consentMenu(page, "Access").click());
-          // The menu names the connection and the app it reaches, not their IDs.
           expect(
             yield* browser.use("The connection lists its app by name", (page) =>
               consentOption(page, name).innerText(),
@@ -383,7 +368,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP sign-in page", (it) => {
             Effect.map((result) => result.structuredContent),
             Effect.flatMap(Schema.decodeUnknownEffect(Pending)),
           );
-        // Browser approval links the review page; through the agent there is no link.
         expect(pending.approvalUrl).toBeDefined();
         const url = new URL(pending.approvalUrl ?? "");
         const reviewed = yield* api.request(
@@ -478,7 +462,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP sign-in page", (it) => {
             Promise.all([Promise.resolve(page.url()), consentValue(page, "Access")]),
           );
           expect(left).toEqual([consentUrl, "All apps"]);
-          // The person saves a connection in the editor's tab, then comes back.
           const connection = yield* createConnection(actors.owner, actors.organization.id, name, [
             allTools(app),
           ]);
@@ -635,16 +618,11 @@ layer(HostedLive, { excludeTestServices: true })("MCP sign-in page", (it) => {
         );
         const paths = [`/api/organizations/${actors.organization.id}/mcp-connections`];
         yield* browser.login(actors.owner);
-        /** The Access menu's value, and whether it is still reading its connections. */
         const accessMenu = (page: Page) =>
           Promise.all([
             consentMenu(page, "Access").innerText(),
             consentMenu(page, "Access").getAttribute("aria-busy"),
           ]);
-        /**
-         * The browser reads the list after the page arrives; check the page while it is held. The
-         * Access menu shows the preselected access at once, and its list loads inside the menu.
-         */
         const heldInPlace =
           (shown: string) => (held: { readonly requested: Effect.Effect<string, unknown> }) =>
             Effect.gen(function* () {
@@ -661,7 +639,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP sign-in page", (it) => {
                 ),
               );
             });
-        /** Capture the open Access menu. A resize closes it, so this is desktop only. */
         const openAccessShot = (name: string) =>
           Effect.gen(function* () {
             yield* browser.use("Open the Access menu", (page) =>
@@ -676,7 +653,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP sign-in page", (it) => {
                 .then(() => page.getByRole("listbox").waitFor({ state: "hidden" })),
             );
           });
-        /** The failure and its retry are inside the Access menu; the row keeps its value. */
         const failureShown = (shown: string) =>
           Effect.gen(function* () {
             yield* browser.use("The Access menu stops loading", (page) =>
@@ -697,7 +673,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP sign-in page", (it) => {
             );
           });
 
-        // The list fails, then a retry loads it; a choice made meanwhile survives both.
         const failing = yield* holdQuery(paths, "fail");
         const retried = Effect.gen(function* () {
           yield* browser.use("Use a desktop window", (page) => page.setViewportSize(desktop));
@@ -721,11 +696,9 @@ layer(HostedLive, { excludeTestServices: true })("MCP sign-in page", (it) => {
           yield* shot("connections-failed-desktop");
           yield* phoneShot("connections-failed-mobile");
           yield* openAccessShot("connections-failed-menu-desktop");
-          // A refresh can read the list more than once; hold every read until the check.
           const retry = yield* holdQuery(paths, "continue", { allRequests: true });
           yield* browser.use("Retry the list", (page) => chooseConsent(page, "Access", "Retry"));
           expect(paths).toContain(yield* retry.requested);
-          // While the retry runs, the menu keeps its value and loads again.
           expect(yield* browser.use("Retrying: the Access menu loads again", accessMenu)).toEqual([
             "All apps",
             "true",
@@ -757,7 +730,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP sign-in page", (it) => {
           mode: "browser",
         });
 
-        // A list that cannot load does not stop the person approving the URL's connection.
         const failingAgain = yield* holdQuery(paths, "fail");
         const failed = Effect.gen(function* () {
           yield* heldInPlace("One of your connections")(failingAgain);

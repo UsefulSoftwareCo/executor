@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// First, so the E2E runner's hooks own the clock before any other module reads it.
 import "./implementation/e2e-process.ts";
 import {
   appsCommand,
@@ -9,7 +8,6 @@ import {
   renderAppFailure,
 } from "@executor-js/app-management/cli";
 import { toolCommands } from "@executor-js/app-management/tools-cli";
-/** CLI composition root. Platform dependencies and raw process arguments stop here. */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Cause, Config, Console, Effect, Option, Runtime, Schema } from "effect";
@@ -42,10 +40,6 @@ import { outdatedCli } from "./implementation/update-notice.ts";
 import { ensure, standalone } from "./implementation/service-client.ts";
 import { readSettings, serviceDirectory } from "./implementation/service-files.ts";
 
-/**
- * A command's implementation, loaded when that command runs. Help, argument errors and other
- * commands then start without the server, the launcher or the upgrader.
- */
 const loaded = <M, A, E, R>(
   load: () => Promise<M>,
   run: (module: M) => Effect.Effect<A, E, R>,
@@ -57,15 +51,10 @@ const bootstrap = () => import("./implementation/bootstrap.ts");
 const pairing = () => import("./implementation/pair.ts");
 const upgrader = () => import("./implementation/upgrade.ts");
 
-// The file that started the CLI shows how it was installed: the npm launcher, or the release
-// executable itself, names itself in EXECUTOR_LAUNCHER; otherwise it is the script Node started.
 const entry = process.env.EXECUTOR_LAUNCHER ?? process.argv[1];
-// The Node.js the npm launcher runs on. The release executable carries its own runtime, so a
-// standalone install needs no Node at all.
 const launcherNode =
   process.env.EXECUTOR_LAUNCHER_NODE ??
   (process.versions.bun === undefined ? process.versions.node : undefined);
-/** Failures whose message is written for the person running the command. */
 const explained = Schema.is(
   Schema.Union([
     LocalConfigurationError,
@@ -76,12 +65,6 @@ const explained = Schema.is(
   ]),
 );
 
-/**
- * Client commands without a named or remembered host use the background server, started if needed, or
- * a private server for the command when the service is disabled. They send its password, or
- * EXECUTOR_API_KEY when that is set. A local server that cannot start fails the command the way
- * its other failures do, with the reason as JSON on stdout for programs.
- */
 const localServer = Effect.gen(function* () {
   const supplied = yield* Config.Redacted("EXECUTOR_API_KEY").pipe(Config.option);
   const directory = yield* serviceDirectory;
@@ -108,10 +91,6 @@ const cli = executorCommand.pipe(
         Effect.gen(function* () {
           if (service && stdio)
             return yield* new CliError.UserError({ cause: "Use --service or --stdio, not both." });
-          // A foreground server says how long its stop took, as its last line on stderr. It is the
-          // only mode that logs there (`server-process.ts`): a private `--stdio` server's stderr is
-          // copied to the command that started it, which asked for no server, and a background
-          // server's goes to the command that started it until it is ready.
           if (!service && !stdio) processOutput.last(exitLine);
           return yield* loaded(serverProcess, ({ serveProcess }) =>
             processOutput.serve(
@@ -183,18 +162,11 @@ const cli = executorCommand.pipe(
 NodeRuntime.runMain(
   Command.run(cli, { version: process.env.EXECUTOR_BUILD_VERSION ?? "0.0.0-dev" }).pipe(
     Effect.scoped,
-    // A reader that closed the pipe, or output that cannot be written, ends a command that is not
-    // serving.
     Effect.raceFirst(processOutput.closed),
-    // Effect CLI renders argument errors and supplies the exit status for help.
-    // Operational failures retain the launcher's sanitized message. A failed apps or tool command
-    // states the host's code, status, message and recovery, and also prints them as JSON on
-    // stdout when a program, not a terminal, reads it.
     Effect.catch((error) => {
       if (CliError.isCliError(error)) return Effect.fail(error);
       const described = explained(error) ? undefined : describeAppFailure(error);
       return Effect.gen(function* () {
-        // A failed apps command also says when this CLI is out of date.
         const update = described === undefined ? undefined : yield* outdatedCli(entry);
         const failure =
           described === undefined || update === undefined ? described : { ...described, update };
@@ -212,7 +184,6 @@ NodeRuntime.runMain(
         });
       });
     }),
-    // runMain's own report of an unhandled failure, written through the console below.
     Effect.tapCause((cause) =>
       Cause.hasInterruptsOnly(cause) || !Runtime.getErrorReported(Cause.squash(cause))
         ? Effect.void

@@ -1,9 +1,3 @@
-/**
- * A TCP proxy in front of a database that can drop its connections the way a far end does in
- * production: the server side goes away while the client's socket stays open and says nothing,
- * so the client learns only when it next writes. It can also refuse every new connection, for a
- * database that cannot be reached at all.
- */
 import { Effect } from "effect";
 import { createServer, connect, type Socket } from "node:net";
 import type { AddressInfo } from "node:net";
@@ -12,22 +6,15 @@ type Pair = { readonly client: Socket; readonly upstream: Socket; dropped: boole
 
 export interface HalfOpenProxy {
   readonly port: number;
-  /** Ends every current connection's server side; each client socket closes on its next write. */
   readonly dropAll: () => number;
-  /** Ends one current connection's server side, the newest still open. */
   readonly dropOne: () => number;
-  /** Connections not dropped that the client closed since the last `resetPeak`. */
   readonly healthyClosed: () => number;
-  /** While set, every new connection is closed as soon as it opens. */
   readonly refuse: (refusing: boolean) => void;
-  /** Connections opened through the proxy so far. */
   readonly opened: () => number;
-  /** The most client connections open at once since the last `resetPeak`, dropped ones included. */
   readonly peak: () => number;
   readonly resetPeak: () => void;
 }
 
-/** Listens on a free local port until the caller's scope closes. */
 export const halfOpenProxy = (target: { readonly host: string; readonly port: number }) =>
   Effect.acquireRelease(
     Effect.callback<HalfOpenProxy & { readonly close: () => void }>((resume) => {
@@ -52,7 +39,6 @@ export const halfOpenProxy = (target: { readonly host: string; readonly port: nu
         const pair: Pair = { client, upstream, dropped: false };
         pairs.add(pair);
         client.on("data", (chunk) => {
-          // The far end is gone: the bytes reach nothing, and the client learns now.
           if (pair.dropped) client.destroy();
           else upstream.write(chunk);
         });

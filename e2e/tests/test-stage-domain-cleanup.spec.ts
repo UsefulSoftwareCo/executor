@@ -1,11 +1,3 @@
-/**
- * Scheduled test-stage cleanup deletes a stage's `AppDomains` record by draining its team DNS
- * through the stage's own API Worker (`TestStageDomainCleanup`). A teardown that stopped after the
- * Workers and the drain's control secret were gone left a record no drain can ever answer, and every
- * cleanup since failed on it. These cases run that deletion as a process
- * (`apps/hosted/cloud/scripts/test-stage-domain-cleanup.ts`) against a local stand-in for
- * Cloudflare's Worker API and the stage's drain endpoint.
- */
 import { createServer } from "node:http";
 import { describe, expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -14,13 +6,11 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 const account = "0123456789abcdef0123456789abcdef";
 const worker = "executor-next-hosted-api-test-e2e-gone-aaaaaaaaaaaaaaaa";
-/** As Alchemy stores the drain's control secret. */
 const secret = {
   resourceType: "Alchemy.Random",
   attr: { text: { __redacted__: "control-secret" } },
 };
 
-/** Whether the stage's API Worker is still uploaded, and what the stand-in was asked. */
 interface World {
   readonly workerExists: boolean;
   readonly requests: string[];
@@ -60,7 +50,6 @@ const standIn = (world: World) =>
     (server) => Effect.sync(server.close),
   );
 
-/** Delete the stage's `AppDomains` record with these other records, as test-stage cleanup does. */
 const deleteDomains = (
   world: World,
   { stage = "test-e2e-gone", records }: { readonly stage?: string; readonly records: object },
@@ -73,7 +62,6 @@ const deleteDomains = (
     const recordsFile = path.join(directory, "records.json");
     const oldsFile = path.join(directory, "olds.json");
     yield* fs.writeFileString(recordsFile, JSON.stringify(records));
-    // A deployment that completed: both Workers' hashes are recorded.
     yield* fs.writeFileString(
       oldsFile,
       JSON.stringify({

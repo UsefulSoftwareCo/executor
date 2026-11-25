@@ -1,10 +1,3 @@
-/**
- * App SQL rules: migrations are the database and their history cannot change, queries never
- * commit anything, transactions are synchronous, and large reads and writes are not capped.
- *
- * Each rule set is its own scenario with its own app, so each deploys only what it proves: the
- * migration history about ten times, the rest once or a few times.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -90,7 +83,6 @@ export default defineApp({}, {
 
 const files = [source, items, appsManifest];
 
-/** An app with no migrations has no database; its `ctx.sql` says so. */
 const withoutDatabase = [
   {
     path: "index.ts",
@@ -110,7 +102,6 @@ const BuildFailed = Schema.Struct({
 });
 const Active = Schema.Struct({ activeVersion: Schema.String });
 
-/** Deploys, calls and reads of the scenario's apps, as the organization's owner. */
 const appData = Effect.gen(function* () {
   const api = yield* Api,
     actors = yield* Actors;
@@ -182,7 +173,6 @@ layer(HostedLive, { excludeTestServices: true })("App data limits", (it) => {
         const { api, actors, prefix, deployNew, active } = yield* appData;
         const app = yield* deployNew("Data migrations", files);
 
-        // A refused deploy leaves the previous version active.
         const before = yield* active(app.id);
         const rejectedWith = (sources: readonly unknown[]) =>
           Effect.gen(function* () {
@@ -198,7 +188,6 @@ layer(HostedLive, { excludeTestServices: true })("App data limits", (it) => {
             expect(yield* active(app.id)).toEqual(before);
             return failed.reason;
           });
-        // Applied migrations cannot be edited, renamed or removed; a misnamed file is refused.
         expect(
           yield* rejectedWith([
             source,
@@ -241,8 +230,6 @@ layer(HostedLive, { excludeTestServices: true })("App data limits", (it) => {
             Effect.flatMap((response) => body(Schema.Number, response)),
           );
 
-        // A failing deploy names the file and SQLite's reason, applies none of its migrations,
-        // and leaves the previous version active.
         const before = yield* active(app.id);
         const rejectedWith = (sources: readonly unknown[]) =>
           Effect.gen(function* () {
@@ -271,8 +258,6 @@ layer(HostedLive, { excludeTestServices: true })("App data limits", (it) => {
         expect(typo).toContain("No migrations were applied");
         expect(yield* tableExists("applied_first")).toBe(0);
 
-        // Comments after a migration's last statement are not a statement, and the file's hash
-        // still covers them, so deploying it again changes nothing.
         const commented = {
           path: "migrations/0002_commented.sql",
           content:
@@ -294,12 +279,9 @@ layer(HostedLive, { excludeTestServices: true })("App data limits", (it) => {
       context,
       Effect.gen(function* () {
         const { api, actors, prefix, deployNew, failure, active } = yield* appData;
-        // Without migrations an app has no database, and its SQL says how to add one.
         const plain = yield* deployNew("No database", withoutDatabase);
         expect(yield* failure(plain.id, "count")).toContain("This app has no database");
 
-        // Reactivating a version from before the app had migrations does not let a later
-        // deploy drop them.
         const plainPath = `${prefix}/${plain.id}`;
         const first = yield* active(plain.id);
         const migrated = yield* api.request(actors.owner, "POST", `${plainPath}/deploy`, {
@@ -334,19 +316,15 @@ layer(HostedLive, { excludeTestServices: true })("App data limits", (it) => {
         const failure = (tool: keyof typeof kinds, input: Record<string, number | string> = {}) =>
           failureIn(app.id, tool, input);
 
-        // Calls have no row budget: pairing 400 rows reads about 160,000, and one call writes
-        // 20,000 rows.
         expect(yield* body(Schema.Number, yield* call("seed", { count: 400 }))).toBe(400);
         expect(yield* body(Schema.Number, yield* call("pairs"))).toBe(160_000);
         expect(yield* body(Schema.Number, yield* call("seed", { count: 20_000 }))).toBe(20_000);
         expect(yield* body(Schema.Number, yield* call("keywordNames"))).toBe(1);
 
-        // A query commits nothing: a write in it fails, and a schema change in it is undone.
         expect(yield* failure("hiddenWrite")).toContain("Queries are read-only");
         expect(yield* body(Schema.Number, yield* call("hiddenTable"))).toBe(1);
         expect(yield* body(Schema.Number, yield* call("tableExists", { name: "sneaky" }))).toBe(0);
 
-        // A query cannot turn off CHECK constraints for later calls.
         expect(yield* failure("loosen")).toContain("cannot change PRAGMA ignore_check_constraints");
         expect(yield* failure("violate")).toContain("CHECK constraint failed");
         expect(yield* failure("defer")).toContain("cannot change PRAGMA defer_foreign_keys");
@@ -354,15 +332,11 @@ layer(HostedLive, { excludeTestServices: true })("App data limits", (it) => {
           "cannot change PRAGMA ignore_check_constraints",
         );
 
-        // Failed statements fail their transaction; transactions are synchronous; a tx does not
-        // outlive its callback.
         expect(yield* failure("caughtFailure")).toContain("no such table");
         expect(yield* failure("awaiting")).toContain("cannot await");
         expect(yield* failure("escaped")).toContain("transaction has ended");
         expect(yield* body(Schema.Number, yield* call("count"))).toBe(20_400);
 
-        // A statement binds at most 100 values, and the error names the limit; a longer list
-        // binds once as a JSON array.
         expect(yield* body(Schema.Number, yield* call("bindings", { count: 100 }))).toBe(1);
         expect(yield* failure("bindings", { count: 101 })).toContain(
           "A statement can bind at most 100 values, but this one binds 101.",

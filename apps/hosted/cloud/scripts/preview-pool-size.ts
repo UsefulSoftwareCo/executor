@@ -1,10 +1,3 @@
-/**
- * Set a PlanetScale preview branch's connection settings: cap its PgBouncer pool so Workers leave
- * room for migrations, and, when `MAX_CONNECTIONS` is given, raise Postgres's `max_connections`.
- * A new branch allows 25 connections whatever its size; PgBouncer's default of 20 per role can
- * take all of them. Raising `max_connections` restarts Postgres, so the migration job waits for
- * this one. PlanetScale credentials come from the deploy environment the command inherits.
- */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import { Config, Effect, Option, Redacted, Schedule, Schema } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
@@ -31,7 +24,6 @@ const apply = Effect.gen(function* () {
     return yield* new PoolSizeFailed({ message: "Only preview branches are configured here" });
   const client = yield* HttpClient.HttpClient;
   const base = `https://api.planetscale.com/v1/organizations/${organization}/databases/${database}/branches/${branch}`;
-  // Responses are decoded by each caller; failures report only the status.
   const send = (request: HttpClientRequest.HttpClientRequest) =>
     Effect.gen(function* () {
       const response = yield* client.execute(
@@ -67,7 +59,6 @@ const apply = Effect.gen(function* () {
         : { pgconf: { max_connections: String(wanted) } },
   });
   if (Object.keys(pgbouncer).length === 0 && Object.keys(pgconf).length === 0) return;
-  // A branch can still be applying its own creation or resize; PlanetScale then refuses the change.
   const change = yield* send(
     yield* HttpClientRequest.patch(`${base}/changes`).pipe(
       HttpClientRequest.bodyJson({ parameters: { ...pgbouncer, ...pgconf } }),
@@ -76,8 +67,6 @@ const apply = Effect.gen(function* () {
     Effect.flatMap(Schema.decodeUnknownEffect(Change)),
     Effect.retry({ schedule: Schedule.spaced("5 seconds"), times: 36 }),
   );
-  // The change reloads PgBouncer, and restarts Postgres for `max_connections`; wait until
-  // PlanetScale reports it complete.
   yield* send(HttpClientRequest.get(`${base}/changes`)).pipe(
     Effect.flatMap(Schema.decodeUnknownEffect(Changes)),
     Effect.flatMap(({ data }) =>

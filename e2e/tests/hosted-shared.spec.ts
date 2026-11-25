@@ -5,7 +5,6 @@ import {
   type LinkScope,
 } from "../support/app-accounts.ts";
 import { scenarios } from "../test-plan.ts";
-/** The same Effect program runs against both hosted products. Only injected actor setup differs. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Exit, Result, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -18,11 +17,6 @@ import { App, Resource, Inventory } from "../support/contracts.ts";
 import { appsManifest } from "../support/apps-release.ts";
 import { docsMcpFixture, docsOrigin, docsSearchTool } from "../support/docs-mcp-fixture.ts";
 
-/**
- * An app whose `echo` reports whether its `service` account is the synthetic parity account. In
- * app scope, someone who can edit the app links one account for everyone; in user scope, each
- * caller links their own.
- */
 const parityFiles = (scope: LinkScope) => [
   {
     path: "index.ts",
@@ -43,11 +37,6 @@ export default defineApp(requirements, async () => ({
   appsManifest,
 ];
 
-/**
- * An owner imports a public MCP server that needs no account and shares it, a member discovers its
- * tools without an account, and an admin calls its read-only search tool and gets structured
- * results whose pages live at `resultsOrigin`.
- */
 const remoteMcpJourney = (server: {
   readonly label: string;
   readonly url: string;
@@ -158,7 +147,6 @@ layer(HostedLive, { excludeTestServices: true })("Hosted parity", (it) => {
                   ),
                   Effect.result,
                 ),
-              // The app goes first: its app link keeps the account from being deleted.
               { concurrency: 1 },
             );
             yield* evidence.json("cleanup.json", cleanup);
@@ -225,7 +213,6 @@ layer(HostedLive, { excludeTestServices: true })("Hosted parity", (it) => {
             );
             expect(saved.status).toBe(200);
             created.account = (yield* body(Resource, saved)).id;
-            // Connecting for the app's own requirement links the new account for everyone.
             expect(
               yield* linkedAccountIds(actors.owner, `${prefix}/apps/${created.app}`, "app"),
             ).toEqual([created.account]);
@@ -235,7 +222,6 @@ layer(HostedLive, { excludeTestServices: true })("Hosted parity", (it) => {
           "Members and admins use the shared app with the account linked for everyone",
           Effect.gen(function* () {
             if (created.account === undefined) return yield* Effect.die("Linked account missing");
-            // Neither links anything: the app link serves their calls.
             for (const actor of [actors.member, actors.admin])
               expect(yield* linkedAccountIds(actor, `${prefix}/apps/${created.app}`)).toEqual([]);
             const tools = yield* api.request(
@@ -275,7 +261,6 @@ layer(HostedLive, { excludeTestServices: true })("Hosted parity", (it) => {
             expect(response.status).toBe(200);
             const visible = yield* body(Inventory, response);
             expect(visible.apps.some((app) => app.id === created.app)).toBe(true);
-            // The account stays the owner's: only the owner's inventory lists it.
             expect(visible.accounts.some((account) => account.id === created.account)).toBe(false);
             const owned = yield* body(
               Inventory,
@@ -344,7 +329,6 @@ layer(HostedLive, { excludeTestServices: true })("Hosted parity", (it) => {
             audience: { kind: "everyone" },
           })).status,
         ).toBe(200);
-        // The admin saves an account from the app, which links it for the admin only.
         const connection = yield* body(
           Resource,
           yield* api.request(actors.admin, "POST", connectionsPath(path, "user", "service"), {}),
@@ -363,8 +347,6 @@ layer(HostedLive, { excludeTestServices: true })("Hosted parity", (it) => {
         const own = yield* api.request(actors.admin, "POST", `${path}/tools/call`, call);
         expect(own.status, JSON.stringify(own.body)).toBe(200);
         expect(own.body).toEqual({ message: "personal account", connected: true });
-        // The account is the admin's alone: the admin reads and manages it, and no route shares it
-        // or reads a policy for it.
         const accountPath = `${prefix}/accounts/${account}`;
         const detail = yield* body(
           Schema.Struct({ account: Resource, canManage: Schema.Boolean }),
@@ -383,11 +365,8 @@ layer(HostedLive, { excludeTestServices: true })("Hosted parity", (it) => {
             `${accountPath}/access`,
             method === "PATCH" ? { audience: { kind: "everyone" } } : undefined,
           );
-          // The route is gone: self-host answers 404, Cloud's router may answer 404 or 405.
           expect([404, 405], `${method} ${JSON.stringify(removed.body)}`).toContain(removed.status);
         }
-        // Other members, the organization's owner included, can neither read it nor link it, so
-        // their calls never run with it.
         for (const actor of [actors.member, actors.owner]) {
           const read = yield* api.request(actor, "GET", accountPath);
           expect(read.status, JSON.stringify(read.body)).toBe(403);
@@ -403,7 +382,6 @@ layer(HostedLive, { excludeTestServices: true })("Hosted parity", (it) => {
           );
           expect(inventory.accounts.some((item) => item.id === account)).toBe(false);
           expect(inventory.links).not.toContainEqual({ app: app.id, account });
-          // Nor can they replace its credentials by reconnecting it.
           const reconnect = yield* api.request(
             actor,
             "POST",
@@ -413,8 +391,6 @@ layer(HostedLive, { excludeTestServices: true })("Hosted parity", (it) => {
           expect(reconnect.status, JSON.stringify(reconnect.body)).toBe(403);
         }
 
-        // A client that still asks for a shared account gets the connecting member's own: the
-        // destination is no longer part of a connection.
         const asked = yield* body(
           Resource,
           yield* api.request(actors.member, "POST", connectionsPath(path, "user", "service"), {
@@ -455,7 +431,6 @@ layer(HostedLive, { excludeTestServices: true })("Hosted parity", (it) => {
           tool: docsSearchTool,
           resultsOrigin: `${docsOrigin}/`,
         });
-        // The admin's call reached the upstream server with its input.
         expect(yield* docs.queries).toEqual(["Workers KV"]);
       }),
     ),

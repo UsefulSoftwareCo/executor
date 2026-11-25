@@ -21,17 +21,6 @@ import { testimonials } from "../content/testimonials";
 import { appStructure } from "../content/app-structure";
 import { appOrigin, siteOrigin } from "../content/site-origin.ts";
 
-// ---------------------------------------------------------------------------
-// `/index.md` — the homepage as Markdown, for agents.
-//
-// Same content as src/pages/index.astro, without the layout, scripts, or
-// interactive demos: an agent that fetches this gets the whole product in one
-// read, plus links to the other machine-readable surfaces.
-//
-// The copy comes from src/content/site-copy.ts so the HTML page and this page
-// cannot drift apart.
-// ---------------------------------------------------------------------------
-
 const machineSummaries = [
   ["Docs", `${siteOrigin}/docs`],
   ["Setup prompt", `${siteOrigin}/setup-prompt.md`],

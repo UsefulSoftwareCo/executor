@@ -1,7 +1,3 @@
-/**
- * Renamed secret providers use a logo only for a public host that is a site's own domain. A
- * subdomain's parent may be an unrelated site, so it gets the neutral mark instead.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { Actors } from "../support/actors.ts";
@@ -12,14 +8,12 @@ import { appsManifest } from "../support/apps-release.ts";
 import { scenarios } from "../test-plan.ts";
 
 const App = Schema.Struct({ id: Schema.String, name: Schema.String });
-// A logo only when the domain the logo proxy is asked for is the host itself or its `www`.
 const cases = [
   { name: "Renamed public service", hosts: ["example.com:8443"], logo: true },
   { name: "Renamed www service", hosts: ["www.example.com"], logo: true },
   { name: "Country domain service", hosts: ["example.co.uk"], logo: true },
   { name: "Subdomain service", hosts: ["sub.example.com"], logo: false },
   { name: "Country subdomain service", hosts: ["sub.example.co.uk"], logo: false },
-  // Asked for as `vercel.app` and `github.io`: the platform's logo, not the project's.
   { name: "Vercel project service", hosts: ["foo.vercel.app"], logo: false },
   { name: "Pages project service", hosts: ["foo.github.io"], logo: false },
   { name: "Address service", hosts: ["203.0.113.5"], logo: false },

@@ -1,9 +1,3 @@
-/**
- * `split` (e2e/scenario-parts.ts) divides a suite's scenarios into the parts CI runs on separate
- * runners, weighing each spec file by its scenarios' measured times (e2e/scenario-times.json).
- * Whatever the weights, every scenario must run exactly once, a file's scenarios must stay in one
- * part, and a commit must always split the same way.
- */
 import { describe, expect, it } from "vitest";
 import { scenarios } from "../test-plan.ts";
 import times from "../scenario-times.json" with { type: "json" };
@@ -18,7 +12,6 @@ const scheduled = (target: (typeof targets)[number]) =>
     .map((scenario) => scenario.title);
 const fileOf = new Map(Object.values(scenarios).map((scenario) => [scenario.title, scenario.file]));
 
-/** Every title in exactly one part, and each file's titles in one part. */
 const expectPartition = (titles: ReadonlyArray<string>, parts: ReadonlyArray<Array<string>>) => {
   expect(parts.flat().toSorted()).toEqual([...titles].toSorted());
   const partOf = new Map<string, number>();
@@ -74,8 +67,6 @@ describe("Splitting scenarios into parts by measured time", () => {
         byFile.set(fileOf.get(title)!, [...(byFile.get(fileOf.get(title)!) ?? []), title]);
     const seconds = (titles: ReadonlyArray<string>) =>
       titles.reduce((sum, title) => sum + own[title]!, 0);
-    // The slowest file, and quick files with more scenarios than it whose total time stays below
-    // half of it: by count the slow file would share a part, by time it is alone.
     const [slow, slowTitles] = [...byFile].toSorted(([, a], [, b]) => seconds(b) - seconds(a))[0]!;
     const quick: Array<string> = [];
     for (const [file, titles] of [...byFile].toSorted(([, a], [, b]) => seconds(a) - seconds(b))) {

@@ -1,29 +1,3 @@
-/**
- * Wait for npm's dist-tags to name a release that npm already serves, and fail on what was seen.
- *
- * npm moves a dist-tag some time after it serves the version itself: beta.51's version document
- * answered at 21:16:00, and one read of the dist-tags 0.1 s later still named beta.50, though
- * `npm view` named beta.51 34 s after that. So the tag is read until it names this release, for a
- * bounded time, and the wait ends on the first answer that settles it:
- *
- * - The channel's tag names this release (and, for a beta, `latest` is what it was before
- *   publishing): done.
- * - The channel's tag still names what it named before publishing: npm has not caught up. Ask
- *   again, until the limit; then fail naming what the tag still says.
- * - A beta's publication changed `latest`: fail at once. A late read shows the old value, so any
- *   other value is a real change, which must be restored by hand.
- * - The channel's tag names some third version: another publication moved it. Fail at once.
- *
- * A request that fails, times out or answers unreadably is not an answer, and is asked again.
- * The limit has no override in production: `publish-npm.ts` passes none.
- *
- * Run directly, it waits once with its inputs from the environment, as e2e/tests/npm-channel.spec.ts
- * runs it against a local registry: `NPM_CHANNEL`, `NPM_CHANNEL_VERSION`, `NPM_CHANNEL_BEFORE` (the
- * dist-tags before publishing, as JSON), and optionally `NPM_CHANNEL_REGISTRY` and
- * `NPM_CHANNEL_PACKAGE` (npm and `executor`). Against another registry only,
- * `NPM_CHANNEL_LIMIT_SECONDS`, `NPM_CHANNEL_POLL_SECONDS` and `NPM_CHANNEL_ATTEMPT_SECONDS` shorten
- * the wait, so a test can reach its end; against npm they are refused.
- */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -33,17 +7,14 @@ import { FetchHttpClient, HttpClient } from "effect/http";
 
 export const npmRegistry = "https://registry.npmjs.org";
 
-/** Whether `registry` is npm's, however it is written (a trailing slash, a path, another case). */
 const isNpm = (registry: string) => {
   try {
     return new URL(registry).hostname.toLowerCase() === new URL(npmRegistry).hostname;
   } catch {
-    // Not a URL: no request to it can reach npm either, so its limits may stand.
     return false;
   }
 };
 
-/** A version `compareReleaseVersions` can order: `2.0.0`, `2.0.0-beta.10`, Executor 1's `1.6.11`. */
 const orderable = /^\d+\.\d+\.\d+(?:-beta\.\d+)?$/u;
 
 export const DistTags = Schema.Record(Schema.String, Schema.String);
@@ -53,33 +24,22 @@ export class NpmChannelFailed extends Schema.TaggedError<NpmChannelFailed>()("Np
   message: Schema.String,
 }) {}
 
-/** The tags have not settled yet, or the registry could not say: ask again, within the limit. */
 class NotYet extends Schema.TaggedError<NotYet>()("NotYet", { reason: Schema.String }) {}
 
 export type NpmChannelWait = {
   /** The registry's origin, such as https://registry.npmjs.org. */
   readonly registry: string;
   readonly packageName: string;
-  /** The dist-tag this release moves: `beta` or `latest`. */
   readonly channel: string;
   readonly version: string;
-  /** The dist-tags as read before publishing. */
   readonly before: DistTags;
-  /** How long to wait in all; 10 minutes. */
   readonly limitSeconds?: number;
-  /** How long between two reads; 10 s. */
   readonly pollSeconds?: number;
-  /** How long one read may take, its body included; 15 s. */
   readonly attemptSeconds?: number;
 };
 
 const named = (tags: DistTags, tag: string) => tags[tag] ?? "nothing";
 
-/**
- * One read of `packageName`'s dist-tags within `attemptSeconds`, its body included. A failed,
- * timed-out or unreadable answer, or one without a `latest` tag (npm always has one, so an answer
- * without it is an error body), is `NotYet`, with the reason.
- */
 export const readDistTags = (registry: string, packageName: string, attemptSeconds: number) =>
   Effect.gen(function* () {
     const http = yield* HttpClient.HttpClient;
@@ -107,10 +67,6 @@ export const readDistTags = (registry: string, packageName: string, attemptSecon
     }),
   );
 
-/**
- * The dist-tags before publishing, read a few times within about a minute: nothing is published
- * yet, so a registry that cannot answer stops the publication with what it last said.
- */
 export const distTagsBeforePublishing = (registry: string, packageName: string) =>
   readDistTags(registry, packageName, 15).pipe(
     Effect.retry({ schedule: Schedule.spaced(Duration.seconds(5)), times: 3 }),
@@ -122,7 +78,6 @@ export const distTagsBeforePublishing = (registry: string, packageName: string) 
     ),
   );
 
-/** Reads the dist-tags until they name `version` under `channel`; returns them. */
 export const awaitNpmChannel = (options: NpmChannelWait) =>
   Effect.gen(function* () {
     const limit = options.limitSeconds ?? 600;
@@ -181,7 +136,6 @@ export const awaitNpmChannel = (options: NpmChannelWait) =>
     );
   });
 
-/** The wait as a command, with its inputs from the environment. */
 const command = Effect.gen(function* () {
   const registry = yield* Config.String("NPM_CHANNEL_REGISTRY").pipe(
     Config.withDefault(npmRegistry),
@@ -226,7 +180,6 @@ const command = Effect.gen(function* () {
   yield* Console.log(`npm's ${channel} tag names ${version}; latest=${named(tags, "latest")}`);
 });
 
-// Run as the main module: Node loads it by its real path, which argv[1] may reach through a link.
 if (
   process.argv[1] !== undefined &&
   realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)

@@ -1,4 +1,3 @@
-/** Product host for private app pages. Identity comes from the hostname and app cookie, never request input. */
 import {
   Version,
   VersionId,
@@ -39,12 +38,10 @@ import { callerAccounts } from "./app-accounts.ts";
 
 const failed = (reason: UiFailed["reason"] = "unavailable") => new UiFailed({ reason });
 const UiBuild = Schema.Struct({ id: VersionId, build: Version.fields.build });
-/** Every account an operation's accounts use, in both scopes. */
 const accountIds = (accounts: AppAccounts) => [
   ...new Set(invocationEntries(accounts).flatMap(([, ids]) => ids)),
 ];
 
-/** Build app handlers and session middleware; the host composition registers their routes. */
 export const appUi = (
   executor: Executor,
   sql: SqlClient.SqlClient,
@@ -86,7 +83,6 @@ export const appUi = (
     Schema.is(OAuthReconnectRequired)(error)
       ? failed("account_required")
       : failed("operation_failed");
-  /** Each call runs with the accounts linked to the app now. */
   const operation = (payload: typeof UiOperation.Type) =>
     Effect.gen(function* () {
       const app = yield* authorize;
@@ -132,7 +128,6 @@ export const appUi = (
             ),
             Stream.mapEffect((frame) =>
               Effect.gen(function* () {
-                // The first result belongs to this request, which was just authorized.
                 if (frame.type === "heartbeat" || frame.revision > 0)
                   yield* operation(payload).pipe(
                     Effect.withSpan(
@@ -191,7 +186,6 @@ export const appUi = (
     const versions = reactivity.subscribe(authorize).pipe(
       Stream.map(({ value }) => value.activeVersion),
       Stream.changes,
-      // Pages opened before versions were named watch `deployment`.
       Stream.map(
         (version) =>
           `event: version\ndata: ${JSON.stringify({ version, deployment: version })}\n\n`,
@@ -208,7 +202,6 @@ export const appUi = (
     });
   }).pipe(htmlResponse);
   const asset = Effect.gen(function* () {
-    // The app's build chose its assets' file names.
     yield* recordRoute("/_executor/assets/:version/:asset");
     const app = yield* authorize;
     const params = yield* HttpRouter.schemaPathParams(
@@ -221,12 +214,10 @@ export const appUi = (
   }).pipe(htmlResponse);
   const dashboard = config.browserOrigin ?? `http://127.0.0.1:${config.port}`;
   const page = Effect.gen(function* () {
-    // The app chose its pages' paths.
     yield* recordRoute("/:page");
     const app = yield* authorize;
     const { target } = yield* appRequest(config.port);
     const version = yield* readVersion(app);
-    // A file needs no accounts.
     const file = yield* appFile({
       origin: target.origin,
       asset: (path) => readAsset(version.build, path),
@@ -234,8 +225,6 @@ export const appUi = (
     if (Option.isSome(file)) return file.value;
     const fix = new URL(`/apps/${app.id}`, dashboard);
     fix.searchParams.set("view", "accounts");
-    // The page runs with the app's linked accounts and the linked ones; a plain requirement with
-    // none shows what to connect.
     const resolution = yield* callerAccounts(sql, executor, app).pipe(
       Effect.map((accounts) => ({ kind: "resolved" as const, accounts })),
       Effect.catchTag("AccountRequired", (error) =>
@@ -270,7 +259,6 @@ export const appUi = (
       return { app: app.name, problems, fix: fix.href };
     });
     return yield* appDocument({
-      // The page names the user requirements' accounts, as hosted does; the app's stay with it.
       accountIds: resolution.kind === "resolved" ? resolution.accounts.user : undefined,
       accounts: yield* accountNotice,
       version: version.id,
@@ -283,7 +271,6 @@ export const appUi = (
         const navigation =
           request.headers["sec-fetch-mode"] === "navigate" ||
           request.headers.accept?.includes("text/html");
-        // This handler is registered only for the SPA, so APIs and retained assets never start sign-in.
         if (request.method === "GET" && navigation) return yield* beginSignIn;
         return yield* error;
       }),

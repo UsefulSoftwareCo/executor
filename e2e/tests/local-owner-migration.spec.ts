@@ -1,13 +1,3 @@
-/**
- * Before local assigned owners, an agent named any owner when it deployed an app or connected an
- * account; the public docs used `alice`. Those records were missing from the dashboard and their
- * apps could not open. Upgrading gives them to `local` once, at startup, in data step
- * `7_local_owners`. The scenarios build apps and accounts through the product, then stop it and
- * rewrite their owners as the earlier server stored them: an app, its account and connections
- * under one owner, and an account connected for a local app under another. Records
- * whose owner is encrypted, a pending sign-in and a pending approval, and the identity of an OAuth
- * client's credentials are then written by the product itself, for an app that owner holds.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schedule, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
@@ -25,10 +15,6 @@ import { serverControl } from "../support/server-control.ts";
 import { scenarios } from "../test-plan.ts";
 
 const step = "7_local_owners";
-/**
- * Each app has its own provider, so an app shares no account with another app's fixture. An
- * account connected for an app is linked to it.
- */
 const source = (
   provider: string,
 ) => `import { defineApp, defineProvider, object, query, router, secrets, string } from "apps";
@@ -37,7 +23,6 @@ const service = defineProvider({ name: ${JSON.stringify(provider)}, auth: {
 } });
 export const who = query({ input: object({}) }, async (ctx) => ctx.user.accounts.service.id);
 export default defineApp({ user: { accounts: { service } } }, { tools: router({ who }) });`;
-/** The app page shows the account its tool call ran with. */
 const files = (provider: string) => [
   { path: "index.ts", content: source(provider) },
   {
@@ -68,7 +53,6 @@ interface Statement {
   readonly sql: string;
   readonly params?: ReadonlyArray<string>;
 }
-/** What the earlier server stored for an app and the connections made for it under `owner`. */
 const ownedApp = (app: string, owner: string): [Statement, ...Statement[]] => [
   { sql: `UPDATE executor_apps SET owner = $2 WHERE id = $1`, params: [app, owner] },
   {
@@ -87,7 +71,6 @@ const ownedApp = (app: string, owner: string): [Statement, ...Statement[]] => [
     params: [app, owner],
   },
 ];
-/** What the earlier server stored for an account, and the connection that saved it, under `owner`. */
 const ownedAccounts = (app: string, owner: string): [Statement, ...Statement[]] => [
   {
     sql: `UPDATE executor_accounts SET owner = $2 WHERE id IN (
@@ -103,7 +86,6 @@ const ownedAccounts = (app: string, owner: string): [Statement, ...Statement[]] 
     params: [app, owner],
   },
 ];
-/** Owners of every table that has one; after the move only `local` and `executor-local`. */
 const ownerTables = [
   "executor_apps",
   "executor_deployments",
@@ -128,7 +110,6 @@ const owners = {
     .concat(" ORDER BY owner"),
 };
 
-/** An app whose account signs in with OAuth at `issuer`, with a tool that needs approval. */
 const oauthSource = (
   issuer: string,
   name: string,
@@ -166,11 +147,6 @@ const Read = Schema.Struct({
     service: Schema.Struct({ refreshed: Schema.Boolean }),
   }),
 });
-/**
- * Every owner column, and a digest of every value a move rewrites: connection targets and states,
- * and the ciphertext of stored clients, sign-ins and approvals. Equal before and after shows a
- * step changed no product row or ciphertext; its journal still records the attempt.
- */
 const stored = {
   sql: ownerTables
     .map(
@@ -187,7 +163,6 @@ const stored = {
     .concat(` ORDER BY 1, 2, 3`),
 };
 
-/** A connection link for the app's account, and the grant its browser page holds. */
 const connectionFor = (agent: Session, app: string) =>
   Effect.gen(function* () {
     const link = yield* body(
@@ -202,10 +177,6 @@ const connectionFor = (agent: Session, app: string) =>
     };
   });
 
-/**
- * Start a connection's sign-in with a stored client and consent at the service, which accepts the
- * client at the callback the sign-in sends. Returns the callback, not yet completed.
- */
 const consentWith = (
   session: Session,
   issuer: Effect.Success<typeof oauthSetupIssuer>,
@@ -239,7 +210,6 @@ const consentWith = (
     ).pipe(Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }));
   });
 
-/** Pair the dashboard in the browser and wait for its app list. */
 const openDashboard = (session: Session, headers: Record<string, string>) =>
   Effect.gen(function* () {
     const browser = yield* Browser;
@@ -254,7 +224,6 @@ const openDashboard = (session: Session, headers: Record<string, string>) =>
     return browser;
   });
 
-/** The bearer-key agent API and the browser session that pairs the dashboard. */
 const agentSession = Effect.gen(function* () {
   const api = yield* Api,
     target = yield* Target,
@@ -270,7 +239,6 @@ const agentSession = Effect.gen(function* () {
   return { session, agent, headers, log: `${target.directory}/server.log` };
 });
 
-/** Deploy an app with an account connected for it, of a provider only this app requires. */
 const appWithAccount = (agent: Session, name: string, label: string) =>
   Effect.gen(function* () {
     const { app } = yield* body(
@@ -306,8 +274,6 @@ layer(TestLive, { excludeTestServices: true })("Local owner migration", (it) => 
               .send("GET", `/v1/accounts?owner=${owner}`)
               .pipe(Effect.flatMap((response) => body(Listed, response)));
 
-          // An app deployed under `alice`, with its account, and an account the docs'
-          // example connected under `bob` for an app of the local user.
           const moved = yield* appWithAccount(agent, `Moved ${suffix}`, `Alice key ${suffix}`);
           const local = yield* appWithAccount(agent, `Kept ${suffix}`, `Bob key ${suffix}`);
           yield* Effect.addFinalizer(() =>
@@ -326,7 +292,6 @@ layer(TestLive, { excludeTestServices: true })("Local owner migration", (it) => 
               Effect.orDie,
             ),
           );
-          // A reconnect of the moved account, left open across the upgrade.
           const open = yield* body(
             Link,
             yield* agent.send("POST", "/account-connect/api/requests", {
@@ -340,7 +305,6 @@ layer(TestLive, { excludeTestServices: true })("Local owner migration", (it) => 
             ...ownedAccounts(local.app.id, "bob"),
           ]);
 
-          // A report start moves no record.
           const seen = (yield* dataStepSummaries(log, step)).length;
           yield* serverControl("data-steps", 200, { mode: "report" });
           yield* serverControl("start");
@@ -352,7 +316,6 @@ layer(TestLive, { excludeTestServices: true })("Local owner migration", (it) => 
           expect((yield* listed("bob")).map(({ id }) => id)).toEqual([local.account.id]);
           expect((yield* listed("local")).map(({ id }) => id)).toEqual([]);
 
-          // Applying moves every record of both owners to `local` in one pass.
           yield* serverControl("stop");
           yield* serverControl("data-steps", 200, { mode: "apply" });
           yield* serverControl("start");
@@ -375,8 +338,6 @@ layer(TestLive, { excludeTestServices: true })("Local owner migration", (it) => 
             ),
           ).toBe(true);
 
-          // The reconnect left open completes, as connection and account moved together, and a new
-          // connection is saved under `local`, whatever owner the agent names.
           const reconnected = yield* body(
             ConnectedAccount,
             yield* agent.send("POST", "/account-connect/api/submit", {
@@ -399,7 +360,6 @@ layer(TestLive, { excludeTestServices: true })("Local owner migration", (it) => 
             (yield* agent.send("POST", `/v1/account-connections/${pending.id}/cancel`)).status,
           ).toBe(200);
 
-          // The dashboard lists the moved accounts, and the moved app opens with its own.
           const pair = yield* body(
             Schema.Struct({ url: Schema.String }),
             yield* session.send("POST", "/auth/pair", undefined, headers),
@@ -427,12 +387,9 @@ layer(TestLive, { excludeTestServices: true })("Local owner migration", (it) => 
           );
           yield* browser.checkpoint("An app deployed under another owner opens after upgrade");
 
-          // No record keeps another owner.
           expect(yield* legacyStorage([owners])).toEqual([
             [{ owner: "executor-local" }, { owner: "local" }],
           ]);
-          // An applied step never runs again, and running its item again, as a start would after
-          // a crash between the move's commit and the journal's, changes nothing.
           yield* serverControl("start");
           expect(yield* dataStepSummaries(log, step)).toHaveLength(seen + 2);
           yield* legacyStorage([
@@ -450,7 +407,6 @@ layer(TestLive, { excludeTestServices: true })("Local owner migration", (it) => 
           );
         }),
       ),
-    // The product starts four times after its first: report, apply, unchanged and the rerun.
     { timeout: 180_000 },
   );
 
@@ -480,7 +436,6 @@ layer(TestLive, { excludeTestServices: true })("Local owner migration", (it) => 
               Effect.orDie,
             ),
           );
-          // `alice` named an app as the local user later named one of theirs.
           yield* legacyStorage([
             ...ownedApp(stray.app.id, "alice"),
             ...ownedAccounts(stray.app.id, "alice"),
@@ -505,12 +460,10 @@ layer(TestLive, { excludeTestServices: true })("Local owner migration", (it) => 
             .toSorted()
             .map((id) => `${id} (owner ${JSON.stringify(id === kept.app.id ? "local" : "alice")})`)
             .join(", ");
-          // An app's slug derives from its name, so one name is one slug too.
           expect(error).toBe(
             `Records of "alice" were not moved to "local", because these would collide: apps named ${JSON.stringify(kept.app.name)}: ${records}; apps with the slug ${JSON.stringify(kept.app.slug)}: ${records}. No product rows or ciphertext changed; this attempt was recorded in the journal. Rename or remove all but one of each, then restart Executor.`,
           );
 
-          // The dashboard names both apps, and which to rename or remove.
           const pair = [kept.app.id, stray.app.id].toSorted().map((id) => ({
             owner: id === kept.app.id ? "local" : "alice",
             id,
@@ -539,7 +492,6 @@ layer(TestLive, { excludeTestServices: true })("Local owner migration", (it) => 
           );
           yield* browser.checkpoint("Another owner's app collides with a local app");
 
-          // Nothing moved: not the app, nor the account that does not collide.
           const app = (id: string) =>
             agent
               .send("GET", `/v1/apps/${id}`)
@@ -550,15 +502,12 @@ layer(TestLive, { excludeTestServices: true })("Local owner migration", (it) => 
               .send("GET", `/v1/accounts?owner=${owner}`)
               .pipe(Effect.flatMap((response) => body(Listed, response)));
           expect((yield* listed("alice")).map(({ id }) => id)).toEqual([stray.account.id]);
-          // Until it moves, local does not serve the app: a connection for it is refused rather
-          // than saved under the owner the app has.
           const refused = yield* agent.send("POST", "/account-connect/api/requests", {
             target: { app: stray.app.id, requirement: "service" },
           });
           expect(refused.status).toBe(404);
           expect(refused.body).toMatchObject({ _tag: "AppNotFound", app: stray.app.id });
 
-          // Once the local user renames theirs, the next start moves everything.
           expect(
             (yield* agent.send("PATCH", `/v1/apps/${kept.app.id}/name`, {
               name: `Renamed ${suffix}`,
@@ -589,7 +538,6 @@ layer(TestLive, { excludeTestServices: true })("Local owner migration", (it) => 
         Effect.gen(function* () {
           const { session, agent, headers, log } = yield* agentSession;
           const issuer = yield* oauthSetupIssuer;
-          // Tokens expire within the renewal window, so every use of the account renews it.
           yield* issuer.configure({ refreshTokens: true, expiresIn: 20 });
           const suffix = randomUUID().slice(0, 8);
           const name = `OAuth moved ${suffix}`;
@@ -604,7 +552,6 @@ layer(TestLive, { excludeTestServices: true })("Local owner migration", (it) => 
               ],
             }),
           );
-          // A client entered at the service by hand, which the agent registered.
           const credentials = {
             clientId: `synthetic-moved-${suffix}`,
             clientSecret: `synthetic-secret-${suffix}`,
@@ -620,7 +567,6 @@ layer(TestLive, { excludeTestServices: true })("Local owner migration", (it) => 
               }),
             )).id,
           };
-          // An account signed in with it, whose grant keeps a copy of the client.
           const first = yield* connectionFor(agent, app.id);
           const signedIn = yield* body(
             Resource,
@@ -635,7 +581,6 @@ layer(TestLive, { excludeTestServices: true })("Local owner migration", (it) => 
               ),
             }),
           );
-          // A second connection, whose sign-in starts once the app is another owner's.
           const second = yield* connectionFor(agent, app.id);
           let added: string | undefined;
           yield* Effect.addFinalizer(() =>
@@ -655,9 +600,6 @@ layer(TestLive, { excludeTestServices: true })("Local owner migration", (it) => 
             ),
           );
 
-          // The earlier server stored the app, its account, connections and client under `alice`.
-          // A client's credentials are identified by a digest over its owner, so the rows written
-          // for `local` go; the product writes `alice`'s below.
           yield* legacyStorage([
             ...ownedApp(app.id, "alice"),
             ...ownedAccounts(app.id, "alice"),
@@ -671,8 +613,6 @@ layer(TestLive, { excludeTestServices: true })("Local owner migration", (it) => 
             },
           ]);
           yield* serverControl("start");
-          // The agent edits `alice`'s client and back: each set of credentials the client holds
-          // or held is recorded under `alice`'s digest, the current set and the earlier one.
           for (const details of [
             { clientId: `${credentials.clientId}-edited`, clientSecret: "synthetic-edited" },
             credentials,
@@ -683,8 +623,6 @@ layer(TestLive, { excludeTestServices: true })("Local owner migration", (it) => 
             });
             expect(edited.status, JSON.stringify(edited.body)).toBe(200);
           }
-          // A sign-in for `alice`, consented at the service and left to complete after the
-          // upgrade, and a call of `alice`'s app waiting for approval with her linked account.
           const callback = yield* consentWith(session, issuer, second, client, `Added ${suffix}`);
           const waiting = yield* body(
             ApprovalRequired,
@@ -695,7 +633,6 @@ layer(TestLive, { excludeTestServices: true })("Local owner migration", (it) => 
             }),
           );
 
-          // A report start found them, and the dashboard says they wait to move.
           const seen = (yield* dataStepSummaries(log, step)).length;
           expect((yield* dataStepSummaries(log, step)).at(-1)).toMatchObject({
             mode: "report",
@@ -711,8 +648,6 @@ layer(TestLive, { excludeTestServices: true })("Local owner migration", (it) => 
           );
           yield* browser.checkpoint("Records of another owner wait to move");
 
-          // Applying moves all of it to `local`, rewriting the sign-in's and the approval's
-          // records and recording the client's current credentials under `local`'s digest.
           yield* serverControl("stop");
           yield* serverControl("data-steps", 200, { mode: "apply" });
           yield* serverControl("start");
@@ -732,14 +667,12 @@ layer(TestLive, { excludeTestServices: true })("Local owner migration", (it) => 
             "toolApprovals.invocation": 1,
           });
 
-          // The approved call runs, as `local`, with the account it was saved with.
           const resumed = yield* agent.send("POST", "/v1/tools/resume", {
             requestId: waiting.requestId,
             response: { action: "accept" },
           });
           expect(resumed.status, JSON.stringify(resumed.body)).toBe(200);
           expect(resumed.body).toEqual({ status: "completed", value: signedIn.id });
-          // The account signed in under `alice` renews with its grant's copy of the client.
           const before = (yield* issuer.metrics).refreshesIssued;
           const read = yield* agent.send("POST", "/v1/tools/call", {
             app: app.id,
@@ -752,7 +685,6 @@ layer(TestLive, { excludeTestServices: true })("Local owner migration", (it) => 
             service: expect.objectContaining({ refreshed: true }),
           });
           expect((yield* issuer.metrics).refreshesIssued).toBeGreaterThan(before);
-          // The sign-in started for `alice` completes for `local`.
           const completed = yield* session.send("POST", "/account-connect/api/oauth/complete", {
             ...second,
             callbackUrl: callback,
@@ -761,7 +693,6 @@ layer(TestLive, { excludeTestServices: true })("Local owner migration", (it) => 
           const account = yield* body(Resource, completed);
           added = account.id;
           expect(account.owner).toBe("local");
-          // `local` holds the client's credentials: registering them again names the moved client.
           const again = yield* agent.send("POST", "/v1/oauth-clients", {
             owner: "local",
             issuer: issuer.origin,
@@ -770,9 +701,6 @@ layer(TestLive, { excludeTestServices: true })("Local owner migration", (it) => 
           expect(again.status, JSON.stringify(again.body)).toBe(409);
           expect(again.body).toMatchObject({ _tag: "OAuthClientExists", client: client.id });
 
-          // The completed sign-in linked its account to the app in place of the account signed in
-          // before the upgrade, whose webhook source is removed in the background. Wait for that,
-          // so the snapshot below holds only rows the data step could change.
           yield* agent.send("GET", `/v1/apps/${app.id}/webhook-sources`).pipe(
             Effect.flatMap((response) =>
               body(
@@ -793,7 +721,6 @@ layer(TestLive, { excludeTestServices: true })("Local owner migration", (it) => 
             Effect.retry({ schedule: Schedule.spaced("200 millis"), times: 100 }),
           );
 
-          // No record keeps another owner, and running the item again changes nothing.
           expect(yield* legacyStorage([owners])).toEqual([
             [{ owner: "executor-local" }, { owner: "local" }],
           ]);
@@ -811,7 +738,6 @@ layer(TestLive, { excludeTestServices: true })("Local owner migration", (it) => 
           expect((yield* legacyStorage([stored]))[0]).toEqual(after);
         }),
       ),
-    // The product starts four times after its first: report, apply, the rerun and cleanup.
     { timeout: 180_000 },
   );
 
@@ -862,8 +788,6 @@ layer(TestLive, { excludeTestServices: true })("Local owner migration", (it) => 
               Effect.orDie,
             ),
           );
-          // `alice` holds an app with an account, and another app with a client whose record no
-          // longer decrypts with this install's key: one byte of its ciphertext differs.
           yield* legacyStorage([
             ...ownedApp(stray.app.id, "alice"),
             ...ownedAccounts(stray.app.id, "alice"),
@@ -880,7 +804,6 @@ layer(TestLive, { excludeTestServices: true })("Local owner migration", (it) => 
           ]);
           const [before] = yield* legacyStorage([stored]);
 
-          // Applying moves nothing, names the record, and leaves the step to retry.
           const seen = (yield* dataStepSummaries(log, step)).length;
           yield* serverControl("data-steps", 200, { mode: "apply" });
           yield* serverControl("start");
@@ -902,7 +825,6 @@ layer(TestLive, { excludeTestServices: true })("Local owner migration", (it) => 
             collisions: [],
             blocked: [{ kind: "oauth_client", id: client, owner: "alice" }],
           });
-          // The dashboard names the record and what to do about it.
           const browser = yield* openDashboard(session, headers);
           yield* browser.use("The dashboard names the record that cannot be read", (page) =>
             page
@@ -916,7 +838,6 @@ layer(TestLive, { excludeTestServices: true })("Local owner migration", (it) => 
               .waitFor(),
           );
           yield* browser.checkpoint("A record of another owner cannot be read");
-          // No product row or ciphertext changed, and the journal records the step as not complete.
           const [after, journal] = yield* legacyStorage([
             stored,
             {
@@ -927,7 +848,6 @@ layer(TestLive, { excludeTestServices: true })("Local owner migration", (it) => 
           expect(after).toEqual(before);
           expect(journal).toEqual([{ completed_at: null }]);
 
-          // Every start tries again, and stays blocked while the record is there.
           yield* serverControl("start");
           expect(yield* nextDataStepSummary(log, step, seen + 1)).toMatchObject({
             mode: "apply",
@@ -935,7 +855,6 @@ layer(TestLive, { excludeTestServices: true })("Local owner migration", (it) => 
             pass: 2,
             outcomes: { blocked: 1 },
           });
-          // Once the person removes the client, the next start moves everything.
           expect(
             (yield* agent.send("DELETE", `/v1/oauth-clients/${client}?owner=alice`)).status,
           ).toBe(200);
@@ -990,14 +909,7 @@ layer(TestLive, { excludeTestServices: true })("Local owner migration", (it) => 
               Effect.orDie,
             ),
           );
-          // Stored timestamps are UTC without a zone; both stay pending for the whole scenario.
           const live = new Date(Date.now() + 60 * 60_000).toISOString();
-          // `alice` holds an app with its account and connection. A registered client, a pending
-          // sign-in and a pending approval of hers decrypt, and her connection parses, but the
-          // product would not read any of them back. The client's secret reads but its
-          // registration does not: it authenticates with a secret it does not hold. The sign-in
-          // names only its owner and provider, the approval only its invocation's owner and an
-          // account selection, and the connection's target has lost its requirement.
           yield* legacyStorage([
             ...ownedApp(stray.app.id, "alice"),
             ...ownedAccounts(stray.app.id, "alice"),
@@ -1059,8 +971,6 @@ layer(TestLive, { excludeTestServices: true })("Local owner migration", (it) => 
           expect(connections).toHaveLength(1);
           const connection = String(connections?.[0]?.["id"]);
 
-          // Applying moves no record, names each one with what to do, and leaves the step to
-          // retry.
           const seen = (yield* dataStepSummaries(log, step)).length;
           yield* serverControl("data-steps", 200, { mode: "apply" });
           yield* serverControl("start");
@@ -1104,7 +1014,6 @@ layer(TestLive, { excludeTestServices: true })("Local owner migration", (it) => 
               .waitFor(),
           );
           yield* browser.checkpoint("Records of another owner the product would not read back");
-          // No product row or ciphertext changed, and the journal records the step as not complete.
           const [after, journal] = yield* legacyStorage([
             stored,
             {

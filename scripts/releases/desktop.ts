@@ -1,4 +1,3 @@
-/** Package the verified CLI runtime beside Electron; sign only what the caller asked for. */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Console, Effect, FileSystem, Path, Schema } from "effect";
@@ -13,10 +12,6 @@ import {
   desktopRuntimeBuildFile,
 } from "../../apps/local/desktop/src/contracts/desktop.ts";
 
-/**
- * Development-only desktop code, which `build.mjs --release` leaves out of the bundle. The bundled
- * electron-updater defines `forceDevUpdateConfig` itself, so the check names the desktop's use of it.
- */
 const developmentOnly = [
   "EXECUTOR_DESKTOP_DEV_UPDATE_CONFIG",
   "autoUpdater.forceDevUpdateConfig",
@@ -42,8 +37,6 @@ const build = Effect.gen(function* () {
   const stage = path.join(output, "desktop");
   const artifacts = path.join(output, "desktop-artifacts");
   const runtime = path.join(stage, "runtime");
-  // The desktop runs the packaged CLI runtime with its own Node; the npm archive holds the CLI's
-  // executable instead.
   const packaged = path.join(output, "package");
   if (!(yield* fs.exists(path.join(packaged, "bin.mjs"))))
     return yield* Effect.die(new Error("Build the matching CLI runtime before the desktop."));
@@ -68,7 +61,6 @@ const build = Effect.gen(function* () {
           code === 0 ? Effect.void : Effect.die(new Error(`${command} exited ${code}`)),
         ),
       );
-  // Signing is a deliberate choice per build, and notarizing implies signing.
   const notarize = process.argv.includes("--notarize");
   const signing = yield* notarize || process.argv.includes("--sign")
     ? developerIdMac({
@@ -76,17 +68,12 @@ const build = Effect.gen(function* () {
         notarize,
       })
     : Effect.succeed(unsignedMac);
-  // Squirrel.Mac only installs signed updates, so unsigned macOS builds get no feed
-  // and tell the person to reinstall from the download page instead.
   const updates = process.platform !== "darwin" || signing !== unsignedMac;
   if (yield* fs.exists(stage)) yield* fs.remove(stage, { recursive: true });
-  // Rebuilding one version must not retain older installers or pre-stapling maps.
   if (yield* fs.exists(artifacts)) yield* fs.remove(artifacts, { recursive: true });
   yield* fs.makeDirectory(runtime, { recursive: true });
   yield* fs.copy(packaged, runtime, { overwrite: true });
   yield* installNodeRuntime(runtime);
-  // The desktop copies this runtime out of the app once per build and runs the background server
-  // from that copy with `node bin.mjs`, so the server outlives an update or an unmounted AppImage.
   yield* fs.writeFileString(
     path.join(runtime, desktopRuntimeBuildFile),
     yield* Schema.encodeEffect(Schema.fromJsonString(DesktopRuntimeBuild))({
@@ -95,10 +82,8 @@ const build = Effect.gen(function* () {
     }),
   );
   yield* run("node", ["apps/local/desktop/scripts/build.mjs", "--release"], root);
-  // The main entry and the server starter it runs in a utility process.
   for (const entry of ["main.cjs", "starter.cjs"]) {
     yield* fs.copyFile(path.join(root, "apps/local/desktop/dist", entry), path.join(stage, entry));
-    // A development override that names where updates come from must not exist in a release.
     const bundled = yield* fs.readFileString(path.join(stage, entry));
     for (const development of developmentOnly)
       if (bundled.includes(development))
@@ -138,8 +123,6 @@ const build = Effect.gen(function* () {
     files: ["main.cjs", "starter.cjs", "package.json"],
     extraResources: [
       { from: runtime, to: "runtime" },
-      // electron-builder deliberately omits a matcher's root node_modules.
-      // Copy the already verified dependency tree through its own resource matcher.
       { from: path.join(runtime, "node_modules"), to: "runtime/node_modules" },
     ],
     directories: { output: artifacts },
@@ -149,7 +132,6 @@ const build = Effect.gen(function* () {
       target: ["dmg", "zip"],
       ...signing.mac,
     },
-    // DMGs are installers, not updater payloads. Stapling changes their bytes after this build.
     dmg: { sign: signing.signDiskImages, writeUpdateInfo: false },
     win: { target: ["nsis"] },
     linux: {
@@ -188,7 +170,6 @@ const build = Effect.gen(function* () {
     signing.env,
   );
   yield* signing.finalize(artifacts);
-  // The app's own copy of the collector, as it ships: every unpacked app this build wrote.
   yield* smokePackagedCollector(root, target, artifacts);
   if (updates && !process.argv.includes("--dir")) {
     const metadata = path.join(artifacts, desktopUpdateFile(target, release.channel));

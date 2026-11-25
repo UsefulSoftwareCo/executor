@@ -1,9 +1,3 @@
-/**
- * Managed Cloud and deployed test stages turn Better Auth's per-address limit off, because every
- * scenario's request comes from one address. These scenarios run alone on a local Cloud started
- * with the limit on (`e2e:cloud --auth-rate-limit`), so their requests are the only ones counted.
- * They share one file so they run in turn: the database scenarios lock the limit's table.
- */
 import { randomBytes } from "node:crypto";
 import { request as httpRequest } from "node:http";
 import { expect, layer } from "@effect/vitest";
@@ -20,7 +14,6 @@ import { targetHosts } from "../support/role-hosts.ts";
 
 type Span = (typeof SpanQuery.Type)["data"][number]["span"];
 
-/** The spans of one trace once `until` holds, looked for up to 20 seconds. */
 const traceSpans = (traceId: string, until: (spans: ReadonlyArray<Span>) => boolean) => {
   const by = Date.now() + 20_000;
   return Effect.flatMap(Telemetry, (telemetry) => telemetry.query(traceId)).pipe(
@@ -33,14 +26,9 @@ const traceSpans = (traceId: string, until: (spans: ReadonlyArray<Span>) => bool
 const Backends = Schema.Array(Schema.Struct({ pid: Schema.Number }));
 const Holder = Schema.Tuple([Schema.Struct({ pid: Schema.Number })]);
 
-/**
- * Lock the limit's table in the fixture's open transaction, and find the server's backends the lock
- * blocks by how their statement starts.
- */
 const heldTable = (lock: string) =>
   Effect.gen(function* () {
     const locks = yield* cloudLocks;
-    // Release first, so a failed scenario does not leave the limit's table locked.
     yield* Effect.addFinalizer(() => Effect.ignore(locks.release));
     const [holder] = yield* locks
       .hold({ sql: "select pg_backend_pid() as pid" })
@@ -65,7 +53,6 @@ const heldTable = (lock: string) =>
     return { locks, blocked };
   });
 
-/** Seconds named by Better Auth's X-Retry-After header, within the limit's window. */
 const retryAfter = (window: number) =>
   Schema.decodeUnknownEffect(
     Schema.NumberFromString.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(window)),
@@ -78,7 +65,6 @@ layer(TestLive, { excludeTestServices: true })("Cloud auth rate limit", (it) => 
       Effect.gen(function* () {
         const target = yield* Target,
           http = yield* HttpClient.HttpClient;
-        // Sign-in runs on the browser origin, which Better Auth trusts.
         const origin = targetHosts(target).browser;
         const post = (path: string, data: unknown) =>
           Effect.scoped(
@@ -105,7 +91,6 @@ layer(TestLive, { excludeTestServices: true })("Cloud auth rate limit", (it) => 
           errorCallbackURL: "/login",
         });
 
-        // Anonymous client registration allows sixty requests a minute from one address.
         const registrations = yield* Effect.forEach(Array.from({ length: 61 }), () => register, {
           concurrency: 1,
         });
@@ -115,20 +100,17 @@ layer(TestLive, { excludeTestServices: true })("Cloud auth rate limit", (it) => 
         ]);
         yield* retryAfter(60)(registrations[60]!.retryAfter);
 
-        // Sign-in allows three requests in ten seconds, counted apart from registration.
         const signIns = yield* Effect.forEach(Array.from({ length: 4 }), () => signIn, {
           concurrency: 1,
         });
         expect(signIns.map((response) => response.status)).toEqual([200, 200, 200, 429]);
         const wait = yield* retryAfter(10)(signIns[3]!.retryAfter);
-        // The named time is when the address may sign in again.
         yield* Effect.sleep(`${wait} seconds`);
         expect((yield* signIn).status).toBe(200);
       }),
     ),
   );
 
-  /** A token request under a new trace, from the one address every request here shares. */
   const tokenRequest = Effect.gen(function* () {
     const target = yield* Target,
       http = yield* HttpClient.HttpClient;
@@ -155,10 +137,6 @@ layer(TestLive, { excludeTestServices: true })("Cloud auth rate limit", (it) => 
     return { traceId, status, retryAfter };
   });
 
-  /**
-   * A token request whose body stops halfway until `rest` has passed, under a new trace. Its
-   * status, and whether the second half had been sent when the status arrived.
-   */
   const splitTokenRequest = (rest: number) =>
     Effect.gen(function* () {
       const target = yield* Target;
@@ -197,7 +175,6 @@ layer(TestLive, { excludeTestServices: true })("Cloud auth rate limit", (it) => 
       }).pipe(Effect.map((answer) => ({ traceId, ...answer })));
     });
 
-  /** Forget the address's count for the token path, so the next request inserts its row. */
   const forgetTokenCount = (locks: Effect.Success<typeof cloudLocks>) =>
     locks.run({ sql: `delete from "rateLimit" where key like '%|/oauth2/token'` });
 
@@ -207,8 +184,6 @@ layer(TestLive, { excludeTestServices: true })("Cloud auth rate limit", (it) => 
       Effect.gen(function* () {
         yield* forgetTokenCount(yield* cloudLocks);
         const { locks, blocked } = yield* heldTable("share");
-        // The table lock lets both requests read that the address has no count yet and holds
-        // both inserts of its first count, so one of them must lose the race to the other.
         const requests = yield* Effect.forkChild(
           Effect.all([tokenRequest, tokenRequest], { concurrency: 2 }),
         );
@@ -216,11 +191,8 @@ layer(TestLive, { excludeTestServices: true })("Cloud auth rate limit", (it) => 
         yield* locks.release;
         const responses = yield* Fiber.join(requests);
 
-        // Better Auth counts the losing request against the winner's row: both reach the token
-        // endpoint, which refuses the made-up refresh token.
         expect(responses.map(({ status }) => status)).toEqual([400, 400]);
 
-        // No error report treats the insert that lost the race as a database fault.
         yield* Effect.sleep("2 seconds");
         const traces = new Set(responses.map(({ traceId }) => traceId));
         const reported = yield* sentryExceptions([...traces]);
@@ -240,8 +212,6 @@ layer(TestLive, { excludeTestServices: true })("Cloud auth rate limit", (it) => 
       context,
       Effect.gen(function* () {
         const { locks, blocked } = yield* heldTable("access exclusive");
-        // The table lock holds the request's read of its count; ending that read's database
-        // backend fails the query the way a lost database connection would.
         const request = yield* Effect.forkChild(tokenRequest);
         const [backend] = yield* blocked(`select`, 1);
         yield* locks.run({ sql: "select pg_terminate_backend($1)", params: [backend!.pid] });
@@ -249,7 +219,6 @@ layer(TestLive, { excludeTestServices: true })("Cloud auth rate limit", (it) => 
         const response = yield* Fiber.join(request);
         expect(response.status).toBeGreaterThanOrEqual(500);
 
-        // The report names the failure by its code, the only detail it may record.
         const reported = yield* sentryExceptions([response.traceId]).pipe(
           Effect.map((exceptions) =>
             exceptions.filter(
@@ -275,8 +244,6 @@ layer(TestLive, { excludeTestServices: true })("Cloud auth rate limit", (it) => 
       Effect.gen(function* () {
         const locks = yield* cloudLocks;
         yield* forgetTokenCount(locks);
-        // The token endpoint allows one device sign-in's 120 polls and twenty other requests in a
-        // minute from one address.
         const allowed = 140;
         const responses = yield* Effect.forEach(
           Array.from({ length: allowed + 1 }),
@@ -293,8 +260,6 @@ layer(TestLive, { excludeTestServices: true })("Cloud auth rate limit", (it) => 
           traceSpans(traceId, (spans) =>
             spans.some((span) => span.tags["auth.token.grant_type"] !== undefined),
           ).pipe(Effect.map((spans) => spans.find((span) => span.tags["auth.token.grant_type"])!));
-        // Better Auth refuses the request before the token endpoint reads it; the span still
-        // names the grant the client asked for.
         expect((yield* server(limited.traceId)).tags).toMatchObject({
           "http.response.status_code": "429",
           "auth.token.grant_type": "refresh_token",
@@ -307,8 +272,6 @@ layer(TestLive, { excludeTestServices: true })("Cloud auth rate limit", (it) => 
           "auth.token.grant_type": "refresh_token",
           "auth.token.rate_limited": "false",
         });
-        // The limit answers before the body arrives, and reading the grant does not hold the
-        // answer back: a grant not read by then is unknown.
         const split = yield* splitTokenRequest(5_000);
         expect({ status: split.status, bodySent: split.bodySent }).toEqual({
           status: 429,

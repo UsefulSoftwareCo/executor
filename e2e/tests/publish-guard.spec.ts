@@ -1,10 +1,3 @@
-/**
- * `scripts/releases/channel-guard.ts` stops a publish step that would move a release channel
- * backwards, and `scripts/releases/publication-report.ts` says what a failed publish job made
- * public. These cases run both as processes against one local stub that answers as each public
- * surface does: npm's dist-tags and versions, GHCR's token, manifests and image configs, the
- * desktop feed's files, the tap's formula and the GitHub release. No case reaches the network.
- */
 import { expect, layer } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { createHash } from "node:crypto";
@@ -19,39 +12,28 @@ const imageRepository = "syntheticorg/executor-selfhost";
 const tap = "SyntheticOrg/homebrew-tap";
 const feedTag = "executor-v2-desktop-updates";
 
-/** What each public surface names. Absent keys answer 404. */
 type State = {
   readonly npmTags?: Readonly<Record<string, string>>;
   readonly npmVersions?: ReadonlyArray<string>;
-  /** Versions npm holds with this archive, and when and whether it deprecated them. */
   readonly npmArchives?: Readonly<
     Record<
       string,
       { readonly integrity: string; readonly deprecated?: string; readonly time?: string }
     >
   >;
-  /** Image tags and the version label of the image each names. */
   readonly images?: Readonly<Record<string, string>>;
-  /** Feed file names and the version each names. */
   readonly feed?: Readonly<Record<string, string>>;
-  /** Formula names (`executor-beta`) and the version each names. */
   readonly formulas?: Readonly<Record<string, string>>;
   readonly release?: { readonly draft: boolean; readonly assets: number; readonly target?: string };
-  /** Every request answers 500. */
   readonly broken?: boolean;
-  /** These surfaces answer 500 to every request. */
   readonly failing?: ReadonlyArray<"npm" | "ghcr" | "feed" | "raw" | "api">;
-  /** These surfaces never answer. */
   readonly hanging?: ReadonlyArray<"npm" | "ghcr" | "feed" | "raw" | "api">;
-  /** npm's dist-tags answer 503 to this many requests first. */
   readonly flakyTags?: number;
 };
 
 const json = (body: unknown) => ({ status: 200, body: JSON.stringify(body) });
 const missing = { status: 404, body: "{}" };
 
-/** The answer `state` gives for `url`. Image manifests are an index, then one image, then a config. */
-/** Which surface a route belongs to, for `failing`. */
 const surfaceOf = (route: string) =>
   route === "/token" || route.startsWith("/v2/")
     ? "ghcr"
@@ -138,7 +120,6 @@ const answer = (state: State, url: string, tagReads: number): { status: number; 
   return missing;
 };
 
-/** One stub serving every surface from `state`. */
 const surfaces = (state: State) =>
   Effect.acquireRelease(
     Effect.callback<{ url: string; paths: () => ReadonlyArray<string>; close: () => void }>(
@@ -178,7 +159,6 @@ const surfaces = (state: State) =>
     (stub) => Effect.sync(stub.close),
   );
 
-/** Runs `script` with `args` against the stub, as the publish job would for VERSION and CHANNEL. */
 const run = (
   stub: string,
   script: "channel-guard.ts" | "publication-report.ts",
@@ -344,7 +324,6 @@ layer(NodeServices.layer)("a publish step never moves a channel backwards", (it)
 
   it.effect("a step's own check outlasts a short outage that quick reads would not", () =>
     Effect.gen(function* () {
-      // Four failed reads: the quick schedule's four reads all fail; the patient one's fifth answers.
       const result = yield* guard(
         { npmTags: { latest: "1.6.11", beta: "2.0.0-beta.51" }, flakyTags: 4 },
         "npm",
@@ -368,7 +347,6 @@ layer(NodeServices.layer)("a publish step never moves a channel backwards", (it)
   );
 });
 
-/** Preflight against `state`, as the publish job's first step runs it, with the tap. */
 const preflight = (state: State, version: string) =>
   Effect.gen(function* () {
     const stub = yield* surfaces(state);
@@ -379,7 +357,6 @@ const preflight = (state: State, version: string) =>
     });
   }).pipe(Effect.scoped);
 
-/** Every channel a step after beta.51 finds, before beta.52 publishes. */
 const afterBeta51: State = {
   npmTags: { latest: "1.6.11", beta: "2.0.0-beta.51" },
   images: { beta: "2.0.0-beta.51" },
@@ -463,7 +440,6 @@ layer(NodeServices.layer)("a stale publish stops before anything moves", (it) =>
     Effect.gen(function* () {
       const result = yield* preflight({ ...afterBeta51, failing: ["npm"] }, "2.0.0-beta.52");
       expect(result.exitCode, result.log).toBe(1);
-      // The first read, whether npm holds this version, already cannot be answered.
       expect(result.log).toContain("Cannot read whether npm holds executor@2.0.0-beta.52");
       expect(result.log).toContain("Nothing was changed");
     }),
@@ -493,7 +469,6 @@ layer(NodeServices.layer)("a stale publish stops before anything moves", (it) =>
   );
 });
 
-/** A launcher archive on disk, and its integrity as npm records it. */
 const launcherFile = (contents: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -504,7 +479,6 @@ const launcherFile = (contents: string) =>
     return { file, integrity: `sha512-${createHash("sha512").update(contents).digest("base64")}` };
   });
 
-/** What npm holds as 2.0.0 today: an archive published in error and deprecated. */
 const strayStable = {
   integrity: "sha512-stray",
   deprecated: "Published in error from a stale historical tag",
@@ -535,7 +509,6 @@ layer(NodeServices.layer)(
           expect(result.log).toContain(
             "this release needs another version number. Nothing was changed.",
           );
-          // Refused on npm's and GitHub's answers alone: no image, formula or feed was asked for.
           expect(
             stub.paths().filter((route) => !["npm", "api"].includes(surfaceOf(route))),
             result.log,
@@ -653,7 +626,6 @@ layer(NodeServices.layer)(
       "with no launcher built, npm holding the version without a published release is the stray archive",
       () =>
         Effect.gen(function* () {
-          // The preflight refused a stable 2.0.0: no launcher, npm's 2.0.0 is somebody else's.
           const result = yield* report(
             { npmTags: { latest: "1.6.11" }, npmArchives: { "2.0.0": strayStable } },
             {
@@ -719,7 +691,6 @@ layer(NodeServices.layer)(
   },
 );
 
-/** What beta.51 left public: everything but the formula and the desktop feed. */
 const beta51: State = {
   release: { draft: false, assets: 21 },
   images: { "2.0.0-beta.51": "2.0.0-beta.51", beta: "2.0.0-beta.51" },
@@ -830,7 +801,6 @@ layer(NodeServices.layer)("a failed publish job says what it published", (it) =>
           RELEASE_TAG: "executor@2.0.0",
         });
         expect(followed.summary).toContain("Nothing is left to finish");
-        // A newer beta kept there is done too, and tells of no newer release.
         const kept = yield* report(stable(betaFeed("2.0.1-beta.1")), {
           VERSION: "2.0.0",
           CHANNEL: "latest",
@@ -879,18 +849,14 @@ layer(NodeServices.layer)("a failed publish job says what it published", (it) =>
   );
 });
 
-/** One step of the `publish` job: its fields at step level and its run block's lines. */
 type Step = {
   readonly lines: ReadonlyArray<string>;
   readonly name: string;
   readonly fields: ReadonlyMap<string, string>;
-  /** The run block's lines, as written; for `run: <command>` the one command at `indent`. */
   readonly run: ReadonlyArray<string>;
-  /** The indentation of the run block's own lines: a line indented further is inside something. */
   readonly indent: number;
 };
 
-/** The `publish` job of release-artifacts.yml: its steps in order. */
 const publishSteps = (workflow: string): ReadonlyArray<Step> => {
   const lines = workflow.split("\n");
   const start = lines.indexOf("  publish:");
@@ -937,11 +903,6 @@ const publishSteps = (workflow: string): ReadonlyArray<Step> => {
   });
 };
 
-/**
- * The commands that move a channel, and the check the step that runs one must run first. A list
- * cannot catch a moving command nobody thought of: a new way to move a channel must be added here
- * with its check, and to the step that runs it.
- */
 const movers: ReadonlyArray<{ readonly move: RegExp; readonly check: string }> = [
   { move: /\bimagetools create\b|\bcrane\b|\bskopeo\b|\boras\b/u, check: "channel-guard.ts image" },
   { move: /\bnpm publish\b|\bnpm dist-tag\b|publish-npm\.ts/u, check: "channel-guard.ts npm" },
@@ -951,22 +912,14 @@ const movers: ReadonlyArray<{ readonly move: RegExp; readonly check: string }> =
     check: "channel-guard.ts desktop-feed",
   },
 ];
-/** Anything that changes something public: the release, the image, npm, the tap or the feed. */
 const changesPublic = (line: string) =>
   /\bgh release (create|upload|edit)\b/u.test(line) || movers.some(({ move }) => move.test(line));
-/** The only condition a moving step may carry: no tap skips the formula's check and move alike. */
 const allowedConditions: ReadonlyMap<string, string> = new Map([
   ['channel-guard.ts homebrew "$RUNNER_TEMP/tap"', "vars.HOMEBREW_TAP != ''"],
 ]);
 
-/** A run line with its comment, if any, removed. */
 const command = (line: string) => line.replace(/(^|\s)#.*$/u, "").trimEnd();
 
-/**
- * Whether `step` runs `node scripts/releases/<check>` as a whole line of its own, at its run block's
- * own indentation (not inside an `if`, a loop or a group), with nothing after it (no `|| true`)
- * and no `set +e` before it, before line `before` of its run block.
- */
 const runsCheck = (step: Step, check: string, before = step.run.length) => {
   const exact = `node scripts/releases/${check}`;
   const at = step.run.findIndex(
@@ -978,7 +931,6 @@ const runsCheck = (step: Step, check: string, before = step.run.length) => {
   return at !== -1 && !step.run.slice(0, at).some((line) => /\bset \+e\b/u.test(command(line)));
 };
 
-/** Why the publish job's wiring of the guard and the report is wrong; empty when it is right. */
 const wiring = (workflow: string): ReadonlyArray<string> => {
   const steps = publishSteps(workflow);
   const problems: Array<string> = [];
@@ -1004,8 +956,6 @@ const wiring = (workflow: string): ReadonlyArray<string> => {
     unconditional(steps[preflight]!);
   }
 
-  // npm never accepts a version twice: once the launcher exists, and before anything exposes it
-  // (the upload, the image, the release's publication), npm must not hold another archive.
   const launcherCheck =
     'channel-guard.ts launcher ".local/releases/$VERSION/wrapper/executor-$VERSION.tgz"';
   const wrapper = steps.findIndex((step) =>
@@ -1087,7 +1037,6 @@ layer(NodeServices.layer)(
           const preflightName = /^( {6}- name: Refuse to publish over a newer release)$/mu;
           const afterPreflight = (step: string) => once(preflightLine, `$1\n${step}`);
           const cases: ReadonlyArray<readonly [string, string, string]> = [
-            // Deleting a check, a step or a field.
             [
               "the image's own check deleted",
               once(/^ +node scripts\/releases\/channel-guard\.ts image\n/mu, ""),
@@ -1125,7 +1074,6 @@ layer(NodeServices.layer)(
               ),
               "the report has no short time limit",
             ],
-            // Disarming a check while its line stays.
             [
               "the npm check commented out",
               once(/^( +)(node scripts\/releases\/channel-guard\.ts npm)$/mu, "$1# $2"),
@@ -1164,7 +1112,6 @@ layer(NodeServices.layer)(
               once(preflightName, "$1\n        continue-on-error: true"),
               'the step "Refuse to publish over a newer release" has continue-on-error',
             ],
-            // The launcher check deleted, moved after the upload, or allowed to fail.
             [
               "the launcher check deleted",
               once(
@@ -1197,7 +1144,6 @@ layer(NodeServices.layer)(
               ),
               'the step "Refuse a version npm holds with another archive" has continue-on-error',
             ],
-            // A new step that moves a channel without its check.
             [
               "a new step moving npm's tag with npm dist-tag",
               afterPreflight(

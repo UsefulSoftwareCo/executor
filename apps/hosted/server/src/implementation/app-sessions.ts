@@ -1,5 +1,4 @@
 import { resolveOrganizationReference } from "./organization-reference.ts";
-/** Better Auth owns persistence and atomic consume; no schema or dashboard-token copies are introduced. */
 import type { AuthContext } from "@better-auth/core";
 import { AppSignInId } from "apps/ui/auth/contracts";
 import { UiFailed, UiForbidden, UiUnauthorized } from "apps/ui/contracts";
@@ -27,7 +26,6 @@ const sameTarget = (a: AppUiTarget, b: AppUiTarget) =>
   a.organization === b.organization &&
   a.origin === b.origin &&
   a.slug === b.slug;
-/** Better Auth stores `impersonatedBy` as null on a session no admin's impersonation created. */
 const Parent = Schema.Struct({
   userId: Principal.fields.userId,
   expiresAt: Schema.Date,
@@ -37,7 +35,6 @@ const Organization = Schema.Struct({ id: OrganizationId, slug: OrganizationSlug 
 const Membership = Schema.Struct({ role: OrganizationRole });
 const Stored = Schema.Struct({ value: Schema.String, expiresAt: Schema.Date });
 const recordJson = Schema.fromJsonString(AppUiRecord);
-/** Run two checks together but report the first one's failure first, as if they ran in order. */
 const inOrder = <A, B, E1, E2>(first: Effect.Effect<A, E1>, second: Effect.Effect<B, E2>) =>
   Effect.all([Effect.result(first), Effect.result(second)], { concurrency: "unbounded" }).pipe(
     Effect.flatMap(([a, b]) =>
@@ -49,7 +46,6 @@ const inOrder = <A, B, E1, E2>(first: Effect.Effect<A, E1>, second: Effect.Effec
     ),
   );
 
-/** Adapt one existing Better Auth context. Persisted state works across restarts and serving processes. */
 export const hostedAppSessions = (
   context: {
     readonly internalAdapter: Pick<
@@ -115,7 +111,6 @@ export const hostedAppSessions = (
           select: ["userId", "expiresAt", "impersonatedBy"],
         }),
       );
-      // The dashboard session the app session came from has ended: signed out or revoked.
       if (row === null) return yield* refuse("revoked", new UiUnauthorized());
       const session = yield* Schema.decodeUnknownEffect(Parent)(row).pipe(
         Effect.mapError(unavailable),
@@ -237,7 +232,6 @@ export const hostedAppSessions = (
           parent(grant.parent, grant.user),
           membership(grant.user, target),
         );
-        // Only one callback across all issued codes may consume this browser attempt.
         yield* Effect.all([read(attemptKey, true), read(grantKey, true)], {
           concurrency: "unbounded",
         });
@@ -261,8 +255,6 @@ export const hostedAppSessions = (
         if (!Schema.is(AppUiSession)(session) || !sameTarget(session.target, target))
           return yield* refuse("wrong_resource", new UiUnauthorized());
         const login = yield* parent(session.parent, session.user);
-        // The serving host checks current membership together with app/account
-        // permissions. A second lookup here adds no authority to that decision.
         return typeof login.impersonatedBy === "string"
           ? { userId: session.user, impersonatedBy: login.impersonatedBy }
           : { userId: session.user };

@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { ArrowDown01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { Cause, Exit, Option, Redacted } from "effect";
+import { Cause, Exit, Option, Redacted, Schema } from "effect";
 import {
+  OAuthOwnClientUnavailable,
   OAuthSetupFailed,
   type Account,
   type OAuthClientId,
@@ -12,6 +13,7 @@ import type { OAuthSubmission } from "../../contracts/credentials.ts";
 import type { FailureProps, Query } from "../../contracts/dashboard.ts";
 import type { ComponentType, ReactNode } from "react";
 import { Button } from "../components/button.tsx";
+import { Checkbox } from "../components/checkbox.tsx";
 import { Input } from "../components/input.tsx";
 import {
   Select,
@@ -30,7 +32,6 @@ import { OAuthClientOrigin, sharesClientId } from "./oauth-client-origin.tsx";
 import { useQuery } from "./context.tsx";
 import { SetupHelp } from "./markdown.tsx";
 
-/** Keep forms mounted through cached setup reads, refresh failures, and retries. */
 export function OAuthSetup<E extends UserFacingError>({
   query,
   children,
@@ -72,7 +73,8 @@ export function OAuthSetup<E extends UserFacingError>({
   );
 }
 
-/** Where the connection's OAuth client comes from. */
+const OwnClientNotice = Schema.Struct({ ownClientUnavailable: OAuthOwnClientUnavailable });
+
 type ClientChoice =
   | { readonly kind: "current" }
   | { readonly kind: "registered"; readonly id: OAuthClientId }
@@ -82,11 +84,6 @@ type ClientChoice =
 const choiceKey = (choice: ClientChoice) =>
   choice.kind === "registered" ? `client:${choice.id}` : choice.kind;
 
-/**
- * The clients this connection can use, in order of preference: the account's own on a reconnect,
- * then clients registered for the provider, the automatic client, and entered details last.
- * Client credentials are each account's own, so only the current ones or new ones apply.
- */
 const clientChoices = (
   options: OAuthConnectOptions | "unresolved",
   reconnect: boolean,
@@ -102,7 +99,6 @@ const clientChoices = (
   ];
 };
 
-/** Choose an OAuth client or enter one; each host owns the sign-in and return flow. */
 export function OAuthFields<A, E>({
   providerName,
   account,
@@ -122,34 +118,20 @@ export function OAuthFields<A, E>({
   disabled = false,
 }: {
   readonly providerName: string;
-  /**
-   * The app's Markdown on creating an OAuth client at this service, shown under Executor's own
-   * line and redirect URL when someone enters a client.
-   */
   readonly clientGuide?: string | undefined;
   readonly account?: Pick<Account, "label">;
   readonly redirectUri: string;
   readonly start: (input: OAuthSubmission) => Promise<Exit.Exit<A, E>>;
-  /** Report "navigating" when the browser is leaving for sign-in, so the action stays busy until it does. */
   readonly onAuthorized: (value: NoInfer<A>) => "navigating" | "done";
   readonly requiresClient: (cause: Cause.Cause<NoInfer<E>>) => boolean;
   readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
-  /** Where the sign-in goes once saved, shown just above the Connect action. */
   readonly access?: ReactNode;
   readonly disabled?: boolean;
   readonly onPendingChange?: (pending: boolean) => void;
   readonly manualClient?: boolean | undefined;
-  /** Hosts with a preflight check supply its result; unresolved checks never guess a sign-in method. */
   readonly setup: OAuthConnectOptions | "unresolved";
-  /** Setup progress covers the Connect action and collapsed Advanced options. */
   readonly setupAction?: ReactNode;
-  /**
-   * Whether the person connecting may register an entered client for the organization. With no
-   * client to sign in with, the form then asks who can use the client it enters: everyone, by
-   * default, registered before sign-in, or only this account.
-   */
   readonly registerClient?: boolean;
-  /** A registered client whose details open prefilled; Connect updates it before signing in. */
   readonly editClient?: OAuthClientId | undefined;
 }) {
   const choices = clientChoices(options, account !== undefined);
@@ -160,27 +142,23 @@ export function OAuthFields<A, E>({
   const [picked, setPicked] = useState<ClientChoice | undefined>(
     manualClient || editClient !== undefined ? { kind: "manual" } : undefined,
   );
-  // A pick that is no longer offered, such as a removed client, falls back to the first choice.
   const choice =
     (picked === undefined
       ? undefined
       : choices.find((offered) => choiceKey(offered) === choiceKey(picked))) ?? choices[0];
   const setup = options;
   const machine = setup !== "unresolved" && setup.grant === "client_credentials";
-  // Without a client to sign in with, the client entered here can become the organization's.
   const missing =
     registerClient &&
     !machine &&
     choices.length > 0 &&
     choices.every((offered) => offered.kind === "manual");
   const manual = choice?.kind === "manual";
-  // Editing keeps the registered client's secret unless a new one is entered.
   const updating = manual && editing !== undefined;
   const userScopes =
     setup !== "unresolved" && setup.grant === "authorization_code" ? (setup.userScopes ?? []) : [];
   const requested = setup === "unresolved" ? 0 : setup.scopes.length + userScopes.length;
   const method = setup === "unresolved" ? "none" : setup.tokenEndpointAuthMethod;
-  // An undeclared method accepts either a public client or one with a secret.
   const acceptsSecret = method !== "none";
   const needsSecret = method !== undefined && method !== "none";
   const details = needsSecret
@@ -188,8 +166,6 @@ export function OAuthFields<A, E>({
     : acceptsSecret
       ? "client ID (and secret, if it has one)"
       : "client ID";
-  // The instance's own client matches the service but may not ask for these scopes, so the person
-  // enters their own; that explanation takes the place of the line of help.
   const refusal =
     setup !== "unresolved" && setup.operatorScopeRefusal !== undefined
       ? new OAuthSetupFailed({
@@ -197,7 +173,6 @@ export function OAuthFields<A, E>({
           operatorScopes: setup.operatorScopeRefusal,
         })
       : undefined;
-  // Client entry's one line of help; a failure, which carries its own recovery, replaces it.
   const guidance = machine
     ? `Create an OAuth client in ${providerName}’s developer settings${setup.scopes.length > 0 ? " with the permissions under Advanced" : ""}, then enter its ${details}.`
     : setup !== "unresolved" && setup.mode === "client-required"
@@ -206,10 +181,17 @@ export function OAuthFields<A, E>({
   const [enteredClientId, setClientId] = useState<string>();
   const clientId = enteredClientId ?? (updating ? editing.clientId : "");
   const [clientSecret, setClientSecret] = useState("");
-  // Details reopened after a failed sign-in were kept to one account, so they stay that way.
   const [shared, setShared] = useState(!manualClient);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<Cause.Cause<E>>();
+  const [chooseAgain, setChooseAgain] = useState(false);
+  const [noticed, setNoticed] = useState<{ readonly value: A }>();
+  const offersChooseAgain =
+    account !== undefined &&
+    setup !== "unresolved" &&
+    setup.grant === "authorization_code" &&
+    setup.chooseAgain === true &&
+    (choice?.kind === "current" || choice?.kind === "automatic");
   const blocked =
     disabled ||
     setupAction !== undefined ||
@@ -221,8 +203,6 @@ export function OAuthFields<A, E>({
       case "current":
         return machine ? "Current client credentials" : "Current client";
       case "registered": {
-        // Registered clients are unnamed; the form is for one service, so its client ID identifies
-        // one, unless another client shares it.
         const client =
           options === "unresolved"
             ? undefined
@@ -267,11 +247,14 @@ export function OAuthFields<A, E>({
           : choice.kind === "automatic"
             ? { client: { automatic: true } }
             : {};
-    const operation = start(submission);
+    const operation = start(
+      offersChooseAgain && chooseAgain ? { ...submission, chooseAgain: true } : submission,
+    );
     void operation.then((exit) => {
       if (Exit.isSuccess(exit)) {
         setClientSecret("");
-        if (onAuthorized(exit.value) === "navigating") return;
+        if (Schema.is(OwnClientNotice)(exit.value)) setNoticed({ value: exit.value });
+        else if (onAuthorized(exit.value) === "navigating") return;
       } else {
         if (requiresClient(exit.cause)) setPicked({ kind: "manual" });
         setError(exit.cause);
@@ -280,9 +263,6 @@ export function OAuthFields<A, E>({
       onPendingChange?.(false);
     });
   };
-  // The picker leads the form only when there is a real choice between clients. With one, the
-  // form uses it and keeps the picker, with entering details, under Advanced. A reconnect keeps
-  // the account's client, so replacing it is always an Advanced option.
   const prominent =
     account === undefined && choices.filter((offered) => offered.kind !== "manual").length > 1;
   const clientSelect =
@@ -294,6 +274,7 @@ export function OAuthFields<A, E>({
           disabled={pending || disabled}
           onValueChange={(value) => {
             setPicked(choices.find((offered) => choiceKey(offered) === value));
+            setNoticed(undefined);
             setError(undefined);
           }}
         >
@@ -311,7 +292,6 @@ export function OAuthFields<A, E>({
       </label>
     );
 
-  // Going back from the provider can restore this page from the back-forward cache mid-redirect.
   useEffect(() => {
     const restored = (event: PageTransitionEvent) => {
       if (!event.persisted) return;
@@ -378,7 +358,6 @@ export function OAuthFields<A, E>({
         </>
       )}
       {manual && missing && setup !== "unresolved" && requested > 0 && (
-        // Creating the provider's OAuth app needs these, so they are part of setup here.
         <div className="space-y-4">
           <Permissions label="Permissions to add to the OAuth app" scopes={setup.scopes} />
           <Permissions label="User token permissions" scopes={userScopes} />
@@ -412,19 +391,48 @@ export function OAuthFields<A, E>({
       <div className="form-actions flex flex-col gap-3 pt-1">
         {access}
         <div role="group" aria-label="Connection options" className="relative flex flex-col gap-4">
+          {noticed !== undefined && (
+            <div role="status" className="space-y-1 rounded-md border bg-muted/60 p-3 text-[13px]">
+              <p className="font-medium">{providerName} may reuse your earlier choice</p>
+              <p className="text-pretty text-muted-foreground">
+                Executor couldn’t give this connection its own sign-in at {providerName}, so{" "}
+                {providerName} may skip asking which account or organization to use. To choose
+                again, revoke Executor’s access in {providerName}’s settings, then continue; your
+                other {providerName} connections may then need reconnecting.
+              </p>
+            </div>
+          )}
           <div className="flex min-h-9 flex-col max-[740px]:min-h-11">
-            {setupAction ?? (
-              <Button type="button" className="w-full" disabled={blocked} onClick={connect}>
-                {pending
-                  ? machine
-                    ? "Connecting…"
-                    : "Preparing sign-in…"
-                  : `${account === undefined ? "Connect" : "Reconnect"} ${providerName}`}
+            {noticed !== undefined ? (
+              <Button
+                type="button"
+                className="w-full"
+                disabled={pending}
+                onClick={() => {
+                  setPending(true);
+                  onPendingChange?.(true);
+                  if (onAuthorized(noticed.value) === "navigating") return;
+                  setNoticed(undefined);
+                  setPending(false);
+                  onPendingChange?.(false);
+                }}
+              >
+                Continue to {providerName}
               </Button>
+            ) : (
+              (setupAction ?? (
+                <Button type="button" className="w-full" disabled={blocked} onClick={connect}>
+                  {pending
+                    ? machine
+                      ? "Connecting…"
+                      : "Preparing sign-in…"
+                    : `${account === undefined ? "Connect" : "Reconnect"} ${providerName}`}
+                </Button>
+              ))
             )}
           </div>
           {missing ? null : setup !== "unresolved" &&
-            (requested > 0 || (!prominent && clientSelect !== undefined)) ? (
+            (requested > 0 || (!prominent && clientSelect !== undefined) || offersChooseAgain) ? (
             <details className="group/advanced min-w-0 border-t pt-3">
               <summary className="flex w-fit cursor-pointer list-none items-center gap-1.5 rounded-sm text-xs font-medium text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
                 <HugeiconsIcon
@@ -444,10 +452,23 @@ export function OAuthFields<A, E>({
                 {!prominent && clientSelect}
                 <Permissions label="Requested permissions" scopes={setup.scopes} />
                 <Permissions label="User token permissions" scopes={userScopes} />
+                {offersChooseAgain && (
+                  <label className="flex items-start gap-2 text-xs">
+                    <Checkbox
+                      className="mt-px"
+                      checked={chooseAgain}
+                      disabled={pending || disabled}
+                      onCheckedChange={(checked) => {
+                        setChooseAgain(checked === true);
+                        setNoticed(undefined);
+                      }}
+                    />
+                    <span>Let me choose the {providerName} account or organization again</span>
+                  </label>
+                )}
               </div>
             </details>
           ) : (
-            // Reserve the collapsed row even when setup has not resolved or has no advanced options.
             <div aria-hidden="true" className="border-t border-transparent pt-3">
               <div className="h-4" />
             </div>
@@ -458,7 +479,6 @@ export function OAuthFields<A, E>({
   );
 }
 
-/** What sign-in asks the provider for, shown before the user leaves for its consent page. */
 function Permissions({
   label,
   scopes,

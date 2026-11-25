@@ -1,8 +1,4 @@
 import { AppProviderFailed } from "../contracts/tools.ts";
-/**
- * Managed webhook registration for each account linked to an app as a webhook source. Linking only
- * saves intent; a lease covers the network work without holding SQL transactions.
- */
 import { Clock, Effect, Exit, Result, Schema } from "effect";
 import type { HostCrypto } from "./host-crypto.ts";
 import { Digest } from "effect/crypto";
@@ -55,26 +51,11 @@ const StoredSource = Schema.Struct({
   lease: Schema.NullOr(Schema.String),
   leaseUntil: Schema.Date,
   retries: Schema.Int,
-})
-  // Storage keeps the columns' former names.
-  .pipe(Schema.encodeKeys({ reconciledVersion: "reconciledDeployment" }));
+}).pipe(Schema.encodeKeys({ reconciledVersion: "reconciledDeployment" }));
 type StoredSource = typeof StoredSource.Type;
 
-/**
- * The wait after a source's `retries`-th attempt in a row that failed or found it needing setup: 30
- * seconds, doubling to at most an hour. A failure that persists, such as a service refusing the
- * account's OAuth client, then costs one attempt an hour instead of one a tick, and so does a
- * source waiting for a person, which an attempt cannot fix. New intent resets the count and runs
- * at once.
- */
 const retryDelay = (retries: number) => Math.min(30_000 * 2 ** (retries - 1), 3_600_000);
 
-/**
- * Completing a manual setup is new intent for the source whose subscription it completed: a source
- * that needs that setup runs again at once rather than waiting out its delay. Run in the
- * completion's transaction after it takes the app's lock, as every write that saves intent does, so
- * a pass completing meanwhile sees the new revision and runs again.
- */
 export const setupCompleted = (
   tx: Query,
   input: { readonly app: AppId; readonly account: AccountId },
@@ -86,9 +67,6 @@ export const setupCompleted = (
       }),
     );
     if (row === null || row.status === "removing") return;
-    // Joins the pending queue now, as `link` does (`queued`): `leaseUntil` of a pending source
-    // without a lease is when it joined. A failed source's is its retry time, which can be an
-    // hour ahead. A held lease is left to its holder, which finds the newer revision.
     const joining =
       row.lease === null ? { leaseUntil: new Date(yield* Clock.currentTimeMillis) } : {};
     yield* query(() =>
@@ -105,50 +83,21 @@ export const setupCompleted = (
     );
   });
 
-/**
- * Keys of managed subscriptions start with `setup-` and hash the definition, source, configuration
- * and the version that created them, so retries reuse a registration and a new version registers
- * again. A manual subscription instead moves to the new version while its setup still fits, since
- * a person copied its callback URL and secret into the provider. The actor and its accounts are not
- * part of the key: callbacks resolve them at each delivery.
- *
- * A reconciliation works for the activation it claimed, the app's `activatedSequence`, which every
- * activation advances, also one back to the same version. It creates and removes subscriptions
- * only while that activation is current, and a source it claimed is ready only if no other
- * activation came in between; otherwise the source stays pending and reconciles again.
- */
 export const makeWebhookSources = (
   db: Query,
   crypto: HostCrypto,
   lifecycle: ResourceLifecycle | undefined,
   resources: {
     readonly webhooks: ReturnType<typeof makeWebhooks>["webhooks"];
-    /** Evaluated now, never reused: reconciliation changes upstream registrations. */
     readonly liveDefinitions: ReturnType<typeof makeWebhooks>["liveDefinitions"];
     readonly retarget: ReturnType<typeof makeWebhooks>["retarget"];
-    /** Creates a managed subscription beside earlier ones with the same key, for an activation. */
     readonly createManaged: ReturnType<typeof makeWebhooks>["createManaged"];
-    /** Removes a managed subscription while an activation is current. */
     readonly removeManaged: ReturnType<typeof makeWebhooks>["removeManaged"];
-    /** Stored-state check for an account whose sign-in must reconnect. */
     readonly accountNeedingReconnect: ReturnType<typeof makeTools>["accountNeedingReconnect"];
   },
 ) => {
   const now = Clock.currentTimeMillis;
-  /**
-   * This service's own name in telemetry, on its sweep's passes and its reads of an app's sources,
-   * so a pass can be told from another server's that shares a collector. One host process (a
-   * self-hosted server's actor) reads and sweeps through one service; on Cloud each Worker has its
-   * own.
-   */
   const instance = globalThis.crypto.randomUUID();
-  /**
-   * A source joining the pending queue: `leaseUntil` of a pending source without a lease is when it
-   * joined, so `tick` serves pending sources first in, first out. A source whose lease is held
-   * keeps it; its holder finds the newer revision when it finishes and queues it at that time.
-   * Read under the app's lock, which every claim also takes, so the lease cannot change before the
-   * write that uses this.
-   */
   const queued = (source: { readonly lease: string | null }) =>
     Effect.map(now, (time): { readonly leaseUntil?: Date } =>
       source.lease === null ? { leaseUntil: new Date(time) } : {},
@@ -177,17 +126,12 @@ export const makeWebhookSources = (
     });
   const view = (row: StoredSource) =>
     Schema.decodeUnknownEffect(WebhookSource)(row).pipe(Effect.mapError(() => new StorageError()));
-  /**
-   * The source's accounts on the active version: the account itself, the app links and, for a
-   * user link, the actor's others. An app link's source has no actor.
-   */
   const accountsOf = (source: StoredSource) =>
     backgroundAccounts(db, lifecycle, {
       app: source.app,
       actor: source.actor ?? undefined,
       source: source.account,
     });
-  /** Managed subscriptions this source registered. */
   const managed = (source: StoredSource) =>
     resources.webhooks
       .list({ app: source.app })
@@ -239,7 +183,6 @@ export const makeWebhookSources = (
             const removing = current.status === "removing";
             let failure: WebhookSource["failure"] = null;
             let status: WebhookSource["status"] = removing ? "removing" : "ready";
-            // How many of the active version's webhooks use this source, once evaluated.
             let served: number | undefined;
             const attempt = yield* Effect.gen(function* () {
               const hooks = yield* managed(current);
@@ -274,10 +217,6 @@ export const makeWebhookSources = (
                 const required = Object.hasOwn(state.version.requirements.accounts, hook.account)
                   ? state.version.requirements.accounts[hook.account]
                   : undefined;
-                // Only definitions of the source's scope whose requirement the run resolved to this
-                // account use it as their source: an app link serves the app-account webhooks of the
-                // requirements it is linked to, a user link user-account webhooks. Another
-                // requirement of the same provider is linked to other accounts.
                 const selected = Object.hasOwn(state.accounts, hook.account)
                   ? state.accounts[hook.account]
                   : undefined;
@@ -299,9 +238,6 @@ export const makeWebhookSources = (
                   config,
                   version,
                 });
-                // A subscription pinned to another version, such as one an earlier version created
-                // and a later one carried, goes through creation, which moves a manual one back
-                // only while its setup still fits.
                 const kept = hooks.find(
                   (saved) =>
                     saved.key === key &&
@@ -310,7 +246,6 @@ export const makeWebhookSources = (
                       saved.status === "pending" ||
                       saved.status === "setup-required"),
                 );
-                // Creating may instead carry a manual subscription from an earlier version.
                 const created =
                   kept ??
                   (yield* resources.createManaged(
@@ -325,7 +260,6 @@ export const makeWebhookSources = (
                     activation,
                   ));
                 desired.add(created.id);
-                // A registration kept from an earlier actor follows the source's current one.
                 yield* resources.retarget(created.id, current.actor);
                 const subscription =
                   created.status === "pending"
@@ -343,7 +277,6 @@ export const makeWebhookSources = (
                 }
               }
               served = desired.size;
-              // Old registrations retain the code and state required for their own cleanup.
               for (const hook of hooks)
                 if (hook.status !== "stopped" && !desired.has(hook.id)) {
                   const stopped = yield* resources.removeManaged(
@@ -387,14 +320,10 @@ export const makeWebhookSources = (
                 const live = yield* find(input);
                 if (live === undefined || live.lease !== token)
                   return live === undefined ? undefined : yield* view(live);
-                // Another activation since the claim, even one back to the same version, means this
-                // pass may have created or kept subscriptions for an activation that is no longer
-                // current, so it does not count.
                 const changed =
                   live.revision !== current.revision ||
                   liveApp.activatedSequence !== app.activatedSequence;
                 const completedAt = yield* now;
-                // A removed source is deleted once its subscriptions have stopped.
                 if (!changed && removing && failure === null) {
                   yield* query(() =>
                     tx.deleteMany("webhookSources", { where: (b) => b("id", "=", live.id) }),
@@ -406,10 +335,6 @@ export const makeWebhookSources = (
                     ? "removing"
                     : "pending"
                   : status;
-                // A source that failed, needs setup or could not finish removing backs off: another
-                // attempt cannot succeed until something changes. The changes Executor sees save new
-                // intent, which runs at once: linking, configuring, an activation, new credentials
-                // for its account and completing a manual setup.
                 const retries = !changed && next !== "ready" ? live.retries + 1 : 0;
                 yield* query(() =>
                   tx.updateMany("webhookSources", {
@@ -443,8 +368,6 @@ export const makeWebhookSources = (
             ? Effect.void
             : transaction(db, (tx) =>
                 Effect.gen(function* () {
-                  // Acquire/release owns the claim across interruption and defects too.
-                  // A completed or superseded claim must never release another worker's lease.
                   yield* lockApp(tx, { app: input.app });
                   const queuedAt = new Date(yield* now);
                   yield* query(() =>
@@ -455,8 +378,6 @@ export const makeWebhookSources = (
                           b("account", "=", input.account),
                           b("lease", "=", token),
                         ),
-                      // Back of the queue: a source failing this way would otherwise come first
-                      // at every sweep and keep the others waiting.
                       set: { lease: null, leaseUntil: queuedAt },
                     }),
                   );
@@ -473,10 +394,6 @@ export const makeWebhookSources = (
       }),
     );
 
-  /**
-   * A source that failed on its accounts waits while they still cannot be used: an account must
-   * reconnect, or a plain requirement has no linked account. Checking reads stored state only.
-   */
   const waiting = (row: StoredSource) =>
     accountsOf(row).pipe(
       Effect.flatMap((accounts) => resources.accountNeedingReconnect({ app: row.app, accounts })),
@@ -524,15 +441,12 @@ export const makeWebhookSources = (
           const app = yield* lockApp(tx, parsed);
           yield* storedAccount(tx, parsed.account);
           const existing = yield* find(parsed);
-          // Omitted configuration keeps the saved one.
           const config =
             parsed.config !== undefined
               ? parsed.config
               : existing === undefined
                 ? {}
                 : existing.config;
-          // Without an actor the account is an app link and serves app-account webhooks; with one,
-          // a user link. Linking in the other scope moves the source, as a handover moves its actor.
           const fields = {
             actor: parsed.actor ?? null,
             accounts: {},
@@ -572,10 +486,6 @@ export const makeWebhookSources = (
           return yield* view(saved);
         }),
       ),
-    /**
-     * Change a source's configuration under the app's lock, only while it is still the source the
-     * caller authorized: same identity, actor and revision, and not being removed.
-     */
     configureSource: (input: typeof UpdateWebhookSource.Type) =>
       transaction(db, (tx) =>
         Effect.gen(function* () {
@@ -618,9 +528,6 @@ export const makeWebhookSources = (
           yield* lockApp(tx, input);
           const existing = yield* find(input);
           if (existing === undefined) return yield* new WebhookNotFound();
-          // New removal intent runs at once, as new link intent does: it does not wait out the
-          // retry delay a failed or waiting source left in `leaseUntil`. An attempt in progress
-          // keeps its lease, and sees the new revision when it completes.
           const fields = {
             status: "removing" as const,
             failure: null,
@@ -642,9 +549,6 @@ export const makeWebhookSources = (
     tick: (limit: number) =>
       Effect.gen(function* () {
         const time = new Date(yield* now);
-        // New saved intent runs immediately, ahead of retries: a backlog of failed or waiting
-        // sources never delays one someone just changed. A pending source without a lease holds
-        // in `leaseUntil` when it joined the queue (`queued`), so this is first in, first out.
         const intent = yield* query(() =>
           db.findMany("webhookSources", {
             where: (b) => b.and(b("status", "=", "pending"), b("lease", "is", null)),
@@ -658,7 +562,6 @@ export const makeWebhookSources = (
             ),
           ),
         );
-        // An active worker keeps its lease; failed unchanged intent keeps its retry delay.
         const retries =
           intent.length >= limit
             ? []
@@ -680,10 +583,6 @@ export const makeWebhookSources = (
                   ),
                 ),
               );
-        // A source that failed on its accounts cannot succeed while one must reconnect or a
-        // requirement needs a choice. Wait instead, checking stored state once per retry delay,
-        // which doubles with each check that finds it still waiting. New credentials for the
-        // source's account (`resumeWaitingSources`) and linking again end the wait at once.
         const ready = yield* Effect.filter(retries, (row) =>
           row.failure !== "accounts" || row.lease !== null
             ? Effect.succeed(true)
@@ -708,8 +607,6 @@ export const makeWebhookSources = (
                 ),
               ),
         );
-        // What this pass took, for anyone judging the queue from its traces: a pass that took fewer
-        // new sources than its limit left none of them behind.
         yield* Effect.annotateCurrentSpan({
           "executor.webhooks.instance": instance,
           "executor.webhooks.sweep.limit": limit,
@@ -727,8 +624,6 @@ export const makeWebhookSources = (
             ),
           { concurrency: 4 },
         );
-        // A full batch of saved intent may have left more behind. Continue while it makes
-        // progress; a batch whose intent all failed waits for the host's next wake.
         return intent.length >= limit && reconciled.slice(0, intent.length).some(Boolean);
       }).pipe(Effect.withSpan("sdk.webhooks.sweep")),
   };

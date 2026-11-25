@@ -22,8 +22,6 @@ layer(TestLive, { excludeTestServices: true })("Email code refresh", (it) => {
             private: response.headers()["cache-control"]?.includes("no-store"),
           }));
         });
-        // The Worker verified there is no session before rendering; a signed-in visitor is
-        // redirected instead of receiving this form.
         expect(document.html).toContain('placeholder="Your email address"');
         expect(document.private).toBe(true);
         yield* browser.use("Type email", (page) =>

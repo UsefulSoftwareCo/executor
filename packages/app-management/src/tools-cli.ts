@@ -1,8 +1,3 @@
-/**
- * Top-level client commands: sign-in for a host's tools, and the MCP tools themselves. Each tool
- * command calls the MCP tool of the same name on the resolved host and prints its result as JSON
- * on stdout; failures follow the `executor apps` convention.
- */
 import {
   Config,
   Console,
@@ -22,25 +17,16 @@ import { hostFlag, namedHost, toolsTarget, type LocalServer } from "./implementa
 import { hasRegistrySession, logout, toolsLogin } from "./implementation/node-auth.ts";
 import { saveContentFiles } from "./implementation/tool-files.ts";
 
-/**
- * The MCP client and the paused-call records, loaded when a command uses them, so other commands
- * and help start without the MCP SDK.
- */
 const toolsClient = Effect.promise(() => import("./implementation/tools-client.ts"));
 const pausedCalls = Effect.promise(() => import("./implementation/paused-calls.ts"));
 
 const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Json));
 
-/** Read a file, or standard input when the path is `-`. */
 const readInput = (file: string) =>
   file === "-"
     ? Effect.flatMap(Stdio.Stdio, (stdio) => stdio.stdin.pipe(Stream.decodeText(), Stream.mkString))
     : Effect.flatMap(FileSystem.FileSystem, (fs) => fs.readFileString(file));
 
-/**
- * The text one of two exclusive flags supplies: inline, or from a file or standard input (`-`).
- * Neither gives `none`; both fail.
- */
 const textFrom = (inline: Option.Option<string>, file: Option.Option<string>, names: string) =>
   Effect.gen(function* () {
     if (Option.isSome(inline) && Option.isSome(file))
@@ -50,7 +36,6 @@ const textFrom = (inline: Option.Option<string>, file: Option.Option<string>, na
     return Option.none<string>();
   });
 
-/** JSON from one of two exclusive flags; `what` names it in the error. */
 const jsonFrom = (
   inline: Option.Option<string>,
   file: Option.Option<string>,
@@ -73,32 +58,18 @@ const jsonFrom = (
 const fileFlag = (name: string, description: string) =>
   Flag.String(name).pipe(Flag.withDescription(description), Flag.optional);
 
-/**
- * What tool commands print. Failures exit 1 as `executor apps` failures do: the message, code and
- * recovery on stderr, and `{"error": ...}` on stdout when stdout is not a terminal.
- */
 const prints = "Prints the result as JSON";
 const pauses = `${prints}, with the path of each image, audio or file it holds, written to a new temporary directory unless --files names one. A paused call prints its pending request, with an approvalUrl when the host gives one; continue it with executor resume`;
 
-/** Where `call`, `execute` and `resume` write the images, audio and files a result holds. */
 const filesFlag = fileFlag(
   "files",
   "Write images, audio and files the result holds into this directory instead of a new temporary one",
 );
 
-/**
- * The tool commands, `login`, `logout`, `whoami` and `mcp`. `localServer` resolves the local
- * Executor that commands use when no host is named or remembered.
- */
 export const toolCommands = <E, R>(
   platform: string,
   localServer?: Effect.Effect<LocalServer, E, R>,
 ) => {
-  /**
-   * Call one MCP tool on the resolved host and print its result, with the images, audio and files
-   * it holds written into `files` or a new temporary directory. A call paused for browser approval
-   * is answered in the session that made it, so `resume` continues that session.
-   */
   const run = (
     host: Option.Option<string>,
     tool: string,
@@ -145,8 +116,6 @@ export const toolCommands = <E, R>(
             token: Effect.succeed(Redacted.make(session.accessToken)),
             local: false,
           };
-          // A host released before whoami still signs in; it just cannot say more. Any other
-          // failure to describe the new sign-in is reported.
           const known = yield* whoami(target).pipe(
             Effect.map(Option.some),
             Effect.catchTag("WhoamiUnavailable", () => Effect.succeedNone),

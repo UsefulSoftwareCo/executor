@@ -1,12 +1,3 @@
-/**
- * Self-host keeps a caller's 256 most recently used MCP sessions in each elicitation mode and never
- * forgets one that owns work, such as a call whose approval prompt waits for the client's answer.
- * The session owns that call only while the client can still receive it. Once the client has gone,
- * workerd aborts the request on the event stream's next write, its 5-second keep-alive, the product
- * ends the stream on that signal, and the transport releases the session with the stream. Without
- * the signal the stream ran until the prompt's 15-minute timeout, and its session stayed pinned for
- * as long.
- */
 import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, Schema } from "effect";
@@ -15,7 +6,6 @@ import { releasedServer } from "../support/docker-release-server.ts";
 import { driver } from "../support/platform.ts";
 
 const keptSessions = 256;
-/** Reads the call's event stream until the approval prompt arrives in it. */
 const readUntilPrompt = (
   reader: ReadableStreamDefaultReader<Uint8Array>,
   decoder: TextDecoder,
@@ -83,7 +73,6 @@ it.live(
               })),
             ),
           );
-        /** A native client's session, initialized and confirmed. */
         const open = Effect.gen(function* () {
           const opened = yield* post({
             id: 1,
@@ -129,11 +118,9 @@ it.live(
           }),
         );
 
-        // While its client can still answer, the session owns the call and outlasts newer ones.
         yield* openNewer;
         expect(yield* ping(session), "a session whose prompt waits for its client").toBe(200);
 
-        // The client goes without answering. The stream's next keep-alive finds it gone.
         leave.abort();
         yield* Effect.sleep("12 seconds");
         yield* openNewer;

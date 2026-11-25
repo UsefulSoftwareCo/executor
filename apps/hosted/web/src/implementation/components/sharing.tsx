@@ -1,5 +1,4 @@
 import { EmptyState } from "@executor-js/ui/dashboard/empty-state";
-/** App and OAuth client sharing uses group grants. Accounts are never shared. */
 import { useForm, useStore } from "@tanstack/react-form";
 import { Exit } from "effect";
 import { useEffect, useId, useRef, useState } from "react";
@@ -23,7 +22,6 @@ import { useOrganizationRoute } from "./organization.tsx";
 
 type AudienceInputProps = {
   readonly groups: readonly Group[];
-  /** What the audience may use, when not the app itself, such as "this client". */
   readonly subject?: string | undefined;
   readonly disabled?: boolean;
   readonly disabledReason?: string | undefined;
@@ -34,13 +32,8 @@ type AudienceInputProps = {
   readonly privateLabel: string;
   readonly onChange: (value: typeof AppAudience.Type) => void;
 };
-/** A group audience needs at least one group; the same rule applies when editing and creating. */
 export const audienceError = (value: typeof AppAudience.Type) =>
   value.kind === "groups" && !value.groups.length ? "Choose at least one group." : undefined;
-/**
- * Controlled sharing fields can be used in Settings and in forms that create a resource with its
- * audience.
- */
 export function AudienceInput(props: AudienceInputProps) {
   const id = useId();
   const value = props.value;
@@ -166,7 +159,6 @@ function GroupSetup() {
     </EmptyState>
   );
 }
-/** A failed save is visible at the form and focused without resetting the draft. */
 export function SharingFailure({
   message,
   title = "Could not save access",
@@ -204,7 +196,6 @@ type SharingProps = {
     revision: typeof AccessRevision.Type,
   ) => Promise<Exit.Exit<{ readonly revision: typeof AccessRevision.Type }, HostedError>>;
 };
-/** The revision belongs to the edited draft, so a refresh cannot silently permit an overwrite. */
 export function SharingEditor(props: SharingProps) {
   const [error, setError] = useState<string>();
   const [saved, setSaved] = useState(false);
@@ -299,7 +290,6 @@ export function SharingEditor(props: SharingProps) {
     </form>
   );
 }
-/** Read-only sharing copy does not imply management grants execution. */
 export function SharingSummary({
   value,
   groups,

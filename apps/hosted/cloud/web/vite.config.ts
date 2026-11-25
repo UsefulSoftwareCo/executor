@@ -18,30 +18,21 @@ export default mergeConfig(
         define: Object.fromEntries(
           browserOnlySettings.map((name) => [`import.meta.env.${name}`, "undefined"]),
         ),
-        // The Dashboard Worker bundles this build beside its own runtime, which also imports
-        // Effect. Left as imports here, both resolve to one copy in the Worker's upload.
         resolve: { external: ["effect"] },
       },
     },
-    // The development dashboard delegates docs to the Worker's built static assets.
     server: { proxy: { "/docs": apiUrl } },
     build: { sourcemap: "hidden" },
     plugins: [
       cloudflareRoutes(),
       cloudReleaseNotes(),
-      // The stack sets a release only for stages that report to Sentry. Every such build injects
-      // the same code; only a build holding the upload token sends its source maps.
       ...(process.env.SENTRY_RELEASE
         ? [
             sentryVitePlugin({
               telemetry: false,
-              // The plugin only logs a failed release or source map upload unless this throws. A
-              // deploy must stop instead: production errors would arrive without readable stacks.
               errorHandler: (error) => {
                 throw error;
               },
-              // Naming the release in every file would rename every file on every deploy. Events
-              // carry the release from the document, and source maps match by debug ID.
               release: { inject: false },
               sourcemaps: { filesToDeleteAfterUpload: ["./dist/**/*.map"] },
             }),

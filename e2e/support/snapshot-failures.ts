@@ -1,9 +1,3 @@
-/**
- * A scenario whose snapshot is missing or empty fails, as the runner writes none unless asked
- * (e2e/snapshot-updates.ts). Vitest's failure then shows no value, since there is nothing to
- * compare with, so this adds what the scenario produced and how to record it on purpose. A changed
- * snapshot already shows its diff.
- */
 import { beforeEach } from "vitest";
 
 const unrecorded = /^Snapshot `.+` mismatched$/u;

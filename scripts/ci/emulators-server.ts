@@ -38,7 +38,6 @@ if (bundle === undefined || state === undefined) {
 
 const mf = new Miniflare({
   modules: [{ type: "ESModule", path: "emulate-hosts.js", contents: readFileSync(bundle, "utf8") }],
-  // The Worker's own compatibility settings (emulate's wrangler.jsonc at the pinned commit).
   compatibilityDate: "2026-06-08",
   compatibilityFlags: ["nodejs_compat"],
   bindings: { EMULATE_HOST_SUFFIX: "emulators.dev" },
@@ -46,7 +45,6 @@ const mf = new Miniflare({
 });
 await mf.ready;
 
-/** The service ids the Worker serves, one per line, from its own catalog. */
 const serviceList = async () => {
   const answer = await mf.dispatchFetch("https://emulators.dev/_emulate/services", {
     headers: { accept: "application/json" },
@@ -57,7 +55,6 @@ const serviceList = async () => {
     | ReadonlyArray<{ id?: unknown }>;
   const services = Array.isArray(catalog) ? catalog : (catalog.services ?? []);
   const ids = services.map(({ id }) => id);
-  // Each id becomes a host name in /etc/hosts: one DNS label, and at least one of them.
   if (ids.length === 0 || !ids.every((id) => typeof id === "string" && /^[a-z0-9-]+$/u.test(id)))
     throw new Error("The Worker's catalog lists no usable service ids.");
   return ids.map((id) => `${id}\n`).join("");
@@ -68,7 +65,6 @@ if (servicesOnly) {
   process.exit(0);
 }
 
-/** Hop-by-hop headers, and the encoding undici has already undone on the body it hands over. */
 const dropped = new Set([
   "connection",
   "keep-alive",
@@ -108,8 +104,6 @@ const server = createServer(
         if (answer.body === null) {
           response.end();
         } else {
-          // With backpressure; a body that fails partway aborts the response, so the client sees a
-          // broken answer rather than a short one that looks complete.
           await pipeline(Readable.fromWeb(answer.body as never), response).catch(
             (error: unknown) => {
               console.log(

@@ -314,7 +314,6 @@ export const mayHaveWritten = <A extends { readonly mayHaveWritten?: true | unde
   schema: Schema.Codec<A, I>,
   failure: A,
 ): A => {
-  // A failure that may have written never also says that nothing was sent.
   const { notSent: _, ...encoded } = Schema.encodeSync(schema)(failure) as I & {
     readonly notSent?: unknown;
   };
@@ -779,8 +778,6 @@ export const mcpFailurePresentation = ({
     "Use the reported phase and error to identify the failure. Check the server URL, transport or access settings only when relevant. Do not expose credentials.";
   switch (reason) {
     case "timeout":
-      // A server that did not answer one call may answer the next, so a read may be repeated
-      // once; a second timeout is investigated before repeating it again.
       if (phase === "call")
         return {
           title: "MCP server did not answer the tool call",
@@ -815,7 +812,6 @@ export const mcpFailurePresentation = ({
     case "invalid_response":
       return {
         title: "MCP server response not supported",
-        // Includes Executor refusing to follow the server to another origin.
         description: `The app’s MCP server returned a response Executor could not use while ${stage}, such as an unreadable message or an address on another origin.${answered}`,
         recovery: {
           action: "Check the response compatibility and the app’s MCP server configuration.",
@@ -824,7 +820,6 @@ export const mcpFailurePresentation = ({
         retryable: false,
       };
     case "invalid_input":
-      // The app reports this reason, so the copy does not claim the call was not sent.
       return phase === "call"
         ? {
             title: "Tool input could not be used",
@@ -844,7 +839,6 @@ export const mcpFailurePresentation = ({
             retryable: false,
           };
     case "request":
-      // Request Timeout and Too Early ask the client to retry the same request later.
       if (status === 408 || status === 425)
         return {
           title: "MCP server asked to retry",
@@ -856,10 +850,6 @@ export const mcpFailurePresentation = ({
           },
           retryable: true,
         };
-      // A server may answer a request carrying the session it issued with 404 when it no longer
-      // has that session, such as one run on several instances that do not share sessions. A new
-      // listing opens another. `session` comes from the app, so the copy only says the session
-      // may have expired. Without a session, a 404 is an ordinary refusal.
       if (status === 404 && phase === "discover" && session === true)
         return {
           title: "MCP session may have expired",
@@ -881,10 +871,6 @@ export const mcpFailurePresentation = ({
           },
           retryable: false,
         };
-      // A JSON-RPC error inside a successful response, such as arguments a tool rejects, states
-      // the server's error. Without one, a transport failure got no answer from the server: it
-      // may not be reachable, or Executor's own request failed. A tool call that failed without an
-      // answer, such as on a dropped connection, may have run.
       return upstream === undefined
         ? phase === "transport"
           ? {
@@ -1015,11 +1001,6 @@ const workerPresentation = (failure: RuntimeFailure | undefined) => {
     case "too-large":
       return {
         description,
-        // One retry can help: a first load can do work the next reuses, such as compiling a large
-        // API definition into the app's cache. The limit is matched from text, and a later attempt
-        // can still pass, so a repeat proves nothing about the cause: the copy stops unchanged
-        // retries and says what to check. The host does not know the app's apps version here, so
-        // rebuilding is advised only for an app on an older one.
         recovery: retryOnce(
           "stop retrying it unchanged and investigate. If the app was built on an older apps version than this host’s, rebuild it on this host’s version and deploy it again; if it already runs this host’s version, or still fails, reduce the work the app does to list its tools.",
           "A resource limit matches this failure. A first load can do work the next one reuses, such as compiling a large API definition into the app's cache, so one retry may succeed. If it fails the same way, stop retrying the unchanged request, even though a later attempt might succeed, and investigate what listing the app's tools costs. Compare the apps version in the app's package.json with framework.release, the version this host runs. If the app's version is older, for example a catalog app installed before a framework fix, pin this host's version and deploy the app again: an older apps version can spend far more work listing a large API. If the versions are the same, or the rebuilt app still fails, find what the app's factory and tool loaders do while listing, such as fetching or parsing a large API definition or building many tools, and reduce it: expose fewer tools, or keep a large definition in the app's cache.",
@@ -1477,8 +1458,6 @@ export const AppProviderFailed = UserFacingError.define({
               },
               retryable: false,
             };
-          // The renewal's own error says what failed. Only a call that may write reports it, so
-          // its recovery is the one for such a call, never repeating it.
           if (renewalFailure !== undefined)
             return {
               title: renewalFailure.title,
@@ -1802,7 +1781,6 @@ export const ToolCallFailed = UserFacingError.define({
               ? "The tool failed after starting"
               : "The tool failed without further detail",
   presentation: callPresentation(({ reason, response, failure, mcp, rpcLimitMatched, notSent }) => {
-    // The host's own fact, never the app's: the call did not leave the host.
     if (notSent === true)
       return {
         title: "Tool call was not sent",
@@ -1815,8 +1793,6 @@ export const ToolCallFailed = UserFacingError.define({
         retryable: true,
       };
     if (mcp !== undefined) return mcpFailurePresentation(mcp);
-    // App code can produce the runtime's text, so the match names a likely cause and keeps a read's
-    // bounded retry. Executor sets no size limit of its own on a result.
     if (rpcLimitMatched === true)
       return {
         title: "Tool result may have been too large to transfer",
@@ -1828,7 +1804,6 @@ export const ToolCallFailed = UserFacingError.define({
         },
         retryable: true,
       };
-    // The API's own recovery, when it stated one, is shown as the API wrote it.
     if (response !== undefined)
       return {
         title: "The app’s API returned an error",

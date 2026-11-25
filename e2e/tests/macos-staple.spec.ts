@@ -1,11 +1,3 @@
-/**
- * The macOS staple repeat (scripts/releases/macos-staple.ts), run as the release job runs it, with a
- * stub `xcrun`, `arch` and `sysctl` first on PATH. Each `xcrun` call takes the next outcome from a
- * list: `net` loses the connection to Apple's ticket service, `5xx` gets a 503 from it, `other` fails
- * as a rejected or unsigned file would, and `ok` staples. The stub records each call and whether it
- * came through `arch -arm64`. The patched `@electron/notarize` 2.5.0, which electron-builder staples
- * the app with, is run from its installed copy the same way.
- */
 import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, FileSystem, Path, Stream } from "effect";
@@ -57,7 +49,6 @@ const setup = Effect.gen(function* () {
   const app = path.join(root, "out", "Executor 2.app");
   yield* fs.makeDirectory(app, { recursive: true });
 
-  /** Staple `app` with these outcomes, through `command`; the calls, output and summary. */
   const staple = (options: {
     readonly outcomes: ReadonlyArray<"ok" | "net" | "5xx" | "other">;
     readonly arm64?: boolean;
@@ -76,7 +67,6 @@ const setup = Effect.gen(function* () {
               PATH: `${bin}:${process.env.PATH ?? ""}`,
               STUB: stub,
               STUB_HARDWARE_ARM64: options.arm64 === false ? "0" : "1",
-              // The Intel leg's caller runs under Rosetta on Apple Silicon.
               STUB_TRANSLATED: options.arm64 === false ? "0" : "1",
               EXECUTOR_STAPLE_WAITS: "0,0,0,0,0",
               GITHUB_STEP_SUMMARY: summary,
@@ -139,7 +129,6 @@ test(
         "::notice title=Stapling repeated::Stapling Executor 2.app: attempt 3 of 6 (arm64) stapled, after 2 that could not reach Apple's ticket service.",
       ]);
       expect(result.summary).toHaveLength(3);
-      // Each failed attempt's full output is in the log, in a group named by attempt and slice.
       expect(result.output).toContain(
         "::group::Stapling Executor 2.app: attempt 1 of 6 (x86_64 under Rosetta) output\n",
       );
@@ -213,7 +202,6 @@ test(
   run(
     Effect.gen(function* () {
       const { path, app, staple } = yield* setup;
-      // The copy electron-builder (app-builder-lib 26.15.6) installs, pinned to the patched version.
       const staplejs = path.resolve(
         "node_modules/.bun/@electron+notarize@2.5.0/node_modules/@electron/notarize/lib/staple.js",
       );
@@ -245,7 +233,6 @@ test(
   run(
     Effect.gen(function* () {
       const { path, app, staple } = yield* setup;
-      // The copy electron-builder (app-builder-lib 26.15.6) installs, pinned to the patched version.
       const staplejs = path.resolve(
         "node_modules/.bun/@electron+notarize@2.5.0/node_modules/@electron/notarize/lib/staple.js",
       );
@@ -254,7 +241,6 @@ test(
         "-e",
         `require(${JSON.stringify(staplejs)}).stapleApp({ appPath: ${JSON.stringify(app)} }).then(() => console.log("stapled"), (error) => { console.log(String(error)); process.exit(1); })`,
       ];
-      // A script that fails makes the patched stapleApp reject, as a failed stapler always did.
       const failing = yield* staple({
         outcomes: ["other", "ok"],
         command: caller,

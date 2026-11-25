@@ -1,25 +1,13 @@
-/**
- * The `apps-version` job runs `scripts/releases/apps-bumped.ts` to require a new `apps` version
- * whenever a pull request changes what the package publishes. These cases run it as a process on
- * staged packages written beforehand (main's, the pull request's, and where the pull request meets
- * main) the way the job does: once against main, and when it exits 3, again with the merge base.
- * They read its exit codes and output.
- */
 import { expect, layer } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, FileSystem, Path, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
-/** One staged package: its version and the content of its one module. */
 interface Staged {
   readonly version: string;
   readonly code: string;
 }
 
-/**
- * `base` is main's tip and `mergeBase` where the pull request meets main: main's tip for a pull
- * request into main (the default), an older main for an upper stack layer.
- */
 const check = (input: {
   readonly base: Staged;
   readonly head: Staged;
@@ -39,7 +27,6 @@ const check = (input: {
         );
         yield* fs.writeFileString(path.join(target, "index.js"), staged.code);
       });
-    // The script reads the pull request's package from packages/apps/dist under its directory.
     yield* stage(path.join(directory, "packages/apps/dist"), input.head);
     yield* stage(path.join(directory, "base"), input.base);
     yield* stage(path.join(directory, "merge-base"), input.mergeBase ?? input.base);
@@ -102,8 +89,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Apps version bump", (i
 
   it.effect("a changed package whose version moves back fails, even to an unused number", () =>
     Effect.gen(function* () {
-      // beta.131 differs from main's beta.136 but is lower, like a number a skipped deploy never
-      // published.
       const result = yield* check({
         base,
         head: { version: "0.0.1-beta.131", code: changed },
@@ -127,7 +112,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Apps version bump", (i
 
   it.effect("a stack layer behind a bump on main that does not change apps passes", () =>
     Effect.gen(function* () {
-      // Main moved to beta.137 after the stack branched from beta.136; the stack never touched apps.
       const result = yield* check({
         base: { version: "0.0.1-beta.137", code: changed },
         head: base,
@@ -171,7 +155,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Apps version bump", (i
     "a stack that changes apps behind a bump must go above main's tip, not its merge base's",
     () =>
       Effect.gen(function* () {
-        // The stack bumped beta.136 to beta.137 from its merge base, but main has since taken beta.137.
         const result = yield* check({
           base: { version: "0.0.1-beta.137", code: changed },
           head: { version: "0.0.1-beta.137", code: "export const answer = 3;\n" },

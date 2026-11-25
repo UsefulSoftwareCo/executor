@@ -1,7 +1,3 @@
-/**
- * Cloud invitations left pending after their inviter lost the role to invite, made by changing the
- * role in managed Cloud's database.
- */
 import { layer } from "@effect/vitest";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { writeRows } from "../support/cloud-rows.ts";

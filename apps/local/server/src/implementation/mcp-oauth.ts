@@ -1,4 +1,3 @@
-/** Local OAuth authenticates consent with dashboard pairing; no hosted identity is required. */
 import { betterAuth } from "better-auth";
 import { APIError, isAPIError } from "better-auth/api";
 import { makeSignature } from "better-auth/crypto";
@@ -33,12 +32,10 @@ import type { ServerConfig } from "../contracts/config.ts";
 import { convertProfileTargets, type ProfileAccount } from "./mcp-auth-profiles.ts";
 import { localRequest, sessionCookie, type LocalAuth } from "./auth.ts";
 
-/** Invalid credentials never fall back to browser cookies or administrative authority. */
 export class LocalMcpUnauthorized extends Schema.TaggedError<LocalMcpUnauthorized>()(
   "LocalMcpUnauthorized",
   {},
 ) {}
-/** Auth database failures stay distinct from invalid credentials. */
 export const LocalMcpAuthUnavailable = UserFacingError.define({
   tag: "LocalMcpAuthUnavailable",
   status: 503,
@@ -53,17 +50,12 @@ export const LocalMcpAuthUnavailable = UserFacingError.define({
   },
   retryable: true,
 });
-/** Parsed LocalMcpAuthUnavailable failure. */
 export type LocalMcpAuthUnavailable = typeof LocalMcpAuthUnavailable.Type;
 const failure = (error: unknown) =>
   isAPIError(error) && [400, 401, 403].includes(error.statusCode)
     ? new LocalMcpUnauthorized()
     : new LocalMcpAuthUnavailable();
 
-/**
- * Own the provider, database, and internal session in the local server scope. `profiles` reads
- * the executor database's profile accounts for the one-time conversion of saved targets.
- */
 export const makeLocalMcpOAuth = <E>(
   config: ServerConfig,
   pairing: LocalAuth,
@@ -79,7 +71,6 @@ export const makeLocalMcpOAuth = <E>(
     yield* fs.chmod(directory, 0o700);
     const databaseContext = yield* Layer.build(localDatabase(directory));
     const db = yield* makeAuthDatabase.pipe(Effect.provideContext(databaseContext));
-    // Separate signing material from encryption use; no generated or fallback secret.
     const secret = yield* Effect.promise(async () => {
       const bytes = await crypto.subtle.digest(
         "SHA-256",
@@ -89,14 +80,12 @@ export const makeLocalMcpOAuth = <E>(
         "",
       );
     });
-    // Local serves its browser pages and its MCP resources on one origin.
     const oauth = grantOAuthPlugins({
       origin,
       resourceOrigins: singleResourceOrigin(origin),
       issuer: `${origin}/api/auth`,
       scopes: ["mcp", "offline_access"],
       resources: mcpOAuthResources([origin]),
-      // Local has no device verification page; its clients open a browser on the same machine.
       deviceAuthorization: false,
       selectResource: (_ctx, _userId, required) =>
         required === undefined || required === "local"
@@ -120,11 +109,6 @@ export const makeLocalMcpOAuth = <E>(
       rateLimit: {
         enabled: true,
         storage: "database" as const,
-        // The limiter counts each address and path, and every caller of this loopback server has
-        // the same address, so a per-address token limit would be one limit for every local MCP
-        // client: one busy or broken client would stop every other client renewing its token.
-        // Nothing here can tell callers apart before the token request is read (client IDs are
-        // public and registered freely), and codes, verifiers and refresh tokens cannot be guessed.
         customRules: { "/oauth2/token": false as const },
       },
     };
@@ -173,7 +157,6 @@ export const makeLocalMcpOAuth = <E>(
     const semaphore = yield* Semaphore.make(1);
     const browserHeaders = (headers: Headers) =>
       Effect.gen(function* () {
-        // Only the local dashboard cookie can establish this single operator identity.
         if (headers.has("authorization")) return yield* new LocalMcpUnauthorized();
         const cookies = headers.get("cookie") ?? "";
         const credential = cookies
@@ -253,7 +236,6 @@ export const makeLocalMcpOAuth = <E>(
     const requestAddress = Effect.map(HttpServerRequest.HttpServerRequest, (request) =>
       requestedMcpAddress(new URL(request.url, origin)),
     );
-    /** An MCP URL whose elicitation_mode or connection is repeated or unsupported. */
     const invalidAddress = HttpServerResponse.jsonUnsafe(
       { error: "Unsupported elicitation_mode or connection." },
       { status: 400 },
@@ -284,18 +266,15 @@ export const makeLocalMcpOAuth = <E>(
             }),
       ),
     );
-    /** The paired dashboard's single operator owns every local connection. */
     const connectionOwner = { userId: user.id, resource: "local" };
     const connectionCall = <A>(run: () => Promise<A>) =>
       Effect.tryPromise({
         try: run,
         catch: (cause) => (isAPIError(cause) ? cause.statusCode : ("unavailable" as const)),
       });
-    /** The grant's current authority, or none when it was revoked or deleted. */
     const grant = (id: GrantId) =>
       Effect.tryPromise({
         try: () => auth.api.getMcpGrant({ body: { id } }),
-        // Only a definitive refusal means the grant is gone; an outage is retried.
         catch: (cause) =>
           isAPIError(cause) && [401, 403, 404].includes(cause.statusCode)
             ? ("refused" as const)
@@ -337,5 +316,4 @@ export const makeLocalMcpOAuth = <E>(
       ),
     };
   });
-/** Provider capabilities captured by the local server, never by app code. */
 export type LocalMcpOAuth = Effect.Success<ReturnType<typeof makeLocalMcpOAuth>>;

@@ -1,9 +1,3 @@
-/**
- * Scratch repositories for the release notes specs: main, with a release commit for beta.4 and the
- * merges after it, and a public repository whose `executor@<version>` tags are `Export <sha>`
- * commits, as scripts/export-public.sh makes them. `notes` runs `scripts/releases/release-notes.ts`
- * in main as the metadata job of `.github/workflows/release-artifacts.yml` does.
- */
 import { expect } from "@effect/vitest";
 import { Effect, FileSystem, Path, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
@@ -44,7 +38,6 @@ const run = (
 
 export const git = (cwd: string, ...args: ReadonlyArray<string>) => gitWith({}, cwd, ...args);
 
-/** `git` with more environment, such as a commit's date. */
 export const gitWith = (env: Record<string, string>, cwd: string, ...args: ReadonlyArray<string>) =>
   run("git", args, cwd, env).pipe(
     Effect.tap((result) =>
@@ -53,16 +46,11 @@ export const gitWith = (env: Record<string, string>, cwd: string, ...args: Reado
     Effect.map((result) => result.stdout.trim()),
   );
 
-/**
- * One squashed pull request: its title, the rest of its message, the files it moves (and changes)
- * and the files it writes.
- */
 export interface Merge {
   readonly title: string;
   readonly body?: string;
   readonly moves?: ReadonlyArray<readonly [string, string]>;
   readonly files: ReadonlyArray<string>;
-  /** When it merged, as an ISO date; now by default. */
   readonly date?: string;
 }
 
@@ -73,12 +61,6 @@ export const portTrailers = [
   "Co-authored-by: devin-ai-integration[bot] <158243242+devin-ai-integration[bot]@users.noreply.github.com>",
 ].join("\n");
 
-/**
- * Main with a release commit for beta.4 and the merges after it, and a public repository whose
- * tags export beta.3 (main's first commit), beta.4 (its release commit, named by a short sha) and
- * beta.6, from a commit main does not hold. Executor 1's tags are there too. `before` merges
- * between beta.3 and beta.4.
- */
 export const repositories = (after: ReadonlyArray<Merge>, before: ReadonlyArray<Merge> = []) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -94,11 +76,9 @@ export const repositories = (after: ReadonlyArray<Merge>, before: ReadonlyArray<
         for (const [from, to] of merge.moves ?? []) yield* git(main, "mv", from, to);
         for (const file of [...(merge.moves ?? []).map(([, to]) => to), ...merge.files]) {
           yield* fs.makeDirectory(path.dirname(path.join(main, file)), { recursive: true });
-          // Each write differs, so a revert's file changes too.
           yield* fs.writeFileString(path.join(main, file), `${merge.title}\n`);
         }
         yield* git(main, "add", "--all");
-        // From a file: a message can be longer than one argument may be.
         const message = path.join(directory, "message");
         yield* fs.writeFileString(
           message,
@@ -139,14 +119,6 @@ export const repositories = (after: ReadonlyArray<Merge>, before: ReadonlyArray<
     return { main, publicRepo: `file://${published}`, first, beta4, merged };
   });
 
-/**
- * Runs `scripts/releases/release-notes.ts` in main with `args`. Every run also writes the notes as
- * JSON, to a scratch file with the most history the script lists when the case writes no `--json`
- * of its own, and when the script succeeds the desktop feed's check
- * (`desktop-feed.ts --check-notes`, the release workflow's next step) must accept that file for the
- * same version: so no case's history can make notes that the feed refuses. A `--cloud` run writes
- * Cloud's notes, which the feed never reads, and runs as given.
- */
 export const notes = (
   repos: { readonly main: string; readonly publicRepo: string },
   args: ReadonlyArray<string>,
@@ -163,7 +135,6 @@ export const notes = (
         yield* fs.makeTempDirectoryScoped({ prefix: "executor-notes-json-" }),
         "notes.json",
       );
-    // --cloud and --check write no release notes for the desktop feed.
     const feedNotes = !args.includes("--cloud") && !args.includes("--check");
     const written = feedNotes
       ? [
@@ -208,9 +179,6 @@ export const notes = (
     return { stdout, stderr, exitCode: Number(exitCode) };
   }).pipe(Effect.scoped);
 
-/**
- * Twenty notes as a change's author would write them. Each must be accepted as written.
- */
 export const realisticNotes: ReadonlyArray<string> = [
   "Workspaces with many apps load in about half the time.",
   "The desktop app reopens on the workspace you used last.",
@@ -234,10 +202,6 @@ export const realisticNotes: ReadonlyArray<string> = [
   "Error messages say which account failed, and why.",
 ];
 
-/**
- * Notes whose words hold runs of hex letters ("feedbac" in feedback) without being one. GitHub links
- * a commit only as a whole word, so each must be accepted as written.
- */
 export const hexWordNotes: ReadonlyArray<string> = [
   "Send feedback from the help menu.",
   "Your feedback's status shows on the settings page.",
@@ -258,10 +222,6 @@ export const hexWordNotes: ReadonlyArray<string> = [
   "Faceted search filters by app and account.",
 ];
 
-/**
- * Notes `scripts/releases/release-notes.ts` accepts: plain prose, which it prints as written. The
- * renderer spec checks GitHub renders each as nothing but its text.
- */
 export const acceptedNotes: ReadonlyArray<string> = [
   "Each app's card now shows its accounts.",
   "Sign-in works again with some identity providers (Okta, for one).",
@@ -274,18 +234,11 @@ export const acceptedNotes: ReadonlyArray<string> = [
   "Waehlen Sie Ihr Konto aus, und los geht's.",
   "2 settings moved to the account page: theme and language.",
   "A run of 6 digits, 123456, is fine.",
-  // Exactly the longest a note may be.
   "Executor starts faster. ".repeat(13).slice(0, 300),
   ...realisticNotes,
   ...hexWordNotes,
 ];
 
-/**
- * Notes it refuses, each with the reason its warning gives: what review found GitHub renders as a
- * mention, a link, a reference, an emoji or markup, and what else falls outside the allow-list. A
- * note marked `message` holds a character that refuses its whole commit message, so the warning
- * names the message, not the line.
- */
 export const refusedNotes: ReadonlyArray<{
   readonly note: string;
   readonly reason: string;
@@ -345,7 +298,6 @@ export const refusedNotes: ReadonlyArray<{
     note: "Fixed in 0123456789abcdef0123456789abcdef01234567",
     reason: "has a whole word of 7 or more hex characters or digits, as in a commit hash",
   },
-  // Ordinary words made only of hex letters: GitHub would link one that names a commit.
   ...[
     "The app no longer shows a defaced icon after an upgrade.",
     "Old banners no longer look effaced on high contrast screens.",
@@ -371,7 +323,6 @@ export const refusedNotes: ReadonlyArray<{
   { note: "🎉 Party", reason: "holds U+1F389, which a note may not" },
   { note: "Zero​width", reason: "holds U+200B, which a note may not" },
   { note: "Tab\there", reason: "holds U+0009, which a note may not" },
-  // Typographic punctuation, a combining mark, a variation selector and letters beyond ASCII.
   { note: "Typographic “quotes”", reason: "holds U+201C, which a note may not" },
   { note: "It’s faster", reason: "holds U+2019, which a note may not" },
   { note: "Faster — much faster", reason: "holds U+2014, which a note may not" },

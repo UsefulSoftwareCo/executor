@@ -63,20 +63,13 @@ import { BearerHashes } from "./bearer-access.ts";
 import { hostedMcpBackend } from "./mcp.ts";
 import { patGrantOf } from "./mcp-oauth.ts";
 
-// A native MCP server retains its tool handlers. Authority is supplied only while
-// dispatching the HTTP request, never while registering those handlers.
 type HostedBackend = Effect.Success<typeof hostedMcpBackend>;
 type RequestError =
   | GrantForbidden
   | Effect.Error<ReturnType<HostedBackend[keyof HostedBackend]>>
   | Effect.Error<ReturnType<McpAuthentication["Service"]["authenticate"]>>;
 const unavailable = () => Effect.fail(new McpUnauthorized());
-/** Calls one session object remembers the accounts of (CallStateCache); the oldest goes first. */
 const callStateLimit = 256;
-/**
- * Each requirement's accounts, without requirements that name none, in a stable order, and whether
- * the call has a caller. Requirement names are unique across scopes.
- */
 const accountsKey = (accounts: AppAccounts | undefined) => [
   accounts?.user === undefined,
   (accounts === undefined ? [] : invocationEntries(accounts))
@@ -87,7 +80,6 @@ const accountsKey = (accounts: AppAccounts | undefined) => [
 const RequestCaller = Context.Reference<string | undefined>("hosted/McpRequestCaller", {
   defaultValue: () => undefined,
 });
-// Programs belong to the caller across MCP sessions, so a request without one must not share a partition.
 const requestCaller = Effect.flatMap(RequestCaller, (caller) =>
   caller === undefined
     ? Effect.die("MCP request has no authenticated caller")
@@ -111,7 +103,6 @@ const RequestBackend = Context.Reference<McpBackend<RequestError>>("hosted/McpRe
     unsubscribeEvent: unavailable,
   }),
 });
-/** The authenticated request's approval mode; see {@link requestMode}. */
 const RequestMode = Context.Reference<ApprovalMode | undefined>("hosted/McpRequestMode", {
   defaultValue: () => undefined,
 });
@@ -152,7 +143,6 @@ const requestBackend: McpBackend<RequestError> = {
     Effect.flatMap(RequestBackend, (backend) => backend.unsubscribeEvent(input)),
 };
 
-/** Build native MCP protocol state inside its host-owned scope, without a caller identity. */
 export const makeHostedMcp = (
   beforeExecute?: McpOptions["beforeExecute"],
   limits: McpOptions["limits"] = defaultMcpLimits,
@@ -181,7 +171,6 @@ export const makeHostedMcp = (
     },
   }).pipe(Effect.orDie);
 
-/** An organization-pathed MCP URL names its organization; bare /mcp leaves the choice to the token. */
 export const requestedMcpOrganization = (url: URL): OrganizationReference | undefined => {
   const match = /^\/org\/([^/]+)\/mcp$/.exec(url.pathname);
   if (match === null) return undefined;
@@ -191,21 +180,13 @@ export const requestedMcpOrganization = (url: URL): OrganizationReference | unde
   return Option.getOrUndefined(reference);
 };
 
-/**
- * Why `access` cannot serve an MCP request at `address`, or undefined when it can. An OAuth grant
- * serves the approval mode and connection its record holds, whatever the URL names. A personal
- * access token has no record: it takes its mode from the URL, and a URL that names a connection
- * is refused rather than served with the token's full access.
- */
 export const mcpAccessRefusal = (access: McpAccess, address: McpAddress) =>
   grantRefusal(access.grant) ??
   (Option.isSome(patGrantOf(access.grant.id)) ? unrecordedRefusal(address) : undefined);
 
-/** A session belongs to a user/client/organization grant, never to a browser's active organization. */
 export const mcpSessionKey = ({ userId, clientId, access, grant }: McpAccess) =>
   JSON.stringify([userId, clientId, access.organization, grant.id]);
 
-/** Supply fresh authorized operations to an existing native MCP transport. */
 export const dispatchHostedMcp = <E, R>(
   access: McpAccess,
   address: McpAddress,
@@ -214,11 +195,9 @@ export const dispatchHostedMcp = <E, R>(
   Effect.gen(function* () {
     const authentication = yield* McpAuthentication;
     const request = yield* HttpServerRequest.HttpServerRequest;
-    // Effect's protocol server issued it at `initialize` and refuses a request naming any other.
     const session = request.headers["mcp-session-id"];
     const scoped = (fresh: McpAccess) =>
       Effect.gen(function* () {
-        // The grant's record, not this URL, decides its mode and connection.
         const refusal = mcpAccessRefusal(fresh, address);
         if (refusal !== undefined) return yield* new GrantForbidden({ refusal });
         const backend = yield* hostedMcpBackend.pipe(
@@ -230,7 +209,6 @@ export const dispatchHostedMcp = <E, R>(
         );
         return restrictMcpBackend<RequestError, never>(backend, Effect.succeed(fresh.grant));
       });
-    // Clients print a refusal's body after their own prefix, so it keeps the typed cause.
     const scope = yield* Effect.result(scoped(access));
     if (Result.isFailure(scope)) return yield* refusedMcpRequest(scope.failure);
     const backend = scope.success;
@@ -238,36 +216,20 @@ export const dispatchHostedMcp = <E, R>(
       Effect.map(Context.pick(HostedExecutor, GroupDatabase)),
       Effect.map(Context.add(HostedBackground, yield* HostedBackground)),
     );
-    // Discovery uses this HTTP request's authenticated identity. Resource policies
-    // are still checked by the hosted backend. Never retain this adapter in the session.
-    // Calls and elicitation can run after a wait, so recheck token/grant/membership
-    // before executing or releasing them, including calls after an approved one.
-    // A recheck names the organization this request resolved, by its ID; it never resolves the
-    // URL's or X-Executor-Organization's slug again, so a slug renamed during the request cannot
-    // move it to another organization. The same bearer keeps its user, client and grant.
     const headers = new Headers(request.headers);
     headers.delete("x-executor-organization");
-    // The organization's and the caller's opaque IDs go on the request's span, on every MCP
-    // operation's span (`McpRequestAttributes`) and on each operation that rechecks
-    // (`mcp.tool.call`, `mcp.tool.resume`), so their latency and failures can be split by
-    // organization and the users they affect counted.
     const caller = callerSpanAttributes(access.access.organization, access.userId);
     yield* Effect.annotateCurrentSpan(caller);
-    // The recheck reads the mode this URL spells out, as the request's own authentication did.
     const named = namedApprovalMode(new URL(request.url, authentication.origin));
     const current = Effect.annotateCurrentSpan(caller).pipe(
       Effect.andThen(
         authentication
           .authenticate(headers, named, access.access.organization)
-          // A recheck is for this organization and user from its start, so one refused or failed
-          // before its statement answers still names them.
           .pipe(Effect.annotateSpans(caller)),
       ),
       Effect.flatMap(scoped),
       Effect.provideContext(services),
     );
-    // Made for this request's organization, whose ID the recheck keeps. If they cannot be made,
-    // the call makes them itself; they never decide the call's outcome or the recheck's.
     const readAhead = (app: AppId) =>
       Effect.flatten(HostedExecutor).pipe(
         Effect.flatMap((executor) => readSelection(executor, access.access.owner, app)),
@@ -275,23 +237,6 @@ export const dispatchHostedMcp = <E, R>(
         Effect.exit,
         Effect.map((read) => (Exit.isSuccess(read) ? read.value : undefined)),
       );
-    /**
-     * One round trip for a warm tool call (F-034). The recheck, then every read the call's checks
-     * and the SDK make, leave in one write: the recheck first, in its own implicit transaction as
-     * on main, then the reads in one read-only snapshot taken after it commits (StatementBatch):
-     * the app, the access fold with the caller's links to it and its app links, and the SDK's reads
-     * of the accounts, its app recheck for them and their grants. The SDK's reads need the call's
-     * accounts, which the links decide only once the fold is read, so they name the accounts this
-     * session's last call naming the same accounts ran with (CallStateCache). The cache holds no
-     * authorization and decides nothing: the accounts are resolved again from the live links, the
-     * SDK uses its reads only where they were made for those accounts, and otherwise the SDK's
-     * reads are sent once more, after the recheck passed, with the live accounts: two round trips.
-     * A call whose named accounts are no longer linked resolves none and sends no second round.
-     * Results are evaluated in main's order: the recheck's outcome first, whatever the reads
-     * returned, then the call's own checks over the batch's reads (`checkedToolCall`, then the
-     * SDK's). A read that failed in storage discards the batch's reads and the call reads on its
-     * own, in main's order; the cache keeps what it held.
-     */
     const batchedCall = (
       batch: NonNullable<Effect.Success<typeof StatementBatch>>,
       cache: NonNullable<Effect.Success<typeof CallStateCache>>,
@@ -309,7 +254,6 @@ export const dispatchHostedMcp = <E, R>(
           Effect.Success<typeof current>,
           Effect.Error<typeof current>
         > = Exit.die("unreachable");
-        // The links do not depend on the accounts, so only the first round reads them.
         let fold: Effect.Success<typeof FoldReadAhead>;
         const round = (known: CallState | undefined, first: boolean) =>
           Effect.gen(function* () {
@@ -324,7 +268,6 @@ export const dispatchHostedMcp = <E, R>(
                     ),
                   ]
                 : []),
-              // The SDK's app recheck runs as the caller, as the call does (`CurrentActor`).
               ...sdk.leaves.map((leaf) =>
                 Effect.provideService(leaf, CurrentUserId, access.userId),
               ),
@@ -341,11 +284,6 @@ export const dispatchHostedMcp = <E, R>(
             yield* batch(leaves, { outside: first ? 1 : 0 });
             return yield* sdk.take;
           });
-        /**
-         * The accounts the call will run with, resolved from the app and links this batch read as
-         * the call resolves them; undefined when they cannot be, which the call then reports. It
-         * only names the rows a second round reads.
-         */
         const resolvedAccounts = (read: Effect.Success<ReturnType<typeof round>>) =>
           read.app === undefined ||
           Result.isFailure(read.app) ||
@@ -363,8 +301,6 @@ export const dispatchHostedMcp = <E, R>(
         const known = cache.get(key);
         let read = yield* round(known, true);
         let rounds = 1;
-        // The recheck decides first, as on main: its refusal or failure is the call's outcome,
-        // whatever the reads returned.
         const authorized = yield* recheck;
         const live = yield* resolvedAccounts(read);
         if (live !== undefined && (known === undefined || !sameAccounts(known.accounts, live))) {
@@ -378,8 +314,6 @@ export const dispatchHostedMcp = <E, R>(
             Cause.findErrorOption(fold.result.cause).pipe(
               Option.exists((error) => error._tag === "StorageError"),
             ));
-        // A discarded batch says nothing about the accounts, so it leaves the session's state as
-        // it was; otherwise the state is what this call resolved, or none when it resolved none.
         if (!failed) {
           cache.delete(key);
           if (live !== undefined) {
@@ -423,10 +357,6 @@ export const dispatchHostedMcp = <E, R>(
         ),
       callTool: (input, options) =>
         Effect.gen(function* () {
-          // Under a read-only rule the grant check evaluates the app before the call resolves its
-          // accounts again from the caller's links (`checkedToolCall`): reading ahead would only
-          // add statements. A grant that changed since this request authenticated is decided
-          // there again.
           if (
             (yield* ConcurrentStatements) === undefined ||
             requiresToolMetadata(grantAuthorization(access.grant.policy).tools, input.app)
@@ -436,22 +366,13 @@ export const dispatchHostedMcp = <E, R>(
           const cache = yield* CallStateCache;
           if (batch !== undefined && cache !== undefined)
             return yield* batchedCall(batch, cache, input, options);
-          // The call check's app read goes out with the recheck. Nothing it returns is used
-          // unless the recheck passes, and the check itself runs after it.
           const [fresh, read] = yield* Effect.all([current, readAhead(input.app)], {
             concurrency: "unbounded",
           });
           return yield* fresh
             .callTool(input, options)
             .pipe(Effect.provideService(SelectionReadAhead, read));
-          // A call's statements wait only behind its own, never behind another call's.
         }).pipe(statementGroup),
-      // Everything else this request runs (discovery listings, skill reads, resumes) stays
-      // ungrouped: each statement takes a connection of its own, as before grouping. Those are
-      // independent units that the request runs side by side and times out one by one (one app's
-      // listing can be stopped while the others go on); sharing a connection would make each wait
-      // behind the slowest. None of them issues statements at the same time, so a group of its
-      // own would save no round trip.
       resumeInvocation: (pending, response, options) =>
         current.pipe(Effect.flatMap((fresh) => fresh.resumeInvocation(pending, response, options))),
       subscribeEvent: (input) =>
@@ -475,7 +396,6 @@ export const dispatchHostedMcp = <E, R>(
     );
   });
 
-/** The 401 that sends a client without a valid bearer to the MCP resource's metadata. */
 export const mcpChallenge = Effect.gen(function* () {
   const auth = yield* McpAuthentication;
   const request = yield* HttpServerRequest.HttpServerRequest;
@@ -494,7 +414,6 @@ const invalidAddress = HttpServerResponse.jsonUnsafe(
   { status: 400 },
 );
 
-/** Authenticate every MCP HTTP method through OAuth or PAT validation; never fall back to a browser cookie. */
 export const authenticatedMcp = <E, R>(
   handle: (
     access: McpAccess,
@@ -504,7 +423,6 @@ export const authenticatedMcp = <E, R>(
   Effect.gen(function* () {
     const auth = yield* McpAuthentication;
     const request = yield* HttpServerRequest.HttpServerRequest;
-    // Programmatic clients have no Origin. Untrusted browser pages cannot call MCP.
     if (request.headers.origin !== undefined && request.headers.origin !== auth.origin)
       return yield* Effect.as(
         recordAuthFailure("origin_mismatch"),
@@ -513,9 +431,7 @@ export const authenticatedMcp = <E, R>(
     const url = new URL(request.url, auth.origin);
     const address = requestedMcpAddress(url);
     if (address === undefined) return invalidAddress;
-    // The request's tool calls recheck the same token; they reuse its hash (see BearerHashes).
     const hashes = new Map<string, string>();
-    // Only the mode the URL spells out: a credential without a grant record defaults on its own.
     const access = yield* Effect.result(
       auth.authenticate(
         new Headers(request.headers),
@@ -528,14 +444,9 @@ export const authenticatedMcp = <E, R>(
         Effect.provideService(BearerHashes, hashes),
       );
     if (access.failure._tag === "McpUnauthorized") return yield* mcpChallenge;
-    // Clients print a refusal's body after their own prefix, so it keeps the typed cause.
     return yield* refusedMcpRequest(access.failure);
   }).pipe(Effect.map(HttpServerResponse.setHeader("cache-control", "no-store")));
 
-/**
- * `GET /mcp/whoami`: what the presented MCP credential reaches, authenticated exactly as the MCP
- * endpoint is, with the same challenge and refusals.
- */
 export const mcpWhoami = authenticatedMcp((access, address) =>
   Effect.gen(function* () {
     const refusal = mcpAccessRefusal(access, address);

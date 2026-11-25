@@ -1,19 +1,16 @@
 import { Redacted, Schema } from "effect";
 
-/** The local database URL is shared by migrations and the development web process. */
 export const cloudDevelopmentDatabaseUrl = (password: Redacted.Redacted<string>, port: number) =>
   Redacted.make(
     `postgresql://executor:${encodeURIComponent(Redacted.value(password))}@127.0.0.1:${port}/executor?sslmode=disable`,
   );
 
-/** Local cloud development accepts an explicit loopback Postgres origin only. */
 export const LocalDatabaseUrl = Schema.Redacted(
   Schema.String.check(
     Schema.makeFilter(
       (value) => {
         try {
           const url = new URL(value);
-          // Validate escaped components before the infrastructure code decodes them.
           const user = decodeURIComponent(url.username);
           const password = decodeURIComponent(url.password);
           const database = decodeURIComponent(url.pathname.slice(1));

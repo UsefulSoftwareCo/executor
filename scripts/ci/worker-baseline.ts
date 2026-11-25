@@ -1,49 +1,3 @@
-/**
- * What a pull request's Worker sizes are compared with: the base of the bottom of its stack, at the
- * commit the pull request is built on.
- *
- *   node scripts/ci/worker-baseline.ts resolve [--main]      writes branch, commit, id, label, note
- *   node scripts/ci/worker-baseline.ts fetch <directory>      writes found and build
- *   node scripts/ci/worker-baseline.ts fallback <directory>   main's baseline and its sizes
- *   node scripts/ci/worker-baseline.ts above                  checks the layer above a `skip`
- *   node scripts/ci/worker-baseline.ts merged <file>          the pull requests a push merges
- *   node scripts/ci/worker-baseline.ts fetch-build <directory> the previous push's built Workers
- *
- * The rule: nothing reaches main without having been compared with main. A pull request whose stack
- * ends on main (its base is main, or its base is the head of an open pull request whose stack ends on
- * main) is compared with main's sizes at the commit it applies to, as before. One whose stack ends on
- * another branch, such as a long-lived feature branch, is compared with that branch at its merge base
- * with the pull request, so it is charged for its own growth; the branch is charged for its total
- * once, against main, by its own pull request into main. The stack is read from GitHub the way the
- * E2E selection reads it: follow the base branch while it is the head of an open pull request in this
- * repository. A branch that cannot be read (deleted, or no merge base) falls back to main.
- *
- * `resolve` reads GITHUB_REPOSITORY, DEFAULT_BRANCH, BASE_REF and BASE_SHA (the pull request's base,
- * or for a push the commit before it) and HEAD_SHA, and writes to GITHUB_OUTPUT: `branch`, `commit`,
- * `id` (`<branch>@<commit>`, which the size gate's record holds, so a run compared with one baseline
- * is never reported for another) and `note` when it fell back to main. `--main` resolves main's
- * baseline whatever the stack ends on: the fallback when the branch's sizes cannot be had.
- *
- * `fetch` reads BASELINE_BRANCH and BASELINE_COMMIT and downloads the baseline's sizes into the
- * directory: for main, the `worker-uploads` artifact of main's CI run at that commit; for another
- * branch, the `worker-uploads-at-<commit>` artifact a pull request run recorded when it built that
- * commit's Workers. It writes `found` and, for another branch with nothing recorded, `build=true`:
- * the job then builds that commit's Workers itself, once per commit. Only sizes from a source this
- * repository's own code wrote are used: main's from main's push runs, a branch's from CI runs of
- * this repository's own branches, and only when the sizes name the commit they were built from.
- *
- * `above` checks a lower stack layer whose e2e block says `skip`: such a layer runs nothing, and
- * passes on the strength of the layer above, so that layer's run must have been computed with this
- * layer in its chain. It passes when an open pull request in this repository whose base is this
- * branch has a CI run on its current head whose record (the select job's `ci-tested-…` artifact)
- * says it was built on this layer's head, and compared its Worker sizes with the branch this
- * layer's stack ends on. The E2E selection always compares with main, whatever the chain, so the
- * base commit covers it. Otherwise it waits a few minutes, for a layer above whose run has not
- * recorded yet, and then fails, naming the pull request above and the commands that run it again.
- *
- * GitHub's API sometimes fails for a moment: each read is tried again a few times, and a stack that
- * still cannot be read is compared with main, with a notice.
- */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
@@ -81,7 +35,6 @@ class BaselineFailed extends Schema.TaggedError<BaselineFailed>()("BaselineFaile
   message: Schema.String,
 }) {}
 
-/** Runs `gh` once, for at most two minutes, and returns its exit code and what it printed. */
 const ghRaw = (args: ReadonlyArray<string>, limit: Duration.Duration = Duration.minutes(2)) =>
   Effect.gen(function* () {
     const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -97,7 +50,6 @@ const ghRaw = (args: ReadonlyArray<string>, limit: Duration.Duration = Duration.
     return { stdout, stderr, exitCode: Number(exitCode) };
   }).pipe(
     Effect.scoped,
-    // A stalled connection is no answer; it is not one of GitHub's brief failures, so not retried.
     Effect.timeout(limit),
     Effect.mapError((error) =>
       error._tag === "TimeoutError"
@@ -108,7 +60,6 @@ const ghRaw = (args: ReadonlyArray<string>, limit: Duration.Duration = Duration.
     ),
   );
 
-/** Runs `gh` once and returns what it prints, or fails with what it said. */
 const ghOnce = (args: ReadonlyArray<string>, limit?: Duration.Duration) =>
   Effect.gen(function* () {
     const { stdout, stderr, exitCode } = yield* ghRaw(args, limit);
@@ -117,17 +68,13 @@ const ghOnce = (args: ReadonlyArray<string>, limit?: Duration.Duration) =>
     return stdout.trim();
   });
 
-/** What `gh` says when GitHub failed for a moment, rather than answered. */
 const transient =
   /HTTP (5\d\d|429)|secondary rate limit|timed? ?out|timeout|connection (reset|refused)|ECONNRESET|unexpected EOF|TLS handshake|temporar/i;
 
-/** How many times a read that failed for a moment is tried again: after one, two and four seconds. */
 const retries = 3;
 
-/** Tries `read` again after a failure that was GitHub's for a moment. */
 const retried = <A, R>(read: Effect.Effect<A, BaselineFailed, R>) =>
   Effect.gen(function* () {
-    // The first wait, in seconds; the spec shortens it.
     const first = yield* Config.Number("WORKER_BASELINE_RETRY_SECONDS").pipe(
       Config.withDefault(1),
       Effect.orDie,
@@ -141,14 +88,8 @@ const retried = <A, R>(read: Effect.Effect<A, BaselineFailed, R>) =>
     );
   });
 
-/** Runs `gh`, again after a failure that was GitHub's for a moment, and returns what it prints. */
 const gh = (args: ReadonlyArray<string>, limit?: Duration.Duration) => retried(ghOnce(args, limit));
 
-/**
- * The REST reads the skip check repeats while it waits, made conditional on what each last
- * returned: GitHub answers 304 for one that has not changed, which does not count against the
- * token's rate limit. `requests` and `unchanged` count them for the step's log.
- */
 const conditional = {
   etags: new Map<string, { readonly etag: string; readonly body: string }>(),
   requests: 0,
@@ -170,7 +111,6 @@ const ghConditional = (path: string, limit: Duration.Duration) =>
       const split = stdout.search(/\r?\n\r?\n/);
       const head = split === -1 ? stdout : stdout.slice(0, split);
       const body = split === -1 ? "" : stdout.slice(split).trim();
-      // gh exits 1 on a 304, with the status line on stdout.
       if (cached !== undefined && /^HTTP\/[\d.]+ 304/.test(head)) {
         conditional.unchanged += 1;
         return cached.body;
@@ -188,10 +128,6 @@ const OpenPullRequests = Schema.fromJsonString(
   Schema.Array(Schema.Struct({ baseRefName: Schema.String, isCrossRepository: Schema.Boolean })),
 );
 
-/**
- * The branches a stack can end on, starting from `base`: follow each open pull request in this
- * repository whose head is the branch to its base, until a branch that is the head of none.
- */
 const bottoms = (repository: string, defaultBranch: string, base: string) =>
   Effect.gen(function* () {
     const ends = new Set<string>();
@@ -228,7 +164,6 @@ const bottoms = (repository: string, defaultBranch: string, base: string) =>
     return ends;
   });
 
-/** The commit `head` and `branch` last shared, as GitHub's comparison names it. */
 const mergeBase = (repository: string, branch: string, head: string) =>
   gh([
     "api",
@@ -255,13 +190,11 @@ const resolve = (forceMain: boolean) =>
     const baseRef = yield* Config.String("BASE_REF").pipe(Config.withDefault(""));
     const baseSha = yield* Config.String("BASE_SHA");
     const head = yield* Config.String("HEAD_SHA").pipe(Config.withDefault(""));
-    /** Main's baseline: the base commit when the base is main or this is a push, else the merge base. */
     const main = (note: string) =>
       baseRef === "" || baseRef === defaultBranch
         ? Effect.succeed({ branch: defaultBranch, commit: baseSha, note })
         : mergeBase(repository, defaultBranch, head).pipe(
             Effect.map((commit) => ({ branch: defaultBranch, commit, note })),
-            // No commit: no sizes are fetched, so no change is shown; the budgets still hold.
             Effect.catchTag("BaselineFailed", (failure) =>
               Effect.succeed({
                 branch: defaultBranch,
@@ -278,7 +211,6 @@ const resolve = (forceMain: boolean) =>
           `the stack below ${baseRef} could not be read, so this compares with ${defaultBranch}`,
         );
       const ends = read.value;
-      // A stack that can end on main is compared with main.
       if (ends.has(defaultBranch) || ends.size !== 1) return yield* main("");
       const [branch] = [...ends];
       return yield* mergeBase(repository, branch!, head).pipe(
@@ -298,7 +230,6 @@ const resolve = (forceMain: boolean) =>
     return chosen;
   });
 
-/** The outputs that name a baseline. */
 const named = (chosen: { branch: string; commit: string; note: string }) => ({
   branch: chosen.branch,
   commit: chosen.commit,
@@ -307,7 +238,6 @@ const named = (chosen: { branch: string; commit: string; note: string }) => ({
   note: chosen.note,
 });
 
-/** How many release commits `fetch` steps back over to find main's sizes: four betas a day. */
 const releaseSteps = 5;
 
 const CommitInfo = Schema.fromJsonString(
@@ -321,7 +251,6 @@ const CommitInfo = Schema.fromJsonString(
   }),
 );
 
-/** A commit's message, author, parents and changed files with their diffs, or none when unread. */
 const commitInfo = (repository: string, sha: string) =>
   gh([
     "api",
@@ -334,7 +263,6 @@ const commitInfo = (repository: string, sha: string) =>
     Effect.map(Option.getOrUndefined),
   );
 
-/** The lines a diff removes and adds, each with the lines above it in the file. */
 const changedLines = (patch: string) => {
   const changed: Array<{ line: string; above: ReadonlyArray<string> }> = [];
   const kept: Array<string> = [];
@@ -346,7 +274,6 @@ const changedLines = (patch: string) => {
   return changed;
 };
 
-/** A diff that changes one `"version"` line from one value to another and nothing else. */
 const versionLine = /^[-+]\s*"version": "[^"]+",?$/;
 const onlyVersion = (patch: string | null, inside?: string) => {
   if (patch === null) return false;
@@ -356,18 +283,10 @@ const onlyVersion = (patch: string | null, inside?: string) => {
     changed[0]!.line.startsWith("-") &&
     changed[1]!.line.startsWith("+") &&
     changed.every(({ line }) => versionLine.test(line)) &&
-    // In the lockfile, the version line of the CLI's own workspace entry, under its name.
     (inside === undefined || changed[0]!.above.slice(-2).join("\n").trim().startsWith(inside))
   );
 };
 
-/**
- * A commit the beta workflow makes to release the CLI: by github-actions[bot], titled `Release …
- * [skip ci]` (so it gets no CI run), and changing only the CLI's changelog, its version, and the
- * lockfile's record of that version, none of which any Cloud Worker reads. A lockfile diff that
- * changes anything else, such as a dependency, could change what a Worker bundles, so a commit
- * with one is not a release commit here.
- */
 const releaseFiles: Record<string, (patch: string | null) => boolean> = {
   "apps/cli/CHANGELOG.md": () => true,
   "apps/cli/package.json": (patch) => onlyVersion(patch),
@@ -385,7 +304,6 @@ const Artifacts = Schema.fromJsonString(
   Schema.Array(Schema.Struct({ expired: Schema.Boolean, run: Schema.NullOr(Schema.Number) })),
 );
 
-/** The workflow, event and head repository of a run, to tell whose code wrote its artifacts. */
 const RunSource = Schema.fromJsonString(
   Schema.Struct({
     path: Schema.String,
@@ -394,16 +312,8 @@ const RunSource = Schema.fromJsonString(
   }),
 );
 
-/** The file a recorded baseline holds next to its sizes: the commit they were built from. */
 const builtFrom = "baseline-commit.txt";
 
-/**
- * An artifact of main's own CI run at `commit` (a push run, which runs only main's code), in
- * `directory`. A release commit gets no run (`[skip ci]`), so it is that of the nearest earlier
- * main commit that has one: a release commit changes no Worker (`releaseCommit`). Only release
- * commits are stepped over, at most `releaseSteps`. With `builtFrom`, the artifact must name the
- * commit it was built from in that file, and it is used only when that is the commit found.
- */
 const fromMain = (
   directory: string,
   commit: string,
@@ -426,7 +336,6 @@ const fromMain = (
         "ci.yml",
         "--branch",
         defaultBranch,
-        // Main's own runs, which run only main's code: a pull request's run can name main too.
         "--event",
         "push",
         "--commit",
@@ -441,7 +350,6 @@ const fromMain = (
         Effect.as(true),
         Effect.catchTag("BaselineFailed", () => Effect.succeed(false)),
       );
-    /** Whether what was downloaded names `sha` as the commit it was built from. */
     const fromCommit = (sha: string) =>
       Effect.gen(function* () {
         if (builtFrom === undefined) return true;
@@ -492,8 +400,6 @@ const fetch = (directory: string, branch: string, commit: string) =>
         );
       return { found: found.found, build: false, commit: found.commit };
     }
-    // A branch's sizes, as a CI run of this repository's own branches recorded them: a fork's run
-    // runs the fork's code, which could write any sizes under any name.
     const name = `worker-uploads-at-${commit}`;
     const ownRun = (run: number) =>
       gh([
@@ -511,7 +417,6 @@ const fetch = (directory: string, branch: string, commit: string) =>
         ),
         Effect.catch(() => Effect.succeed(false)),
       );
-    // The sizes name the commit they were built from; any others are not this commit's.
     const fromCommit = Effect.gen(function* () {
       const path = `${directory}/${builtFrom}`;
       const built = (yield* fs.exists(path)) ? (yield* fs.readFileString(path)).trim() : "";
@@ -591,15 +496,8 @@ const RunJobs = Schema.fromJsonString(
   }),
 );
 
-/** The select job's step that runs this check, by its name in checks.yml. */
 const checkStep = "Check that the layer above was computed on this layer";
 
-/**
- * Whether `lower.head` is an ancestor of `tested`, the merge commit an upper run tested: GitHub's
- * compare of the two, which says `ahead` or `identical` exactly when it is (the equivalent of `git
- * merge-base --is-ancestor`, without the history a shallow checkout lacks). Asked once per tested
- * commit and remembered; an answer that could not be read is undefined, so the check keeps waiting.
- */
 const containsLower = (
   lower: Lower,
   tested: string,
@@ -625,10 +523,6 @@ const containsLower = (
     return answer;
   }).pipe(Effect.catchCause(() => Effect.succeed<boolean | undefined>(undefined)));
 
-/**
- * One look at the pull requests above `lower`: this repository's open pull requests based on its
- * branch, and their CI runs on their current heads. A record is downloaded once per artifact.
- */
 const look = (
   lower: Lower,
   scratch: string,
@@ -647,9 +541,6 @@ const look = (
           ),
         ),
       );
-    // A run's jobs, page by page until those named are all listed or the run's jobs end: a full run
-    // has more than the 100 a page holds (96 E2E matrix jobs alone), and its required checks come
-    // last. Each page is a conditional read, free while it has not changed.
     const jobsOf = (run: number, names: ReadonlyArray<string>) =>
       Effect.gen(function* () {
         const jobs: Array<(typeof RunJobs.Type)["jobs"][number]> = [];
@@ -667,8 +558,6 @@ const look = (
             return jobs;
         }
       });
-    // A fork's pull request, and a fork's run on the same commit, run the fork's code, which could
-    // write any record: only this repository's count.
     const pulls = (yield* read(
       Pulls,
       `repos/${repository}/pulls?base=${encodeURIComponent(lower.ref)}&state=open&per_page=100`,
@@ -679,8 +568,6 @@ const look = (
           HeadRuns,
           `repos/${repository}/actions/runs?event=pull_request&head_sha=${pull.head.sha}&per_page=50`,
         );
-        // CI's runs, not another workflow's; a cancelled run may have recorded and then stopped,
-        // so its record is not read.
         const ci = all
           .filter(
             (run) =>
@@ -690,7 +577,6 @@ const look = (
           .toSorted((a, b) => b.id - a.id);
         const runs = ci.filter((run) => run.conclusion !== "cancelled");
         const seen: Array<RunSeen> = [];
-        // Only cancelled runs on the head: the newest is seen as cancelled, which fails at once.
         const cancelled = ci[0];
         if (runs.length === 0 && cancelled !== undefined)
           seen.push({
@@ -700,12 +586,7 @@ const look = (
             waitingAbove: false,
             cancelled: true,
           });
-        // Every run on the head is read, since any one with a fitting record passes; the ten newest
-        // cover a stack's duplicates and re-runs.
         for (const run of runs.slice(0, 10)) {
-          // Every page: a run re-run a few times holds more than the 100 a page lists, newest
-          // first, and its select's record, uploaded first, then falls past the first page (#5407's
-          // run held 138 on 24 Nov 2026, its record on page 2).
           const artifacts: Array<(typeof RunArtifacts.Type)["artifacts"][number]> = [];
           for (let page = 1; ; page += 1) {
             const listed = yield* read(
@@ -715,8 +596,6 @@ const look = (
             artifacts.push(...listed.artifacts);
             if (listed.artifacts.length === 0 || artifacts.length >= listed.total_count) break;
           }
-          // Its own record: a re-run that chose differently uploads a second one, and the newest
-          // is what the run's latest attempt chose.
           const newest = artifacts
             .filter((artifact) => artifact.name.startsWith(`ci-tested-pr${pull.number}-`))
             .toSorted((a, b) => b.id - a.id)[0];
@@ -741,9 +620,6 @@ const look = (
           }
           const record = newest === undefined ? undefined : records.get(newest.id);
           if (record !== undefined) {
-            // A ready layer passes only on a merge gate that passed: the state of its required
-            // checks (gateOutcome). A job the run's jobs do not list is `missing` once the run has
-            // ended, and not listed yet before.
             const gates =
               lower.ready && !pull.draft && (record.gate === "full" || record.gate === "narrowed")
                 ? yield* jobsOf(run.id, ["checks / check", "checks / e2e"]).pipe(
@@ -801,7 +677,6 @@ const look = (
     );
     return { _tag: "Read", uppers } as Observation;
   }).pipe(
-    // However many reads a look makes, it ends in time for the next.
     Effect.timeoutOrElse({
       duration: limits.look,
       orElse: () =>
@@ -811,7 +686,6 @@ const look = (
           }),
         ),
     }),
-    // Not reading is not an answer: the check looks again until its deadline.
     Effect.catchCause((cause) =>
       Effect.succeed({
         _tag: "Unread",
@@ -820,10 +694,6 @@ const look = (
     ),
   );
 
-/**
- * The check of the layer above a skip layer (e2e/ci-skip-check.ts): it looks, waits within the
- * bounds, logs one decision line and a summary sentence, and fails only when enforcing.
- */
 const readLower = Effect.gen(function* () {
   return {
     repository: yield* Config.String("GITHUB_REPOSITORY"),
@@ -831,7 +701,6 @@ const readLower = Effect.gen(function* () {
     head: yield* Config.String("HEAD_SHA"),
     bottom: yield* Config.String("BASELINE_BRANCH"),
     runId: yield* Config.String("GITHUB_RUN_ID").pipe(Config.withDefault("<run-id>")),
-    // Ready unless select read it as a draft: a value it did not write is no proof of a draft.
     ready: (yield* Config.String("LOWER_DRAFT").pipe(Config.withDefault(""))) !== "true",
   } satisfies Lower;
 });
@@ -839,11 +708,7 @@ const readLower = Effect.gen(function* () {
 const decide = (lower: Lower) =>
   Effect.gen(function* () {
     const scratch = `${yield* Config.String("RUNNER_TEMP").pipe(Config.withDefault("/tmp"))}/ci-above`;
-    // Seconds of the clock per second of the rule. The spec runs the waits faster, and then counts
-    // only the waits, since its stand-in reads take longer than the waits it shortens.
     const scale = yield* Config.Number("SKIP_ABOVE_TIME_SCALE").pipe(Config.withDefault(1));
-    // Each read, download included, gets 20 seconds and each look a minute: a stalled connection
-    // is no answer, and cannot hold the step past its deadline.
     const limits = {
       read: Duration.millis(Math.max(1000, 20_000 * scale)),
       look: Duration.millis(Math.max(2000, 60_000 * scale)),
@@ -873,14 +738,7 @@ const decide = (lower: Lower) =>
     }
   });
 
-/**
- * The check of the layer above a skip layer (e2e/ci-skip-check.ts): it looks, waits within the
- * bounds, logs one decision line and a summary sentence, and fails only when enforcing. While
- * observing nothing in it can fail the step, a defect included: that is logged as `error`.
- */
 const above = Effect.gen(function* () {
-  // Whether to enforce is read apart from the rest, so a missing variable is still a defect the
-  // guard turns into the error outcome while observing.
   const enforce = enforcing({
     ready: (yield* Config.String("LOWER_DRAFT").pipe(Config.withDefault(""))) !== "true",
   });
@@ -926,13 +784,6 @@ const above = Effect.gen(function* () {
 
 const MergedPulls = Schema.fromJsonString(Schema.Array(Schema.Number));
 
-/**
- * The descriptions of the pull requests a push to main merges, for the size gate on main
- * (worker-sizes.ts `--merged`): the merged pull requests of each commit between BEFORE_SHA and
- * HEAD_SHA. Writes them to `file` as JSON and `pulls` (#1, #2) to the step's outputs. If GitHub
- * cannot be read it writes no file and says so: not knowing the allowances is not growth, so the
- * gate then only reports. A commit no pull request merged allows nothing, with a notice.
- */
 const merged = (file: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -1006,7 +857,6 @@ NodeRuntime.runMain(
         label: `${branch} at ${result.commit.slice(0, 9)}`,
       });
     }
-    // The branch's sizes could not be had: compare with main's, never skip the comparison.
     if (command === "fallback" && args[0] !== undefined) {
       const chosen = yield* resolve(true);
       const result = yield* fetch(args[0], chosen.branch, chosen.commit);
@@ -1018,7 +868,6 @@ NodeRuntime.runMain(
     }
     if (command === "above") return yield* above;
     if (command === "merged" && args[0] !== undefined) return yield* merged(args[0]);
-    // The previous push's built Workers, for the start-up record (worker-startup-record.ts).
     if (command === "fetch-build" && args[0] !== undefined) {
       const commit = yield* Config.String("BASE_SHA");
       const found = yield* fromMain(

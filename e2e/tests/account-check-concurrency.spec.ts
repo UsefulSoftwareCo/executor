@@ -1,11 +1,3 @@
-/**
- * An account's first check for an app records a row, and two first checks can run at once: the
- * dashboard's naming prompt checks a new account while the app's accounts view checks it in the
- * background, or two tabs or an agent check it together. Both must record their result. The
- * scenario makes them write the row at the same moment by construction: its own uncommitted
- * insert of the account's check row holds both requests at their writes, and it commits once both
- * wait. Only Cloud's Postgres runs that transaction beside the server's own.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Fiber, Schedule, Schema } from "effect";
 import { body } from "../support/api.ts";
@@ -14,7 +6,6 @@ import { HostedLive, withHostedCase } from "../support/case.ts";
 import { cloudLocks } from "../support/cloud-locks.ts";
 import { scenarios } from "../test-plan.ts";
 
-/** One app-account requirement whose provider's check reports who the account is. */
 const source = `import { defineApp, defineProvider, secrets, object, string, router } from "apps";
 const service = defineProvider({
   name: "Concurrent check fixture",
@@ -52,12 +43,10 @@ layer(HostedLive, { excludeTestServices: true })("Account check concurrency", (i
         );
 
         const locks = yield* cloudLocks;
-        // Commit first, so a failed scenario does not leave the row's key held.
         yield* Effect.addFinalizer(() => Effect.ignore(locks.release));
         const [holder] = yield* locks
           .hold({ sql: "select pg_backend_pid() as pid" })
           .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Holder)), Effect.orDie);
-        // The account's check row, uncommitted: a write of the same row waits until release.
         yield* locks.hold({
           sql: `insert into executor_account_checks
               (id, account, app, deployment, credential_generation, status, checked_at)
@@ -65,7 +54,6 @@ layer(HostedLive, { excludeTestServices: true })("Account check concurrency", (i
           params: [`${account}:${app.id}`, account, app.id, activeVersion],
         });
 
-        // Two first checks of the account: neither can see a recorded check.
         const check = api.request(actors.owner, "POST", `${prefix}/accounts/${account}/health`);
         const first = yield* Effect.forkChild(check);
         const second = yield* Effect.forkChild(check);
@@ -84,10 +72,8 @@ layer(HostedLive, { excludeTestServices: true })("Account check concurrency", (i
             Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 150 }),
             Effect.orDie,
           );
-        // The row commits while both checks wait to write it.
         yield* locks.release;
 
-        // Each check records its result over the row and reports the account healthy.
         for (const fiber of [first, second]) {
           const response = yield* Fiber.join(fiber);
           expect(response.status, JSON.stringify(response.body)).toBe(200);

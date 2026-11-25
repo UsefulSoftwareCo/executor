@@ -1,4 +1,3 @@
-/** Exercise the complete local server with the official MCP client and public SDK HTTP routes. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
 import { scenarios } from "../test-plan.ts";
@@ -43,11 +42,6 @@ const Listed = Schema.Struct({
   ),
 });
 const SkillsInput = Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown));
-/**
- * The `skills` inputs a text shows. The `skills` description shows them as bare objects; every
- * other text shows a concrete call as `skills({...})`. Keys may be unquoted and strings may use
- * single quotes, as in the descriptions.
- */
 const skillsExamples = (text: string, bare: boolean) =>
   [...text.matchAll(bare ? /\{[^{}]*\}/g : /skills\((\{[^{}]*\})\)/g)].map((match) =>
     (match[1] ?? match[0])
@@ -131,7 +125,6 @@ layer(TestLive, { excludeTestServices: true })("Local skills", (it) => {
         );
         const entryDocument = yield* Schema.decodeUnknownEffect(Document)(entry.structuredContent);
         expect(entryDocument.files).toContain("feedback.md");
-        // Local sends the same entry skill as its MCP instructions, without the frontmatter.
         expect(instructions).toBe(
           entryDocument.content.replace(/^---\n[\s\S]*?\n---\n/, "").trim(),
         );
@@ -207,7 +200,6 @@ layer(TestLive, { excludeTestServices: true })("Local skills", (it) => {
         expect(
           (yield* Schema.decodeUnknownEffect(Document)(topic.structuredContent)).content,
         ).toContain("withOptimisticUpdate");
-        // Every file the guide links is listed and readable, including the nested upgrade guides.
         const linked = [...guideDocument.content.matchAll(/\]\(([^)\s#:]+\.md)\)/g)].map(
           (match) => match[1] ?? "",
         );
@@ -234,7 +226,6 @@ layer(TestLive, { excludeTestServices: true })("Local skills", (it) => {
             (yield* Schema.decodeUnknownEffect(Document)(read.structuredContent)).content,
           ).not.toBe("");
         }
-        // The Executor app appears once, at its slug, with its linked local key.
         const referenceTools = "tools.executor";
         const accountTools = yield* client.use(
           "Discover account management operations",
@@ -263,8 +254,6 @@ layer(TestLive, { excludeTestServices: true })("Local skills", (it) => {
             },
           },
         });
-        // Agents save accounts only by completing an app's connection request, so the fixture
-        // connects one and the management app reads, renames, lists, and removes it.
         const agent: Session = {
           ...session,
           send: (method, path, data, extra = {}) => {
@@ -427,7 +416,6 @@ return { sameAccount: target.account === read.id && read.id === updated.id, labe
         );
         expect(copiedDocument.version).toBe(copy.activeVersion);
         expect(copiedDocument.content).toContain("Version one.");
-        // Every document needs an app. There is no unscoped authoring-guide fallback.
         for (const input of [
           { file: "SKILL.md" },
           { name: "app-authoring" },
@@ -449,15 +437,12 @@ return { sameAccount: target.account === read.id && read.id === updated.id, labe
       Effect.gen(function* () {
         const target = yield* Target,
           mcp = yield* McpClient;
-        // MCP tool input schemas use JSON Schema 2020-12, which this validator implements.
         const validator = new CfWorkerJsonSchemaValidator();
         const client = yield* mcp.connect(target.apiKey, "skills-input-schema");
         const call = (step: string, input: Record<string, unknown>) =>
           client.use(step, (client, signal) =>
             client.callTool({ name: "skills", arguments: input }, undefined, { signal }),
           );
-        // Every text an agent reads before calling skills: each mode's tool descriptions and
-        // the server instructions, which are the Executor app's entry skill.
         const texts: { readonly source: string; readonly examples: ReadonlyArray<string> }[] = [];
         let advertised: Record<string, unknown> | undefined;
         const executeDescriptions: { readonly mode: string; readonly text: string }[] = [];
@@ -491,9 +476,6 @@ return { sameAccount: target.account === read.id && read.id === updated.id, labe
         }
         if (advertised === undefined)
           return yield* Effect.die("Every MCP mode must list the skills tool");
-        // The server instructions are the entry skill, so neither execute nor skills sends an
-        // agent that already has them to read the same text again; each names the read only for
-        // clients that do not show instructions.
         expect(executeDescriptions.map((description) => description.mode)).toEqual([
           "model",
           "native",
@@ -518,8 +500,6 @@ return { sameAccount: target.account === read.id && read.id === updated.id, labe
         }
         const accepts = validator.getValidator(advertised);
 
-        // The advertised schema and the runtime agree on every read shape, and both refuse a
-        // document or reference without its app or skill.
         const index = yield* Schema.decodeUnknownEffect(Index)(
           (yield* call("List every skill", {})).structuredContent,
         );
@@ -548,7 +528,6 @@ return { sameAccount: target.account === read.id && read.id === updated.id, labe
           }).toEqual({ input, schema: valid, runtime: valid });
         }
         const refused = yield* call("Read a skill without its app", { name: "executor" });
-        // The refusal names the call that works.
         expect(refused.content).toEqual([
           {
             type: "text",
@@ -556,7 +535,6 @@ return { sameAccount: target.account === read.id && read.id === updated.id, labe
           },
         ]);
 
-        // Every Executor app skill document and reference: the guidance agents read next.
         const listed = yield* Schema.decodeUnknownEffect(Index)(
           (yield* call("List the Executor app's skills", { app: guide.app.slug }))
             .structuredContent,
@@ -586,7 +564,6 @@ return { sameAccount: target.account === read.id && read.id === updated.id, labe
             });
           }
         }
-        // The texts that send agents to skills give a call they can make.
         for (const source of [
           "model skills description",
           "model execute description",

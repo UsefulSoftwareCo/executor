@@ -1,19 +1,3 @@
-/**
- * The evidence of a release job's failed scenarios, laid out as CI's e2e jobs lay out theirs, so
- * `ci-evidence.ts --scenario` fetches one scenario's folder from the run without the job's whole
- * diagnostics archive: `<run>/<target>/report/evidence/<id>/` with a `result.json` (title, file,
- * target, status, errors) beside the scenario's files. Only failed scenarios are copied, and
- * nothing is written when none failed, so the upload step that follows has nothing to send.
- *
- * Usage:
- *   `node e2e/release-evidence.ts e2e <dest> <root>` copies, from runs of `e2e/run.ts` under
- *   `<root>` (`.local/e2e`), each failed scenario's evidence folder with its server's and CLI's
- *   logs and a background server's diagnostics inside it, and the run's `evidence.json`,
- *   `run.json` and Vitest report.
- *   `node e2e/release-evidence.ts vitest <dest> <target> <failures> <results.json>...` writes a
- *   folder for each failed test of the Vitest JSON reports, holding its `result.json` and the
- *   desktop failure folders under `<failures>` that name the test (`e2e/support/desktop.ts`).
- */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { createHash } from "node:crypto";
@@ -51,7 +35,6 @@ const Report = Schema.fromJsonString(
 const failed = (status: string | undefined) =>
   status !== undefined && !["passed", "skipped", "pending", "todo"].includes(status);
 
-/** Copy `from` to `to` when it exists, as a file or a whole directory. */
 const copyIfPresent = (from: string, to: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -62,7 +45,6 @@ const copyIfPresent = (from: string, to: string) =>
     return true;
   });
 
-/** Failed scenarios of `e2e/run.ts` runs: `<root>/<run>/<target>/report/evidence/<id>/`. */
 const fromRuns = (dest: string, root: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -87,7 +69,6 @@ const fromRuns = (dest: string, root: string) =>
           if (!failed(status)) continue;
           const out = path.join(dest, run, target, "report", "evidence", id);
           yield* copyIfPresent(folder, out);
-          // The scenario's own server, CLI and background server, which ran outside the folder.
           const scenario = yield* fs
             .readFileString(path.join(folder, "scenario.json"))
             .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Scenario)), Effect.option);
@@ -129,7 +110,6 @@ const fromRuns = (dest: string, root: string) =>
     return copied;
   });
 
-/** Failed tests of plain Vitest runs, with the desktop failure folders that name them. */
 const fromReports = (
   dest: string,
   target: string,

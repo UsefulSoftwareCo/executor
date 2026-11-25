@@ -1,4 +1,3 @@
-/** Typed product calls for catalog import and reusable account setup. */
 import { browserOnly } from "@executor-js/ui/contracts/http";
 import type { AppId } from "@executor-js/sdk";
 import { DashboardClient, appAtom, overviewAtom, toolsAtom } from "./api.ts";
@@ -8,15 +7,8 @@ import { acknowledge, invalidate } from "@executor-js/ui/contracts/mutations";
 import { accountAtom } from "./accounts.ts";
 import { linkedAccountIds } from "@executor-js/ui/contracts/app-accounts";
 
-/** Catalog metadata is loaded independently of installed apps. */
-/**
- * The full catalog is large and only decorates icons and the add-app page, so the browser loads
- * it after the page is interactive instead of the server embedding it in every document.
- */
 export const catalogAtom = browserOnly(DashboardClient.query("dashboard", "catalog", {}));
-/** Generate ordinary app source from a user-supplied endpoint or API definition. */
 export const importCustomAppAtom = DashboardClient.mutation("dashboard", "importCustomApp");
-/** Delete one configured copy without deleting its reusable accounts or other apps. */
 export const deleteAppAtom = Atom.family((app: AppId) =>
   DashboardClient.runtime.fn((_: void, get) =>
     Effect.flatMap(DashboardClient, (client) =>

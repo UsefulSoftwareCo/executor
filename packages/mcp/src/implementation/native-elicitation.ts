@@ -1,4 +1,3 @@
-/** Native approval delivery holds only the active MCP request; codemode remains parked while the user decides. */
 import { Clock, Effect, Option, Schema } from "effect";
 import { McpSchema } from "effect/ai";
 import { ElicitationResponse } from "apps/contracts";
@@ -7,7 +6,6 @@ import type { McpBackend } from "../contracts/backend.ts";
 import type { ApprovalMode, makeExecutions } from "./executions.ts";
 import type { Program } from "./execute.ts";
 
-/** Drive the shared continuation manager using the requesting client's elicitation responses. */
 export const executeNative = (
   executions: Effect.Success<ReturnType<typeof makeExecutions>>,
   caller: string,
@@ -20,7 +18,6 @@ export const executeNative = (
       const client = yield* Effect.serviceOption(McpSchema.McpServerClient);
       const { clientCapabilities } = yield* McpSchema.McpRequestContext;
       const capability = clientCapabilities.elicitation;
-      // Older elicitation capabilities used an empty object to advertise form support.
       if (
         Option.isNone(client) ||
         capability === undefined ||
@@ -45,7 +42,6 @@ export const executeNative = (
               McpReverseOperationError: () =>
                 Effect.fail(new NativeElicitationFailed({ reason: "transport" })),
             }),
-            // The client's `_meta` may hold any value; a resume keeps only JSON.
             Effect.flatMap((answer) =>
               Schema.decodeUnknownEffect(ElicitationResponse)(answer).pipe(
                 Effect.mapError(() => new NativeElicitationFailed({ reason: "transport" })),

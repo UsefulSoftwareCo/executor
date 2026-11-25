@@ -1,16 +1,3 @@
-/**
- * Local-only probe of what a tool call says when its exchange with the app runtime never formed,
- * through the SDK's own call path: `executor.tools.call` and `executor.tools.resume`, the real
- * `appRuntime` (which marks each hand-off to the app's code), PGlite in memory, and a stub in
- * place of the runtime's transport only. The stub answers the catalog read for a call's kind,
- * asks approval for a call when told to, and fails a call the way the transport does when its
- * socket never opened twice (`RuntimeProtocolFailed`, `notSent`). Prints, as JSON, what the caller
- * received, for `runtime-connect-repeat.spec.ts` to judge.
- *
- * - `call-once`: the call names its kind, so the call is its only hand-off.
- * - `call-after-kind-read`: the call names no kind, so the catalog read for its kind comes first.
- * - `call-resumed`: the call asks approval; the resumed call is its second hand-off.
- */
 import { Effect, Layer, Redacted, Schema, Stream } from "effect";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { pgliteLayer } from "fumadb-effect/pglite";
@@ -28,11 +15,9 @@ type Case = (typeof cases)[number];
 const name = process.argv[process.argv.indexOf("--case") + 1] as Case;
 if (!cases.includes(name)) throw new Error(`--case must be one of ${cases.join(", ")}`);
 
-/** What the stub transport was asked for, in order. */
 const operations: string[] = [];
 let calls = 0;
 
-/** The transport the real `appRuntime` sends each invocation through. */
 const transport = {
   name: "runtime.stub",
   loadBuild: () => Effect.die(new Error("The stub runtime keeps no builds")),
@@ -47,7 +32,6 @@ const transport = {
     operations.push(invocation.command.operation);
     switch (invocation.command.operation) {
       case "inspect":
-        // The tool declares no read-only kind: a mutation.
         return Effect.succeed({
           ok: true,
           value: {
@@ -57,7 +41,6 @@ const transport = {
         });
       case "call":
         calls += 1;
-        // Asked approval first when the case says so; after that, never connected.
         return name === "call-resumed" && calls === 1
           ? Effect.succeed({
               ok: false,
@@ -132,7 +115,6 @@ const program = Effect.gen(function* () {
         response: { action: "accept" },
       } as never),
     );
-    // A resume answers with its outcome; a failed one carries the call's error.
     const answered =
       resumed._tag === "Success" ? (resumed.value as { error?: unknown }) : undefined;
     return {

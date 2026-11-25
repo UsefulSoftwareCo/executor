@@ -22,7 +22,6 @@ import { appError } from "../../contracts/apps.ts";
 import type { HostedError } from "../../contracts/errors.ts";
 
 const catalogIcons = catalogIconsAtom(catalogAtom);
-/** Organization-aware atoms stay inside the hosted product. */
 export function useDashboardAtoms() {
   return dashboardAtoms(useOrganizationRoute().organization);
 }
@@ -51,7 +50,6 @@ const AccountLink = ({ account, children, ...props }: AccountLinkProps) => {
     </Link>
   );
 };
-/** Hosted failures keep auth and transport details out of display components. */
 export function HostedFailure({ cause, retry, retrying, layout }: FailureProps<HostedError>) {
   const error = Cause.findErrorOption(cause);
   if (Option.isSome(error) && Schema.is(AppProviderFailed)(error.value))
@@ -111,7 +109,6 @@ export function HostedFailure({ cause, retry, retrying, layout }: FailureProps<H
     </Alert>
   );
 }
-/** Shared views bind independently of access checks and sidebar metadata. */
 export function HostedDashboard({ children }: { readonly children: ReactNode }) {
   return (
     <DashboardProvider catalogIcons={catalogIcons} AppLink={AppLink} AccountLink={AccountLink}>

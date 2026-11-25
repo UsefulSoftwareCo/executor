@@ -2,7 +2,6 @@ import { RequiredAction } from "./authorization.ts";
 import { requireAccount } from "./account-grants.ts";
 import { AccountWorkflowsActive } from "@executor-js/sdk/core";
 import { AccountWebhooksActive } from "@executor-js/sdk/core";
-/** Account metadata and connection flows for an authenticated organization. */
 import {
   App,
   Provider,
@@ -49,7 +48,6 @@ import {
 import { AuthenticationUnavailable, RequireBrowserSession } from "./auth.ts";
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
 
-/** The account is linked to apps for everyone; it cannot be deleted until it is unlinked. */
 export const AccountLinkedToApp = UserFacingError.define({
   tag: "AccountLinkedToApp",
   status: 409,
@@ -63,13 +61,7 @@ export const AccountLinkedToApp = UserFacingError.define({
       "Read the app accounts of each named app with appAccounts.appList and unlink this account with appAccounts.appUnlink, or ask someone who can edit the app to. Link a replacement first if the app still needs one. Then delete the account.",
   },
 });
-/** Parsed AccountLinkedToApp failure. */
 export type AccountLinkedToApp = typeof AccountLinkedToApp.Type;
-/**
- * The built-in Executor app's "Executor API key" account would fail every call: its Organization is
- * not a URL slug or ID (`organization`), the token cannot reach that organization (`unreachable`),
- * or Executor does not accept the token (`token`). Nothing is saved.
- */
 export const ExecutorKeyRefused = UserFacingError.define({
   tag: "ExecutorKeyRefused",
   status: 422,
@@ -110,13 +102,11 @@ export const ExecutorKeyRefused = UserFacingError.define({
             },
           },
 });
-/** Parsed ExecutorKeyRefused failure. */
 export type ExecutorKeyRefused = typeof ExecutorKeyRefused.Type;
 
 const params = { organization: OrganizationReference };
 const app = { ...params, app: AppId };
 const connection = { ...params, connection: AccountConnectionId };
-// Reading a connection also verifies ownership of its optional target app.
 const connectionErrors = [
   StorageError,
   AccountConnectionNotFound,
@@ -133,52 +123,37 @@ const completionErrors = [
   CredentialsError,
 ] as const;
 const prefix = "/api/organizations/:organization";
-/**
- * Account setup belongs in the browser, so agents receive an authenticated form link, and the
- * callback to register when the service needs the user's own OAuth client.
- */
 export const BrowserAccountConnection = Schema.Struct({
   ...AccountConnection.fields,
   url: HttpUrl,
   redirectUri: HttpUrl,
 });
-/**
- * Reading a connection returns the same form link as creating it, so an agent can hand it over
- * again, and the exact registered callback when a host uses a separate OAuth relay.
- */
 export const HostedAccountConnection = Schema.Struct({
   ...AccountConnection.fields,
   url: HttpUrl,
   redirectUri: HttpUrl,
-  /** The target app's check can validate credentials entered for this connection. */
   checkable: Schema.Boolean,
 });
 export type HostedAccountConnection = typeof HostedAccountConnection.Type;
-/** Browser return context preserves the callback URL bound into the OAuth attempt. */
 export const HostedOAuthSignIn = Schema.Struct({
   status: Schema.Literal("redirect"),
   ...OAuthSignIn.fields,
+  ownClientUnavailable: OAuthStartResult.members[0].fields.ownClientUnavailable,
 });
 export type HostedOAuthSignIn = typeof HostedOAuthSignIn.Type;
-/** Immediate account completion needs no browser return context. */
 export const HostedOAuthStartResult = Schema.Union([
   HostedOAuthSignIn,
   OAuthStartResult.members[1],
 ]);
 export type HostedOAuthStartResult = typeof HostedOAuthStartResult.Type;
-/** Safe metadata for the account detail view. Only the account's owner reads it. */
 export const HostedAccountDetail = Schema.Struct({
   account: Account,
   provider: Provider,
   apps: Schema.Array(App),
-  /** Checks by the apps in `apps` only; reading it never runs a check. */
   health: AccountHealth,
-  /** Whether deleting the account also asks its service to revoke access. */
   revocation: AccountRevocation.fields.revocation,
-  /** The dashboards' shared detail shape. Only the owner reads an account, and owners manage it. */
   canManage: Schema.Boolean,
 });
-/** Credentials travel directly to the authorized host and never appear in successful responses. */
 export const HostedAccounts = HttpApiGroup.make("accounts")
   .add(
     HttpApiEndpoint.get("get", `${prefix}/accounts/:account`, {
@@ -229,7 +204,6 @@ export const HostedAccounts = HttpApiGroup.make("accounts")
   .add(
     HttpApiEndpoint.patch("update", `${prefix}/accounts/:account`, {
       params: { ...params, account: AccountId },
-      /** Only supplied fields change; a null description removes it. */
       payload: Schema.Struct({
         label: Schema.optional(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(120))),
         description: Schema.optional(
@@ -288,12 +262,8 @@ export const HostedAccounts = HttpApiGroup.make("accounts")
       payload: Schema.Struct({
         method: Schema.NonEmptyString,
         label: Schema.optional(Schema.NonEmptyString),
-        /**
-         * A registered client the caller may use, the organization's automatic client, or one
-         * entered for this account alone. Omitted, a new account uses the automatic client and a
-         * reconnect keeps the client its account signed in with.
-         */
         client: Schema.optional(OAuthClientSelection),
+        chooseAgain: Schema.optional(Schema.Literal(true)),
       }),
       success: HostedOAuthStartResult,
       error: [
@@ -315,9 +285,7 @@ export const HostedAccounts = HttpApiGroup.make("accounts")
   )
   .middleware(RequireOrganization);
 
-/** Where a provider's callback returns: the connection it completes and the page that follows. */
 export const HostedOAuthCallback = Schema.Struct({
-  /** Dashboard state is keyed by the organization's route reference, its slug. */
   organizationSlug: OrganizationSlug,
   connection: AccountConnectionId,
   app: AppId,
@@ -325,10 +293,6 @@ export const HostedOAuthCallback = Schema.Struct({
   reconnect: Schema.Boolean,
 });
 export type HostedOAuthCallback = typeof HostedOAuthCallback.Type;
-/**
- * The callback's OAuth state finds its pending connection, so the sign-in can finish in any tab
- * or browser where the connection's creator is signed in. Completion repeats every check.
- */
 export const HostedOAuthCallbacks = HttpApiGroup.make("oauthCallback")
   .add(
     HttpApiEndpoint.post("resolve", "/api/oauth/callback/resolve", {

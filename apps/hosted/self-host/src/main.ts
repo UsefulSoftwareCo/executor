@@ -1,4 +1,3 @@
-/** Native development entry point. Runtime-specific imports stay at this edge. */
 import * as BunCrypto from "@effect/platform-bun/BunCrypto";
 import * as BunHttpServer from "@effect/platform-bun/BunHttpServer";
 import * as BunRuntime from "@effect/platform-bun/BunRuntime";
@@ -42,18 +41,15 @@ const settings = Config.all({
   ),
 );
 
-/** Compose native resources without opening a listener; used by development and HTTP tests. */
 export const selfHostRoutes = Effect.gen(function* () {
   const skills = yield* readExecutorSkills;
   const policy = yield* urlPolicyConfig;
   const egress: HostEgress = { policy, client: yield* safeHttpClient(policy) };
   const executorServices = Layer.succeedContext(yield* Layer.build(selfHostExecutor(egress)));
   const path = yield* Path.Path;
-  // The renderer is imported from the same package build; see `dashboardFiles`.
   const dashboard = yield* dashboardFiles(
     yield* path.fromFileUrl(new URL("../web/dist/", import.meta.url)),
   );
-  // The release check's last answer, beside the data it describes, as the CLI keeps its own.
   const fs = yield* FileSystem.FileSystem;
   const checkFile = path.resolve(yield* dataDirectory, "update-check.json");
   return yield* selfHostRouteMap({
@@ -101,13 +97,10 @@ const server = Layer.unwrap(
   Layer.provide(BunHttpServer.layerHttpServices),
 );
 
-/** Serve until interrupted; `scripts/coverage-main.ts` runs it under Bun's coverage profiler. */
 export const main = Effect.scoped(
   Effect.gen(function* () {
     const { host, port } = yield* settings;
     const listener = yield* Layer.build(
-      // Bun closes a request after 10 seconds without a response by default; account checks
-      // and server-rendered documents can wait longer.
       BunHttpServer.layer({ hostname: host, port, idleTimeout: 30 }),
     );
     const bound = yield* HttpServer.HttpServer.pipe(Effect.provideContext(listener));
@@ -115,8 +108,6 @@ export const main = Effect.scoped(
     if (!("port" in address)) return yield* Effect.die("Self-host requires a TCP listener");
     const base = yield* ConfigProvider.ConfigProvider;
     const overrides: Record<string, string> = { PORT: String(address.port) };
-    // Port zero is a real OS allocation, not a released-port probe. Resolve local URLs
-    // before auth, managed app installation, or any callback is configured.
     for (const key of ["BETTER_AUTH_URL", "EXECUTOR_OAUTH_CALLBACK_URL"]) {
       const value = yield* Config.String(key).pipe(Config.option);
       if (Option.isSome(value)) {

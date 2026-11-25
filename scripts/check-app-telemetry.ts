@@ -1,16 +1,3 @@
-/**
- * The host rebuilds the spans an app isolate returns from a closed vocabulary
- * (`packages/telemetry/src/app-records.ts`): an unknown span name becomes `app.unrecognized` and an
- * unknown attribute is dropped. That fails safe, but silently. This check reads the framework code
- * an app's server build bundles, the `apps` package's server entry points and everything they
- * import, and fails when it names a span or sets an attribute key the vocabulary does not know, so
- * a framework change updates the vocabulary in the same change.
- *
- * Names are read at Effect's span and annotation calls, and at every call of a helper that passes
- * a parameter on as a span's name or attributes. A name built from a template resolves through
- * its parts' literal types. A name the check cannot resolve fails too: pass a literal, or a value
- * with a literal union type.
- */
 import ts from "typescript-5";
 import { readFileSync } from "node:fs";
 import { relative } from "node:path";
@@ -24,7 +11,6 @@ const root = new URL("../", import.meta.url).pathname;
 const manifest: { exports: Record<string, string> } = JSON.parse(
   readFileSync(new URL("../packages/apps/package.json", import.meta.url), "utf8"),
 );
-/** Entry points for authored UI pages; they run in the browser and report through its own relay. */
 const browserEntries = new Set([
   "./client",
   "./react",
@@ -50,10 +36,8 @@ const program = ts.createProgram(entries, {
 });
 const checker = program.getTypeChecker();
 
-/** Effect's calls whose first argument names a span and whose second holds its options. */
 const spanCalls = new Set(["withSpan", "withSpanScoped", "makeSpan", "makeSpanScoped", "useSpan"]);
 const effectModules = new Set(["Effect", "Stream", "Layer"]);
-/** Effect's calls that set attributes: `(key, value)` or `({ key: value })`. */
 const annotationCalls = new Set(["annotateCurrentSpan", "annotateSpans"]);
 
 const problems: Array<string> = [];
@@ -66,14 +50,12 @@ const where = (node: ts.Node) => {
   return `${relative(root, file.fileName)}:${line + 1}`;
 };
 
-/** Every string a type allows, if it is a union of string literals. */
 const literals = (type: ts.Type): Array<string> | undefined => {
   const parts = type.isUnion() ? type.types : [type];
   const values = parts.map((part) => (part.isStringLiteral() ? part.value : undefined));
   return values.every((value) => value !== undefined) ? values : undefined;
 };
 
-/** Every string an expression can evaluate to, if the check can tell. */
 const strings = (node: ts.Expression): Array<string> | undefined => {
   if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return [node.text];
   if (ts.isTemplateExpression(node)) {
@@ -98,7 +80,6 @@ const collect = (node: ts.Node) => {
 for (const file of program.getSourceFiles())
   if (!file.isDeclarationFile && !file.fileName.includes("/node_modules/")) collect(file);
 
-/** The function a call runs, when the program declares it. */
 const target = (call: ts.CallExpression) => {
   const callee = ts.isPropertyAccessExpression(call.expression)
     ? call.expression.name
@@ -116,10 +97,6 @@ const target = (call: ts.CallExpression) => {
 };
 
 type Role = "name" | "options" | "attributes";
-/**
- * A helper that passes one of its parameters on as a span's name, options or attributes, such as
- * `withRemoteSpan(request, name)`: its callers supply the value, so each call site is read.
- */
 const helpers = new Set<string>();
 const forward = (parameter: ts.ParameterDeclaration, role: Role) => {
   const helper = parameter.parent;
@@ -142,7 +119,6 @@ const key = (node: ts.Node, value: string | undefined) => {
 
 const attributes = (node: ts.Expression): void => {
   if (ts.isParenthesizedExpression(node)) return attributes(node.expression);
-  // `...(condition ? { key: value } : {})`
   if (ts.isConditionalExpression(node)) {
     attributes(node.whenTrue);
     return attributes(node.whenFalse);
@@ -164,7 +140,6 @@ const attributes = (node: ts.Expression): void => {
   }
 };
 
-/** Whether `helper` spreads `parameter` into an object it builds, as `ownedBy` does with options. */
 const spreads = (helper: ts.SignatureDeclaration, parameter: ts.ParameterDeclaration) => {
   let found = false;
   const visit = (node: ts.Node) => {
@@ -181,8 +156,6 @@ const spreads = (helper: ts.SignatureDeclaration, parameter: ts.ParameterDeclara
 };
 
 const options = (node: ts.Expression) => {
-  // A helper that adds to the caller's options, such as `ownedBy(owner, options)`: read what the
-  // caller passed.
   if (ts.isCallExpression(node)) {
     const helper = target(node);
     helper?.parameters.forEach((parameter, index) => {

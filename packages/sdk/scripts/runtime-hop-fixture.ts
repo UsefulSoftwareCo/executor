@@ -1,10 +1,3 @@
-/**
- * Local-only probe of what a failed exchange with the app runtime records (`runtime-hop.ts`). Each
- * case runs exchanges against a stub on 127.0.0.1, or a failure built to break the recording, and
- * prints what the span recorded as JSON for `runtime-hop-shape.spec.ts` to judge. The HTTP cases
- * use the same `FetchHttpClient` the runtime's hops use, here on the fixture's own runtime (Node in
- * the scenario). The RPC cases use a `ws` socket, as the runtime's sessions do.
- */
 import { Cause, Deferred, Effect, Exit, Fiber } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 import * as Net from "node:net";
@@ -39,12 +32,10 @@ const cases = [
 ] as const;
 type Case = (typeof cases)[number];
 
-/** The `executor.runtime.*` attributes the current span carries. */
 const recorded = Effect.map(Effect.currentSpan, (span) =>
   Object.fromEntries([...span.attributes].filter(([key]) => key.startsWith("executor.runtime."))),
 );
 
-/** A TCP server on 127.0.0.1 that handles each connection with `onConnection`. */
 const tcpServer = (onConnection: (socket: Net.Socket) => void) =>
   Effect.acquireRelease(
     Effect.callback<Net.Server>((resume) => {
@@ -54,7 +45,6 @@ const tcpServer = (onConnection: (socket: Net.Socket) => void) =>
     (server) => Effect.sync(() => server.close()),
   ).pipe(Effect.map((server) => (server.address() as Net.AddressInfo).port));
 
-/** Run `then` once the request's headers have arrived on `socket`. */
 const untilHeaders = (socket: Net.Socket, then: () => void) => {
   let buffered = Buffer.alloc(0);
   const onData = (chunk: Buffer) => {
@@ -72,7 +62,6 @@ const answering = tcpServer((socket) =>
   ),
 );
 
-/** One exchange through `hops.http` as the runtime's `/workflow` hop makes it. */
 const exchange = (
   hops: ReturnType<typeof runtimeHops>,
   port: number,
@@ -93,17 +82,12 @@ const exchange = (
     );
   });
 
-/** A span around `program`, reporting its outcome and what the span recorded. */
 const probe = <A, E, R>(program: Effect.Effect<Exit.Exit<A, unknown>, E, R>) =>
   Effect.gen(function* () {
     const exit = yield* program;
     return { outcome: Exit.isSuccess(exit) ? "answered" : "failed", attributes: yield* recorded };
   }).pipe(Effect.withSpan("probe"), Effect.provide(FetchHttpClient.layer));
 
-/**
- * A failure built to break the recording, sent through the HTTP hop and through the RPC hop: the
- * same object must come out, classified as it would be without the recording.
- */
 const guardCase = (error: unknown, view?: RuntimeView, socket?: SocketRecord) =>
   Effect.gen(function* () {
     const hops = runtimeHops(view);
@@ -120,7 +104,6 @@ const guardCase = (error: unknown, view?: RuntimeView, socket?: SocketRecord) =>
       exit.cause.reasons.length === 1 &&
       Cause.isFailReason(exit.cause.reasons[0]!) &&
       exit.cause.reasons[0]!.error === error;
-    // The classification the failure gets, or that classifying it throws, as without the recording.
     const label = (value: unknown) => {
       try {
         return classify(value);
@@ -141,7 +124,6 @@ const guardCase = (error: unknown, view?: RuntimeView, socket?: SocketRecord) =>
     };
   }).pipe(Effect.withSpan("probe"));
 
-/** An error whose `code` getter throws. */
 const throwingGetter = () => {
   const error = new Error("synthetic");
   Object.defineProperty(error, "code", {
@@ -151,7 +133,6 @@ const throwingGetter = () => {
   });
   return error;
 };
-/** A value every property read of which throws. */
 const throwingProxy = () =>
   new Proxy(new Error("synthetic"), {
     get() {
@@ -165,7 +146,6 @@ const throwingProxy = () =>
     },
   });
 
-/** An RPC socket to a WebSocket stub doing `serve`, recorded once it has closed. */
 const wsServer = (serve: (socket: WebSocket) => void) =>
   Effect.acquireRelease(
     Effect.callback<WebSocketServer>((resume) => {
@@ -177,7 +157,6 @@ const wsServer = (serve: (socket: WebSocket) => void) =>
     (server) => Effect.sync(() => server.close()),
   ).pipe(Effect.map((server) => (server.address() as { port: number }).port));
 
-/** Run `then` once at least `ms` have passed on this process's clock, however late timers fire. */
 const atLeast = (ms: number, then: () => void) => {
   const from = performance.now();
   const check = () => {
@@ -188,11 +167,6 @@ const atLeast = (ms: number, then: () => void) => {
   setTimeout(check, ms);
 };
 
-/**
- * One RPC session through `hops.rpc`: its work fails once the socket has closed (`transport`), at
- * once while the socket is open (`app`), succeeds (`success`), or is interrupted (`interrupt`).
- * `onReceived` runs after the client has received a message (the recording has counted it).
- */
 const session = (
   port: number,
   ending: "transport" | "app" | "success" | "interrupt",
@@ -230,13 +204,11 @@ const session = (
 const run = (name: Case) => {
   switch (name) {
     case "http-unanswered":
-      // Closes 120 ms after the request arrived: the time to failure is at least that.
       return tcpServer((socket) =>
         untilHeaders(socket, () => setTimeout(() => socket.destroy(), 120)),
       ).pipe(Effect.flatMap((port) => probe(exchange(runtimeHops(), port, "{}"))));
     case "http-answer-reset":
       return Effect.gen(function* () {
-        // The server resets only once the client has read the reply's headers.
         const headersRead = yield* Deferred.make<void>();
         const port = yield* tcpServer((socket) =>
           untilHeaders(socket, () => {
@@ -276,7 +248,6 @@ const run = (name: Case) => {
         Effect.flatMap((port) => probe(exchange(runtimeHops(), port, "x".repeat(4 * 1024 * 1024)))),
       );
     case "http-idle":
-      // A successful exchange, 150 ms idle, then one that fails: the failure says how long it was.
       return Effect.gen(function* () {
         const hops = runtimeHops();
         const good = yield* answering;
@@ -289,7 +260,6 @@ const run = (name: Case) => {
         };
       });
     case "http-restarted":
-      // A runtime replaced twice, the last time 80 ms before the failure.
       return Effect.gen(function* () {
         const lastAt = performance.now();
         yield* Effect.sleep("80 millis");
@@ -316,7 +286,6 @@ const run = (name: Case) => {
         },
       });
     case "context-checked":
-      // A probe context with keys and values the recording must refuse, and an odd error tag.
       return guardCase(
         Object.assign(new Error("synthetic"), {
           _tag: "has spaces in it",
@@ -330,7 +299,6 @@ const run = (name: Case) => {
             "executor.runtime.probe.outcome": "timeout",
             "executor.runtime.probe.in_flight": true,
             "executor.runtime.http.route": "/elsewhere",
-            // Keys under the recording's own prefix that the hop never writes itself.
             "executor.runtime.forged": "forged",
             "executor.runtime.http.forged": 1,
             "other.prefix": 1,
@@ -342,8 +310,6 @@ const run = (name: Case) => {
         },
       );
     case "code-long":
-      // Node's longer codes, 26 and 28 characters, are kept. A code of Bun's word form longer than
-      // the 40 characters a value may have is recorded as `other`, not dropped.
       return Effect.gen(function* () {
         const stream = yield* guardCase(
           Object.assign(new Error("synthetic"), { code: "ERR_STREAM_PREMATURE_CLOSE" }),
@@ -363,13 +329,10 @@ const run = (name: Case) => {
         };
       });
     case "ws-refused":
-      // Nothing listens on the port: the socket never opens.
-      // The listener is closed (its socket released at once) before the client connects.
       return Effect.scoped(tcpServer(() => {})).pipe(
         Effect.flatMap((port) => session(port, "transport", false)),
       );
     case "ws-closed-before-upgrade":
-      // The server accepts the connection and closes it before answering the upgrade.
       return tcpServer((socket) => untilHeaders(socket, () => socket.destroy())).pipe(
         Effect.flatMap((port) => session(port, "transport", false)),
       );
@@ -378,8 +341,6 @@ const run = (name: Case) => {
         Effect.flatMap((port) => session(port, "transport", false)),
       );
     case "ws-close-after-message":
-      // Answers the client's message. The client, at least 30 ms on its own clock after it has
-      // received the reply, asks the stub to close: the order is a fact, not a delay.
       return Effect.gen(function* () {
         let served: WebSocket | undefined;
         const port = yield* wsServer((socket) => {

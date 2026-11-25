@@ -1,16 +1,3 @@
-/**
- * Main health's reads: every answer it takes from GitHub, decoded at the boundary. Each answer is
- * decoded through a schema that names exactly the fields the code uses, with their types and the
- * values GitHub documents for them; a value outside them (a missing field, a wrong type, an enum
- * value GitHub does not list, a run of another workflow, branch or event, a timestamp GitHub
- * stamped more than `skew` in the future, a held beta's `since` more than `sinceSkew` in the
- * future) fails the read. So does a list whose pages disagree with the count GitHub gives for it,
- * that holds an item twice, or whose runs are out of order, and a GraphQL answer that carries
- * `errors`. A failed read is `ReadFailed`: the run stops before its first write, so no
- * answer that is partial or malformed can read as nothing being wrong.
- *
- * Every request goes through `gh api`, one at a time, in the order the facts need them.
- */
 import { Effect, FileSystem, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import {
@@ -28,17 +15,14 @@ export class ReadFailed extends Schema.TaggedError<ReadFailed>()("ReadFailed", {
   message: Schema.String,
 }) {}
 
-/** A workflow whose runs decide a source: CI on main, or the Windows check. */
 export interface Source {
   readonly workflow: string;
   readonly branch: string;
   readonly event: string;
-  /** The run title that counts, when other runs share the workflow, branch and event. */
   readonly title?: string;
 }
 
 export interface Settings {
-  /** `OWNER/NAME`. */
   readonly repository: string;
   /** `https://github.com`. */
   readonly server: string;
@@ -50,35 +34,21 @@ export interface Settings {
     readonly workflow: string;
     readonly branch: string;
     readonly artifact: string;
-    /** The events Beta runs on (beta.yml's `on`): only a run for one of them uploads a decision. */
     readonly events: ReadonlyArray<string>;
   };
-  /** Milliseconds since the epoch, read once for the whole run. */
   readonly now: number;
-  /** A scratch directory of this run's own. */
   readonly temp: string;
 }
 
-/** How far back a red source looks for the last green run, in pages of 100 runs. */
 const historyPages = 5;
-/** How old a Beta decision may be and still count: a day less than beta.yml keeps the artifact. */
 const betaWindow = 6 * 24 * 60 * 60 * 1000;
-/** How far in the future a timestamp GitHub stamps may be, for clocks that differ a little. */
 const skew = 5 * 60 * 1000;
-/**
- * How far in the future a held beta's `since` may be: clock skew between the Beta runner that
- * computed it (from commit and npm publish times, all in its past) and the runner reading it, and
- * nothing more. Hosted runners keep their clocks synchronised to well under a second, so a minute
- * is ample for skew; a `since` further ahead was never a time in Beta's past, and fails the read.
- */
 const sinceSkew = 60 * 1000;
 const perPage = 100;
 const stays = "The issue stays as it is until a run reads it.";
 
 const failed = (message: string) => Effect.fail(new ReadFailed({ message }));
 
-// Values as GitHub documents them (REST "Workflow runs" and "Workflow jobs"). startup_failure is
-// a run conclusion GitHub gives a run whose workflow could not start.
 const RunStatus = Schema.Literals([
   "queued",
   "in_progress",
@@ -121,10 +91,8 @@ const iso = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/u;
 
 const escaped = (text: string) => text.replace(/[.*+?^${}()|[\]\\/]/gu, "\\$&");
 
-/** The schemas of every answer, with what this run expects: its repository, sources and clock. */
 const schemas = (settings: Settings) => {
   const repository = `${settings.server}/${settings.repository}`;
-  /** A time no later than now and `allowed`, for clocks that differ a little. */
   const Time = (allowed: number) =>
     Schema.String.check(
       Schema.isPattern(iso),
@@ -134,7 +102,6 @@ const schemas = (settings: Settings) => {
           : Date.parse(value) <= settings.now + allowed || `${value} is in the future`,
       ),
     );
-  /** A time GitHub stamped, no later than now and `skew`. */
   const Stamp = Time(skew);
   const Run = (source: Source) =>
     Schema.Struct({
@@ -229,7 +196,6 @@ const schemas = (settings: Settings) => {
         }),
       ),
     }),
-    /** The run that uploaded the newest decision: a Beta run on Beta's branch, for one of its events. */
     Producer: (run: number) =>
       Schema.Struct({
         id: Schema.Literal(run),
@@ -238,18 +204,14 @@ const schemas = (settings: Settings) => {
         head_branch: Schema.Literal(settings.beta.branch),
         status: RunStatus,
       }),
-    /** Exactly what beta.yml's "Record the held beta decision" step writes; decoded with no field more. */
     Decision: Schema.Struct({
       state: Schema.Literals(["held", "clear"]),
       reason: Schema.String,
-      // When the beta became due: empty when that could not be read. Never in the future, beyond
-      // `sinceSkew` (a minute) for the two runners' clocks; anything later fails the read.
       since: Schema.Union([Schema.Literal(""), Time(sinceSkew)]),
       run: Schema.String.check(
         Schema.isPattern(new RegExp(`^${escaped(repository)}/actions/runs/[0-9]+$`, "u")),
       ),
     }),
-    /** A page of the open issues with the label. An answer that carries `errors` is refused, even an empty list. */
     IssuesPage: Schema.Struct({
       errors: Schema.optionalKey(Schema.Never),
       data: Schema.Struct({
@@ -293,7 +255,6 @@ const schemas = (settings: Settings) => {
   };
 };
 
-/** Runs `gh` with ARGS: its output as bytes, its error output and exit code. */
 const gh = (args: ReadonlyArray<string>) =>
   Effect.gen(function* () {
     const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -314,12 +275,10 @@ const gh = (args: ReadonlyArray<string>) =>
     Effect.mapError((error) => new ReadFailed({ message: `gh could not run: ${error.message}` })),
   );
 
-/** The HTTP status of a failed `gh api`, when it names one. */
 const statusOf = (stderr: string) => Number(/\(HTTP (\d{3})\)/u.exec(stderr)?.[1] ?? 0);
 
 const text = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
 
-/** One answer of `gh api ARGS`, or a failed read. */
 const answer = (args: ReadonlyArray<string>) =>
   Effect.gen(function* () {
     const result = yield* gh(["api", ...args]);
@@ -328,7 +287,6 @@ const answer = (args: ReadonlyArray<string>) =>
     return result.stdout;
   });
 
-/** ANSWER as SCHEMA, or a failed read naming WHAT. */
 const decode = <S extends Schema.Top & { readonly DecodingServices: never }>(
   schema: S,
   bytes: Uint8Array,
@@ -347,12 +305,6 @@ const decode = <S extends Schema.Top & { readonly DecodingServices: never }>(
     ),
   );
 
-/**
- * Checks page PAGE of a list against its count: the same count as every earlier page (`total`,
- * undefined on the first), exactly the items the count leaves for this page, and no item an
- * earlier page or this one already held. A page cut short or shifted by a change between two reads
- * would otherwise read as a list with nothing wrong in it.
- */
 const checkPage = (
   what: string,
   page: number,
@@ -377,7 +329,6 @@ const checkPage = (
     return count;
   });
 
-/** Every item of a REST list read to its end, each page checked against its count. */
 const readAll = <I extends { readonly id: number }>(
   path: string,
   page: (
@@ -410,24 +361,14 @@ const readAll = <I extends { readonly id: number }>(
     }
   });
 
-/** A run that counts, with the attempt that decides it and how that attempt ended. */
 interface Decided extends RunRef {
   readonly createdAt: number;
   readonly attempt: number;
   readonly conclusion: string;
 }
 
-/** A cancelled or skipped attempt is no result. */
 const isVoid = (conclusion: string) => conclusion === "cancelled" || conclusion === "skipped";
 
-/**
- * The one order runs are ranked in: newer `created_at` first, then the higher id first among runs
- * created at the same time. GitHub lists a workflow's runs newest first, which the reader checks
- * (a run listed after an older one is a failed read), but promises no order among runs that share
- * a timestamp, and those can fall either side of a page's end. So the id half of the key is never
- * read from the order GitHub serves: it is applied only by sorting, and only to runs whose whole
- * timestamp has been read (see `workflow`), so what is decided does not depend on that order.
- */
 const byTime = (a: { readonly createdAt: number }, b: { readonly createdAt: number }) =>
   b.createdAt - a.createdAt;
 const newestFirst = (a: Decided, b: Decided) => byTime(a, b) || b.id - a.id;
@@ -436,37 +377,6 @@ export const reads = (settings: Settings) => {
   const S = schemas(settings);
   const repo = `repos/${settings.repository}`;
 
-  /**
-   * The attempt of a listed run that counts, or undefined when the run counts for nothing. Take the
-   * run's latest completed attempt; a later attempt still running does not count yet.
-   *
-   * - It succeeded: green. It failed (any conclusion but success, cancelled or skipped): red.
-   * - It was cancelled or skipped: that is no result on its own, and it never hides an earlier
-   *   failure. The latest attempt before it that was neither decides only if it failed. If it
-   *   succeeded, or every attempt was cancelled or skipped, the run counts for nothing: it is not
-   *   green, since its latest completed attempt did not succeed, and older runs decide.
-   * - No attempt has completed (a first attempt still running): nothing.
-   *
-   * So for a run of two attempts:
-   *
-   *   attempt 1   attempt 2   counts as
-   *   success     running     green, attempt 1
-   *   success     success     green, attempt 2
-   *   success     failed      red, attempt 2
-   *   success     cancelled   nothing
-   *   failed      running     red, attempt 1
-   *   failed      success     green, attempt 2
-   *   failed      failed      red, attempt 2
-   *   failed      cancelled   red, attempt 1
-   *   cancelled   running     nothing
-   *   cancelled   success     green, attempt 2
-   *   cancelled   failed      red, attempt 2
-   *   cancelled   cancelled   nothing
-   *   running     (none)      nothing
-   *
-   * Earlier attempts are read one by one (runs/ID/attempts/N), newest first, only as far as the
-   * rule needs; each must be that run's attempt, completed, with a conclusion.
-   */
   const decidingAttempt = (run: {
     readonly id: number;
     readonly status: string;
@@ -506,11 +416,6 @@ export const reads = (settings: Settings) => {
       return undefined;
     });
 
-  /**
-   * A red run's failed jobs, by job id. The first `logsRead` have the scenarios their logs list in
-   * Vitest's summary or, for a job stopped before it, its live reporter. A log GitHub no longer has
-   * (404 or 410) is said to be gone; any other failure to read one fails the read.
-   */
   const failedJobs = (run: Decided) =>
     Effect.gen(function* () {
       const jobs = yield* readAll(
@@ -529,8 +434,6 @@ export const reads = (settings: Settings) => {
           out.push({ name, url: job.html_url, log: "unread", scenarios: [] });
           continue;
         }
-        // gh prints no response that holds terminal escape sequences unless told to, and a job's
-        // log holds its colored output.
         const result = yield* gh([
           "api",
           "--allow-escape-sequences",
@@ -550,10 +453,6 @@ export const reads = (settings: Settings) => {
       return out;
     });
 
-  /**
-   * The commits from the last green run to the first red one: GitHub says how many there are, and
-   * the first 50 are listed. Commits GitHub cannot compare (404) are said to be gone.
-   */
   const commits = (green: RunRef, first: RunRef) =>
     Effect.gen(function* () {
       const path = `${repo}/compare/${green.sha}...${first.sha}?per_page=50&page=1`;
@@ -578,20 +477,6 @@ export const reads = (settings: Settings) => {
       } satisfies Commits;
     });
 
-  /**
-   * A workflow's fact, from its runs: read a page at a time, newest first, each page checked and
-   * each run decoded, until the newest run that counts decides: green at once, red once the last
-   * green run before it is read, the list ends or `historyPages` pages are read. Unknown only when
-   * the whole list was read and no run counts; `historyPages` pages without one is a failed read,
-   * since what the runs past them say is not known.
-   *
-   * A decision rests on one run: the green run, for green and for red's last green (or the newest
-   * red run, while no green one is read). It stands only once every run created at that run's
-   * time has been read, since one of them, with a higher id, ranks above it (`newestFirst`): so
-   * while that run's time is the time of the last run listed so far, cancelled and other runs
-   * included, the next page is read, until a run older than it is listed or the list ends. A tie
-   * still not read whole after `historyPages` pages is a failed read.
-   */
   const workflow = (source: Source) =>
     Effect.gen(function* () {
       const path = `${repo}/actions/workflows/${source.workflow}/runs?branch=${source.branch}&event=${source.event}`;
@@ -599,7 +484,6 @@ export const reads = (settings: Settings) => {
       const seen = new Set<number>();
       let total: number | undefined;
       let previous: number | undefined;
-      /** What the runs read so far decide, and the run that decision rests on. */
       const latest = (): {
         readonly health: "none" | "green" | "red" | "open";
         readonly rests?: Decided;
@@ -643,7 +527,6 @@ export const reads = (settings: Settings) => {
         }
         if (page * perPage >= total) break;
         const state = latest();
-        // Every run listed later is no newer than the last one listed so far.
         const whole = state.rests !== undefined && state.rests.createdAt > previous!;
         if ((state.health === "green" || state.health === "red") && whole) break;
         if (page === historyPages) {
@@ -681,14 +564,6 @@ export const reads = (settings: Settings) => {
       } satisfies WorkflowFact;
     });
 
-  /**
-   * The held beta: the decision in the newest artifact named `beta.artifact` that a run on Beta's
-   * branch in this repository uploaded in the last `betaWindow`, or unknown when there is none.
-   * Artifacts of other branches or of forks are not Beta's decisions and are passed over. The
-   * newest one must be readable: expired, from another workflow or event, not downloadable, or
-   * holding anything but one decision as beta.yml writes it is a failed read, and an older
-   * decision never stands in for it.
-   */
   const beta = Effect.gen(function* () {
     const path = `${repo}/actions/artifacts?name=${settings.beta.artifact}`;
     const artifacts = yield* readAll(path, (bytes, what) =>
@@ -724,7 +599,6 @@ export const reads = (settings: Settings) => {
       yield* answer([`${repo}/actions/runs/${newest.workflow_run.id}`]),
       `Run ${newest.workflow_run.id}, which uploaded artifact ${newest.id} (only ${settings.beta.workflow} on ${settings.beta.branch} uploads it),`,
     );
-    // gh refuses to print a response holding an escape byte unless told to, and a zip's bytes can.
     const zip = yield* answer([
       "--allow-escape-sequences",
       `${repo}/actions/artifacts/${newest.id}/zip`,
@@ -745,7 +619,6 @@ export const reads = (settings: Settings) => {
       : ({ health: "good", run: decision.run } satisfies BetaFact);
   });
 
-  /** The one file NAME of a zip, or a failed read when it holds anything else. */
   const unzipped = (zip: Uint8Array, name: string, id: number) =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -781,13 +654,6 @@ export const reads = (settings: Settings) => {
       return content.stdout;
     });
 
-  /**
-   * The open issues that are this script's, lowest number first: the label, opened by the
-   * github-actions app's bot (GraphQL names it `github-actions`, of type Bot), and the marker in the
-   * body. Read through GraphQL, whose issue list says how many issues match (REST's does not), 100 a
-   * page: every page must report the same count and hold exactly what it leaves for that page, say
-   * whether another follows as the count does, and hold no issue twice.
-   */
   const owned = Effect.gen(function* () {
     const query = `query($owner: String!, $name: String!, $label: String!, $after: String) {
   repository(owner: $owner, name: $name) {
@@ -858,7 +724,6 @@ export const reads = (settings: Settings) => {
       .map(({ number, title, body }) => ({ number, title, body }));
   });
 
-  /** Whether the label exists: only a 404 means it does not. */
   const labelExists = Effect.gen(function* () {
     const result = yield* gh(["api", `${repo}/labels/${settings.label}`]);
     if (result.exitCode !== 0) {
@@ -882,11 +747,6 @@ export const reads = (settings: Settings) => {
 
 const ref = (run: Decided): RunRef => ({ id: run.id, url: run.url, sha: run.sha });
 
-/**
- * The failed scenarios a job's log names, as Vitest's summary lists them (`FAIL  file > title`),
- * or for a job stopped before its summary, as its live reporter marked them (`× file > title`):
- * at most 20, each once, in order. Timestamps and terminal controls are gone from the text.
- */
 const scenarios = (bytes: Uint8Array) => {
   const lines = stripControls(
     text(bytes)

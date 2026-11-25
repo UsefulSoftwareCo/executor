@@ -1,4 +1,3 @@
-/** Operator-free data steps, including the pin of existing apps to an explicit `apps` framework. */
 export * from "./contracts/data-steps.ts";
 export * from "./contracts/framework-pin.ts";
 export * from "./contracts/executor-app-redeploy.ts";

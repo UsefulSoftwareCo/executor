@@ -1,4 +1,3 @@
-/** Default management keys are ordinary personal accounts each user links to the common app. */
 import { holdTeamInstallation, InstallationDirectory } from "../support/team-installation.ts";
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema, Schedule } from "effect";
@@ -97,7 +96,6 @@ layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it
           );
           expect(card).toContain(account.label);
           expect(card).not.toContain("Needs account");
-          // Add app knows the default app is installed, so its Executor row offers Open, not Add.
           yield* browser.use("Open Add app", (page) =>
             page.goto(`/org/${actors.organization.slug}/apps/add`),
           );
@@ -160,7 +158,6 @@ layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it
                   .click()
                   .then(() => page.getByRole("menuitem", { name: "Unlink", exact: true }).click()),
               );
-              // No other app uses the managed key, so the page offers to delete it; keep it.
               yield* browser.use("Keep the managed account when offered its deletion", (page) =>
                 page
                   .getByRole("dialog", { name: "Delete unused account?" })
@@ -172,7 +169,6 @@ layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it
                   .getByRole("dialog", { name: "Delete unused account?" })
                   .waitFor({ state: "hidden" }),
               );
-              // The kept account stays listed as one the user could link again, unselected.
               yield* browser.use("Wait for the confirmed unlink", (page) =>
                 page
                   .getByRole("list", { name: "Executor accounts", exact: true })
@@ -212,7 +208,6 @@ layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it
             Effect.tap((response) => Effect.sync(() => expect(response.status).toBe(200))),
             Effect.flatMap((response) => body(Inventory, response)),
           );
-        // Setup runs without an inventory request. Reads only observe committed progress.
         yield* read(actors.owner).pipe(
           Effect.repeat({
             schedule: Schedule.spaced("250 millis"),
@@ -237,7 +232,6 @@ layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it
               directory,
             );
             yield* installBrowserClock;
-            // A document load renders the directory on the server, beyond the browser hold.
             yield* openThroughBrowser(
               "Open Apps during team installation",
               `/org/${actors.organization.slug}/apps`,
@@ -265,7 +259,6 @@ layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it
               ),
             ).toBe(0);
             yield* held.resume;
-            // A settled directory learns about the retry at its next idle reconciliation.
             yield* advanceToReconciliation;
             yield* browser.use("Retried installation shows the skeleton again", (page) =>
               page.getByRole("status", { name: "Installing app", exact: true }).waitFor(),
@@ -305,7 +298,6 @@ layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it
             Effect.tap((response) => Effect.sync(() => expect(response.status).toBe(200))),
             Effect.flatMap((response) => body(Inventory, response)),
           );
-        // Setup runs without an inventory request. Reads only observe committed progress.
         yield* read(actors.owner).pipe(
           Effect.repeat({
             schedule: Schedule.spaced("250 millis"),
@@ -381,7 +373,6 @@ layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it
             kind: "query",
             input: {},
           });
-        // Each user's call runs with their own linked key; another user's key cannot be linked.
         const [ownerCall, adminCall, deniedLink] = yield* Effect.all(
           [
             call(actors.owner),
@@ -408,7 +399,6 @@ layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it
           Schema.Struct({ id: Schema.String }),
           yield* api.request(actors.owner, "POST", connectionsPath(path, "user", "service"), {}),
         );
-        // An ordinary token the member made: connecting checks it, so it is live until revoked.
         const ordinary = yield* body(
           Schema.Struct({ id: Schema.String, key: Schema.String }),
           yield* api.request(actors.owner, "POST", "/api/auth/api-key/create", {
@@ -434,16 +424,11 @@ layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it
             keyId: ordinary.id,
           })).status,
         ).toBe(200);
-        // Connecting from the app links the manual key in place of the managed one, which stays
-        // saved; member setup on later reads neither links it again nor mints another.
         const afterManual = yield* read(actors.owner);
         expect(yield* linkedAccountIds(actors.owner, path)).toEqual([manual.id]);
         expect(
           afterManual.accounts.filter((item) => item.method === "apiKey").map((item) => item.id),
         ).toEqual(expect.arrayContaining([account, manual.id]));
-        // Calls now run with the manual key, whose revoked token the API refuses. Only the
-        // Executor app's own key is ever recreated: this one stays refused, call after call, and
-        // the refusal tells the agent how to replace it.
         for (const attempt of ["first", "second"]) {
           const manualCall = yield* call(actors.owner);
           expect(manualCall.status, `${attempt}: ${JSON.stringify(manualCall.body)}`).toBe(502);
@@ -473,7 +458,6 @@ layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it
             (key) => key.name === "Executor app (created automatically)",
           ),
         ).toHaveLength(1);
-        // Linking the managed key again replaces the manual one.
         yield* linkAccount(actors.owner, path, "service", account);
         expect(yield* linkedAccountIds(actors.owner, path)).toEqual([account]);
         const chosen = yield* call(actors.owner);
@@ -525,7 +509,6 @@ layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it
         );
         expect(yield* managedKeys).toBe(1);
         yield* unlinkAccount(actors.admin, path, "service", account);
-        // Member setup runs on every read; none of them may link the key again or mint another.
         const unlinked = Effect.gen(function* () {
           const inventories = yield* Effect.forEach([0, 1, 2, 3], () => read(actors.admin), {
             concurrency: 4,
@@ -561,7 +544,6 @@ layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it
           expect(call.body).toMatchObject({ _tag: "AccountRequired", slot: "service" });
         });
         yield* unlinked;
-        // A new version of the common app sends member setup past its fast path.
         const original = yield* body(
           Schema.Struct({
             files: Schema.Array(Schema.Struct({ path: Schema.String, content: Schema.String })),
@@ -580,7 +562,6 @@ layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it
         });
         expect(redeployed.status, JSON.stringify(redeployed.body)).toBe(200);
         yield* unlinked;
-        // Linking again is the member's own choice and works on the kept account.
         yield* linkAccount(actors.admin, path, "service", account);
         expect(yield* linkedAccountIds(actors.admin, path)).toEqual([account]);
       }),
@@ -606,7 +587,6 @@ layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it
             files: files.toSorted((left, right) => left.path.localeCompare(right.path)),
           })),
         );
-        // A version whose files differ from this host's template, as an earlier template's do.
         const earlier = (yield* source).files.map((file) =>
           file.path === "index.ts"
             ? { ...file, content: `${file.content}\n// Synthetic earlier template\n` }
@@ -615,7 +595,6 @@ layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it
         const deployed = yield* saveAndDeploy(actors.owner, path, { files: earlier });
         expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
         const version = (yield* body(Schema.Struct({ app: Version }), deployed)).app.activeVersion;
-        // Record it as the version Executor installed, then start the current server over it.
         yield* legacyStorage([
           {
             sql: `UPDATE "organization" SET metadata = jsonb_set(coalesce(metadata::jsonb, '{}'::jsonb), '{executorDefaults}', jsonb_build_object('installed', true, 'app', $2::text, 'deployment', $3::text))::text WHERE id = $1`,
@@ -623,7 +602,6 @@ layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it
           },
         ]);
         yield* serverControl("start");
-        // A new admin joins, and member setup mints and links their key.
         const email = `joining-admin-${randomUUID().slice(0, 8)}@example.test`;
         const invitation = yield* body(
           Resource,
@@ -645,12 +623,10 @@ layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it
         const joined = yield* managementApp(joining);
         expect(joined.app.id).toBe(app.id);
         expect(joined.account).not.toBe(account);
-        // Setup left the organization's version, and the keys that fit it, as they were.
         expect(
           (yield* body(Version, yield* api.request(actors.owner, "GET", path))).activeVersion,
         ).toBe(version);
         expect((yield* source).files).toEqual(earlier);
-        // The owner's key still fits the app, so calls keep running with it.
         expect(yield* linkedAccountIds(actors.owner, path)).toEqual([account]);
         const call = yield* api.request(actors.owner, "POST", `${path}/tools/call`, {
           tool: "context.get",

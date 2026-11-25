@@ -433,7 +433,6 @@ export interface Runtime<Requirements = never> {
     | RuntimeProtocolUnsupported
     | RuntimeAppsDependencyMissing
     | BuildMemoryExceeded
-    // Keeping the build failed in storage: nothing about the app, and building again may succeed.
     | BlobStoreError,
     Requirements
   >;

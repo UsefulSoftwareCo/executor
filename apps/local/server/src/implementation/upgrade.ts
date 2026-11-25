@@ -1,11 +1,3 @@
-/**
- * `executor upgrade`: install a newer release the way this copy was installed. A standalone install
- * downloads the release archive, checks it, and switches to it, keeping the version it replaced for
- * `--rollback`. An npm-family install runs its package manager, after checking that the release's
- * launcher supports this Node. Either way it runs only on request and confirms the new command
- * works. Both replace the files a running background server uses, so that server is stopped first
- * and started again on the new version afterwards, or on this one if the upgrade fails.
- */
 import {
   compareReleaseVersions,
   newerRelease,
@@ -49,16 +41,9 @@ import {
   npmRegistry,
 } from "./update-notice.ts";
 
-/** The process facts the entry point supplies. */
 export interface UpgradeHost {
-  /** The file that started the CLI, whose location shows how it was installed. */
   readonly entry: string | undefined;
-  /**
-   * The Node.js version, without the leading v, that runs the npm launcher or the CLI; none for a
-   * release executable started directly, which needs no Node.
-   */
   readonly node: string | undefined;
-  /** The running executable, which a standalone install keeps under its versions directory. */
   readonly executable: string;
   readonly platform: string;
   readonly arch: string;
@@ -71,10 +56,6 @@ export interface UpgradeOptions {
   readonly rollback: boolean;
 }
 
-/**
- * Each package manager's global install. It installs only the launcher, which downloads the
- * release's runtime the first time it starts.
- */
 const installArgs = (method: GlobalInstaller, version: string): ReadonlyArray<string> => {
   const spec = `executor@${version}`;
   switch (method) {
@@ -99,7 +80,6 @@ const Release = Schema.Struct({
   engines: Schema.optional(Schema.Struct({ node: Schema.optional(Schema.String) })),
 });
 
-/** The release's published manifest, or undefined when the registry has no such version. */
 const fetchRelease = (version: string) =>
   Effect.gen(function* () {
     const registry = yield* npmRegistry;
@@ -113,17 +93,12 @@ const fetchRelease = (version: string) =>
             ),
       ),
       Effect.timeout(Duration.seconds(10)),
-      // The body is read before the client's connections close with this layer.
       Effect.provide(NodeHttpClient.layerNodeHttp),
     );
   });
 
 const numbers = (version: string) => version.split(".").map((part) => Number.parseInt(part, 10));
 
-/**
- * Whether `node` meets an engines range. Releases publish `>=major.minor.patch`; any other range
- * is reported as one this command cannot check rather than guessed at.
- */
 const meetsNode = (node: string, range: string) => {
   const match = /^>=\s*v?(\d+(?:\.\d+){0,2})$/u.exec(range.trim());
   if (match === null) return undefined;
@@ -136,22 +111,15 @@ const meetsNode = (node: string, range: string) => {
   return true;
 };
 
-/**
- * Windows package managers and command shims are .cmd scripts that only cmd.exe starts. It is named
- * from ComSpec rather than found on PATH, as Bun's `shell` option looks for it. The arguments here
- * are package specs and flags, which need no quoting.
- */
 const throughShell = (platform: string, command: string, args: ReadonlyArray<string>) =>
   platform === "win32"
     ? {
-        // An empty value, as a stripped environment can pass, names no shell either.
         command:
           process.env.ComSpec || `${process.env.SystemRoot || "C:\\Windows"}\\System32\\cmd.exe`,
         args: ["/d", "/s", "/c", [command, ...args].join(" ")],
       }
     : { command, args };
 
-/** Run one command with its output streamed through; resolves to its exit code and stderr. */
 const runStreaming = (command: string, args: ReadonlyArray<string>, platform: string) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -184,19 +152,16 @@ const runStreaming = (command: string, args: ReadonlyArray<string>, platform: st
     }),
   );
 
-/** How to start the installed `executor`: through PATH, or a standalone version's executable. */
 type Installed = (args: ReadonlyArray<string>) => {
   readonly command: string;
   readonly args: ReadonlyArray<string>;
 };
 
-/** `executor` the way a shell would start it, through PATH. */
 const onPath =
   (platform: string): Installed =>
   (args) =>
     throughShell(platform, "executor", args);
 
-/** Run the installed `executor` with `args` to exit, with its output captured. */
 const runInstalled = (
   installed: Installed,
   args: ReadonlyArray<string>,
@@ -225,7 +190,6 @@ const runInstalled = (
 const lastLines = (text: string, count: number) =>
   text.trimEnd().split("\n").slice(-count).join("\n");
 
-/** Ask on a terminal. Without one, `whenNotInteractive` decides: proceed, or stop with its error. */
 const confirm = (
   message: string,
   initial: boolean,
@@ -246,10 +210,8 @@ const confirm = (
     if (!accepted) return yield* failed("cancelled", "Upgrade cancelled. Nothing was changed.");
   });
 
-/** The version a development build's server reports. It runs from a checkout, not an install. */
 const developmentVersion = "0.0.0-dev";
 
-/** Say when the background server for this data directory still runs another version. */
 const restartNotice = (directory: string, target: string) =>
   Effect.gen(function* () {
     const service = yield* discover(directory);
@@ -263,19 +225,11 @@ const restartNotice = (directory: string, target: string) =>
     );
   });
 
-/**
- * What became of this data directory's background server before an upgrade replaced files:
- * nothing to stop, stopped, or still running because it did not stop.
- */
 type Paused =
   | { readonly state: "none" }
   | { readonly state: "stopped" }
   | { readonly state: "running"; readonly pid: number; readonly message: string };
 
-/**
- * Stop the background server, which may run from the files an upgrade is about to replace or
- * remove. A development build's server runs from its checkout and keeps running.
- */
 const pauseService = (directory: string) =>
   Effect.gen(function* () {
     const service = yield* registered(directory);
@@ -296,10 +250,6 @@ const pauseService = (directory: string) =>
     );
   });
 
-/**
- * Run `change` with the background server paused. If it fails or is interrupted after the server
- * stopped, this CLI, which the failed change left in place, starts the server again.
- */
 const whilePaused = <A, E, R>(directory: string, paused: Paused, change: Effect.Effect<A, E, R>) =>
   paused.state !== "stopped"
     ? change
@@ -318,13 +268,6 @@ const whilePaused = <A, E, R>(directory: string, paused: Paused, change: Effect.
         ),
       );
 
-/**
- * After a successful upgrade, start the background server it stopped with the new version's own
- * `executor service start`, and say whether it runs that version. A server that was not stopped
- * gets the restart notice instead. A release from before the background service, which a rollback
- * or a downgrade can install, has no `executor service`: it refuses `service status`, which every
- * later release answers, and its server runs in the foreground instead.
- */
 const resumeService = (directory: string, paused: Paused, installed: Installed, version: string) =>
   Effect.gen(function* () {
     if (paused.state !== "stopped") return yield* restartNotice(directory, version);
@@ -359,17 +302,12 @@ const resumeService = (directory: string, paused: Paused, installed: Installed, 
     );
   });
 
-/** A standalone install's version, started from its own executable. */
 const versionInstalled = (install: StandaloneInstall, version: string, platform: string) =>
   Effect.map(versionExecutable(install, version, platform), (command): Installed => (args) => ({
     command,
     args,
   }));
 
-/**
- * Switch a standalone install to `version` with the background server paused. A server that did
- * not stop keeps the version it runs from installed.
- */
 const switchPaused = (
   directory: string,
   install: StandaloneInstall,
@@ -395,7 +333,6 @@ const switchPaused = (
     return paused;
   });
 
-/** Switch a standalone install back to the version it ran before its last upgrade. */
 const rollback = (options: UpgradeOptions, host: UpgradeHost) =>
   Effect.gen(function* () {
     const install = yield* standaloneInstall(host.executable, host.platform);
@@ -461,7 +398,6 @@ export const upgrade = (options: UpgradeOptions, host: UpgradeHost) =>
             ),
           );
 
-    // A one-shot runner fetches the release each run; there is no installed copy to replace.
     if (isOneShot(method)) {
       const spec = requested ?? (Option.isSome(current) ? releaseChannel(current.value) : "beta");
       yield* Console.log(
@@ -509,7 +445,6 @@ export const upgrade = (options: UpgradeOptions, host: UpgradeHost) =>
         `${registry} has no Executor release v${target}. Nothing was changed.`,
       );
 
-    // A standalone install carries its own runtime. The npm launcher runs on the person's Node.
     const range = release.engines?.node;
     if (method !== "standalone" && host.node !== undefined && range !== undefined) {
       const meets = meetsNode(host.node, range);
@@ -599,8 +534,6 @@ export const upgrade = (options: UpgradeOptions, host: UpgradeHost) =>
         undefined,
       );
 
-    // The package manager replaces the files the background server runs from; Windows would refuse
-    // to replace its running executable.
     const directory = yield* serviceDirectory;
     const paused = yield* pauseService(directory);
     if (paused.state === "running")
@@ -642,7 +575,6 @@ export const upgrade = (options: UpgradeOptions, host: UpgradeHost) =>
             "verify-failed",
             `${method} installed Executor v${target}, but ${detail} Run \`${host.platform === "win32" ? "where.exe executor" : "type -a executor"}\` to see which executable your shell starts, or reinstall with: ${command}`,
           );
-        // The new launcher's first start downloads and checks its release's runtime.
         yield* Console.log(
           `Starting Executor v${target}. Its first start downloads the runtime for this platform.`,
         );

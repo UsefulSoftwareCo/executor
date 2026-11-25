@@ -22,7 +22,6 @@ import {
   visibleApps,
   requireAppAccess,
 } from "./resource-policy.ts";
-/** Hosted catalog and execution policy for the shared MCP engine; no HTTP transport or credentials. */
 import { CurrentMcpExecution, ToolCallRecorded, type McpBackend } from "@executor-js/mcp";
 import {
   AccountRequired,
@@ -54,20 +53,10 @@ import { patGrantOf } from "./mcp-oauth.ts";
 import { listTools, searchableTools, searchTools } from "./tools.ts";
 import { bundleAppSkills, listAppSkills, readAppSkill } from "./skills.ts";
 
-/**
- * The client that sent this request, as it describes itself. Protocol 2026-07-28 has no
- * `initialize` and carries the client's info in every request's metadata; earlier versions give it
- * once in `initialize`. The request context holds it either way. Self-reported, so attribution only.
- */
 const requestClient = Effect.map(Effect.serviceOption(McpSchema.McpRequestContext), (request) =>
   Option.flatMapNullishOr(request, (context) => context.clientInfo),
 );
 
-/**
- * Bind one request's verified membership and lazy SDK. The host must authenticate
- * and check membership before supplying CurrentOrganization, on every request.
- * Do not retain this adapter in an MCP session or a process-global layer.
- */
 export const hostedMcpBackend = Effect.gen(function* () {
   const organization = yield* CurrentOrganization;
   const policy = yield* CurrentPolicy;
@@ -77,11 +66,6 @@ export const hostedMcpBackend = Effect.gen(function* () {
   const grant = yield* CurrentMcpGrant;
   const session = yield* CurrentMcpSession;
   const background = yield* HostedBackground;
-  /**
-   * The log's caller for a call in `execution`: an API key's synthetic grant names its key, any
-   * other grant is the agent's. The session is recorded only when the call runs in an initialized
-   * session, which the protocol server found by the ID it issued, and the ID has this server's form.
-   */
   const caller = Effect.fn(function* (execution: string | undefined) {
     if (grant === undefined) return undefined;
     const pat = patGrantOf(grant);
@@ -103,7 +87,6 @@ export const hostedMcpBackend = Effect.gen(function* () {
     Context.add(CurrentUserId, user),
     Context.add(HostedBackground, background),
   );
-  // Discovery reads are traced only; clients repeat them on every session and poll.
   const observe = <A, E, R>(
     operation: string,
     work: Effect.Effect<A, E, R>,
@@ -126,8 +109,6 @@ export const hostedMcpBackend = Effect.gen(function* () {
         Effect.provideContext(context),
       );
     });
-  // A single metadata snapshot feeds this request's catalog. Each call still checks the app and
-  // resolves the caller's accounts again.
   const discoveryApps = yield* Effect.cached(
     Effect.flatMap(sdk, (executor) =>
       executor.apps
@@ -142,19 +123,11 @@ export const hostedMcpBackend = Effect.gen(function* () {
         .pipe(Effect.flatMap(visibleApps)),
     ).pipe(Effect.provideContext(context)),
   );
-  // Resolve linked account labels once per request, even when discovery fans out over apps.
   const discoveryAccounts = yield* Effect.cached(
     Effect.flatMap(discoveryApps, (apps) => callerLinkedAccounts(apps.map((app) => app.id))).pipe(
       Effect.provideContext(context),
     ),
   );
-  /**
-   * The caller's access to every app the request lists for discovery, their links to them and
-   * the apps' links, read in one statement once per request, when discovery first needs it, so
-   * discovery does not check each app in a statement of its own. Each app is still decided on its
-   * own from it, as its own reads would decide it. Undefined when the read did not answer: each
-   * app then reads for itself.
-   */
   const discoveryAccess = yield* Effect.cached(
     Effect.gen(function* () {
       const apps = (yield* discoveryApps).filter((app) => permitsApp(policy, app.id));
@@ -167,20 +140,12 @@ export const hostedMcpBackend = Effect.gen(function* () {
       Effect.provideContext(context),
     ),
   );
-  /** This app's access as {@link discoveryAccess} read it, when it covered the app. */
   const accessFromDiscovery = (app: AppId) =>
     Effect.map(discoveryAccess, (read) =>
       read === undefined || !read.apps.some((listed) => listed.id === app)
         ? undefined
         : { access: read.access.find((policy) => policy.app === app) },
     );
-  /**
-   * What search needs for the apps of one search batch: each app's selection decided from
-   * {@link discoveryAccess}, then the SDK's reads for the target of every app that selected
-   * (`PrefetchHost.searchable`), a fixed number of statements however many apps the batch has.
-   * Only the batch's apps are read: a search must not wait on another app's rows, which a slow or
-   * locked listing can hold. Undefined when the access read did not answer.
-   */
   const searchReadsFor = (batch: ReadonlySet<AppId>) =>
     Effect.gen(function* () {
       const read = yield* discoveryAccess;
@@ -222,10 +187,6 @@ export const hostedMcpBackend = Effect.gen(function* () {
       Effect.provideContext(context),
     );
   type SearchReads = Effect.Success<ReturnType<typeof searchReadsFor>>;
-  /**
-   * Each app's search batch reads, made once per batch, when the first of its apps needs them. An
-   * app belongs to the first batch that names it; a later batch naming it again reads the rest.
-   */
   const searchBatches = new Map<AppId, Effect.Effect<SearchReads>>();
   const searchReads = (app: AppId, batch: ReadonlyArray<AppId> | undefined) =>
     Effect.gen(function* () {
@@ -239,14 +200,8 @@ export const hostedMcpBackend = Effect.gen(function* () {
           members.add(member);
           searchBatches.set(member, reads);
         }
-      // Another read of the same batch may have claimed this app while the reads were made.
       return yield* searchBatches.get(app) ?? reads;
     });
-  /**
-   * An operation resolves the caller's links narrowed to the grant's targets, so a plain user
-   * requirement whose links the grant does not target fails as `AccountRequired`. When the caller
-   * did link an account for it, the grant refused that account: report that instead.
-   */
   const explained = (error: AccountRequired) =>
     Effect.gen(function* () {
       if (error.scope !== "user" || user === undefined) return error;
@@ -276,12 +231,10 @@ export const hostedMcpBackend = Effect.gen(function* () {
         (error) => Effect.flatMap(explained(error), Effect.fail),
       ),
     );
-  /** Event subscriptions belong to the request's grant and act for its user. */
   const subscriber = Effect.gen(function* () {
     if (grant === undefined || user === undefined) return yield* new OrganizationForbidden();
     return { principal: grant, subject: user };
   });
-  /** The app is this organization's, visible to the caller, and theirs to use. */
   const eventApp = (app: AppId) =>
     Effect.gen(function* () {
       yield* authorizeApp(app);
@@ -289,7 +242,6 @@ export const hostedMcpBackend = Effect.gen(function* () {
         return yield* new AppNotFound({ app });
       yield* requireAppAccess(app, "use");
     });
-  /** Check the call as discovery would, then make it with the caller's resolved accounts. */
   const startCall = (
     input: Parameters<McpBackend<Error>["callTool"]>[0],
     options?: ToolInvocationOptions,
@@ -297,8 +249,6 @@ export const hostedMcpBackend = Effect.gen(function* () {
     Effect.gen(function* () {
       const owner = yield* currentOwner;
       const executor = yield* sdk;
-      // Under a read-only rule the grant check evaluates the app before the call reaches here,
-      // so an app read made beside authentication would be older than that evaluation.
       const ahead = yield* SelectionReadAhead;
       const read =
         ahead !== undefined && !requiresToolMetadata(policy.tools, input.app) ? ahead : undefined;
@@ -311,7 +261,6 @@ export const hostedMcpBackend = Effect.gen(function* () {
       );
       yield* recordCallDetails({ version, accounts, ...(kind === undefined ? {} : { kind }) });
       const call = executor.tools.call({ ...input, version, accounts, kind }, options);
-      // The check has finished: the call may read its state and recheck its accounts at once.
       return yield* (yield* ConcurrentStatements) !== undefined
         ? call.pipe(Effect.provideService(InvocationSelection, { app: input.app, owner, accounts }))
         : call;
@@ -327,8 +276,6 @@ export const hostedMcpBackend = Effect.gen(function* () {
       Effect.gen(function* () {
         const { principal, subject } = yield* subscriber;
         const { target } = input;
-        // A saved subscription can name an app the caller no longer sees; to them it has no event.
-        // A selection of every app is the organization's; each delivery checks its app.
         if (target.app !== null)
           yield* eventApp(target.app).pipe(
             Effect.catchTag("AppNotFound", () => Effect.fail(new EventNotFound({ kind: "event" }))),
@@ -358,7 +305,6 @@ export const hostedMcpBackend = Effect.gen(function* () {
         const owner = yield* currentOwner;
         const executor = yield* sdk;
         const { version, accounts } = yield* selectedActiveVersion(executor, owner, input);
-        // A tool whose permission cannot be confirmed cannot receive input.
         yield* authorizeTool({ ...input, version, accounts }).pipe(
           Effect.mapError(() => new ElicitationFailed({ reason: "forbidden" })),
         );
@@ -391,7 +337,6 @@ export const hostedMcpBackend = Effect.gen(function* () {
           return yield* new OrganizationForbidden();
         const app = (yield* discoveryApps).find((app) => app.id === input.app);
         if (app === undefined) return yield* new AppNotFound({ app: input.app });
-        // A read pinned to a retained version resolves that version's requirements.
         const requirements =
           input.version === undefined || input.version === app.activeVersion
             ? app.requirements
@@ -430,11 +375,9 @@ export const hostedMcpBackend = Effect.gen(function* () {
           true,
           grantRefusal(startCall(input, options)),
         );
-        // The agent is told the call's reference beside its outcome.
         if (logged.reference !== undefined) (yield* ToolCallRecorded)?.(logged.reference);
         return yield* logged.exit;
       }).pipe((work) => observe("callTool", work)),
-    // The call's reference was given when the call paused; the resume reports its outcome only.
     resumeInvocation: (request, response, options?: ToolInvocationOptions) =>
       loggedToolResume(
         request.requestId,

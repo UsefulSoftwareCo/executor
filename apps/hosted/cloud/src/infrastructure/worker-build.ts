@@ -1,4 +1,3 @@
-/** Rolldown output rules for each Worker: upload only reachable modules, within a budget. */
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import type { WorkerProps } from "alchemy/Cloudflare";
 import { Effect, FileSystem, Path } from "effect";
@@ -23,43 +22,19 @@ export type WorkerName =
   | "marketing"
   | "edge";
 
-/**
- * The most JavaScript each Worker may upload, in bytes. Cloudflare compiles every uploaded ES
- * module when an isolate starts, whether or not the Worker ever imports it: about 40 ms for each
- * megabyte, on every cold request (36-45 ms on test stages; see `notes/cloud-latency.md`).
- *
- * Each budget is a backstop with room above the Worker's size, so a build fails only on a large
- * mistake, and a change does not fail for arriving last. What holds a Worker's size is the check
- * job: it fails a pull request that adds more than 50 KB to one Worker unless the description
- * allows it (`scripts/worker-sizes.ts`), and flags a Worker with little of its budget left.
- *
- * Change a budget only in a pull request that does nothing else and says what the added
- * cold-start time buys. To make room instead, load rarely used code from another Worker: the API
- * Worker leaves rendering to `dashboard`, source formatting and Markdown parsing to `formatter`,
- * the authoring reference to `authoring` and MCP sessions to `mcp-server`.
- */
 const uploadBudgets: Record<WorkerName, number> = {
-  // A person or an agent waits on the first five's cold starts, so each has about a tenth of its
-  // size as room.
   api: 6_000_000,
-  // App runners and data supervisors: a cold tool call starts both isolates.
   "app-data": 750_000,
   "app-pages": 2_700_000,
   "mcp-server": 3_700_000,
-  // Reached through a service binding, so most documents start a new isolate.
   dashboard: 4_300_000,
-  // The rest are called rarely or already take seconds. `formatter` and `authoring` take what
-  // the API Worker leaves out, so they have more room.
   formatter: 2_500_000,
-  // Generated data: the published skills and the framework reference.
   authoring: 1_000_000,
   compiler: 1_700_000,
   marketing: 1_000_000,
-  // A test stage's forwarding Worker: routing and a service binding call.
   edge: 400_000,
 };
 
-/** The fields of Rolldown's output bundle these rules read. */
 type OutputBundle = Record<
   string,
   | {
@@ -76,16 +51,8 @@ type OutputBundle = Record<
   | { readonly type: "asset"; readonly source: string | Uint8Array }
 >;
 
-/** The plugin that enforces a Worker's budget; `scripts/worker-builds.ts` builds Workers that use it. */
 export const uploadedModulesPlugin = "executor-uploaded-modules";
 
-/**
- * Rolldown emits a chunk for every dynamic import it finds, even when tree-shaking removes the
- * only code that loads it, such as deploy-time Vite support inside Alchemy. No uploaded module
- * can load such a chunk, so it is dropped with its source map. The budget is then checked
- * against exactly what Cloudflare receives, and the upload is written with each byte attributed
- * to its source so `bun run hosted:cloud:worker-sizes` can say what grew.
- */
 const uploadedModules = (worker: WorkerName) => ({
   name: uploadedModulesPlugin,
   async generateBundle(options: { readonly dir?: string }, bundle: OutputBundle) {
@@ -114,7 +81,6 @@ const uploadedModules = (worker: WorkerName) => ({
       if (output.type !== "chunk") continue;
       if (reachable.has(name)) {
         bytes += Buffer.byteLength(output.code);
-        // Generated modules have no source; name them by their chunk without its content hash.
         const unmapped = `(no source map: ${name.replace(/-[\w-]{8}\.js$/, ".js")})`;
         if (output.map === null)
           sources.set(unmapped, (sources.get(unmapped) ?? 0) + Buffer.byteLength(output.code));
@@ -153,7 +119,6 @@ const uploadedModules = (worker: WorkerName) => ({
   },
 });
 
-/** Collect exactly this Worker's output for Sentry; Alchemy's bundle folder retains older builds. */
 const sentryArtifacts = (worker: WorkerName) => ({
   name: "executor-sentry-artifacts",
   writeBundle: (_options: unknown, bundle: OutputBundle) =>
@@ -178,19 +143,10 @@ const sentryArtifacts = (worker: WorkerName) => ({
     ),
 });
 
-/**
- * Modules an `alchemy dev` build replaces with a local test hook, by file name in this directory.
- * Deployed builds bundle each pass-through as written, so their uploads contain no hook for a
- * binding or a request to turn on. `scripts/worker-sizes.ts` fails if a deployed build uploads one.
- */
 export const localTestModules: ReadonlyArray<readonly [passThrough: string, hook: string]> = [
   ["mcp-interaction-faults.ts", "mcp-interaction-faults-local.ts"],
 ];
 
-/**
- * Resolve each pass-through in `localTestModules` to its hook instead. This is an alias, not a
- * plugin: `alchemy dev` sends Worker props to its local provider over RPC, which drops functions.
- */
 const localTestHooks = () => {
   const directory = new URL(".", import.meta.url);
   return Object.fromEntries(
@@ -201,10 +157,6 @@ const localTestHooks = () => {
   );
 };
 
-/**
- * Build options for one Worker. The compiler keeps Alchemy's default output. `localTestHooks`
- * is for `alchemy dev` only.
- */
 export const workerBuild = (
   worker: WorkerName,
   options: { readonly localTestHooks?: boolean } = {},
@@ -218,15 +170,7 @@ export const workerBuild = (
         output: {
           entryFileNames: `${worker}-[name].js`,
           chunkFileNames: `${worker}-[name]-[hash].js`,
-          // Normal ESM ordering avoids an initializer wrapper around every module.
-          // This graph is covered by the workerd MCP and app-UI tests; keep source maps for diagnostics.
           strictExecutionOrder: false,
-          // Re-chunking the prebuilt dashboard graph by entry reach can evaluate a chunk that reads a
-          // binding before the chunk that initializes it. One chunk keeps that graph's own module order.
-          // The dashboard build imports this Worker's Effect, and a group also takes its modules'
-          // dependencies: without a group of its own, Effect joins the dashboard chunk, and the
-          // entry, which imports Effect too, then loads the whole renderer at startup instead of on
-          // the first render. Groups are plain strings: Alchemy keeps these props as JSON.
           codeSplitting: {
             groups: [
               ...(worker === "dashboard"

@@ -1,4 +1,3 @@
-/** Pending connection ownership is persisted; knowing a connection ID grants no authority. */
 import {
   StorageError,
   type AccountConnection,
@@ -15,7 +14,6 @@ import {
   requireAccountOwner,
 } from "./resource-policy.ts";
 
-/** Save the connection's creator and target before exposing the connection URL. */
 export const recordConnection = (connection: AccountConnection, scope: AccountScope) =>
   Effect.gen(function* () {
     const actor = yield* currentResourceAuthority;
@@ -27,17 +25,12 @@ export const recordConnection = (connection: AccountConnection, scope: AccountSc
         scope,
       }),
     );
-    // destination is no longer read; it stays required until a later release drops the column.
     yield* sql`insert into hosted_connection_access (connection_id, organization_id, creator_id, destination, target)
       values (${connection.id}, ${actor.organization}, ${actor.user}, '{"kind":"personal"}'::jsonb, ${target}::jsonb)`;
     return connection;
   }).pipe(
     Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new StorageError() }),
   );
-/**
- * Read current ownership and target rights before every step, including OAuth return: use of the
- * app for a user requirement, management of it for an app requirement, which links the account for everyone.
- */
 export const connectionAccess = (connection: AccountConnectionId) =>
   Effect.gen(function* () {
     const actor = yield* currentResourceAuthority;
@@ -52,7 +45,6 @@ export const connectionAccess = (connection: AccountConnectionId) =>
   }).pipe(
     Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new StorageError() }),
   );
-/** The organization where this user created the connection; nobody else's creation qualifies. */
 export const createdConnectionOrganization = (connection: AccountConnectionId, user: string) =>
   Effect.gen(function* () {
     const sql = yield* policyDatabase;
@@ -66,7 +58,6 @@ export const createdConnectionOrganization = (connection: AccountConnectionId, u
   }).pipe(
     Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new StorageError() }),
   );
-/** Reconnect checks the saved account as well as the pending request. */
 export const checkConnection = (connection: AccountConnection) =>
   Effect.gen(function* () {
     const access = yield* connectionAccess(connection.id);

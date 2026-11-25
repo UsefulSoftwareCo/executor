@@ -1,4 +1,3 @@
-/** Comments outlive the deployed stage, so reopening a PR updates the same comment. */
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as GitHub from "alchemy/GitHub";
@@ -58,7 +57,6 @@ export default Alchemy.Stack(
       repository: name,
       issueNumber: number,
       body: [
-        // The workflow reads the status back to tell whether a stage may remain to remove.
         `${previewCommentMarker}\n${previewStatusLine(status)}`,
         "### Executor preview",
         descriptions[status],

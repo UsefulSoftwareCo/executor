@@ -27,21 +27,11 @@ const subscribe = (listener: () => void) => {
 };
 const snapshot = () => document.documentElement.getAttribute(desktopUpdateAttribute);
 
-/** The update the desktop app has told this dashboard about; none outside the desktop. */
 export function useDesktopUpdate() {
   const value = useSyncExternalStore(subscribe, snapshot, () => null);
   return value === null ? Option.none<DesktopUpdate>() : decode(value);
 }
 
-/**
- * The desktop app's update as the sidebar's news block above its links: while it downloads, a
- * "Downloading" tag and its version; once it is ready, an "Update ready" tag, a line naming the
- * version and a "Restart to update" link that restarts Executor into it. When the update feed
- * listed notes, the line leads with the ready version's newest note, and the tag and line open
- * every note between the running version and the ready one. The shell shows it in place of the
- * sidebar's resource links, and `desktopUpdateMark` in the icon rail; the app's Updates menu
- * offers the same restart.
- */
 export function DesktopUpdateBlock({ update }: { readonly update: DesktopUpdate }) {
   const [open, setOpen] = useState(false);
   const opener = useRef<HTMLButtonElement>(null);
@@ -122,10 +112,6 @@ export function DesktopUpdateBlock({ update }: { readonly update: DesktopUpdate 
   );
 }
 
-/**
- * The update's mark in the icon rail, which expands the rail to the block: a download icon, with a
- * dot once the update is ready to install.
- */
 export const desktopUpdateMark = (update: DesktopUpdate) => ({
   label:
     update.state === "ready"
@@ -135,11 +121,6 @@ export const desktopUpdateMark = (update: DesktopUpdate) => ({
   dot: update.state === "ready",
 });
 
-/**
- * Says once, to a screen reader, that the desktop's update is ready, also when the sidebar is the
- * icon rail, which has no block. The region is always on the page, so the change into it is
- * announced; it is empty while there is nothing ready, as in any browser.
- */
 export function DesktopUpdateAnnouncement({
   update,
 }: {

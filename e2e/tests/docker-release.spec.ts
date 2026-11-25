@@ -30,10 +30,6 @@ import { currentClient } from "../support/api.ts";
 import { releaseNetwork } from "../support/release-networks.ts";
 import { stalledPageReport } from "../support/stalled-page.ts";
 
-/**
- * `workerd --version` prints the release date of the workerd the checkout pins, which the image
- * ships: 1.20260918.1 prints `workerd 2026-09-18`.
- */
 const pinnedWorkerd = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const manifest = yield* Schema.decodeUnknownEffect(
@@ -118,8 +114,6 @@ for (const mode of ["explicit", "local", "railway"] as const)
           }),
         );
         const address = `http://127.0.0.1:${port}`;
-        // Keep the container listener outside the OS ephemeral port range used
-        // by the embedded app runtime. Only the published host port is random.
         const containerPort = 8080;
         const origin =
           mode === "railway"
@@ -130,7 +124,6 @@ for (const mode of ["explicit", "local", "railway"] as const)
         yield* Effect.acquireRelease(run(["volume", "create", id]), () =>
           run(["volume", "rm", id]).pipe(Effect.orDie),
         );
-        // Railway volumes do not inherit the image directory's owner.
         if (mode === "railway")
           yield* run([
             "run",
@@ -146,7 +139,6 @@ for (const mode of ["explicit", "local", "railway"] as const)
             "chown 0:0 /app/data && chmod 755 /app/data",
           ]);
         const environment: Record<string, string> = {
-          // Release scenarios never send product analytics, even from an image with a baked key.
           DO_NOT_TRACK: "1",
           PORT: String(containerPort),
           EXECUTOR_APP_UI_BASE_URL: origin,
@@ -317,7 +309,6 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
           cookie,
         );
         expect(connected.status).toBe(200);
-        // Connecting from the app links the account to it; calls use it.
         yield* Schema.decodeUnknownEffect(Schema.Struct({ id: Schema.String }))(
           yield* driver("connected account", () => connected.json()),
         );
@@ -415,8 +406,6 @@ visit("/app/data/hosted.pglite");process.stdout.write(hash.digest("hex"));`,
                   to,
                   String(truncate),
                 ]);
-              // Complete the byte copy, then force PostgreSQL open to reject a truncated control file.
-              // Retrying after repair must recopy that failed bootstrap, not reuse its imported bytes.
               yield* move(control, held, true);
               yield* start();
               const refused = yield* request("/health").pipe(
@@ -442,8 +431,6 @@ visit("/app/data/hosted.pglite");process.stdout.write(hash.digest("hex"));`,
               ).toBe(nativeBackup);
           }
           if (mode === "explicit") {
-            // Exercise the packaged Git HTTP backend, including its pack subprocesses.
-            // Deploying alone only covers Git's built-in local repository commands.
             const fs = yield* FileSystem.FileSystem;
             const path = yield* Path.Path;
             const directory = yield* fs.makeTempDirectoryScoped({ prefix: "release-git-" });
@@ -525,8 +512,6 @@ visit("/app/data/hosted.pglite");process.stdout.write(hash.digest("hex"));`,
           expect(viewer.status).toBe(200);
           if (mode === "explicit") {
             const fixture = `${id}-network-${Number(restart)}`;
-            // Both listeners belong to the disposable container. A refused DNS
-            // answer must never open the second listener, even during redirects.
             yield* Effect.acquireRelease(
               run([
                 "run",
@@ -622,8 +607,6 @@ http.createServer((request, response) => {
               });
             }
             const observed = yield* stats;
-            // The allowed import's anonymous check, then one request to the redirect that was
-            // refused without following it. The blocked host was never contacted.
             expect(observed.requests).toEqual([
               "POST allowed.example.test:8091/mcp",
               "POST allowed.example.test:8091/mcp",
@@ -634,9 +617,6 @@ http.createServer((request, response) => {
             ]);
             expect(observed.blockedConnections).toBe(0);
           }
-          // The image under test serves its collector only on a private Unix socket, which
-          // operators read through `executor-host telemetry`. An earlier image may still listen
-          // on loopback, or name its collector's port in collector.json.
           const legacyCollector =
             restart || initialImage === image
               ? undefined
@@ -699,8 +679,6 @@ http.createServer((request, response) => {
           if (!restart) beforeRestartTrace = trace;
           else if (runtime === "executor-host") {
             expect(beforeRestartTrace).toBeDefined();
-            // The host reports the collector's answer and exits with an error for any other
-            // status than 200.
             const discarded = yield* run([
               "exec",
               id,
@@ -717,8 +695,6 @@ http.createServer((request, response) => {
             expect((yield* run(["exec", id, "/app/workerd", "--version"])).trim()).toBe(
               yield* pinnedWorkerd,
             );
-            // The collector shares the container's memory limit. It holds at most four exports of
-            // 16 MiB in flight and refuses beyond that; the product's own exports fit.
             const ingest = yield* readCollector("/api/ingest").pipe(
               Effect.flatMap(
                 Schema.decodeUnknownEffect(
@@ -742,16 +718,11 @@ http.createServer((request, response) => {
               maxBytes: 16 * 1024 * 1024,
               refused: { queueFull: 0, tooLarge: 0, invalid: 0, storeFailed: 0 },
             });
-            // The collector runs in its own process beside the product's workerd. Stopping it leaves
-            // the product serving; the host restarts it after waiting a second, and the new
-            // collector stores the product's spans.
             const collectorProcess = run([
               "exec",
               id,
               "sh",
               "-c",
-              // The collector's executable, the first word of its command line. The pattern is built
-              // at runtime so this shell's own command line does not match it.
               'm=executor-collector; for p in /proc/[0-9]*; do case "$(cat "$p/cmdline" 2>/dev/null)" in "/app/$m"*) echo "${p#/proc/}";; esac; done',
             ]).pipe(Effect.map((output) => output.trim()));
             const firstCollector = yield* collectorProcess;
@@ -777,9 +748,6 @@ http.createServer((request, response) => {
               200,
             );
             yield* spansOf(afterRestart);
-            // The image runs Executor's workerd build pinned in workerd.json, configured to
-            // collect idle isolates, pace pressure collections and release TCMalloc memory. App
-            // Worker unloading stays with the runner's residency, and the bridges keep `gc`.
             const pinFile = yield* (yield* Path.Path).fromFileUrl(
               new URL("../../apps/hosted/self-host/workerd.json", import.meta.url),
             );
@@ -953,7 +921,6 @@ const result=await pg.query('SELECT name FROM "user"');await pg.close();process.
         if (mode !== "explicit") {
           yield* run(["stop", "--time", "15", id]);
           yield* run(["rm", id]);
-          // Losing one key must not silently generate a replacement for existing data.
           yield* run([
             "run",
             "--rm",
@@ -978,10 +945,6 @@ const result=await pg.query('SELECT name FROM "user"');await pg.close();process.
     ).pipe(Effect.provide(NodeServices.layer)),
   );
 
-// Operators can let apps fetch private addresses. The bundled collector stores and serves every
-// app's traces without authentication, so it listens on no TCP port: with private fetch on, an
-// authored app reaches none of its routes on any port in the container. The product still
-// exports to it over a private Unix socket, and operators read it through the host.
 it.live("released image keeps its collector out of apps' reach with private fetch on", () =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -1026,7 +989,6 @@ it.live("released image keeps its collector out of apps' reach with private fetc
       const containerPort = 8080;
       const origin = `http://localhost:${port}`;
       const environment: Record<string, string> = {
-        // Release scenarios never send product analytics, even from an image with a baked key.
         DO_NOT_TRACK: "1",
         PORT: String(containerPort),
         BETTER_AUTH_URL: origin,
@@ -1050,7 +1012,6 @@ it.live("released image keeps its collector out of apps' reach with private fetc
           ],
           environment,
         ),
-        // An anonymous data volume is removed with the container.
         () => run(["rm", "--force", "--volumes", id]).pipe(Effect.orDie),
       );
       yield* Effect.addFinalizer((exit) =>
@@ -1133,8 +1094,6 @@ export default defineApp({}, async () => ({
         );
       const productTrace = randomBytes(16).toString("hex");
       expect((yield* request("/api/viewer", undefined, cookie, productTrace)).status).toBe(200);
-      // The product exports over the socket, and the operator reads the trace through the host.
-      // Once it is stored, a read route that an app could reach would return it.
       const telemetry = (path: string) => run(["exec", id, "executor-host", "telemetry", path]);
       const spans = (trace: string) =>
         telemetry(`/api/traces/${trace}/spans`).pipe(
@@ -1165,8 +1124,6 @@ export default defineApp({}, async () => ({
             .filter((fields) => /^[0-9A-F]+:[0-9A-F]{4}$/.test(fields[1] ?? "")),
         ),
       );
-      // Every TCP port listening in the container's network namespace, and the port the collector
-      // served on in earlier images.
       const listening = (yield* tcpTables)
         .filter((fields) => fields[3] === "0A")
         .map((fields) => Number.parseInt(fields[1]!.split(":")[1]!, 16));
@@ -1196,7 +1153,6 @@ export default defineApp({}, async () => ({
           },
         ],
       });
-      // A refusal names the URL it refused, so only a response the app received is checked.
       const received = (result: string) => (result.startsWith("reached ") ? result : "");
       for (const listener of ports) {
         const base = `http://127.0.0.1:${listener}`;
@@ -1217,7 +1173,6 @@ export default defineApp({}, async () => ({
           expect(written).toMatch(/^refused /);
         }
       }
-      // Spans the product exported after the probes have arrived, so an app's write would have too.
       const laterTrace = randomBytes(16).toString("hex");
       expect((yield* request("/api/viewer", undefined, cookie, laterTrace)).status).toBe(200);
       yield* spans(laterTrace);
@@ -1233,9 +1188,6 @@ export default defineApp({}, async () => ({
         ])).trim(),
         "no app wrote spans into the collector",
       ).toBe("Executor: the telemetry collector answered 404");
-      // The collector's own process holds its Unix socket and no TCP socket. The image has no tools to
-      // read another process's descriptors, so a client in its process namespace reads them as
-      // the same user.
       const collectorSockets = yield* run([
         "run",
         "--rm",
@@ -1278,8 +1230,6 @@ process.stdout.write(JSON.stringify({
   ).pipe(Effect.provide(NodeServices.layer)),
 );
 
-// Every container mounts its product volume at the same path. Two containers that share a
-// temporary directory must still each keep their own collector while the other starts and stops.
 it.live("released images that share a temporary directory keep separate collectors", () =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -1300,7 +1250,6 @@ it.live("released images that share a temporary directory keep separate collecto
           run(["volume", "rm", "--force", `${name}-${suffix}`]).pipe(Effect.orDie),
         ).pipe(Effect.as(`${name}-${suffix}`));
       const temporary = yield* volume("tmp");
-      // A sticky, world-writable directory, as /tmp is.
       yield* run([
         "run",
         "--rm",
@@ -1353,7 +1302,6 @@ it.live("released images that share a temporary directory keep separate collecto
         );
         return id;
       });
-      // Each command's exit code is its answer; output alone would accept an instance still starting.
       const succeeds = (args: readonly string[]) =>
         processes.exitCode(ChildProcess.make("docker", args)).pipe(
           Effect.filterOrFail(
@@ -1366,7 +1314,6 @@ it.live("released images that share a temporary directory keep separate collecto
           yield* succeeds(["exec", id, "executor-host", "health"]);
           yield* succeeds(["exec", id, "executor-host", "telemetry", "/api/health"]);
         }).pipe(Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 240 }));
-      // Each request carries a new trace id; the instance's own collector must store its spans.
       const traced = Effect.fn("traced request")(function* (id: string) {
         const published = (yield* run(["port", id, "8080/tcp"])).trim().split("\n")[0]!;
         const trace = randomBytes(16).toString("hex");
@@ -1400,7 +1347,6 @@ it.live("released images that share a temporary directory keep separate collecto
         stored(id, trace, "a new trace did not reach this instance's collector").pipe(
           Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 60 }),
         );
-      // An instance keeps the traces it stored and stores new ones in its own collector.
       const keeps = Effect.fn("instance keeps its collector")(function* (
         id: string,
         traces: readonly string[],
@@ -1431,10 +1377,6 @@ it.live("released images that share a temporary directory keep separate collecto
   ).pipe(Effect.provide(NodeServices.layer)),
 );
 
-// A tailnet name such as nexus.<tailnet>.ts.net resolves into 100.64.0.0/10. App isolates
-// may reach only public addresses, so the built-in Executor app must reach its own dashboard
-// origin without the network. The runner reaches the published port and sends the tailnet
-// Host header, so the same case works with Docker Desktop, OrbStack and Linux Docker.
 it.live("released image serves management tools at a tailnet origin with private fetch off", () =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -1451,13 +1393,11 @@ it.live("released image serves management tools at a tailnet origin with private
         );
       const id = `selfhost-e2e-${randomBytes(6).toString("hex")}`;
       const registry = yield* containerNpmRegistry;
-      // Shared CGNAT space, the same range Tailscale assigns.
       const network = yield* releaseNetwork("tailnet");
       const address = `${network.subnet}.10`;
       const containerPort = 8080;
       const hostname = "nexus.example.ts.net";
       const origin = `http://${hostname}:${containerPort}`;
-      // A public-looking name for the same private address, which no name check catches.
       const disguised = "intranet.example.com";
       const port = yield* Effect.scoped(
         Effect.gen(function* () {
@@ -1479,13 +1419,11 @@ it.live("released image serves management tools at a tailnet origin with private
         }),
       );
       const environment: Record<string, string> = {
-        // Release scenarios never send product analytics, even from an image with a baked key.
         DO_NOT_TRACK: "1",
         PORT: String(containerPort),
         BETTER_AUTH_URL: origin,
         BETTER_AUTH_SECRET: randomBytes(32).toString("hex"),
         EXECUTOR_ENCRYPTION_KEY: randomBytes(32).toString("hex"),
-        // A synthetic registry that shares the container's network namespace.
         EXECUTOR_REGISTRY_URL: "http://127.0.0.1:8093",
       };
       yield* Effect.acquireRelease(
@@ -1506,14 +1444,12 @@ it.live("released image serves management tools at a tailnet origin with private
             `${disguised}:${address}`,
             "--publish",
             `127.0.0.1:${port}:${containerPort}`,
-            // EXECUTOR_APPS_ALLOW_PRIVATE_FETCH stays unset: the default is under test.
             ...Object.keys(environment).flatMap((name) => ["--env", name]),
             ...registry.docker,
             image,
           ],
           environment,
         ),
-        // An anonymous data volume is removed with the container.
         () => run(["rm", "--force", "--volumes", id]).pipe(Effect.orDie),
       );
       yield* Effect.addFinalizer((exit) =>
@@ -1521,7 +1457,6 @@ it.live("released image serves management tools at a tailnet origin with private
           ? run(["logs", id]).pipe(Effect.flatMap(Console.error), Effect.ignore)
           : Effect.void,
       );
-      // Node's fetch replaces a Host header, so send requests through node:http instead.
       const hostFetch: typeof fetch = (input, init) => {
         const outgoing = new Request(input, init);
         const url = new URL(outgoing.url);
@@ -1576,8 +1511,6 @@ it.live("released image serves management tools at a tailnet origin with private
             }),
         );
       };
-      // Like the dashboard, each request states the wire revision this release reads, unless it
-      // stands in for a client released before revisions, which sends none.
       const request = (
         route: string,
         data?: unknown,
@@ -1617,9 +1550,6 @@ it.live("released image serves management tools at a tailnet origin with private
         Schema.NonEmptyArray(Schema.Struct({ id: Schema.String })),
       )(yield* driver("organization response", () => organizations.json()));
       const prefix = `/api/organizations/${organization.id}`;
-      // workerd rejects some fetch redirect modes before sending. Each name selects one registry
-      // response, and the catalog must report it without following a redirect. Like a remote
-      // registry, a lookup by name answers only a listing published under exactly that name.
       const appRegistry = `${id}-registry`;
       yield* Effect.acquireRelease(
         run([
@@ -1696,7 +1626,6 @@ http.createServer((request, response) => {
         publishedAt: "2026-01-02T00:00:00.000Z",
       };
       expect(yield* catalog()).toEqual({ status: 200, body: [example, notes] });
-      // Each failure states its cause in a message Executor derives from the reason.
       const failures = {
         "@fixture/moved": {
           reason: "status",
@@ -1728,10 +1657,6 @@ http.createServer((request, response) => {
             `/api/registry/apps${name === undefined ? "" : `?name=${encodeURIComponent(name)}`}`,
         ),
       );
-      // A client released before publisher scopes sends no revision. It is shown a listing in a
-      // publishing scope under its slug, and each name it sends is looked up as itself and as the
-      // scoped name it could stand for, concurrently. A name neither finds is answered as the
-      // registry answers that name.
       const released = {};
       const lookups = (...names: ReadonlyArray<string>) =>
         names.map((name) => `/api/registry/apps?name=${encodeURIComponent(name)}`).toSorted();
@@ -1757,7 +1682,6 @@ http.createServer((request, response) => {
         answer: { status: 400, body: { _tag: "RegistryError", ...failures["@fixture/missing"] } },
         lookups: lookups("@fixture/missing", "@fixture.executor.community/missing"),
       });
-      // This release's clients mean exactly the name they send, looked up once.
       expect(yield* lookupsFor("@scoped/notes", currentClient), "a current client").toEqual({
         answer: { status: 400, body: { _tag: "RegistryError", ...failures["@fixture/missing"] } },
         lookups: lookups("@scoped/notes"),
@@ -1799,8 +1723,6 @@ export default defineApp({}, async () => ({
       const app = yield* Schema.decodeUnknownEffect(
         Schema.Struct({ id: Schema.String, slug: Schema.String }),
       )(yield* driver("probe app", () => deployed.json()));
-      // Setup provisions the built-in Executor app and links the member's managed key to it in the
-      // background.
       yield* Effect.gen(function* () {
         const inventory = yield* Schema.decodeUnknownEffect(
           Schema.Struct({
@@ -1875,14 +1797,11 @@ export default defineApp({}, async () => ({
           `authored app fetches ${url}`,
           `return await tools[${JSON.stringify(app.slug)}].probe(${JSON.stringify({ url })})`,
         );
-      // The same listener on its private address is not the dashboard origin.
       const refused = yield* probe(`http://${address}:${containerPort}/health`);
       expect(refused.ok).toBe(true);
-      // Executor refuses the address by name, before the public-only network would.
       expect(refused.value, "private app fetch stays off by default").toMatch(
         /^refused:Executor refused a request to 100\.64\.[\d.]+:\d+: apps on this instance can reach only public addresses/,
       );
-      // A public name passes Executor's check, and the public-only network refuses its address.
       const resolved = yield* probe(`http://${disguised}:${containerPort}/health`);
       expect(resolved.ok).toBe(true);
       expect(resolved.value, "the network refuses a public name's private address").toMatch(
@@ -1897,17 +1816,8 @@ export default defineApp({}, async () => ({
   ).pipe(Effect.provide(NodeServices.layer)),
 );
 
-/** One call of a probe app, reporting its isolate and how many calls that isolate has served. */
 type Probe = Effect.Effect<{ readonly isolate: string; readonly calls: number }, unknown>;
 
-/**
- * The released image reads `EXECUTOR_APP_WORKERS` through its Go host into the apps Worker's
- * workerd binding. A positive value bounds the app Workers kept loaded, an unset value applies the
- * default of 64 and an invalid value stops the server before it starts. Each probe app reports an
- * identifier from its module state, so a Worker that was unloaded and loaded again reports a new
- * identifier and no earlier calls. The limit also counts the built-in Executor app's Worker, so
- * the probes start only after its background setup has finished.
- */
 it.live(
   "released image keeps at most EXECUTOR_APP_WORKERS app Workers loaded",
   () =>
@@ -1942,14 +1852,12 @@ it.live(
         );
         const containerPort = 8080;
         const registry = yield* containerNpmRegistry;
-        /** Start the image with an app Worker limit, or none, in its own container. */
         const start = (limit: string | undefined) =>
           Effect.gen(function* () {
             const id = `executor-app-workers-${randomBytes(6).toString("hex")}`;
             const port = yield* freePort;
             const origin = `http://localhost:${port}`;
             const environment: Record<string, string> = {
-              // Release scenarios never send product analytics, even from an image with a baked key.
               DO_NOT_TRACK: "1",
               PORT: String(containerPort),
               BETTER_AUTH_URL: origin,
@@ -1973,13 +1881,11 @@ it.live(
                 ],
                 environment,
               ),
-              // An anonymous data volume is removed with the container.
               () => run(["rm", "--force", "--volumes", id]).pipe(Effect.orDie),
             );
             return { id, origin, address: `http://127.0.0.1:${port}` };
           });
 
-        // An invalid limit stops the server with a clear message instead of using a default.
         for (const invalid of ["0", "many"]) {
           const container = yield* start(invalid);
           const code = (yield* run(["wait", container.id]).pipe(
@@ -1995,7 +1901,6 @@ it.live(
           );
         }
 
-        /** An owner, an organization and probe apps without accounts on a running container. */
         const serve = (limit: string | undefined, apps: number) =>
           Effect.gen(function* () {
             const container = yield* start(limit);
@@ -2040,10 +1945,6 @@ it.live(
               yield* request("/api/auth/organization/list", undefined, cookie),
             );
             const prefix = `/api/organizations/${organization.id}`;
-            // Setup installs the built-in Executor app and links the owner's managed key to it in
-            // the background. That link's webhook source reconciliation loads the app's Worker,
-            // which under a low limit unloads an idle probe Worker, so it must finish before the
-            // probes are deployed.
             const executorSources = yield* Effect.gen(function* () {
               const { apps: installed } = yield* request(
                 `${prefix}/inventory`,
@@ -2075,7 +1976,6 @@ it.live(
                 ? yield* Effect.fail(new Error("Executor app setup has not finished"))
                 : sources;
             }).pipe(Effect.retry({ schedule: Schedule.spaced("200 millis"), times: 150 }));
-            // A source that is not ready retries its reconciliation later and loads the Worker again.
             for (const source of executorSources)
               expect(source.status, "the built-in Executor app is set up").toBe("ready");
             const probes: Array<Probe> = [];
@@ -2128,7 +2028,6 @@ export default defineApp({}, async () => ({
             return probes;
           });
 
-        // A limit of one: calling a second app unloads the first, which then loads again.
         yield* Effect.scoped(
           Effect.gen(function* () {
             const [first, second] = (yield* serve("1", 2)) as [Probe, Probe];
@@ -2148,13 +2047,11 @@ export default defineApp({}, async () => ({
           }),
         );
 
-        // No limit set: the default keeps 64 Workers loaded and unloads the 65th most recent.
         yield* Effect.scoped(
           Effect.gen(function* () {
             const probes = yield* serve(undefined, 65);
             const first: Array<{ isolate: string; calls: number }> = [];
             for (const probe of probes) first.push(yield* probe);
-            // Newest first, so each call reuses a loaded Worker and unloads none.
             for (let index = probes.length - 1; index >= 1; index--) {
               const again = yield* probes[index]!;
               expect(again.isolate, `app ${index} stayed loaded`).toBe(first[index]!.isolate);
@@ -2174,7 +2071,6 @@ export default defineApp({}, async () => ({
 
 const Workspace = Schema.Struct({ revision: Schema.Struct({ commit: Schema.String }) });
 
-/** One unencoded HTTP exchange: the bytes exactly as the image sent them. */
 type RawResponse = {
   readonly status: number;
   readonly headers: Readonly<Record<string, string | ReadonlyArray<string> | undefined>>;
@@ -2187,8 +2083,6 @@ const varies = (response: RawResponse) =>
     .flatMap((value) => value.split(","))
     .map((field) => field.trim().toLowerCase());
 
-// The image's Go host compresses text responses for clients that accept it, off workerd's thread.
-// Event streams stay unencoded, so each event must still reach an open page as it is sent.
 it.live(
   "released image compresses dashboard files and API JSON and keeps event streams live",
   () =>
@@ -2219,7 +2113,6 @@ it.live(
         const origin = `http://localhost:${port}`;
         const address = `http://127.0.0.1:${port}`;
         const environment: Record<string, string> = {
-          // Release scenarios never send product analytics, even from an image with a baked key.
           DO_NOT_TRACK: "1",
           PORT: "8080",
           BETTER_AUTH_URL: origin,
@@ -2242,7 +2135,6 @@ it.live(
             ],
             environment,
           ),
-          // An anonymous data volume is removed with the container.
           () => run(["rm", "--force", "--volumes", id]).pipe(Effect.orDie),
         );
         yield* Effect.addFinalizer((exit) =>
@@ -2276,7 +2168,6 @@ it.live(
               ),
             ),
           );
-        // Node's HTTP client neither asks for nor decodes an encoding, so the bytes are the image's.
         const raw = (route: string, acceptEncoding: string | undefined) =>
           driver(
             `GET ${route} accepting ${acceptEncoding ?? "no encoding"}`,
@@ -2310,7 +2201,6 @@ it.live(
                 outgoing.end();
               }),
           );
-        // fetch decodes the encoding it receives and still reports it.
         const decoded = (route: string, acceptEncoding: string) =>
           driver(`read ${route} accepting ${acceptEncoding}`, (signal) =>
             fetch(`${address}${route}`, {
@@ -2334,7 +2224,6 @@ it.live(
           Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 240 }),
         );
 
-        // Chromium's Accept-Encoding: brotli is preferred, and the page and its script are encoded.
         const browserEncodings = "gzip, deflate, br, zstd";
         const login = yield* raw("/login", browserEncodings);
         expect(login.status).toBe(200);
@@ -2365,7 +2254,6 @@ it.live(
           expect(decoding.encoding).toBe(encoding);
           expect(decoding.body.equals(identity.body), `${encoding} decodes exactly`).toBe(true);
         }
-        // Already compressed formats and tiny bodies are sent as they are.
         expect((yield* raw("/favicon.png", browserEncodings)).headers["content-encoding"]).toBe(
           undefined,
         );
@@ -2390,7 +2278,6 @@ it.live(
         );
         const prefix = `/api/organizations/${organization.id}`;
 
-        // API JSON is encoded and decodes to the same document.
         const openapi = yield* raw("/openapi.json", browserEncodings);
         expect(openapi.headers["content-encoding"], "API JSON is compressed").toBe("br");
         const plainOpenapi = yield* raw("/openapi.json", undefined);
@@ -2414,7 +2301,6 @@ it.live(
           if (new URL(response.url()).pathname.endsWith(".js"))
             scripts.push({ url: response.url(), encoding: response.headers()["content-encoding"] });
         });
-        // The dashboard renders from its compressed document, scripts and data.
         yield* driver("open the dashboard sign-in", () => page.goto(`${origin}/login`));
         yield* driver("enter the owner's email", () =>
           page.getByLabel("Email", { exact: true }).fill("compression@example.test"),
@@ -2425,9 +2311,6 @@ it.live(
         yield* driver("sign in", () =>
           page.getByRole("button", { name: "Sign in", exact: true }).click(),
         );
-        // Signing in shows the apps page's pending skeleton, headed "Apps", on the sign-in document,
-        // then replaces that document with the apps page. Navigating before the replace commits
-        // races it, so wait for the apps page's own document first.
         yield* reportStall(
           driver("the apps page document loads", () =>
             page.waitForURL(
@@ -2446,8 +2329,6 @@ it.live(
           "every dashboard script arrives compressed",
         ).toEqual([]);
 
-        // An app page keeps an event stream open for new versions. Deploying again must reach
-        // the open page through that stream, which reloads it.
         const files = (heading: string) => [
           {
             path: "index.ts",

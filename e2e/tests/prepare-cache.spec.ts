@@ -1,8 +1,3 @@
-/**
- * `bun run e2e:prepare` runs `node scripts/e2e-prepare.ts`, which caches each build step's outputs
- * under a hash of its inputs. These cases copy the script into a temporary git repository with the
- * same layout and fake build scripts, and read which steps ran and what they left behind.
- */
 import { expect, layer } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, FileSystem, Path, Stream } from "effect";
@@ -19,12 +14,7 @@ const steps = [
   "e2e:npm",
 ] as const;
 
-/**
- * Steps whose command runs every time, never this cache: the collector's build script checks the
- * pinned toolchain and reuses builds through its own identity and store.
- */
 const uncached: ReadonlyArray<(typeof steps)[number]> = ["collector:build"];
-/** `ran` as a run lists it: these steps, and every uncached one, in the order of `steps`. */
 const runs = (built: ReadonlyArray<string>) =>
   steps.filter((step) => built.includes(step) || uncached.includes(step));
 
@@ -39,15 +29,10 @@ const outputs: Record<(typeof steps)[number], string> = {
   "e2e:npm": ".local/test-runtime/npm/package.tgz",
 };
 
-/** Further outputs a step declares, which the fake build writes beside the first. */
 const moreOutputs: Partial<Record<(typeof steps)[number], ReadonlyArray<string>>> = {
   "e2e:runtime": [".local/test-runtime/host.json.map"],
 };
 
-/**
- * Appends the step to `$FAKE_STATE/ran` and writes its outputs with a build number, so a restored
- * output shows which build made it. `FAKE_FAIL` names a step that exits 3 without output.
- */
 const build = `import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
@@ -73,11 +58,6 @@ const workspace = (name: string, dependencies: ReadonlyArray<string> = []) =>
     dependencies: Object.fromEntries(dependencies.map((dependency) => [dependency, "workspace:*"])),
   });
 
-/**
- * The layout the script reads: `@fake/utils` <- `apps` <- `@fake/sdk` <- local web,
- * `@fake/telemetry` <- `@fake/sdk`, and `@fake/ui` <- both dashboards. As in executor-next, the
- * telemetry package holds the collector's crate, its build script and the viewer's package.
- */
 const files: Record<string, string> = {
   "package.json": JSON.stringify({
     type: "module",
@@ -130,7 +110,6 @@ const files: Record<string, string> = {
   "e2e/README.md": "\n",
 };
 
-/** A git repository with the script and the fakes, and an empty cache directory. */
 const repository = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -142,7 +121,6 @@ const repository = Effect.gen(function* () {
   }
   yield* fs.makeDirectory(path.join(repo, "scripts"), { recursive: true });
   yield* fs.copyFile("scripts/e2e-prepare.ts", path.join(repo, "scripts/e2e-prepare.ts"));
-  // Untracked files count as inputs, so the repository needs no commit.
   yield* processes.exitCode(ChildProcess.make("git", ["init", "--quiet"], { cwd: repo }));
   const cache = path.join(yield* fs.makeTempDirectoryScoped({ prefix: "executor-prepare-" }), "c");
   return { repo, cache };
@@ -162,7 +140,6 @@ const prepare = (
     const child = yield* processes.spawn(
       ChildProcess.make("node", ["scripts/e2e-prepare.ts", ...(options.args ?? [])], {
         cwd: input.repo,
-        // CI is set on the runners; an empty value leaves the cache on.
         env: { CI: "", EXECUTOR_E2E_CACHE: input.cache, FAKE_STATE: state, ...options.env },
         extendEnv: true,
       }),
@@ -208,13 +185,11 @@ layer(NodeServices.layer, { excludeTestServices: true })("Cached e2e:prepare", (
       expect(first.exitCode).toBe(0);
       expect(first.ran).toEqual(steps);
       for (const step of steps) expect(first.stdout).toContain(`${step}: built`);
-      // Outputs from the build are removed or replaced by stale files, then restored.
       yield* fs.remove(path.join(input.repo, outputs["apps:build"]));
       yield* fs.writeFileString(path.join(input.repo, outputs["web:build"]), "stale\n");
       yield* fs.writeFileString(path.join(input.repo, "apps/local/web/dist/extra.js"), "stale\n");
       const second = yield* prepare(input);
       expect(second.exitCode).toBe(0);
-      // The collector's build script runs again, as it does every time; every other step is cached.
       expect(second.ran).toEqual(uncached);
       for (const step of steps)
         expect(second.stdout).toContain(`${step}: ${uncached.includes(step) ? "built" : "cached"}`);
@@ -232,11 +207,8 @@ layer(NodeServices.layer, { excludeTestServices: true })("Cached e2e:prepare", (
       expect((yield* prepare(input)).ran).toEqual(steps);
       const changes: ReadonlyArray<readonly [string, ReadonlyArray<string>]> = [
         ["packages/ui/index.ts", ["hosted:self-host:web:build", "web:build"]],
-        // apps <- sdk <- local web; e2e:apps packs the apps build.
         ["packages/utils/index.ts", ["apps:build", "e2e:runtime", "e2e:apps", "web:build"]],
-        // The telemetry package's own sources are inputs of what depends on it: sdk <- local web.
         ["packages/telemetry/src/index.ts", ["e2e:runtime", "web:build"]],
-        // Its crate, build script and nested viewer package are not: only their own steps.
         ["packages/telemetry/collector/src/main.rs", ["collector:build"]],
         ["packages/telemetry/collector/README.md", ["collector:build"]],
         ["packages/telemetry/scripts/build-collector.ts", ["collector:build"]],
@@ -245,11 +217,9 @@ layer(NodeServices.layer, { excludeTestServices: true })("Cached e2e:prepare", (
         ["apps/hosted/self-host/package.json", ["hosted:self-host:web:build"]],
         ["scripts/pack-test-apps.ts", ["e2e:apps"]],
         ["e2e/npm-packages.json", ["e2e:npm"]],
-        // A new untracked file in a package is an input.
         ["packages/sdk/new.ts", ["e2e:runtime", "web:build"]],
         ["bun.lock", steps],
         ["e2e/README.md", []],
-        // Ignored files are not inputs.
         ["packages/ui/dist/ignored.js", []],
       ];
       for (const [file, rebuilt] of changes) {
@@ -274,7 +244,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Cached e2e:prepare", (
       yield* fs.writeFileString(file, original);
       const reverted = yield* prepare(input);
       expect(reverted.ran).toEqual(runs([]));
-      // The first run's build, restored: its number is the step's place in that run.
       expect(yield* read(input, outputs["web:build"])).toBe(
         `web:build build ${steps.indexOf("web:build") + 1}\n`,
       );
@@ -300,7 +269,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Cached e2e:prepare", (
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const input = yield* repository;
-      // As CI does: the collector is fetched after prepare, from its run's collector job.
       const before = yield* prepare(input, { args: ["--skip", "collector:build"] });
       expect(before.exitCode, before.stdout).toBe(0);
       expect(before.ran).toEqual(steps.filter((step) => step !== "collector:build"));

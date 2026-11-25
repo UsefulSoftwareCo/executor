@@ -1,10 +1,6 @@
 import { Fragment, useId, useState, type ReactNode } from "react";
 import { parse } from "tldts";
 
-/**
- * One part of the short form of a host list: a run of exact hosts that share a registrable
- * domain, or one declared host named as it is.
- */
 type HostPart =
   | {
       readonly type: "domain";
@@ -13,11 +9,6 @@ type HostPart =
     }
   | { readonly type: "host"; readonly host: string };
 
-/**
- * The registrable domain an exact host without a port belongs to, by the public suffix list's
- * ICANN and private sections, so `a.github.io` and `b.github.io` stay apart. Wildcards, hosts with
- * a port, IP addresses and names without a known public suffix have none and are always named.
- */
 const registrableDomain = (host: string) => {
   if (host.startsWith("*.") || host.includes(":")) return undefined;
   const parsed = parse(host, { allowPrivateDomains: true });
@@ -26,11 +17,6 @@ const registrableDomain = (host: string) => {
     : undefined;
 };
 
-/**
- * The short form of a host list: exact hosts that share a registrable domain with at least one
- * other declared host fold into one count per domain, then every other host, wildcard or host with
- * a port is named. Both keep the order in which their hosts are declared.
- */
 const hostParts = (hosts: readonly string[]): readonly HostPart[] => {
   const byDomain = new Map<string, string[]>();
   for (const host of hosts) {
@@ -45,17 +31,12 @@ const hostParts = (hosts: readonly string[]): readonly HostPart[] => {
   ];
 };
 
-/** A host or domain name as the access notices show it. */
 export const HostChip = ({ host }: { readonly host: string }) => (
   <span className="rounded border border-border bg-muted/50 px-1 py-px font-mono text-[11px] text-foreground wrap-anywhere">
     {host}
   </span>
 );
 
-/**
- * What a wildcard declaration allows, in words: `*.example.com` matches exactly one more label
- * (`api.example.com`, not `example.com` or `a.b.example.com`), as `credentialHostMatches` does.
- */
 const wildcardMeaning = (host: string) => {
   const separator = host.lastIndexOf(":");
   const [name, port] =
@@ -63,7 +44,6 @@ const wildcardMeaning = (host: string) => {
   return `(any host directly under ${name.slice(2)}${port === "" ? "" : `, port ${port}`})`;
 };
 
-/** A declared host as the sentence names it: wildcards say what they match. */
 const NamedHost = ({ host }: { readonly host: string }) =>
   host.startsWith("*.") ? (
     <>
@@ -73,7 +53,6 @@ const NamedHost = ({ host }: { readonly host: string }) =>
     <HostChip host={host} />
   );
 
-/** Items joined as a sentence lists them: "a", "a and b", "a, b and c". */
 const joined = (items: readonly ReactNode[]) =>
   items.map((item, index) => (
     <span key={index}>
@@ -82,12 +61,6 @@ const joined = (items: readonly ReactNode[]) =>
     </span>
   ));
 
-/**
- * Where credentials may be sent, as the end of a sentence that `lead` starts ("Hidden values are
- * only sent to"), followed by `after`. One or two hosts, or hosts that share no domain, are named
- * inline. A longer list says how many hosts share each registrable domain and names every other
- * host, with a button that lists every declared host in place.
- */
 export function CredentialHosts({
   hosts,
   lead,

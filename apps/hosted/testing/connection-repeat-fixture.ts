@@ -1,28 +1,3 @@
-/**
- * Local-only probe of the patched `@effect/sql-pg` pool's repeat of a statement whose connection
- * the far end dropped. Cloud's databases sit behind proxies (Hyperdrive, PlanetScale's routing)
- * that can end a connection without the client hearing of it until the client next writes; the
- * pooled connection then fails its next statement. Each case runs a pool configured as Cloud's
- * (`cloudDatabasePool`) through a proxy here that drops connections that way, and prints what it
- * saw as JSON for `cloud-database-placement.spec.ts` to judge. Never installed in the HTTP server.
- *
- * - `read`: a read on a dropped idle connection, in the Worker event's pool and in a session
- *   object's (statement groups, one caller per connection).
- * - `write`: a write on a dropped idle connection, in the event's pool and in a session object's
- *   statement group.
- * - `transaction`: a transaction whose connection is dropped after `BEGIN` and one statement,
- *   then reads.
- * - `down`: a read on a dropped connection while no new connection can be made.
- * - `cap`: more concurrent reads than the pool's cap, after every connection is dropped.
- * - `burst`: one read after every idle connection of a full session-object pool is dropped.
- * - `drop-one`: one read after one of a full session-object pool's idle connections is dropped,
- *   several times over, so the order the pool hands connections out in cannot hide a fault.
- * - `held`: a held batch, as a session object's tool call runs one: its leaf reads, the connection
- *   drops, and the leaf reads again. The second read must not be repeated on another connection,
- *   outside the hold and its snapshot.
- * - `classify`: statements the repeat must treat as reads or writes, checked against
- *   `PgConnection.readOnlyStatement`.
- */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { PgClient } from "@effect/sql-pg";
@@ -59,13 +34,11 @@ const cases = [
   "classify",
 ] as const;
 
-/** Statements and whether the repeat may treat each as a read. */
 const classified: ReadonlyArray<readonly [string, "read" | "write"]> = [
   ["SELECT 1", "read"],
   ["select updated_at, deleted_at, lock_id from t where id = $1", "read"],
   ["WITH a AS (SELECT 1) SELECT * FROM a", "read"],
   ["SELECT count(*)::int FROM t", "read"],
-  // Not caught, as documented: a user-defined function with side effects in a bare SELECT.
   ["SELECT my_function($1)", "read"],
   ["INSERT INTO t (id) VALUES (1)", "write"],
   ["UPDATE t SET a = 1", "write"],
@@ -104,7 +77,6 @@ const classified: ReadonlyArray<readonly [string, "read" | "write"]> = [
   ["DO $$ BEGIN END $$", "write"],
 ];
 
-/** Records every span the program starts; returns the attributes of those that repeated. */
 const recording = () => {
   const spans: Array<Tracer.NativeSpan> = [];
   const tracer = Tracer.make({
@@ -121,7 +93,6 @@ const recording = () => {
   return { tracer, repeats };
 };
 
-/** A failure's text, or `ok`. */
 const outcome = <A, E>(exit: Exit.Exit<A, E>) =>
   Exit.isSuccess(exit) ? "ok" : Cause.pretty(exit.cause).split("\n")[0];
 
@@ -149,7 +120,6 @@ const command = Command.make("connection-repeat-fixture", {
           Redacted.make(configuration.database),
         );
         const target = new URL(Redacted.value(database));
-        // This run's own name and table, so parallel scenarios on the shared database are untouched.
         const run = randomBytes(6).toString("hex");
         const table = `e2e_repeat_${run}`;
         const admin = yield* Effect.acquireRelease(
@@ -171,7 +141,6 @@ const command = Command.make("connection-repeat-fixture", {
         const proxied = new URL(target.toString());
         proxied.hostname = "127.0.0.1";
         proxied.port = String(proxy.port);
-        /** A client configured as Cloud's: the event's pool, or a session object's with groups. */
         const client = (shape: "event" | "object") =>
           PgClient.layer({
             url: Redacted.make(proxied.toString()),
@@ -182,10 +151,6 @@ const command = Command.make("connection-repeat-fixture", {
             connectTimeout: Duration.millis(2500),
             connectRetries: 1,
           });
-        /**
-         * Warms one connection, then runs `program`, which drops every connection at the far end
-         * (`drop`) when it chooses, and reports what happened after the drop.
-         */
         const afterDrop = <A, E>(
           shape: "event" | "object",
           program: (sql: SqlClient.SqlClient, drop: Effect.Effect<void>) => Effect.Effect<A, E>,
@@ -198,7 +163,6 @@ const command = Command.make("connection-repeat-fixture", {
           const { tracer, repeats } = recording();
           return Effect.gen(function* () {
             const sql = yield* SqlClient.SqlClient;
-            // `warm` concurrent reads open that many connections, which then sit idle.
             yield* Effect.all(
               Array.from({ length: options.warm ?? 1 }, () => sql`SELECT pg_sleep(0.05)`),
               { concurrency: "unbounded", discard: true },
@@ -215,18 +179,13 @@ const command = Command.make("connection-repeat-fixture", {
             });
             const exit = yield* Effect.exit(program(sql, drop));
             const millis = Date.now() - started;
-            // Closes the pool runs in the background finish before they are counted.
             yield* Effect.sleep("200 millis");
             return {
               dropped,
               outcome: outcome(exit),
               millis,
-              // TCP connections opened from the drop on: a repeat's, and the pool's refill, which
-              // with the repeat taking a pooled connection are the same.
               connects: proxy.opened() - openedBefore,
-              // The most connections open at once from the drop on, dropped ones included.
               peak: proxy.peak(),
-              // Connections that were not dropped which the pool closed from the drop on.
               healthyClosed: proxy.healthyClosed(),
               repeats: repeats(),
             };
@@ -236,7 +195,6 @@ const command = Command.make("connection-repeat-fixture", {
           <A, E>(statement: (sql: SqlClient.SqlClient) => Effect.Effect<A, E>) =>
           (sql: SqlClient.SqlClient, drop: Effect.Effect<void>) =>
             Effect.andThen(drop, statement(sql));
-        /** `reads` concurrent reads, each its own statement, after a drop; how many succeeded. */
         const many = (reads: number) => (sql: SqlClient.SqlClient, drop: Effect.Effect<void>) =>
           Effect.andThen(
             drop,
@@ -272,7 +230,6 @@ const command = Command.make("connection-repeat-fixture", {
                 then((sql) => sql`INSERT INTO ${sql(table)} (id) VALUES (1)`),
               );
               const eventRows = yield* rows;
-              // A session object's statements go out on its multiplexed path, in a group.
               const object = yield* afterDrop(
                 "object",
                 then((sql) => PgPool.grouped(sql`INSERT INTO ${sql(table)} (id) VALUES (2)`)),
@@ -283,8 +240,6 @@ const command = Command.make("connection-repeat-fixture", {
               };
             }
             case "transaction":
-              // The connection is lost after BEGIN and one statement; the next read in the same
-              // transaction meets the dead socket.
               return yield* afterDrop("event", (sql, drop) =>
                 sql.withTransaction(
                   Effect.gen(function* () {
@@ -329,8 +284,6 @@ const command = Command.make("connection-repeat-fixture", {
               return { runs };
             }
             case "held":
-              // The shape `mcp-session.ts` gives a tool call's reads: one leaf in a held,
-              // read-only snapshot batch.
               return yield* afterDrop("object", (sql, drop) =>
                 PgPool.held(
                   PgConnection.pipelined(

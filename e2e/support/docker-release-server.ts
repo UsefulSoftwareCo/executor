@@ -1,4 +1,3 @@
-/** A fresh released image with an owner, shared by the docker-release specs that deploy apps into it. */
 import { expect } from "@effect/vitest";
 import { Config, Console, Effect, Exit, Schema, Schedule } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
@@ -7,18 +6,11 @@ import { createServer } from "node:net";
 import { driver } from "./platform.ts";
 import { containerNpmRegistry } from "./npm-registry.ts";
 
-/** Settings for `releasedServerWith`. */
 export interface ReleasedServerOptions {
-  /** More environment for the container. */
   readonly environment?: Readonly<Record<string, string>>;
-  /** More `docker run` arguments, such as a restart policy. */
   readonly docker?: readonly string[];
 }
 
-/**
- * Start the image under test with `options`, set up its owner and organization; removed when the
- * scope closes.
- */
 export const releasedServerWith = (options: ReleasedServerOptions = {}) =>
   Effect.gen(function* () {
     const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -46,7 +38,6 @@ export const releasedServerWith = (options: ReleasedServerOptions = {}) =>
     const origin = `http://localhost:${port}`;
     const encryptionKey = randomBytes(32).toString("hex");
     const environment: Record<string, string> = {
-      // Release scenarios never send product analytics, even from an image with a baked key.
       DO_NOT_TRACK: "1",
       PORT: "8080",
       BETTER_AUTH_URL: origin,
@@ -73,7 +64,6 @@ export const releasedServerWith = (options: ReleasedServerOptions = {}) =>
       ),
       () => run(["rm", "--force", "--volumes", id]).pipe(Effect.orDie),
     );
-    // The image logs to stderr. Read it with stdout: an unread pipe fills and `docker logs` waits.
     yield* Effect.addFinalizer((exit) =>
       Exit.isFailure(exit)
         ? processes
@@ -132,21 +122,14 @@ export const releasedServerWith = (options: ReleasedServerOptions = {}) =>
       "/api/auth/organization/list",
     );
     const prefix = `/api/organizations/${organization.id}`;
-    /** Create an app from `files` and deploy it. */
     const deploy = (name: string, files: ReadonlyArray<{ path: string; content: string }>) =>
       json(Schema.Struct({ id: Schema.String }), `${prefix}/apps/deploy`, { name, files });
-    /** Run a shell script in the container as the user the server runs as. */
     const exec = (script: string) => run(["exec", "--user", "executor", id, "sh", "-c", script]);
-    /** Run a shell script in the container as root. */
     const execRoot = (script: string) => run(["exec", "--user", "root", id, "sh", "-c", script]);
-    /** The container's log so far; the image logs to stderr. */
     const logs = processes.string(ChildProcess.make("docker", ["logs", id], { stderr: "pipe" }), {
       includeStderr: true,
     });
-    // Stops every engine in the process; the product's state and the engines' storage remain.
     const restart = run(["restart", id]).pipe(Effect.andThen(ready));
-    // Stops the process for a while before starting it again, so durable deadlines pass while
-    // no engine is running.
     const restartAfter = (downtime: `${number} seconds`) =>
       run(["stop", id]).pipe(
         Effect.andThen(Effect.sleep(downtime)),
@@ -154,11 +137,8 @@ export const releasedServerWith = (options: ReleasedServerOptions = {}) =>
         Effect.andThen(ready),
       );
     return {
-      /** The container's name. */
       id,
-      /** Run `docker` with these arguments. */
       docker: run,
-      /** Answers once `/health` is 200. */
       ready,
       request,
       json,
@@ -170,15 +150,11 @@ export const releasedServerWith = (options: ReleasedServerOptions = {}) =>
       restart,
       restartAfter,
       encryptionKey,
-      /** The image's public port on 127.0.0.1, and the origin its pages are served at. */
       port,
       origin,
-      /** The owner's session, as a `cookie` header. */
       session: cookie,
-      /** The owner's organization's ID. */
       organization: organization.id,
     };
   });
 
-/** Start the image under test with its defaults; see `releasedServerWith`. */
 export const releasedServer = releasedServerWith();

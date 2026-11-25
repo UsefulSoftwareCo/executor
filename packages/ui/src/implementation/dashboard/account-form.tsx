@@ -37,7 +37,6 @@ import {
 import { SetupHelp } from "./markdown.tsx";
 import { CredentialHosts } from "./credential-hosts.tsx";
 
-/** One credential form for creation, reconnection and agent handoff; the host owns saving, naming and navigation. */
 export function AccountForm<A, E>({
   provider,
   account,
@@ -53,10 +52,6 @@ export function AccountForm<A, E>({
   check,
   disabled = false,
 }: {
-  /**
-   * Check complete credentials before saving, with the app that will use them. The form shows
-   * whether they work; saving stays the user's choice. Null means the app defines no check.
-   */
   readonly check?: {
     readonly app: AppId;
     readonly run: (input: AccountSubmission) => Promise<Exit.Exit<CredentialCheck | null, E>>;
@@ -85,18 +80,15 @@ export function AccountForm<A, E>({
   const auth = provider.definition.auth[method];
   const parsed = auth && accountFields(auth);
   const fields = parsed && Option.isSome(parsed) ? parsed.value : undefined;
-  // The app's own steps for getting these credentials, in place of the generic line.
   const guide = auth?.type === "secrets" ? auth.guide : undefined;
   const updatePending = (value: boolean) => {
     setPending(value);
     onPendingChange?.(value);
   };
   const [verdict, setVerdict] = useState<Verdict>({ state: "idle" });
-  // Only secrets can be validated before saving; OAuth has its own sign-in.
   const validates = check !== undefined && auth?.type === "secrets";
   const changeValues = (nextValues: Readonly<Record<string, string>>) => {
     setValues(nextValues);
-    // A result belongs to the credentials it checked; any edit needs a new validation.
     setVerdict({ state: "idle" });
   };
   const submitText =
@@ -141,7 +133,6 @@ export function AccountForm<A, E>({
         if (!validates || check === undefined || verdict.state !== "idle") return save(input);
         setVerdict({ state: "checking" });
         void check.run(input).then((exit) => {
-          // An app without a check has nothing to validate, so saving continues.
           if (Exit.isSuccess(exit) && exit.value === null) {
             setVerdict({ state: "idle" });
             save(input);
@@ -170,7 +161,6 @@ export function AccountForm<A, E>({
             <SelectTrigger>
               <SelectValue />
             </SelectTrigger>
-            {/* As wide as the field: a long method name wraps instead of widening the menu. */}
             <SelectContent className="w-(--radix-select-trigger-width)">
               {methods.map(([name, auth]) => (
                 <SelectItem key={name} value={name}>
@@ -224,9 +214,6 @@ export function AccountForm<A, E>({
           )}
           {error && <Failure cause={error} />}
           <div className="form-actions flex items-center gap-5 pt-1 text-[13px] [&_a]:text-muted-foreground max-[740px]:[&_>_a]:min-h-11 max-[740px]:[&_>_a]:inline-flex max-[740px]:[&_>_a]:items-center max-[740px]:flex-wrap max-[740px]:gap-[12px_20px] max-[480px]:[&_>_button]:basis-full">
-            {/* Busy without Button's `loading`, whose spinner is a second live region named
-                "Loading" and hides the text from the button's name. The name always says what the
-                button does; the verdict line alone announces the check. */}
             <Button
               type="submit"
               className={busy ? "relative w-full" : "w-full"}
@@ -252,7 +239,6 @@ export function AccountForm<A, E>({
   );
 }
 
-/** Whether a form has secret fields the hosts hide, and secret fields the app reads. */
 const secretAccess = (fields: AccountFormFields, hosts: readonly string[] | undefined) => {
   const secrets = Object.entries(fields.properties)
     .filter(([name, field]) => field.type === "string" && !fields.plain?.includes(name))
@@ -260,13 +246,6 @@ const secretAccess = (fields: AccountFormFields, hosts: readonly string[] | unde
   return { hidden: secrets.includes(true), readable: secrets.includes(false) };
 };
 
-/**
- * What the app gets for the entered credentials: a line above the submit button for each tag the
- * fields carry, where `SignInAccess` says the same of a sign-in. A provider that declares hosts
- * gives the app placeholders for hidden values; Executor substitutes the real values only on
- * requests to those hosts. `raw()` fields, and every secret of a provider without hosts, are
- * readable by the app, as plain fields are.
- */
 function CredentialAccess({
   hosts,
   hidden,
@@ -315,11 +294,6 @@ function CredentialAccess({
   );
 }
 
-/**
- * Where a sign-in's tokens go, in one line. Signing in enters no value, so this names the
- * sign-in rather than explaining placeholders: hosts keep it from the app, and without hosts the
- * app reads it.
- */
 function SignInAccess({
   provider,
   hosts,
@@ -365,11 +339,6 @@ type Verdict =
   | { readonly state: "done"; readonly result: CredentialCheck }
   | { readonly state: "unverified" };
 
-/**
- * What a failed check found, as the form shows it and the fix prompt quotes it. It says
- * "credentials", not the method's label: a label names a sign-in method ("Auth token or API key")
- * and does not read as the object of a sentence.
- */
 const checkFailure = (
   status: Exclude<AccountCheckStatus, "healthy">,
   provider: string,
@@ -386,7 +355,6 @@ const checkFailure = (
     Match.exhaustive,
   );
 
-/** Hands a check that may be wrong to the user's agent, which fixes and redeploys the app. */
 const checkFixPrompt = (app: AppId, provider: string, method: string, failure: string) =>
   [
     `The account check in my Executor app (app ID: ${app}) failed for my ${provider} credentials (sign-in method: ${method}), and the check itself may be wrong.`,
@@ -396,12 +364,6 @@ const checkFixPrompt = (app: AppId, provider: string, method: string, failure: s
     `Start with the Executor app's executor skill. Read the app's source, find the health check for the ${provider} provider, and fix it so it accepts working credentials and still rejects bad ones. Deploy the updated app. Don't ask me to paste the credentials into chat.`,
   ].join("\n");
 
-/**
- * Whether the entered credentials work, as the app's check found. The line keeps its height while
- * empty, so a short result never moves the form; the app's own explanation of a failure may wrap.
- * It is the form's one live region: assistive technology hears "Validating…" while the check runs,
- * then the result in its place.
- */
 function CredentialVerdict({
   app,
   verdict,
@@ -410,7 +372,6 @@ function CredentialVerdict({
 }: {
   readonly app: AppId;
   readonly verdict: Verdict;
-  /** The sign-in method's label, which only the fix prompt names. */
   readonly method: string;
   readonly provider: string;
 }) {
@@ -433,8 +394,6 @@ function CredentialVerdict({
         : shown.status === "credentials_rejected"
           ? "bad"
           : "warn";
-  // The app's author wrote its check, so a failure that blames the credentials may be the check's
-  // own bug. An unreachable service says nothing about either.
   const doubtsCheck =
     failure !== undefined && shown !== undefined && shown.status !== "upstream_unavailable";
   return (

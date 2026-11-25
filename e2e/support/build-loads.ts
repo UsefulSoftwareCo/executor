@@ -1,16 +1,9 @@
-/**
- * Count how often a host loaded an app's retained build. Each host's build loader records every
- * load as a span in the calling trace, so the counts come from delivered telemetry rather than
- * from inside the runtime.
- */
 import { Effect, FileSystem, Path, Schedule } from "effect";
 import { Evidence, Telemetry } from "./evidence.ts";
 import { Target } from "./platform.ts";
 
-/** The span each host's build loader records when a runtime cold start asks for app code. */
 export const buildLoadSpan = "runtime.app.build.load";
 
-/** The build loads recorded in the latest request's trace, once its server span has arrived. */
 export const latestRequestBuildLoads = (label: string) =>
   Effect.gen(function* () {
     const evidence = yield* Evidence,
@@ -33,11 +26,6 @@ export const latestRequestBuildLoads = (label: string) =>
     return loads.length;
   });
 
-/**
- * Every build load of one app, in any trace including background discovery, counted per runtime:
- * the app Worker or data facet of one account selection. Waits until at least one load has arrived
- * and the counts hold across three reads, so delivery lag is not mistaken for a missing load.
- */
 export const appBuildLoads = (app: string) =>
   Effect.gen(function* () {
     const telemetry = yield* Telemetry,
@@ -68,12 +56,6 @@ export const appBuildLoads = (app: string) =>
     return yield* Effect.die(`Build loads of ${app} did not settle: ${previous}`);
   });
 
-/**
- * Make the retained build whose authored source contains `marker` unreadable to the host, as a
- * brief storage failure would, until the returned effect restores it or the scope closes. Self-host
- * and local keep builds as files in the server's data directory; a cold start that asks for the
- * build meanwhile fails to load.
- */
 export const unreadableBuild = (marker: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem,
@@ -81,7 +63,6 @@ export const unreadableBuild = (marker: string) =>
       target = yield* Target;
     const directory = path.join(target.directory, "data", "builds");
     const builds: string[] = [];
-    // Each build's record is `<build>/worker.json`; the framework it links is stored apart.
     for (const name of yield* fs.readDirectory(directory)) {
       const file = path.join(directory, name, "worker.json");
       if (!name.startsWith("bld_") || !(yield* fs.exists(file))) continue;

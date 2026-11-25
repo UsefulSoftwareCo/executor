@@ -1,86 +1,3 @@
-/**
- * The public notes of an Executor release: what changed for users since the release before it,
- * then the install instructions at the top of scripts/releases/README.md. The metadata job of
- * `.github/workflows/release-artifacts.yml` writes them before any build, so a failure here costs
- * no matrix, and the publish job creates the GitHub release with them.
- *
- *   node scripts/releases/release-notes.ts [--version <version>] [--to <commit>] [--output <file>]
- *     [--json <file> [--history <releases>]]
- *   node scripts/releases/release-notes.ts --cloud <file or -> [--to <commit>]
- *   node scripts/releases/release-notes.ts --check <base> [--title <pull request title>]
- *
- * `--version` defaults to apps/cli/package.json and `--to` to HEAD, so the notes of an earlier
- * release can be written again from main with its version and its `Release` commit. Without
- * `--output` they go to stdout.
- *
- * `--json` also writes the notes as plain text,
- * `{ since, releases: [{ version, notes: [{ area, text }] }] }`: this release's and, with
- * `--history n`, those of the `n - 1` public releases before it, each against the release before
- * it, newest first, without a port's credit. `since` says how far back it is whole: every release
- * after `since`, up to this one, is listed, and none before it. The list stops at the newest
- * earlier release this checkout cannot place, which `since` is then, so it has no gaps. The
- * desktop update feed reads the file under the same rule (notes-history.ts), and this script
- * checks it so before writing it.
- *
- * `--cloud` writes Cloud's notes instead, `{ notes: [{ date, text, kind }] }`, newest change first and a
- * change's own lines in the order written: the accepted lines of main's commits in the
- * `cloudWindowDays` days before `--to`, at most `cloudMaxNotes`, on changes that reach Cloud
- * (`reachesCloud`) and change no other product's own code (`anotherProducts`), Cloud-only ones
- * included, under the same rules as the release's. It reads no public repository. It refuses a
- * window it cannot see in full: the checkout must hold a commit of main from before the window,
- * and no grafted or replaced history. The production deploy writes them to a file before it
- * builds, and the Cloud dashboard's build takes that file (apps/hosted/cloud/web/release-notes.ts).
- *
- * The release before is the highest `executor@<version>` tag below this version in the public
- * repository (`PUBLIC_REPO`, by default UsefulSoftwareCo/executor). That tag's commit exports a
- * commit of this repository, which its subject names (`Export <sha>`, scripts/export-public.sh),
- * and the changes are main's commits after that one, up to `--to`: each a squashed pull request.
- * The checkout needs that history.
- *
- * Only a commit whose message has a line `Release-note: <text>` is listed, and its text is the
- * line, as written, less the kind its writer may put first (`Feature: `, `Improvement: ` or `Fix: `,
- * `kindOfNote`; a note without one is a fix), which only `--cloud` writes and Cloud's what's new
- * reads, to lead with the newest feature or improvement. A line counts only when `Release-note:` starts a line of the message's body, so
- * not indented, quoted or inline. A message that holds `<`, `[`, `$`, "```" or `~~~` anywhere,
- * title included, other than in the address `<name@host>` and a name's closing `[bot]`
- * (`trailerParts`) of a line that is, whole, a `Co-authored-by: <name> <address>` trailer
- * (`coAuthor`), anywhere in the message, has no notes at all (`hiding`):
- * GitHub's Markdown can hide a line from whoever reads it rendered with HTML, a link definition,
- * math or a code fence, and this script does not try to tell where. Any line that holds
- * `Release-note:` and is not counted gets a warning that names its commit and line. A commit's
- * title is private and never printed, here or in a warning. `Release-note: none` is the same as no
- * line.
- *
- * A note is accepted only when it is plain prose that GitHub renders as nothing but its text
- * (`refusal`): at most `maxNoteLength` characters of ASCII letters, digits, spaces and
- * . , ; : ! ? ' " ( ) -, starting with a letter or digit, with no colon before anything but a
- * space, no dot inside a word (a host name), no letters joined to digits by a hyphen (`GH-123`), no
- * whole word of 7 or more hex characters or digits (a commit hash), no `GHSA-` advisory and no
- * private repository's name. Any other note is left out whole, never rewritten, with a warning that
- * names its commit, line and the reason. Each accepted line of a commit is listed, once, in order.
- *
- * A commit with an accepted line is listed when it changes a file the release ships
- * (`shippedSources` in e2e/release-lanes.ts: the packages the CLI, the desktop app and the
- * self-host image are built from), other than scripts, tests, fixtures and Markdown: under
- * `CLI and desktop` when it changes only the CLI's and the desktop app's own packages, under
- * `Self-host` when only the self-host image's own, and under `All installs` otherwise. A line on a
- * change to nothing a release ships (Cloud, CI, tests, tooling) is not listed, with a warning that
- * names the commit. Once the listed lines hold `maxNotesLength` characters, later changes are left
- * out, with a warning. Every commit not listed is counted in one line. A revert and the commit it
- * reverts cancel when both are in the release, newest first, so a reverted revert cancels nothing
- * and the change it reverted is listed. When nothing is listed, the notes say no release notes were
- * written. Warnings go to the job log, which is private, and name commits only.
- *
- * A commit with a line that ports an outside contributor's public pull request (its `Public-PR:`
- * line, as scripts/export-public.sh reads them) is listed whatever it changed, once for each public
- * pull request (the first of its commits with a line), with a link to it and the
- * GitHub handle of each of its `Co-Authored-By` trailers with a users.noreply.github.com address,
- * bots aside. That credit is the only link and mention in the notes, and it is built only from a
- * marker that names this public repository and a number (`publicPr`) and from handles that match
- * GitHub's rule (`noreply`), so it can point only at a public pull request and its contributors.
- * Anything else credits nothing, with a warning that names the commit and line, and the note is
- * listed as if the change were no port. No other trailer, name or email appears.
- */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Console, Effect, FileSystem, Option, Path, Schedule, Schema, Stream } from "effect";
@@ -91,35 +8,31 @@ import {
   cloudNoteDays,
   kindOfNote,
   type NoteKind,
+  type NoteProduct,
+  noteProductNames,
+  noteProducts,
   refusal,
 } from "@executor-js/utils/release-notes";
 import { notDeployInputs } from "../../apps/hosted/cloud/src/infrastructure/deploy-inputs.ts";
 import { type NotesHistory, notesHistoryProblem } from "./notes-history.ts";
+import { noteAudience, noteHash } from "./note-audiences.ts";
 import { earlierNoteKind } from "./note-kinds.ts";
 
 class ReleaseNotesFailed extends Schema.TaggedError<ReleaseNotesFailed>()("ReleaseNotesFailed", {
   message: Schema.String,
 }) {}
 
-/** The self-host image's own code, which Cloud does not build. */
 const selfHostOnly = ["apps/hosted/self-host/**"];
 
-/** Documentation that Cloud serves but that changes nothing Cloud does. */
 const documents = ["apps/docs/**", "**/*.mdx", ".changeset/**"];
 
-/** Files in a shipped package that change nothing a user installs. */
 const notShipped = ["**/scripts/**", "**/test/**", "**/tests/**", "**/fixtures/**", "**/*.md"];
 
-/** The commits Beta and the bun.lock repair push to main, which change no source. */
 const automatedTitle = /\[skip ci\]$/u;
 
-/** The most characters the listed lines may hold together; later changes are left out. */
 const maxNotesLength = 10_000;
-/** The most releases `--json` lists, this one included. */
 const maxHistory = 20;
-/** How far back from `--to` `--cloud` reads main, in days: as long as the dashboard shows a note. */
 const cloudWindowDays = cloudNoteDays;
-/** The most notes `--cloud` lists. */
 const cloudMaxNotes = 10;
 
 const areas = ["All installs", "CLI and desktop", "Self-host", "Other"] as const;
@@ -159,15 +72,9 @@ const gitOk = (args: ReadonlyArray<string>, cwd?: string) =>
     ),
   );
 
-/**
- * The `count` releases before `version` in the public repository, oldest first, each with the
- * commit of this one it exports, or why it has none. The last, the release before this one, must
- * have one; an earlier release without one is only left out of the history (`--json`).
- */
 const earlierReleases = (version: typeof ReleaseVersion.Type, publicRepo: string, count: number) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    // A short outage of the public repository should not fail a publishing run.
     const patient = <A, E, R>(read: Effect.Effect<A, E, R>) =>
       read.pipe(Effect.retry({ schedule: Schedule.exponential(2_000), times: 4 }));
     const tags = (yield* patient(
@@ -188,7 +95,6 @@ const earlierReleases = (version: typeof ReleaseVersion.Type, publicRepo: string
       return yield* new ReleaseNotesFailed({
         message: `${publicRepo} has no executor@ release tag below ${version}.`,
       });
-    // A scratch repository, so this checkout gets no shallow public commit.
     const scratch = yield* fs.makeTempDirectoryScoped({ prefix: "executor-release-notes-" });
     yield* gitOk(["init", "--quiet"], scratch);
     yield* patient(
@@ -204,7 +110,6 @@ const earlierReleases = (version: typeof ReleaseVersion.Type, publicRepo: string
         scratch,
       ),
     );
-    // Each release has a source, or why it has none.
     const releases: Array<
       { readonly version: typeof ReleaseVersion.Type } & (
         | { readonly source: string; readonly missing?: undefined }
@@ -241,19 +146,12 @@ const earlierReleases = (version: typeof ReleaseVersion.Type, publicRepo: string
 
 interface Commit {
   readonly sha: string;
-  /** When it reached main: its committer date, as GitHub's squash merge writes it. */
   readonly date: string;
-  /** Private: used only to match a revert to its target and in note-kinds.ts, never printed. */
   readonly title: string;
   readonly message: string;
   readonly files: ReadonlyArray<string>;
 }
 
-/**
- * Main's commits after `from` up to `to`, oldest first, with the files each changed. Without rename
- * detection, which reads file contents: the metadata job's checkout has none, and no credentials to
- * fetch them, and a renamed file's two paths classify it as well as one.
- */
 const commitsBetween = (from: string | undefined, to: string) =>
   gitOk([
     "log",
@@ -282,39 +180,15 @@ const commitsBetween = (from: string | undefined, to: string) =>
     ),
   );
 
-/** A title without its private pull request number. */
 const bareTitle = (title: string) => title.replace(/\s*\(#\d+\)$/u, "").trim();
 
-/**
- * What lets GitHub's Markdown hide a line from whoever reads the message rendered: HTML (a comment,
- * `<details>` or an attribute), a link definition's title, math, and code fences. A message that
- * holds any of them has no notes.
- */
 const hiding = ["<", "[", "$", "```", "~~~"];
 
-/**
- * What a `Co-authored-by:` trailer writes: an email address, `<name@host>`, and a bot's name ending
- * `[bot]` right after a letter or digit. No tag, comment or link definition starts this way, so
- * these are the only places `hiding` allows `<` or `[`, and only on a `coAuthor` line, which holds
- * one address, at its end, and no other `<`, `>`, `[` or `]`.
- */
 const trailerParts = /<[A-Za-z0-9._+-]+(?:\[bot\])?@[A-Za-z0-9.-]+>|(?<=[A-Za-z0-9-])\[bot\]/gu;
 
-/**
- * A line that is, whole, a `Co-authored-by: <name> <address>` trailer (the key in any case, as git
- * reads it), the only trailer main's messages give an address, with nothing after it but spaces: a
- * name with no `<`, `>`, `[`, `]`, `$`, backtick or control character but a closing `[bot]`, and an
- * address `<local@host>` of letters, digits and `._+-` (a bot's local part ending `[bot]`), and
- * letters, digits, dots and hyphens. It may be any line of a message: a squash joins its commits'
- * messages, so a port's own trailers sit in the middle.
- */
 const coAuthor =
   /^Co-authored-by: [^<>[\]$`\p{Cc}]+?(?:(?<=[A-Za-z0-9-])\[bot\])? <(?<address>[A-Za-z0-9._+-]+(?:\[bot\])?@[A-Za-z0-9.-]+)> *$/iu;
 
-/**
- * The `coAuthor` lines of a message's trailer block, by index: its last paragraph, after the
- * title's, when every line of it is a trailer (`Key: value`). A port's credit reads only these.
- */
 const coAuthors = (lines: ReadonlyArray<string>) => {
   let end = lines.length;
   while (end > 0 && lines[end - 1]!.trim() === "") end -= 1;
@@ -328,14 +202,6 @@ const coAuthors = (lines: ReadonlyArray<string>) => {
   });
 };
 
-/**
- * A commit message's notes: each line of its body that starts with `Release-note: <text>`, in order
- * and once each, `none` and empty ones aside, and accepted by `refusal`, each with the kind its
- * writer put before it (`kindOfNote`), which is not part of its text. A message that holds any
- * of `hiding` outside the `trailerParts` of its `coAuthor` lines has none, and `hiddenBy` says which.
- * Any other line that holds `Release-note:` is returned as ignored, and a note `refusal` refuses as
- * refused, both by line number.
- */
 const notesOf = (message: string) => {
   const notes: Array<{ readonly text: string; readonly kind: NoteKind }> = [];
   const ignored: Array<{ readonly line: number; readonly reason: string }> = [];
@@ -349,7 +215,6 @@ const notesOf = (message: string) => {
   if (!mentioned || hiddenBy !== undefined) return { notes, ignored, refused, hiddenBy };
   for (const [index, line] of lines.entries()) {
     if (!/release-note:/iu.test(line)) continue;
-    // The title: private, and never a note.
     if (index === 0) {
       ignored.push({ line: 1, reason: "in the title" });
       continue;
@@ -368,7 +233,6 @@ const notesOf = (message: string) => {
     }
     if (note[1] === "" || note[1]!.toLowerCase() === "none") continue;
     const { kind, text } = kindOfNote(note[1]!);
-    // A kind with nothing after it, or with `none`, has no note: it is refused, never published.
     const reason =
       text === "" || text.toLowerCase() === "none"
         ? `names its kind, ${kind}, but no note after it`
@@ -379,28 +243,15 @@ const notesOf = (message: string) => {
   return { notes, ignored, refused, hiddenBy };
 };
 
-/**
- * A port's marker, as scripts/export-public.sh reads it: the public repository, exactly, a pull
- * request number of at most nine digits and the 40-hex head it ported.
- */
 const escapedRepository = release.repository.replace(/[\\^$.*+?()[\]{}|/]/gu, "\\$&");
 const publicPr = new RegExp(
   `^Public-PR: ${escapedRepository}#([1-9][0-9]{0,8}) [0-9a-f]{40}[ \\t]*$`,
   "u",
 );
 
-/**
- * A users.noreply.github.com address and the GitHub handle it names, without its `id+` prefix:
- * letters, digits and single hyphens between them, at most 39 characters.
- */
 const noreply =
   /^(?:[0-9]+\+)?(?<handle>(?=[A-Za-z0-9-]{1,39}@)[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)@users\.noreply\.github\.com$/u;
 
-/**
- * The public pull request a commit ports, from its first `publicPr` line, and the handles of its
- * `coAuthors`, bots aside. The credit is built from these alone. `unread` are the lines that start
- * `Public-PR:` but are no marker, and `unnamed` the co-authors with no `noreply` handle, by line.
- */
 const port = (message: string) => {
   const lines = message.split("\n").map((line) => line.replace(/\r$/u, ""));
   const markers = lines.flatMap((line, index) =>
@@ -424,23 +275,24 @@ const port = (message: string) => {
   };
 };
 
-/**
- * The message GitHub squashes a pull request's commits into, with this repository's settings
- * (the commit's or the pull request's title, then the commits' messages): one commit keeps its own
- * message; several get the pull request's title and each commit as `* <subject>` and its body.
- */
 const squashed = (title: string, commits: ReadonlyArray<{ subject: string; body: string }>) =>
   commits.length === 1
     ? `${commits[0]!.subject}\n\n${commits[0]!.body}`
     : [title, ...commits.map(({ subject, body }) => `* ${subject}\n\n${body}`)].join("\n\n");
 
-/**
- * `--check <base>`: before pushing, read the branch's commits since `base` as GitHub will squash
- * them, and fail when a Release-note: line in them would be dropped, with the same reasons the
- * release's warnings give. It prints the lines that would be listed. `--title` is the pull
- * request's title, which the squash uses when the branch has several commits.
- */
-const checkBranch = (base: string, title: string) =>
+const audienceText = (audience: ReadonlyArray<NoteProduct>) =>
+  audience.map((product) => noteProductNames[product]).join(", ");
+
+const someFiles = (files: ReadonlyArray<string>) =>
+  files.length <= 3
+    ? files.join(", ")
+    : `${files.slice(0, 3).join(", ")} and ${files.length - 3} more`;
+
+const checkBranch = (
+  base: string,
+  title: string,
+  reachOf: (files: ReadonlyArray<string>) => Readonly<Record<NoteProduct, ReadonlyArray<string>>>,
+) =>
   Effect.gen(function* () {
     const log = yield* gitOk(["log", "--reverse", "--format=%x1e%s%x1f%b", `${base}..HEAD`]);
     const commits = log
@@ -451,7 +303,15 @@ const checkBranch = (base: string, title: string) =>
         return { subject, body: body.trimEnd() };
       });
     if (commits.length === 0) return yield* Console.log(`No commits since ${base}.`);
-    const { notes, ignored, refused, hiddenBy } = notesOf(squashed(title, commits));
+    const message = squashed(title, commits);
+    const { notes, ignored, refused, hiddenBy } = notesOf(message);
+    const ported = port(message).number !== undefined;
+    const reaching = reachOf(
+      (yield* gitOk(["diff", "--no-renames", "--name-only", `${base}...HEAD`]))
+        .split("\n")
+        .filter((file) => file !== ""),
+    );
+    const reached = noteProducts.filter((product) => reaching[product].length > 0);
     const problems = [
       ...(hiddenBy === undefined
         ? []
@@ -466,13 +326,64 @@ const checkBranch = (base: string, title: string) =>
           `line ${line} of the squashed message has a Release-note: line that ${reason}`,
       ),
     ];
-    for (const note of notes)
+    for (const note of notes) {
+      const audience = noteAudience(note.text);
+      const hash = noteHash(note.text);
+      const change =
+        "to change that, add an entry with its hash and the products it is for to scripts/releases/note-audiences.ts";
+      const why = reached
+        .map((product) => `${noteProductNames[product]}: ${someFiles(reaching[product])}`)
+        .join("; ");
+      const unreached = (audience ?? []).filter((product) => !reached.includes(product));
+      const portLine =
+        ported &&
+        audience === undefined &&
+        !reached.includes("local") &&
+        !reached.includes("self-host")
+          ? [
+              "  As a port of a public pull request, it is also listed in the public release under Other, with its credit.",
+            ]
+          : [];
+      const shown =
+        audience !== undefined
+          ? [
+              `  Shown to: ${audienceText(audience)}, as scripts/releases/note-audiences.ts says for its hash. ${
+                reached.length === 0
+                  ? "By its files this change reaches no product."
+                  : `By its files this change reaches ${audienceText(reached)} (${why}).`
+              }`,
+              ...(unreached.length === 0
+                ? []
+                : [
+                    `  The entry names ${audienceText(unreached)}, which this change's files do not reach: keep that only if their users will notice the change.`,
+                  ]),
+            ]
+          : reached.length === 0
+            ? [
+                "  Shown to: no product, since this change touches only scripts, tests, fixtures, documents, CI or tooling, which no product ships.",
+                `  If users will notice it, ${change}.`,
+              ]
+            : [
+                `  Shown to: ${audienceText(reached)}, the products this change reaches (${why}).`,
+                `  If the users of one of them would not notice it, ${change}.`,
+              ];
       yield* Console.log(
-        `Release-note accepted: ${note.text}\n  Kind: ${note.kind}${
-          note.kind === "fix"
-            ? ", so Cloud's what's new never leads with it (write Feature: or Improvement: before a note that is one)"
-            : ""
-        }`,
+        [
+          `Release-note accepted: ${note.text}`,
+          `  Kind: ${note.kind}${
+            note.kind === "fix"
+              ? ", so Cloud's what's new never leads with it (write Feature: or Improvement: before a note that is one)"
+              : ""
+          }`,
+          ...shown,
+          `  Hash: ${hash}`,
+          ...portLine,
+        ].join("\n"),
+      );
+    }
+    if (notes.length > 0)
+      yield* Console.log(
+        'Who a note is for is the writer\'s call: see "Release notes" in RELEASING.md.',
       );
     if (problems.length > 0)
       return yield* new ReleaseNotesFailed({
@@ -516,8 +427,23 @@ NodeRuntime.runMain(
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const options = yield* parseArguments(process.argv.slice(2));
+    const shipped = yield* shippedSources;
+    const localOnly = shipped.local.filter((glob) => !shipped.image.includes(glob));
+    const reachesCloud = (file: string) =>
+      !notDeployInputs.some((entry) => entry.path.test(file)) &&
+      !matchesAny([...notShipped, ...documents], file) &&
+      !matchesAny([...localOnly, ...selfHostOnly], file);
+    const reachOf = (files: ReadonlyArray<string>): Record<NoteProduct, ReadonlyArray<string>> => {
+      const builtFrom = (globs: ReadonlyArray<string>) =>
+        files.filter((file) => matchesAny(globs, file) && !matchesAny(notShipped, file));
+      return {
+        cloud: files.filter(reachesCloud),
+        local: builtFrom(shipped.local),
+        "self-host": builtFrom(shipped.image),
+      };
+    };
     if (options.check !== undefined)
-      return yield* checkBranch(options.check, options.title ?? "Pull request title");
+      return yield* checkBranch(options.check, options.title ?? "Pull request title", reachOf);
     const version = yield* Schema.decodeUnknownEffect(ReleaseVersion)(
       options.version ?? release.version,
     ).pipe(
@@ -526,42 +452,17 @@ NodeRuntime.runMain(
       ),
     );
     const to = (yield* gitOk(["rev-parse", "--verify", `${options.to ?? "HEAD"}^{commit}`])).trim();
-    const shipped = yield* shippedSources;
-    const everything = [...new Set([...shipped.local, ...shipped.image])];
-    const localOnly = shipped.local.filter((glob) => !shipped.image.includes(glob));
-    const imageOnly = shipped.image.filter((glob) => !shipped.local.includes(glob));
-    /**
-     * Whether a change to `file` reaches Cloud: a file a Cloud deploy reads
-     * (apps/hosted/cloud/src/infrastructure/deploy-inputs.ts) that is not only the CLI's and the
-     * desktop app's (`localOnly`) or the self-host image's own (`selfHostOnly`; Cloud builds the
-     * hosted dashboard and server too), nor a script, test, fixture or document (the
-     * docs site describes every product, so a change to it alone says nothing about Cloud).
-     */
-    const reachesCloud = (file: string) =>
-      !notDeployInputs.some((entry) => entry.path.test(file)) &&
-      !matchesAny([...notShipped, ...documents], file) &&
-      !matchesAny([...localOnly, ...selfHostOnly], file);
-    /**
-     * Whether a change is another product's too: it changes code that is only the CLI's, the
-     * desktop app's or the self-host image's. Its note is written for their users (AGENTS.md asks
-     * for one only on a change they would notice), so Cloud leaves it out even when the change
-     * also reaches Cloud.
-     */
-    const anotherProducts = (files: ReadonlyArray<string>) =>
-      files.some(
-        (file) =>
-          matchesAny([...localOnly, ...selfHostOnly], file) &&
-          !matchesAny([...notShipped, ...documents], file),
-      );
+    const areaOf = (audience: ReadonlyArray<NoteProduct>): Area | undefined =>
+      audience.includes("local") && audience.includes("self-host")
+        ? "All installs"
+        : audience.includes("local")
+          ? "CLI and desktop"
+          : audience.includes("self-host")
+            ? "Self-host"
+            : undefined;
 
-    // The job log is private: a warning names a commit, and never its title or its note.
     const warn = (sha: string, message: string) =>
       Console.warn(`::warning title=Release notes::${sha} ${message}`);
-    /**
-     * The changes main's commits after `from` up to `to` list: as the notes' Markdown lines by area,
-     * with a port's credit, and as plain notes, each its area and text alone. `warn` reports what
-     * is left out, and why.
-     */
     const listChanges = (
       from: string | undefined,
       to: string,
@@ -570,8 +471,6 @@ NodeRuntime.runMain(
     ) =>
       Effect.gen(function* () {
         const commits = yield* commitsBetween(from, to);
-        // A revert and the commit it reverts cancel. Newest first, so a revert that is itself reverted
-        // cancels nothing, and the change it reverted stands. GitHub cuts a long reverted title with "…".
         const cancelled = new Set<string>();
         for (let index = commits.length - 1; index >= 0; index -= 1) {
           const commit = commits[index]!;
@@ -632,11 +531,6 @@ NodeRuntime.runMain(
             other += 1;
             continue;
           }
-          const files = commit.files.filter((file) =>
-            reach === "release"
-              ? matchesAny(everything, file) && !matchesAny(notShipped, file)
-              : reachesCloud(file),
-          );
           const { number: ported, handles, unread, unnamed } = port(commit.message);
           for (const line of unread)
             yield* warn(
@@ -649,15 +543,32 @@ NodeRuntime.runMain(
                 commit.sha,
                 `line ${line} has a Co-authored-by: trailer without a users.noreply.github.com address that names a GitHub handle, so the notes thank no one for it.`,
               );
-          if (reach === "cloud" && (files.length === 0 || anotherProducts(commit.files))) {
-            other += 1;
-            continue;
-          }
-          if (ported === undefined && files.length === 0) {
+          const reaching = reachOf(commit.files);
+          const reached = noteProducts.filter((product) => reaching[product].length > 0);
+          const addressed = notes.map((note) => {
+            const audience = noteAudience(note.text);
+            return { ...note, stated: audience !== undefined, audience: audience ?? reached };
+          });
+          const shown = addressed.flatMap((note) => {
+            if (reach === "cloud")
+              return note.audience.includes("cloud")
+                ? [{ ...note, area: areaOf(note.audience) ?? "Other" }]
+                : [];
+            const area =
+              areaOf(note.audience) ?? (ported !== undefined && !note.stated ? "Other" : undefined);
+            return area === undefined ? [] : [{ ...note, area }];
+          });
+          if (
+            reach === "release" &&
+            ported === undefined &&
+            areaOf(reached) === undefined &&
+            addressed.some((note) => !note.stated)
+          )
             yield* warn(
               commit.sha,
               "has a Release-note: line on a change to nothing a release ships (Cloud-only, CI, tests or tooling), so the notes leave it out.",
             );
+          if (shown.length === 0) {
             other += 1;
             continue;
           }
@@ -669,8 +580,6 @@ NodeRuntime.runMain(
             other += 1;
             continue;
           }
-          // The one link and mention in the notes, built only from `publicPr`'s number and `noreply`'s
-          // handles: both public, and neither free text.
           const credit =
             ported === undefined
               ? ""
@@ -679,12 +588,8 @@ NodeRuntime.runMain(
                     ? `, thanks ${handles.map((handle) => `@${handle}`).join(", ")}`
                     : ""
                 })`;
-          // An accepted note renders as its text alone, so it is printed as written.
-          const lines = notes.map((note) => `- ${note.text}${credit}`);
-          const added = lines.reduce((total, line) => total + line.length, 0);
-          // Once one change does not fit, later ones do not either, so the notes keep merge order.
-          // Cloud's notes have their own bound, the newest `cloudMaxNotes`, so the length a release's
-          // notes hold does not apply: it would keep the oldest and drop the newest.
+          const lines = shown.map((note) => ({ area: note.area, line: `- ${note.text}${credit}` }));
+          const added = lines.reduce((total, { line }) => total + line.length, 0);
           if (reach === "release" && length + added > maxNotesLength) {
             length = maxNotesLength;
             yield* warn(
@@ -695,21 +600,12 @@ NodeRuntime.runMain(
             continue;
           }
           length += added;
-          const area: Area =
-            files.length === 0
-              ? "Other"
-              : files.every((file) => matchesAny(localOnly, file))
-                ? "CLI and desktop"
-                : files.every((file) => matchesAny(imageOnly, file))
-                  ? "Self-host"
-                  : "All installs";
           if (ported !== undefined) credited.add(ported);
-          listed.get(area)!.push(...lines);
+          for (const { area, line } of lines) listed.get(area)!.push(line);
           plain.push(
-            ...notes.map(({ text, kind }) => ({
+            ...shown.map(({ area, text, kind }) => ({
               area,
               text,
-              // A note merged before kinds could be written has the kind note-kinds.ts gives it.
               kind: kind === "fix" ? (earlierNoteKind(commit.title, text) ?? kind) : kind,
               date: commit.date,
               sha: commit.sha,
@@ -721,20 +617,14 @@ NodeRuntime.runMain(
 
     const cloudFile = options.cloud;
     if (cloudFile !== undefined) {
-      // Cloud runs main, not releases: the newest notes merged in the window before `to`.
       const end = new Date((yield* gitOk(["log", "-1", "--format=%cI", to])).trim());
       const start = new Date(end.getTime() - cloudWindowDays * 24 * 60 * 60 * 1000);
-      // A history that is grafted or has replaced commits is not main's own, and could hide
-      // commits inside the window without a trace, so neither is read.
       const grafts = (yield* gitOk(["rev-parse", "--git-path", "info/grafts"])).trim();
       const replaced = (yield* gitOk(["replace", "--list"])).trim();
       if ((yield* fs.exists(grafts)) || replaced !== "")
         return yield* new ReleaseNotesFailed({
           message: `This checkout ${replaced !== "" ? "replaces commits (git replace)" : `grafts its history (${grafts})`}, so it cannot show main's history as it is. Write Cloud's notes from a checkout without them.`,
         });
-      // The window is seen in full only from a commit before it: every commit after that one on
-      // main's first-parent line is then in this checkout. A shallow checkout that stops inside the
-      // window, such as CI's depth-one clone, has none and is refused rather than list fewer notes.
       const before = (yield* gitOk([
         "rev-list",
         "-1",
@@ -752,7 +642,6 @@ NodeRuntime.runMain(
         });
       }
       const { plain } = yield* listChanges(before, to, warn, "cloud");
-      // Newest change first, and a change's own notes in the order they were written.
       const changes: Array<typeof plain> = [];
       for (const note of plain)
         if (changes.at(-1)?.[0]?.sha === note.sha) changes.at(-1)!.push(note);
@@ -808,7 +697,6 @@ NodeRuntime.runMain(
     const readme = yield* fs.readFileString(
       path.join(path.dirname(yield* path.fromFileUrl(new URL(import.meta.url))), "README.md"),
     );
-    // The README's first section, the install instructions, without its own heading.
     const install = readme
       .split(/^## /mu)[0]!
       .replace(/^# .*\n/u, "")
@@ -830,12 +718,6 @@ NodeRuntime.runMain(
     }
 
     if (options.json === undefined) return;
-    // The same notes as plain text, for the products to show: this release's, then each earlier
-    // release's against the release before it, newest first, back to the newest release whose
-    // source or whose predecessor's is unknown. That release and every one before it are left out,
-    // so `since`, the release before the oldest listed, says how far back the list is whole. A
-    // reader cannot tell a gap from the versions alone, so the list has none. The left-out
-    // releases' own warnings were the job log's when they were published, so they are not repeated.
     const textByArea = (notes: ReadonlyArray<{ readonly area: Area; readonly text: string }>) =>
       notes.map(({ area, text }) => ({ area, text }));
     const plain: Array<NotesHistory["releases"][number]> = [
@@ -877,7 +759,6 @@ NodeRuntime.runMain(
       since = before.version;
     }
     const written: NotesHistory = { since, releases: plain };
-    // The feed refuses notes that break its rule; stop here rather than write them.
     const problem = notesHistoryProblem(written, version);
     if (problem !== undefined)
       return yield* new ReleaseNotesFailed({ message: `The JSON history ${problem}.` });

@@ -1,21 +1,12 @@
-/**
- * Checks that local lists data step 7 once the SDK's latest storage version is 4.0.11 or later.
- * Every local release before step 7 refuses that storage, which keeps a release that lets agents
- * name any owner from opening a database the step has moved. A release with the storage and
- * without the step would be one, so such a tree must not pass. First the same rule runs on
- * check-local-data-steps-fixtures.ts, trees it must reject and ones it must accept.
- */
 import { Effect } from "effect";
 import { OwnerId } from "../packages/sdk/src/contracts/shared.ts";
 import { storageSchemas } from "../packages/sdk/src/implementation/storage-migrations.ts";
 import { hostDataStepNames } from "../packages/app-management/src/implementation/host-data-steps.ts";
 import { fixtures } from "./check-local-data-steps-fixtures.ts";
 
-/** The first storage no local release before step 7 opens. History fixes both. */
 const storage = "4.0.11";
 const step = "7_local_owners";
 
-/** Whether a dotted version is at least another, part by part. */
 const atLeast = (version: string, minimum: string) => {
   const have = version.split(".").map(Number);
   const need = minimum.split(".").map(Number);
@@ -43,7 +34,6 @@ if (wrong.length > 0) {
 }
 
 const latest = storageSchemas.at(-1)?.version ?? "";
-// Local's journal requires local owners (`runStartupDataSteps`), so this is the list local runs.
 const local = hostDataStepNames({
   localOwners: {
     owner: OwnerId.make("local"),

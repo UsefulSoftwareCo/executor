@@ -2,7 +2,6 @@ import type { ReactNode } from "react";
 import { OrganizationSwitcher, useOrganizationRoute } from "./organization.tsx";
 import { DashboardFrame } from "./dashboard-frame.tsx";
 
-/** Organization and session controls belong to the hosted product, outside the shared shell. */
 export function DashboardShell({
   navigation,
   banner,

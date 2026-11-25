@@ -39,7 +39,6 @@ import { organizationSlugMaxLength } from "@executor-js/hosted-server/organizati
 
 export type { MemberLimit };
 
-/** Hosts may compose extra admin settings, a member limit and a footer below the members list. */
 export function OrganizationPage({
   emailInvitations = false,
   memberLimit,

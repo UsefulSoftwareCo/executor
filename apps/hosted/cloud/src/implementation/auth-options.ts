@@ -1,4 +1,3 @@
-/** Cloud sign-in policy; self-hosted deployments do not need these OAuth credentials. */
 import { siteVisitorCookie } from "@executor-js/marketing/site-visitor";
 import type { BetterAuthOptions } from "better-auth";
 import { APIError } from "better-auth/api";
@@ -6,6 +5,7 @@ import { authOptions, type GrantObservers } from "@executor-js/hosted-server";
 import { cloudHosts } from "../infrastructure/stage.ts";
 import { passkey } from "@better-auth/passkey";
 import { emailOTP } from "better-auth/plugins/email-otp";
+import { signInOriginCookie } from "@executor-js/hosted-server/sign-in-origin";
 import { organization } from "better-auth/plugins/organization";
 import { oAuthProxy } from "better-auth/plugins/oauth-proxy";
 import { oauthProxyLocationGuard, oauthProxyProductionGuard } from "./oauth-proxy-guard.ts";
@@ -29,10 +29,8 @@ import { chatGptSettings, chatGptSignIn } from "./chatgpt-sign-in.ts";
 import { cloudMemberLimit } from "./member-limit.ts";
 import { v1HandoffSessions } from "./v1-session-handoff.ts";
 
-/** The better-auth endpoint that creates accounts from a verified email code. */
 const emailCodeSignInPath = "/sign-in/email-otp";
 
-/** Require both cloud social providers and reject blank credentials at startup. */
 export const cloudAuthSettings = Effect.gen(function* () {
   const hosts = yield* cloudHosts;
   const url = hosts.browser;
@@ -41,9 +39,6 @@ export const cloudAuthSettings = Effect.gen(function* () {
   const emulators = yield* cloudEmulators;
   const oauthRedirectUri = yield* cloudAccountRedirectUri;
   const { names: proxyNames, settings: oauthProxy } = yield* cloudOAuthProxy;
-  // The proxy's production is where its sign-ins return. A value naming this deployment's other
-  // hosts is stale configuration: production would proxy its own sign-ins to itself. The browser
-  // origin moves with `CLOUD_BROWSER_ORIGIN`; the callback origin does not, so neither does this.
   if (
     Option.isSome(oauthProxy) &&
     oauthProxy.value.productionUrl !== callbackOrigin &&
@@ -54,7 +49,6 @@ export const cloudAuthSettings = Effect.gen(function* () {
         `${proxyNames.productionUrl} is ${oauthProxy.value.productionUrl}, this deployment's own origin; set it to ${callbackOrigin}, where its social sign-ins return`,
       ),
     );
-  // Production must trust the stage origins it redirects signed-in profiles back to.
   const trustedOrigins = yield* Config.String("AUTH_TRUSTED_ORIGINS").pipe(
     Config.option,
     Effect.map(
@@ -117,12 +111,6 @@ const GoogleUserInfo = Schema.Struct({
   picture: Schema.optional(Schema.String),
 });
 
-/**
- * Google leaves `picture` out of some accounts' ID tokens, Workspace accounts among them, while
- * its userinfo endpoint still returns it. Better Auth builds the user from the ID token alone, so
- * those people never got a photo. When the token has none, ask userinfo for the photo and nothing
- * else. The profile stays the verified token's; a userinfo failure keeps the sign-in photo-less.
- */
 const withGooglePhoto = (options: GoogleOptions): GoogleOptions => {
   const provider = google(options);
   return {
@@ -154,15 +142,10 @@ const withGooglePhoto = (options: GoogleOptions): GoogleOptions => {
   };
 };
 
-/** Promise boundary used by Better Auth's organization lifecycle. */
 export interface CloudBillingHooks {
   readonly memberLimit: (organization: string) => Promise<number>;
 }
 
-/**
- * Keep the passkey relying-party identity pinned to the configured hosts. The caller decides the
- * per-address limit with `cloudAuthRateLimit`.
- */
 export const cloudAuthOptions = (
   settings: Effect.Success<typeof cloudAuthSettings> & { readonly rateLimitEnabled: boolean },
   ipAddressHeaders: string[],
@@ -175,8 +158,6 @@ export const cloudAuthOptions = (
   onProviderPhoto?: (refresh: ProviderPhotoRefresh) => void,
 ) => {
   const base = authOptions(settings, ipAddressHeaders, grants);
-  // A test stage that signs in through production's proxy uses production's callback, which the
-  // proxy sets. Every other deployment names its own social callback origin explicitly.
   const proxiedElsewhere = Option.exists(
     settings.oauthProxy,
     (proxy) => proxy.productionUrl !== settings.callbackOrigin,
@@ -192,19 +173,11 @@ export const cloudAuthOptions = (
     advanced: {
       ...base.advanced,
       cookies: {
-        // SAML returns through a cross-site POST. Keep its browser binding
-        // cookie available without changing any session cookie's SameSite policy.
         relay_state: { attributes: { sameSite: "none" as const, secure: true } },
       },
     },
     trustedOrigins: [...base.trustedOrigins, ...settings.trustedOrigins],
     user: {
-      // Better Auth stores a provider photo only when it creates the user. This is the one
-      // hook that sees a returning or newly linked provider's verified profile, so keep the
-      // photo current here. Name and email stay as they are, and a provider without a photo
-      // never clears one. Accepts every identity; a failed write must not block sign-in.
-      // ChatGPT never joins an existing account by email. The rejection is returned, not
-      // thrown: Better Auth replaces anything thrown here with a generic validation failure.
       validateUserInfo: ({ user, source }, context) =>
         source.method === "oauth" &&
         source.oauth?.providerId === "openai" &&
@@ -264,9 +237,6 @@ export const cloudAuthOptions = (
             if (user.emailVerified && onSignup !== undefined) await onSignup(user.id);
             return Effect.runPromise(
               Effect.sync(() => {
-                // Only a new email-code account is offered a passkey. Social sign-ins
-                // already have a fast path, and existing-user sign-ins never
-                // recreate a dismissed prompt.
                 if (context?.path !== emailCodeSignInPath) return;
                 context.setCookie(passkeyEnrollmentCookie.name, user.id, {
                   ...passkeyEnrollmentCookie.attributes,
@@ -279,8 +249,6 @@ export const cloudAuthOptions = (
       },
       session: {
         create: {
-          // Consume the site visitor identity on every successful sign-in, including returning
-          // users. It must never be linked to a second account later.
           after: async (session, context) => {
             if (onLogin !== undefined) await onLogin(session.userId);
             if (!context) return;
@@ -293,6 +261,12 @@ export const cloudAuthOptions = (
                 onNone: () => ({}),
                 onSome: (domain) => ({ domain }),
               }),
+            });
+            context.setCookie(signInOriginCookie, "", {
+              path: "/",
+              maxAge: 0,
+              sameSite: "lax",
+              secure: new URL(settings.url).protocol === "https:",
             });
           },
           before: async (session, context) => {
@@ -314,7 +288,6 @@ export const cloudAuthOptions = (
             clientId: settings.googleClientId,
             clientSecret: Redacted.value(settings.googleClientSecret),
             includeGrantedScopes: false,
-            // Without it Google silently reuses an account that already approved Executor.
             prompt: "select_account" as const,
           }),
           github: {
@@ -347,8 +320,6 @@ export const cloudAuthOptions = (
         onSome: (services) => [emulatedSocialProviders(services, redirectURI)],
         onNone: () => [],
       }),
-      // Login mail is part of the request: provider rejection must reach the UI.
-      // Better Auth's default background helper catches and logs these failures.
       {
         id: "executor-auth-email-delivery",
         init: () => ({
@@ -359,20 +330,6 @@ export const cloudAuthOptions = (
           },
         }),
       },
-      // A test stage starts the social flow with production's redirect URI; production exchanges
-      // the code and returns the encrypted profile here. Production itself never proxies its own origin.
-      // On production the guard runs first: it limits the return target to trusted origins and
-      // refuses the completion endpoints, so the shared secret cannot mint a production session.
-      // The location guard runs last, because Better Auth runs after hooks in plugin order and
-      // the proxy plugin's after hook rewrites the outgoing redirect. It checks that rewrite
-      // wherever the plugin is registered, not only on the origin that acts as production.
-      //
-      // The plugin proxies a sign-in unless the request's origin is its production URL. Production
-      // is the edge (`executor.sh`), but its own sign-ins start on the browser origin (`app.`, or
-      // `v2.` under the rollback switch), so the plugin would proxy them to a completion endpoint
-      // the guard refuses. Production names itself as the current URL instead: every sign-in it
-      // starts is its own and returns through the edge directly. It still exchanges the codes of
-      // proxied sign-ins, which the plugin recognizes by their encrypted state, not by origin.
       ...Option.match(settings.oauthProxy, {
         onSome: (proxy) => {
           const secret = Redacted.value(proxy.secret);
@@ -411,18 +368,13 @@ export const cloudAuthOptions = (
           ),
       }),
       ...(billing === undefined ? [] : [cloudMemberLimit(billing)]),
-      // Server only: sessions for members v1 vouches for (`v1-session-handoff.ts`).
       v1HandoffSessions(),
-      // The native migrator creates tables in plugin order; SSO references organization.
       cloudSso(billing),
       emailOTP({
         storeOTP: "hashed",
         expiresIn: emailCodeExpiresIn,
         allowedAttempts: 3,
-        // A signed-in session alone cannot move the account: the current address approves the
-        // change with its own code, then the new address proves ownership with another.
         changeEmail: { enabled: true, verifyCurrentEmail: true },
-        // Better Auth sends sign-in codes to new emails too; their first code creates the account.
         sendVerificationOTP: async (data, ctx) => {
           const signUp =
             data.type === "sign-in" &&
@@ -433,8 +385,6 @@ export const cloudAuthOptions = (
           );
         },
       }),
-      // The relying party is the role hosts' domain (`executor.sh`), so passkeys survive a later
-      // move of the dashboard between hosts under it. Ceremonies run on the browser origin.
       passkey({
         rpID: settings.hosts.passkey.rpId,
         rpName: "Executor",

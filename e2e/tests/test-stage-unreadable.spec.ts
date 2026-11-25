@@ -1,10 +1,3 @@
-/**
- * A test stage whose Alchemy records the state store cannot read is removed only by an explicit
- * `test-stage destroy --by-name`, by the names and tags the stage implies. These cases run the
- * `test-stage` CLI as a process against a recorded copy of the state store and the Cloudflare,
- * Neon and Axiom APIs, which also holds production's resources and neighbouring stages' shaped as
- * the real ones are, and a disposable Postgres for the stage registry.
- */
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { randomBytes } from "node:crypto";
 import { describe, expect, it } from "@effect/vitest";
@@ -22,7 +15,6 @@ const tags = (stage: string, id: string, stack = stackTag) => [
   `alchemy:stage:${stage}`,
   `alchemy:id:${id}`,
 ];
-/** Physical names as Alchemy gave them to real stages: untruncated for pr-2994, hashed for search-loop. */
 const pr2994 = {
   api: "executor-next-hosted-api-test-pr-2994-s6qio74pydelrhgd",
   pages: "executor-next-hosted-apppages-2hh3rqvfveyv4kykb7awstll",
@@ -37,17 +29,13 @@ const searchLoop = {
 
 interface Fault {
   readonly method: string;
-  /** Matches the request path, query included. */
   readonly path: RegExp;
   readonly status: number;
   readonly headers?: Record<string, string>;
-  /** How many requests it answers; omitted, every one. */
   times?: number;
-  /** It answers only after this many DELETE requests, as a check after removal would see. */
   readonly afterDeletes?: number;
 }
 
-/** The services' contents, which the recorded APIs list and delete from. */
 interface World {
   workers: Array<{ id: string; tags: string[] | null }>;
   zones: Array<{ id: string; name: string }>;
@@ -59,27 +47,18 @@ interface World {
   destinations: Array<{ slug: string; name: string }>;
   hyperdrive: Array<{ id: string; name: string }>;
   certificates: Array<{ id: string; name: string | null }>;
-  /** The Artifacts namespaces and how many repositories each holds. */
   artifacts: Record<string, number>;
-  /** Whether a namespace's repository list leaves out its total, as no real answer does. */
   repositoriesWithoutTotal?: boolean;
-  /** Whether the namespace list hands back the second page's cursor again and again. */
   repeatNamespaceCursor?: boolean;
   branches: Array<{ id: string; name: string; default: boolean }>;
   monitors: Array<{ id: string; name: string }>;
   tokens: Array<{ id: string; name: string }>;
-  /** Alchemy records by stage and logical ID: readable, undecryptable, or failing that many reads. */
   state: Record<string, Record<string, "readable" | "undecryptable" | number>>;
   faults: Fault[];
-  /** The PlanetScale test database's branches: whether production, and what a delete answers. */
   planetscale?: Record<string, { production: boolean; deleteStatus: number }>;
-  /** The account's Durable Object namespaces, by the Worker that exports each class. */
   namespaces?: Array<{ script: string }>;
-  /** How many more namespaces the listing's `total_count` claims than it returns. */
   namespacesUnlisted?: number;
-  /** Pages of the bucket listing, by name, when the listing is paginated. */
   bucketPages?: ReadonlyArray<ReadonlyArray<string>>;
-  /** Listing results that report more pages than they return. */
   partial?: ReadonlyArray<string>;
   requests: string[];
 }
@@ -88,12 +67,10 @@ const pr2994World = (): World => ({
   workers: [
     { id: pr2994.api, tags: tags("test-pr-2994", "Api") },
     { id: pr2994.pages, tags: tags("test-pr-2994", "AppPages") },
-    // Another stack's Worker in the same stage is not this stack's.
     {
       id: "executor-pr-preview-comments-x-test-pr-2994-aaaaaaaaaaaaaaaa",
       tags: tags("test-pr-2994", "Comment", "alchemy:stack:executor-pr-preview-comments"),
     },
-    // A neighbour whose slug is a prefix of this one, and one this one is a prefix of.
     {
       id: "executor-next-hosted-api-test-pr-299-bbbbbbbbbbbbbbbb",
       tags: tags("test-pr-299", "Api"),
@@ -103,7 +80,6 @@ const pr2994World = (): World => ({
       tags: tags("test-pr-29940", "Api"),
     },
     { id: "executor-next-hosted-api-v2-dddddddddddddddd", tags: tags("v2", "Api") },
-    // Named like this stage's but untagged.
     { id: "executor-next-hosted-api-test-pr-2994-eeeeeeeeeeeeeeee", tags: null },
   ],
   zones: [testZone, appZone, otherZone],
@@ -161,7 +137,6 @@ const pr2994World = (): World => ({
     [appZone.id]: [
       { id: "dns-team", name: "*.team.pr-2994.executor.website", type: "AAAA" },
       { id: "dns-team-host", name: "team.pr-2994.executor.website", type: "AAAA" },
-      // Production writes one label per team, and a team may be named like the base.
       { id: "dns-production-team", name: "*.pr-2994.executor.website", type: "AAAA" },
       { id: "dns-neighbour-team", name: "*.team.pr-299.executor.website", type: "AAAA" },
     ],
@@ -173,7 +148,6 @@ const pr2994World = (): World => ({
   hyperdrive: [],
   certificates: [],
   artifacts: {
-    // More than one page of namespaces, as the account has, with this stage's on the second.
     ...Object.fromEntries(
       Array.from({ length: 150 }, (_, index) => [`executor-test-e2e-${index}-apps`, 0]),
     ),
@@ -214,7 +188,6 @@ const envelope = (result: unknown, result_info?: unknown) => ({
   ...(result_info === undefined ? {} : { result_info }),
 });
 
-/** Answer one request from the world, or a fault queued for it. */
 const answer = (world: World, method: string, url: URL, body: string, authorization = "") => {
   const path = url.pathname;
   const query = url.search;
@@ -243,7 +216,6 @@ const answer = (world: World, method: string, url: URL, body: string, authorizat
   const cf = `/client/v4/accounts/${account}`;
   let match: RegExpExecArray | null;
 
-  // The state store.
   if (path === "/version") return json({ version: 7 });
   if ((match = /^\/state\/stacks\/([^/]+)\/stages\/([^/]+)\/resources$/u.exec(path)))
     return json(Object.keys(world.state[decodeURIComponent(match[2]!)] ?? {}));
@@ -271,7 +243,6 @@ const answer = (world: World, method: string, url: URL, body: string, authorizat
     return { status: 204, headers: {}, body: "" };
   }
 
-  // PlanetScale: the test database's branches.
   if (
     (match =
       /^\/v1\/organizations\/synthetic-org\/databases\/executor-test\/branches(?:\/([^/]+))?$/u.exec(
@@ -305,7 +276,6 @@ const answer = (world: World, method: string, url: URL, body: string, authorizat
     }
   }
 
-  // Cloudflare.
   if (path === `${cf}/workers/scripts`) {
     if (method === "GET")
       return ok(
@@ -322,8 +292,6 @@ const answer = (world: World, method: string, url: URL, body: string, authorizat
     return gone;
   }
   if (path === `${cf}/workers/durable_objects/namespaces` && method === "GET") {
-    // As Cloudflare answers: `total_count` and no page count. It gives at most 300 a page here,
-    // fewer than the CLI asks for, so the account's namespaces take two pages.
     const all = world.namespaces ?? [];
     const page = Number(url.searchParams.get("page") ?? "1");
     const per = Math.min(Number(url.searchParams.get("per_page") ?? "20"), 300);
@@ -409,7 +377,6 @@ const answer = (world: World, method: string, url: URL, body: string, authorizat
   }
   if (path === `${cf}/hyperdrive/configs`) return ok(world.hyperdrive);
   if (path === `${cf}/mtls_certificates`) return ok(world.certificates);
-  // Artifacts answer only the token minted for them, never the test-stage token.
   if (path.startsWith(`${cf}/artifacts/`) && authorization !== "Bearer artifacts-token")
     return { status: 401, headers: {}, body: "" };
   if (path === `${cf}/artifacts/namespaces` && method === "GET") {
@@ -434,7 +401,6 @@ const answer = (world: World, method: string, url: URL, body: string, authorizat
     );
   }
   if ((match = new RegExp(`^${cf}/artifacts/namespaces/([^/]+)/repos$`, "u").exec(path))) {
-    // A namespace that does not exist lists as empty, as Cloudflare's does.
     const total = world.artifacts[decodeURIComponent(match[1]!)] ?? 0;
     const shown = Math.min(total, 50);
     return ok(
@@ -451,14 +417,12 @@ const answer = (world: World, method: string, url: URL, body: string, authorizat
     );
   }
 
-  // Neon.
   if ((match = /^\/api\/v2\/projects\/test-project\/branches(?:\/([^/]+))?$/u.exec(path))) {
     if (method === "GET") return json({ branches: world.branches });
     world.branches = world.branches.filter((branch) => branch.id !== match![1]);
     return json({});
   }
 
-  // Axiom.
   if ((match = /^\/v2\/(monitors|tokens)(?:\/([^/]+))?$/u.exec(path))) {
     const kind = match[1] as "monitors" | "tokens";
     if (method === "GET") return json(world[kind]);
@@ -468,7 +432,6 @@ const answer = (world: World, method: string, url: URL, body: string, authorizat
   return missing;
 };
 
-/** The recorded APIs on a local port, for the life of the scope. */
 const recordedApis = (world: World) =>
   Effect.acquireRelease(
     Effect.callback<{ readonly origin: string; readonly close: () => void }>((resume) => {
@@ -502,7 +465,6 @@ const recordedApis = (world: World) =>
     (apis) => Effect.sync(apis.close),
   );
 
-/** A disposable Postgres with the registry's admin role, removed when the scope closes. */
 const registry = Effect.gen(function* () {
   const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
   const container = `executor-stage-registry-${randomBytes(6).toString("hex")}`;
@@ -535,7 +497,6 @@ const registry = Effect.gen(function* () {
     .trim()
     .split(":")
     .at(-1);
-  // The image's first server is Unix-only while it initialises; wait for the TCP listener.
   yield* processes
     .string(
       ChildProcess.make("sh", [
@@ -571,14 +532,12 @@ const registry = Effect.gen(function* () {
   return { url: `postgresql://stage.admin:${password}@127.0.0.1:${port}/postgres`, psql };
 });
 
-/** Run the CLI once against the world. */
 const cli = (
   world: World,
   args: ReadonlyArray<string>,
   options: {
     readonly registry?: string;
     readonly env?: Record<string, string>;
-    /** Run as the CLI runs without `apps/hosted/cloud/scripts/with-artifacts-token.sh`. */
     readonly withoutArtifactsToken?: boolean;
   } = {},
 ) =>
@@ -606,7 +565,6 @@ const cli = (
           TEST_STAGE_AXIOM_API: apis.origin,
           TEST_STAGE_STATE_STORE_URL: apis.origin,
           TEST_STAGE_STATE_STORE_TOKEN: "state-token",
-          // Only read when a case names a PlanetScale test database.
           TEST_STAGE_PLANETSCALE_API: apis.origin,
           TEST_STAGE_REMOVAL_SETTLE: "10 millis",
           TEST_STAGE_API_BACKOFF: "10 millis",
@@ -644,7 +602,6 @@ const deletes = (world: World) => world.requests.filter((request) => request.sta
 const lease = (slug: string, database = "neon", createdAt = "2026-10-15T00:00:00Z", owner = slug) =>
   `insert into executor_test_stage_leases (slug, owner, created_at, expires_at, database_provider, retention, background)
    values ('${slug}', '${owner.replaceAll("'", "''")}', '${createdAt}', null, '${database}', 'retained', 'active')`;
-/** The registry table exists once the CLI has connected; `inventory` does not connect, `list` does. */
 const prepareRegistry = (world: World, url: string) =>
   cli(world, ["list"], { registry: url }).pipe(
     Effect.tap((result) => Effect.sync(() => expect(result.code, result.output).toBe(0))),
@@ -707,7 +664,6 @@ describe("Removing a test stage by name", () => {
       Object.assign(world.buckets, {
         [searchLoop.appBuilds]: [],
         [searchLoop.siteAssets]: [],
-        // The same truncated start and instance characters with another stage's hash.
         "executor-next-hosted-siteassets-test-seaaaaaaaaetonhh4hwltku7qi": [],
       });
       world.state["test-search-loop"] = { Api: "undecryptable" };
@@ -724,7 +680,6 @@ describe("Removing a test stage by name", () => {
       ];
       world.dns[appZone.id] = [
         { id: "dns-own-team", name: "*.team.reload0922.executor.website", type: "AAAA" },
-        // Another stage whose app base is this one's slug.
         { id: "dns-other-stage", name: "*.team.pr-2994.executor.website", type: "AAAA" },
         { id: "dns-production-team", name: "*.reload0922.executor.website", type: "AAAA" },
       ];
@@ -782,7 +737,6 @@ describe("Removing a test stage by name", () => {
     () =>
       Effect.gen(function* () {
         const transient = pr2994World();
-        // More failures than Alchemy's client retries by itself, fewer than the CLI's retries add.
         transient.state["test-pr-2994"] = { Api: 7, AuthSecret: "readable" };
         expect((yield* inventory(transient, "pr-2994")).state).toEqual({
           records: 2,
@@ -836,7 +790,6 @@ describe("Removing a test stage by name", () => {
       });
       const later = yield* inventory(failing, "pr-2994");
       expect(later.blockers).toEqual([blocker("Listing Artifacts namespaces returned HTTP 500.")]);
-      // The first page was read; only the later page failed, five times.
       expect(
         failing.requests.filter((request) => /artifacts\/namespaces\?.*cursor=/u.test(request)),
       ).toHaveLength(5);
@@ -855,8 +808,6 @@ describe("Removing a test stage by name", () => {
     () =>
       Effect.gen(function* () {
         const world = pr2994World();
-        // pr-39's namespace holds more than a page of repositories; pr-399's and production's are
-        // decoys with repositories of their own.
         Object.assign(world.artifacts, {
           "executor-test-pr-39-apps": 60,
           "executor-test-pr-399-apps": 0,
@@ -891,7 +842,6 @@ describe("Removing a test stage by name", () => {
   );
 });
 
-/** These run on the real clock: they wait for Postgres and for the CLI's retries. */
 describe("Removing a test stage by name, with its registry", () => {
   it.live(
     "removes the stage in order, retrying 429 and 5xx, and deletes its records only after an empty check",
@@ -921,7 +871,6 @@ describe("Removing a test stage by name, with its registry", () => {
         );
         const first = (fragment: string) =>
           order.findIndex((request) => request.includes(fragment));
-        // App-zone DNS first, then the Workers, then what is found by their names.
         expect(first("/dns_records/dns-team")).toBe(0);
         expect(first("/workers/scripts/")).toBeGreaterThan(first("/dns_records/dns-team-host"));
         expect(first("/workers/routes/")).toBeGreaterThan(first("/workers/scripts/"));
@@ -932,7 +881,6 @@ describe("Removing a test stage by name, with its registry", () => {
             order.filter((request) => request.includes(`/workers/scripts/${pr2994.pages}`)).length,
         ).toBe(3);
         expect(order.filter((request) => request.includes("/workflows/"))).toHaveLength(3);
-        // Everything of the stage is gone and nothing else is.
         expect(world.workers.map((worker) => worker.id)).not.toContain(pr2994.api);
         expect(world.workers).toHaveLength(5);
         expect(Object.keys(world.buckets)).toHaveLength(3);
@@ -957,7 +905,6 @@ describe("Removing a test stage by name, with its registry", () => {
         const world = pr2994World();
         yield* prepareRegistry(world, url);
         yield* psql(lease("pr-2994"));
-        // Every attempt at the first bucket is refused, so the run stops there.
         world.faults.push({
           method: "DELETE",
           path: /\/r2\/buckets\/[^/]+$/u,
@@ -969,7 +916,6 @@ describe("Removing a test stage by name, with its registry", () => {
         });
         expect(failedRun.code).not.toBe(0);
         expect(failedRun.output).toContain("returned HTTP 403");
-        // The Workers and routes went; the records and the registry entry stay.
         expect(world.workers.map((worker) => worker.id)).not.toContain(pr2994.pages);
         expect(Object.keys(world.state["test-pr-2994"]!)).toHaveLength(3);
         expect(
@@ -993,7 +939,6 @@ describe("Removing a test stage by name, with its registry", () => {
         const world = pr2994World();
         yield* prepareRegistry(world, url);
         yield* psql(lease("pr-2994"));
-        // The stage's 18 deletions all succeed; only the check after them cannot list.
         world.faults.push({ method: "GET", path: /\/v2\/tokens$/u, status: 500, afterDeletes: 18 });
         const result = yield* cli(world, ["destroy", "pr-2994", "--by-name", "--yes"], {
           registry: url,
@@ -1041,7 +986,6 @@ describe("Removing a test stage by name, with its registry", () => {
         const { url, psql } = yield* registry;
         const world = pr2994World();
         yield* prepareRegistry(world, url);
-        // The oldest of 80 stages, owned by someone whose name breaks a workflow command.
         yield* psql(
           lease("pr-2994", "neon", "2026-10-01T00:00:00Z", "Owner 100%\r\n::error::spoof"),
         );
@@ -1050,7 +994,6 @@ describe("Removing a test stage by name, with its registry", () => {
          select 'filler-' || n, 'Filler', '2026-11-01'::timestamptz + n * interval '1 minute', null, 'neon', 'retained', 'active'
          from generate_series(1, 79) as n`,
         );
-        // The deploy stops at its first build step, after eviction.
         const directory = yield* fs.makeTempDirectoryScoped({ prefix: "executor-stage-evict-" });
         const bin = path.join(directory, "bin");
         yield* fs.makeDirectory(bin);
@@ -1090,13 +1033,6 @@ describe("Removing a test stage by name, with its registry", () => {
     180_000,
   );
 
-  /**
-   * `deploy` with `stages` other test stages already leased, pr-2994 the oldest. The build tools
-   * are stubs that leave a mark when they run and then fail, so the deploy stops at its first build
-   * step, after its eviction decision: the mark says whether it got that far. An eviction's own
-   * `alchemy destroy` succeeds. pr-2994's records are
-   * unreadable unless `readable`, so evicting it fails unless they are.
-   */
   const deployAmong = (
     stages: number,
     flags: ReadonlyArray<string>,
@@ -1110,7 +1046,6 @@ describe("Removing a test stage by name, with its registry", () => {
       readonly readable?: boolean;
       readonly namespaces?: Array<{ script: string }>;
       readonly namespacesUnlisted?: number;
-      /** More production Workers, which no test stage owns, beside the world's 7. */
       readonly workers?: number;
       readonly env?: Record<string, string>;
     } = {},
@@ -1144,7 +1079,6 @@ describe("Removing a test stage by name, with its registry", () => {
       const bin = path.join(directory, "bin");
       const built = path.join(directory, "built");
       yield* fs.makeDirectory(bin);
-      // An eviction's `alchemy destroy` succeeds; any other call is a build step, which fails.
       for (const tool of ["bun", "alchemy"]) {
         yield* fs.writeFileString(
           path.join(bin, tool),
@@ -1187,7 +1121,6 @@ describe("Removing a test stage by name, with its registry", () => {
     () =>
       Effect.gen(function* () {
         const { result, built, deletes, oldest } = yield* deployAmong(79, ["--no-evict"]);
-        // It reaches the first build step, whose stub fails.
         expect(result.output).not.toContain("would evict");
         expect(result.output).not.toContain("Evicting the oldest test stage");
         expect([built, deletes, oldest]).toEqual([true, [], "1"]);
@@ -1221,10 +1154,6 @@ describe("Removing a test stage by name, with its registry", () => {
     180_000,
   );
 
-  /**
-   * The account's Durable Object namespaces: `stage` of them exported by pr-2994's API Worker, and
-   * `others` by production's, which no test stage owns.
-   */
   const namespaces = (stage: number, others: number) => [
     ...Array.from({ length: stage }, () => ({ script: pr2994.api })),
     ...Array.from({ length: others }, () => ({
@@ -1234,7 +1163,6 @@ describe("Removing a test stage by name, with its registry", () => {
 
   const classLimit = "TEST_STAGE_DURABLE_OBJECT_CLASS_LIMIT";
   const workerLimit = "TEST_STAGE_WORKER_LIMIT";
-  /** 497 namespaces over two pages; a stage holds up to 8, so a new one would make 505. */
   const pastClasses =
     "Deploying new-stage brings the account to about 505 Durable Object namespaces (497 now, up to 8 for a test stage), past Cloudflare's documented limit of 500 Durable Object classes per Workers Paid account. This account's real limit is unknown and may have been raised, so the deploy goes on; if it is lower, the deploy fails part way through. Set TEST_STAGE_DURABLE_OBJECT_CLASS_LIMIT to the account's limit to refuse such a deploy instead.";
 
@@ -1273,7 +1201,6 @@ describe("Removing a test stage by name, with its registry", () => {
     "past Cloudflare's documented Workers quota with no limit configured, a new stage warns and deploys",
     () =>
       Effect.gen(function* () {
-        // The world's 7 Workers and 492 more make 499; pr-2994 has 2, so a new stage would make 501.
         const { result, built } = yield* deployAmong(10, [], { workers: 492 });
         expect(result.output).toContain(
           "Deploying new-stage brings the account to about 501 Workers (499 now, up to 2 for a test stage), past Cloudflare's documented limit of 500 Workers per Workers Paid account. This account's real limit is unknown and may have been raised, so the deploy goes on; if it is lower, the deploy fails part way through. Set TEST_STAGE_WORKER_LIMIT to the account's limit to refuse such a deploy instead.",
@@ -1334,7 +1261,6 @@ describe("Removing a test stage by name, with its registry", () => {
     "the namespaces of a stage the deploy evicts count as freed",
     () =>
       Effect.gen(function* () {
-        // pr-2994's 8 go with it, so the new stage brings the account back to 497.
         const { result, built, oldest } = yield* deployAmong(80, [], {
           readable: true,
           namespaces: namespaces(8, 489),
@@ -1351,7 +1277,6 @@ describe("Removing a test stage by name, with its registry", () => {
     "a stage whose eviction fails frees nothing: past a configured limit the deploy stops before it reserves or builds",
     () =>
       Effect.gen(function* () {
-        // pr-2994's records are unreadable, so its eviction fails and its 8 stay: 505 would pass 500.
         const { result, built, leases, oldest } = yield* deployAmong(80, [], {
           namespaces: namespaces(8, 489),
           env: { [classLimit]: "500" },
@@ -1370,7 +1295,6 @@ describe("Removing a test stage by name, with its registry", () => {
     "a stage whose eviction fails frees nothing: with no limit configured the deploy warns and goes on",
     () =>
       Effect.gen(function* () {
-        // Before the eviction pr-2994's 8 count as freed, so nothing warns; once it fails, 505 does.
         const { result, built } = yield* deployAmong(80, [], { namespaces: namespaces(8, 489) });
         expect(result.output).toContain("Could not evict pr-2994");
         expect(result.output).toContain(pastClasses);
@@ -1386,7 +1310,6 @@ describe("Removing a test stage by name, with its registry", () => {
     "a namespace listing that ends before the total it states is not taken as the count",
     () =>
       Effect.gen(function* () {
-        // 300 fit and 300 more are claimed but never listed: counting 300 would wave it through.
         const { result, built, leases } = yield* deployAmong(10, [], {
           namespaces: namespaces(8, 292),
           namespacesUnlisted: 300,
@@ -1449,16 +1372,9 @@ describe("Removing a test stage by name, with its registry", () => {
   );
 });
 
-/**
- * A new stage's `alchemy deploy` that fails only because its Hyperdrive config could not reach the
- * new database yet is run once more (`test-stage-deploy-retry.ts`). The build tools are stubs that succeed; `alchemy`
- * prints each attempt's recorded output and exits with its status, and counts its runs; `/health`
- * on the stage's hosts answers `ok` in the CLI process, so a deploy that succeeds finishes.
- */
 describe("Retrying a new stage's deploy", () => {
   const colour = (text: string) => `\u001b[31m${text}\u001b[39m`;
   const line = (text: string) => `[01:48:25.603] INFO (#1): ${text}`;
-  /** The Durable Object tag race, which the Alchemy patch handles and the retry does not. */
   const durableObjectTags = [
     line(
       "[AppDataSupervisor] fail — Cannot apply new-sqlite-class migration to class 'AppDataSupervisor' that is already depended on by existing Durable Objects. [code: 10074] (15.2s)",
@@ -1469,7 +1385,6 @@ describe("Retrying a new stage's deploy", () => {
     line(""),
     line("Failed: 44 succeeded, 2 failed (2m 41s)"),
   ].join("\n");
-  /** As run 44655804399 printed it, with Alchemy's colours on the config's own line. */
   const hyperdriveOrigin = (took: string) =>
     [
       line("[DatabaseConnection] creating"),
@@ -1497,7 +1412,6 @@ describe("Retrying a new stage's deploy", () => {
     readonly output: string;
     readonly code: number;
   }
-  /** Deploy `slug` with `alchemy` answering `attempts` in turn; a further run exits 99. */
   const deployAttempts = (url: string, slug: string, attempts: ReadonlyArray<Attempt>) =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -1506,7 +1420,6 @@ describe("Retrying a new stage's deploy", () => {
       const bin = path.join(directory, "bin");
       const runs = path.join(directory, "runs");
       yield* fs.makeDirectory(bin);
-      // The packed apps' version names the directory the CLI writes under `.local/stage-apps`.
       const version = `0.0.0-deploy-retry-${randomBytes(4).toString("hex")}`;
       const stageApps = path.resolve(".local/stage-apps");
       yield* Effect.addFinalizer(() =>
@@ -1626,20 +1539,17 @@ globalThis.fetch = (input, init) => {
           line("[Edge] fail — Unauthorized: Authentication error [code: 10000] (0.4s)"),
           line("Failed: 49 succeeded, 2 failed (40.0s)"),
         ].join("\n");
-        // A signature in a failed resource's message, but a summary that counts another failure.
         const uncounted = [
           line(
             "[DatabaseConnection] fail — BadRequest: Network connection to the provided database timed out. (12.8s)",
           ),
           line("Failed: 49 succeeded, 2 failed (40.0s)"),
         ].join("\n");
-        // A signature's text with no summary: Alchemy stopped before or outside its apply.
         const unfinished = line(
           "[DatabaseConnection] fail — BadRequest: Network connection to the provided database timed out. (12.8s)",
         );
         for (const [slug, output] of [
           ["retry-unrelated", unrelated],
-          // The Alchemy patch on main handles this race; the retry does not.
           ["retry-durable-object", durableObjectTags],
           ["retry-mixed", mixed],
           ["retry-uncounted", uncounted],
@@ -1680,12 +1590,6 @@ globalThis.fetch = (input, init) => {
   );
 });
 
-/**
- * A deployed E2E stage on PlanetScale whose deploy stopped before Alchemy recorded its branch: the
- * stage's Alchemy destroy (a stand-in that succeeds and deletes nothing) leaves the branch, and
- * `test-stage destroy` then removes it by its exact name, keeping the stage's lease unless
- * PlanetScale answers 404 (`test-stage-branch.ts`). The same holds for scheduled cleanup.
- */
 describe("Removing a branch a PlanetScale stage's destroy left", () => {
   const leftWorld = (slug: string, deleteStatus: number): World => ({
     workers: [],
@@ -1706,7 +1610,6 @@ describe("Removing a branch a PlanetScale stage's destroy left", () => {
     faults: [],
     planetscale: {
       [`test-${slug}`]: { production: false, deleteStatus },
-      // Never touched: production, the index-lock branch, a name that starts with the stage's.
       main: { production: true, deleteStatus: 500 },
       "idx-lock-38132096340-1": { production: true, deleteStatus: 500 },
       [`test-${slug}-copy`]: { production: false, deleteStatus: 500 },
@@ -1721,7 +1624,6 @@ describe("Removing a branch a PlanetScale stage's destroy left", () => {
     PLANETSCALE_API_TOKEN: "synthetic-token",
     TEST_STAGE_BRANCH_POLL: "10 millis",
   });
-  /** A directory whose `alchemy` succeeds and does nothing, as a destroy that left the branch. */
   const quietAlchemy = Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
@@ -1736,7 +1638,6 @@ describe("Removing a branch a PlanetScale stage's destroy left", () => {
     world.requests.filter((request) => request.includes("/v1/organizations/"));
   const leaseCount = (psql: (sql: string) => Effect.Effect<string, unknown>, slug: string) =>
     psql(`select count(*) from executor_test_stage_leases where slug = '${slug}'`);
-  /** A temporary PlanetScale lease created at `createdAt`; it expires 3 hours later. */
   const planetscaleLease = (slug: string, createdAt: string) =>
     `insert into executor_test_stage_leases (slug, owner, created_at, expires_at, database_provider, retention, background)
      values ('${slug}', 'CI', '${createdAt}', '${createdAt}'::timestamptz + interval '3 hours', 'planetscale', 'temporary', 'active')`;
@@ -1802,7 +1703,6 @@ describe("Removing a branch a PlanetScale stage's destroy left", () => {
         const { url, psql } = yield* registry;
         const world = leftWorld("e2e-left3", 403);
         yield* prepareRegistry(world, url);
-        // Past its cleanup deadline.
         yield* psql(planetscaleLease("e2e-left3", "2026-11-16T01:00:00Z"));
         const bin = yield* quietAlchemy;
         const result = yield* cli(world, ["cleanup"], { registry: url, env: planetscaleEnv(bin) });

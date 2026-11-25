@@ -1,4 +1,3 @@
-/** Vitest hooks own isolated servers and cleanup; the test deadline owns scenario work. */
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Clock, Config, Effect, Exit, FileSystem, Layer, Option, Path, Scope } from "effect";
 import { randomBytes } from "node:crypto";
@@ -23,7 +22,6 @@ import { targetHosts } from "./role-hosts.ts";
 import { machineWorkMs, referenceMachineWorkMs, timeoutLine } from "./machine-speed.ts";
 import { hookTimeoutMs } from "../timeouts.ts";
 
-/** An extra Testing SDK scenario acquired by setup. The test may close its scope early. */
 export interface SdkScenarioFixture {
   readonly scenario: Effect.Success<ReturnType<typeof createScenario>>;
   readonly scope: Scope.Closeable;
@@ -43,16 +41,13 @@ declare module "vitest" {
   }
 }
 
-/** Require the scenario acquired by this configuration's beforeEach hook. */
 export const scenarioLifetime = (context: TestContext) => {
   if (context.executorScenario === undefined)
     throw new Error("Executor scenarios require the E2E lifecycle setup file");
   return context.executorScenario;
 };
 
-// Vitest's beforeEach and onTestFinished hooks are Promise APIs; this acquires each scenario's runtime.
 /* oxlint-disable executor/no-manual-effect-runtime-in-tests */
-/** Register bounded native hooks without replacing Effect Vitest's test execution. */
 export const installScenarioLifecycle = () =>
   beforeEach((context) => {
     const scope = Effect.runSync(Scope.make());
@@ -63,8 +58,6 @@ export const installScenarioLifecycle = () =>
     let provisioningMs: number | null = null;
     let save = (_finishedAt: number): Effect.Effect<void> => Effect.void;
     let finished = false;
-    // A scenario that fails while a request of it never got a connection says so in its failure,
-    // a time-out included: "one stage request was unsent for 31.0 s".
     context.onTestFailed(({ task }) => {
       const note = unsentNote(task.name);
       const first = task.result?.errors?.[0];
@@ -73,11 +66,8 @@ export const installScenarioLifecycle = () =>
       first.message = `${original}; ${note}`;
       if (first.stack) first.stack = first.stack.replace(original, first.message);
     });
-    // The time-out that applied, and, when the scenario or one of its hooks timed out, how fast
-    // the machine was then (machine-speed.ts). The line is also put on the time-out's own error.
     let timing: Record<string, unknown> = {};
     let discard: Effect.Effect<void> = Effect.void;
-    // A passing scenario's server data is never read again; failures keep theirs for diagnosis.
     context.onTestFinished(({ task }) => {
       finished = true;
       timing = { timeoutMs: task.timeout, hookTimeoutMs };
@@ -89,8 +79,6 @@ export const installScenarioLifecycle = () =>
         const machineMs = machineWorkMs();
         const lines = timedOut.map(({ error, kind, boundMs }) => {
           const line = `${kind} ${timeoutLine(boundMs, boundMs, machineMs)}`;
-          // The first line of the failure, which the job log and ci-failures print, names the
-          // machine's speed; Vitest's own message follows it.
           const original = error.message;
           error.message = `${line}\n${original}`;
           if (error.stack) error.stack = error.stack.replace(original, error.message);
@@ -102,7 +90,6 @@ export const installScenarioLifecycle = () =>
       return Effect.runPromise(
         Scope.close(scope, outcome).pipe(
           Effect.ensuring(Clock.currentTimeMillis.pipe(Effect.flatMap(save))),
-          // Closing the scope wrote the scenario's evidence, its stage requests included.
           Effect.ensuring(Effect.sync(() => forgetStageRequests(task.name))),
           Effect.andThen(
             Effect.suspend(() => (task.result?.state === "pass" ? discard : Effect.void)),
@@ -119,11 +106,6 @@ export const installScenarioLifecycle = () =>
           const paths = yield* Path.Path;
           const directory = `${base.directory}/report/lifecycle`;
           yield* fs.makeDirectory(directory, { recursive: true });
-          // The stage this scenario sends to: its requests lost in transport are told apart
-          // and recorded, each on a connection of its own (lost-connections.ts). A target the scenario starts adds
-          // its own origins as soon as it exists (sdk/scenario.ts).
-          // A request of which nothing was written is sent again, never at or past the
-          // scenario's own bound, counted from before its set-up.
           configureLostConnections({
             origins: Object.values(targetHosts(base)),
             deadline: () =>
@@ -167,8 +149,6 @@ export const installScenarioLifecycle = () =>
             (scenario) => scenario.title === context.task.name,
           );
           const primary = Effect.gen(function* () {
-            // The CLI test exercises creation and removal itself. An unused outer
-            // server would compete with the server whose lifecycle it verifies.
             const target = yield* plan?.fixtures === "cli"
               ? prepareScenario(base, context.task.name)
               : startScenario(base, context.task.name, undefined, plan?.serverEnvironment);
@@ -181,7 +161,6 @@ export const installScenarioLifecycle = () =>
               scope,
             );
             const actors = yield* Actors.pipe(Effect.provideContext(fixtures));
-            // Background installs would otherwise land mid-scenario; owners and admins get keys.
             if (plan.provisioning !== "observed") {
               const settling = yield* Clock.currentTimeMillis;
               yield* prepareOrganization(actors.organization.id, {
@@ -198,7 +177,6 @@ export const installScenarioLifecycle = () =>
               ).pipe(Effect.provideContext(fixtures));
             return { target, actors };
           });
-          // Each extra scenario owns a child scope, so a test can end it while the case continues.
           const extra = Effect.forEach(
             plan?.sdkScenarios ?? [],
             (label) =>
@@ -215,7 +193,6 @@ export const installScenarioLifecycle = () =>
           const [{ target, actors }, sdkScenarios] = yield* Effect.all([primary, extra], {
             concurrency: 2,
           });
-          // Cloud scenarios share the run directory; only isolated scenario directories are discarded.
           const directories = [target, ...sdkScenarios.map(({ scenario }) => scenario.target)]
             .map(({ directory }) => directory)
             .filter((directory) => directory !== base.directory);
@@ -247,11 +224,6 @@ export const installScenarioLifecycle = () =>
     );
   });
 
-/**
- * At the end of each test file, save the lost requests no scenario saved: those made outside any
- * scenario (`beforeAll`, `afterAll`, a `layer`'s set-up and teardown) and a scenario's whose start
- * failed before its lifecycle could save them, so a burst in set-up still shows in the summary.
- */
 export const installLostRequestSaving = () =>
   afterAll(() =>
     Effect.runPromise(

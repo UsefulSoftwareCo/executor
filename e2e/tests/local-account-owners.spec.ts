@@ -1,4 +1,3 @@
-/** Local assigns app and account owners itself, so an agent's owner never hides an account. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -36,7 +35,6 @@ const Refused = Schema.Struct({
     }),
   }),
 });
-/** An owner no local app or account has. */
 const elsewhere = "someone-else";
 
 layer(TestLive, { excludeTestServices: true })("Local account owners", (it) => {
@@ -50,7 +48,6 @@ layer(TestLive, { excludeTestServices: true })("Local account owners", (it) => {
           target = yield* Target,
           session = yield* api.session();
         const headers = { authorization: `Bearer ${Redacted.value(target.apiKey)}` };
-        // The agent API takes the host-issued bearer credential, not a browser origin.
         const agent: Session = {
           ...session,
           send: (method, path, data, extra = {}) => {
@@ -63,7 +60,6 @@ layer(TestLive, { excludeTestServices: true })("Local account owners", (it) => {
           Effect.forEach(owned, (path) => agent.send("DELETE", path)).pipe(Effect.orDie),
         );
 
-        // An app deployed under another owner belongs to the local user.
         const { app } = yield* body(
           Deployed,
           yield* agent.send("POST", "/v1/apps/deploy", {
@@ -89,7 +85,6 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
         const provider = app.requirements.accounts.service.provider;
         const requirement = { app: app.id, requirement: "service" };
 
-        // A connection request naming another owner saves the account under the app's owner.
         const link = yield* body(
           Link,
           yield* agent.send("POST", "/account-connect/api/requests", {
@@ -114,7 +109,6 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
             .pipe(Effect.flatMap((response) => body(Listed, response)));
         expect((yield* listed("local")).map(({ id }) => id)).toEqual([account.id]);
         expect(yield* listed(elsewhere)).toEqual([]);
-        // The SDK's own connection route ignores the caller's owner the same way.
         const pending = yield* body(
           Connection,
           yield* agent.send("POST", "/v1/account-connections", {
@@ -127,7 +121,6 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
           (yield* agent.send("POST", `/v1/account-connections/${pending.id}/cancel`)).status,
         ).toBe(200);
 
-        // Providers are read for one owner: the providers of that owner's accounts.
         const providers = (owner: string) =>
           agent
             .send("GET", `/v1/providers?owner=${owner}`)
@@ -138,8 +131,6 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
         expect(host).not.toContain(provider);
         expect(yield* providers(elsewhere)).toEqual([]);
 
-        // Listing never spans owners: a read without one is refused with `RequestInvalid`, as every
-        // SDK route refuses a request its schema rejects, naming the missing owner.
         for (const path of ["/v1/accounts", "/v1/providers"])
           expect(yield* agent.send("GET", path)).toEqual({
             status: 400,
@@ -179,7 +170,6 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
           expect(response.message).toContain("input.query.owner: Missing key");
         }
 
-        // The dashboard lists the account and manages it.
         const pair = yield* body(
           Schema.Struct({ url: Schema.String }),
           yield* session.send("POST", "/auth/pair", undefined, headers),
@@ -272,8 +262,6 @@ export default defineApp({}, { tools: router({}) });`,
         expect(before.map(({ owner }) => owner).toSorted()).toEqual(
           expect.arrayContaining(["executor-local", "local"]),
         );
-        // Removing `local` would delete every record of the local user, and `executor-local` the
-        // server's own Executor app. Neither route exists, so neither can be called.
         for (const owner of ["local", "executor-local"]) {
           expect((yield* agent.send("DELETE", `/v1/owners/${owner}`)).status, owner).toBe(404);
           expect((yield* agent.send("GET", `/v1/owners/${owner}/removable`)).status, owner).toBe(

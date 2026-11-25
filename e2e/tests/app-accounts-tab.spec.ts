@@ -1,11 +1,3 @@
-/**
- * The Accounts tab in the hosted dashboard: one component lists App accounts, linked for everyone,
- * and Your accounts, linked for the caller. People who can edit the app choose its accounts with a
- * radio for a plain requirement, checkboxes for a many() requirement, and "Connect new account"
- * last; everyone else sees the App accounts greyed out and read-only. App schedules are marked as
- * the app's and only editors change them, and a call needing an app account that must reconnect
- * tells the caller someone who can edit the app must reconnect it.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
@@ -29,10 +21,6 @@ import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
 import { settleWebhookSources } from "../support/webhook-sources.ts";
 import { scenarios } from "../test-plan.ts";
 
-/**
- * Datadog is the app's own account; Mail each member's, where many() needs none linked. The `who`
- * tool reports the linked Datadog account, and `report` runs as the app on its app schedule.
- */
 const source = `import { defineApp, defineProvider, secrets, query, mutation, appInterval, object, string, router, type QueryContext } from "apps";
 const key = secrets({ label: "Key", fields: object({ token: string() }) });
 const datadog = defineProvider({ name: "Datadog", auth: { key } });
@@ -54,7 +42,6 @@ const Settings = Schema.Array(
 );
 const readOnly = "Only people who can edit this app can change these accounts.";
 
-/** Deploy `content` as the owner and let everyone in the organization use the app. */
 const sharedApp = (name: string, content: string) =>
   Effect.gen(function* () {
     const api = yield* Api,
@@ -68,7 +55,6 @@ const sharedApp = (name: string, content: string) =>
     const app = yield* body(App, deployed),
       path = `${prefix}/apps/${app.id}`;
     const accounts: string[] = [];
-    // The app goes first: an account linked to it for everyone cannot be deleted.
     yield* Effect.addFinalizer(() =>
       Effect.gen(function* () {
         yield* api.request(actors.owner, "DELETE", path);
@@ -83,7 +69,6 @@ const sharedApp = (name: string, content: string) =>
         audience: { kind: "everyone" },
       })).status,
     ).toBe(200);
-    /** Start the owner's connection for a requirement; completing it links the account there. */
     const startConnection = (requirement: string, scope: LinkScope = "app") =>
       Effect.gen(function* () {
         const connection = yield* api.request(
@@ -95,7 +80,6 @@ const sharedApp = (name: string, content: string) =>
         expect(connection.status, JSON.stringify(connection.body)).toBe(200);
         return (yield* body(Resource, connection)).id;
       });
-    /** Connect a key account for a requirement as the owner, which links it there. */
     const connect = (requirement: string, label: string, scope: LinkScope = "app") =>
       Effect.gen(function* () {
         const connection = yield* startConnection(requirement, scope);
@@ -110,9 +94,7 @@ const sharedApp = (name: string, content: string) =>
         accounts.push(account);
         return account;
       });
-    /** The app's `(requirement, account)` links in one scope, as the owner lists them. */
     const links = (scope: LinkScope = "app") => accountLinks(actors.owner, path, scope);
-    /** Link or unlink one of the app's own accounts as `actor`: the response, for refusals. */
     const appLink = (
       actor: Session,
       method: "PUT" | "DELETE",
@@ -142,18 +124,13 @@ const sharedApp = (name: string, content: string) =>
     };
   });
 
-/** The app's own requirements in the Accounts tab. */
 const appSection = (page: Page) => page.getByRole("region", { name: "App accounts", exact: true });
-/** The caller's own requirements in the Accounts tab. */
 const yourSection = (page: Page) =>
   page.getByRole("region", { name: "Your accounts", exact: true });
-/** Datadog's requirement in the App accounts section; the app has two requirements. */
 const datadogSection = (page: Page) =>
   appSection(page).getByRole("region", { name: "Datadog (datadog)", exact: true });
-/** Mail's requirement in the Your accounts section. */
 const mailSection = (page: Page) =>
   yourSection(page).getByRole("region", { name: "Mail (mail)", exact: true });
-/** The schedule row of the app's `report` schedule. */
 const reportRow = (page: Page) => page.locator('[aria-label="report"]');
 
 layer(HostedLive, { excludeTestServices: true })("Hosted Accounts tab", (it) => {
@@ -165,11 +142,9 @@ layer(HostedLive, { excludeTestServices: true })("Hosted Accounts tab", (it) => 
           evidence = yield* Evidence;
         const fixture = yield* sharedApp("Team report", source);
         const { actors, url, links, call } = fixture;
-        // Connecting for the plain app requirement links each new account, replacing the last.
         const team = yield* fixture.connect("datadog", "Team Datadog");
         const backup = yield* fixture.connect("datadog", "Backup Datadog");
         expect(yield* links()).toEqual([["datadog", backup]]);
-        // Connecting for the many() user requirement adds each account.
         const work = yield* fixture.connect("mail", "Work mail", "user");
         const home = yield* fixture.connect("mail", "Home mail", "user");
         expect(yield* links("user")).toEqual([
@@ -185,8 +160,6 @@ layer(HostedLive, { excludeTestServices: true })("Hosted Accounts tab", (it) => 
         yield* browser.use("Your accounts are linked for you", (page) =>
           yourSection(page).getByText("Linked for you", { exact: true }).waitFor(),
         );
-        // The plain requirement lists every Datadog account the owner can use as radios, the
-        // linked one selected, then the connect row.
         yield* browser.use("Backup Datadog is the selected radio", (page) =>
           datadogSection(page)
             .getByRole("radio", { name: "Backup Datadog", checked: true, exact: true })
@@ -219,7 +192,6 @@ layer(HostedLive, { excludeTestServices: true })("Hosted Accounts tab", (it) => 
           0,
           "false",
         ]);
-        // The many() requirement lists the owner's Mail accounts as checkboxes, both linked.
         expect(
           yield* browser.use("Read Your accounts controls", (page) =>
             mailSection(page)
@@ -241,7 +213,6 @@ layer(HostedLive, { excludeTestServices: true })("Hosted Accounts tab", (it) => 
         );
         yield* evidence.attach("manager-accounts.png", "image/png", screenshot);
 
-        // Selecting Team Datadog links it for everyone, replacing Backup Datadog.
         yield* browser.use("Select Team Datadog", (page) =>
           datadogSection(page).getByRole("radio", { name: "Team Datadog", exact: true }).click(),
         );
@@ -262,12 +233,9 @@ layer(HostedLive, { excludeTestServices: true })("Hosted Accounts tab", (it) => 
         expect(called.status, JSON.stringify(called.body)).toBe(200);
         expect(yield* body(Schema.Json, called)).toBe(team);
 
-        // Clearing a checkbox unlinks that account from the many() requirement; checking it again
-        // links it back.
         yield* browser.use("Clear Home mail", (page) =>
           mailSection(page).getByRole("checkbox", { name: "Home mail", exact: true }).click(),
         );
-        // No app uses Home mail now; keeping it leaves it saved.
         yield* browser.use("Keep the unused mail account", (page) =>
           page
             .getByRole("dialog", { name: "Delete unused account?" })
@@ -293,7 +261,6 @@ layer(HostedLive, { excludeTestServices: true })("Hosted Accounts tab", (it) => 
           ["mail", home],
         ]);
 
-        // Unlinking the plain requirement's account from its menu leaves nothing selected.
         yield* browser.use("Open Team Datadog's actions", (page) =>
           datadogSection(page)
             .getByRole("button", { name: "Manage Team Datadog", exact: true })
@@ -317,7 +284,6 @@ layer(HostedLive, { excludeTestServices: true })("Hosted Accounts tab", (it) => 
           ),
         ).toBe(0);
         expect(yield* links()).toEqual([]);
-        // Unlinking keeps the account saved; the app's calls have no Datadog account now.
         const saved = yield* fixture.api.request(
           actors.owner,
           "GET",
@@ -349,8 +315,6 @@ layer(HostedLive, { excludeTestServices: true })("Hosted Accounts tab", (it) => 
         yield* browser.use("The App accounts section says who can change it", (page) =>
           appSection(page).getByText(readOnly, { exact: true }).waitFor(),
         );
-        // The member sees the requirement, the linked account's name and its selection, greyed
-        // out and read-only.
         yield* browser.use("Team Datadog is shown selected and disabled", (page) =>
           datadogSection(page)
             .getByRole("radio", {
@@ -382,8 +346,6 @@ layer(HostedLive, { excludeTestServices: true })("Hosted Accounts tab", (it) => 
         );
         yield* evidence.attach("member-app-accounts.png", "image/png", screenshot);
 
-        // The member uses the linked account through the app and can list the app links, but
-        // cannot read a requirement's choices or change them.
         const called = yield* call(actors.member, "who");
         expect(called.status, JSON.stringify(called.body)).toBe(200);
         expect(yield* body(Schema.Json, called)).toBe(team);
@@ -417,8 +379,6 @@ layer(HostedLive, { excludeTestServices: true })("Hosted Accounts tab", (it) => 
         const card = (page: Page) =>
           page.getByRole("link", { name: `Open ${app.name}`, exact: true });
 
-        // The member links no account of their own; the app's card names the owner's account
-        // linked for everyone instead of saying none is linked.
         yield* browser.login(actors.member);
         yield* browser.use("Open the member's apps", (page) =>
           page.goto(`/org/${actors.organization.slug}/apps`),
@@ -442,7 +402,6 @@ layer(HostedLive, { excludeTestServices: true })("Hosted Accounts tab", (it) => 
           ),
         );
 
-        // The owner's account row lists the app it is linked to for everyone.
         yield* browser.login(actors.owner);
         yield* browser.use("Open the owner's accounts", (page) =>
           page.goto(`/org/${actors.organization.slug}/accounts`),
@@ -499,7 +458,6 @@ layer(HostedLive, { excludeTestServices: true })("Hosted Accounts tab", (it) => 
               reportRow(page).getByText("App schedule", { exact: true }).waitFor(),
             );
           });
-        /** The row's state, its buttons and whether each is enabled, and any approval choice. */
         const rowControls = (state: string) =>
           Effect.gen(function* () {
             yield* browser.use(`The row is ${state}`, (page) =>
@@ -524,7 +482,6 @@ layer(HostedLive, { excludeTestServices: true })("Hosted Accounts tab", (it) => 
             return { buttons, approvals, yours };
           });
 
-        // A member sees the paused app schedule with its control disabled, and cannot enable it.
         yield* browser.login(actors.member);
         yield* openSchedules("the member");
         expect(yield* rowControls("Paused")).toEqual({
@@ -537,7 +494,6 @@ layer(HostedLive, { excludeTestServices: true })("Hosted Accounts tab", (it) => 
         expect(refused.status, JSON.stringify(refused.body)).toBe(403);
         expect(yield* appSchedule).toEqual([]);
 
-        // A manager enables it from the tab, with no approval choice.
         yield* browser.login(actors.owner);
         yield* openSchedules("the manager");
         expect(yield* rowControls("Paused")).toEqual({
@@ -559,7 +515,6 @@ layer(HostedLive, { excludeTestServices: true })("Hosted Accounts tab", (it) => 
         });
         expect(yield* appSchedule).toMatchObject([{ actor: null, enabled: true }]);
 
-        // The member sees it enabled, still without controls or an approval choice.
         yield* browser.login(actors.member);
         yield* openSchedules("the member");
         expect(yield* rowControls("Enabled")).toEqual({
@@ -575,7 +530,6 @@ layer(HostedLive, { excludeTestServices: true })("Hosted Accounts tab", (it) => 
         expect(pauseRefused.status, JSON.stringify(pauseRefused.body)).toBe(403);
         expect(yield* appSchedule).toMatchObject([{ actor: null, enabled: true }]);
 
-        // The manager pauses it again.
         yield* browser.login(actors.owner);
         yield* openSchedules("the manager");
         yield* browser.use("Pause the app schedule", (page) =>
@@ -595,7 +549,6 @@ layer(HostedLive, { excludeTestServices: true })("Hosted Accounts tab", (it) => 
           evidence = yield* Evidence,
           http = yield* HttpClient.HttpClient;
         const issuer = yield* oauthSetupIssuer;
-        // Tokens issued inside the host's renewal window renew on every use.
         yield* issuer.configure({ refreshTokens: true, expiresIn: 20 });
         const provider = `Reconnect service ${randomUUID().slice(0, 8)}`;
         const fixture = yield* sharedApp(
@@ -611,7 +564,6 @@ export default defineApp(requirements, async () => ({ tools: router({ who }) }))
         );
         const { api, actors, prefix, path, url, links, call } = fixture;
 
-        // The owner, who can edit the app, connects its account through the service's sign-in.
         const connection = yield* fixture.startConnection("service");
         const started = yield* api.request(
           actors.owner,
@@ -644,15 +596,12 @@ export default defineApp(requirements, async () => ({ tools: router({ who }) }))
         const account = (yield* body(Resource, completed)).id;
         fixture.accounts.push(account);
         expect(yield* links()).toEqual([["service", account]]);
-        // Linking makes the account the app's webhook source in the background, which resolves,
-        // and so may renew, it. Let that finish so the renewal below belongs to the member's call.
         yield* settleWebhookSources(actors.owner, path, (sources) =>
           sources.some((source) => source.account === account && source.status !== "pending"),
         );
         const working = yield* call(actors.member, "who");
         expect(working.status, JSON.stringify(working.body)).toBe(200);
 
-        // The member has the tool open when the service ends the grant.
         yield* browser.login(actors.member);
         yield* browser.use("Open the member's tool", (page) =>
           page.goto(`${url}?view=tools&tool=who`),
@@ -686,7 +635,6 @@ export default defineApp(requirements, async () => ({ tools: router({ who }) }))
           page.screenshot(),
         );
         yield* evidence.attach("member-reconnect-message.png", "image/png", message);
-        // The API names the app requirement too.
         const refused = yield* call(actors.member, "who");
         expect(refused.status, JSON.stringify(refused.body)).toBe(409);
         expect(
@@ -696,7 +644,6 @@ export default defineApp(requirements, async () => ({ tools: router({ who }) }))
           ),
         ).toEqual({ _tag: "OAuthReconnectRequired", appRequirement: "service" });
 
-        // The member's Accounts tab offers no reconnect either.
         yield* browser.use("Open the member's accounts", (page) =>
           page.goto(`${url}?view=accounts`),
         );
@@ -709,7 +656,6 @@ export default defineApp(requirements, async () => ({ tools: router({ who }) }))
           ),
         ).toBe(0);
 
-        // The owner is told the linked account needs sign-in and can reconnect it.
         yield* browser.login(actors.owner);
         yield* browser.use("Open the manager's accounts", (page) =>
           page.goto(`${url}?view=accounts`),

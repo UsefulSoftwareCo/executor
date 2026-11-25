@@ -3,29 +3,11 @@ import type { SourceFile } from "../contracts/version.ts";
 import { asciiJson } from "./ascii-json.ts";
 import { outboundGroupHeader } from "./app-network.ts";
 
-/**
- * The text files a server entry retains as `ctx.files`. `ui/` is the browser app: the host serves
- * it as compiled assets, and embedding it would make every build parse it as one string literal.
- */
 export const serverFiles = <File extends SourceFile>(files: readonly File[]) =>
   files.filter((file) => !file.path.startsWith("ui/"));
-/**
- * The Worker module that holds `ctx.files`, beside the bundle rather than in it. The compiler never
- * reads the file text: a large file, such as an OpenAPI document, would otherwise be parsed and
- * printed again as one string literal. JSON source modules read their text from it. It is written
- * in ASCII, so one non-ASCII character in any file cannot double the memory of the whole module;
- * the escapes evaluate to each file's exact text.
- */
 export const serverFilesModule = "__executor_files.js";
 export const serverFilesSource = (files: readonly SourceFile[]) =>
   `export default ${asciiJson(JSON.stringify(serverFiles(files)))};`;
-/**
- * The retained server entry for every protocol so far. It imports the framework's host module as a
- * namespace and uses only what protocol 1 guarantees, so it links against every protocol-1 framework. Optional
- * later additions are feature-detected: `isolatedCacheSession` first shipped after apps
- * 0.0.1-beta.0, and the invocation bridges skip caching when a build has no `cacheSession`.
- * `isolatedClock` first shipped in apps 0.0.1-beta.46; without it they report no dispatch time.
- */
 export const appBridge = `
 import app from "./index.ts";
 import * as host from "apps/host";
@@ -48,10 +30,6 @@ export default {
   }
 };`;
 
-/**
- * Entry for the SDK's in-process Node runtime. Every protocol so far uses the same host
- * functions; the entry records which one its framework speaks.
- */
 export const nodeAppEntry = (protocol: number) => (files: readonly SourceFile[]) =>
   [
     'import app from "./source/index.ts";',
@@ -59,47 +37,17 @@ export const nodeAppEntry = (protocol: number) => (files: readonly SourceFile[])
     `export const protocol = ${protocol};`,
     "const handler = host.createAppHandler(app);",
     `const files = ${JSON.stringify(serverFiles(files))};`,
-    // Redacted owns a private store per Effect instance. Decode on
-    // the host side and re-wrap with the selected app framework.
     "export default (request, context, accounts) => handler(request, { ...context, ...host.hostContext(accounts, context.approval), files });",
   ].join("\n");
 
-/**
- * The runtime's network module. Each bridge imports it before the app, so it evaluates first and
- * app code only ever sees the global `fetch` it installs; see app-network.ts.
- */
 export const appNetworkModuleName = "__executor_network.js";
 const networkImport = `import "./${appNetworkModuleName}";`;
 
-/**
- * The app isolate's whole part of a call, on its own clock: from dispatching the request to reading
- * the response, so the framework's work outside its spans, such as decoding the request, collecting
- * telemetry and serializing the result, is counted. It reads the framework's own clock, so it agrees
- * with the app's spans; a build whose framework has no clock reports no dispatch time.
- */
 const dispatchTiming = `const dispatched = (clock, started, value) => clock === undefined || typeof value !== "object" || value === null || Array.isArray(value) ? value : { ...value, dispatch: { elapsedMs: Number(clock() - started) / 1000000 } };`;
 
-/**
- * Collect this isolate's garbage once a call is over, at most every ten seconds. workerd runs a
- * major collection only when an isolate's own JavaScript heap grows, but each call also leaves
- * runtime objects outside that heap, held by small wrappers that only such a collection frees.
- * An isolate whose heap stays small therefore keeps every call's objects. Hosts that run their
- * own workerd expose `gc`; elsewhere this does nothing.
- */
 const collectGarbage = `let collected = 0;
 const collect = () => { const gc = globalThis.gc; if (typeof gc !== "function" || Date.now() - collected < 10000) return; collected = Date.now(); gc(); };`;
 
-/**
- * Runtime-owned RPC entrypoint. Retained fetch bridges continue to work and only new bridges use
- * the callback.
- *
- * `load: "call"` imports the app inside `start`, for a Worker that only declares a new build. A
- * module that throws while it loads then fails in this isolate, which still holds its stack; the
- * Worker Loader reports a failed static import without positions. RPC carries an error's name and
- * message but not its stack, so a new error with the same name carries the positions in its
- * message. The app's error is never changed: it may be frozen or have a read-only message, and
- * anything unexpected while reading it sends the original on unchanged.
- */
 export const appRpcBridge = (module: string, load: "module" | "call" = "module") => `
 import { outboundGroup } from "./${appNetworkModuleName}";
 ${
@@ -166,7 +114,6 @@ export default class extends WorkerEntrypoint {
   ${retireMethod}
 }`;
 
-/** A dynamic class receives only its own SQLite storage, with no platform bindings. */
 export const appFacetBridge = (module: string) => `
 ${networkImport}
 import bridge from ${JSON.stringify(`./${module}`)};

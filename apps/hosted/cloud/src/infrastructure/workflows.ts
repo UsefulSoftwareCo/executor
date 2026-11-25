@@ -1,6 +1,5 @@
 import { cloudArtifactsTokensLive } from "./artifacts-tokens.ts";
 import { cloudSentry, reportCloudFailure } from "../implementation/error-reporting.ts";
-/** One native Cloudflare workflow routes every run to its retained Dynamic Worker app build. */
 import { cloudAnalytics, recordBackgroundUsage } from "../implementation/product-analytics.ts";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { Cause, Clock, Config, Effect, Exit, Option, Schema } from "effect";
@@ -23,10 +22,6 @@ import { cloudProduct } from "./product.ts";
 import { appDataSupervisors } from "./app-data.ts";
 import { safe } from "./workflow-runtime.ts";
 
-/**
- * A sleep the native engine refused or failed: the platform answered, so the failure names the
- * platform's error class and classified code. A failure carrying our own marker passes through.
- */
 const nativeSleep = (effect: Effect.Effect<void>) =>
   effect.pipe(
     Effect.catchCause((cause) => {
@@ -35,7 +30,6 @@ const nativeSleep = (effect: Effect.Effect<void>) =>
     }),
   );
 
-/** A retryable step failure. The engine serializes its encoded message, so a replay decodes the same. */
 class RetryableStepFailure extends Schema.TaggedError<RetryableStepFailure>()(
   "RetryableStepFailure",
   { message: Schema.String },
@@ -43,10 +37,6 @@ class RetryableStepFailure extends Schema.TaggedError<RetryableStepFailure>()(
 
 const encode = workflowFailureMessage;
 
-/**
- * E2E runs only: engine call faults (`engine-faults.ts`), read only where emulated providers run,
- * which only loopback Cloud and `test-e2e-` stages accept.
- */
 const engineFaults = Effect.gen(function* () {
   if (Option.isNone(yield* cloudEmulators.pipe(Effect.orDie))) return null;
   const configured = yield* Config.option(Config.String("EXECUTOR_TEST_WORKFLOW_ENGINE_FAULTS"));
@@ -56,10 +46,6 @@ const engineFaults = Effect.gen(function* () {
   ).pipe(Effect.orDie);
 });
 
-/**
- * A sleep held by an E2E late fault before it reaches the engine, then failed by a fault before the
- * engine sees it or after it waited. The hold is a real timer, as a slow call would be.
- */
 const faulted = (
   late: number | undefined,
   fault: EngineFault | undefined,
@@ -109,7 +95,6 @@ const runWorkflow = (
                   },
                 }),
                 Effect.provideContext(services),
-                // The engine retries typed failures and stops at a defect.
                 Effect.catch((error) =>
                   error.retryable
                     ? Effect.fail(new RetryableStepFailure({ message: encode(error) }))
@@ -156,7 +141,6 @@ const runWorkflow = (
       ),
     );
   }).pipe(Effect.orDie);
-/** Step callbacks run inside the app's Dynamic Worker; the Cloudflare engine owns the journal. */
 export class AppWorkflows extends Cloudflare.Workflow<AppWorkflows>()(
   "AppWorkflows",
   Effect.gen(function* () {

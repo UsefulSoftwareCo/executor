@@ -1,16 +1,3 @@
-/**
- * MCP tool calls made at once in one `execute`, whose key checks contend: a personal access token's
- * check records the key's use at most once a minute, so when several calls check a stale key at
- * once, those that wait behind the one recording it read the key again, after the batch their
- * first check went out in, while that batch's `COMMIT` may still be unanswered. Through Hyperdrive
- * a statement written then was never answered, and the call and every call behind it waited for
- * the execute's five-minute deadline. Every round must answer within 45 seconds, on a session
- * object whose pool is still opening its connections (a new key reaches a new object) and on one
- * whose connections are open, and its calls must have read their key again.
- *
- * The key row's lock is held through the runner's fixture process (`/api-key-use`), which has the
- * Cloud's database locally and on a deployed stage alike, for the scenario's own keys only.
- */
 import { expect, layer } from "@effect/vitest";
 import { Clock, Effect, Fiber, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -50,15 +37,8 @@ const Execution = Schema.Struct({
   }),
 });
 
-/** Calls each `execute` makes at once, as the production programs that hung did. */
 const parallel = 6;
-/**
- * Key checks waiting on the hold that make it certain one is a tool call's. One request checks its
- * key in one statement at a time, so a request's own checks are at most one waiter; two at once
- * include a tool call's check, which the commit then makes contended (`bearer-access.ts`).
- */
 const waitersForCertainty = 2;
-/** Rounds, each with the key's last use cleared first. */
 const rounds = 6;
 
 layer(HostedLive, { excludeTestServices: true })("Cloud concurrent recheck", (it) => {
@@ -137,18 +117,11 @@ layer(HostedLive, { excludeTestServices: true })("Cloud concurrent recheck", (it
                 Effect.map(({ execution }) => execution),
               );
           const execute = (operation: string, code: string) => executeOn(client, operation, code);
-          /** A session of its own, whose object's pool has no connection open yet. */
-          // Warm the session: its first call reads the links in a round of its own.
           expect(yield* execute("Warm the session", `return await ${tool}({})`)).toEqual({
             ok: true,
             value: "synthetic-recheck",
           });
 
-          /**
-           * What of each tool call of an execute's trace has ended, grouped by the call's span ID
-           * so that a call still running (its own span not ended) is seen too: its batch, the key
-           * reads under its recheck, and the call itself.
-           */
           const callsOf = (traceId: string, settled: boolean) =>
             telemetry.query(traceId).pipe(
               Effect.flatMap((trace) => {
@@ -174,8 +147,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud concurrent recheck", (it
                 };
                 for (const { span } of trace.data) {
                   if (span.operationName === "mcp.tool.call") of(span.spanId).ended = true;
-                  // A batch's span is the call's child; the recheck's statements are under its
-                  // `auth.authenticate`, whose parent is the call.
                   if (span.operationName === "sql.pipeline" && span.parentSpanId !== null)
                     of(span.parentSpanId).batches++;
                   if (
@@ -197,8 +168,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud concurrent recheck", (it
               }),
               Effect.retry({ schedule: Schedule.spaced("1 second"), times: 40 }),
             );
-          // The key row's lock is held through the runner's fixture process, which has the
-          // stage's database, locally and on a deployed stage alike; only the scenario's own keys.
           const target = yield* Target;
           if (target.fixtures === undefined || target.scenarioId === undefined)
             return yield* Effect.die(new Error("The scenario needs the runner's fixture control"));
@@ -215,7 +184,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud concurrent recheck", (it
               action,
               ...(seconds === undefined ? {} : { seconds }),
             }).pipe(Effect.orDie);
-          /** The sessions waiting on the scenario's hold of the key row, directly or in its queue. */
           const blocked = (key: string) =>
             keyUse(key, "blocked").pipe(
               Effect.flatMap(
@@ -232,10 +200,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud concurrent recheck", (it
               let roundKey = pat;
               let roundClient = client;
               for (let round = 0; round < rounds; round++) {
-                // Even rounds are cold: a new key reaches a new session object (an object is its
-                // bearer's), whose pool opens its connections while the calls arrive. Odd rounds
-                // reuse that session a few seconds later, its connections open. Each round's first
-                // call warms the session's call state, so the calls after it take the warm path.
                 const cold = round % 2 === 0;
                 if (cold) {
                   const created = yield* body(
@@ -257,12 +221,7 @@ layer(HostedLive, { excludeTestServices: true })("Cloud concurrent recheck", (it
                   });
                 }
                 const started = yield* Clock.currentTimeMillis;
-                // Used 52 seconds ago: the request's own checks and the round's first call find the
-                // use recorded, so they write nothing and pass the lock below; the calls made ten
-                // seconds later find it stale, and their checks wait for the lock to record it.
                 yield* keyUse(roundKey.id, "age", 52);
-                // The hold is taken before the calls and always released here, whatever fails
-                // meanwhile: a lock left held would stall the key's deletion until the fixture ends.
                 const { fiber, waiting, waiters } = yield* Effect.scoped(
                   Effect.gen(function* () {
                     yield* Effect.acquireRelease(keyUse(roundKey.id, "hold"), () =>
@@ -278,10 +237,6 @@ return await Promise.all(Array.from({ length: ${parallel} }, () => ${tool}({})))
                         ).pipe(Effect.timeout("45 seconds")),
                       ),
                     );
-                    // Release only once tool calls' key checks wait on the hold. A check updates
-                    // the key's last use only when its snapshot finds it stale; one that does waits
-                    // for the hold, and when the hold commits a fresh use the check finds the row
-                    // changed, so it is contended and its call reads the key again.
                     const seen = yield* blocked(roundKey.id).pipe(
                       Effect.filterOrFail((found) => found.keyChecks >= waitersForCertainty),
                       Effect.retry({ schedule: Schedule.spaced("50 millis"), times: 600 }),
@@ -302,7 +257,6 @@ return await Promise.all(Array.from({ length: ${parallel} }, () => ${tool}({})))
                     ? undefined
                     : yield* Effect.option(
                         callsOf(request.traceId, answered).pipe(
-                          // A call that did not end has no span of its own: record what of it ended.
                           Effect.catch(() => callsOf(request.traceId, false)),
                         ),
                       );
@@ -356,9 +310,6 @@ return await Promise.all(Array.from({ length: ${parallel} }, () => ${tool}({})))
                   .map((entry) => entry.round),
                 "Rounds in which no call read its key again",
               ).toEqual([]);
-              // A round can also fail fast: a key check that is contended twice, or reads its
-              // key under the scenario's lock, answers 503 or 401. That is not this fault and is
-              // not judged here; each round's outcome is in the evidence.
             }),
           );
         }).pipe(Effect.provide(McpClient.layer)),

@@ -1,4 +1,3 @@
-/** Local PGlite driver composition and additive schema setup. */
 import { makeExecutorStorage } from "@executor-js/sdk/core";
 import { createDataStepJournal } from "@executor-js/app-management/data-steps";
 import { startupPhase } from "./startup-diagnostics.ts";
@@ -7,21 +6,6 @@ import { Context, Effect, FileSystem, Layer, Path } from "effect";
 import { SqlClient } from "effect/sql";
 import * as Migrator from "effect/sql/Migrator";
 
-/**
- * The accounts linked to each app's requirements, as hosted keeps them, without an organization or
- * an access policy: an app link has no `subject` and is used for every call and the app's
- * background work; a user link has the local subject, `local`. Links are keyed by requirement. A
- * plain requirement has at most one link per scope, kept by linking under the app's lock; many()
- * any number. Removing the app or the account removes its links, but an account with an app link
- * is refused first (`AccountLinkedToApp`, and the account removal hook). Local has one subject, so
- * no `linked_by` is kept.
- *
- * Profiles are converted once: each enabled profile that is not being removed links the existing
- * accounts it selected to the requirement it selected them for, as user links, dated by the oldest
- * such profile. A plain requirement links only the account it used, its first existing one, as SDK
- * 4.0.13 reads it. Profiles whose account set SDK 4.0.13 planned as a copy of the app are skipped;
- * data step `10_profile_app_copies` links their accounts to the copy.
- */
 const appAccountLinks = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`create table local_app_account_links (
@@ -62,13 +46,8 @@ const appAccountLinks = Effect.gen(function* () {
     on conflict do nothing`;
 });
 
-/**
- * Local product tables beside the SDK schema, each applied once and recorded in the same SQL
- * transaction. Append new steps; never change one that has shipped.
- */
 const migrateLocalProduct = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  // Effect's Postgres migrator probes with ::regclass; create its journal explicitly first.
   yield* sql`create table if not exists private_local_migrations (
     migration_id integer primary key,
     created_at timestamp with time zone not null default now(),
@@ -78,13 +57,11 @@ const migrateLocalProduct = Effect.gen(function* () {
     table: "private_local_migrations",
     loader: Migrator.fromRecord({
       "1_data_steps": createDataStepJournal("private_local"),
-      // Runs after SDK 4.0.13, which keeps the profiles and plans their copies.
       "2_app_account_links": appAccountLinks,
     }),
   });
 });
 
-/** Open persistent Effect SQL resources in the host scope and preserve existing records. */
 export const openStorage = (directory: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;

@@ -1,20 +1,3 @@
-/**
- * Measured scenario times, which `split` (e2e/scenario-parts.ts) weighs parts by.
- *
- *   node scripts/ci/scenario-times.ts record <run> <directory>...
- *
- * reads every Vitest `results.json` under the directories (a full CI run's `e2e-<target>-results-*`
- * artifacts, unpacked) and writes `e2e/scenario-times.json`: for each target, each scenario's time
- * in whole seconds, and the run they came from. A scenario that ran more than once on a target (a
- * Cloud scenario on several runtimes) counts its total. Keys are sorted, so the same results write
- * the same file, and `split` gives the same parts for a commit however often it runs.
- *
- * Refresh it from a recent full run on main, which runs every scenario:
- *   gh run download <run> --repo UsefulSoftwareCo/executor-next --pattern 'e2e-*-results-*' --dir <dir>
- *   node scripts/ci/scenario-times.ts record <run> <dir>
- * A branch's new scenarios need nothing: `split` gives a scenario it has no time for the target's
- * median.
- */
 import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -35,7 +18,6 @@ const resultsFiles = (directory: string): ReadonlyArray<string> =>
     return name === "results.json" ? [path] : [];
   });
 
-/** The target a results file belongs to: `<stamp>-<target>-<hash>/<target>/report/diagnostics/`. */
 const targetOf = (file: string) => file.split("/").at(-4);
 
 const [command, run, ...directories] = process.argv.slice(2);
@@ -51,7 +33,6 @@ for (const file of directories.flatMap(resultsFiles)) {
   const times = totals.get(target) ?? new Map<string, number>();
   totals.set(target, times);
   for (const suite of results.testResults ?? [])
-    // Only scenarios that ran: a skipped or filtered one has no time, and would weigh 1 s.
     for (const { title, status, duration } of suite.assertionResults ?? [])
       if (
         title !== undefined &&

@@ -46,7 +46,6 @@ export const isolatedCacheSession = (callback: (input: unknown) => Promise<unkno
     background: (task) =>
       Effect.gen(function* () {
         const services = yield* Effect.context<never>();
-        // The bridge owns this boundary. drain/cancel retain the RPC callback and await every task.
         // oxlint-disable-next-line executor/authored-code-through-adapter -- Executor's background refresh
         const promise = Effect.runPromiseWith(services)(
           task.pipe(

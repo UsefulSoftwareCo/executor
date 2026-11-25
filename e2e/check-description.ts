@@ -1,29 +1,3 @@
-/**
- * Check a pull request description's `e2e` block before pushing, as CI's `select` job will:
- *
- *   bun run e2e:check-description --file description.md
- *   bun run e2e:check-description -            (the description on stdin)
- *   bun run e2e:check-description --pr 4439    (an open pull request's description and base)
- *
- * It runs `node e2e/ci-selection.ts`, the program the `select` job runs, with the job's
- * environment, and a stand-in `gh` first on its PATH (e2e/check-description-gh.ts) that answers
- * that program's reads from this checkout instead of GitHub: the description from the file, stdin
- * or the pull request; the changed files from `git diff` of HEAD against the base (`--base`, the
- * pull request's base, or main), and main's files, each fetched from origin as it is now (or the
- * commit `--main` names, for a test). With `--pr` the checkout must hold the pull request's head
- * commit, and the pull request's head branch stands for this one. It prints the same messages,
- * minus the advice only CI can follow, exits with the same code, and on success prints the same
- * selection: the jobs, their scenario counts and the release lanes. It checks what is committed.
- * A `skip` cannot be checked before the layer above is open; with a file or stdin it says so and
- * passes. `--pull <number>` with a file names the open pull request the description is for, before
- * its new head is pushed: the layers above it are read from GitHub, as with `--pr`, so a `skip`
- * with none fails as CI fails it. `--base-commit <sha>` compares with a local commit instead of
- * fetching the base, for a stack layer whose base is a lower layer not pushed yet (`bun run
- * pr:check`). `--head-ref <branch>` names the branch the checked commit is the head of, for a
- * checkout of another layer, which is detached: the layers above are the open pull requests based
- * on that branch, as CI reads them. It needs the network: it fetches main and the base from origin, and `--pr` and
- * `--pull` read GitHub with `gh`.
- */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Console, Effect, FileSystem, Path, Schema, Stream } from "effect";
@@ -36,7 +10,6 @@ class CheckFailed extends Schema.TaggedError<CheckFailed>()("CheckFailed", {
 const usage =
   "Usage: bun run e2e:check-description (--file <description.md> [--pull <number>] | - | --pr <number>) [--base <branch>] [--base-commit <sha>] [--head-ref <branch>] [--main <ref>]";
 
-/** Runs a command and returns what it prints, its error output and its exit code. */
 const run = (command: string, args: ReadonlyArray<string>, stdin?: string) =>
   Effect.gen(function* () {
     const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -106,8 +79,6 @@ const program = Effect.gen(function* () {
   let description: string;
   let baseBranch = option("--base") ?? "main";
   let headRef = givenHeadRef ?? (yield* git("rev-parse", "--abbrev-ref", "HEAD"));
-  // A detached checkout is the head of no branch, and no pull request is based on `HEAD`: a skip
-  // would be checked against no layer above.
   if (pull !== undefined && headRef === "HEAD")
     return yield* new CheckFailed({
       message: `--pull ${pull} checks a detached checkout, which names no branch: give the pull request's branch with --head-ref, so the layers above it are found.`,
@@ -141,7 +112,6 @@ const program = Effect.gen(function* () {
         }),
       ),
     )(viewed.stdout);
-    // The changed files come from this checkout, so it must hold the pull request's head.
     if (head !== read.headRefOid)
       return yield* new CheckFailed({
         message: `This checkout's HEAD is ${head}, but pull request ${pr}'s head is ${read.headRefOid}, so its changed files would not be the pull request's. Check out that commit first: git fetch origin ${read.headRefName} && git checkout --detach ${read.headRefOid}`,
@@ -151,8 +121,6 @@ const program = Effect.gen(function* () {
     headRef = read.headRefName;
   } else description = yield* fs.readFileString(stdin ? "/dev/stdin" : file!);
 
-  // Main and the base as the remote has them, fetched into refs of this check's own, or the
-  // commit `--main` names (which also stands for the base unless `--base` names a ref).
   const given = option("--main");
   const main = given ?? "refs/check-description/main";
   const base =
@@ -162,8 +130,6 @@ const program = Effect.gen(function* () {
     const fetched = yield* run("git", [
       "fetch",
       "--quiet",
-      // Only the refs named here: without it git also moves refs/remotes/origin/main to what it
-      // fetched, so a check against another origin (the selection spec's) rewrote the checkout's.
       "--refmap=",
       "origin",
       "+refs/heads/main:refs/check-description/main",
@@ -207,9 +173,7 @@ const program = Effect.gen(function* () {
         E2E_COMPARE_BASE: "main",
         E2E_COMPARE_HEAD: head,
         E2E_LOCAL_CHECK: "1",
-        // Run from inside a CI job, the selection would refuse local mode (e2e/ci-selection.ts).
         GITHUB_ACTIONS: "",
-        // A draft is complete as it is: nothing will edit it while this waits.
         E2E_DESCRIPTION_WAIT_SECONDS: "0",
         GITHUB_REPOSITORY: repository,
         GITHUB_RUN_ID: "<run id>",

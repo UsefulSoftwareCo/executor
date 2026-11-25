@@ -1,17 +1,7 @@
-/**
- * Stage requests lost in transport (`support/lost-connections.ts`): before any response, or after
- * one began and before it was whole. Saved per scenario in
- * the run's `report/lost-requests/` and counted for a job's summary, zero included: where each was
- * lost (a new connection, a reused one, after a response began), with its time. Only a request of
- * which nothing was written to any connection is sent again; one answered so is kept as "sent
- * again: answered" with its repeats, and counted apart from the lost.
- */
 import { Effect, FileSystem, Path, Schema } from "effect";
 
-/** A path with its ids shortened to `:id`: a run of 16 or more id characters. */
 export const shortPath = (path: string) => path.replace(/[A-Za-z0-9_-]{16,}/gu, ":id");
 
-/** Where a run keeps its records, under the run's directory. */
 export const lostRequestDirectory = "report/lost-requests";
 
 export const LostRequestRecord = Schema.Struct({
@@ -31,7 +21,6 @@ export const LostRequestRecord = Schema.Struct({
     responseStarted: Schema.Boolean,
   }),
   outcome: Schema.String,
-  /** The failed attempts of a request sent again because nothing of it was written. */
   repeats: Schema.optional(
     Schema.Array(
       Schema.Struct({
@@ -47,10 +36,6 @@ export type LostRequestRecord = typeof LostRequestRecord.Type;
 
 const decode = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Array(LostRequestRecord)));
 
-/**
- * Save lost requests in a run directory, under a name of the saver's: a scenario's id, a test
- * file's records made outside any scenario, or the suite's preparation. None writes nothing.
- */
 export const saveLostRequests = (
   run: string,
   name: string,
@@ -69,7 +54,6 @@ export const saveLostRequests = (
     );
   });
 
-/** Every record under the directories, at any depth, oldest first. A file that does not decode fails. */
 export const readLostRequests = (directories: ReadonlyArray<string>) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -89,15 +73,12 @@ export const readLostRequests = (directories: ReadonlyArray<string>) =>
     return records.flat().toSorted((a, b) => a.at.localeCompare(b.at));
   });
 
-/** The outcome of a request answered after being sent again. */
 export const answeredAfterRepeats = "sent again: answered";
 
-/** Requests answered only after being sent again: how many, their repeats, and their waits in all. */
 export const repeatTotals = (records: ReadonlyArray<LostRequestRecord>) => {
   const answered = records.filter((record) => record.outcome === answeredAfterRepeats);
   return {
     requests: answered.length,
-    // Each request's first attempt is not a repeat.
     repeats: answered.reduce((sum, record) => sum + (record.repeats?.length ?? 0), 0),
     waitedMs: answered.reduce((sum, record) => sum + record.elapsedMs, 0),
   };
@@ -105,7 +86,6 @@ export const repeatTotals = (records: ReadonlyArray<LostRequestRecord>) => {
 
 const seconds = (milliseconds: number) => `${(milliseconds / 1000).toFixed(1)} s`;
 
-/** A record's own repeats: `3 attempts over 3.2 s, not sent again: 5 repeats used`. */
 const repeatText = (record: LostRequestRecord) =>
   record.repeats === undefined
     ? record.stopped === undefined
@@ -113,10 +93,6 @@ const repeatText = (record: LostRequestRecord) =>
       : `, not sent again: ${record.stopped}`
     : `, ${record.outcome === answeredAfterRepeats ? record.repeats.length + 1 : record.repeats.length} attempts over ${seconds(record.elapsedMs)}${record.stopped === undefined ? "" : `, not sent again: ${record.stopped}`}`;
 
-/**
- * One summary paragraph: the lost requests, each outcome's count, those outside any scenario, the
- * requests answered only after being sent again, and when each happened.
- */
 export const lostRequestLines = (records: ReadonlyArray<LostRequestRecord>) => {
   const lost = records.filter((record) => record.outcome !== answeredAfterRepeats);
   const totals = repeatTotals(records);
@@ -146,6 +122,5 @@ export const lostRequestLines = (records: ReadonlyArray<LostRequestRecord>) => {
   ].join("\n");
 };
 
-/** What a job summary says when the records could not be read: never a count, never zero. */
 export const lostRequestsUncounted =
   "Stage requests lost in transport: NOT COUNTED. The records could not be read, so this job's count is unknown, not zero.";

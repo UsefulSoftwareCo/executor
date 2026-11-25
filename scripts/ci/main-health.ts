@@ -1,33 +1,3 @@
-/**
- * Keeps one issue about main's health. `.github/workflows/main-health.yml` runs it, and nothing
- * else writes the issue: no other workflow creates, edits, comments on, closes or reopens it.
- *
- * Every run reads three facts afresh (`main-health-read.ts`), each `bad`, `good` or `unknown`:
- *
- * - CI: the newest finished run of CI_WORKFLOW on CI_BRANCH for CI_EVENT that counts
- *   (main-health.yml: the newest finished push run of ci.yml on main). That is not always main's
- *   head commit: a `[skip ci]` commit (the beta's release bump, the bun.lock repair) has no run, so
- *   the run of the commit before it counts. While the head's run is in progress, the newest run
- *   that finished before it decides. Which attempt of a re-run counts is `decidingAttempt`'s rule.
- *   Red is bad, green good, and no run that counts at all unknown.
- * - The Windows check: the same, for runs of WINDOWS_WORKFLOW on WINDOWS_BRANCH for WINDOWS_EVENT
- *   titled WINDOWS_TITLE (release-check.yml starts them).
- * - The held beta: the newest BETA_ARTIFACT artifact a BETA_WORKFLOW run on BETA_BRANCH uploaded
- *   in the last six days (beta.yml, on each tick that decides `held` or `clear`, kept for a week).
- *   Held is bad, clear good, and no decision in six days unknown.
- *
- * and one more, also read afresh: whether an issue this script owns is open now. That is an input
- * on purpose, and it is a read of GitHub on this run, not trust in what an earlier run wrote: it
- * decides only whether to open one or leave the open one as it is when nothing is known to be bad
- * (`decide` in `main-health-decide.ts`). Something bad keeps the issue open with the whole current
- * state; every source good closes it; otherwise nothing opens or closes, and an open issue is
- * rewritten with the current facts, saying which source is unknown and why.
- *
- * Every read comes before every write, and a read that fails or does not decode stops the run with
- * nothing written; the next run writes the whole issue again from what it reads. An issue is this
- * script's only if it has LABEL, was opened by github-actions[bot] and its body carries the marker
- * below. It never re-runs, reverts or mentions anyone, and posts no comments.
- */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Clock, Config, Console, Effect, FileSystem, Schema, Stream } from "effect";
@@ -87,7 +57,6 @@ const program = Effect.gen(function* () {
     temp,
   });
 
-  // Every read, before any write.
   const facts = { ci: yield* read.ci, windows: yield* read.windows, beta: yield* read.beta };
   const owned = yield* read.owned;
 
@@ -126,14 +95,12 @@ const program = Effect.gen(function* () {
       return stdout;
     }).pipe(Effect.scoped);
   let requests = 0;
-  /** Writes REQUEST as the JSON body of `gh api -X METHOD PATH`. */
   const send = (method: string, path: string, request: object) =>
     Effect.gen(function* () {
       const file = `${temp}/request-${requests++}.json`;
       yield* fs.writeFileString(file, JSON.stringify(request));
       return yield* gh(["api", "-X", method, `repos/${repository}/${path}`, "--input", file]);
     });
-  /** Writes an issue's whole state in one call, title and body included. */
   const write = (number: number, state: "open" | "closed", reason?: "completed" | "not_planned") =>
     send("PATCH", `issues/${number}`, {
       title,
@@ -148,8 +115,6 @@ const program = Effect.gen(function* () {
     `CI ${facts.ci.health}, Windows check ${facts.windows.health}, beta ${facts.beta.health}: ${outcome}.`,
   );
   if (outcome === "open") {
-    // The label, made the first time rather than relying on what GitHub does with a label that
-    // does not exist.
     if (!(yield* read.labelExists))
       yield* gh([
         "api",

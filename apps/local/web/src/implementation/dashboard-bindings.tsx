@@ -13,7 +13,6 @@ const AppLink = ({ app, view, tool, ...props }: AppLinkProps) => (
 const AccountLink = ({ account, ...props }: AccountLinkProps) => (
   <Link to="/accounts" search={{ account }} {...props} />
 );
-/** Typed navigation and local data are supplied outside the shared UI. */
 export function LocalDashboard({ children }: { readonly children: ReactNode }) {
   return (
     <DashboardProvider catalogIcons={catalogIcons} AppLink={AppLink} AccountLink={AccountLink}>

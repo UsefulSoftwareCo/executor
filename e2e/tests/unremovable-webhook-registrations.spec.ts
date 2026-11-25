@@ -1,16 +1,3 @@
-/**
- * Before #3915, an app-account webhook that registered after its source lost its app link saved
- * the registration with the app's remaining links, without its source. The apps framework refuses
- * every webhook command whose source is not among its accounts, so removing it was refused on every
- * attempt: it stayed `stopping` with failure `unregister`, and its app could not be removed. Data
- * step `11_unremovable_webhook_registrations` disables each such subscription, so a person removes
- * it at the provider and confirms, as Executor asks for any registration it can no longer remove.
- *
- * The fixed product can no longer save such a registration, so the fixture lets the product put a
- * subscription into `stopping` with failure `unregister` itself (the app's provider fails for that
- * account), then writes the one column the race wrote differently: the saved accounts, as a
- * registration that ran after the source's link went saved them.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import type { HttpClient } from "effect/http";
@@ -38,7 +25,6 @@ import { scenarios } from "../test-plan.ts";
 const step = "11_unremovable_webhook_registrations";
 
 const provider = keyProvider("Unremovable webhook fixture");
-/** An app-account webhook whose provider refuses every call for an account keyed `provider-down`. */
 const source = `import { defineApp, defineProvider, secrets, query, object, string, router } from "apps";
 const team = ${provider};
 const down = (input) => input.account.fields.token === "provider-down";
@@ -58,37 +44,25 @@ const Stored = Schema.Struct({
 });
 const Status = Schema.Struct({ status: Schema.String });
 
-/** The services a host's operations use. */
 type Needs = Api | Evidence | HttpClient.HttpClient | Target;
 
-/** One statement against the stopped product's tables. */
 interface Statement {
   readonly sql: string;
   readonly params?: ReadonlyArray<string>;
 }
 
-/** How a host's app links, unlinks, confirms a removal at the provider and removes the app. */
 interface Host {
   readonly actor: Session;
-  /** The path whose `webhooks` lists the app's subscriptions. */
   readonly path: string;
-  /** Save an account with this token and link it to the app's `svc` requirement for everyone. */
   readonly link: (token: string) => Effect.Effect<string, unknown, Needs>;
   readonly unlink: (account: string) => Effect.Effect<unknown, unknown, Needs>;
   readonly confirm: (subscription: string) => Effect.Effect<string, unknown, Needs>;
-  /** One attempt to remove the app; its HTTP status. */
   readonly remove: Effect.Effect<number, unknown, Needs>;
-  /** The runner's write to the stopped product's database (`legacyStorage`). */
   readonly storage: (
     statements: readonly [Statement, ...Statement[]],
   ) => Effect.Effect<ReadonlyArray<ReadonlyArray<Record<string, unknown>>>, unknown, Needs>;
 }
 
-/**
- * Put one subscription into the stuck state, with two others as they were: healthy, and merely
- * stopping (waiting for a provider that is down, a removal the product's next attempt finishes).
- * Leaves the product stopped, as a legacy write does, with the rows as written.
- */
 const prepare = (host: Host) =>
   Effect.gen(function* () {
     const target = yield* Target;
@@ -110,25 +84,20 @@ const prepare = (host: Host) =>
         ),
       );
 
-    // Two healthy app links, each registered with the app's links at the time.
     const healthy = yield* host.link("healthy");
     const merely = yield* host.link("merely-stopping");
     yield* settled({
       [healthy]: { status: "active", failure: null },
       [merely]: { status: "active", failure: null },
     });
-    // A third whose provider is down: its registration saves all three links and fails.
     const stuck = yield* host.link("provider-down");
     yield* settled({ [stuck]: { status: "pending", failure: "register" } });
-    // Unlinking it removes its registration with those accounts, which the provider refuses: the
-    // product leaves it stopping with failure `unregister`, as the race did.
     yield* host.unlink(stuck);
     const before = yield* settled({ [stuck]: { status: "stopping", failure: "unregister" } });
     const stuckHook = hookOf(before, stuck),
       healthyHook = hookOf(before, healthy),
       merelyHook = hookOf(before, merely);
     const ids = [stuckHook.id, healthyHook.id, merelyHook.id];
-    /** The three subscriptions' stored rows. Stops the product. */
     const stored = host
       .storage([
         {
@@ -143,8 +112,6 @@ const prepare = (host: Host) =>
       );
 
     const seen = (yield* dataStepSummaries(log, step)).length;
-    // What the race saved: the app's links once the source's had gone. The other subscription waits
-    // for a provider that is down, a removal the product's next attempt finishes.
     yield* host.storage([
       {
         sql: `UPDATE executor_webhooks SET registered_accounts = $2::json WHERE id = $1`,
@@ -172,10 +139,6 @@ type Prepared = Effect.Success<ReturnType<typeof prepare>>;
 
 const rowOf = (rows: ReadonlyArray<typeof Stored.Type>, id: string) =>
   rows.find((row) => row.id === id);
-/**
- * The stuck subscription's source keeps retrying its removal, and each attempt's claim gives it a
- * new revision; nothing retries the other two, which stay exactly as written.
- */
 const unchanged = (
   prepared: Prepared,
   rows: ReadonlyArray<typeof Stored.Type>,
@@ -193,10 +156,6 @@ const unchanged = (
     expect(rowOf(rows, id)).toEqual(rowOf(earlier, id));
 };
 
-/**
- * A report names the one unremovable registration and writes nothing, and its app cannot be
- * removed. Starts the product in report mode and leaves it stopped.
- */
 const reportFirst = (prepared: Prepared) =>
   Effect.gen(function* () {
     yield* serverControl("start");
@@ -209,10 +168,6 @@ const reportFirst = (prepared: Prepared) =>
     unchanged(prepared, yield* prepared.stored, prepared.written);
   });
 
-/**
- * Applying the step on the next start disables only the stuck subscription. Starts the product in
- * apply mode from stopped and leaves it serving.
- */
 const apply = (prepared: Prepared) =>
   Effect.gen(function* () {
     const { log, host, accounts, hookOf } = prepared;
@@ -233,10 +188,6 @@ const apply = (prepared: Prepared) =>
     });
   });
 
-/**
- * The disabled subscription keeps its saved registration, with a new revision, and the other two
- * rows are exactly as written. Stops the product.
- */
 const appliedRows = (prepared: Prepared) =>
   Effect.gen(function* () {
     const { hooks, written } = prepared;
@@ -254,11 +205,6 @@ const appliedRows = (prepared: Prepared) =>
     return applied;
   });
 
-/**
- * Starting again with the applied step changes nothing: it does not run again. Startup runs data
- * steps before the product serves, so the log is complete once the start answers. Starts the
- * product from stopped and leaves it serving.
- */
 const startAppliedAgain = (prepared: Prepared) =>
   Effect.gen(function* () {
     const appliedPasses = (yield* dataStepSummaries(prepared.log, step)).length;
@@ -266,7 +212,6 @@ const startAppliedAgain = (prepared: Prepared) =>
     expect((yield* dataStepSummaries(prepared.log, step)).length).toBe(appliedPasses);
   });
 
-/** A report after the step applied finds nothing left to disable. Starts the product from stopped. */
 const reportAfterApply = (prepared: Prepared) =>
   Effect.gen(function* () {
     const passes = (yield* dataStepSummaries(prepared.log, step)).length;
@@ -279,11 +224,6 @@ const reportAfterApply = (prepared: Prepared) =>
     });
   });
 
-/**
- * A person removes the stuck registration at the provider and confirms. The product's next removal
- * of the merely stopping one succeeds now that its provider answers, and the app can be removed.
- * Needs the product serving.
- */
 const confirmAndRemove = (prepared: Prepared) =>
   Effect.gen(function* () {
     const { host, accounts, hooks, settled } = prepared;
@@ -298,10 +238,6 @@ const confirmAndRemove = (prepared: Prepared) =>
     expect(yield* host.remove).toBe(200);
   });
 
-/**
- * The whole journey on one product, as self-host runs it: report, apply, start again with the step
- * applied and report again, then confirm and remove the app.
- */
 const journey = (host: Host) =>
   Effect.gen(function* () {
     const prepared = yield* prepare(host);
@@ -343,7 +279,6 @@ layer(TestLive, { excludeTestServices: true })("Unremovable webhook registration
     ),
   );
 
-  // Local starts take 8 to 12 seconds on CI, so its journey is three scenarios of two starts each.
   it.effect(scenarios.localUnremovableWebhookRegistrations.title, (context) =>
     withCase(
       context,
@@ -383,13 +318,6 @@ layer(TestLive, { excludeTestServices: true })("Unremovable webhook registration
   );
 });
 
-/**
- * The unremovable-webhook app deployed on Local, writing storage with the scenario's
- * `legacyStorage`. With `removed`, cleanup removes the app and its
- * accounts, which needs the product serving and every subscription stopped. A scenario that ends
- * with the product stopped and a subscription disabled leaves them: the case's own process and
- * database end with it.
- */
 const localHost = (storage: Host["storage"], removed: boolean) =>
   Effect.gen(function* () {
     const { api, agent } = yield* localAgent;
@@ -439,7 +367,6 @@ const localHost = (storage: Host["storage"], removed: boolean) =>
     return host;
   });
 
-/** One attempt to remove the app at `appPath`; its HTTP status. */
 const removeAppOnce = (actor: Session, appPath: string) =>
   Effect.gen(function* () {
     const api = yield* Api;

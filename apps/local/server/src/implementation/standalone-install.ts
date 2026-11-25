@@ -1,14 +1,3 @@
-/**
- * A standalone install: the release archive unpacked by the install script into
- * `<root>/versions/<version>/`, with `<root>/current` pointing at the version in use and
- * `<root>/previous` at the one before it. `<root>` is `~/.executor/v2/runtime` unless the person
- * chose another directory. A command on PATH starts `current/executor`, so switching `current`
- * switches every later start. A switch removes older versions, so a process still running from
- * one loses its files: `executor upgrade` stops the background server first.
- *
- * Release archives come from the public release and are checked against its SHA256SUMS before
- * anything is unpacked.
- */
 import * as NodeHttpClient from "@effect/platform-node/NodeHttpClient";
 import { createHash, randomUUID } from "node:crypto";
 import { symlink } from "node:fs/promises";
@@ -18,25 +7,18 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { UpgradeFailed } from "../contracts/startup.ts";
 
 export interface StandaloneInstall {
-  /** The directory holding `versions/`, `current` and `previous`. */
   readonly root: string;
-  /** The version directory the running executable belongs to. */
   readonly version: string;
 }
 
 const executableName = (platform: string) => (platform === "win32" ? "executor.exe" : "executor");
 
-/** The executable of one installed version. */
 export const versionExecutable = (install: StandaloneInstall, version: string, platform: string) =>
   Effect.gen(function* () {
     const path = yield* Path.Path;
     return path.join(install.root, "versions", version, executableName(platform));
   });
 
-/**
- * The standalone install that `executable` belongs to, or none when it was installed another way.
- * Launcher symlinks resolve to the version directory, so the real path shows the layout.
- */
 export const standaloneInstall = (executable: string, platform: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -52,14 +34,9 @@ export const standaloneInstall = (executable: string, platform: string) =>
       : Option.none<StandaloneInstall>();
   });
 
-/** The release archive for one platform: the platform's npm package, which holds the install. */
 export const releaseArchive = (version: string, platform: string, arch: string) =>
   `executor-${version}-${platform}-${arch}.tgz`;
 
-/**
- * Where release files are downloaded from: `<base>/executor@<version>/<file>`. Set
- * EXECUTOR_DOWNLOAD_URL to use a mirror of the public releases.
- */
 export const downloadBase = Config.String("EXECUTOR_DOWNLOAD_URL").pipe(
   Config.withDefault("https://github.com/UsefulSoftwareCo/executor/releases/download"),
   Config.map((base) => base.replace(/\/+$/u, "")),
@@ -68,7 +45,6 @@ export const downloadBase = Config.String("EXECUTOR_DOWNLOAD_URL").pipe(
 const failed = (reason: UpgradeFailed["reason"], message: string) =>
   new UpgradeFailed({ reason, message });
 
-/** The SHA-256 a SHA256SUMS file lists for `file`, as `sha256sum` writes it. */
 const listedDigest = (sums: string, file: string) => {
   for (const line of sums.split("\n")) {
     const match = /^([0-9a-f]{64}) [ *](?:\.\/)?(.+)$/u.exec(line.trim());
@@ -77,7 +53,6 @@ const listedDigest = (sums: string, file: string) => {
   return undefined;
 };
 
-/** The version `current` or `previous` names, or none when it is missing or points elsewhere. */
 export const linkedVersion = (root: string, name: "current" | "previous") =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -93,11 +68,6 @@ export const linkedVersion = (root: string, name: "current" | "previous") =>
     );
   });
 
-/**
- * Point `name` at `versions/<version>`. On macOS and Linux a new link replaces the old one in one
- * rename, so a start never finds it missing. Windows links directories with junctions, which
- * cannot be renamed over, so the old one is removed first.
- */
 const link = (root: string, name: "current" | "previous", version: string, platform: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -115,12 +85,6 @@ const link = (root: string, name: "current" | "previous", version: string, platf
     yield* fs.rename(temporary, destination);
   });
 
-/**
- * Make `version` current and remember the version it replaces as previous. Other versions are
- * removed, except those in `running`: versions a background server still runs from, because it
- * could not be stopped. A removal Windows refuses, as for an open executable, is retried at a
- * later switch.
- */
 export const switchVersion = (
   install: StandaloneInstall,
   version: string,
@@ -148,7 +112,6 @@ export const switchVersion = (
     ),
   );
 
-/** Run `executor --version` from a version directory. */
 const reportedVersion = (executable: string) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -168,11 +131,6 @@ const reportedVersion = (executable: string) =>
     }),
   ).pipe(Effect.orElseSucceed(() => undefined));
 
-/**
- * Download `version`'s archive for this platform, check it against the release's SHA256SUMS,
- * unpack it into `versions/<version>` and check that its executable reports that version. Nothing
- * outside `versions/` changes, and a failed step leaves no version directory behind.
- */
 export const installVersion = (
   install: StandaloneInstall,
   version: string,
@@ -184,8 +142,6 @@ export const installVersion = (
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-      // GitHub answers each release download with a redirect to the file, so the status is
-      // checked on the response the redirects end at.
       const client = (yield* HttpClient.HttpClient).pipe(
         HttpClient.followRedirects(5),
         HttpClient.filterStatusOk,
@@ -210,7 +166,6 @@ export const installVersion = (
         );
       const versions = path.join(install.root, "versions");
       yield* fs.makeDirectory(versions, { recursive: true });
-      // Partial files stay beside the versions they would join, on the same volume.
       const work = yield* fs.makeTempDirectoryScoped({
         directory: install.root,
         prefix: ".download-",
@@ -236,8 +191,6 @@ export const installVersion = (
           "checksum-mismatch",
           `The downloaded ${file} does not match the SHA256SUMS of the v${version} release (expected ${expected}, got ${actual}). It was deleted and nothing was changed.`,
         );
-      // npm archives hold one package/ directory. Windows' own tar reads a relative path; Git's
-      // GNU tar would read a drive letter as a host name.
       const unpacked = path.join(work, "package");
       const tar =
         platform === "win32"
@@ -273,6 +226,5 @@ export const installVersion = (
         ),
       ),
     ),
-    // The body is read before the client's connections close with this layer.
     Effect.provide(NodeHttpClient.layerNodeHttp),
   );

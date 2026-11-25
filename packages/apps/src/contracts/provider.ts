@@ -277,7 +277,6 @@ export interface AccountCheckContext<Auth extends AuthMethods> {
  * replaced, so write it for them.
  */
 export interface AccountCheck<Auth extends AuthMethods> {
-  // Method syntax lets a check typed for specific methods be stored as a general one.
   run(context: AccountCheckContext<Auth>): Effect.Effect<AccountCheckResult | void, unknown>;
 }
 
@@ -334,8 +333,6 @@ export interface AccountRequest {
 
 /** One account for these methods, discriminated by its author-chosen method name. */
 export type AccountOfMethods<Auth extends AuthMethods> = {
-  // One object type rather than an intersection with `AccountRequest`, so compiler errors about
-  // accounts print it as written.
   readonly [Method in keyof Auth & string]: {
     readonly id: AccountId;
     readonly method: Method;

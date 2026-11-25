@@ -1,7 +1,3 @@
-/**
- * Generate the Executor app's skills and framework reference for Cloud, and the revision of the
- * API the Executor app reads. Generating the API document takes too long for a request's isolate.
- */
 import { generateFrameworkReference } from "../../../../packages/apps/scripts/reference.mjs";
 import { readExecutorSkillDocuments } from "@executor-js/app-templates/executor";
 import { hostedApiRevision } from "@executor-js/hosted-server";
@@ -27,7 +23,6 @@ NodeRuntime.runMain(
         "framework-reference.json": JSON.stringify(reference),
       }),
     );
-    // Every deployed stage serves these exact bytes; see `servesBuiltApiDocument`.
     yield* fs.writeFileString(
       path.join(root, "apps/hosted/cloud/.generated/executor-api-revision.json"),
       JSON.stringify({

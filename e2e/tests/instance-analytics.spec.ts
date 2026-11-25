@@ -24,7 +24,6 @@ const Completed = Schema.Struct({
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const disabled = { _tag: "FeedbackDisabled", message: "Feedback is disabled on this instance." };
 
-/** Properties every event may carry beyond its own allowlist. */
 const common = new Set([
   "install_id",
   "product",
@@ -70,7 +69,6 @@ const allowed: Record<string, ReadonlySet<string>> = {
   ]),
 };
 
-/** Every event is personless, carries the install ID and stays within its allowlist. */
 const expectAnonymous = (
   events: readonly DeliveredEvent[],
   product: "cli" | "self-host",
@@ -122,7 +120,6 @@ layer(HostedLive, { excludeTestServices: true })("Self-host instance analytics",
         const [owner, member] = yield* Effect.all([viewer(actors.owner), viewer(actors.member)]);
         const root = `/api/organizations/${organization.id}`;
 
-        // User-chosen names reach the product but never the batch.
         const group = "Zebra canary analytics group";
         const created = yield* api.request(actors.owner, "POST", `${root}/groups`, {
           name: group,
@@ -131,8 +128,6 @@ layer(HostedLive, { excludeTestServices: true })("Self-host instance analytics",
         });
         expect(created.status, JSON.stringify(created.body)).toBe(200);
 
-        // An agent sends feedback through the Executor app's feedback.submit tool.
-        // The Executor app's one linked account is the owner's managed key, so no choice is needed.
         const { app, account } = yield* managementApp(actors.owner);
         const ownerMessage = "Owner feedback through the Executor app tool";
         const called = yield* api.request(
@@ -145,7 +140,6 @@ layer(HostedLive, { excludeTestServices: true })("Self-host instance analytics",
             input: { body: { message: ownerMessage } },
           },
         );
-        // Hosted tool calls return the tool's value.
         expect(called.status, JSON.stringify(called.body)).toBe(200);
         expect(called.body).toEqual({ status: "accepted" });
         const memberMessage = "Member feedback through the hosted API";
@@ -169,7 +163,6 @@ layer(HostedLive, { excludeTestServices: true })("Self-host instance analytics",
         expectAnonymous(events, "self-host", install);
         for (const event of events) expect(event.properties.root_domain).toBe("private");
 
-        // People get a stable HMAC per instance, never their user ID.
         const ownerFeedback = events.find((event) => event.properties.message === ownerMessage);
         const memberFeedback = events.find((event) => event.properties.message === memberMessage);
         const ownerId = ownerFeedback?.distinct_id ?? "";
@@ -206,7 +199,6 @@ layer(HostedLive, { excludeTestServices: true })("Self-host instance analytics",
           new URL(target.metadata.origin).host,
         ])
           expect(text.includes(secret), `analytics contain ${secret}`).toBe(false);
-        // The fixture's slug is a common word, so compare whole values.
         for (const event of events)
           expect(Object.values(event.properties)).not.toContain(organization.slug);
       }),
@@ -225,7 +217,6 @@ layer(HostedLive, { excludeTestServices: true })("Self-host instance analytics",
         });
         expect(refused.status).toBe(409);
         expect(refused.body).toEqual(disabled);
-        // The agent sees the same explanation through the Executor app.
         const { app } = yield* managementApp(actors.owner);
         const called = yield* api.request(
           actors.owner,
@@ -241,7 +232,6 @@ layer(HostedLive, { excludeTestServices: true })("Self-host instance analytics",
           _tag: "ToolCallFailed",
           response: { code: "FeedbackDisabled", status: 409, message: disabled.message },
         });
-        // Shutdown sends whatever a running sender buffered, so an empty file is conclusive.
         yield* serverControl("stop");
         expect((yield* deliveredAnalyticsWholeEnvironment).text).toBe("");
       }),
@@ -291,7 +281,6 @@ layer(TestLive, { excludeTestServices: true })("Local instance analytics", (it) 
         });
         expect(startup?.properties).not.toHaveProperty("root_domain");
 
-        // The agent-facing document has the same operation as hosted Executor.
         const document = yield* api.request(agent, "GET", "/openapi.json");
         expect(document.body).toMatchObject({
           paths: { "/v1/feedback": { post: { operationId: "feedback.submit" } } },
@@ -301,7 +290,6 @@ layer(TestLive, { excludeTestServices: true })("Local instance analytics", (it) 
           yield* api.request(agent, "GET", "/v1/apps?owner=executor-local&name=Executor"),
         );
         const app = executor[0]?.id ?? "";
-        // The host's managed account is the Executor app's one linked account.
         const owned = yield* body(
           Schema.Array(Schema.Struct({ id: Schema.String })),
           yield* api.request(agent, "GET", "/v1/accounts?owner=executor-local"),
@@ -309,7 +297,6 @@ layer(TestLive, { excludeTestServices: true })("Local instance analytics", (it) 
         expect(owned).toHaveLength(1);
         const account = owned[0]?.id ?? "";
         const message = "Local feedback through the Executor app tool";
-        // The agent API calls the app with its linked account.
         const linked = yield* body(
           Schema.Array(Schema.Struct({ account: Schema.Struct({ id: Schema.String }) })),
           yield* api.request(agent, "GET", `/dashboard/api/apps/${app}/accounts/user`),
@@ -325,7 +312,6 @@ layer(TestLive, { excludeTestServices: true })("Local instance analytics", (it) 
         const result = yield* body(Completed, called);
         expect(result.toolError, JSON.stringify(result.value)).toBeUndefined();
 
-        // A failed call records its outcome and error type, never its tool name or input.
         const canary = "zebra-canary-tool";
         const missing = yield* api.request(agent, "POST", "/v1/tools/call", {
           app,
@@ -376,7 +362,6 @@ layer(TestLive, { excludeTestServices: true })("Local instance analytics", (it) 
         });
         expect(refused.status).toBe(409);
         expect(refused.body).toEqual(disabled);
-        // Shutdown sends whatever a running sender buffered, so an empty file is conclusive.
         yield* serverControl("stop");
         expect((yield* deliveredAnalyticsWholeEnvironment).text).toBe("");
       }),

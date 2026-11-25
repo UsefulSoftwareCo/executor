@@ -140,7 +140,6 @@ export type OAuth2Method<Response extends Schema<unknown, boolean>> = NativeOAut
 const accountDecoder = <S extends Schema<unknown, boolean>>(
   schema: S,
 ): EffectSchema.Decoder<AccountFields<S>> =>
-  // SAFETY: the brand exists only in types; secret values are strings at runtime.
   decoderOf(schema) as unknown as EffectSchema.Decoder<AccountFields<S>>;
 
 /** The `plain()` and `raw()` fields of an object schema, or none. */
@@ -212,7 +211,6 @@ export const secrets = <const F extends Fields>(options: {
     ...(options.guide === undefined ? {} : { guide: options.guide }),
     fields: accountDecoder(options.fields),
     ...exposureOf(options.fields),
-    // SAFETY: the callback receives references named by the schema's own keys.
     ...placementsOf(
       `"${options.label}"`,
       options.fields,
@@ -261,7 +259,6 @@ export function oauth2(
       config,
       accountDecoder(response),
       exposureOf(response).exposure,
-      // SAFETY: the callback receives references named by the response projection's own keys.
       placementsOf("OAuth", response, request as RequestPlacements<string> | undefined).request,
       clientGuide,
     ),
@@ -354,7 +351,6 @@ export function query<Input, Output, Context extends AnyContext = NativeQueryCon
 ): ReturnType<typeof operationQuery<Input, Output, Context>>;
 export function query(first: unknown, second: unknown): unknown {
   if (typeof first === "string") return queryPlacement(first, second);
-  // SAFETY: the operation overload's signature types both arguments; this only dispatches on `first`.
   return operationQuery(...([first, second] as Parameters<typeof operationQuery>));
 }
 

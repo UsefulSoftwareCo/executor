@@ -1,10 +1,3 @@
-/**
- * A dedicated local product process and a view of the workflow engines its workerd holds.
- *
- * Local and desktop run every workflow run as its own Engine durable object in the product's
- * workerd process. A loaded engine keeps its SQLite database open; the namespace's own
- * metadata database stays open while the process runs.
- */
 import { Effect, FileSystem, Option, Path, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { serverProcessFile, startManagedServer } from "./managed-server.ts";
@@ -12,10 +5,8 @@ import { driver, Target } from "./platform.ts";
 import { freePort } from "./ports.ts";
 import { reveal } from "./failure-text.ts";
 
-/** The engine namespace's storage directory below the product's data directory. */
 const engineDirectory = ["data", "workerd", "workflows", "executor-app-workflows"];
 
-/** Start a local product with its own data, so its engines are the only ones counted. */
 export const startLocalProduct = (environment: Readonly<Record<string, string>> = {}) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -74,17 +65,14 @@ export const startLocalProduct = (environment: Readonly<Record<string, string>> 
     return { directory: yield* fs.realPath(directory), json, request };
   });
 
-/** Files each process holds open, and its executable when the platform reports it. */
 type OpenFiles = ReadonlyMap<
   string,
   { readonly names: Set<string>; executable?: string | undefined }
 >;
 
-/** Every file workerd processes hold open, read with lsof. */
 const openFilesFromLsof = Effect.gen(function* () {
   const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
   const path = yield* Path.Path;
-  // -F prints one field per line: p<pid>, f<descriptor>, n<name>.
   const output = yield* processes.string(
     ChildProcess.make("lsof", ["-n", "-P", "-w", "-F", "pfn", "-c", "workerd"]),
   );
@@ -105,12 +93,6 @@ const openFilesFromLsof = Effect.gen(function* () {
   return byProcess satisfies OpenFiles;
 });
 
-/**
- * Windows has no lsof. Windows reports which processes hold a file open, whatever share mode
- * they opened it with, through `FileProcessIdsUsingFile`; this asks it about each of `files`.
- * The Restart Manager asks the same question but refuses paths longer than 260 characters,
- * which engine databases below the test directory exceed.
- */
 const windowsHolders = `$ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 Add-Type -TypeDefinition @"
@@ -169,7 +151,6 @@ const WindowsHolders = Schema.Array(
   }),
 );
 
-/** The processes holding each of `files` open, read from Windows. */
 const openFilesFromWindows = (files: ReadonlyArray<string>) =>
   Effect.gen(function* () {
     const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -184,7 +165,6 @@ const openFilesFromWindows = (files: ReadonlyArray<string>) =>
               "-EncodedCommand",
               Buffer.from(windowsHolders, "utf16le").toString("base64"),
             ],
-            // The list goes through the environment, which has room for many long paths.
             { env: { ENGINE_FILES: JSON.stringify(files) }, extendEnv: true },
           ),
         );
@@ -198,7 +178,6 @@ const openFilesFromWindows = (files: ReadonlyArray<string>) =>
         );
       }),
     );
-    // A failed query must not read as no process holding the namespace.
     if (result.exitCode !== 0)
       return yield* Effect.fail(
         new Error(`Open file query exited ${result.exitCode}: ${result.stderr.trim()}`),
@@ -214,7 +193,6 @@ const openFilesFromWindows = (files: ReadonlyArray<string>) =>
     ) satisfies OpenFiles;
   });
 
-/** One row of the machine's process table, with its whole command line. */
 const ProcessRow = Schema.Struct({
   pid: Schema.Number,
   parent: Schema.Number,
@@ -226,7 +204,6 @@ $rows = @(Get-CimInstance Win32_Process -Property ProcessId, ParentProcessId, Co
 })
 ConvertTo-Json -Compress -Depth 2 -InputObject $rows
 `;
-/** Every process on the machine with its parent and command line. */
 const processTable = Effect.gen(function* () {
   const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
   if (process.platform === "win32")
@@ -253,12 +230,6 @@ const processTable = Effect.gen(function* () {
   });
 });
 
-/**
- * The ID of the workerd process that runs the apps of the product started in `directory`: among
- * the product process's descendants, the workerd the app runtime serves with a debug port (the
- * product's telemetry collector is a workerd too, started without one). Fails when there is none,
- * or more than one, so a scenario never signals some other process.
- */
 export const workerdProcess = (directory: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -299,11 +270,6 @@ export const workerdProcess = (directory: string) =>
     return runtime.pid;
   });
 
-/**
- * The workerd process that serves `directory`'s workflow engines: its executable and the
- * engine databases it holds open. Fails when no workerd holds the namespace's metadata
- * database, so a missing process or a missing inspector can never read as zero engines.
- */
 export const workflowEngines = (directory: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;

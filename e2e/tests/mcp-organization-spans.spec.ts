@@ -1,26 +1,3 @@
-/**
- * Hosted MCP spans name the organization they run for and the caller by their opaque IDs, so one
- * organization's failures can be told apart from an outage and the users they reach counted.
- * Every MCP operation span records both from its start: the tools (`mcp.search`, `mcp.describe`,
- * `mcp.call`, `mcp.execute`, `mcp.resume`, `mcp.skills`), the event methods (`mcp.events.*`), the
- * catalog reads under them and the tool calls they make (`mcp.tool.call`, `mcp.tool.resume`),
- * failed ones included. A tool call's bearer recheck names them from its start too, so a recheck
- * refused before its statement answers still does.
- *
- * A bearer check names only the caller's own organization, with the caller (the grant's or the
- * key's user), once it knows the organization is theirs. A grant's organization is known when its
- * statement answers, so a refusal after that, such as a grant used at an organization URL that
- * names none, keeps both. An unpinned key's is known only once its membership holds, so a key
- * refused for an organization its user does not belong to names no organization, on any span; a
- * pinned key refused for another organization names its own while its user is a member there; it
- * is deleted with that membership, so once the user has left it names none. A refused request never names the
- * organization it asked for, so it cannot count against that organization's failures. Its request
- * span still names the key's verified user and why it was refused (`auth.failure.reason`).
- *
- * On Cloud the gateway's forward of a request it authenticated names both even when the session
- * object never answers; a request routed by its session id learns only the organization, from the
- * object's answer, so one the object never answers names neither: the gateway never guesses.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Fiber, Layer, Redacted, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
@@ -71,7 +48,6 @@ export default defineApp({}, async () => ({
   }),
 }));`;
 
-/** The operation spans the tools' calls record; each must name the organization and the caller. */
 const operations = [
   "mcp.search",
   "mcp.describe",
@@ -86,12 +62,9 @@ const operations = [
   "mcp.discovery.accounts",
   "mcp.discovery.tools",
 ];
-/** Operation spans a path records only sometimes; any that is delivered must name it too. */
 const occasional = /^mcp\.(?:discovery\.|search\.discovery$|describe\.discovery$)/u;
 
-/** The stateful revision, whose sessions carry an `Mcp-Session-Id`. */
 const stateful = "2025-06-18";
-/** The stateless revision names itself in every request and has no session. */
 const stateless = "2026-07-28";
 const statelessMeta = {
   "io.modelcontextprotocol/protocolVersion": stateless,
@@ -109,17 +82,11 @@ const initialize = {
 
 const named = (spans: ReadonlyArray<Span>, name: string) =>
   spans.filter((span) => span.operationName === name);
-/**
- * A refused request's bearer check and its request span have both reached the collector. A Cloud
- * isolate exports every span that has ended with whichever request flushes first, so a concurrent
- * request can deliver the check before the request span it runs under has ended.
- */
 const checkedAndAnswered = (spans: ReadonlyArray<Span>) =>
   named(spans, "auth.authenticate").length > 0 && named(spans, "http.server POST").length > 0;
 const exception = (span: Span) =>
   span.events.find((event) => event.name === "exception")?.attributes["exception.type"];
 
-/** Shared by both scenarios: keys, one raw MCP POST under its own trace, and a trace's spans. */
 const helpers = Effect.gen(function* () {
   const api = yield* Api,
     actors = yield* Actors,
@@ -127,7 +94,6 @@ const helpers = Effect.gen(function* () {
     telemetry = yield* Telemetry,
     target = yield* Target,
     http = yield* HttpClient.HttpClient;
-  /** An API key of `actor` (the owner by default), pinned to `pinned` when it names one. */
   const createKey = (
     name: string,
     options: { readonly actor?: Session; readonly pinned?: string } = {},
@@ -178,12 +144,10 @@ const helpers = Effect.gen(function* () {
         return { traceId, status: response.status, headers: response.headers, text };
       }),
     ).pipe(Effect.provideService(HttpClient.TracerPropagationEnabled, false));
-  /** A trace's delivered spans once `ready` holds for them. */
   const spans = (traceId: string, ready: (spans: ReadonlyArray<Span>) => boolean) =>
     telemetry
       .settled(traceId, ready)
       .pipe(Effect.tap((all) => evidence.json(`trace-${traceId}.json`, all)));
-  /** The Better Auth user ID and email of `actor`'s session. */
   const identity = (actor: Session) =>
     api.request(actor, "GET", "/api/auth/get-session").pipe(
       Effect.flatMap((response) => body(SessionIdentity, response)),
@@ -209,7 +173,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP organization spans", (it) 
             target = yield* Target;
           const { createKey, identity, post, spans } = yield* helpers;
           const organization = actors.organization.id;
-          // Every key and grant below is the owner's unless it names another actor.
           const owner = (yield* identity(actors.owner)).id;
           const prefix = `/api/organizations/${organization}`;
           const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
@@ -223,9 +186,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP organization spans", (it) 
             api.request(actors.owner, "DELETE", path).pipe(Effect.ignore),
           );
           const tool = (name: string) => `tools[${JSON.stringify(app.slug)}].${name}`;
-          /** The delivered spans of every MCP request since `before`, once `ready` holds for them. */
-          // The request list is read again on each attempt: the MCP client records a request when
-          // its response starts, and sends some, such as notifications, beside the calls.
           const deliveredSince = (before: number, ready: (spans: ReadonlyArray<Span>) => boolean) =>
             telemetry.settled(
               evidence.requests.pipe(
@@ -240,7 +200,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP organization spans", (it) 
             );
 
           const key = yield* createKey("Organization spans");
-          // Model mode, named in the URL, so the approval below pauses for a resume.
           const client = yield* mcp.connect(key.key, "organization-spans", {
             organization,
             mode: "model",
@@ -268,14 +227,11 @@ layer(HostedLive, { excludeTestServices: true })("MCP organization spans", (it) 
                 code: `throw new Error("A synthetic program failure");`,
               });
               yield* callTool("List skills", "skills", {});
-              // No app has this slug, so the read fails before it rechecks the grant, which would
-              // name the organization itself.
               const missingSkill = yield* callTool("Read a skill of a missing app", "skills", {
                 app: `missing-${randomUUID().slice(0, 8)}`,
                 name: "missing-skill",
               });
               expect(missingSkill.isError, "The skill read fails").toBe(true);
-              // The approved call runs when the answer arrives, as `mcp.tool.resume`.
               const paused = yield* callTool("Execute a call that needs approval", "execute", {
                 code: `return (await ${tool("approved")}({ text: "approved" })).text;`,
               });
@@ -341,7 +297,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP organization spans", (it) 
             "Each event method's span names the organization and the caller, a refused subscription included",
             Effect.gen(function* () {
               const { callbackUrl, name } = yield* eventFixtures;
-              // Events are a stateless-revision extension, sent as a client such as ChatGPT sends them.
               const rpc = (method: string, params: Readonly<Record<string, unknown>>) =>
                 post({
                   credential: key.key,
@@ -366,8 +321,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP organization spans", (it) 
                 ttlMs: 60 * 60_000,
               });
               yield* answered(Granted, subscribed.text);
-              // No app has this slug, so the subscription is refused before it rechecks the grant,
-              // which would name the organization itself.
               const refused = yield* rpc("events/subscribe", {
                 name: `missing-${randomUUID().slice(0, 8)}.issue.opened`,
                 arguments: filters,
@@ -414,8 +367,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP organization spans", (it) 
           yield* evidence.step(
             "A tool call's recheck refused before its statement answers names the organization and the caller",
             Effect.gen(function* () {
-              // Its own key, revoked while its program is held between two calls: the next call's
-              // recheck finds no key, so it fails before it reads any organization from a row.
               const held = yield* createKey("Organization spans, revoked while held");
               const heldClient = yield* mcp.connect(held.key, "organization-spans-held", {
                 organization,
@@ -508,7 +459,6 @@ try { return await ${tool("echo")}({ text: "after" }); } catch { return "refused
           yield* evidence.step(
             "A bearer check refused after it resolves the organization names it and the grant's user",
             Effect.gen(function* () {
-              // The grant resolves its organization; the URL then names no organization at all.
               const refused = yield* post({
                 credential: Redacted.make(Redacted.value(grant.tokens).access_token),
                 path: `/org/missing-${randomUUID().slice(0, 8)}/mcp`,
@@ -534,11 +484,6 @@ try { return await ${tool("echo")}({ text: "after" }); } catch { return "refused
           yield* evidence.step(
             "A key refused for an organization its user does not belong to never names that organization",
             Effect.gen(function* () {
-              /**
-               * The bearer check of a request that names `reference`, which refuses it, every span
-               * of that request that names an organization, and the caller, credential and reason
-               * its request span names.
-               */
               const refusedCheck = (credential: Redacted.Redacted<string>, reference: string) =>
                 Effect.gen(function* () {
                   const refused = yield* post({
@@ -577,8 +522,6 @@ try { return await ${tool("echo")}({ text: "after" }); } catch { return "refused
                 pinned: organization,
               });
               if (target.metadata.target === "cloud") {
-                // Only Cloud lets a user hold several organizations, so only there can a key name
-                // one its user never joined, or a key pinned to one name another.
                 const created = yield* api.request(
                   actors.owner,
                   "POST",
@@ -616,8 +559,6 @@ try { return await ${tool("echo")}({ text: "after" }); } catch { return "refused
                   request: [[owner, "api_key", "organization_mismatch"]],
                 });
               }
-              // On both products the member leaves the organization. Its unpinned key outlives
-              // the membership, and names the organization it left by its slug.
               const rejoin = Effect.gen(function* () {
                 const invited = yield* api.request(
                   actors.owner,
@@ -662,8 +603,6 @@ try { return await ${tool("echo")}({ text: "after" }); } catch { return "refused
                       naming: [],
                       request: [[member.id, "api_key", "not_member"]],
                     });
-                    // A pinned key ends with its membership, so the request is refused before
-                    // any check names an organization.
                     const pinnedLeft = yield* post({
                       credential: memberPinned.key,
                       headers: { "x-executor-organization": actors.organization.slug },
@@ -708,8 +647,6 @@ try { return await ${tool("echo")}({ text: "after" }); } catch { return "refused
           const organization = actors.organization.id;
           const owner = (yield* identity(actors.owner)).id;
           const key = yield* createKey("Forward organization");
-          // The session object fails the request before its handler runs, so its answer is an
-          // empty 500 without the organization the object would have named.
           const lost = { "x-executor-test-fault": "request-lost" };
           const forwarded = (traceId: string) =>
             spans(traceId, (all) => named(all, "mcp.session.forward").length > 0).pipe(

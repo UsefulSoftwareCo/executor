@@ -24,7 +24,6 @@ layer(HostedLive, { excludeTestServices: true })("Testing SDK", (it) => {
           actors = yield* Actors,
           api = yield* Api,
           evidence = yield* Evidence;
-        // Setup created the overlapping scenario; this case seeds, isolates and fails it.
         const [overlap] = scenarioLifetime(context).sdkScenarios;
         if (overlap === undefined)
           return yield* Effect.die(new Error("The test plan declares the overlapping scenario"));
@@ -51,7 +50,6 @@ layer(HostedLive, { excludeTestServices: true })("Testing SDK", (it) => {
             actors.owner,
             "POST",
             `/api/organizations/${actors.organization.id}/apps/${app.id}/tools/call`,
-            // Both seeded tools are queries.
             { tool, kind: "query", accounts: app.accounts, input: {} },
           );
         const [rows, repository, foreign, secondRows] = yield* Effect.all(
@@ -90,10 +88,8 @@ layer(HostedLive, { excludeTestServices: true })("Testing SDK", (it) => {
         expect(rows.closed).toBe(200);
         expect(new Set(rows.keys).size).toBe(1000);
         expect(repository).toEqual({ name: "operations", private: true, owner: "scenario-42" });
-        // An actor may never read another scenario's organization, even on the shared deployment.
         expect([403, 404]).toContain(foreign.status);
         expect(secondRows.count).toBe(20);
-        // A failed scenario must release its resources without touching the survivor.
         yield* Scope.close(child, Exit.fail(new Error("Deliberate scenario failure")));
         expect((yield* body(Summary, yield* call("summary"))).count).toBe(1000);
         if (target.metadata.target === "cloud") {

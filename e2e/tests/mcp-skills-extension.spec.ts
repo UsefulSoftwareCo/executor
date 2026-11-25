@@ -1,10 +1,3 @@
-/**
- * Executor's own MCP server serves the caller's skills through the MCP Skills extension
- * (`io.modelcontextprotocol/skills`): every skill of every app the caller can see, read with the
- * same grants, accounts and catalogs as the `skills` tool. The client is the official TypeScript
- * SDK's `SkillsClient`, which checks each file's size, digest and frontmatter against the entry it
- * listed, so a file that does not match its listing fails the read.
- */
 import { expect, layer } from "@effect/vitest";
 import type { Skill } from "@modelcontextprotocol/client/ext/skills";
 import { Effect, Layer, Redacted, Schedule, Schema } from "effect";
@@ -17,7 +10,7 @@ import { Browser } from "../support/browser.ts";
 import { appsManifest } from "../support/apps-release.ts";
 import { HostedLive, TestLive, withCase, withHostedCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
-import { Evidence } from "../support/evidence.ts";
+import { Evidence, Telemetry, type DeliveredSpan } from "../support/evidence.ts";
 import { McpClient } from "../support/mcp-client.ts";
 import { McpOAuth } from "../support/mcp-oauth.ts";
 import { ConnectionView, consentTo, revokeClientGrants } from "../support/mcp-connections.ts";
@@ -34,15 +27,10 @@ const Source = Schema.Struct({
   files: Schema.Array(Schema.Struct({ path: Schema.String, content: Schema.String })),
 });
 const INVALID_PARAMS = -32602;
-/** What the 2025 revisions' base protocol answers for a resource the server does not serve. */
 const RESOURCE_NOT_FOUND = -32002;
 
 const skillMd = (name: string, description: string, body: string) =>
   `---\nname: ${name}\ndescription: ${description}\n---\n${body}\n`;
-/**
- * An app with a skill that has a nested reference, so a file below a subdirectory is served, and a
- * file whose name has reserved URI characters.
- */
 const skillAppFiles = (skill: string, marker: string) => [
   {
     path: "index.ts",
@@ -57,11 +45,9 @@ const skillAppFiles = (skill: string, marker: string) => [
     ),
   },
   { path: `skills/${skill}/references/deep/notes.md`, content: `Notes ${marker} ✓\n` },
-  // Reserved characters in a file name are percent-encoded in its URI, never a query or fragment.
   { path: `skills/${skill}/references/Q&A #1.md`, content: `Answers ${marker}\n` },
   appsManifest,
 ];
-/** An app whose skill loader fails, or never answers. */
 const loaderAppFiles = (loader: string) => [
   {
     path: "index.ts",
@@ -72,7 +58,6 @@ export default defineApp({}, async (ctx) => ({ dynamicSkills: dynamicSkills({ li
 ];
 const failingLoader = 'throw new Error("synthetic skill source failure");';
 const stalledLoader = "await new Promise(() => {}); return [];";
-/** A loader that reads through the app cache, so its catalog is kept, and answers after 6.5 s. */
 const slowLoader = `await ctx.cache.read?.("slow-skills");
 await new Promise((done) => setTimeout(done, 6500));
 return [{ name: "slow-guide", description: "Synthetic slow instructions.", files: [{ path: "SKILL.md", content: "---\\nname: slow-guide\\ndescription: Synthetic slow instructions.\\n---\\nSlow.\\n" }] }];`;
@@ -80,7 +65,6 @@ return [{ name: "slow-guide", description: "Synthetic slow instructions.", files
 const sha256 = (bytes: Uint8Array) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 const uris = (skills: ReadonlyArray<Skill>) => skills.map((skill) => skill.uri);
 
-/** Read every file of each skill and check what the client verified against the entry. */
 const readEveryFile = (
   client: Effect.Success<ReturnType<(typeof McpSkillsClient.Service)["connect"]>>,
   skills: ReadonlyArray<Skill>,
@@ -156,7 +140,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP Skills extension", (it) =>
           ],
           { concurrency: 4 },
         );
-        // A new app is the owner's alone; sharing the first gives the member its skills too.
         const access = yield* body(
           Access,
           yield* api.request(actors.owner, "GET", `${prefix}/apps/${hidden.id}/access`),
@@ -173,8 +156,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP Skills extension", (it) =>
           { audience: { kind: "everyone" }, revision: sharing.revision },
         );
         expect(shareResponse.status, JSON.stringify(shareResponse.body)).toBe(200);
-        // The skills a listing serves are each app's kept catalog; read them once, as the
-        // dashboard does, so a slow first build cannot leave a working app out of the listing.
         for (const app of [shared, hidden]) {
           const bundle = yield* api.request(
             actors.owner,
@@ -200,7 +181,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP Skills extension", (it) =>
           directoryRead: true,
         });
         expect(capabilities?.resources).toBeDefined();
-        // A failing app and an app whose loader never answers are left out, not the listing.
         const listing = yield* owner.use("List the owner's skills", (skills) => skills.list());
         yield* evidence.json("owner-listing.json", listing);
         expect(listing.invalid).toEqual([]);
@@ -211,7 +191,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP Skills extension", (it) =>
         );
         expect(listed.some((uri) => uri.startsWith(`skill://${failing.slug}/`))).toBe(false);
         expect(listed.some((uri) => uri.startsWith(`skill://${stalled.slug}/`))).toBe(false);
-        // Every file of the listed skills is served with the bytes the manifest describes.
         const own = listing.skills.filter((skill) =>
           [sharedGuide, privatePlan].includes(skill.uri),
         );
@@ -240,7 +219,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP Skills extension", (it) =>
             ),
         );
         expect(answers.text).toBe(`Answers ${marker}\n`);
-        // skills/get answers one skill by URI with the same entry the listing gave.
         const got = yield* owner.use("Get one skill", (skills) => skills.get(sharedGuide));
         expect(got.skill).toEqual(guideEntry);
         const directory = yield* owner.use("Read a skill directory", (skills) =>
@@ -251,7 +229,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP Skills extension", (it) =>
           `skill://${shared.slug}/shared-guide/references/deep`,
         ]);
 
-        // Unknown and malformed names and URIs are invalid parameters.
         const refusals = yield* Effect.all({
           unknownSkill: owner.refusal("Get a skill the app does not have", (skills) =>
             skills.get(`skill://${shared.slug}/no-such-skill/SKILL.md`),
@@ -287,7 +264,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP Skills extension", (it) =>
           notDirectory: INVALID_PARAMS,
         });
 
-        // The member sees the shared app's skills and never the owner's private app's.
         const member = yield* skillsClients.connect(memberKey, "member", {
           revision: "2026-07-28",
           organization,
@@ -310,7 +286,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP Skills extension", (it) =>
           }),
         ).toEqual({ get: INVALID_PARAMS, read: INVALID_PARAMS });
 
-        // An OAuth grant narrowed to one app serves that app's skills alone, live.
         yield* browser.login(actors.owner);
         const grant = yield* oauth.authorize;
         const granted = yield* skillsClients.connect(
@@ -362,7 +337,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP Skills extension", (it) =>
           directory: INVALID_PARAMS,
         });
 
-        // A sessionful 2025-11-25 client gets the same skills and files.
         const legacy = yield* skillsClients.connect(ownerKey, "owner-legacy", {
           revision: "2025-11-25",
           organization,
@@ -382,7 +356,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP Skills extension", (it) =>
           ),
         ).toBe(RESOURCE_NOT_FOUND);
 
-        // A client that does not use the extension is offered no skill file as a resource.
         const plain = yield* mcp.connect(ownerKey, "plain", { organization });
         const offered = yield* plain.use("A plain client lists resources", (client, signal) =>
           Promise.all([
@@ -423,7 +396,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP Skills extension", (it) =>
         const executor = apps.find((app) => app.slug === "executor");
         if (executor === undefined)
           return yield* Effect.die("The organization must have its Executor app");
-        // The organization adds a skill of its own to its Executor app and deploys it.
         const source = yield* body(
           Source,
           yield* api.request(actors.owner, "GET", `${prefix}/apps/${executor.id}/source`),
@@ -448,8 +420,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP Skills extension", (it) =>
           },
         );
         expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
-        // Read the new version's skills once, as the dashboard does, so the listing serves them
-        // kept rather than waiting on the first load.
         const bundle = yield* api.request(
           actors.owner,
           "GET",
@@ -517,7 +487,6 @@ layer(TestLive, { excludeTestServices: true })("Local MCP Skills extension", (it
         const grantedGuide = `skill://${granted.slug}/granted-guide/SKILL.md`;
         const otherGuide = `skill://${other.slug}/other-guide/SKILL.md`;
 
-        // The local key reaches every app.
         const local = yield* skillsClients.connect(target.apiKey, "local", {
           revision: "2026-07-28",
         });
@@ -531,8 +500,6 @@ layer(TestLive, { excludeTestServices: true })("Local MCP Skills extension", (it
           expect.arrayContaining([grantedGuide, otherGuide, "skill://executor/executor/SKILL.md"]),
         );
         expect(listed.some((uri) => uri.startsWith(`skill://${failing.slug}/`))).toBe(false);
-        // An app slower than the listing waits for is left out of it, and its load runs on, so a
-        // later listing serves its skills.
         const slowGuide = `skill://${slow.slug}/slow-guide/SKILL.md`;
         expect(listed).not.toContain(slowGuide);
         const later = yield* local
@@ -552,7 +519,6 @@ layer(TestLive, { excludeTestServices: true })("Local MCP Skills extension", (it
           ),
         ).toBe(INVALID_PARAMS);
 
-        // A connection scoped to one app lists and serves only that app's skills.
         const clients: string[] = [];
         yield* revokeClientGrants(operator, () => clients);
         const created = yield* api.request(operator, "POST", "/dashboard/api/mcp/connections", {
@@ -589,7 +555,6 @@ layer(TestLive, { excludeTestServices: true })("Local MCP Skills extension", (it
   );
 });
 
-/** A loopback service that counts the requests to `/stall` and answers none until it closes. */
 const holdingUpstream = Effect.gen(function* () {
   let arrivals = 0;
   const held: ServerResponse[] = [];
@@ -622,7 +587,190 @@ const holdingUpstream = Effect.gen(function* () {
   return { origin: `http://127.0.0.1:${port}`, arrivals: Effect.sync(() => arrivals) };
 });
 
+const gatedUpstream = Effect.gen(function* () {
+  let held: ServerResponse[] | undefined;
+  let counting = false;
+  let arrivals = 0;
+  const answer = (response: ServerResponse) => response.writeHead(200).end("open");
+  const server = createServer((request, response) => {
+    if (request.url !== "/gate") {
+      response.writeHead(404).end();
+      return;
+    }
+    if (counting) arrivals += 1;
+    if (held === undefined) return answer(response);
+    held.push(response);
+  });
+  const port = yield* Effect.acquireRelease(
+    Effect.callback<number>((resume) => {
+      server.listen(0, "127.0.0.1", () => {
+        const address = server.address();
+        resume(
+          typeof address === "object" && address !== null
+            ? Effect.succeed(address.port)
+            : Effect.die("The gated upstream needs a TCP listener"),
+        );
+      });
+    }),
+    () =>
+      Effect.callback<void>((resume) => {
+        for (const response of held ?? []) response.destroy();
+        server.closeAllConnections();
+        server.close(() => resume(Effect.void));
+      }),
+  );
+  return {
+    origin: `http://127.0.0.1:${port}`,
+    hold: Effect.sync(() => {
+      held = [];
+      counting = true;
+    }),
+    open: Effect.sync(() => {
+      for (const response of held ?? []) answer(response);
+      held = undefined;
+    }),
+    arrivals: Effect.sync(() => arrivals),
+  };
+});
+const gatedApps = 10;
+
 layer(HostedLive, { excludeTestServices: true })("MCP Skills extension loads", (it) => {
+  it.effect(scenarios.mcpSkillsExtensionLoadsTogether.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const api = yield* Api,
+          actors = yield* Actors,
+          evidence = yield* Evidence,
+          telemetry = yield* Telemetry,
+          skillsClients = yield* McpSkillsClient;
+        const organization = actors.organization.id,
+          prefix = `/api/organizations/${organization}`;
+        const upstream = yield* gatedUpstream;
+        const run = randomUUID().slice(0, 8);
+        const deploy = (name: string, loader: string) =>
+          Effect.gen(function* () {
+            const response = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+              name: `${name} ${run}`,
+              files: loaderAppFiles(loader),
+            });
+            expect(response.status, JSON.stringify(response.body)).toBe(200);
+            const app = yield* body(App, response);
+            yield* Effect.addFinalizer(() =>
+              api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
+            );
+            return app;
+          });
+        const gated = yield* Effect.forEach(
+          Array.from({ length: gatedApps }, (_, index) => index),
+          (index) =>
+            deploy(
+              `Gated skills ${index}`,
+              `await (await ctx.fetch(${JSON.stringify(`${upstream.origin}/gate`)}, { signal: ctx.signal })).text();
+return [{ name: "gated-${index}", description: "Synthetic gated instructions.", files: [{ path: "SKILL.md", content: ${JSON.stringify(skillMd(`gated-${index}`, "Synthetic gated instructions.", "Gated."))} }] }];`,
+            ),
+          { concurrency: 4 },
+        );
+        yield* Effect.forEach(
+          gated,
+          (app) =>
+            api
+              .request(actors.owner, "GET", `${prefix}/apps/${app.id}/skill-bundle`)
+              .pipe(
+                Effect.tap((response) =>
+                  Effect.sync(() =>
+                    expect(response.status, JSON.stringify(response.body)).toBe(200),
+                  ),
+                ),
+              ),
+          { concurrency: 4 },
+        );
+        const created = yield* api.request(actors.owner, "POST", "/api/auth/api-key/create", {
+          name: "MCP skills extension loads",
+        });
+        expect(created.status).toBe(200);
+        const token = yield* body(Token, created);
+        yield* Effect.addFinalizer(() =>
+          api
+            .request(actors.owner, "POST", "/api/auth/api-key/delete", { keyId: token.id })
+            .pipe(Effect.orDie),
+        );
+        const client = yield* skillsClients.connect(token.key, "loads-together", {
+          revision: "2026-07-28",
+          organization,
+        });
+
+        yield* upstream.hold;
+        let listings = 1;
+        const listing = yield* client.use("List while the gate holds every load", (skills) =>
+          skills.list(),
+        );
+        yield* evidence.json("gated-listing.json", listing);
+        const started = yield* upstream.arrivals;
+        expect(started).toBeGreaterThanOrEqual(2);
+        expect(started).toBeLessThan(gatedApps);
+        const listed = uris(listing.skills);
+        const gatedGuides = gated.map(
+          (app, index) => `skill://${app.slug}/gated-${index}/SKILL.md`,
+        );
+        expect(listed.filter((uri) => gatedGuides.includes(uri))).toEqual([]);
+
+        yield* upstream.open;
+        expect(
+          yield* upstream.arrivals.pipe(
+            Effect.repeat({
+              schedule: Schedule.spaced("100 millis"),
+              until: (count) => count >= gatedApps,
+            }),
+            Effect.timeout("30 seconds"),
+          ),
+        ).toBe(gatedApps);
+        const later = yield* client
+          .use("List again until every gated app is served", (skills) => skills.list())
+          .pipe(
+            Effect.tap(() => Effect.sync(() => (listings += 1))),
+            Effect.repeat({
+              schedule: Schedule.spaced("500 millis"),
+              until: (listing) => gatedGuides.every((uri) => uris(listing.skills).includes(uri)),
+            }),
+            Effect.timeout("30 seconds"),
+          );
+        expect(uris(later.skills)).toEqual(expect.arrayContaining(gatedGuides));
+
+        const first = yield* telemetry.search("mcp.skills.extension.list", { organization }).pipe(
+          Effect.repeat({
+            schedule: Schedule.spaced("250 millis"),
+            until: (found) => found.data.length >= listings,
+          }),
+          Effect.map(
+            (found) =>
+              found.data.toSorted((a, b) => a.span.startTime.localeCompare(b.span.startTime))[0],
+          ),
+          Effect.timeout("30 seconds"),
+        );
+        const loaded = (spans: ReadonlyArray<DeliveredSpan>) => {
+          const children = new Map<string, Array<DeliveredSpan>>();
+          for (const span of spans)
+            if (span.parentSpanId !== null)
+              children.set(span.parentSpanId, [...(children.get(span.parentSpanId) ?? []), span]);
+          const below = (span: DeliveredSpan): Array<DeliveredSpan> =>
+            (children.get(span.spanId) ?? []).flatMap((child) => [child, ...below(child)]);
+          const listing = spans.find((span) => span.spanId === first!.span.spanId);
+          return new Set(
+            (listing === undefined ? [] : below(listing))
+              .filter((span) => span.operationName === "sdk.skills.bundle" && span.status === "ok")
+              .flatMap((bundle) => below(bundle).map((span) => span.tags["executor.app.id"])),
+          );
+        };
+        const spans = yield* telemetry.settled(first!.traceId, (spans) =>
+          gated.every((app) => loaded(spans).has(app.id)),
+        );
+        yield* evidence.json("gated-listing-spans.json", spans);
+        expect(gated.filter((app) => !loaded(spans).has(app.id))).toEqual([]);
+      }).pipe(Effect.provide(McpSkillsClient.layer)),
+    ),
+  );
+
   it.effect(scenarios.mcpSkillsExtensionStalledLoad.title, (context) =>
     withHostedCase(
       context,
@@ -644,7 +792,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP Skills extension loads", (
         yield* Effect.addFinalizer(() =>
           api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
         );
-        // The stalled app is shared, so both callers list it; a second app stays the owner's own.
         const access = yield* body(
           Access,
           yield* api.request(actors.owner, "GET", `${prefix}/apps/${app.id}/access`),
@@ -668,7 +815,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP Skills extension loads", (
         yield* Effect.addFinalizer(() =>
           api.request(actors.owner, "DELETE", `${prefix}/apps/${ownerOnly.id}`).pipe(Effect.orDie),
         );
-        // Read its skills once, as the dashboard does, so the listings serve them kept.
         const warmed = yield* api.request(
           actors.owner,
           "GET",
@@ -693,7 +839,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP Skills extension loads", (
           keyFor(actors.owner),
           keyFor(actors.member),
         ]);
-        // The member can see the stalled app, so its listing reaches the app's load.
         const memberApps = yield* body(
           Schema.Array(App),
           yield* api.request(actors.member, "GET", `${prefix}/apps`),
@@ -720,8 +865,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP Skills extension loads", (
           client
             .use(`List as ${label} while the source holds`, (skills) => skills.list())
             .pipe(Effect.map((listing) => uris(listing.skills)));
-        // The owner's listing leaves the app out and starts its one load, which reaches the source
-        // and is held there.
         const first = yield* list(owner, "owner");
         expect(first.some((uri) => uri.startsWith(`skill://${app.slug}/`))).toBe(false);
         expect(first).toContain(`skill://${ownerOnly.slug}/owner-only/SKILL.md`);
@@ -730,8 +873,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP Skills extension loads", (
           Effect.timeout("30 seconds"),
         );
         expect(held).toBe(1);
-        // While it is held, the member's and the owner's next listings leave the app out without
-        // asking the source again, and the member's holds nothing of the owner's own app.
         for (const [client, label] of [
           [member, "member"],
           [ownerLegacy, "owner-legacy"],

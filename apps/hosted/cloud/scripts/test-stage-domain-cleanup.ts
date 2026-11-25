@@ -1,14 +1,3 @@
-/**
- * Run test-stage cleanup's deletion of one `AppDomains` record (`TestStageDomainCleanup`) against
- * the Alchemy records given, as `alchemy destroy alchemy.test-cleanup.ts` does for a stage. Prints
- * `{"deleted": true}`; a failure prints its tag and exits 1.
- *
- *   node scripts/test-stage-domain-cleanup.ts --stage test-<slug> --records <file> --olds <file>
- *
- * `--records` is a JSON object of the stage's Alchemy records by logical ID, encoded as Alchemy
- * stores them; `--olds` the record's props. `test-stage-domain-cleanup.spec.ts` runs it against a local stand-in for Cloudflare's API
- * and the stage's drain endpoint.
- */
 import { readFileSync } from "node:fs";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as Provider from "alchemy/Provider";
@@ -31,7 +20,6 @@ const option = (name: string) => {
 };
 const stack = "executor-next-hosted";
 const stage = option("--stage");
-// Read as Alchemy's state store reads its records, so a `__redacted__` value is a Redacted again.
 const records: Record<string, ResourceState> = JSON.parse(
   readFileSync(option("--records"), "utf8"),
   reviveState,
@@ -53,7 +41,6 @@ NodeRuntime.runMain(
     yield* Console.log(JSON.stringify({ deleted: true }));
   }).pipe(
     Effect.provide(TestStageDomainCleanup()),
-    // Alchemy's engine provides the stage's state to a deletion, as it does here.
     Effect.provide(inMemoryState({ [stack]: { [stage]: records } })),
     Effect.provideService(Stage, stage),
     Effect.provideService(StackContext, {

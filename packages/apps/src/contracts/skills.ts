@@ -126,7 +126,6 @@ export class SkillLoadFailed extends Schema.TaggedError<SkillLoadFailed>()("Skil
     "changed",
     "encoding",
   ]),
-  // Error instances read an omitted message as "", so an empty message means none was given.
   message: Schema.optional(Schema.String.check(Schema.isMaxLength(500))),
   status: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 100, maximum: 599 }))),
   missing: Schema.optional(Schema.Literals(["repository", "ref"])),

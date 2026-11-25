@@ -47,10 +47,6 @@ const Installation = Schema.Struct({
   state: Schema.Literals(["pending", "ready", "external", "file"]),
 });
 const Keys = Schema.Struct({ apiKey: Schema.String, encryptionKey: Schema.String });
-/**
- * The manifest of a directory whose keys are in its own `keys.json`: they move with the backup,
- * so it names no OS credential, and it must never contain a key.
- */
 const Manifest = Schema.Struct({
   version: Schema.Literal(1),
   appVersion: Schema.String,
@@ -59,23 +55,6 @@ const Manifest = Schema.Struct({
   installation: Schema.Struct({ id: Schema.String, keySource: Schema.Literal("key-file") }),
 });
 
-/**
- * An isolated desktop profile and data directory whose key setup never touches a real OS
- * credential. `supplied` gives the server synthetic keys. `file` sets EXECUTOR_KEY_STORAGE=file,
- * so keys live only in the directory's `keys.json`. `unreachable-store` supplies none and points
- * the OS credential store somewhere it cannot be used: an empty home has no macOS default
- * keychain, which refuses access, and a missing bus has no Linux Secret Service, which is absent.
- * Windows Credential Manager cannot be made unusable for one process.
- *
- * The desktop starts its background server detached, and it outlives the desktop, so the scope
- * stops every server the scenario left for the data directory, or for `legacy`, the directory an
- * older desktop kept its data in. `port: false` leaves EXECUTOR_PORT unset for the desktop, so
- * `service.json` chooses its server's port.
- *
- * The OS per-user cache directory is inside the scenario's directory too: the server keeps its
- * compile cache there, and a packaged desktop's updater downloads updates into it
- * (`%LOCALAPPDATA%`, `~/Library/Caches` or `$XDG_CACHE_HOME`).
- */
 const desktopHome = (
   options: {
     readonly keys?: "supplied" | "file" | "unreachable-store";
@@ -92,14 +71,12 @@ const desktopHome = (
       Config.withDefault(process.env.PATH ?? ""),
     );
     const port = yield* freePort;
-    // The server deploys the bundled Executor app, which pins this checkout's apps release.
     const registry = yield* localNpmRegistry;
     const data = path.join(home, "data");
     const legacy = path.join(home, "legacy");
     const cacheHome = path.join(home, "cache-home");
     const common = {
       ...runnerSession(),
-      // Release scenarios never send product analytics, even from a build with a baked key.
       DO_NOT_TRACK: "1",
       EXECUTOR_NO_UPDATE_CHECK: "1",
       PATH: runtimePath,
@@ -114,7 +91,6 @@ const desktopHome = (
       EXECUTOR_DESKTOP_PROFILE_DIR: path.join(home, "profile"),
       EXECUTOR_NPM_REGISTRY: registry.url,
     };
-    // macOS has no variable for its cache directory, only the home it is in.
     const env: Record<string, string> = {
       ...common,
       HOME: process.platform === "darwin" ? cacheHome : (process.env.HOME ?? ""),
@@ -131,7 +107,6 @@ const desktopHome = (
     yield* Effect.addFinalizer(() =>
       Effect.forEach([data, legacy], (directory) => stopBackgroundServers(directory, () => seen)),
     );
-    // The CLI on the same data directory as the desktop.
     const cli = yield* desktopCli({ env: { ...env, EXECUTOR_DATA_DIR: data }, cwd: home });
     return {
       home,
@@ -141,7 +116,6 @@ const desktopHome = (
       port,
       origin: `http://127.0.0.1:${port}`,
       cli,
-      /** Wait for a server for `directory` other than `servers`; it is stopped with the scope. */
       nextServer: (servers: ReadonlyArray<ServiceRegistration>, directory = data) =>
         nextServer(directory, servers).pipe(
           Effect.tap((server) => Effect.sync(() => seen.push(server))),
@@ -160,7 +134,6 @@ const screenshot = (page: Page, name: string) =>
     );
   });
 
-/** Wait until at least `count` native message boxes have been answered, and return them. */
 const dialogsShown = (electron: ElectronApplication, count: number) =>
   answeredDialogs(electron).pipe(
     Effect.flatMap((boxes) =>
@@ -181,7 +154,6 @@ const dashboard = (page: Page) =>
     page.getByRole("heading", { name: /^Apps/ }).waitFor({ state: "visible", timeout: 60_000 }),
   );
 
-/** The window's session is paired with the server it shows. */
 const pairedSession = (page: Page) =>
   driver("the window's session is paired", () =>
     page.evaluate(() =>
@@ -189,13 +161,11 @@ const pairedSession = (page: Page) =>
     ),
   );
 
-/** `executor service status` for a running server. */
 const statusLine = (server: ServiceRegistration) =>
   `${server.url} (version ${server.version}, process ${server.pid})`;
 
 const services = Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer);
 
-/** What the CLI says on stderr when it starts a background server. */
 const startingInCli = "Starting background Executor";
 const Apps = Schema.fromJsonString(
   Schema.Array(Schema.Struct({ id: Schema.String, slug: Schema.String })),
@@ -216,8 +186,6 @@ it.live(scenarios.desktopCrashRecovery.title, () =>
       const first = yield* nextServer([]);
       const servers = [first];
 
-      // Stopping the shared server on purpose, as `executor service stop` does, is not a crash,
-      // and the desktop does not start another by itself: it says the server was stopped.
       const stopped = yield* cli.run(["service", "stop"]);
       expect(stopped.code, stopped.stderr).toBe(0);
       yield* recoveryHeading(page, "The background Executor was stopped");
@@ -229,8 +197,6 @@ it.live(scenarios.desktopCrashRecovery.title, () =>
       const starts = yield* serverStarts(data);
       expect((yield* cli.run(["service", "status"])).stdout.trim()).toBe("stopped");
 
-      // A server the CLI starts again is joined as soon as it answers, without starting one: the
-      // CLI found none running, and the desktop started none.
       const begun = yield* cli.run(["service", "start"]);
       expect(begun.code, begun.stderr).toBe(0);
       expect(begun.stderr).toContain(startingInCli);
@@ -242,7 +208,6 @@ it.live(scenarios.desktopCrashRecovery.title, () =>
         fromCli.pid,
       );
 
-      // `executor service restart` replaces it, and the desktop follows to the new one.
       const restart = yield* cli.run(["service", "restart"]);
       expect(restart.code, restart.stderr).toBe(0);
       const replacement = yield* nextServer(servers);
@@ -254,7 +219,6 @@ it.live(scenarios.desktopCrashRecovery.title, () =>
       expect(yield* pairedSession(page)).toEqual({ authenticated: true });
       expect(yield* serverStarts(data)).toBe(starts);
 
-      // Start on the stopped page starts a server from the desktop and pairs the window with it.
       expect((yield* cli.run(["service", "stop"])).code).toBe(0);
       yield* recoveryHeading(page, "The background Executor was stopped");
       yield* driver("start from the stopped page", () =>
@@ -273,8 +237,6 @@ it.live(scenarios.desktopCrashRecovery.title, () =>
       expect(["stopped", "replaced"]).toContain(deliberate[1]);
       expect(deliberate[2]).toBe("stopped");
 
-      // A server that crashes leaves its registration behind and stops answering. The desktop
-      // replaces it and pairs the window with the new one.
       for (const _ of [1, 2]) {
         yield* crashServer(servers[servers.length - 1]!.pid);
         const next = yield* nextServer(servers);
@@ -285,7 +247,6 @@ it.live(scenarios.desktopCrashRecovery.title, () =>
       }
       const crashStarts = yield* serverStarts(data);
 
-      // A third crash within a minute stops reconnecting and shows recovery; no server starts.
       yield* crashServer(servers[servers.length - 1]!.pid);
       yield* driver("crash-loop recovery", () =>
         page
@@ -304,7 +265,6 @@ it.live(scenarios.desktopCrashRecovery.title, () =>
       const left = yield* registeredServer(data);
       expect(Option.isNone(left) || (yield* serverExited(left.value))).toBe(true);
 
-      // Restart from the recovery page starts a server and pairs the window again.
       yield* driver("restart from recovery", () =>
         page.getByRole("button", { name: "Restart", exact: true }).click(),
       );
@@ -327,10 +287,6 @@ it.live(scenarios.desktopLateLoadFailure.title, () =>
       yield* dashboard(page);
       yield* reportReplacedLoadFailuresLate(electron);
 
-      // The server crashes, so the window shows the startup page, and then hears that the
-      // dashboard it replaced failed to load. The startup page shows only until the replacement
-      // server is ready, so the wait for it starts on the dashboard. It reads from the window: a
-      // desktop stopped behind its error box answers no main-process call.
       const startupPage = yield* driver("the window shows the startup page", () =>
         page.waitForURL((url) => url.protocol === "data:", { timeout: 30_000 }),
       ).pipe(Effect.forkScoped({ startImmediately: true }));
@@ -339,8 +295,6 @@ it.live(scenarios.desktopLateLoadFailure.title, () =>
       yield* nextServer([first]);
       yield* Fiber.join(startupPage);
 
-      // That failure was the dashboard's, not the startup page's: the desktop keeps its window
-      // and opens the new server's dashboard.
       yield* dashboard(page);
       expect(yield* lateLoadFailures(electron)).toBe(1);
       expect(yield* eventsNamed(data, "Executor desktop ready", 2)).toHaveLength(2);
@@ -364,8 +318,6 @@ it.live(scenarios.desktopDashboardRetry.title, () =>
       );
       expect(yield* failures).toEqual([]);
 
-      // The window's next two dashboard loads fail. Each time the desktop loads the dashboard
-      // again with a fresh pairing link, since the one it used is spent, and the window is paired.
       yield* failDashboardLoads(electron, origin, 2);
       yield* crashServer(first.pid);
       const second = yield* nextServer([first]);
@@ -383,9 +335,6 @@ it.live(scenarios.desktopDashboardRetry.title, () =>
       ]);
       expect(yield* failures).toHaveLength(2);
 
-      // When every load fails, the third failure in a row shows the dashboard's own recovery page
-      // with the failure, and no other server starts. The server runs, so it offers no reset.
-      // Restart joins the server and pairs the window.
       const starts = yield* serverStarts(data);
       yield* failDashboardLoads(electron, origin, "all");
       yield* crashServer(second.pid);
@@ -398,9 +347,6 @@ it.live(scenarios.desktopDashboardRetry.title, () =>
       expect(yield* driver("the failure", () => page.locator("pre").textContent())).toBe(
         `The Executor window could not load the dashboard from ${origin} 3 times in a row. The last time: ERR_BLOCKED_BY_CLIENT (-20).`,
       );
-      // The desktop logs each failure before it shows the page, but its logger buffers lines and
-      // writes them to the file every 250 ms (rotatingJsonLogger in packages/telemetry/src/files.ts),
-      // so the page can show before the file holds the third; wait for all five.
       expect(
         (yield* eventsNamed(data, dashboardFailed, 5))
           .slice(2)
@@ -435,11 +381,8 @@ it.live(
         const { home, data, env, nextServer } = yield* desktopHome();
         const electron = yield* launchDesktop({ cwd: home, env });
         const page = yield* driver("desktop window", () => electron.firstWindow());
-        // The server starter stops answering once it has started a server: it and that start
-        // attempt hang until they are resumed.
         const stalled = yield* stallStarter(electron);
 
-        // After its deadline the desktop stops waiting and says the server could not start.
         yield* driver("start recovery after the starter's deadline", () =>
           page
             .getByRole("heading", {
@@ -453,8 +396,6 @@ it.live(
           "did not say whether the server started within 3 minutes",
         );
 
-        // The hung starter is stopped, and the start attempt it left, which never served, is
-        // ended first, as the starter would have ended it.
         const [ended] = yield* eventsNamed(
           data,
           "Ended a start attempt of a server starter that did not exit",
@@ -471,11 +412,9 @@ it.live(
         );
         expect(Option.isNone(yield* registeredServer(data))).toBe(true);
 
-        // Restart starts a server and pairs the window with it.
         yield* driver("restart from recovery", () =>
           page.getByRole("button", { name: "Restart", exact: true }).click(),
         );
-        // No server is registered, so any that answers is the one Restart started.
         yield* nextServer([]);
         yield* dashboard(page);
         expect(yield* pairedSession(page)).toEqual({ authenticated: true });
@@ -490,7 +429,6 @@ it.live(scenarios.desktopSharedService.title, () =>
     Effect.gen(function* () {
       const { home, data, env, origin, cli, nextServer } = yield* desktopHome({ keys: "file" });
 
-      // The desktop starts the data directory's background server, and the CLI uses that one.
       const started = yield* Effect.scoped(
         Effect.gen(function* () {
           const electron = yield* launchDesktop({ cwd: home, env });
@@ -513,12 +451,10 @@ it.live(scenarios.desktopSharedService.title, () =>
         }),
       );
 
-      // Quitting the desktop leaves the server running for the CLI and MCP clients.
       expect(yield* answersReady(started)).toBe(true);
       const after = yield* cli.run(["service", "status"]);
       expect(after.stdout.trim()).toBe(statusLine(started));
 
-      // A server the CLI starts is the one the desktop joins: it starts none of its own.
       const stopped = yield* cli.run(["service", "stop"]);
       expect(stopped.code, stopped.stderr).toBe(0);
       expect(yield* serverExited(started)).toBe(true);
@@ -541,10 +477,6 @@ it.live(scenarios.desktopSharedService.title, () =>
   ).pipe(Effect.provide(services)),
 );
 
-/**
- * Real data in `directory`, made the way a user's is: the CLI starts a background server there,
- * which sets up its keys, storage and bundled app. Returns that server and the apps it lists.
- */
 const seedData = (
   cli: Effect.Success<ReturnType<typeof desktopCli>>,
   directory: string,
@@ -563,7 +495,6 @@ const seedData = (
     return { server, apps };
   });
 
-/** An older desktop's `desktop.json`, which chose its server's port. */
 const legacySettings = (directory: string, port: number) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -592,7 +523,6 @@ it.live(scenarios.desktopMigrationMoved.title, () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      // No EXECUTOR_PORT: the old desktop's saved port must carry over to the shared directory.
       const { home, data, legacy, env, cli, nextServer } = yield* desktopHome({
         keys: "file",
         port: false,
@@ -604,12 +534,9 @@ it.live(scenarios.desktopMigrationMoved.title, () =>
       yield* legacySettings(legacy, desktopPort);
       const installation = yield* fs.readFileString(path.join(legacy, "installation.json"));
       const keys = yield* fs.readFileString(path.join(legacy, "keys.json"));
-      // Older desktops created their data directory with the default mode, readable by others.
       const posix = process.platform !== "win32";
       if (posix) yield* fs.chmod(legacy, 0o755);
 
-      // While a server still uses the old data, nothing moves and no server starts: the window
-      // explains what to quit.
       yield* Effect.scoped(
         Effect.gen(function* () {
           const electron = yield* launchDesktop({ cwd: home, env });
@@ -641,7 +568,6 @@ it.live(scenarios.desktopMigrationMoved.title, () =>
           const electron = yield* launchDesktop({ cwd: home, env });
           const page = yield* driver("desktop window", () => electron.firstWindow());
           yield* dashboard(page);
-          // The server runs on the moved data, on the old desktop's port.
           expect(new URL(page.url()).origin).toBe(`http://127.0.0.1:${desktopPort}`);
           const server = yield* nextServer([old.server]);
           expect(server.url).toBe(`http://127.0.0.1:${desktopPort}`);
@@ -655,7 +581,6 @@ it.live(scenarios.desktopMigrationMoved.title, () =>
       const backup = moved?.annotations.backup ?? "";
       expect(path.dirname(backup)).toBe(backups);
       expect(path.basename(backup)).toMatch(/^desktop-data-\d{8}T\d{6}Z-[0-9a-f]{6}$/);
-      // The data moved whole and unchanged, keys included; the old directory became the backup.
       expect(yield* fs.exists(legacy)).toBe(false);
       expect(yield* fs.readFileString(path.join(data, "installation.json"))).toBe(installation);
       expect(yield* fs.readFileString(path.join(data, "keys.json"))).toBe(keys);
@@ -663,7 +588,6 @@ it.live(scenarios.desktopMigrationMoved.title, () =>
       expect(JSON.parse(yield* fs.readFileString(path.join(data, "service.json")))).toMatchObject({
         port: desktopPort,
       });
-      // The shared directory is private, as the CLI creates it, whatever the old one's mode was.
       if (posix) expect((yield* fs.stat(data)).mode & 0o777).toBe(0o700);
       const listed = yield* cli.run(["apps", "list"]);
       expect(listed.code, listed.stderr).toBe(0);
@@ -675,12 +599,10 @@ it.live(scenarios.desktopMigrationMoved.title, () =>
       expect(record).toMatchObject({ state: "done", result: { kind: "moved", backup } });
       const events = (yield* desktopEvents(data)).map((event) => event.message);
       expect(events).not.toContain("Showing the moved data notice");
-      // Moving finished before the desktop first started a server.
       expect(events.indexOf("Moved the desktop's data")).toBeLessThan(
         events.indexOf("Starting the background Executor"),
       );
 
-      // It moves once: an old directory that reappears later is left alone.
       yield* fs.makeDirectory(legacy);
       const stray = JSON.stringify({ version: 1, id: randomUUID(), state: "file" });
       yield* fs.writeFileString(path.join(legacy, "installation.json"), stray);
@@ -699,11 +621,6 @@ it.live(scenarios.desktopMigrationMoved.title, () =>
   ).pipe(Effect.provide(services)),
 );
 
-/**
- * A desktop home where the old desktop directory holds the desktop's data, with its saved port, and
- * the shared directory holds the CLI's own data, whose background server is running: a machine
- * that used both before the desktop shared the CLI's data.
- */
 const replacedHome = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -724,11 +641,6 @@ const replacedHome = Effect.gen(function* () {
 });
 type ReplacedHome = Effect.Success<typeof replacedHome>;
 
-/**
- * In a launch after the desktop's data replaced the CLI's: the server runs on the moved data, on the
- * old desktop's port; the CLI's server was stopped and its data moved aside, whole; the desktop's
- * data won. Returns where the CLI's data went.
- */
 const replacedData = (home: ReplacedHome, page: Page) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -755,7 +667,6 @@ const replacedData = (home: ReplacedHome, page: Page) =>
 
 const movedNotice = "Executor now shares its data with the CLI";
 
-/** `electron`'s launch showed the notice that names where the CLI's data went. */
 const noticeNamed = (electron: ElectronApplication, data: string, archived: string) =>
   Effect.gen(function* () {
     const [notice] = yield* dialogsShown(electron, 1);
@@ -765,7 +676,6 @@ const noticeNamed = (electron: ElectronApplication, data: string, archived: stri
     expect(shown?.annotations.archived).toBe(archived);
   });
 
-/** Once the notice has been answered, a later launch does not show it again. */
 const noticeShownOnce = (home: ReplacedHome) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -792,19 +702,15 @@ it.live(scenarios.desktopMigrationReplaced.title, () =>
     Effect.gen(function* () {
       const home = yield* replacedHome;
 
-      // The launch that moves the data starts the server on it and names where the CLI's data went.
       yield* Effect.scoped(
         Effect.gen(function* () {
           const electron = yield* launchDesktop({ cwd: home.home, env: home.env });
-          // The notice shows once the window has settled; record it instead of waiting for a person.
           yield* answerDialogs(electron, {});
           const page = yield* driver("desktop window", () => electron.firstWindow());
           yield* dashboard(page);
           expect(yield* pairedSession(page)).toEqual({ authenticated: true });
           const archived = yield* replacedData(home, page);
           yield* noticeNamed(electron, home.data, archived);
-          // In that one launch the data moved before a server started, and the notice came once
-          // the window showed the dashboard.
           const events = (yield* desktopEvents(home.data)).map((event) => event.message);
           expect(events.filter((message) => message === "Starting Executor desktop")).toHaveLength(
             1,
@@ -831,7 +737,6 @@ it.live(scenarios.desktopMigrationReplacedClosed.title, () =>
       const path = yield* Path.Path;
       const home = yield* replacedHome;
       const recordPath = path.join(home.home, "migration.json");
-      /** Whether the migration record says the move is done; it only ever moves forward. */
       const moveDone = Effect.gen(function* () {
         if (!(yield* fs.exists(recordPath))) return false;
         const record = yield* fs
@@ -840,18 +745,11 @@ it.live(scenarios.desktopMigrationReplacedClosed.title, () =>
         return record.state === "done";
       });
 
-      // Closing the window while the data moves ends the app once the move is done. The move first
-      // stops the CLI's server, which is suspended: it waits seconds for it to answer and then to
-      // exit before it ends it, so the window closes long before the data has moved. Whether it
-      // did is read from the migration record before the server is resumed, and required, since
-      // the checks below hold only for a window closed during the move.
       const closed = yield* Effect.scoped(
         Effect.gen(function* () {
           const held = yield* suspendProcess(home.cliData.server.pid);
           const electron = yield* launchDesktop({ cwd: home.home, env: home.env });
-          // Resumed before the desktop is closed, which waits for the move.
           yield* Effect.addFinalizer(() => held.resume);
-          // A notice this launch shows stays unanswered, so it is still due on the next launch.
           yield* answerDialogs(electron, { [movedNotice]: "unanswered" });
           const page = yield* driver("desktop window", () => electron.firstWindow());
           yield* driver("the window says the data is moving", () =>
@@ -868,8 +766,6 @@ it.live(scenarios.desktopMigrationReplacedClosed.title, () =>
               for (const window of BrowserWindow.getAllWindows()) window.close();
             }),
           );
-          // Electron quits as the last window closes, in the same step, so once no window is left
-          // the desktop has been asked to quit. It answers, so it still runs.
           const windowless = driver("no desktop window is left", () =>
             electron.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length),
           ).pipe(
@@ -891,11 +787,6 @@ it.live(scenarios.desktopMigrationReplacedClosed.title, () =>
       expect(closed.moved, "the data had moved before the window closed").toBe(false);
       const interrupted = (yield* desktopEvents(home.data)).map((event) => event.message);
       expect(interrupted).toContain("Moved the desktop's data");
-      // The desktop quit once the move was done, before it started or joined a server, and so
-      // before the notice. Meanwhile its menu was its own, with none of its actions, which need
-      // the data: File, by its label, with only Quit (Close on macOS), and the standard Edit, View
-      // and Window menus. Electron's default menu has the same items, but builds File from its
-      // role.
       expect(interrupted).not.toContain("Connecting to the background Executor");
       expect(interrupted).not.toContain("Showing the moved data notice");
       const darwin = process.platform === "darwin";
@@ -910,7 +801,6 @@ it.live(scenarios.desktopMigrationReplacedClosed.title, () =>
         darwin ? "close" : "quit",
       ]);
 
-      // The next launch starts the server on the moved data and names where the CLI's data went.
       yield* Effect.scoped(
         Effect.gen(function* () {
           const electron = yield* launchDesktop({ cwd: home.home, env: home.env });
@@ -955,9 +845,6 @@ it.live(scenarios.desktopMigrationSettings.title, () =>
           { discard: true },
         );
 
-      // The CLI's directory holds only its settings, as `executor service set` leaves them before
-      // any server has run: its own port, a variable for its servers, how its keys are kept, and
-      // the service turned off.
       yield* setAll([
         ["service", "set", "port", String(yield* freePort)],
         ["service", "set", "env", "EXECUTOR_E2E_CARRIED", "kept"],
@@ -967,9 +854,6 @@ it.live(scenarios.desktopMigrationSettings.title, () =>
       const firstSettings = yield* fs.readFileString(path.join(home.data, "service.json"));
       expect(yield* fs.readDirectory(home.data)).toEqual(["service.json"]);
 
-      // The first launch copies the data but cannot move the old directory aside, so it keeps the
-      // verified copy for the next launch and changes nothing else. POSIX refuses a rename into a
-      // read-only folder; Windows ignores that, but refuses to rename a folder with a file open.
       yield* Effect.scoped(
         Effect.gen(function* () {
           if (process.platform === "win32")
@@ -995,8 +879,6 @@ it.live(scenarios.desktopMigrationSettings.title, () =>
       expect(yield* fs.readFileString(path.join(home.data, "service.json"))).toBe(firstSettings);
       expect(yield* fs.exists(home.legacy)).toBe(true);
 
-      // Meanwhile the CLI's settings change. The next launch moves the copy with them as they are
-      // then.
       const cliPort = yield* freePort;
       yield* setAll([
         ["service", "set", "port", String(cliPort)],
@@ -1004,7 +886,6 @@ it.live(scenarios.desktopMigrationSettings.title, () =>
       ]);
       const cliSettings = yield* fs.readFileString(path.join(home.data, "service.json"));
 
-      // The launch that moves the data names where the CLI's settings went and what changed.
       yield* Effect.scoped(
         Effect.gen(function* () {
           const electron = yield* launchDesktop({ cwd: home.home, env: home.env });
@@ -1025,7 +906,6 @@ it.live(scenarios.desktopMigrationSettings.title, () =>
           const archived = moved?.annotations.archived ?? "";
           expect(path.dirname(archived)).toBe(backups);
           expect(path.basename(archived)).toMatch(/^cli-data-\d{8}T\d{6}Z-[0-9a-f]{6}$/);
-          // The CLI's settings are kept there as they were.
           expect(yield* fs.readFileString(path.join(archived, "service.json"))).toBe(cliSettings);
           yield* noticeNamed(electron, home.data, archived);
           const [notice] = yield* dialogsShown(electron, 1);
@@ -1043,8 +923,6 @@ it.live(scenarios.desktopMigrationSettings.title, () =>
         }),
       );
 
-      // The shared directory has the CLI's other settings as they were when the copy moved in,
-      // with the desktop's port and the service on, and is private.
       expect(JSON.parse(yield* fs.readFileString(path.join(home.data, "service.json")))).toEqual({
         env: { EXECUTOR_E2E_CARRIED: "kept", EXECUTOR_E2E_LATER: "later" },
         port: desktopPort,
@@ -1063,8 +941,6 @@ it.live(scenarios.desktopMigrationSettings.title, () =>
       if (process.platform !== "win32")
         expect((yield* fs.stat(home.data)).mode & 0o777).toBe(0o700);
 
-      // App commands use the background server the desktop left running, as they did not while
-      // the service was off.
       const listed = yield* home.cli.run(["apps", "list"], {}, { source: true });
       expect(listed.code, listed.stderr).toBe(0);
       expect(listed.stderr).not.toContain(startingInCli);
@@ -1085,9 +961,6 @@ it.live(scenarios.desktopSlowStop.title, () =>
       const server = yield* nextServer([]);
       const starts = yield* serverStarts(data);
 
-      // The server is asked to stop and takes seconds to exit, keeping its registration until
-      // then and answering meanwhile that it is stopping. A real server's own shutdown takes a
-      // fraction of a second, so it is ended and a stand-in answers in its place, as it would.
       yield* crashServer(server.pid);
       yield* connectionRefused(Number(new URL(server.url).port)).pipe(
         Effect.filterOrFail(
@@ -1099,15 +972,12 @@ it.live(scenarios.desktopSlowStop.title, () =>
       yield* Effect.scoped(
         Effect.gen(function* () {
           const stopping = yield* stoppingServer(server);
-          // The desktop says the server was stopped, while it is still stopping.
           yield* recoveryHeading(page, "The background Executor was stopped");
           expect(
             yield* driver("stopped page actions", () => page.getByRole("button").allTextContents()),
           ).toEqual(["Start", "Quit"]);
           const [lost] = yield* eventsNamed(data, lostServer, 1);
           expect(lost?.annotations).toMatchObject({ pid: server.pid, loss: "stopped" });
-          // It waits on that page through more of the server's answers than the three missed
-          // checks after which a server that stopped answering counts as lost, starting none.
           const seen = yield* stopping.answered;
           yield* stopping.answered.pipe(
             Effect.filterOrFail(
@@ -1118,13 +988,10 @@ it.live(scenarios.desktopSlowStop.title, () =>
           );
           expect(yield* serverStarts(data)).toBe(starts);
           yield* recoveryHeading(page, "The background Executor was stopped");
-          // The server's last step is removing its registration.
           yield* fs.remove(path.join(data, "server.json"));
         }),
       );
 
-      // The stop was not counted as a crash: the server the CLI starts next is joined, and the
-      // desktop has started none of its own.
       const begun = yield* cli.run(["service", "start"]);
       expect(begun.code, begun.stderr).toBe(0);
       expect(begun.stderr).toContain(startingInCli);
@@ -1177,7 +1044,6 @@ it.live(scenarios.desktopReset.title, () =>
       const path = yield* Path.Path;
       const { home, data, env, nextServer } = yield* desktopHome({ keys: "file" });
       const backups = path.join(home, "backups");
-      // Data whose key file is gone: key setup refuses, and starting over can help.
       const original = randomUUID();
       yield* fs.makeDirectory(data, { recursive: true });
       yield* fs.writeFileString(
@@ -1192,7 +1058,6 @@ it.live(scenarios.desktopReset.title, () =>
       expect(
         yield* driver("recovery actions", () => page.getByRole("button").allTextContents()),
       ).toEqual(["Restart", "Show logs", "Reset data…", "Quit"]);
-      // The server said why it refused, and a configuration failure is not retried.
       const [refused] = yield* eventsNamed(data, "Background Executor could not start", 1);
       expect(refused?.annotations).toMatchObject({
         stage: "configuration",
@@ -1208,7 +1073,6 @@ it.live(scenarios.desktopReset.title, () =>
         "Reset Executor data…",
       ]);
 
-      // Cancel leaves everything in place.
       yield* answerDialogs(electron, {});
       yield* clickMenuItem(electron, "Help", "Reset Executor data…");
       const cancelled = yield* dialogsShown(electron, 1);
@@ -1218,9 +1082,6 @@ it.live(scenarios.desktopReset.title, () =>
         "synthetic retained data",
       );
 
-      // A move that fails leaves the data and its lock state in place and starts the server again.
-      // POSIX refuses a rename into a read-only directory; Windows ignores that, so there the
-      // backups folder cannot be created at all.
       if (process.platform === "win32") yield* fs.writeFileString(backups, "");
       else yield* fs.makeDirectory(backups, { mode: 0o500 });
       yield* answerDialogs(electron, { "Reset Executor data?": 0 });
@@ -1257,7 +1118,6 @@ it.live(scenarios.desktopReset.title, () =>
         yield* fs.chmod(backups, 0o700);
       }
 
-      // Confirming from the recovery page moves the data aside and starts fresh.
       yield* answerDialogs(electron, { "Reset Executor data?": 0 });
       yield* driver("reset from recovery", () =>
         page.getByRole("button", { name: "Reset data…", exact: true }).click(),
@@ -1304,7 +1164,6 @@ it.live(scenarios.desktopReset.title, () =>
       const freshKeys = yield* readKeys(data);
       expect(yield* fs.exists(path.join(data, "retained.txt"))).toBe(false);
 
-      // Resetting while the server runs stops it on purpose: the desktop never reports it lost.
       yield* answerDialogs(electron, { "Reset Executor data?": 0 });
       yield* clickMenuItem(electron, "Help", "Reset Executor data…");
       const again = yield* dialogsShown(electron, 2);
@@ -1318,7 +1177,6 @@ it.live(scenarios.desktopReset.title, () =>
       const second = (yield* fs.readDirectory(backups)).find((name) => name !== moved[0]);
       expect(second).toBeDefined();
       expect(again[1]?.detail).toContain(path.join(backups, second!));
-      // The running directory's key file moved with it, and its manifest names no key.
       const secondBackup = path.join(backups, second!);
       expect(yield* readKeys(secondBackup)).toEqual(freshKeys);
       const secondManifest = yield* fs.readFileString(
@@ -1337,16 +1195,12 @@ it.live(scenarios.desktopReset.title, () =>
           (event) => event.message === lostServer || event.message === "Showing desktop recovery",
         ),
       ).toEqual([]);
-      // Lines logged before a move go with it: the first backup holds both reset attempts.
       expect(
         (yield* desktopEvents(backup)).filter(
           (event) => event.message === "Resetting Executor data",
         ),
       ).toHaveLength(2);
 
-      // A server killed outright leaves its lock and registration behind. Reset, chosen before
-      // the desktop replaces it, takes that lock over as the next server would, and moves the
-      // data aside.
       const startsBeforeCrash = yield* serverStarts(data);
       yield* crashServer(third.pid);
       yield* answerDialogs(electron, { "Reset Executor data?": 0 });
@@ -1368,7 +1222,6 @@ it.live(scenarios.desktopReset.title, () =>
       expect(yield* fs.exists(path.join(crashedData, ".server.lock"))).toBe(false);
       expect(yield* fs.exists(path.join(crashedData, "server.json"))).toBe(false);
       expect(yield* fs.exists(path.join(crashedData, "installation.json"))).toBe(true);
-      // The desktop had started no replacement for the killed server before the reset ran.
       expect(yield* serverStarts(crashedData)).toBe(startsBeforeCrash);
     }),
   ).pipe(Effect.provide(services)),
@@ -1380,7 +1233,6 @@ it.live(scenarios.desktopResetWithheld.title, () =>
     const path = yield* Path.Path;
     const noReset = ["Restart", "Show logs", "Quit"];
 
-    /** The server refused with `reason`, said so on its structured channel, and was not retried. */
     const refusedOnce = (data: string, reason: string) =>
       Effect.gen(function* () {
         const [refused] = yield* eventsNamed(data, "Background Executor could not start", 1);
@@ -1392,8 +1244,6 @@ it.live(scenarios.desktopResetWithheld.title, () =>
         expect(Option.isNone(yield* registeredServer(data))).toBe(true);
       });
 
-    // Another process holds the server lock, or the key setup lock, without being a running
-    // server. Its future timestamp keeps it from going stale.
     for (const held of [".server.lock", ".bootstrap.lock"])
       yield* Effect.scoped(
         Effect.gen(function* () {
@@ -1413,9 +1263,6 @@ it.live(scenarios.desktopResetWithheld.title, () =>
         }),
       );
 
-    // An Executor from before the background service runs on the data: it holds no lock, so only
-    // its server.json shows it, and the desktop cannot stop it. This test's own process stands in
-    // for it, with a listener that answers as that Executor did.
     yield* Effect.scoped(
       Effect.gen(function* () {
         const { home, data, env } = yield* desktopHome({ keys: "file" });
@@ -1457,7 +1304,6 @@ it.live(scenarios.desktopResetWithheld.title, () =>
         });
         expect(yield* serverStarts(data)).toBe(0);
 
-        // Reset from the menu refuses too, and leaves the data in place.
         yield* answerDialogs(electron, { "Reset Executor data?": 0 });
         yield* clickMenuItem(electron, "Help", "Reset Executor data…");
         const failure = yield* dialogsShown(electron, 2);
@@ -1472,7 +1318,6 @@ it.live(scenarios.desktopResetWithheld.title, () =>
       }),
     );
 
-    /** Start on a directory whose record says `state`, and expect `heading` without reset. */
     const withheld = (options: {
       readonly heading: string;
       readonly reason: string;
@@ -1494,15 +1339,12 @@ it.live(scenarios.desktopResetWithheld.title, () =>
           expect(
             yield* driver("recovery actions", () => page.getByRole("button").allTextContents()),
           ).toEqual(noReset);
-          // A configuration failure is not retried, and nothing was changed or written.
           yield* refusedOnce(data, options.reason);
           expect(yield* fs.readFileString(path.join(data, "installation.json"))).toBe(record);
           expect(yield* fs.exists(path.join(data, "keys.json"))).toBe(false);
         }),
       );
 
-    // Key settings that cannot apply to existing data must be changed, not reset away:
-    // supplied keys on a directory that saves its own, and a key storage it does not use.
     yield* withheld({
       heading: "Executor's key settings do not match its data",
       reason: "misconfigured",
@@ -1517,9 +1359,6 @@ it.live(scenarios.desktopResetWithheld.title, () =>
       state: "ready",
     });
 
-    // An EXECUTOR_KEY_STORAGE the server cannot use is refused before anything is created, set in
-    // the desktop's environment or saved with `executor service set env`, which the servers a
-    // client starts run with. It is fixed by changing the setting, never by a reset.
     for (const saved of [false, true])
       yield* Effect.scoped(
         Effect.gen(function* () {
@@ -1546,7 +1385,6 @@ it.live(scenarios.desktopResetWithheld.title, () =>
           expect(refused?.annotations.detail).toContain(
             'EXECUTOR_KEY_STORAGE must be "file" (keep keys in keys.json) or "os" (OS credential store only), or unset.',
           );
-          // The data directory holds only the desktop's own log, and the saved setting.
           expect((yield* fs.readDirectory(data)).toSorted()).toEqual(
             saved ? ["diagnostics", "service.json"] : ["diagnostics"],
           );
@@ -1556,8 +1394,6 @@ it.live(scenarios.desktopResetWithheld.title, () =>
         }),
       );
 
-    // The data may be intact behind a store that is absent or refuses access, so it is never
-    // offered for reset. The harness makes the store absent on Linux and refusing on macOS.
     if (process.platform === "win32") return;
     yield* withheld(
       process.platform === "darwin"

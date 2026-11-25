@@ -34,11 +34,6 @@ const accessLabel = (access: ConnectedAgentAccess) => {
   }
 };
 
-/**
- * Agents the current user authorized over OAuth. Each row is one grant; revoking it ends the
- * agent's access at once and it must sign in again to reconnect. Only agents that can still reach
- * Executor are listed, most recently used first.
- */
 export function ConnectedAgents<E, EL extends E, ER extends E>({
   query,
   revoke,
@@ -46,7 +41,6 @@ export function ConnectedAgents<E, EL extends E, ER extends E>({
 }: {
   readonly query: Query<readonly ConnectedAgent[], EL>;
   readonly revoke: Atom.AtomResultFn<GrantId, void, ER>;
-  /** Renders list and revocation failures. */
   readonly Failure: ComponentType<FailureProps<E>>;
 }) {
   const [revoking, setRevoking] = useState<ConnectedAgent>();
@@ -150,7 +144,6 @@ function AgentRow({
   );
 }
 
-/** Matches one row of the loaded list so loading does not reflow the page. */
 function ConnectedAgentsSkeleton() {
   return (
     <div role="status" aria-label="Loading connected agents" className="divide-y border-y">

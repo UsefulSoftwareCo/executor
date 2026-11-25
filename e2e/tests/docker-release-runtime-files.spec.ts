@@ -1,19 +1,8 @@
-/**
- * The image's runtime belongs to root. The host reads `/app/workerd.capnp`, `/app/product.mjs` and
- * the workerd binary again at every start, so the user that runs app code must not be able to change
- * them, or anything else under `/app` and the host's own executables. Only the product and telemetry
- * data directories are that user's. Before, the runtime was copied owned by that user.
- */
 import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect } from "effect";
 import { releasedServer } from "../support/docker-release-server.ts";
 
-/**
- * Every path under /app outside the data directories, /app itself included, and the host's
- * executables that the running user may write, by access(2) and by opening the files the host reads
- * for appending, which writes nothing. The image has no `find`, so dash walks the tree.
- */
 const writableRuntime = `
 walk() {
   for f in "$1"/* "$1"/.[!.]* "$1"/..?*; do

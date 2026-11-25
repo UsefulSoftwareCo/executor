@@ -6,11 +6,6 @@ import type { GrantSettings, ResourceOrigins } from "@executor-js/mcp-auth/grant
 import { DeviceDecision, DeviceRequestView } from "@executor-js/mcp-auth/device";
 import { authCallOptions, mcpAuthorization, type AuthCallOptions } from "./auth.ts";
 
-/**
- * Where this deployment serves its MCP and API resources, canonical first, sent with each
- * server-rendered document. They can differ from the page's own origin, which serves the
- * dashboard and sign-in.
- */
 export const resourceOriginsAtom = Atom.make<ResourceOrigins | null>(null).pipe(
   Atom.serializable({
     key: "hosted:resource-origins",
@@ -18,7 +13,6 @@ export const resourceOriginsAtom = Atom.make<ResourceOrigins | null>(null).pipe(
       Schema.Struct({
         mcp: Schema.NonEmptyArray(Schema.String),
         api: Schema.NonEmptyArray(Schema.String),
-        // Consent for one of Executor v1's MCP URLs needs it after hydration (`legacyMcpTarget`).
         legacyMcp: Schema.optional(Schema.String),
       }),
     ),
@@ -26,7 +20,6 @@ export const resourceOriginsAtom = Atom.make<ResourceOrigins | null>(null).pipe(
   Atom.keepAlive,
 );
 
-/** Safe OAuth setup errors shown to the person granting access. */
 export class McpConnectionFailed extends Schema.TaggedError<McpConnectionFailed>()(
   "McpConnectionFailed",
   { message: Schema.String },
@@ -58,10 +51,8 @@ const request = <A>(
     Effect.withSpan(`ui.mcp.${operation}`),
   );
 
-/** The registered client metadata consent shows; Better Auth's public client response decodes to it. */
 const McpClient = Schema.Struct({ client_name: Schema.optional(Schema.String) });
 
-/** Look up registered client metadata; names from the authorization URL are not trusted. */
 export const mcpClientAtom = Atom.family((clientId: string) =>
   BrowserAtoms.atom(
     request("client", (options) => mcpAuthorization(options).client(clientId)).pipe(
@@ -86,7 +77,6 @@ export const mcpClientAtom = Atom.family((clientId: string) =>
   ),
 );
 
-/** The organization and settings chosen belong to this consent POST, not a shared browser preference. */
 export const mcpConsentAtom = BrowserAtoms.fn(
   (input: {
     accept: boolean;
@@ -96,10 +86,6 @@ export const mcpConsentAtom = BrowserAtoms.fn(
   }) => request("consent", (options) => mcpAuthorization(options).consent(input)),
 );
 
-/**
- * Device sign-in requests fail for reasons the person can act on: a mistyped or expired code, a
- * code already used, or an organization they no longer belong to.
- */
 const deviceCall = <A>(
   operation: string,
   run: (
@@ -138,7 +124,6 @@ const deviceCall = <A>(
     Effect.withSpan(`ui.device.${operation}`),
   );
 
-/** The pending device sign-in a user code names, for the person deciding it. */
 export const deviceRequestAtom = Atom.family((userCode: string) =>
   BrowserAtoms.atom(
     deviceCall(
@@ -155,7 +140,6 @@ export const deviceRequestAtom = Atom.family((userCode: string) =>
   ),
 );
 
-/** The organization chosen on the page belongs to this decision only. */
 export const deviceDecisionAtom = BrowserAtoms.fn(
   (input: {
     userCode: string;

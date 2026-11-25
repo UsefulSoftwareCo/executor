@@ -1,4 +1,3 @@
-/** Trusted workerd host. App modules get isolated Workers/facets, never this environment. */
 import { DurableObject, WorkerEntrypoint, WorkflowEntrypoint } from "cloudflare:workers";
 import { NonRetryableError } from "cloudflare:workflows";
 import type {
@@ -117,26 +116,14 @@ interface HttpService {
 }
 interface Environment {
   readonly AUTH: string;
-  /**
-   * The secret credential handles are sealed with, derived from the instance's encryption key so
-   * it is the same after a restart and never a value anyone else knows. Only this host's runner
-   * and outbound read it; app code never does.
-   */
   readonly CREDENTIAL_SECRET: string;
-  /** Host decision, not an app capability: apps never see or change this binding. */
   readonly APPS_PRIVATE_FETCH: boolean;
-  /** workerd network service that refuses private, loopback and link-local destinations. */
   readonly PUBLIC_FETCH: HttpService;
-  /** This instance's own dashboard origin, or empty when the host serves none. */
   readonly SELF_ORIGIN: string;
-  /** Reaches the product that serves `SELF_ORIGIN` without the network. */
   readonly SELF?: HttpService;
-  /** The npm registry builds resolve packages from, or empty for the public registry. */
   readonly NPM_REGISTRY: string;
   readonly LOADER: WorkerLoader;
-  /** Most app Workers this process keeps loaded, or null for the default. */
   readonly APP_WORKERS?: number | null;
-  /** Seconds an idle app Worker stays loaded, zero for no idle unloading, or null for the default. */
   readonly APP_WORKER_IDLE_SECONDS?: number | null;
   readonly DATA: {
     getByName(name: string): DataEntrypoint;
@@ -144,33 +131,19 @@ interface Environment {
   };
   readonly RUNS: Workflow<{ run: string }>;
   readonly HOST: Fetcher;
-  /** E2E runs only: delays around a supervisor's reset (`workerd-apps.ts`); otherwise null. */
   readonly SUPERVISOR_FAULTS?: {
     readonly resetDelayMs?: number;
     readonly resetHoldMs?: number;
     readonly replyDelayMs?: number;
   } | null;
-  /** E2E runs only: engine call faults (`engine-faults.ts`); otherwise null. */
   readonly WORKFLOW_ENGINE_FAULTS?: EngineFaultList | null;
 }
 
 const sleep = (ms: number | undefined) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-/**
- * The reason a data supervisor gives when it resets itself after its facet is unloaded. The
- * supervisors run in this isolate, and the token is made here on first use (workerd allows no
- * random values at startup), so no app text can carry it.
- */
 // oxlint-disable-next-line executor/no-module-level-mutable-state -- one token per isolate; it carries no request data
 let resetToken: string | undefined;
 const supervisorReset = () => (resetToken ??= `Data supervisor reset ${crypto.randomUUID()}`);
-/**
- * Send one call to an app's data supervisor. workerd fails every request an object has accepted
- * but not yet started when that object resets, with the reset's reason, and a stub made before the
- * reset keeps failing. A supervisor resets itself only while it handles nothing, so a call that
- * fails with exactly that reason had not started; it is sent once more, through a new stub, to the
- * instance that replaces it. `resent` runs when it is.
- */
 const toSupervisor = async <A>(
   env: Environment,
   app: string,
@@ -185,7 +158,6 @@ const toSupervisor = async <A>(
     return call(env.DATA.getByName(app));
   }
 };
-/** A runner's call to an app's data supervisor, and whether it was sent again after a reset. */
 const supervisorCall = <A>(
   env: Environment,
   app: string,
@@ -202,32 +174,17 @@ const supervisorCall = <A>(
     }).pipe(Effect.map((value) => ({ value, resent })));
   });
 
-/** A native sleep: a failure without our marker is the platform's, recorded by class only. */
 const nativeSleep = (work: () => Promise<unknown>) =>
   Effect.tryPromise({ try: work, catch: nativeEngineFailure }).pipe(Effect.asVoid);
 const failure = () => new WorkflowFailure({ reason: "engine", retryable: true });
-/** The deployer sees the underlying failure; builds bind no accounts. */
 const buildFailed = (stage: RuntimeBuildFailed["stage"], cause: unknown) =>
   new RuntimeBuildFailed({ stage, message: describeBuildCause(cause) });
-/** What the runner binds to one app's outbound network. App code cannot set it. */
 const OutboundProps = Schema.Struct({
   app: Schema.NonEmptyString,
   hostApi: Schema.optionalKey(HostApiCheck),
 });
 type OutboundProps = typeof OutboundProps.Type;
-/** Handles are sealed with a key derived from the secret only this host and its runner share. */
 const credentials = (env: Environment) => credentialKey(env.CREDENTIAL_SECRET);
-/**
- * Every app isolate's global `fetch`, bound to its app. It substitutes the credential handles the
- * request carries when its target is allowed; see credential-handles.ts.
- *
- * `global_fetch_strictly_public` cannot do this here: it routes global fetch through workerd's
- * `internet` service, which this runtime configures to allow private addresses. Requests for this
- * instance's own dashboard origin go to the product through a service binding, so the bundled
- * Executor app works when that origin resolves to a private address. Everything else uses the
- * public-only network service unless the operator allows private fetch. Redirects return to the
- * isolate, which sends each hop back here.
- */
 export class AppOutbound extends WorkerEntrypoint<Environment> {
   async fetch(request: Request): Promise<Response> {
     const self = this.env.SELF === undefined ? undefined : URL.parse(this.env.SELF_ORIGIN)?.origin;
@@ -236,8 +193,6 @@ export class AppOutbound extends WorkerEntrypoint<Environment> {
       app: props.app,
       ...(props.hostApi === undefined ? {} : { hostApi: props.hostApi }),
       key: await Effect.runPromise(credentials(this.env)),
-      // Refuse a private destination by name, before the public-only network refuses its
-      // address with an error app code cannot tell apart from any other connection failure.
       egress: { refusePrivateAddresses: !this.env.APPS_PRIVATE_FETCH, selfOrigin: self },
       send: (request) => {
         if (this.env.SELF !== undefined && new URL(request.url).origin === self)
@@ -247,20 +202,9 @@ export class AppOutbound extends WorkerEntrypoint<Environment> {
     });
   }
 }
-/** The installer's name for a destination the host's network policy refuses. */
 class TarballDestinationRefused extends Error {
   override readonly name = "NetworkRefused";
 }
-/**
- * How a build reaches anything off its registry's origin when the operator has not allowed
- * private fetch: tarball URL dependencies, and tarballs or redirects registry metadata sends
- * elsewhere. They go through the public-only network, as app code's own requests do. This
- * Worker's global `fetch` uses the `internet` service, which reaches private addresses, and stays
- * the path to the registry's own origin, so an operator's private registry keeps working. The
- * installer follows each redirect itself and sends every hop here or to the registry. A private
- * address named in the URL is refused before sending; one a public name resolves to is refused by
- * the network, which workerd reports with an error reference only.
- */
 const publicTarballFetch =
   (network: HttpService) =>
   (input: string, init?: RequestInit): Promise<Response> => {
@@ -273,7 +217,6 @@ type OutboundLoopback = (options: { readonly props: OutboundProps }) => Fetcher;
 const OutboundExports = Schema.Struct({
   AppOutbound: Schema.declare((value): value is OutboundLoopback => typeof value === "function"),
 });
-/** The loopback binding to `AppOutbound` that workerd supplies on every context's exports. */
 const appOutbound =
   (context: { readonly exports: unknown }) =>
   (app: string, hostApi: HostApiCheck | undefined): Fetcher =>
@@ -298,13 +241,8 @@ const hostRequest = (env: Environment, command: WorkflowHostCommand) =>
     Effect.flatMap((reply) => (reply.ok ? Effect.succeed(reply.value) : Effect.fail(reply.error))),
   );
 
-/**
- * workerd keeps this isolate, and every app Worker it loads, for the life of the process. One
- * residency, shared by every request, bounds how many app Workers stay loaded.
- */
 // oxlint-disable-next-line executor/no-module-level-mutable-state -- one process-wide residency bounds loaded app Workers across requests
 let residency: AppWorkerResidency | undefined;
-/** The shared runner over this Worker's loader, data supervisors and outbound network. */
 const runner = (env: Environment, context: Pick<ExecutionContext, "waitUntil" | "exports">) =>
   makeAppRunner({
     loader: env.LOADER,
@@ -312,7 +250,6 @@ const runner = (env: Environment, context: Pick<ExecutionContext, "waitUntil" | 
       limit: env.APP_WORKERS ?? defaultAppWorkerLimit,
       idleSeconds: env.APP_WORKER_IDLE_SECONDS ?? defaultAppWorkerIdleSeconds,
     })),
-    // A later call's trim runs this, so the stub is made then, in that call's request.
     unloadFacet: (app, identity) =>
       Effect.tryPromise({
         try: () => env.DATA.getByName(app).unload(identity),
@@ -321,7 +258,6 @@ const runner = (env: Environment, context: Pick<ExecutionContext, "waitUntil" | 
     outbound: appOutbound(context),
     credentialKey: credentials(env),
     data: (app) => ({
-      // A resent invocation says so in its reply, for the host's span of the call.
       invoke: (input, load, elicit, controls) =>
         Effect.map(
           supervisorCall(env, app, (supervisor) =>
@@ -332,13 +268,11 @@ const runner = (env: Environment, context: Pick<ExecutionContext, "waitUntil" | 
               ? { ...value, resent: true }
               : value,
         ),
-      // A cancel is not sent again: its call has ended, and a failed cancel is ignored.
       cancel: (id) =>
         Effect.tryPromise({
           try: () => env.DATA.getByName(app).cancel(id),
           catch: (cause) => cause,
         }),
-      // An app's commands outside the data operations run in its Worker and use this cache.
       cache: (namespace, command) =>
         Effect.map(
           supervisorCall(env, app, (supervisor) => supervisor.cache(namespace, command)),
@@ -350,7 +284,6 @@ const runner = (env: Environment, context: Pick<ExecutionContext, "waitUntil" | 
 const ignore = () => undefined;
 const encodedJson = Schema.fromJsonString(Schema.Json);
 
-/** Each WebSocket session owns its invocation lifetime and host capabilities. */
 class AppApi extends RpcTarget {
   readonly #env: Environment;
   readonly #lifetime = new AbortController();
@@ -366,7 +299,6 @@ class AppApi extends RpcTarget {
       return Promise.reject(new Error("This app session already has an invocation"));
     const active = Effect.runPromise(work, { signal: this.#lifetime.signal });
     this.#active = active;
-    // Keep cleanup I/O alive if the RPC socket disappears mid-transaction.
     this.#context.waitUntil(
       active.then(
         () => undefined,
@@ -379,9 +311,7 @@ class AppApi extends RpcTarget {
     this.#lifetime.abort();
     try {
       await this.#active;
-    } catch {
-      /* The invocation reports its own failure. */
-    }
+    } catch {}
   }
   [Symbol.dispose]() {
     this.#lifetime.abort();
@@ -482,48 +412,20 @@ class AppApi extends RpcTarget {
   }
 }
 
-/** Native app data stays in isolated facets and retains its database across code updates. */
 export class AppDataSupervisor extends DurableObject<Environment> {
   readonly #supervisor: Promise<Effect.Success<ReturnType<typeof makeFacetSupervisor>>>;
-  /**
-   * Requests this instance has received, a number that only goes up. The app Worker limit holds
-   * one account selection's facet while its call's reply is on the way, but a call of another
-   * selection of the same app can arrive during that unload, run, and still be waiting on its
-   * reply when the reset fires; the reset would fail that reply after its write and the host would
-   * send it again. So an unload takes this number when it begins, and its reset goes ahead only if
-   * no request has arrived since. Unloads are not counted, so another selection's unload in the
-   * meantime changes nothing an earlier one sees.
-   */
   #received = 0;
-  /**
-   * Reset this instance once the app Worker limit has unloaded its facet, when it has received no
-   * request since that unload began and holds no page's socket. workerd frees an unloaded facet's Worker, and that
-   * Worker's memory, only when it later drops the object that loaded it. Apps called in quick
-   * succession outrun that, so without the reset a burst of apps with a database runs the process
-   * out of memory. The reset runs after the unload's reply, which the unload sends only once every
-   * call's release has finished. A request that arrives as it resets has not started, and the host
-   * sends it again. The app's storage, its alarm and its revision are kept; its next request
-   * starts a new instance.
-   */
   #resetWhenIdle(seen: number) {
     const faults = this.env.SUPERVISOR_FAULTS;
     setTimeout(async () => {
-      // E2E runs only: wait with the input open, so other work can be running at the checks.
       if (faults?.resetDelayMs !== undefined) await sleep(faults.resetDelayMs);
-      // A request that arrived since this unload began may be running, or have run and still
-      // await its reply. A call running when the unload began made it answer false.
       if (this.#received !== seen) return;
-      // A page's change socket would close with the instance.
       if (this.ctx.getWebSockets().length > 0) return;
-      // E2E runs only: hold the input, so a request sent now is accepted but cannot start. The
-      // reset follows in the same continuation, before any held request can take the input.
       if (faults?.resetHoldMs !== undefined)
         await this.ctx.blockConcurrencyWhile(() => sleep(faults.resetHoldMs));
       try {
         this.ctx.abort(supervisorReset());
-      } catch {
-        // The reset ends this instance; nothing is waiting on it.
-      }
+      } catch {}
     }, 0);
   }
   constructor(ctx: DurableObjectState, env: Environment) {
@@ -548,14 +450,12 @@ export class AppDataSupervisor extends DurableObject<Environment> {
     const result = Effect.runPromise(
       (await this.#supervisor).invoke(input, load, elicit, controls),
     );
-    // The supervisor owns rollback even if the original RPC caller disconnects.
     this.ctx.waitUntil(
       result.then(
         () => undefined,
         () => undefined,
       ),
     );
-    // E2E runs only: hold the reply after the call has left the facet.
     const delay = this.env.SUPERVISOR_FAULTS?.replyDelayMs;
     if (delay === undefined) return result;
     const value = await result;
@@ -604,7 +504,6 @@ export class AppDataSupervisor extends DurableObject<Environment> {
   }
 }
 
-/** The workflow body and every durable step execute in workerd; Node supplies only host data. */
 export class AppWorkflows extends WorkflowEntrypoint<Environment, { run: string }> {
   async run(event: Readonly<{ payload: { run: string } }>, step: unknown): Promise<Schema.Json> {
     const lifetime = new AbortController();
@@ -698,7 +597,6 @@ export class AppWorkflows extends WorkflowEntrypoint<Environment, { run: string 
                 headers: {},
               },
               {
-                // Only a cold start of the run's Worker reads its build from the product.
                 load: () =>
                   Effect.runPromise(
                     hostRequest(this.env, { operation: "load", run: seed.runId }).pipe(
@@ -729,9 +627,6 @@ export class AppWorkflows extends WorkflowEntrypoint<Environment, { run: string 
             );
           if (!result.ok) {
             const detail = workflowFailureDetail(result.error);
-            // The engine retries steps, not the body. A retryable engine failure whose cause is
-            // known is recorded now, while the engine reports the run running or waiting; see
-            // `execute`.
             const recorded =
               result.error.reason !== "engine" ||
               !result.error.retryable ||
@@ -764,12 +659,6 @@ export class AppWorkflows extends WorkflowEntrypoint<Environment, { run: string 
   }
 }
 
-/**
- * `path` on the registry builds install from (`NPM_REGISTRY`, or the public registry), read as
- * builds read it: this Worker's global `fetch`, which the `internet` network serves, with no header
- * and no redirect followed. The host's release check reads it here, over the session builds are
- * compiled in, so it reaches the registry exactly as app installs do on every host.
- */
 const readRegistry = async (
   env: Environment,
   path: string,
@@ -787,7 +676,6 @@ const readRegistry = async (
   }
 };
 
-/** Only the authenticated Node host can reach administration or create an RPC session. */
 export default {
   async fetch(request: Request, env: Environment, context: ExecutionContext): Promise<Response> {
     if (request.headers.get("authorization") !== `Bearer ${env.AUTH}`)
@@ -799,7 +687,6 @@ export default {
       return toSupervisor(env, url.searchParams.get("app") ?? "", (supervisor) =>
         supervisor.fetch(request),
       );
-    // Evaluated results the host keeps in the app's supervisor, beside its app cache.
     if (url.pathname === "/evaluated") {
       const command = Schema.decodeUnknownOption(EvaluatedCommandJson)(await request.text());
       if (command._tag === "None") return new Response(null, { status: 400 });
@@ -824,7 +711,6 @@ export default {
         try {
           await handle.terminate();
         } catch (error) {
-          // The run can finish after the status read; terminating a finished instance fails.
           state = await handle.status();
           if (!finished()) throw error;
         }
@@ -838,7 +724,6 @@ export default {
         try {
           await env.RUNS.create({ id: input.run, params: { run: input.run } });
         } catch {
-          // Another request may have created this same retained run meanwhile.
           const retained = await (await env.RUNS.get(input.run)).status();
           if (retained.status === "unknown")
             return Response.json({ error: "engine" }, { status: 503 });

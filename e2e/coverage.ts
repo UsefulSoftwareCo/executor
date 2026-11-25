@@ -1,34 +1,3 @@
-/**
- * Product line coverage of the E2E suite, per scenario.
- *
- * `E2E_COVERAGE=1` makes the runner profile each self-host and local product process (see
- * `support/managed-server.ts`): Bun writes lcov, Node writes V8 coverage. The product's workerd
- * logs which functions its isolates ran (see `support/workerd-coverage.ts`); the host bundle's and
- * the app framework's source maps map them to their sources. Each scenario
- * starts its own product, so each report belongs to one scenario. Chromium records every scenario's
- * page scripts, on Cloud too (see `support/browser.ts`), which the dashboards' source maps map to
- * their sources. Cloud's Worker serves all scenarios at once and is not profiled.
- *
- * - `collect <out> <directory...>` reduces the raw reports under each run directory to one compact
- *   file: the lines each scenario covered, and each target's executable lines.
- * - `report <file...>` prints coverage by target and package, and each scenario's unique lines: a
- *   scenario no other covers a line of adds no line coverage.
- * - `cover <out> <file...>` writes a small set of scenarios that covers every line, and the rest.
- * - `check <baseline> <file...>` fails when a target covers fewer lines than the baseline records,
- *   beyond the run-to-run noise in that target's `tolerance`. A rise past it fails nothing: a pull
- *   request usually runs only its selected scenarios, so a rise first shows after merge. The check
- *   prints a warning annotation and a job summary line with the command that records the run.
- * - `baseline <baseline> <file...>` writes the baseline from collected runs. Pass one run's files:
- *   it counts the union of every file, so several runs record more than any one run covers.
- *
- * A target's covered lines differ between runs of the same tree: timing decides some paths, such as
- * retries and cache races. The baseline therefore records totals, not lines, and each target allows
- * twice its measured spread. In 20 full runs of main on near-unchanged code, local varied by 0.15%
- * and self-host by 0.21%. Cloud, which counts only Chromium's page coverage, varied by 0.58%: a
- * page's coverage is read once, when its context closes, and Chromium keeps no coverage for a
- * document the page has navigated away from. A scenario that navigates loses its earlier documents'
- * lines, and in about half of runs some of them still appear, so a few scenarios decide the spread.
- */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Config, Console, Effect, FileSystem, Option, Path, Schema } from "effect";
@@ -39,14 +8,12 @@ class CoverageFailed extends Schema.TaggedError<CoverageFailed>()("CoverageFaile
   message: Schema.String,
 }) {}
 
-/** Line numbers as sorted ranges, such as `1-4,9,12-30`. */
 const LineRanges = Schema.String;
 const Collected = Schema.Struct({
   version: Schema.Literal(1),
   targets: Schema.Record(
     Schema.String,
     Schema.Struct({
-      /** Lines any profiled process could have run, by repository path. */
       executable: Schema.Record(Schema.String, LineRanges),
       scenarios: Schema.Array(
         Schema.Struct({
@@ -64,7 +31,6 @@ const Baseline = Schema.Struct({
     Schema.String,
     Schema.Struct({
       covered: Schema.Number,
-      /** Fraction of the target's covered lines a run may lose to timing before the check fails. */
       tolerance: Schema.Number,
     }),
   ),
@@ -89,11 +55,9 @@ const decodeLines = (ranges: string) =>
         return Array.from({ length: end! - start! + 1 }, (_, offset) => start! + offset);
       });
 
-/** Product source files; the harness's own preloads and launchers are not product. */
 const isProduct = (file: string) =>
   !file.startsWith("e2e/") &&
   !file.includes("node_modules/") &&
-  // Built bundles, such as the dashboard a server renders, duplicate their sources line for line.
   !file.includes("/dist/") &&
   !file.startsWith("apps/hosted/self-host/scripts/") &&
   /\.[cm]?[jt]sx?$/.test(file);
@@ -105,7 +69,6 @@ const lines = (into: FileLines, file: string) => {
   return entry;
 };
 
-/** Bun's lcov: `SF:` opens a file, `DA:<line>,<hits>` reports one executable line. */
 const readLcov = (text: string, into: FileLines) => {
   let file: string | undefined;
   for (const line of text.split("\n")) {
@@ -119,7 +82,6 @@ const readLcov = (text: string, into: FileLines) => {
   }
 };
 
-/** V8's function coverage: each function's nested ranges with their run counts. */
 const V8Functions = Schema.Array(
   Schema.Struct({
     ranges: Schema.Array(
@@ -131,10 +93,8 @@ const V8Coverage = Schema.Struct({
   result: Schema.Array(Schema.Struct({ url: Schema.String, functions: V8Functions })),
 });
 
-/** Each offset's run count, or -1 outside every function. */
 const paint = (functions: typeof V8Functions.Type, length: number) => {
   const counts = new Int32Array(length).fill(-1);
-  // V8 nests ranges, so painting outer ranges before inner ones leaves each offset's innermost count.
   const ranges = functions
     .flatMap((fn) => fn.ranges)
     .sort((a, b) => a.startOffset - b.startOffset || b.endOffset - a.endOffset);
@@ -143,11 +103,6 @@ const paint = (functions: typeof V8Functions.Type, length: number) => {
   return counts;
 };
 
-/**
- * Node's V8 coverage gives each function's ranges and their counts, nested and in source offsets.
- * Node strips TypeScript types to whitespace, so offsets index the source file itself. A line runs
- * when its first character runs; blank and comment-only lines are not executable.
- */
 const readV8 = (
   coverage: typeof V8Coverage.Type,
   root: string,
@@ -181,7 +136,6 @@ const readV8 = (
   }
 };
 
-/** Chromium's coverage of a page's scripts, as `support/browser.ts` saves it. */
 const BrowserCoverage = Schema.Array(
   Schema.Struct({
     url: Schema.String,
@@ -200,7 +154,6 @@ type Bundle = {
 };
 
 const base64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-/** A source map's segments: generated line and column, source index, source line. */
 const segments = function* (mappings: string) {
   let source = 0,
     sourceLine = 0;
@@ -230,10 +183,6 @@ const segments = function* (mappings: string) {
   }
 };
 
-/**
- * The browser runs the dashboards' built bundles. Each bundle's source map names the source line
- * every generated position came from; a source line runs when a position mapped to it runs.
- */
 const readBrowser = (
   coverage: typeof BrowserCoverage.Type,
   root: string,
@@ -264,17 +213,10 @@ const readBrowser = (
   }
 };
 
-/**
- * workerd's coverage, as `support/workerd-coverage.ts` saves it from its isolates' function logs:
- * each script's functions, counted 1 when they ran and 0 when not, so it counts functions rather
- * than blocks. `bundle` is the host bundle the product loaded.
- */
 const WorkerdCoverage = Schema.Struct({ bundle: Schema.String, scripts: BrowserCoverage });
-/** Modules by name with their source maps, as `writeWorkerdHostBundle` and `apps:build` write them. */
 const BundleModules = Schema.Array(Schema.Struct({ name: Schema.String, content: Schema.Unknown }));
 const FrameworkModules = Schema.Struct({ server: Schema.Record(Schema.String, Schema.String) });
 const SourceMaps = Schema.Record(Schema.String, SourceMap);
-/** How long the script a coverage report describes is: its outermost function spans all of it. */
 const scriptLength = (functions: typeof V8Functions.Type) =>
   Math.max(
     0,
@@ -283,32 +225,11 @@ const scriptLength = (functions: typeof V8Functions.Type) =>
     ),
   );
 
-/**
- * What `collect` says about a JSON file it cannot decode, in place of the file itself: its path,
- * size, modification time and SHA-256, the parser's or the schema's error with the byte at which
- * the file stops being JSON, and an excerpt of its bytes.
- *
- * Every JSON file `collect` decodes comes here when it fails: each scenario's `scenario.json` and
- * raw coverage reports (V8's `*.json`, Chromium's `browser-*.json`, workerd's `workerd-*.json`),
- * which the harness writes; the dashboards' source maps (`*.js.map` beside their built bundles
- * under `apps/`); the app framework's `packages/apps/dist/runtime.json` and its map; and the host
- * bundle and its map that a workerd report names by path (`bundle`). They hold source paths,
- * offsets and source code, not secrets, but that last path is read out of a report, so it could
- * name any file. So the record shows few of its bytes. The rule: a file of at most
- * `excerptBytes` bytes is shown whole; of a larger one, `excerptWindow` bytes from its start and
- * from its end and twice that around the failing byte when the parser names one, never more than
- * `excerptBytes` in all. Every byte other than printable ASCII is escaped, in the path too, and
- * the path and the error are cut to a fixed length. A position V8's own message names counts
- * characters of the decoded text; the record's `at byte` counts the file's bytes.
- */
 const excerptWindow = 64;
 const excerptBytes = 4 * excerptWindow;
-/** The longest error message kept, after escaping, as a schema's message can quote a value. */
 const messageLength = 240;
-/** The most bytes of a path kept: its start and, as the file's name is there, more of its end. */
 const pathBytes = 256;
 
-/** Each byte as printable ASCII, a backslash doubled, or else `\xNN`. */
 const escapedBytes = (bytes: Uint8Array) =>
   Array.from(bytes, (byte) =>
     byte === 0x5c
@@ -324,7 +245,6 @@ const escapeText = (text: string, limit: number) => {
   return escaped.length <= limit ? escaped : `${escaped.slice(0, limit)}... (cut)`;
 };
 
-/** A path's bytes escaped, its middle cut when it has more than `pathBytes`. */
 const escapePath = (file: string) => {
   const bytes = escapedBytes(Buffer.from(file, "utf8"));
   if (bytes.length <= pathBytes) return bytes.join("");
@@ -332,23 +252,14 @@ const escapePath = (file: string) => {
   return `${bytes.slice(0, head).join("")}...(cut)...${bytes.slice(bytes.length - (pathBytes - head)).join("")}`;
 };
 
-/** The text a JSON file's bytes decode to, as `FileSystem.readFileString` decodes them. */
 const decodeUtf8 = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
 
-/** V8's message without the input it quotes (`Unexpected token 'x', "..." is not valid JSON`). */
 const withoutQuotedInput = (message: string) =>
   message.replace(
     /^(Unexpected token '.*?'), (?:\.\.\.)?".*"(?:\.\.\.)? is not valid JSON$/su,
     "$1, not valid JSON",
   );
 
-/**
- * The first byte of `bytes` at which they stop being a JSON text, `bytes.length` when they end
- * early, or undefined when they are one. Counted in the file's bytes, never in decoded text: a
- * byte that is not UTF-8 decodes to a replacement character, which is valid inside a string and
- * nowhere else, and that is how it is judged here. A leading byte order mark is skipped, as the
- * decoder drops it. One pass, without backtracking, whatever the file holds.
- */
 const firstInvalidByte = (bytes: Uint8Array): number | undefined => {
   const size = bytes.length;
   let at = bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf ? 3 : 0;
@@ -360,7 +271,6 @@ const firstInvalidByte = (bytes: Uint8Array): number | undefined => {
       at++;
     }
   };
-  /** Past a string starting at `at`; false with `at` at the byte that ends it wrongly. */
   const string = () => {
     at++;
     while (at < size) {
@@ -387,7 +297,6 @@ const firstInvalidByte = (bytes: Uint8Array): number | undefined => {
           }
           continue;
         }
-        // `"`, `\`, `/`, b, f, n, r, t
         if (![0x22, 0x5c, 0x2f, 0x62, 0x66, 0x6e, 0x72, 0x74].includes(escape)) {
           at++;
           return false;
@@ -404,7 +313,6 @@ const firstInvalidByte = (bytes: Uint8Array): number | undefined => {
     while (isDigit(bytes[at])) at++;
     return true;
   };
-  /** Past a number, `true`, `false` or `null` starting at `at`; false where it goes wrong. */
   const scalar = () => {
     const first = bytes[at];
     if (first === 0x2d || isDigit(first)) {
@@ -464,7 +372,6 @@ const firstInvalidByte = (bytes: Uint8Array): number | undefined => {
   }
 };
 
-/** The record `collect` fails with for a JSON file it cannot decode; see `excerptBytes`. */
 const jsonFailureRecord = (failure: {
   readonly file: string;
   readonly bytes: Uint8Array;
@@ -474,7 +381,6 @@ const jsonFailureRecord = (failure: {
 }) => {
   const { bytes } = failure;
   const size = bytes.length;
-  // Never past the file's end, so the window around it is always within the file.
   const found = failure.parser === undefined ? undefined : firstInvalidByte(bytes);
   const offset = found === undefined ? undefined : Math.min(found, size);
   const windows: Array<[number, number]> = [];
@@ -510,10 +416,6 @@ const collect = (out: string, directories: ReadonlyArray<string>) =>
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const root = path.resolve(".");
-    /**
-     * `bytes`, read from `file`, decoded as JSON. Bytes that do not decode fail the step with
-     * `jsonFailureRecord` of them, which never copies the file.
-     */
     const decodeJson =
       <S extends Schema.Top>(schema: S, file: string) =>
       (bytes: Uint8Array) =>
@@ -530,7 +432,6 @@ const collect = (out: string, directories: ReadonlyArray<string>) =>
               ),
           }),
         );
-    /** Fails the step with `jsonFailureRecord` of `file`, whose bytes were `bytes`. */
     const unreadableJson = (
       file: string,
       bytes: Uint8Array,
@@ -559,7 +460,6 @@ const collect = (out: string, directories: ReadonlyArray<string>) =>
       string,
       { executable: Map<string, Set<number>>; scenarios: Map<string, FileLines> }
     >();
-    // The dashboards' built bundles, by file name, which their content hash makes unique.
     const bundleFiles = new Map<string, string>();
     const findBundles = (directory: string, built: boolean): Effect.Effect<void, unknown> =>
       Effect.gen(function* () {
@@ -578,9 +478,6 @@ const collect = (out: string, directories: ReadonlyArray<string>) =>
     yield* findBundles(path.join(root, "apps"), false);
     const bundles = new Map<string, Bundle | undefined>();
     const bundleOf = (url: string) => bundles.get(path.basename(new URL(url).pathname));
-    // Inside workerd, the host bundle's modules are `file:///bundle/<name>`, and app Workers link
-    // the app framework's modules as `node_modules/apps/<name>`, as the staged package's
-    // `runtime.json` holds them.
     const workerdBundles = new Map<string, Bundle | undefined>();
     const loadModules = (
       key: string,
@@ -675,7 +572,6 @@ const collect = (out: string, directories: ReadonlyArray<string>) =>
             );
             const bundleOf = workerdBundleOf(coverage.bundle);
             readBrowser(
-              // A module rebuilt since the run no longer matches its coverage's offsets.
               coverage.scripts.filter(
                 ({ url, functions }) => bundleOf(url)?.text.length === scriptLength(functions),
               ),
@@ -750,7 +646,6 @@ const collect = (out: string, directories: ReadonlyArray<string>) =>
     );
   });
 
-/** Union several collected runs, such as CI shards, by target. */
 const readCollected = (files: ReadonlyArray<string>) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -831,7 +726,6 @@ const report = (files: ReadonlyArray<string>) =>
         a.localeCompare(b),
       ))
         yield* Console.log(`  ${name}: ${covered}/${executable} (${percent(covered, executable)})`);
-      // How many scenarios cover each line; a scenario's unique lines are those only it covers.
       const owners = new Map<string, number>();
       for (const { covered } of data.scenarios.values())
         for (const [file, lines] of covered)
@@ -854,12 +748,6 @@ const report = (files: ReadonlyArray<string>) =>
     }
   });
 
-/**
- * A small set of scenarios that together cover every line all of them cover, chosen greedily: each
- * pick covers the most lines the picks before it left uncovered. Lines are counted on every
- * profiled target, and a scenario is one title wherever it runs. The scenarios outside the set add
- * no line coverage together, not only one at a time. Writes them to `out` as JSON.
- */
 const cover = (out: string, files: ReadonlyArray<string>) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;

@@ -1,4 +1,3 @@
-/** Sharing state and mutations are keyed by organization and resource, with confirmed updates. */
 import { hydrated } from "@executor-js/ui/contracts/http";
 import { revalidated } from "@executor-js/ui/contracts/refresh";
 import { pollingQuery, whileLoaded } from "@executor-js/ui/contracts/polling";
@@ -42,18 +41,12 @@ const appAccess = Atom.family((key: AppKey) =>
     protectedQuery,
   ),
 );
-/** Explicit management mode never changes the normal app or account list. */
 export const resourceDirectoryAtom = (
   organization: OrganizationReference,
   view: "available" | "managed" = "available",
 ) => directory(new DirectoryKey({ organization, view }));
-/** Per-app authority and sharing. */
 export const appAccessAtom = (key: { organization: OrganizationReference; app: AppId }) =>
   appAccess(new AppKey(key));
-/**
- * Read the lists again after a change to apps or sharing. They stay visible while they reconcile;
- * the server's access verdict still clears them when the change removed this user's access.
- */
 export const refreshResourceDirectory = (
   get: Atom.FnContext,
   organization: OrganizationReference,
@@ -62,10 +55,6 @@ export const refreshResourceDirectory = (
   get.refresh(resourceDirectoryAtom(organization, "managed"));
   get.refresh(inventoryAtom(organization));
 };
-/**
- * Apply a confirmed rename or deletion to account rows in place. Access is unchanged, so the
- * lists stay visible while they reconcile instead of being discarded.
- */
 export const acknowledgeResourceAccount = (
   get: Atom.FnContext,
   organization: OrganizationReference,
@@ -105,7 +94,6 @@ const shareApp = Atom.family((key: AppKey) =>
       ),
   ),
 );
-/** App sharing is an independent mutation per app. */
 export const shareAppAtom = (key: { organization: OrganizationReference; app: AppId }) =>
   shareApp(new AppKey(key));
 
@@ -152,14 +140,12 @@ const inventory = Atom.family((key: ListKey) =>
     }),
   ),
 );
-/** A UI group filter narrows already-authorized rows; it grants no additional access. */
 export const resourceInventoryAtom = (
   organization: OrganizationReference,
   view: "available" | "managed" = "available",
   group = "all",
 ) => inventory(new ListKey({ organization, view, group }));
 
-/** Page-local filters share one result lifetime within a single organization. */
 export function createAppListAtoms(organization: OrganizationReference) {
   const filters = Atom.make<{
     readonly view: "available" | "managed";
@@ -175,6 +161,5 @@ export function createAppListAtoms(organization: OrganizationReference) {
       refresh(resourceDirectoryAtom(organization, "managed"));
     },
   );
-  // Retain cards while another filter loads, but clear them on access denial.
   return { filters, query: protectedQuery(selected) };
 }

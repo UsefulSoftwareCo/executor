@@ -27,10 +27,8 @@ type Span = (typeof SpanQuery.Type)["data"][number]["span"];
 
 const revokedEvent = "auth.token.refresh_family_revoked";
 const grantMarker = "urn:e2e:private-grant-marker";
-/** Claude Code registers as "Claude Code (<server name>)". */
 const clientName = "Claude Code (executor_e2e)";
 const loopback = "http://127.0.0.1:9/callback";
-/** Registrations as real clients make them, and the family each must be recorded as. */
 const registrations = [
   { name: "Codex", family: "codex" },
   { name: "claudeai", family: "claude-ai" },
@@ -41,11 +39,9 @@ const registrations = [
   { name: "Windsurf", family: "windsurf" },
   { name: "Executor CLI", family: "executor-cli" },
   { name: "Executor E2E client", family: "other" },
-  // claude.ai's callback names the client when the registration does not.
   { redirect: "https://claude.ai/api/mcp/auth_callback", family: "claude-ai" },
 ] as const;
 
-/** A token request under a new trace. Only its status leaves this function; never its body. */
 const tokenRequest = (fields: UrlParams.Input) =>
   Effect.gen(function* () {
     const target = yield* Target,
@@ -69,7 +65,6 @@ const tokenRequest = (fields: UrlParams.Input) =>
   });
 
 const Registered = Schema.Struct({ client_id: Schema.NonEmptyString });
-/** Register a public client anonymously, as an MCP client does, and return its ID. */
 const register = (client: { readonly name?: string; readonly redirect?: string }) =>
   Effect.gen(function* () {
     const target = yield* Target,
@@ -97,7 +92,6 @@ const register = (client: { readonly name?: string; readonly redirect?: string }
     );
   });
 
-/** A registration under a new trace. Only its status leaves this function; never its body. */
 const registrationRequest = (body: Record<string, unknown>) =>
   Effect.gen(function* () {
     const target = yield* Target,
@@ -121,7 +115,6 @@ const registrationRequest = (body: Record<string, unknown>) =>
     return { traceId, status };
   });
 
-/** The registration's server span, once the collector has it. */
 const registrationSpan = (traceId: string) =>
   Effect.flatMap(Telemetry, (telemetry) => telemetry.query(traceId)).pipe(
     Effect.map((found) =>
@@ -141,12 +134,6 @@ const registrationSpan = (traceId: string) =>
     Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 80 }),
   );
 
-/**
- * Server spans of one operation on one path that name this client family, newest last, from the
- * whole environment: authorization and consent run in the browser's navigations, whose traces the
- * scenario does not record, and their spans name no user. Another scenario's sign-in with this
- * family since `since` is found too.
- */
 const familySpans = (operation: string, path: string, family: string, since: number) =>
   Effect.flatMap(Telemetry, (telemetry) =>
     telemetry.searchWholeEnvironment(operation, {
@@ -172,7 +159,6 @@ const refreshFields = (grant: Grant) => ({
   resource: grant.resource,
 });
 
-/** The token request's server span, once the collector has it. */
 const tokenSpan = (traceId: string) =>
   Effect.flatMap(Telemetry, (telemetry) => telemetry.query(traceId)).pipe(
     Effect.map((found) =>
@@ -255,8 +241,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth token telemetry", (it) =
         });
         expect(unsupported.status).toBe(400);
 
-        // End the rotation's replay window without waiting: the stored token now reads as
-        // rotated `age` ago. Only this client's rows change.
         const locks = yield* cloudLocks;
         const rotatedAgo = (age: string) =>
           locks.run({
@@ -265,22 +249,17 @@ layer(HostedLive, { excludeTestServices: true })("OAuth token telemetry", (it) =
               where "clientId" = $1 and "rotatedAt" is not null`,
             params: [stored.clientId],
           });
-        // An idle instance presenting a copy replaced two hours ago is refused alone; the
-        // current token keeps working.
         yield* rotatedAgo("2 hours");
         const superseded = yield* tokenRequest(refreshFields(stored));
         expect(superseded.status).toBe(400);
         const current = yield* tokenRequest(refreshFields(first));
         expect(current.status).toBe(200);
-        // A copy replaced more than a day ago still revokes the grant.
         yield* rotatedAgo("25 hours");
         const reused = yield* tokenRequest(refreshFields(stored));
         expect(reused.status).toBe(400);
-        // Reuse detection removed every refresh token of the grant, the rotated one included.
         const ended = yield* tokenRequest(refreshFields(first));
         expect(ended.status).toBe(400);
 
-        // The span names the grant Better Auth reads: the last value, trimmed, case kept.
         const named = (...grants: ReadonlyArray<string>) =>
           tokenRequest([
             ...grants.map((grant) => ["grant_type", grant] as const),
@@ -347,9 +326,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth token telemetry", (it) =
           rejection: "reused",
           family: "claude-code",
         });
-        // Each refused copy records how long ago rotation replaced it; tokens that were never
-        // revoked carry no age. The database set the rotation time and the app reads its own
-        // clock, so allow them to differ by a minute.
         const ages = [
           [spans.superseded, 2 * 3600],
           [spans.reused, 25 * 3600],
@@ -362,8 +338,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth token telemetry", (it) =
         }
         for (const span of [spans.sibling, spans.current, spans.ended, spans.duplicated])
           expect(span.tags["auth.token.refresh_revoked_age_seconds"]).toBeUndefined();
-        // Every refresh grant names the token it presented by one reference, so retries of one
-        // token can be counted once; other grants name none.
         const ref = (span: Span) => span.tags["auth.token.refresh_token_ref"];
         const storedRefs = [spans.sibling, spans.superseded, spans.reused].map(ref);
         const firstRefs = [spans.current, spans.ended, spans.duplicated, spans.padded].map(ref);
@@ -401,7 +375,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth token telemetry", (it) =
             family: "claude-code",
           });
 
-        // Compare inside the test so no credential reaches assertion diagnostics.
         const serialized = JSON.stringify(spans);
         const leaked = [
           Redacted.value(stored.tokens).refresh_token,
@@ -413,8 +386,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth token telemetry", (it) =
         ].some((secret) => serialized.includes(secret));
         expect(leaked).toBe(false);
 
-        // The authorization that started the grant and the consent that completed it name
-        // the same family, so a client's re-logins can be counted.
         const authorizations = yield* familySpans(
           "http.server GET",
           "/api/auth/oauth2/authorize",
@@ -435,8 +406,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth token telemetry", (it) =
           false,
         );
 
-        // Each registration is recorded by the family its name, or its callback, declares,
-        // including when the refresh token is not one Executor issued.
         const families = yield* Effect.forEach(registrations, (client) =>
           Effect.gen(function* () {
             const clientId = yield* register(client);
@@ -455,7 +424,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth token telemetry", (it) =
         expect(families.map(({ recorded }) => recorded)).toEqual(
           families.map(({ expected }) => expected),
         );
-        // A client that never registered, or none named at all, is unknown.
         const unregistered = yield* tokenRequest({
           grant_type: "refresh_token",
           client_id: `unregistered-${randomBytes(8).toString("hex")}`,
@@ -471,8 +439,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth token telemetry", (it) =
             "unknown",
           );
 
-        // A refused registration records its OAuth error and the rule that refused it; the
-        // description, which quotes the client's input, stays out of the span.
         const grants = {
           token_endpoint_auth_method: "none",
           grant_types: ["authorization_code", "refresh_token"],
@@ -480,8 +446,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth token telemetry", (it) =
         };
         const registrationCases = [
           {
-            // Without an HTTP loopback or private-use callback, a client is a web client, which
-            // may not use a loopback host even over HTTPS.
             body: {
               ...grants,
               client_name: "Cursor",
@@ -495,7 +459,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth token telemetry", (it) =
             },
           },
           {
-            // The schema refuses a callback that is not a URL before any rule runs.
             body: { ...grants, client_name: "Cursor", redirect_uris: [`cursor://${grantMarker}`] },
             expected: {
               status: 400,
@@ -533,7 +496,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth token telemetry", (it) =
             },
           },
           {
-            // The schema refuses the field before any rule runs; a malformed name names no client.
             body: { ...grants, client_name: 42, redirect_uris: [loopback] },
             expected: {
               status: 400,
@@ -569,7 +531,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth token telemetry", (it) =
           false,
         );
 
-        // Each answer is the client's to act on: none is reported as an Executor failure.
         yield* Effect.sleep("2 seconds");
         const traces = new Set(
           [

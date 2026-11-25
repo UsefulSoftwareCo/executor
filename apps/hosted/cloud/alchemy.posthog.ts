@@ -1,4 +1,3 @@
-/** Persistent analytics resources. Deploy before the hosted application in the same stage. */
 import * as Alchemy from "alchemy";
 import { Random, RandomProvider } from "alchemy/Random";
 import * as Output from "alchemy/Output";
@@ -49,7 +48,6 @@ export default Alchemy.Stack(
     const project = yield* PostHogProject("Project", {
       organizationId,
       name: stage === "v2" ? "Executor V2" : `Executor V2 (${stage})`,
-      // Pages run on the browser origin and, for marketing, on the edge.
       appUrls: yield* cloudHosts.pipe(
         Effect.orDie,
         Effect.map((hosts) => [
@@ -75,14 +73,11 @@ export default Alchemy.Stack(
         ...report,
       }).pipe(retain());
     }
-    // Running: deploying launches it, and changing the status here pauses, resumes or ends it.
     const onboarding = yield* PostHogExperiment("OnboardingOrderExperiment", {
       projectId: project.id,
       definition: onboardingExperimentDefinition,
-      status: "running",
+      status: "stopped",
     }).pipe(retain());
-    // Independent of the order experiment. Ended in PostHog on 2026-10-30; an ended experiment
-    // cannot run again.
     const onboardingSkip = yield* PostHogExperiment("OnboardingSkipExperiment", {
       projectId: project.id,
       definition: onboardingSkipExperimentDefinition,

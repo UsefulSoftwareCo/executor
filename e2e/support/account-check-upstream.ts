@@ -3,7 +3,6 @@ import { Effect, Layer, Ref, Schema } from "effect";
 import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { createServer } from "node:http";
 
-/** The only token the fake service accepts. */
 export const acceptedToken = "synthetic-check-token";
 
 type Failure =
@@ -14,13 +13,6 @@ type Failure =
     }
   | { readonly kind: "hang" };
 
-/**
- * What the fake service answers. The rest apply only to the MCP server: `page` serves a web page
- * at its URL, answering POST with `post` when set, and `list-error` answers `tools/list` with a
- * JSON-RPC internal error. `protected` refuses every request without the accepted token with an
- * OAuth challenge, initialization included; `open` lists its tools for anyone, with or without a
- * token. `anonymous` gives only requests without credentials the `failure`.
- */
 export type AccountCheckAnswer =
   | { readonly kind: "user" }
   | Failure
@@ -35,12 +27,6 @@ const McpMessage = Schema.Struct({
   method: Schema.String,
 });
 
-/**
- * A synthetic service with one safe read, `GET /me`, and an MCP server at `/mcp`. `/me` returns a
- * synthetic user for the accepted token and 401 for any other token. The MCP server initializes
- * anyone but lists its tools only for the accepted token. Both answer the configured failure.
- * `anonymousRequests` counts the MCP requests that carried no credentials.
- */
 export const accountCheckUpstream = Effect.gen(function* () {
   const answer = yield* Ref.make<AccountCheckAnswer>({ kind: "user" });
   const anonymousRequests = yield* Ref.make(0);
@@ -79,7 +65,6 @@ export const accountCheckUpstream = Effect.gen(function* () {
             },
           },
         );
-      // No standalone event stream.
       if (request.method !== "POST") return HttpServerResponse.empty({ status: 405 });
       const message = yield* request.json.pipe(
         Effect.flatMap(Schema.decodeUnknownEffect(McpMessage)),

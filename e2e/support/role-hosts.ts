@@ -1,4 +1,3 @@
-/** Cloud role hosts, observed only through HTTP. No product code is imported. */
 import { Effect } from "effect";
 import { driver, type Target } from "./platform.ts";
 
@@ -14,13 +13,6 @@ export const roleHost = (origin: string, role: "app" | "mcp" | "api" | "edge" | 
   return url.origin;
 };
 
-/**
- * Where a target serves each part of the product. A run's `origin` is the deployment origin
- * (`v2.executor.sh`'s place). Every Cloud target has role hosts, so its dashboard and sign-in are
- * on `app.`, or on the deployment origin under the rollback switch (`e2e:cloud --rollback`); the
- * canonical MCP and API resources are on `mcp.` and `api.`. Other targets serve everything on one
- * origin.
- */
 export const targetHosts = (target: typeof Target.Service) => {
   const origin = target.metadata.origin;
   if (target.metadata.target !== "cloud")
@@ -42,13 +34,11 @@ export const targetHosts = (target: typeof Target.Service) => {
   };
 };
 
-/** MCP endpoints and their resource discovery, which Cloud never serves on its browser origin. */
 export const isMcpPath = (pathname: string) =>
   pathname === "/mcp" ||
   /^\/org\/[^/]+\/mcp$/.test(pathname) ||
   pathname.startsWith("/.well-known/oauth-protected-resource");
 
-/** One request without following redirects; only its status, chosen headers and body text. */
 export const rawRequest = (url: string, init: RequestInit = {}) => {
   const operation = `${init.method ?? "GET"} ${new URL(url).host}${new URL(url).pathname}`;
   return driver(operation, (signal) => fetch(url, { ...init, redirect: "manual", signal })).pipe(

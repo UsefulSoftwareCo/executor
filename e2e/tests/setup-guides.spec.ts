@@ -1,11 +1,3 @@
-/**
- * Apps tell people where to get credentials: each field's `title` and `description`, a secrets
- * method's `guide` and an OAuth method's `clientGuide`. The connect form renders them as Markdown,
- * and agents read them in the app's requirements. Help belongs to each app version, not to the
- * provider: the provider ID hashes the definition without it, so apps that explain one provider
- * differently share its accounts, and editing help keeps the ID and every link. Deploys refuse
- * help the form would not show safely.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -42,7 +34,6 @@ const Connection = Schema.Struct({
   id: Schema.String,
   provider: Schema.Struct({ id: Schema.String, definition: Schema.Json }),
 });
-/** A hosted connection request as created, with the link the agent gives the user. */
 const HostedLink = Schema.Struct({ ...Connection.fields, url: Schema.String });
 const Account = Schema.Struct({ id: Schema.String });
 const StoredProvider = Schema.Struct({ id: Schema.String, definition: Schema.Json });
@@ -55,7 +46,6 @@ const BuildFailed = Schema.Struct({
   message: Schema.String,
 });
 
-/** Indented as an author writes it inside a template literal; the declaration stores it dedented. */
 const indentedGuide = (who: string) => `
         Sign in to the help desk as ${who} first.
 
@@ -69,7 +59,6 @@ const guideOf = (who: string) =>
     "1. Open [Team settings](https://tickets.example.com/settings/team).",
     "2. Turn on **API access**.",
   ].join("\n");
-/** How the connect form shows `guideOf(who)`. */
 const shownGuide = (who: string) =>
   `Sign in to the help desk as ${who} first.\n\nOpen Team settings.\nTurn on API access.`;
 const siteHelp = "The part before `.tickets.example.com` in your help desk URL.";
@@ -94,25 +83,15 @@ interface Help {
   readonly guide?: string;
   readonly site?: FieldHelp;
   readonly token?: FieldHelp;
-  /** Adds an optional port field; an optional field's help sits in its schema's `anyOf`. */
   readonly port?: FieldHelp;
-  /**
-   * Adds an optional `routing` object with this help on its `queue`: help nested below a field,
-   * which the form never shows but the provider must still leave out.
-   */
   readonly queue?: FieldHelp;
 }
-/** The full help one app writes for the help desk. */
 const adminHelp: Help = {
   guide: indentedGuide("an admin"),
   site: { title: "Site", description: siteHelp },
   token: { title: "API token", description: indentedTokenHelp },
 };
 
-/**
- * A help desk API key provider named `name`, with the help an app writes for it. Its `who` query
- * reads the linked account, so a call proves the account still fills the requirement.
- */
 const keySource = (name: string, help: Help) => {
   const options = (field: FieldHelp | undefined) =>
     field === undefined ? "" : JSON.stringify(field);
@@ -139,7 +118,6 @@ export const who = query({ input: object({}) }, async (ctx) => ({
 export default defineApp({ user: { accounts: { service } } }, { tools: router({ who }) });`;
 };
 
-/** An OAuth provider; `discover` names an issuer, else its declared endpoints are used. */
 const oauthSource = (name: string, clientGuide: string, discover?: string) =>
   `import { defineApp, defineProvider, oauth2, router } from "apps";
 const service = defineProvider({
@@ -159,10 +137,8 @@ const service = defineProvider({
 });
 export default defineApp({ user: { accounts: { service } } }, async () => ({ tools: router({}) }));`;
 
-/** A name no other scenario uses: provider rows are shared across the instance. */
 const uniqueName = (label: string) => `${label} ${randomUUID().slice(0, 8)}`;
 
-/** The apiKey method's help in a provider definition: its guide and each field's title and description. */
 const helpOf = (definition: Schema.Json) =>
   Effect.map(Schema.decodeUnknownEffect(Definition)(definition), ({ auth }) => {
     const method = auth["apiKey"];
@@ -189,17 +165,12 @@ const Routing = Schema.Struct({
     }),
   }),
 });
-/** The help on `routing.queue`, in the optional `routing` field's object member. */
 const queueHelpOf = (definition: Schema.Json) =>
   Effect.map(
     Schema.decodeUnknownEffect(Routing)(definition),
     ({ auth }) => auth.apiKey.fields.properties.routing.anyOf[0].properties.queue,
   );
 
-/**
- * Each input of a form with the text of its label and of the element its `aria-describedby`
- * names, and whether that description sits outside the label.
- */
 const describedInputs = (form: Locator) =>
   form.locator("input").evaluateAll((inputs: HTMLInputElement[]) =>
     inputs.map((input) => {
@@ -214,7 +185,6 @@ const describedInputs = (form: Locator) =>
     }),
   );
 
-/** Wait for the open dialog's animations, so a checkpoint shows it as people see it. */
 const settled = (page: Page) =>
   page
     .getByRole("dialog")
@@ -222,14 +192,12 @@ const settled = (page: Page) =>
       Promise.all(dialog.getAnimations({ subtree: true }).map((animation) => animation.finished)),
     );
 
-/** The element that describes a field's input. */
 const descriptionOf = (form: Locator, input: Locator) =>
   input
     .getAttribute("aria-describedby")
     .then((id) => form.locator(`[id=${JSON.stringify(id ?? "")}]`));
 
 layer(HostedLive, { excludeTestServices: true })("Setup help", (it) => {
-  /** Deploy apps for the owner, deleting each when the scenario ends. */
   const hostedApps = Effect.gen(function* () {
     const api = yield* Api,
       actors = yield* Actors;
@@ -257,7 +225,6 @@ layer(HostedLive, { excludeTestServices: true })("Setup help", (it) => {
         expect(response.status, JSON.stringify(response.body)).toBe(200);
         return (yield* body(Redeployed, response)).app;
       });
-    /** Ask for a connection to the app's `service` requirement, as an agent does. */
     const connection = (path: string, input: { readonly account?: string }) =>
       Effect.gen(function* () {
         const response = yield* api.request(
@@ -301,7 +268,6 @@ layer(HostedLive, { excludeTestServices: true })("Setup help", (it) => {
         const name = uniqueName("Refused desk");
         const refusal =
           "App build failed: setup help must be Markdown with absolute https links and no HTML or images.";
-        /** The build failure a deploy of `content` reports. */
         const refused = (content: string) =>
           Effect.gen(function* () {
             const response = yield* send("Refused help", content);
@@ -342,7 +308,6 @@ layer(HostedLive, { excludeTestServices: true })("Setup help", (it) => {
         const failures = yield* Effect.forEach(cases, ([help]) => refused(keySource(name, help)), {
           concurrency: 3,
         });
-        // Each failure names the requirement, the provider, the method and the field.
         expect(failures).toEqual(
           cases.map(([, problem]) => ({
             _tag: "VersionBuildFailed",
@@ -359,8 +324,6 @@ layer(HostedLive, { excludeTestServices: true })("Setup help", (it) => {
           message: `${refusal} Requirement "service" (provider "${oauthName}") method "oauth" clientGuide contains raw HTML; write Markdown instead.`,
         });
 
-        // Help at the limits deploys, and so does an email address written as text: GFM reads it
-        // as a mailto link, but the form shows it as the address.
         yield* deploy(
           "Help at the limits",
           keySource(name, {
@@ -380,10 +343,6 @@ layer(HostedLive, { excludeTestServices: true })("Setup help", (it) => {
         const { api, actors, prefix, deploy, redeploy, connection, submit, who } =
           yield* hostedApps;
         const name = uniqueName("Help desk");
-        // Three apps declare the same provider: one not explaining it, as apps did before setup
-        // help, then one explaining it fully and one another way, each also on a field nested in
-        // another. Each deploy writes the shared provider row, so the last carries help it must
-        // leave out.
         const plain = yield* deploy("Plain desk", keySource(name, { queue: {} }));
         const admins = yield* deploy(
           "Admin desk",
@@ -405,7 +364,6 @@ layer(HostedLive, { excludeTestServices: true })("Setup help", (it) => {
           [admins, agents].map(({ app }) => app.requirements.accounts.service.provider),
         ).toEqual([provider, provider]);
 
-        // Agents read each app's own help, dedented, in its requirements.
         const requirementHelp = (app: typeof App.Type) =>
           helpOf(app.requirements.accounts.service.definition);
         expect(yield* requirementHelp(admins.app)).toEqual({
@@ -423,7 +381,6 @@ layer(HostedLive, { excludeTestServices: true })("Setup help", (it) => {
           site: {},
           token: {},
         });
-        // So is help nested below a field, dedented too.
         expect(
           yield* Effect.forEach([admins, agents, plain], ({ app }) =>
             queueHelpOf(app.requirements.accounts.service.definition),
@@ -434,7 +391,6 @@ layer(HostedLive, { excludeTestServices: true })("Setup help", (it) => {
           {},
         ]);
 
-        // An agent's connection read carries the app's help.
         const pending = yield* connection(admins.path, {});
         expect(pending.provider.id).toBe(provider);
         expect((yield* helpOf(pending.provider.definition)).guide).toBe(guideOf("an admin"));
@@ -445,7 +401,6 @@ layer(HostedLive, { excludeTestServices: true })("Setup help", (it) => {
             .pipe(Effect.orDie),
         );
 
-        // The provider row every app shares holds the definition without any app's help.
         const stored = Effect.gen(function* () {
           const response = yield* api.request(
             actors.owner,
@@ -460,7 +415,6 @@ layer(HostedLive, { excludeTestServices: true })("Setup help", (it) => {
           definition: plain.app.requirements.accounts.service.definition,
         });
 
-        // The other apps use the same account.
         for (const { path } of [agents, plain])
           yield* linkAccount(actors.owner, path, "service", account.id);
         const everyApp = [admins, agents, plain];
@@ -469,7 +423,6 @@ layer(HostedLive, { excludeTestServices: true })("Setup help", (it) => {
         const served = { account: account.id, site: "billing" };
         expect(yield* calls).toEqual([served, served, served]);
 
-        // Editing the help redeploys with the same provider, links and account.
         const edited = yield* redeploy(
           admins.path,
           keySource(name, {
@@ -491,7 +444,6 @@ layer(HostedLive, { excludeTestServices: true })("Setup help", (it) => {
           definition: plain.app.requirements.accounts.service.definition,
         });
 
-        // A reconnect after the edit replaces the credentials of the same account.
         const reconnect = yield* connection(admins.path, { account: account.id });
         const reconnected = yield* submit(reconnect.id, "tkt_synthetic_rotated");
         expect(reconnected).toEqual({ id: account.id });
@@ -507,7 +459,6 @@ layer(HostedLive, { excludeTestServices: true })("Setup help", (it) => {
         const { api, actors, prefix, deploy, connection } = yield* hostedApps;
         const browser = yield* Browser;
         const issuer = yield* oauthSetupIssuer;
-        // The service registers no clients, so the person connecting enters one.
         yield* issuer.configure({ registration: false });
         const name = uniqueName("Help desk");
         const admins = yield* deploy("Admin desk", keySource(name, adminHelp));
@@ -541,7 +492,6 @@ layer(HostedLive, { excludeTestServices: true })("Setup help", (it) => {
             guideRegion
               .getByRole("link", { name: "Team settings", exact: true })
               .getAttribute("href"),
-            // The link to where the token comes from is in the token field's own help.
             descriptionOf(form, token).then((help) =>
               help.getByRole("link", { name: "API tokens", exact: true }).getAttribute("href"),
             ),
@@ -553,7 +503,6 @@ layer(HostedLive, { excludeTestServices: true })("Setup help", (it) => {
           shownGuide("an admin"),
           "https://tickets.example.com/settings/team",
           "https://tickets.example.com/settings/tokens",
-          // Each label is the field's title; its description is under the input, outside the label.
           [
             {
               label: "Site",
@@ -566,10 +515,8 @@ layer(HostedLive, { excludeTestServices: true })("Setup help", (it) => {
               outsideLabel: true,
             },
           ],
-          // The app's guide replaces the generic line.
           0,
         ]);
-        // The guide comes first, then each field above its description.
         const order = yield* browser.use("Read the form's order", () =>
           Promise.all([descriptionOf(form, site), descriptionOf(form, token)]).then(
             ([siteHelp, tokenHelp]) =>
@@ -586,7 +533,6 @@ layer(HostedLive, { excludeTestServices: true })("Setup help", (it) => {
         yield* browser.use("The dialog settles", settled);
         yield* browser.checkpoint("Connect form with the app's guide and field help");
 
-        // The described fields connect an account.
         const submitted = yield* browser.use("Connect the account", (page) =>
           site
             .fill("billing")
@@ -611,7 +557,6 @@ layer(HostedLive, { excludeTestServices: true })("Setup help", (it) => {
         );
         yield* browser.use("Keep the account's name", (page) => nameConnectedAccount(page));
 
-        // Another app explains the same provider its own way.
         yield* browser.use("Open the other app's accounts", (page) =>
           page.goto(`/org/${actors.organization.slug}/apps/${agents.app.id}?view=accounts`),
         );
@@ -634,7 +579,6 @@ layer(HostedLive, { excludeTestServices: true })("Setup help", (it) => {
         ]);
         yield* browser.use("Close the other dialog", (page) => page.keyboard.press("Escape"));
 
-        // OAuth client entry shows the app's client guide after Executor's steps and redirect URL.
         yield* browser.use("Open the OAuth app's accounts", (page) =>
           page.goto(`/org/${actors.organization.slug}/apps/${oauth.app.id}?view=accounts`),
         );
@@ -675,7 +619,6 @@ const Deployed = Schema.Struct({ app: Schema.Struct({ id: Schema.String }) });
 const LocalLink = Schema.Struct({ connection: Schema.String, url: Schema.String });
 
 layer(TestLive, { excludeTestServices: true })("Local setup help", (it) => {
-  /** Deploy a local app through the agent API, deleting it when the scenario ends. */
   const deployLocal = (agent: Session, name: string, content: string) =>
     Effect.gen(function* () {
       const response = yield* agent.send("POST", "/v1/apps/deploy", {
@@ -704,7 +647,6 @@ layer(TestLive, { excludeTestServices: true })("Local setup help", (it) => {
         });
         expect(issued.status, JSON.stringify(issued.body)).toBe(200);
         const link = yield* body(LocalLink, issued);
-        // The agent reads the app's help before sending the link.
         const read = yield* agent
           .send("GET", `/v1/account-connections/${link.connection}`)
           .pipe(Effect.flatMap((response) => body(Connection, response)));
@@ -765,7 +707,6 @@ layer(TestLive, { excludeTestServices: true })("Local setup help", (it) => {
           agent.send("DELETE", `/v1/accounts/${account.id}`).pipe(Effect.orDie),
         );
 
-        // Local's provider row holds the definition without the app's help.
         const providers = yield* agent
           .send("GET", "/v1/providers?owner=local")
           .pipe(Effect.flatMap((response) => body(Schema.Array(StoredProvider), response)));
@@ -818,7 +759,6 @@ export default defineApp({}, { tools: router({
               ]),
             );
         });
-        // The image is its alt text; only the https link opens.
         expect(rendered).toEqual([0, 1, ["https://tickets.example.com/docs"], 1]);
       }),
     ),

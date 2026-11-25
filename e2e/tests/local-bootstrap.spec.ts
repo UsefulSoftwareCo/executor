@@ -24,19 +24,6 @@ const chosenNotice = "EXECUTOR_KEY_STORAGE=file; keys saved to ";
 const optIn = "set EXECUTOR_KEY_STORAGE=file";
 const leakedHex = "ab".repeat(32);
 
-/**
- * A stand-in for @napi-rs/keyring. It acts only when EXECUTOR_E2E_STAND_IN is set; otherwise it
- * finds nothing and refuses writes. Errors copy the package's keyring-core text:
- * - absent: the constructor throws, as Linux does without D-Bus or a Secret Service.
- * - denied: reads reject, as a cancelled macOS Keychain prompt does.
- * - denied-noisy: reads reject with a control character and a long hex run, which the
- *   message must strip and redact.
- * - dismissed: reads find nothing and the write rejects, as a dismissed Secret Service
- *   unlock prompt does.
- * - no-logon-session: reads reject with Windows ERROR_NO_SUCH_LOGON_SESSION.
- * - granted: a working store kept in EXECUTOR_E2E_STAND_IN_FILE.
- * The real store is never touched.
- */
 const standInKeyring = [
   'import { existsSync, readFileSync, writeFileSync } from "node:fs";',
   "const mode = process.env.EXECUTOR_E2E_STAND_IN;",
@@ -68,10 +55,8 @@ const standInKeyring = [
   "}",
 ].join("\n");
 
-/** Drive the packaged CLI against one data directory with an explicit environment. */
 const packagedCli = (options: {
   readonly keys: ReadonlyArray<string>;
-  /** A scratch directory for starting the CLI with the stand-in keyring; none uses the real one. */
   readonly standIn?: string;
 }) =>
   Effect.gen(function* () {
@@ -89,10 +74,8 @@ const packagedCli = (options: {
             options.standIn,
             "@napi-rs/keyring",
             standInKeyring,
-            // Other starts in the same scenario use the real module.
             "EXECUTOR_E2E_STAND_IN",
           );
-    // Startup deploys the bundled Executor app, which pins this checkout's apps release.
     const registry = yield* localNpmRegistry;
     const environment = (
       directory: string,
@@ -105,7 +88,6 @@ const packagedCli = (options: {
           return value === undefined ? [] : [[key, value] as const];
         }),
       ),
-      // Release scenarios never send product analytics, even from a build with a baked key.
       DO_NOT_TRACK: "1",
       EXECUTOR_DATA_DIR: directory,
       EXECUTOR_PORT: String(port),
@@ -133,15 +115,12 @@ const packagedCli = (options: {
         .readFileString(path.join(directory, "installation.json"))
         .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Record))));
 
-    /** Start until ready, prove the bearer key works, then stop. Returns output seen so far. */
     const start = (
       directory: string,
       options: {
         readonly apiKey?: () => Effect.Effect<string, unknown>;
         readonly env?: Readonly<Record<string, string>>;
-        /** A replaced key that must now be refused. */
         readonly previousKey?: string;
-        /** Run against the ready server on its port before it stops. */
         readonly during?: (port: number) => Effect.Effect<void, unknown, never>;
       } = {},
     ) =>
@@ -162,7 +141,6 @@ const packagedCli = (options: {
           const stdout = yield* collect(child.stdout);
           const stderr = yield* collect(child.stderr);
           const origin = `http://127.0.0.1:${port}`;
-          // The server listens before it opens storage and answers 503 until it is ready.
           const ready = http.get(`${origin}/auth/session`).pipe(
             Effect.filterOrFail(
               (response) => response.status === 200,
@@ -204,7 +182,6 @@ const packagedCli = (options: {
         }),
       );
 
-    /** Run to exit and return its exit code and complete stderr. */
     const refuse = (directory: string, env: Readonly<Record<string, string>> = {}) =>
       Effect.scoped(
         Effect.gen(function* () {
@@ -218,7 +195,6 @@ const packagedCli = (options: {
           return { code: Number(code), message };
         }),
       );
-    /** Run one command to exit and return its exit code and output. */
     const finish =
       (args: ReadonlyArray<string>) =>
       (directory: string, env: Readonly<Record<string, string>> = {}, serverPort?: number) =>
@@ -237,7 +213,6 @@ const packagedCli = (options: {
             return { code: Number(code), stdout, stderr };
           }),
         );
-    /** `executor --server <url>`: a client of a server it did not start, sent the saved API key. */
     const client = (url: string) => finish(["--server", url]);
     return {
       start,
@@ -288,7 +263,6 @@ it.live(scenarios.localBootstrap.title, () =>
       expect((yield* cli.readRecord(directory)).id).toBe(installation.id);
       expect((yield* credential.fingerprint) === first).toBe(true);
 
-      // Delete only this test's generated OS entry, then check refusal through the actual CLI.
       yield* credential.remove;
       const missing = yield* cli.refuse(directory);
       expect(missing.code).toBe(1);
@@ -306,16 +280,12 @@ it.live(scenarios.localBootstrapKeyFile.title, () =>
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const root = yield* fs.makeTempDirectoryScoped({ prefix: "executor-key-file-e2e-" });
-      // CI sets "absent" on Linux outside any D-Bus session, where Secret Service
-      // genuinely cannot be reached. Elsewhere the store is present, so the child
-      // loads a stand-in keyring module whose constructor fails as an absent store's does.
       const store = yield* Config.Literals(
         ["present", "absent"],
         "EXECUTOR_E2E_CREDENTIAL_STORE",
       ).pipe(Config.withDefault("present"));
       const absent: Record<string, string> =
         store === "present" ? { EXECUTOR_E2E_STAND_IN: "absent" } : {};
-      // No D-Bus variables reach the child, so Linux cannot find a Secret Service.
       const cli = yield* packagedCli({
         keys: ["PATH", "HOME", "USERPROFILE", "SystemRoot", "APPDATA", "LOCALAPPDATA"],
         standIn: root,
@@ -327,8 +297,6 @@ it.live(scenarios.localBootstrapKeyFile.title, () =>
           return directory;
         });
 
-      // First start without a store saves the keys to a private file and says so on stderr.
-      // Executor creates this directory itself, so its mode is Executor's choice.
       const directory = path.join(root, "first-start");
       const keyFile = path.join(directory, "keys.json");
       const readKeys = fs
@@ -339,7 +307,6 @@ it.live(scenarios.localBootstrapKeyFile.title, () =>
         env: absent,
       });
       expect(first.stderr).toContain(`${notice}${keyFile}`);
-      // stdout is the desktop readiness protocol and must never carry the notice.
       expect(first.stdout).not.toContain(notice);
       const installation = yield* cli.readRecord(directory);
       expect(installation.state).toBe("file");
@@ -354,7 +321,6 @@ it.live(scenarios.localBootstrapKeyFile.title, () =>
         .update(yield* fs.readFileString(keyFile))
         .digest("hex");
 
-      // Restart reuses the same file and record without a new notice.
       const restart = yield* cli.start(directory, {
         apiKey: () => Effect.succeed(keys.apiKey),
         env: absent,
@@ -367,7 +333,6 @@ it.live(scenarios.localBootstrapKeyFile.title, () =>
           .digest("hex"),
       ).toBe(fingerprint);
 
-      // Supplied keys cannot silently move a key-file directory to external keys.
       const supplied = yield* cli.refuse(directory, {
         ...absent,
         EXECUTOR_API_KEY: keys.apiKey,
@@ -377,7 +342,6 @@ it.live(scenarios.localBootstrapKeyFile.title, () =>
       expect(supplied.message).toContain("This directory uses its key file");
       expect(yield* cli.readRecord(directory)).toEqual(installation);
 
-      // Losing the key file stops startup instead of generating replacements.
       yield* fs.remove(keyFile);
       const lost = yield* cli.refuse(directory, absent);
       expect(lost.code).toBe(1);
@@ -385,7 +349,6 @@ it.live(scenarios.localBootstrapKeyFile.title, () =>
       expect(yield* fs.exists(keyFile)).toBe(false);
       expect(yield* cli.readRecord(directory)).toEqual(installation);
 
-      // A pending record from a first start without a store also falls back.
       const pending = yield* fresh("pending");
       const pendingRecord = { version: 1, id: crypto.randomUUID(), state: "pending" } as const;
       yield* fs.writeFileString(
@@ -396,7 +359,6 @@ it.live(scenarios.localBootstrapKeyFile.title, () =>
       expect(pendingStart.stderr).toContain(`${notice}${path.join(pending, "keys.json")}`);
       expect(yield* cli.readRecord(pending)).toEqual({ ...pendingRecord, state: "file" });
 
-      // A first start interrupted after saving its key file finishes with those keys.
       const interrupted = yield* fresh("interrupted");
       const interruptedRecord = { version: 1, id: crypto.randomUUID(), state: "pending" } as const;
       yield* fs.writeFileString(
@@ -414,7 +376,6 @@ it.live(scenarios.localBootstrapKeyFile.title, () =>
         JSON.stringify(keys),
       );
 
-      // A directory that already keeps its keys in the OS store never falls back.
       const keyring = yield* fresh("keyring");
       const readyRecord = { version: 1, id: crypto.randomUUID(), state: "ready" } as const;
       yield* fs.writeFileString(
@@ -427,7 +388,6 @@ it.live(scenarios.localBootstrapKeyFile.title, () =>
       expect(yield* fs.exists(path.join(keyring, "keys.json"))).toBe(false);
       expect(yield* cli.readRecord(keyring)).toEqual(readyRecord);
 
-      // Existing data without a record still refuses to create keys.
       const orphaned = yield* fresh("orphaned");
       yield* fs.makeDirectory(path.join(orphaned, "executor.pglite"));
       const unrecorded = yield* cli.refuse(orphaned, absent);
@@ -461,15 +421,12 @@ it.live(scenarios.localBootstrapDenied.title, () =>
           return directory;
         });
 
-      // A cancelled prompt on the first read stops startup and saves no keys anywhere.
       const directory = path.join(root, "first-start");
       const keyFile = path.join(directory, "keys.json");
       const cancelled = yield* cli.refuse(directory, as("denied"));
       expect(cancelled.code).toBe(1);
       expect(cancelled.message).toContain(deniedMessage);
       expect(cancelled.message).toContain("Start Executor again to be asked again");
-      // The platform text explains the failure; sessions without prompts get an
-      // unlock command, and a new directory gets the key file opt-in.
       expect(cancelled.message).toContain("(Platform failure: User canceled the operation.)");
       if (process.platform === "linux")
         expect(cancelled.message).toContain("`gnome-keyring-daemon --unlock`");
@@ -481,14 +438,12 @@ it.live(scenarios.localBootstrapDenied.title, () =>
       const pending = yield* cli.readRecord(directory);
       expect(pending.state).toBe("pending");
 
-      // A dismissed prompt when saving the new credential also stops without a key file.
       const dismissed = yield* cli.refuse(directory, as("dismissed"));
       expect(dismissed.code).toBe(1);
       expect(dismissed.message).toContain(deniedMessage);
       expect(yield* fs.exists(keyFile)).toBe(false);
       expect(yield* cli.readRecord(directory)).toEqual(pending);
 
-      // Granting access on a later start keeps the keys in the store.
       const granted = yield* cli.start(directory, {
         env: as("granted"),
         apiKey: () =>
@@ -508,15 +463,12 @@ it.live(scenarios.localBootstrapDenied.title, () =>
       expect(yield* fs.exists(keyFile)).toBe(false);
       expect(yield* cli.readRecord(directory)).toEqual({ ...pending, state: "ready" });
 
-      // Once ready, denied access still never falls back.
       const later = yield* cli.refuse(directory, as("denied"));
       expect(later.code).toBe(1);
       expect(later.message).toContain(deniedMessage);
-      // A ready directory cannot switch, so the opt-in is not offered.
       expect(later.message).not.toContain(optIn);
       expect(yield* fs.exists(keyFile)).toBe(false);
 
-      // Platform text is sanitized before display.
       const noisy = yield* cli.refuse(directory, as("denied-noisy"));
       expect(noisy.code).toBe(1);
       expect(noisy.message).toContain("(Couldn't access platform storage: locked [redacted])");
@@ -524,7 +476,6 @@ it.live(scenarios.localBootstrapDenied.title, () =>
       expect(noisy.message).not.toContain("\u0007");
       expect((yield* cli.readRecord(directory)).state).toBe("ready");
 
-      // A pending record left by a denied start still falls back if the store is absent.
       const retried = yield* fresh("denied-then-absent");
       const denied = yield* cli.refuse(retried, as("denied"));
       expect(denied.code).toBe(1);
@@ -533,8 +484,6 @@ it.live(scenarios.localBootstrapDenied.title, () =>
       expect(absent.stderr).toContain(`${notice}${path.join(retried, "keys.json")}`);
       expect(yield* cli.readRecord(retried)).toEqual({ ...retriedRecord, state: "file" });
 
-      // Windows reports a logon session without a credential vault as absent; elsewhere
-      // that text is not a recognized absence and counts as denied.
       const session = yield* fresh("no-logon-session");
       if (process.platform === "win32") {
         const saved = yield* cli.start(session, { env: as("no-logon-session") });
@@ -576,8 +525,6 @@ it.live(scenarios.localBootstrapKeyStorage.title, () =>
           .readFileString(file)
           .pipe(Effect.map((text) => createHash("sha256").update(text).digest("hex")));
 
-      // A first start with a working store still uses keys.json when asked, and
-      // never writes the store.
       const chosen = path.join(root, "chosen");
       const chosenKeyFile = path.join(chosen, "keys.json");
       const first = yield* cli.start(chosen, {
@@ -597,7 +544,6 @@ it.live(scenarios.localBootstrapKeyStorage.title, () =>
       const keys = yield* readKeys(chosen);
       const chosenFingerprint = yield* fingerprint(chosenKeyFile);
 
-      // On a file directory the opt-in is a no-op, and later starts need no opt-in.
       for (const env of [as("granted", "file"), as("granted")]) {
         const again = yield* cli.start(chosen, { env, apiKey: () => Effect.succeed(keys.apiKey) });
         expect(again.stderr).not.toContain(chosenNotice);
@@ -606,7 +552,6 @@ it.live(scenarios.localBootstrapKeyStorage.title, () =>
       }
       expect(yield* fs.exists(storeFile)).toBe(false);
 
-      // Requiring the OS store on a file directory fails without changes.
       const toStore = yield* cli.refuse(chosen, as("granted", "os"));
       expect(toStore.code).toBe(1);
       expect(toStore.message).toContain(
@@ -616,7 +561,6 @@ it.live(scenarios.localBootstrapKeyStorage.title, () =>
       expect(yield* fingerprint(chosenKeyFile)).toBe(chosenFingerprint);
       expect(yield* fs.exists(storeFile)).toBe(false);
 
-      // A pending directory left by denied access can opt in on its next start.
       const pending = path.join(root, "pending");
       const denied = yield* cli.refuse(pending, as("denied"));
       expect(denied.code).toBe(1);
@@ -631,7 +575,6 @@ it.live(scenarios.localBootstrapKeyStorage.title, () =>
       expect(yield* cli.readRecord(pending)).toEqual({ ...pendingRecord, state: "file" });
       expect(yield* fs.exists(storeFile)).toBe(false);
 
-      // A directory that keeps its keys in the OS store is never switched.
       const ready = path.join(root, "ready");
       yield* cli.start(ready, { env: as("granted") });
       const readyRecord = yield* cli.readRecord(ready);
@@ -647,12 +590,10 @@ it.live(scenarios.localBootstrapKeyStorage.title, () =>
       expect(yield* fs.exists(path.join(ready, "keys.json"))).toBe(false);
       expect(yield* cli.readRecord(ready)).toEqual(readyRecord);
       expect(yield* fingerprint(storeFile)).toBe(storeFingerprint);
-      // Requiring the store it already uses is a no-op.
       yield* cli.start(ready, { env: as("granted", "os") });
       expect(yield* cli.readRecord(ready)).toEqual(readyRecord);
       expect(yield* fingerprint(storeFile)).toBe(storeFingerprint);
 
-      // Requiring the store disables the automatic fallback on a first start.
       const required = path.join(root, "required");
       const absent = yield* cli.refuse(required, as("absent", "os"));
       expect(absent.code).toBe(1);
@@ -662,7 +603,6 @@ it.live(scenarios.localBootstrapKeyStorage.title, () =>
       expect(yield* fs.exists(path.join(required, "keys.json"))).toBe(false);
       expect((yield* cli.readRecord(required)).state).toBe("pending");
 
-      // Supplied keys are never stored, so a storage choice cannot apply to them.
       const supplied = path.join(root, "supplied");
       const withKeys = yield* cli.refuse(supplied, {
         ...as("granted", "file"),
@@ -673,7 +613,6 @@ it.live(scenarios.localBootstrapKeyStorage.title, () =>
       expect(withKeys.message).toContain("EXECUTOR_KEY_STORAGE cannot apply");
       expect(yield* fs.exists(path.join(supplied, "keys.json"))).toBe(false);
 
-      // An unknown value lists the valid ones and creates nothing.
       const invalid = path.join(root, "invalid");
       const unknown = yield* cli.refuse(invalid, as("granted", "keyring"));
       expect(unknown.code).toBe(1);
@@ -718,7 +657,6 @@ it.live(scenarios.localBootstrapRotation.title, () =>
             Schema.decodeUnknownEffect(Schema.fromJsonString(KeyFile))(saved[id]),
           ),
         );
-      /** The server accepts the new key and refuses the one it replaced. */
       const accepts = (
         directory: string,
         env: Readonly<Record<string, string>>,
@@ -726,7 +664,6 @@ it.live(scenarios.localBootstrapRotation.title, () =>
         previousKey: string,
       ) => cli.start(directory, { env, apiKey: () => Effect.succeed(key), previousKey });
 
-      // A directory with no saved keys has nothing to rotate and is left untouched.
       const empty = path.join(root, "empty");
       const nothing = yield* cli.rotate(empty, as("granted"));
       expect(nothing.code).toBe(1);
@@ -734,7 +671,6 @@ it.live(scenarios.localBootstrapRotation.title, () =>
       expect(nothing.stderr).toContain(unchanged);
       expect(yield* fs.exists(path.join(empty, "installation.json"))).toBe(false);
 
-      // keys.json: the API key is replaced in place, the encryption key and record are kept.
       const file = path.join(root, "file");
       const keyFile = path.join(file, "keys.json");
       yield* cli.start(file, { env: as("granted", "file") });
@@ -753,7 +689,6 @@ it.live(scenarios.localBootstrapRotation.title, () =>
       expect(yield* fs.exists(storeFile)).toBe(false);
       yield* accepts(file, as("granted"), after.apiKey, before.apiKey);
 
-      // OS credential store: the same credential entry is rewritten, and keys.json never appears.
       const ready = path.join(root, "ready");
       yield* cli.start(ready, { env: as("granted") });
       const readyRecord = yield* cli.readRecord(ready);
@@ -768,14 +703,12 @@ it.live(scenarios.localBootstrapRotation.title, () =>
       expect(yield* cli.readRecord(ready)).toEqual(readyRecord);
       yield* accepts(ready, as("granted"), restored.apiKey, stored.apiKey);
 
-      // Denied store access changes nothing and says so.
       const denied = yield* cli.rotate(ready, as("denied"));
       expect(denied.code).toBe(1);
       expect(denied.stderr).toContain("Access to the OS credential store was denied");
       expect(denied.stderr).toContain(unchanged);
       expect(yield* storedKeys(readyRecord.id)).toEqual(restored);
 
-      // Supplied keys are never stored, so they cannot be rotated here.
       const supplied = yield* cli.rotate(file, {
         ...as("granted"),
         EXECUTOR_API_KEY: after.apiKey,
@@ -806,7 +739,6 @@ it.live(scenarios.localBootstrapPair.title, () =>
         EXECUTOR_E2E_STAND_IN: mode,
         EXECUTOR_E2E_STAND_IN_FILE: storeFile,
       });
-      /** The record and the stand-in store, which pairing must leave as they were. */
       const saved = (directory: string) =>
         Effect.all([
           fs.readFileString(path.join(directory, "installation.json")),
@@ -830,15 +762,11 @@ it.live(scenarios.localBootstrapPair.title, () =>
             const before = yield* saved(ready);
             const origin = `http://127.0.0.1:${port}`;
             const link = new RegExp(`^http://127\\.0\\.0\\.1:${port}/#pair=[a-f0-9]{64}$`, "u");
-            // `executor service pair` sends the password the running server registered and reads no
-            // keys, so a store that denies access or cannot be found does not stop it.
             for (const mode of ["granted", "denied", "absent"]) {
               const paired = yield* cli.pair(ready, as(mode), port);
               expect(paired.code, paired.stderr).toBe(0);
               expect(paired.stdout.trim()).toMatch(link);
             }
-            // A client of a server it did not start sends the key saved where its directory keeps
-            // it, here the OS store, which that server accepts.
             const joined = yield* cli.client(origin)(ready, as("granted"), port);
             expect(joined.code, joined.stderr).toBe(0);
             const lines = joined.stdout.trim().split("\n");
@@ -855,9 +783,7 @@ it.live(scenarios.localBootstrapPair.title, () =>
       expect(stopped.stderr).toContain(`No background Executor is running for ${ready}.`);
       expect(yield* saved(ready)).toEqual(before);
 
-      // The client reads its key before it sends anything, so these fail before any request.
       const nowhere = `http://127.0.0.1:${yield* freePort}`;
-      // Denied store access is reported, and the client never falls back to a key file.
       const denied = yield* cli.client(nowhere)(ready, as("denied"));
       expect(denied.code).toBe(1);
       expect(denied.stderr).toContain("Access to the OS credential store was denied");
@@ -868,7 +794,6 @@ it.live(scenarios.localBootstrapPair.title, () =>
       expect(absent.stderr).toContain("OS credential store could not be found");
       expect(yield* saved(ready)).toEqual(before);
 
-      // A credential missing from the store is reported and never replaced.
       const lost = path.join(root, "lost");
       yield* record(lost, "ready");
       const lostBefore = yield* saved(lost);
@@ -877,7 +802,6 @@ it.live(scenarios.localBootstrapPair.title, () =>
       expect(missing.stderr).toContain("OS credential is missing");
       expect(yield* saved(lost)).toEqual(lostBefore);
 
-      // A first start that never finished has no keys to send, and its record stays pending.
       const pending = path.join(root, "pending");
       yield* record(pending, "pending");
       const pendingBefore = yield* saved(pending);

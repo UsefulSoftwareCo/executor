@@ -1,8 +1,3 @@
-/**
- * A host of the MCP Skills extension: the official TypeScript SDK's `SkillsClient`, which lists,
- * gets and reads a server's skills and checks every file's size, digest and frontmatter against the
- * entry it listed. Scenarios use it as a real client would, through Executor's `/mcp`.
- */
 import { Client, ProtocolError, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { SkillsClient } from "@modelcontextprotocol/client/ext/skills";
 import { Context, Effect, Layer, Redacted } from "effect";
@@ -11,7 +6,6 @@ import { Evidence } from "./evidence.ts";
 import { Target, driver } from "./platform.ts";
 import { reveal } from "./failure-text.ts";
 
-/** The revision a client speaks: the stateless 2026-07-28, or the sessionful 2025-11-25. */
 export type SkillsRevision = "2026-07-28" | "2025-11-25";
 
 const make = Effect.gen(function* () {
@@ -23,15 +17,12 @@ const make = Effect.gen(function* () {
       label: string,
       options: {
         readonly revision: SkillsRevision;
-        /** X-Executor-Organization, for a hosted credential that is not bound to one. */
         readonly organization?: string;
-        /** A scoped connection's ID, for its own `/mcp?connection=` URL. */
         readonly connection?: string;
       },
     ) =>
       Effect.gen(function* () {
         const methods: string[] = [];
-        // Record methods only; the credential stays out of the evidence.
         const observedFetch: typeof fetch = (input, init) => {
           const request = new Request(input, init);
           request.headers.set("authorization", `Bearer ${reveal(accessToken)}`);
@@ -82,7 +73,6 @@ const make = Effect.gen(function* () {
               operation,
               driver(operation, () => action(skills, client)),
             ),
-          /** The JSON-RPC error code a request is refused with, or `undefined` when it succeeds. */
           refusal: (
             operation: string,
             action: (skills: SkillsClient, client: Client) => Promise<unknown>,
@@ -103,7 +93,6 @@ const make = Effect.gen(function* () {
   };
 });
 
-/** Case-scoped factory: each connected client has its own Effect lifetime. */
 export class McpSkillsClient extends Context.Service<
   McpSkillsClient,
   Effect.Success<typeof make>

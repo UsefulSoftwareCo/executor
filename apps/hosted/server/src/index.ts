@@ -1,4 +1,3 @@
-/** Hosted product composition, shared by cloud and self-host only. */
 export { requestServices } from "./implementation/request-services.ts";
 export * from "./contracts/product-analytics.ts";
 export { withExecutorAnalytics } from "./implementation/product-analytics.ts";

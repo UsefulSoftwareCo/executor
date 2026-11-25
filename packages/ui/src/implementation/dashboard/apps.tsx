@@ -18,7 +18,6 @@ import {
 import { AppIcon, Empty, SearchInput } from "./common.tsx";
 import { Button } from "../components/button.tsx";
 
-/** A card for each configured app and its linked accounts. */
 export function AppsPage<E>({
   action,
   connect,
@@ -46,8 +45,6 @@ export function AppsPage<E>({
         {connect}
         {(!Option.isSome(data) || data.value.apps.length > 0 || pending) && action}
       </PageHeader>
-      {/* Controls above cards should use half-card or full-card widths. Search uses a full
-          card and Filters uses half a card at each grid breakpoint. Phones share one row. */}
       <div className="list-toolbar apps-toolbar mb-4 flex flex-wrap items-center gap-4 max-[600px]:mb-3 max-[600px]:flex-nowrap max-[600px]:gap-2">
         {(!Option.isSome(data) || data.value.apps.length > 0 || pending || search.length > 0) && (
           <div className="w-[calc((100%_-_2rem)/3)] shrink-0 max-[1100px]:w-[calc((100%_-_1rem)/2)] max-[600px]:w-auto max-[600px]:min-w-0 max-[600px]:flex-1">
@@ -120,8 +117,6 @@ function AppsList({
               return account === undefined ? [] : [account];
             });
             const shared = data.appLinks.filter((link) => link.app === app.id);
-            // The inventory names no requirements for user links, so a user requirement counts
-            // any linked account of its provider. App links name theirs.
             const user = Object.entries(app.requirements.accounts).flatMap(([slot, requirement]) =>
               requirement.scope === "user"
                 ? userLinked
@@ -135,8 +130,6 @@ function AppsList({
             }));
             const missing =
               missingRequirements(requirementAccounts(app, { user, app: appScope })).length > 0;
-            // Each linked account once, user links first. A shared account the caller does not
-            // own shows its link's label and no sign-in state.
             const linked: { readonly id: AccountId; readonly label: string }[] = [];
             for (const account of [
               ...userLinked,

@@ -1,80 +1,3 @@
-/**
- * Builds the Rust telemetry collector (`packages/telemetry/collector`) for one release target, checks
- * the result against the platform floors, smoke-tests it, and writes it with its licence notices to
- * `packages/telemetry/dist/collector/`. Every consumer builds the collector through this script, so
- * the flags, path remapping and deployment targets live here, and this file is part of the
- * artifact's identity.
- *
- *   node packages/telemetry/scripts/build-collector.ts [--target <target>] --key
- *   node packages/telemetry/scripts/build-collector.ts [--target <target>] [--verbose] <step>...
- *
- * `<target>` is one of the release targets (`linux-x64`, `linux-arm64`, `darwin-arm64`, `darwin-x64`,
- * `win32-x64`) and defaults to the host's. The steps run in the order given:
- *
- * - `build`: builds with the pinned toolchain and writes `dist/collector/` (the executable,
- *   `NOTICE`, `licenses/`, `cargo-packages.txt` and `identity`). It does nothing when `identity`
- *   already holds this tree's key. Outside CI it first looks in the shared store (below) for a
- *   build of the same key and copies it. Cargo's intermediate files go to the shared cache, never
- *   into the workspace.
- * - `notices`: rewrites the licence files and package list in `dist/collector/`.
- * - `check`: the platform checks on the built executable: architecture, size, the newest glibc
- *   symbol and the shared libraries on Linux, the minimum macOS version and the linked libraries on
- *   macOS, the C runtime imports on Windows, and no build machine paths.
- * `--executable <file>` makes `check` and `smoke` read that file instead of the build, such as the
- * copy a package carries; `--packaged` makes `check` require it to be the build's own bytes (its
- * SHA-256 and size, recorded in `executable.sha256` when it was built) in place of the build machine
- * path search, so it needs no Rust toolchain.
- * - `smoke`: starts the built executable on a temporary store and port, sends one span and one log,
- *   reads the ingest counters, stops it and starts it again on the same store. It needs neither git
- *   nor Rust, so CI also runs it in an `ubuntu:22.04` container, the oldest glibc supported.
- *
- * `--key` prints the artifact's identity: a SHA-256 of the crate's files as the compiler sees them
- * (everything in its directory, whatever git ignores, but its own `target/` and the editor and OS
- * leftovers `.DS_Store`, `.#*`, `#*#`, `*~`, `.*.swp` and `.*.swo`; a link to nothing counts by its
- * target's name), this script, the target, and the C compiler and linker on this host. Caches store
- * the build under it.
- *
- * `--verbose` runs cargo with `-vv`, which prints every command it runs, and the compiler with
- * `RUST_BACKTRACE=1`. Neither is part of the identity, and neither changes the executable's bytes.
- *
- * The tools see only the variables `toolEnv` keeps; the rest of the caller's environment is dropped.
- * Kept are the variables that find the tools (`keptVariables`), plus two groups that do not change
- * what is compiled:
- * - `CARGO_BUILD_JOBS`, how many compiler processes run at once, so a host can bound a cold build.
- * - The proxy and certificate variables (`fetchVariables`), passed to `cargo fetch` alone, so a host
- *   behind a proxy can download crates. They decide whether crates download, not which:
- *   `cargo fetch --locked` checks every crate against the lockfile's checksum, and the compile runs
- *   `--offline`.
- * Dropped though they do not change the bytes either:
- * - The jobserver variables, `MAKEFLAGS`, `MFLAGS` and `CARGO_MAKEFLAGS`: `CARGO_BUILD_JOBS` is the
- *   one supported way to bound the build.
- * - Diagnostics and locale (`RUST_BACKTRACE`, `RUST_LOG`, `CARGO_LOG`, `CARGO_TERM_*`, `LANG`,
- *   `LC_*`): a variable the caller sets never reaches the compiler; `--verbose` asks for the output
- *   instead.
- * Everything else that is dropped can change the bytes: compilers, linkers and their flags, wrappers,
- * Cargo's profile and target settings, build scripts' inputs, and SDK selection (`keptVariables`).
- *
- * The pinned toolchain must already be installed: without it the script stops and prints the one
- * command that installs it. `--install-toolchain` installs it and the target's standard library
- * (alone, or before `--key` or the steps), for CI and release runners.
- *
- * The shared cache is `$EXECUTOR_COLLECTOR_CACHE` (an absolute path), or `executor-collector` in the
- * platform's cache directory (`$XDG_CACHE_HOME` or `~/.cache`, `~/Library/Caches`,
- * `%LOCALAPPDATA%`). It holds `target/<crate path hash>/`, cargo's output for one workspace's crate,
- * kept while used and removed after `targetDays` days unused or when the directories pass
- * `targetBytes` in all, least recently used first; and, outside CI, `store/<target>/<key>/`, finished
- * builds by identity, at most `storeEntries` a target and none unused for `storeDays` days. A
- * build is written beside the store (`<key>.partial-<pid>-<random>`) and renamed into it, and handed
- * out by copying, never by link: nothing in a workspace can write through to it. A partial copy
- * whose writer has exited, or that is older than an hour, is removed, and partial copies count
- * against the bound. An entry, and a workspace's own build, is used only when its executable has
- * the SHA-256 and size recorded beside it when it was built; a damaged entry is removed and the
- * build compiled again. Builds of one identity that start together compile once: the first takes
- * `locks/<target>/<key>.lock` in the cache and the others wait for its stored build (`takeLock`).
- * A store that cannot be written is said loudly, in the build's output and in `e2e:prepare`'s
- * summary, and noted in `locks/<target>/store-unwritable`, so builds that would wait compile at
- * once; the note goes when a build is stored again, and is ignored after an hour (`storeBroken`). Nothing after a whole, checked build fails it.
- */
 import { spawn, spawnSync, type ChildProcess, type SpawnSyncReturns } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
@@ -82,7 +5,6 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-/** A failure the script reports in one line and exits 1 for. */
 class CollectorBuildError extends Error {
   readonly _tag = "CollectorBuildError";
 }
@@ -99,7 +21,6 @@ type Target = {
   readonly triple: string;
   readonly os: Os;
   readonly arch: Arch;
-  /** `LC_BUILD_VERSION minos` on macOS. Pinned so a toolchain update cannot raise it unnoticed. */
   readonly macosMinimum: string | undefined;
 };
 
@@ -141,21 +62,12 @@ const targets: ReadonlyArray<Target> = [
   },
 ];
 
-/** The newest glibc symbol version the Linux executable may need: the CLI's bundled workerd needs it. */
 const glibcCeiling = [2, 35] as const;
-/** The shared libraries the Linux executable may link. */
 const linuxLibraries =
   /^(libc\.so\.6|libm\.so\.6|libgcc_s\.so\.1|ld-linux-(x86-64|aarch64)\.so\.[12])$/u;
-/** The Windows C runtime DLLs that `+crt-static` keeps out of the import table. */
 const windowsRuntime = /^(vcruntime.*|msvcp.*|ucrtbase.*|api-ms-win-crt-.*)\.dll$/iu;
 const maxBytes = 15 * 1024 * 1024;
-/** The licence and notice files copied from each package, as `scripts/releases/runtime-bundle.ts` does. */
 const noticeFile = /^(licen[sc]e|notice|copying|copyright|third.party)([._-]|$)/iu;
-/**
- * A file that grants the package's licence: `LICENSE*`, `LICENCE*`, `COPYING*` or `UNLICENSE*`, but
- * not a supplemental one such as `LICENSE-THIRD-PARTY` or `LICENSE.notice`. A `NOTICE` or
- * `COPYRIGHT` file adds to a licence and grants none, so it never satisfies the gate alone.
- */
 const primaryLicence = (name: string) =>
   /^(un)?licen[sc]e([._-]|$)|^copying([._-]|$)/iu.test(name) && !/third.party|notice/iu.test(name);
 
@@ -164,7 +76,6 @@ const root = path.resolve(path.dirname(script), "../../..");
 const crate = path.join(root, "packages/telemetry/collector");
 const output = path.join(root, "packages/telemetry/dist/collector");
 
-/** The shared cache: one directory per machine and user, the same rule on every host. */
 const cacheRoot = (): string => {
   const set = process.env.EXECUTOR_COLLECTOR_CACHE;
   if (set !== undefined && set !== "") {
@@ -183,41 +94,18 @@ const cacheRoot = (): string => {
           : path.join(os.homedir(), ".cache");
   return path.join(base, "executor-collector");
 };
-/**
- * Cargo's output for this checkout's crate. The path remapping in `rustFlags` names the crate's
- * directory, so two checkouts never share one: each would rebuild every crate the other built.
- */
 const targetDirectory = (): string =>
   path.join(cacheRoot(), "target", createHash("sha256").update(crate).digest("hex").slice(0, 16));
-/** Cargo's output directories kept in all: about 130 MB each for one target. */
 const targetBytes = 3 * 1024 * 1024 * 1024;
 const targetDays = 14;
-/** Finished builds kept per target, and for how long unused. A build is about 7 MB. */
 const storeEntries = 32;
 const storeDays = 30;
-/** No cleanup removes what was used this recently: another build may be using it now. */
 const inUseMs = 60 * 60 * 1000;
-/** CI never reads or writes the store, as `scripts/e2e-prepare.ts` keeps no cache there. */
 const storeEnabled = () => process.env.CI === undefined || process.env.CI === "";
 
 const executableName = (target: Target) =>
   target.os === "win32" ? "executor-collector.exe" : "executor-collector";
 
-// ---------------------------------------------------------------------------------------------
-// Processes
-
-/**
- * The variables rustup, cargo, rustc and the C compiler and linker they run may see. Everything
- * else is dropped, so nothing in the caller's environment can change the bytes without changing the
- * identity: `CC`, `CFLAGS`, `LDFLAGS` and their per-target forms, `LIBSQLITE3_FLAGS`, `SDKROOT`,
- * `RUSTFLAGS`, every `CARGO_*` setting but `CARGO_HOME`, a Visual Studio developer prompt's
- * `INCLUDE` and `LIB`, and any other variable a build script reads. What is kept only finds the tools (`PATH`, the homes,
- * the Windows system directories the MSVC lookup uses), and the identity records the versions of
- * the tools this environment finds. One more is kept, `CARGO_BUILD_JOBS`: it sets how many
- * compiler processes run at once, so a host can hold a cold build to its share of the cores, and
- * not what any of them produces (the release profile's codegen units are fixed), so it stays out of
- * the identity. Compared with names in upper case, as Windows does.
- */
 const keptVariables: ReadonlySet<string> = new Set([
   "PATH",
   "HOME",
@@ -248,12 +136,6 @@ const keptVariables: ReadonlySet<string> = new Set([
   "OS",
 ]);
 
-/**
- * Variables `cargo fetch` alone is given, so it can download through a proxy that needs them: they
- * decide whether crates download, not which, since `--locked` checks each crate against the
- * lockfile's checksum. The compile runs `--offline` and never sees them. Compared in upper case, and
- * passed with the caller's own spelling (`https_proxy` as well as `HTTPS_PROXY`).
- */
 const fetchVariables: ReadonlySet<string> = new Set([
   "HTTP_PROXY",
   "HTTPS_PROXY",
@@ -272,24 +154,16 @@ const fetchEnv = (): NodeJS.ProcessEnv =>
     ),
   );
 
-/** The pinned Rust release, from the crate's `rust-toolchain.toml`. */
 const pinnedToolchain = (): string =>
   fs
     .readFileSync(path.join(crate, "rust-toolchain.toml"), "utf8")
     .match(/^channel\s*=\s*"([^"]+)"\s*$/mu)?.[1] ??
   fail("Cannot read the channel from packages/telemetry/collector/rust-toolchain.toml");
 
-/**
- * The environment for every Rust and C tool this script runs: the kept variables, the pinned
- * toolchain named explicitly in `RUSTUP_TOOLCHAIN` (it takes precedence over a `rustup override`
- * for the directory and over `rust-toolchain.toml`), and `extra`.
- */
 const toolEnv = (extra: Record<string, string>): NodeJS.ProcessEnv => {
   const env: NodeJS.ProcessEnv = {};
   for (const [name, value] of Object.entries(process.env))
     if (keptVariables.has(name.toUpperCase())) env[name] = value;
-  // RUSTUP_AUTO_INSTALL=0: a toolchain named in RUSTUP_TOOLCHAIN that is missing is an error, never
-  // a download; only `--install-toolchain` installs one (`installToolchain`).
   return {
     ...env,
     CARGO_HOME: cargoHome(),
@@ -302,7 +176,6 @@ const toolEnv = (extra: Record<string, string>): NodeJS.ProcessEnv => {
 type Run = {
   readonly cwd?: string;
   readonly env?: NodeJS.ProcessEnv;
-  /** What to say when the command cannot run or fails, before its own output. */
   readonly failure: string;
 };
 
@@ -318,7 +191,6 @@ const runResult = (command: string, args: ReadonlyArray<string>, options: Run) =
   return result;
 };
 
-/** Runs a command to completion and returns its stdout; fails with its output when it fails. */
 const capture = (command: string, args: ReadonlyArray<string>, options: Run): string => {
   const result = runResult(command, args, options);
   if (result.status !== 0)
@@ -328,10 +200,6 @@ const capture = (command: string, args: ReadonlyArray<string>, options: Run): st
   return result.stdout;
 };
 
-/**
- * Runs a command with its output on this process's stderr, so `--key` prints only the key, and
- * fails when it fails.
- */
 const stream = (command: string, args: ReadonlyArray<string>, options: Run): void => {
   const result = spawnSync(command, args, {
     cwd: options.cwd ?? root,
@@ -346,15 +214,6 @@ const stream = (command: string, args: ReadonlyArray<string>, options: Run): voi
     );
 };
 
-// ---------------------------------------------------------------------------------------------
-// Toolchain
-
-/**
- * Cargo's home, by Cargo's own rule: `CARGO_HOME` when it is set and not empty, otherwise `.cargo`
- * in the home directory. Every tool this script runs is given this same absolute path, and the
- * Cargo config check looks there. A relative `CARGO_HOME` is refused: each tool would resolve it
- * from the directory it runs in, and this script from its own.
- */
 const cargoHome = (): string => {
   const set = process.env.CARGO_HOME;
   const home = set === undefined || set === "" ? path.join(os.homedir(), ".cargo") : set;
@@ -365,7 +224,6 @@ const cargoHome = (): string => {
   return path.resolve(home);
 };
 
-/** The one command that installs the pinned toolchain, and `target`'s library when it needs one. */
 const installCommand = (target: Target) => {
   const toolchain = pinnedToolchain();
   const host = target.name === hostTarget();
@@ -382,10 +240,6 @@ const requireRustup = (target: Target) => {
     );
 };
 
-/**
- * Stops, printing the command that installs it, unless the pinned toolchain and `target`'s standard
- * library are installed. Never installs anything.
- */
 const requireToolchain = (target: Target) => {
   requireRustup(target);
   const toolchain = pinnedToolchain();
@@ -402,11 +256,9 @@ const requireToolchain = (target: Target) => {
     );
 };
 
-/** The pinned toolchain, installed with `--install-toolchain` or required to be present already. */
 const toolchainReady = (target: Target, install: boolean) =>
   install ? installToolchain(target) : requireToolchain(target);
 
-/** Installs the pinned toolchain and `target`'s standard library; both are no-ops once present. */
 const installToolchain = (target: Target) => {
   requireRustup(target);
   const toolchain = pinnedToolchain();
@@ -418,9 +270,6 @@ const installToolchain = (target: Target) => {
       failure: "Cannot install the pinned Rust toolchain from static.rust-lang.org",
     },
   );
-  // Only darwin-x64, built on an Apple Silicon runner, is not the host's own target. Adding it here
-  // rather than in rust-toolchain.toml keeps every other machine from downloading four standard
-  // libraries it never uses.
   stream("rustup", ["target", "add", "--toolchain", toolchain, target.triple], {
     cwd: crate,
     failure: `Cannot install the ${target.triple} standard library from static.rust-lang.org`,
@@ -433,19 +282,9 @@ const sysroot = () =>
     failure: "Cannot find the Rust toolchain",
   }).trim();
 
-// ---------------------------------------------------------------------------------------------
-// Identity
-
 const sha256 = (data: string | Buffer) => createHash("sha256").update(data).digest("hex");
 
-/**
- * The tools that turn the crate into bytes, as `toolEnv` finds them: the pinned Rust toolchain
- * (`rustc -vV`, `cargo -vV`), the C compiler that builds the bundled SQLite and the linker that
- * links the executable.
- */
 const hostTools = (target: Target): Record<string, string> => {
-  // Some tools print their version and still exit non-zero (Apple's `ld -v` with no input), so
-  // `anyStatus` takes what they printed.
   const output = (command: string, args: ReadonlyArray<string>, anyStatus = false) => {
     const result = runResult(command, args, {
       cwd: crate,
@@ -501,13 +340,6 @@ const hostTools = (target: Target): Record<string, string> => {
   }
 };
 
-/**
- * The Cargo configuration files in effect for the crate: `.cargo/config.toml` or `.cargo/config` in
- * the crate's directory or any directory above it, and in `CARGO_HOME`. The identity makes its
- * promise only when there are none, as on every CI and release runner. Cargo resolves a config's
- * values against where the file is, and an `[env]` entry can choose another compiler, so neither
- * its text nor its place says what it changes; a build with one in effect is never cached.
- */
 const cargoConfigFiles = (): ReadonlyArray<string> => {
   const directories: string[] = [];
   for (let directory = crate; ; directory = path.dirname(directory)) {
@@ -526,7 +358,6 @@ const cargoConfigFiles = (): ReadonlyArray<string> => {
   ];
 };
 
-/** Whether anything is at `file`, a link to nothing included. */
 const present = (file: string): boolean => {
   try {
     fs.lstatSync(file);
@@ -536,11 +367,6 @@ const present = (file: string): boolean => {
   }
 };
 
-/**
- * Whether what is at a config path is a regular file, through links; fails otherwise. This is the
- * script's own rule, deliberately stricter than Cargo, which ignores a link to nothing there: no
- * key is made while anything other than a readable config file sits at a config path.
- */
 const regularFile = (file: string): true => {
   let stat: fs.Stats;
   try {
@@ -557,15 +383,8 @@ const regularFile = (file: string): true => {
   return true;
 };
 
-/** The `identity` of a build a Cargo config affected. A key is 64 hex digits, so none equals it. */
 const uncacheable = "uncacheable: a Cargo config file was in effect";
 
-/**
- * Names editors and operating systems leave beside files, which no compile reads: `.DS_Store`,
- * Emacs's lock links `.#*` and autosaves `#*#`, backups `*~`, and vim's swap files `.*.swp` and
- * `.*.swo`. Exact patterns, matched against a file's or link's own name and never a directory's;
- * no other name is left out, so a near miss (`main.swp`, `x.rs~1`) still counts.
- */
 const editorLeftover = (name: string) =>
   name === ".DS_Store" ||
   name.startsWith(".#") ||
@@ -573,14 +392,6 @@ const editorLeftover = (name: string) =>
   name.endsWith("~") ||
   /^\..+\.sw[po]$/u.test(name);
 
-/**
- * The crate's files as the compiler sees them: everything in its directory, whatever git ignores,
- * but `target/`, where `cargo test` and `cargo build` run in the crate write their output, and
- * `editorLeftover` names. Paths relative to the repository, with forward slashes, sorted. A link to
- * a file counts as its target and its contents, and a link to nothing as its target alone; a link
- * to a directory, or anything else that is not a file or a directory, is refused, since its
- * contents could change without changing what is hashed here.
- */
 const crateFiles = (): ReadonlyArray<string> => {
   const files: string[] = [];
   const walk = (directory: string) => {
@@ -601,18 +412,11 @@ const crateFiles = (): ReadonlyArray<string> => {
   return files.map((file) => path.relative(root, file).split(path.sep).join("/")).sort();
 };
 
-/** What a link in the crate points at: a file, nothing at all, or something else. */
 const linked = (link: string): "file" | "nothing" | "other" => {
   const stat = fs.statSync(link, { throwIfNoEntry: false });
   return stat === undefined ? "nothing" : stat.isFile() ? "file" : "other";
 };
 
-/**
- * The artifact identity of `target` built from this tree on this host: the crate's files (`crateFiles`), this
- * script, the target and the tools `toolEnv` finds. `toolEnv` keeps the caller's other variables
- * out of the build. It is a cacheable identity only while no Cargo config file is in effect
- * (`cargoConfigFiles`); callers check that first. Needs the pinned toolchain installed.
- */
 const identity = (target: Target): string => {
   const hash = createHash("sha256");
   hash.update(
@@ -634,10 +438,6 @@ const identity = (target: Target): string => {
   return hash.digest("hex");
 };
 
-// ---------------------------------------------------------------------------------------------
-// Build
-
-/** Paths on the build machine that must not appear in the executable. */
 const buildPaths = (): ReadonlyArray<string> => [
   cargoHome(),
   sysroot(),
@@ -648,32 +448,22 @@ const buildPaths = (): ReadonlyArray<string> => [
 
 const rustFlags = (target: Target): string =>
   [
-    // The executable keeps source paths for panic messages. Fixed prefixes keep the build machine's
-    // directories, and the user name in them, out of the bytes.
     `--remap-path-prefix=${cargoHome()}=/cargo`,
     `--remap-path-prefix=${sysroot()}=/rust`,
     `--remap-path-prefix=${crate}=/executor-collector`,
-    // Link the C runtime statically, so the executable needs no Visual C++ redistributable.
     ...(target.os === "win32" ? ["-Ctarget-feature=+crt-static"] : []),
   ].join("\u001f");
 
 const buildEnv = (target: Target) =>
   toolEnv({
-    // The encoded form keeps paths with spaces whole.
     CARGO_ENCODED_RUSTFLAGS: rustFlags(target),
-    // Read by rustc's linker arguments and by the C compiler for the bundled SQLite.
     ...(target.macosMinimum === undefined ? {} : { MACOSX_DEPLOYMENT_TARGET: target.macosMinimum }),
   });
 
-/** Whether `error` says a path is gone: another build removed it since it was listed. */
 const vanished = (error: unknown) =>
   (error as NodeJS.ErrnoException).code === "ENOENT" ||
   (error as NodeJS.ErrnoException).code === "ENOTDIR";
 
-/**
- * Bytes in `directory`, its files counted once each. Other builds compile into the shared cache
- * meanwhile, so a file or directory that vanishes during the walk counts as nothing.
- */
 const directoryBytes = (directory: string): number => {
   let entries: fs.Dirent[];
   try {
@@ -696,13 +486,11 @@ const directoryBytes = (directory: string): number => {
   return bytes;
 };
 
-/** When a cache entry was last used: the mtime of its `last-used` file, or of the entry. */
 const lastUsed = (entry: string): number => {
   const marker = path.join(entry, "last-used");
   try {
     return (fs.existsSync(marker) ? fs.statSync(marker) : fs.statSync(entry)).mtimeMs;
   } catch {
-    // Removed by another process since it was listed.
     return Number.NaN;
   }
 };
@@ -714,23 +502,15 @@ const markUsed = (entry: string) => {
   else fs.writeFileSync(marker, "");
 };
 
-/** A copy in progress beside `to`: `<to>.partial-<pid>-<random>`, so its writer can be told. */
 const partialPath = (to: string) =>
   `${to}.partial-${process.pid}-${createHash("sha256").update(`${Date.now()}${Math.random()}`).digest("hex").slice(0, 8)}`;
 const partialName = /\.partial-(\d+)-[0-9a-f]+$/u;
 
-/** Whether a partial copy was abandoned: its writer has exited, or it is older than `inUseMs`. */
 const abandoned = (entry: string, now: number): boolean => {
   const pid = Number(partialName.exec(entry)?.[1]);
   return !running(pid) || !(now - lastUsed(entry) <= inUseMs);
 };
 
-/**
- * Removes cache entries in `directory` unused for `days` days, and abandoned partial copies; then
- * the least recently used entries until `within` holds, partial copies counted. It never removes
- * one used within `inUseMs` or `keep`, and reads an entry's last use again just before removing
- * it, so an entry another process has just started copying is kept.
- */
 const prune = (
   directory: string,
   days: number,
@@ -765,7 +545,6 @@ const prune = (
   }
 };
 
-/** Copies `from` to `to`: written beside `to` and renamed over it, by copying, never linking. */
 const replaceWithCopy = (from: string, to: string) => {
   const partial = partialPath(to);
   try {
@@ -781,17 +560,12 @@ const replaceWithCopy = (from: string, to: string) => {
 const storeEntry = (target: Target, key: string) =>
   path.join(cacheRoot(), "store", target.name, key);
 
-/** The executable's SHA-256 and size, written beside it when it is built. */
 const digestFile = "executable.sha256";
 const executableDigest = (file: string) => {
   const bytes = fs.readFileSync(file);
   return `${sha256(bytes)} ${bytes.length}`;
 };
 
-/**
- * Whether `directory` holds a whole build of `key`: its identity, and an executable whose SHA-256
- * and size are those recorded when it was built.
- */
 const intact = (directory: string, target: Target, key: string): boolean => {
   const read = (name: string) => {
     try {
@@ -808,7 +582,6 @@ const intact = (directory: string, target: Target, key: string): boolean => {
   );
 };
 
-/** Puts the build in `output` in the store under `key`, unless another process just did. */
 const storeBuild = (target: Target, key: string) => {
   const entry = storeEntry(target, key);
   if (!fs.existsSync(entry)) {
@@ -818,8 +591,6 @@ const storeBuild = (target: Target, key: string) => {
       fs.cpSync(output, partial, { recursive: true, dereference: true });
       fs.renameSync(partial, entry);
     } catch (error) {
-      // Another build stored the same key first, and its entry holds the same build; any other
-      // failure is the caller's.
       if (!fs.existsSync(entry)) throw error;
     } finally {
       fs.rmSync(partial, { recursive: true, force: true });
@@ -828,22 +599,8 @@ const storeBuild = (target: Target, key: string) => {
   markUsed(entry);
 };
 
-// ---------------------------------------------------------------------------------------------
-// One build per identity
-
-/**
- * Builds that start together on the same identity (several workspaces preparing after a merge)
- * compile once: the first takes the identity's lock, and the others wait for its stored build and
- * copy it. The lock is `locks/<target>/<key>.lock` in the cache, holding its builder's process id,
- * that process's start time and a token. It is stale once that process has exited, once the id
- * belongs to a process started at another time (a reused id), or after `inUseMs` as a last resort;
- * a stale lock is taken over. The lock only saves compiles: what is correct rests on the store's
- * rename and the executable's digest, so two builders that both take a lock (two taking over one
- * stale lock at once) still store and copy whole builds.
- */
 const lockWaitMs = 20 * 60 * 1000;
 const lockPollMs = 250;
-/** How far a process's start time, as `ps` reads it to the second, may differ from the lock's. */
 const startToleranceMs = 5_000;
 const startedAt = Math.round(Date.now() - process.uptime() * 1000);
 
@@ -871,15 +628,10 @@ const running = (pid: number) => {
     process.kill(pid, 0);
     return true;
   } catch (error) {
-    // EPERM: the process exists but belongs to someone else.
     return (error as NodeJS.ErrnoException).code === "EPERM";
   }
 };
 
-/**
- * When process `pid` started, from its elapsed time as `ps -o etime=` gives it on Linux and macOS
- * (`[[dd-]hh:]mm:ss`, no time zone involved); undefined where `ps` cannot say (Windows).
- */
 const processStarted = (pid: number): number | undefined => {
   if (process.platform === "win32") return undefined;
   const result = spawnSync("ps", ["-o", "etime=", "-p", String(pid)], { encoding: "utf8" });
@@ -889,7 +641,6 @@ const processStarted = (pid: number): number | undefined => {
   return Date.now() - (((days! * 24 + hours!) * 60 + minutes!) * 60 + seconds!) * 1000;
 };
 
-/** Why the lock in `file` no longer holds, or undefined while its builder runs. */
 const staleness = (file: string, holder: Holder | undefined): string | undefined => {
   if (holder === undefined) return "it does not name a builder";
   if (!running(holder.pid)) return `its builder, process ${holder.pid}, has exited`;
@@ -906,10 +657,6 @@ type Lock =
   | { readonly kind: "held"; readonly file: string; readonly holder: Holder | undefined }
   | { readonly kind: "unavailable"; readonly reason: string };
 
-/**
- * Takes the lock for `key`: written whole beside it and linked into place, so no reader ever sees
- * a lock half written, and the link fails when another builder holds it.
- */
 const takeLock = (target: Target, key: string): Lock => {
   const file = lockFile(target, key);
   const holder: Holder = {
@@ -935,13 +682,11 @@ const takeLock = (target: Target, key: string): Lock => {
   return {
     kind: "taken",
     release: () => {
-      // Only this builder's own lock: a builder that took over a stale one holds its own token.
       if (readHolder(file)?.token === holder.token) fs.rmSync(file, { force: true });
     },
   };
 };
 
-/** Removes a stale lock. Moved aside first, so a lock another builder has just taken survives. */
 const breakLock = (file: string, stale: Holder | undefined) => {
   const aside = partialPath(file);
   try {
@@ -952,7 +697,6 @@ const breakLock = (file: string, stale: Holder | undefined) => {
   }
   const moved = readHolder(aside);
   if (moved !== undefined && moved.token !== stale?.token) {
-    // A builder took the lock between the look and the move: put it back.
     try {
       fs.linkSync(aside, file);
     } catch {}
@@ -960,7 +704,6 @@ const breakLock = (file: string, stale: Holder | undefined) => {
   fs.rmSync(aside, { force: true });
 };
 
-/** Removes the locks of builders that are gone, and lock files a killed builder left half made. */
 const pruneLocks = (target: Target) => {
   const directory = path.dirname(lockFile(target, "x"));
   if (!fs.existsSync(directory)) return;
@@ -978,15 +721,9 @@ const pruneLocks = (target: Target) => {
 
 const sleep = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
-/**
- * Copies the stored build of `key` into the workspace and says so; false when there is none. A
- * damaged entry is removed, not left for the next workspace.
- */
 const copyFromStore = (target: Target, key: string): boolean => {
   const entry = storeEntry(target, key);
   if (!fs.existsSync(entry)) return false;
-  // Marked before it is copied, so no prune removes it meanwhile. A store this process cannot write
-  // is still read.
   try {
     markUsed(entry);
   } catch (error) {
@@ -1006,12 +743,10 @@ const copyFromStore = (target: Target, key: string): boolean => {
   return true;
 };
 
-/** Compiles `target` into `output`, its identity written last. */
 const compile = (target: Target, key: string | undefined) => {
   const targetDir = targetDirectory();
   const executable = path.join(output, executableName(target));
   markUsed(targetDir);
-  // Separate from the build, so an outage at crates.io is named as one.
   stream("cargo", ["fetch", "--locked", "--target", target.triple], {
     cwd: crate,
     env: fetchEnv(),
@@ -1038,8 +773,6 @@ const compile = (target: Target, key: string | undefined) => {
         : `cargo build failed. For every command cargo ran and the compiler's backtrace, run the build again with --verbose (node packages/telemetry/scripts/build-collector.ts --target ${target.name} --verbose build); a RUST_BACKTRACE or RUST_LOG you set does not reach the compiler`,
     },
   );
-  // Replace the whole directory, and write the identity last, so an interrupted build never
-  // leaves a directory that claims to be complete.
   fs.rmSync(output, { recursive: true, force: true });
   fs.mkdirSync(output, { recursive: true });
   fs.copyFileSync(
@@ -1053,10 +786,6 @@ const compile = (target: Target, key: string | undefined) => {
   console.log(`Built executor-collector for ${target.name} at ${output} (${key ?? uncacheable}).`);
 };
 
-/**
- * Work after a build that is already whole and checked: storing it and pruning the caches. None of
- * it can fail the build; a problem is logged.
- */
 const afterBuild = (what: string, work: () => void) => {
   try {
     work();
@@ -1064,23 +793,6 @@ const afterBuild = (what: string, work: () => void) => {
     console.error(`${what} failed; the build stands: ${String(error)}`);
   }
 };
-/**
- * A shared store this host cannot write, a read-only or full disk, is not hidden. Each build that
- * finds it so prints one loud line, which `e2e:prepare` repeats in its summary (the file
- * `EXECUTOR_PREPARE_NOTES` names), and leaves `locks/<target>/store-unwritable` beside the locks
- * with the reason. A build that finds the identity's lock held and this note under an hour old
- * compiles at once instead of waiting for a build that will not be stored. A builder that takes the
- * lock first checks it can write the store (`probeStore`): when it cannot, it releases the lock
- * before compiling, so no waiter queues behind its compile even when the note itself cannot be
- * written. One case still queues: a store with room for the probe but not for a build, and no room
- * for the note either; then waiters compile one after another, as before this note existed.
- *
- * The note goes away without anyone removing it by hand: the first build that stores removes it,
- * and it is ignored after `inUseMs`. While it is fresh, a builder that takes the lock releases it at
- * once and compiles, then still tries to store, so a repaired store takes that build and the note
- * goes; a passing probe alone does not remove it, since a full disk can take the probe and not the
- * build. Nothing here fails a build: the note, the line and the probe only log.
- */
 const unwritableNote = (target: Target) =>
   path.join(cacheRoot(), "locks", target.name, "store-unwritable");
 
@@ -1114,7 +826,6 @@ const storeRepaired = (target: Target) => {
   } catch {}
 };
 
-/** The reason in a note under an hour old, or undefined. */
 const storeUnwritable = (target: Target): string | undefined => {
   try {
     const note = unwritableNote(target);
@@ -1125,10 +836,8 @@ const storeUnwritable = (target: Target): string | undefined => {
   }
 };
 
-/** Why the store cannot be written, by writing and removing a small file in it; or undefined. */
 const probeStore = (target: Target): string | undefined => {
   const directory = path.join(cacheRoot(), "store", target.name);
-  // Named as a partial copy, so pruning removes one a killed build left.
   const probe = partialPath(path.join(directory, "probe"));
   try {
     fs.mkdirSync(directory, { recursive: true });
@@ -1188,7 +897,6 @@ const build = (target: Target, install: boolean) => {
       if (lock.kind === "taken") {
         let held = true;
         try {
-          // Another builder may have stored it between the look and the lock.
           if (copyFromStore(target, key)) return;
           const probed = probeStore(target);
           const noted = probed === undefined ? storeUnwritable(target) : undefined;
@@ -1196,7 +904,6 @@ const build = (target: Target, install: boolean) => {
             compile(target, key);
             storeAfterBuild(target, key);
           } else {
-            // Nothing is likely to be stored: let the others compile now, not after this build.
             if (probed !== undefined) storeBroken(target, probed);
             else
               console.error(
@@ -1205,7 +912,6 @@ const build = (target: Target, install: boolean) => {
             lock.release();
             held = false;
             compile(target, key);
-            // A store that has been repaired takes this build, which removes the note.
             if (probed === undefined) storeAfterBuild(target, key);
           }
         } finally {
@@ -1221,7 +927,6 @@ const build = (target: Target, install: boolean) => {
         );
         break;
       }
-      // Released between the link and the read: look again.
       if (lock.holder === undefined && !fs.existsSync(lock.file)) continue;
       const stale = staleness(lock.file, lock.holder);
       if (stale !== undefined) {
@@ -1257,23 +962,18 @@ const build = (target: Target, install: boolean) => {
   pruneTargets();
 };
 
-// ---------------------------------------------------------------------------------------------
-// Notices
-
 type CargoPackage = {
   readonly id: string;
   readonly name: string;
   readonly version: string;
   readonly directory: string;
   readonly licenseFile: string | undefined;
-  /** A procedural macro runs inside the compiler; neither it nor what only it uses is linked. */
   readonly procMacro: boolean;
 };
 
 type CargoGraph = {
   readonly root: string;
   readonly packages: ReadonlyMap<string, CargoPackage>;
-  /** Each package's dependencies that are linked into it: normal ones, not build or dev ones. */
   readonly linked: ReadonlyMap<string, ReadonlyArray<string>>;
 };
 
@@ -1292,7 +992,6 @@ const list = (value: unknown, where: string): ReadonlyArray<unknown> =>
 const record = (value: unknown, where: string): Record<string, unknown> =>
   isRecord(value) ? value : fail(`cargo metadata: ${where} is not an object`);
 
-/** Parses `cargo metadata --format-version 1` output into the resolved package graph. */
 const parseCargoGraph = (json: string): CargoGraph => {
   const metadata = record(JSON.parse(json), "the output");
   const packages = new Map<string, CargoPackage>();
@@ -1325,7 +1024,6 @@ const parseCargoGraph = (json: string): CargoGraph => {
         const kinds = list(field(dep, "dep_kinds", id), `${id} dep_kinds`).map((kind) =>
           field(record(kind, `${id} dep_kind`), "kind", id),
         );
-        // `null` is a normal dependency; "build" and "dev" never reach the executable.
         return kinds.includes(null) ? [text(field(dep, "pkg", id), `${id} dep pkg`)] : [];
       }),
     );
@@ -1337,7 +1035,6 @@ const parseCargoGraph = (json: string): CargoGraph => {
   };
 };
 
-/** Every package linked into the executable for `target`, the collector itself excluded. */
 const linkedPackages = (target: Target): ReadonlyArray<CargoPackage> => {
   const graph = parseCargoGraph(
     capture(
@@ -1371,13 +1068,6 @@ const linkedPackages = (target: Target): ReadonlyArray<CargoPackage> => {
     .sort((a, b) => `${a.name}@${a.version}`.localeCompare(`${b.name}@${b.version}`));
 };
 
-/**
- * Writes `NOTICE` (Motel's licence, whose behaviour the collector follows), `licenses/cargo/` (each
- * linked crate's licence and notice files), `licenses/rust/COPYRIGHT-library.html` (the Rust
- * standard library's notices, shipped in the toolchain) and `cargo-packages.txt`. SQLite is in the
- * public domain; `libsqlite3-sys` carries its notice. The system C libraries are linked dynamically,
- * except the MSVC C runtime on Windows.
- */
 const notices = (target: Target) => {
   const licenses = path.join(output, "licenses");
   fs.rmSync(licenses, { recursive: true, force: true });
@@ -1386,7 +1076,6 @@ const notices = (target: Target) => {
   const packages = linkedPackages(target);
   for (const pkg of packages) {
     const listed = fs.readdirSync(pkg.directory);
-    // The package's own licence: the file its manifest declares, or a primary licence file.
     const licences = [
       ...(pkg.licenseFile === undefined ? [] : [path.resolve(pkg.directory, pkg.licenseFile)]),
       ...listed.filter(primaryLicence).map((name) => path.join(pkg.directory, name)),
@@ -1415,10 +1104,6 @@ const notices = (target: Target) => {
   );
 };
 
-// ---------------------------------------------------------------------------------------------
-// Check
-
-/** The DLL names a PE32+ executable imports, read from its import directory. */
 const peImports = (
   bytes: Buffer,
 ): { readonly machine: number; readonly imports: ReadonlyArray<string> } => {
@@ -1430,7 +1115,6 @@ const peImports = (
   const optionalSize = bytes.readUInt16LE(pe + 20);
   const optional = pe + 24;
   if (bytes.readUInt16LE(optional) !== 0x20b) return fail("The Windows executable is not PE32+");
-  // PE32+: the data directories start at 112; the import directory is the second.
   const importRva = bytes.readUInt32LE(optional + 112 + 8);
   const sections = Array.from({ length: sectionCount }, (_, index) => {
     const at = optional + optionalSize + index * 40;
@@ -1468,7 +1152,6 @@ const atMost = (version: ReadonlyArray<number>, ceiling: ReadonlyArray<number>) 
   return true;
 };
 
-/** Facts the check established, for the log and the job summary. */
 type Facts = Record<string, string>;
 
 const checkLinux = (target: Target, binary: string): Facts => {
@@ -1545,32 +1228,22 @@ const checkWindows = (binary: string): Facts => {
     fail(
       `The executable imports the C runtime dynamically (${runtime.join(", ")}): it must link it statically`,
     );
-  // build.rs embeds windows.manifest; without it SQLite cannot open a store path over 260
-  // characters even where the machine allows long paths.
   if (!/<longPathAware\b[^>]*>\s*true\s*<\/longPathAware>/u.test(bytes.toString("latin1")))
     fail("The executable's embedded manifest does not declare longPathAware");
   return { "C runtime": "static", "long paths": "longPathAware", imports: imports.join(" ") };
 };
 
-/** The executable's bytes; fails when it is over the 15 MiB cap, which `check` and `smoke` enforce. */
 const executableBytes = (binary: string): Buffer => {
   const bytes = fs.readFileSync(binary);
   if (bytes.length > maxBytes) fail(`The executable is ${bytes.length} bytes, over ${maxBytes}`);
   return bytes;
 };
 
-/** Where the steps read the executable: `--executable`, or the build in `dist/collector`. */
 let chosenExecutable: string | undefined;
-/** `--verbose`: cargo's `-vv` and the compiler's backtraces, outside the identity. */
 let verbose = false;
 const executablePath = (target: Target) =>
   chosenExecutable ?? path.join(output, executableName(target));
 
-/**
- * `packaged`: the executable is a packaged copy of a build this script already checked, read on a
- * runner that may have no Rust toolchain. Its bytes must be the build's (`executable.sha256` in
- * `dist/collector`), which stands in for the build machine path search the build's own check made.
- */
 const check = (target: Target, packaged: boolean) => {
   const binary = executablePath(target);
   if (!fs.existsSync(binary)) fail(`${binary} does not exist; run the build step first`);
@@ -1582,9 +1255,6 @@ const check = (target: Target, packaged: boolean) => {
     if (executableDigest(binary) !== recorded)
       fail(`${binary} is not the build in ${output} (its SHA-256 and size differ)`);
   }
-  // A leaked path continues into a file name, so each directory is searched with a separator after
-  // it, which keeps a short directory such as a container's `/w` from matching other text. Both
-  // separators are tried, since a path can be written either way on Windows.
   const leaked = (packaged ? [] : [...buildPaths(), os.homedir()])
     .map((directory) => directory.replace(/[\\/]+$/u, ""))
     .filter((directory) => directory !== "")
@@ -1616,24 +1286,15 @@ const check = (target: Target, packaged: boolean) => {
     );
 };
 
-// ---------------------------------------------------------------------------------------------
-// Smoke
-
-/** A collector process this smoke test started. It is reaped before the test returns. */
 type Owned = {
   readonly child: ChildProcess;
-  /** Resolves with the exit code once the process has exited, or failed to start. */
   readonly exited: Promise<number | null>;
-  /** Resolves with the first line it writes on stdout. */
   readonly firstLine: Promise<string>;
-  /** Resolves when the process could not be started or signalled. */
   readonly failed: Promise<Error>;
   readonly running: () => boolean;
-  /** Its output so far, for a failure message. */
   readonly log: () => string;
 };
 
-/** One collector that printed its listening line. */
 type Collector = {
   readonly port: number;
   readonly instance: Owned;
@@ -1642,12 +1303,9 @@ type Collector = {
 
 const startDeadlineMs = 30_000;
 const requestDeadlineMs = 10_000;
-/** The local host kills the collector 3 s after asking it to stop. */
 const stopDeadlineMs = 3_000;
-/** How long a killed collector gets to exit before the test gives up waiting for it. */
 const reapDeadlineMs = 5_000;
 
-/** A promise that resolves with "late" after `ms`, and the way to stop its timer. */
 const deadline = (ms: number) => {
   let timer: NodeJS.Timeout | undefined;
   const late = new Promise<"late">((done) => {
@@ -1656,11 +1314,6 @@ const deadline = (ms: number) => {
   return { late, cancel: () => clearTimeout(timer) };
 };
 
-/**
- * Starts the collector and records it in `owned` before anything is read from it, so every path
- * out of the smoke test, a failure included, can reap it. The callbacks only collect output and
- * settle promises; nothing in them can throw.
- */
 const spawnCollector = (binary: string, data: string, owned: Set<Owned>): Owned => {
   const child = spawn(binary, ["serve", "--data", data, "--listen", "127.0.0.1:0"], {
     stdio: ["ignore", "pipe", "pipe"],
@@ -1679,7 +1332,6 @@ const spawnCollector = (binary: string, data: string, owned: Set<Owned>): Owned 
   const failed = new Promise<Error>((done) => {
     child.on("error", (error) => {
       done(error);
-      // A process that never started emits no exit event.
       if (child.pid === undefined) {
         ended = true;
         exit?.(null);
@@ -1710,7 +1362,6 @@ const spawnCollector = (binary: string, data: string, owned: Set<Owned>): Owned 
   return instance;
 };
 
-/** Kills `instance` if it is still running and waits, at most `reapDeadlineMs`, for it to exit. */
 const reap = async (instance: Owned) => {
   if (instance.running()) instance.child.kill("SIGKILL");
   const wait = deadline(reapDeadlineMs);
@@ -1718,7 +1369,6 @@ const reap = async (instance: Owned) => {
   wait.cancel();
 };
 
-/** Starts a collector on `data` and waits for its listening line; fails on anything else. */
 const start = async (binary: string, data: string, owned: Set<Owned>): Promise<Collector> => {
   const instance = spawnCollector(binary, data, owned);
   const wait = deadline(startDeadlineMs);
@@ -1748,11 +1398,6 @@ const start = async (binary: string, data: string, owned: Set<Owned>): Promise<C
   return { port, instance, log: instance.log };
 };
 
-/**
- * Asks the collector to stop and resolves with its exit code; fails when it is still running
- * `stopDeadlineMs` later. Node cannot send Ctrl-Break to another process, so on Windows this
- * terminates it.
- */
 const stop = async (collector: Collector): Promise<number | null> => {
   const { instance } = collector;
   if (!instance.running()) return instance.exited;
@@ -1801,7 +1446,6 @@ const crateVersion = () =>
 const syntheticTraceId = "5b8efff798038103d269b633813fc60c";
 const syntheticSpanId = "eee19b7ec3c1b174";
 
-/** A trace export of one synthetic span with these attributes. */
 const spanExport = (spanId: string, name: string, attributes: ReadonlyArray<unknown>) => {
   const now = BigInt(Date.now()) * 1_000_000n;
   return {
@@ -1832,10 +1476,8 @@ const spanExport = (spanId: string, name: string, attributes: ReadonlyArray<unkn
   };
 };
 
-/** How many key-value lists the nested attribute value sits inside. */
 const nestedDepth = 64;
 
-/** What the smoke test sends and checks; each probe runs against the collector in order. */
 const probes: ReadonlyArray<(collector: Collector) => Promise<void>> = [
   async (collector) => {
     const health = await request(collector, "GET", "/api/health");
@@ -1854,9 +1496,6 @@ const probes: ReadonlyArray<(collector: Collector) => Promise<void>> = [
     );
     expectEqual("/v1/traces", "insertedSpans", stored.insertedSpans, 1);
   },
-  // The collector decodes on threads with a stack of its own size (otlp::DECODE_STACK), measured
-  // on x86-64 Linux only, and its tests run only there: each platform's build must store a value
-  // inside 64 key-value lists and stay up.
   async (collector) => {
     let value: unknown = { stringValue: "deepest" };
     for (let depth = 0; depth < nestedDepth; depth++)
@@ -1897,7 +1536,6 @@ const probes: ReadonlyArray<(collector: Collector) => Promise<void>> = [
     });
     expectEqual("/v1/logs", "insertedLogs", stored.insertedLogs, 1);
   },
-  // When the query routes exist, read the span and the log back here.
   async (collector) => {
     const ingest = await request(collector, "GET", "/api/ingest");
     expectEqual("/api/ingest", "pending", ingest.pending, 0);
@@ -1917,8 +1555,6 @@ const smoke = async (target: Target) => {
   if (!fs.existsSync(binary)) fail(`${binary} does not exist; run the build step first`);
   executableBytes(binary);
   if (target.os === "win32") {
-    // A longPathAware process gets long paths only where the machine allows them; print the
-    // setting, so a failure below says which of the two is missing.
     const setting = spawnSync(
       "reg",
       ["query", "HKLM\\SYSTEM\\CurrentControlSet\\Control\\FileSystem", "/v", "LongPathsEnabled"],
@@ -1929,8 +1565,6 @@ const smoke = async (target: Target) => {
     );
   }
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "executor-collector-smoke-"));
-  // The store's path is longer than Windows' 260-character MAX_PATH, as data directories under a
-  // long user or temporary path can be.
   const data = path.join(scratch, ..."abcde".split("").map((letter) => letter.repeat(60)));
   const owned = new Set<Owned>();
   try {
@@ -1938,9 +1572,7 @@ const smoke = async (target: Target) => {
     const first = await start(binary, data, owned);
     for (const probe of probes) await probe(first);
     const code = await stop(first);
-    // Windows: the process was terminated, which exits 1. Elsewhere SIGTERM is a clean stop.
     if (target.os !== "win32") expectEqual("stop", "exit code", code, 0);
-    // The store opens again after the stop.
     const second = await start(binary, data, owned);
     await probes[0]?.(second);
     await stop(second);
@@ -1949,8 +1581,6 @@ const smoke = async (target: Target) => {
     );
   } finally {
     await Promise.all([...owned].map(reap));
-    // Windows Defender can hold the store file for a moment after the collector exits: retry. A
-    // clean-up that still fails is logged, never thrown, so it cannot replace the smoke's own result.
     try {
       fs.rmSync(scratch, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     } catch (error) {
@@ -1958,9 +1588,6 @@ const smoke = async (target: Target) => {
     }
   }
 };
-
-// ---------------------------------------------------------------------------------------------
-// Command line
 
 const steps = ["build", "notices", "check", "smoke"] as const;
 type Step = (typeof steps)[number];

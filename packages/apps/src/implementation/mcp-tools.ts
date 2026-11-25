@@ -71,7 +71,6 @@ const resultSchema = (structuredContent: JsonObject | undefined): JsonObject => 
     return { type: "object", properties: resultFields, required: ["content"] };
   const { schema, root } = placed(structuredContent, "#/anyOf/0/properties/structuredContent");
   return {
-    // The envelope's keywords mean the same in every draft, so the server's draft applies.
     ...(structuredContent.$schema === undefined ? {} : { $schema: structuredContent.$schema }),
     ...root,
     anyOf: [
@@ -95,8 +94,6 @@ export const adaptMcpTool = (client: McpClient, tool: McpToolMetadata) =>
     const decoder = yield* jsonSchemaDecoder(tool.inputSchema).pipe(
       Effect.mapError(() => new McpError({ phase: "schema", reason: "invalid_response" })),
     );
-    // One schema both describes and checks the result: the host decodes every call's
-    // returned value with `output`, and catalogs render the same decoder's document.
     const output = preparedJsonSchemaDecoder(resultSchema(tool.outputSchema));
     const { outputSchema: _upstream, ...metadata } = tool;
     const adapted: McpTools[string] = {
@@ -113,8 +110,6 @@ export const adaptMcpTool = (client: McpClient, tool: McpToolMetadata) =>
             Effect.flatMap(Schema.decodeUnknownEffect(JsonObject)),
             Effect.mapError(() => new McpError({ phase: "call", reason: "invalid_input" })),
           );
-          // Compile the output schema before sending a potentially mutating
-          // call, so an unsupported schema cannot fail after its effects.
           yield* output.compile.pipe(
             Effect.mapError(() => new McpError({ phase: "schema", reason: "invalid_response" })),
           );

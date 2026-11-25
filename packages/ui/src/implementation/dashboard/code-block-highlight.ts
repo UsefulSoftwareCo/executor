@@ -7,10 +7,6 @@ import { highlightTokens } from "../../contracts/highlight.ts";
 
 const key = new PluginKey<DecorationSet>("codeBlockHighlight");
 
-/**
- * Color editor code blocks with the same tokens as the reader. Colors are decorations, so the
- * document and its Markdown stay unchanged. Blocks stay plain until the highlighter loads.
- */
 export function codeBlockHighlight(highlighter: () => HighlighterCore | undefined) {
   const decorate = (doc: Node) => {
     const current = highlighter();
@@ -33,7 +29,6 @@ export function codeBlockHighlight(highlighter: () => HighlighterCore | undefine
             );
           from = to;
         }
-        // The newline between lines.
         from += 1;
       }
       return false;
@@ -53,7 +48,6 @@ export function codeBlockHighlight(highlighter: () => HighlighterCore | undefine
   });
 }
 
-/** Recolor the document once the highlighter has loaded. */
 export function refreshCodeBlockHighlight(view: EditorView) {
   view.dispatch(view.state.tr.setMeta(key, true));
 }

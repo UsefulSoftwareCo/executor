@@ -12,10 +12,6 @@ import {
 } from "../../contracts/app-ui.ts";
 import { useOrganizationRoute } from "../components/organization.tsx";
 
-/**
- * The server answers `/app-auth` with a redirect whenever it has an attempt to resolve, so this page
- * renders only for a failure, a missing attempt, or a client-side navigation that must reach it.
- */
 export function AppSignInPage({
   request,
   failure,
@@ -38,10 +34,6 @@ export function AppSignInPage({
   );
 }
 
-/**
- * Optional action slot: products with app hosting render a normal link. The app runs with the
- * accounts the caller linked to it.
- */
 export function OpenAppAction({ app }: { readonly app: App }) {
   return app.activeVersion === null ? null : (
     <DeployedOpenAppAction app={app} version={app.activeVersion} />

@@ -9,10 +9,8 @@ import type { ReactNode } from "react";
 import { Navigation } from "../navigation.tsx";
 import { SelfHostUpdateBlock, useSelfHostUpdate } from "../update.tsx";
 
-/** The URL owns this tab's organization; all product pages inherit this boundary. */
 export const Route = createFileRoute("/org/$organizationSlug")({
   component: OrganizationLayout,
-  // The server streams the dashboard frame and navigation first, then the organization.
   pendingComponent: OrganizationPending,
 });
 function OrganizationLayout() {
@@ -29,7 +27,6 @@ function OrganizationLayout() {
   );
 }
 
-/** The shell, with the update block above the links once an owner's or admin's server has one. */
 function SelfHostShell({ children }: { readonly children: ReactNode }) {
   const update = useSelfHostUpdate();
   return (

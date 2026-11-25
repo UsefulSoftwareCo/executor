@@ -1,13 +1,3 @@
-/**
- * Fails when a page of the built public site links to a path that would 404.
- *
- * Run after `bun run hosted:cloud:site:build`. It resolves every same-origin
- * href and src in the composed site the way the deployed Worker does: a
- * Worker-first route, then a `_redirects` rule, then an exact static asset.
- * That covers the marketing pages, every docs page, the docs sidebar and the
- * links between them, so a removed or renamed page fails here instead of in
- * production.
- */
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import { Effect, FileSystem, Path, Schema } from "effect";
@@ -20,7 +10,6 @@ export class BrokenSiteLinks extends Schema.TaggedError<BrokenSiteLinks>()("Brok
 
 type Rule = Readonly<{ pattern: RegExp; target: string; status: number }>;
 
-/** Cloudflare route syntax: `:name` matches one segment, a trailing `*` matches the rest. */
 const routePattern = (source: string) =>
   new RegExp(
     "^" +
@@ -60,7 +49,6 @@ const checkSiteLinks = Effect.gen(function* () {
       status: Number(status),
     }));
 
-  // Redirect rules can chain; a few hops is far more than the site uses.
   const resolves = (pathname: string, hops = 0): boolean => {
     if (hops > 5) return false;
     if (workerRoutes.some((route) => route.test(pathname))) return true;
@@ -72,7 +60,6 @@ const checkSiteLinks = Effect.gen(function* () {
     return files.has(pathname);
   };
 
-  // The route a page is served at, so relative links resolve as the browser would.
   const pageRoute = (file: string) =>
     file === "/index.html"
       ? "/"

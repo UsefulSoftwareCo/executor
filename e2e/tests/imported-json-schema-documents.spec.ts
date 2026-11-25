@@ -8,13 +8,6 @@ import { Actors } from "../support/actors.ts";
 import { App } from "../support/contracts.ts";
 import { appsManifest } from "../support/apps-release.ts";
 
-/**
- * Every app evaluation builds each imported schema again, so building one must stay a single
- * pass over its document. `shared` reaches its leaf through 2^30 paths: a check that revisits
- * shared parts cannot finish within the scenario deadline. `nested` is 20,000 levels deep: a
- * recursive check overflows the stack and the evaluation fails. Neither schema is parsed, so
- * only construction is exercised; `source.route` shows a shared definition still validates.
- */
 const source = `
 import { defineApp, dynamicRouter, jsonSchema, query, router } from "apps";
 const address = { type: "object", properties: { city: { type: "string" } }, required: ["city"], additionalProperties: false };
@@ -60,7 +53,6 @@ layer(HostedLive, { excludeTestServices: true })("Imported JSON Schemas", (it) =
             input,
           });
         const input = { home: { city: "Springfield" }, work: { city: "Shelbyville" } };
-        // Two calls: each evaluates the app and builds both schemas again.
         for (const _ of [1, 2]) {
           const result = yield* call(input);
           expect(result.status, JSON.stringify(result.body)).toBe(200);

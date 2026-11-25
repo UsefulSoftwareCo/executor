@@ -1,21 +1,3 @@
-/**
- * After a publish job failed, say what this release made public and what it did not, from the
- * public surfaces themselves rather than from which steps passed: beta.51's npm step failed while
- * npm already served the launcher with its tag. Writes a table to the job summary and the log:
- *
- * - the public GitHub release: public or draft, and its assets;
- * - the image's version tag and its channel tag;
- * - npm's version and its channel tag (and `latest`, for a beta, which it must not have moved);
- * - the Homebrew formula for the channel, when the workflow has a tap;
- * - each desktop feed file for the channel;
- *
- * and one line on whether `gh run rerun <run> --failed` would finish the publication.
- *
- * It never fails: a surface it cannot read is a row that says so, and anything else unexpected is
- * printed. The step runs only after a failure, so the job keeps that failure's conclusion. Reads
- * VERSION, CHANNEL, IMAGE, PUBLIC_REPOSITORY, RELEASE_TAG, and optionally TAP, GH_TOKEN (to see a
- * draft), GITHUB_RUN_ID and GITHUB_STEP_SUMMARY. Changes nothing anywhere (public-state.ts).
- */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { createHash } from "node:crypto";
@@ -38,11 +20,8 @@ import {
 type Row = {
   readonly surface: string;
   readonly now: string;
-  /** Done for this release; undefined when it could not be read. */
   readonly done: boolean | undefined;
-  /** What the surface names, when it is a channel, to tell a newer release from this one. */
   readonly names?: string | undefined;
-  /** npm holds this version with an archive other than this run's launcher. */
   readonly stray?: boolean;
 };
 
@@ -66,7 +45,6 @@ const program = Effect.gen(function* () {
   const run = yield* Config.String("GITHUB_RUN_ID").pipe(Config.withDefault("<run>"));
   const summary = yield* Config.String("GITHUB_STEP_SUMMARY").pipe(Config.option);
   const at = yield* endpoints;
-  // The launcher this run built, when release:wrapper ran: npm's archive is compared with it.
   const launcher = yield* Config.String("LAUNCHER").pipe(
     Config.withDefault(`.local/releases/${version}/wrapper/executor-${version}.tgz`),
   );
@@ -89,9 +67,7 @@ const program = Effect.gen(function* () {
       Effect.map((files) =>
         files.map((file): Row =>
           follows
-            ? // A stable release also moves beta installs forward, but desktop-feed.ts keeps a
-              // newer beta there: either is done, and neither tells of a newer release.
-              {
+            ? {
                 surface: `desktop feed ${file.name} (beta installs follow)`,
                 now: file.version ?? "nothing",
                 done:
@@ -112,11 +88,6 @@ const program = Effect.gen(function* () {
       ),
     );
 
-  // Every surface at once, so the step's time limit is spent on the slowest read, not their sum,
-  // and each group of reads within its own limit (150 s, inside the step's three minutes), so the
-  // table is always written: a group that has not answered by then is a row that says so. One
-  // group can take longer than the step otherwise: the image's four reads, or the feed's four
-  // files, each read up to four times for 15 s. The rows keep this order.
   const groupSeconds = yield* Config.Number("EXECUTOR_PUBLIC_REPORT_GROUP_SECONDS").pipe(
     Config.withDefault(150),
   );
@@ -196,9 +167,6 @@ const program = Effect.gen(function* () {
               return archive.integrity === built
                 ? row("published, this run's launcher", true)
                 : row("npm serves a different archive under this version", false, true);
-            // No launcher in this run, as when the preflight refused the version: npm's archive is
-            // this publication's only if the release for the tag is published (npm gets the
-            // launcher after that). Without it, npm's archive came from elsewhere.
             const release = yield* githubRelease(at, repository, tag, token);
             return release === undefined || release.draft
               ? row(

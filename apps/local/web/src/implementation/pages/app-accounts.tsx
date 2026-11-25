@@ -38,12 +38,6 @@ import type { AccountSummary } from "@executor-js/ui/contracts/dashboard";
 import type { AccountId, AccountScope, App, AccountRequirement } from "@executor-js/sdk";
 import type { DashboardError } from "../../contracts/errors.ts";
 
-/**
- * The app's accounts in two sections: App accounts, linked for every call and the app's background
- * work, and Your accounts. Locally the owner changes both: choose a saved account, clear one from a
- * many() requirement, or connect a new account, which saves it and links it in one step. The
- * account stays saved when it is unlinked.
- */
 export function AppAccounts({
   app,
   appLinks,
@@ -51,11 +45,8 @@ export function AppAccounts({
   accounts,
 }: {
   readonly app: App;
-  /** The app links, oldest first per requirement, with their sign-in details. */
   readonly appLinks: readonly RequirementLink<AccountSummary>[];
-  /** The user links, oldest first per requirement, with their sign-in details. */
   readonly userLinks: readonly RequirementLink<AccountSummary>[];
-  /** Every saved account. */
   readonly accounts: readonly AccountSummary[];
 }) {
   const registry = useContext(RegistryContext);
@@ -65,7 +56,6 @@ export function AppAccounts({
     return Effect.runPromiseExit(
       AtomRegistry.getResult(registry, check, { suspendOnWaiting: true }),
     ).then((exit) => {
-      // The rows show the results before the check settles, so they never fall back to the old ones.
       if (Exit.isSuccess(exit)) acknowledgeLinkChecks({ registry }, app.id, exit.value);
       return exit;
     });
@@ -81,7 +71,6 @@ export function AppAccounts({
     readonly requirement: AccountRequirement;
   }>();
   const [connecting, setConnecting] = useState(false);
-  // Credentials are replaced here, where the app shows which hosts receive them.
   const [replacing, setReplacing] = useState<{
     readonly scope: AccountScope;
     readonly slot: string;

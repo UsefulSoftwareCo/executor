@@ -1,7 +1,4 @@
-/** Interactive CLI over the same SDK used by committed scenarios. */
-// First: the harness's outbound connect time-out (support/connect-timeout.ts).
 import "./support/connect-timeout.ts";
-// Second: each stage request on a connection of its own (support/stage-connections.ts).
 import "./support/stage-connections.ts";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";

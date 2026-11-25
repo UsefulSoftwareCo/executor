@@ -1,17 +1,3 @@
-/**
- * The npm packages the e2e products install, pinned in `e2e/npm-packages.json`, so scenarios never
- * reach the public registry. The suite's loopback registry (e2e/support/npm-registry.ts) serves
- * only these versions, from archives this script downloads once and checks against their pinned
- * integrity.
- *
- *   node scripts/e2e-npm-packages.ts           Download missing archives into .local/test-runtime/npm.
- *   node scripts/e2e-npm-packages.ts --update  Resolve `roots` again and rewrite the lock.
- *   node scripts/e2e-npm-packages.ts --only FILE  Download only the `name@version`s FILE lists
- *     (`{ "packages": [...] }`), as a release check does before its packaged scenarios.
- *
- * A scenario that declares a new package, or a change to the versions below, needs `--update`:
- * the download refuses a lock whose roots differ from these.
- */
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import { createRequire } from "node:module";
@@ -34,29 +20,20 @@ type Lock = {
 };
 
 const dependency = (name: string, range: string): Root => ({ name, range, transitive: true });
-/** Installed alone, as the product installs `apps` releases and Tailwind's stylesheet. */
 const alone = (name: string, range: string): Root => ({ name, range, transitive: false });
 
-/** Every package a scenario's app declares and imports, and every `apps` release it pins. */
 const roots: ReadonlyArray<Root> = [
-  // Quick add, the authored MCP templates and MCP fixture apps.
   dependency("@modelcontextprotocol/sdk", apps.devDependencies["@modelcontextprotocol/sdk"]),
-  // mcp-execute-failures.spec.ts pins an older SDK.
   dependency("@modelcontextprotocol/sdk", "1.30.0"),
   dependency("react", "19.2.0"),
   dependency("react", "^19.2.0"),
   dependency("react-dom", "19.2.0"),
   dependency("react-dom", "^19.2.0"),
   dependency("graphql", "16.11.0"),
-  // Workflow fixture apps (support/workflow-app.ts).
   dependency("brotli-wasm", "3.0.1"),
   dependency("is-number", "7.0.0"),
-  // cloud-compiler.spec.ts installs an exact zod release.
   dependency("zod", "3.25.76"),
-  // The compiler installs Tailwind at the version the host bundles for `@import "tailwindcss"`.
   alone("tailwindcss", tailwind.version),
-  // catalog-copy-rebuild.spec.ts installs catalog sources on beta.88 and beta.100 and rebuilds them
-  // on beta.140.
   ...[0, 1, 2, 4, 5, 9, 10, 14, 22, 33, 59, 84, 88, 95, 100, 140].map((beta) =>
     alone("apps", `0.0.1-beta.${beta}`),
   ),
@@ -67,7 +44,6 @@ const archives = path.resolve(".local/test-runtime/npm");
 const upstream = "https://registry.npmjs.org";
 const timeout = 60_000;
 
-/** The archive file for one locked version; the loopback registry reads the same name. */
 const archiveName = (name: string, version: string) => `${name.replace("/", "+")}-${version}.tgz`;
 
 const fail = (message: string): never => {
@@ -75,14 +51,8 @@ const fail = (message: string): never => {
   process.exit(1);
 };
 
-/** Attempts at one request: a CI job's e2e:prepare failed when one archive took over a minute. */
 const attempts = 3;
 
-/**
- * One request to the registry, with its body read. A request that times out, loses its
- * connection or gets a 429 or 5xx answer is sent again, twice at most, after 2 and then 8 seconds:
- * this is setup, not a scenario, and every archive is still checked against its locked integrity.
- */
 const get = async (url: string, accept?: string): Promise<Uint8Array> => {
   for (let attempt = 1; ; attempt++) {
     const failure = await fetch(url, {
@@ -106,14 +76,7 @@ const get = async (url: string, accept?: string): Promise<Uint8Array> => {
   }
 };
 
-/**
- * Resolve every root as the compiler's installer does (`@cloudflare/worker-bundler`): an exact
- * version, a dist-tag, then the highest satisfying version, following `dependencies` of transitive
- * roots. Every range is resolved, not one version per name, so the lock holds the answer for any
- * install order. Serving only these versions leaves each range's answer unchanged.
- */
 const update = async () => {
-  // The installer's own semver, so ranges resolve exactly as they do in the product.
   const bundler = fs.realpathSync("packages/sdk/node_modules/@cloudflare/worker-bundler");
   const semver = createRequire(path.join(bundler, "package.json"))("semver") as {
     maxSatisfying: (versions: ReadonlyArray<string>, range: string) => string | null;
@@ -175,7 +138,6 @@ const update = async () => {
     const entry = packages[name]!;
     const tags = (await packument(name))["dist-tags"];
     sorted[name] = {
-      // Only tags that name a locked version; a range never resolves to an unlocked one.
       distTags: Object.fromEntries(
         Object.entries(tags).filter(([, version]) => entry.versions[version] !== undefined),
       ),
@@ -198,7 +160,6 @@ const update = async () => {
 const integrityOf = (bytes: Uint8Array) =>
   `sha512-${createHash("sha512").update(bytes).digest("base64")}`;
 
-/** Download each locked archive not already present, refusing bytes that miss its integrity. */
 const download = async () => {
   const lock = JSON.parse(fs.readFileSync(lockFile, "utf8")) as Lock;
   if (JSON.stringify(lock.roots) !== JSON.stringify(roots))
@@ -214,7 +175,6 @@ const download = async () => {
     })),
   );
   const keep = new Set(locked.map(({ file }) => file));
-  // `--only FILE`: just these versions, each of which must be in the lock.
   const onlyFile = process.argv[process.argv.indexOf("--only") + 1];
   const only = process.argv.includes("--only")
     ? (JSON.parse(fs.readFileSync(onlyFile ?? "", "utf8")) as { packages: ReadonlyArray<string> })

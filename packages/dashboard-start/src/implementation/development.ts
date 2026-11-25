@@ -1,4 +1,3 @@
-/** Node-backed development rendering shared by hosted dashboards. */
 import { IncomingMessage, ServerResponse, type Server } from "node:http";
 import * as NodeHttpServerRequest from "@effect/platform-node/NodeHttpServerRequest";
 import { DevelopmentDashboardFailed } from "../contracts/development.ts";
@@ -64,7 +63,6 @@ export const developmentDashboard = (
       const request = yield* HttpServerRequest.HttpServerRequest;
       const incoming = NodeHttpServerRequest.toIncomingMessage(request);
       const outgoing = NodeHttpServerRequest.toServerResponse(request);
-      // Effect 4.1 may hand over an HTTP/2 request; this development server only speaks HTTP/1.
       if (!(incoming instanceof IncomingMessage) || !(outgoing instanceof ServerResponse))
         return HttpServerResponse.empty({ status: 505 });
       return yield* Effect.callback<HttpServerResponse.HttpServerResponse>((resume) => {

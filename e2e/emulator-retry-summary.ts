@@ -1,8 +1,3 @@
-/**
- * Adds a job's count of hosted emulator calls that needed a retry to its summary, zero included:
- * `node e2e/emulator-retry-summary.ts <job status> <directory>...`. A job that passed only after
- * retrying says so. The records come from `emulatorRequest` (`e2e/emulator-retries.ts`).
- */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Config, Console, Effect, FileSystem, Option } from "effect";
@@ -15,7 +10,6 @@ NodeRuntime.runMain(
       return yield* Effect.die(
         "Usage: node e2e/emulator-retry-summary.ts <job status> <directory>...",
       );
-    // A summary never turns a job red: a record it cannot read is reported, not failed on.
     const counted = yield* countEmulatorRetries(directories).pipe(Effect.option);
     if (Option.isNone(counted)) {
       yield* Console.log("The hosted emulator calls that needed a retry could not be counted.");
@@ -28,7 +22,6 @@ NodeRuntime.runMain(
         : "";
     const report = `## Hosted emulators\n\n${emulatorRetryLine(counts)}${passedWithRetries}\n`;
     yield* Console.log(report);
-    // Where people look: an annotation on the run, not only a line in the summary.
     if (passedWithRetries !== "")
       yield* Console.log(`::warning title=Hosted emulators::${passedWithRetries.trim()}`);
     const summary = yield* Config.String("GITHUB_STEP_SUMMARY").pipe(Config.option);

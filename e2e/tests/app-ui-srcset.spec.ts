@@ -1,8 +1,3 @@
-/**
- * Every view of an app page rewrites its `srcset` candidates to the version's asset root. A long
- * run of commas inside one candidate costs no more than its length, so the page answers as fast
- * as a page of the same size whose commas are in an attribute nothing rewrites.
- */
 import { expect, layer } from "@effect/vitest";
 import { Clock, Effect } from "effect";
 import { randomUUID } from "node:crypto";
@@ -15,19 +10,8 @@ import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
 import { appsManifest } from "../support/apps-release.ts";
 
-/**
- * Commas inside one candidate URL. Rewriting them took time in the square of their count, about
- * 4 seconds a view at this count on a 16-vCPU machine, against tens of milliseconds for the same
- * page served without a rewrite.
- */
 const commas = ",".repeat(100_000);
-/**
- * How many times slower than the baseline the page may be. Both pages carry the same bytes
- * through the same parse, so a linear rewrite keeps them alike; a quadratic one is a hundred times
- * slower.
- */
 const slowerThanBaseline = 4;
-/** Reads of each page, alternated; the fastest of each is compared, so one stalled read is not. */
 const reads = 3;
 
 const page = (image: string) => [
@@ -62,7 +46,6 @@ layer(HostedLive, { excludeTestServices: true })("App page srcset", (it) => {
           browser = yield* Browser;
         const prefix = `/api/organizations/${actors.organization.id}`;
         yield* browser.login(actors.owner);
-        /** Deploy a page and sign in to its origin on a public file, so the page is unread. */
         const deploy = (name: string, image: string) =>
           Effect.gen(function* () {
             const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
@@ -110,7 +93,6 @@ layer(HostedLive, { excludeTestServices: true })("App page srcset", (it) => {
           fastest.long,
           `the long srcset page's fastest read, against the baseline's ${fastest.baseline} ms (${JSON.stringify(times)})`,
         ).toBeLessThanOrEqual(Math.max(fastest.baseline, 1) * slowerThanBaseline);
-        // Both candidates point at the version's assets; the commas stay inside the first URL.
         const version = /srcset="\/_executor\/assets\/([^/"]+)\//.exec(text)?.[1];
         expect(version).toBeDefined();
         const root = `/_executor/assets/${version}/`;

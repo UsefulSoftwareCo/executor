@@ -1,4 +1,3 @@
-/** Portable workerd app compilation, protocol adapters, and immutable build storage. */
 export * from "./contracts/worker-build.ts";
 export {
   assembleWorkerBundle,

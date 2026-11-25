@@ -1,4 +1,3 @@
-/** Evaluated app declarations follow their inputs and never bypass live access. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -16,7 +15,6 @@ import {
   linkedAccountIds,
 } from "../support/app-accounts.ts";
 
-/** Declarations derived from the linked account's stored credential and the deployed version. */
 const source = (
   version: string,
 ) => `import {defineApp,defineProvider,secrets,query,workflow,object,string, router} from "apps";
@@ -84,7 +82,6 @@ layer(HostedLive, { excludeTestServices: true })("App declarations", (it) => {
               expect(response.status, JSON.stringify(response.body)).toBe(200);
               return (yield* body(Resource, response)).id;
             });
-          /** Connect a new personal account from the app, which links it for the actor. */
           const connect = (actor: Session, token: string) =>
             Effect.gen(function* () {
               const response = yield* api.request(
@@ -98,10 +95,8 @@ layer(HostedLive, { excludeTestServices: true })("App declarations", (it) => {
               accounts.push({ actor, id: account });
               return account;
             });
-          /** Replace the stored credential of an existing account; its ID and link stay. */
           const reconnect = (actor: Session, account: string, token: string) =>
             Effect.gen(function* () {
-              // Connecting from the app with an existing account replaces its credentials.
               const response = yield* api.request(
                 actor,
                 "POST",
@@ -115,7 +110,6 @@ layer(HostedLive, { excludeTestServices: true })("App declarations", (it) => {
                 account,
               );
             });
-          /** Reads evaluated with the actor's linked account. */
           const workflows = (actor: Session) =>
             Effect.gen(function* () {
               const response = yield* api.request(actor, "GET", `${path}/workflows`);
@@ -129,44 +123,35 @@ layer(HostedLive, { excludeTestServices: true })("App declarations", (it) => {
               return (yield* body(Bundle, response)).skills.map((skill) => skill.description);
             });
 
-          // Reads use the actor's linked account.
           const alpha = yield* connect(actors.owner, "alpha");
-          // A first evaluation and an identical second read return the same declarations.
           expect(yield* workflows(actors.owner)).toEqual(["first_alpha"]);
           expect(yield* workflows(actors.owner)).toEqual(["first_alpha"]);
           expect(yield* skills(actors.owner)).toEqual(["first guide for alpha"]);
           expect(yield* skills(actors.owner)).toEqual(["first guide for alpha"]);
 
-          // A replaced credential is a different evaluation input.
           yield* reconnect(actors.owner, alpha, "beta");
           expect(yield* workflows(actors.owner)).toEqual(["first_beta"]);
           expect(yield* skills(actors.owner)).toEqual(["first guide for beta"]);
 
-          // Connecting a second account from the app replaces the linked one, which stays saved:
-          // the new account is a different evaluation input.
           const gamma = yield* connect(actors.owner, "gamma");
           expect(yield* linkedAccountIds(actors.owner, path)).toEqual([gamma]);
           expect(yield* workflows(actors.owner)).toEqual(["first_gamma"]);
           expect(yield* skills(actors.owner)).toEqual(["first guide for gamma"]);
-          // Linking the first account again is the earlier input.
           yield* linkAccount(actors.owner, path, "service", alpha);
           expect(yield* workflows(actors.owner)).toEqual(["first_beta"]);
           expect(yield* skills(actors.owner)).toEqual(["first guide for beta"]);
           yield* linkAccount(actors.owner, path, "service", gamma);
 
-          // Another member's read is evaluated with that member's own account.
           yield* connect(actors.member, "delta");
           expect(yield* workflows(actors.member)).toEqual(["first_delta"]);
           expect(yield* workflows(actors.member)).toEqual(["first_delta"]);
           expect(yield* workflows(actors.owner)).toEqual(["first_gamma"]);
-          // Retained results never substitute for access: another member's account stays closed.
           expect((yield* linkAccountResponse(actors.member, path, "service", gamma)).status).toBe(
             403,
           );
           expect(yield* workflows(actors.member)).toEqual(["first_delta"]);
           expect(yield* skills(actors.member)).toEqual(["first guide for delta"]);
 
-          // Revoking the member's app access denies a read whose result is still retained.
           const shared = yield* body(
             Access,
             yield* api.request(actors.owner, "GET", `${path}/access`),
@@ -182,7 +167,6 @@ layer(HostedLive, { excludeTestServices: true })("App declarations", (it) => {
             403,
           );
 
-          // A new version is a new build: its declarations appear on the next read.
           const redeployed = yield* saveAndDeploy(actors.owner, path, {
             files: [{ path: "index.ts", content: source("second") }, appsManifest],
           });

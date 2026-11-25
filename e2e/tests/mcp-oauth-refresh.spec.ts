@@ -1,4 +1,3 @@
-/** MCP clients often run several instances that share one stored OAuth grant. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Layer, Redacted, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
@@ -28,7 +27,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP OAuth refresh", (it) => {
           oauth = yield* McpOAuth,
           mcp = yield* McpClient;
         yield* browser.login(actors.owner);
-        // Two instances of one client load the same stored grant. Each keeps its own copy.
         const stored = yield* evidence.step("Authorize one MCP grant", oauth.authorize);
         const first = yield* evidence.step(
           "The first instance refreshes the stored grant",
@@ -42,12 +40,10 @@ layer(HostedLive, { excludeTestServices: true })("MCP OAuth refresh", (it) => {
           client.listTools(),
         );
         expect(listed.tools.length).toBeGreaterThan(0);
-        // The second instance still holds the refresh token the first instance rotated.
         const sibling = yield* evidence.step(
           "A sibling instance refreshes with the token it loaded earlier",
           oauth.refresh(stored),
         );
-        // It joins the first instance's rotation instead of forking or ending the grant.
         const same =
           Redacted.value(sibling.tokens).access_token ===
             Redacted.value(first.tokens).access_token &&
@@ -97,7 +93,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP OAuth refresh", (it) => {
           "The first instance refreshes the stored grant",
           oauth.refresh(stored),
         );
-        // Just inside the hour the rotation's access token lives, a sibling still joins it.
         yield* serverControl("stop");
         yield* serverControl("clock/advance", 200, { milliseconds: 59 * 60_000 });
         yield* serverControl("start");
@@ -105,13 +100,10 @@ layer(HostedLive, { excludeTestServices: true })("MCP OAuth refresh", (it) => {
           "A sibling refreshes with the rotated token 59 minutes later",
           oauth.refresh(stored),
         );
-        // Compare inside the test so neither token reaches assertion diagnostics.
         const joined =
           Redacted.value(sibling.tokens).refresh_token ===
           Redacted.value(first.tokens).refresh_token;
         expect(joined).toBe(true);
-        // After that hour a stale copy, such as one an idle sibling kept, is refused alone for a
-        // day after its rotation, and the grant's current token keeps working.
         yield* serverControl("stop");
         yield* serverControl("clock/advance", 200, { milliseconds: 2 * 60_000 });
         yield* serverControl("start");
@@ -122,8 +114,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP OAuth refresh", (it) => {
             return yield* oauth.refresh(first);
           }),
         );
-        // More than a day after its rotation the server cannot tell the copy from a stolen one,
-        // so presenting it ends the grant for every holder.
         yield* serverControl("stop");
         yield* serverControl("clock/advance", 200, { milliseconds: 24 * 3600_000 });
         yield* serverControl("start");
@@ -153,7 +143,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP OAuth refresh", (it) => {
             yield* serverControl("clock/advance", 200, { milliseconds });
             yield* serverControl("start");
           });
-        /** The status of an MCP `initialize` with the grant's access token; a stream is not read. */
         const mcpStatus = (grant: Grant) =>
           Effect.scoped(
             Effect.gen(function* () {
@@ -180,8 +169,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP OAuth refresh", (it) => {
           ).pipe(Effect.timeout("30 seconds"), Effect.orDie);
         const agentsPath = `/api/organizations/${actors.organization.id}/mcp-agents`;
 
-        // This browser session approves every grant below and is never used again, so it expires
-        // seven days after this sign-in. Refreshing a grant does not extend it.
         const approving = yield* freshOwnerSession;
         yield* browser.login(approving);
         const idle = yield* evidence.step(
@@ -196,8 +183,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP OAuth refresh", (it) => {
           "Authorize an agent that is revoked later",
           oauth.authorizeNamed("Revoked agent"),
         );
-        // A refresh that asks for fewer scopes gets a refresh token without offline access, which
-        // stays bound to the approving session as one sign-out would revoke.
         const narrowed = yield* evidence.step(
           "Authorize an agent and narrow its refresh token to the mcp scope",
           Effect.flatMap(oauth.authorizeNamed("Narrowed agent"), (grant) =>
@@ -211,8 +196,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP OAuth refresh", (it) => {
             oauth.refresh(daily),
           );
         }
-        // Half an hour before the session expires, the daily agent refreshes once more. That access
-        // token names the session, which is still live.
         yield* advance(day - 30 * minute);
         daily = yield* evidence.step(
           "The daily agent refreshes half an hour before the session expires",
@@ -227,12 +210,10 @@ layer(HostedLive, { excludeTestServices: true })("MCP OAuth refresh", (it) => {
           readonly observed: unknown;
           readonly expected: unknown;
         }> = [];
-        // Every check runs before the assertion, so a failure lists the whole table.
         const record = (name: string, observed: unknown, expected: unknown) =>
           Effect.sync(() => {
             outcomes.push({ name, observed, expected });
           });
-        /** Refresh, record the refresh status and the refreshed token's MCP status. */
         const refreshAndCall = (name: string, grant: Grant) =>
           Effect.gen(function* () {
             const refreshed = yield* oauth.refresh(grant).pipe(Effect.option);
@@ -246,8 +227,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP OAuth refresh", (it) => {
             return refreshed.value;
           });
 
-        // The fixture owner's own session, which the OAuth driver and these dashboard calls read
-        // with, expired as well; signing it in again leaves the approving session alone.
         const signIn = yield* api.request(actors.owner, "POST", "/api/auth/sign-in/email", {
           email: "owner@example.test",
           password,
@@ -261,7 +240,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP OAuth refresh", (it) => {
         yield* evidence.step(
           "Before it refreshes, the idle agent is listed through its refresh token alone",
           Effect.gen(function* () {
-            // Its only access token expired days ago; its refresh token names the expired session.
             yield* record(
               "idle agent: listed before it refreshes",
               (yield* listedAgents).has(idle.grantId),
@@ -275,11 +253,9 @@ layer(HostedLive, { excludeTestServices: true })("MCP OAuth refresh", (it) => {
             return yield* refreshAndCall("idle agent", idle);
           }),
         );
-        // The refresh token the second refresh after expiry rotated, kept to replay later.
         const replayable = yield* evidence.step(
           "The daily agent's last token named the expired session; it refreshes and keeps working",
           Effect.gen(function* () {
-            // The control: this unexpired access token names the session, which has now expired.
             yield* record(
               "daily agent: MCP with the token issued before the session expired",
               yield* mcpStatus(beforeExpiry),
@@ -287,7 +263,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP OAuth refresh", (it) => {
             );
             daily = yield* refreshAndCall("daily agent", daily);
             const rotated = daily;
-            // A token minted after the session expired carries on refreshing.
             daily = yield* refreshAndCall("daily agent, second refresh after expiry", daily);
             return rotated;
           }),
@@ -354,7 +329,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP OAuth refresh", (it) => {
           }),
         );
 
-        // A token without a session still ends by its own expiry, an hour after it was issued.
         yield* advance(61 * minute);
         yield* evidence.step(
           "An access token issued after the session expired ends after its hour",
@@ -367,7 +341,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP OAuth refresh", (it) => {
             yield* refreshAndCall("idle agent, an hour later", idleAfter);
           }),
         );
-        // More than a day after its rotation, replaying a rotated token ends every copy.
         yield* advance(25 * 60 * minute);
         yield* evidence.step(
           "Replaying a rotated token more than a day later still ends the grant",

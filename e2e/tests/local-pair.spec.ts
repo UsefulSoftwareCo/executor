@@ -1,4 +1,3 @@
-/** Run the real `executor service pair` beside a server the scenario starts with its own data directory. */
 import { expect, layer } from "@effect/vitest";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { randomBytes } from "node:crypto";
@@ -27,10 +26,8 @@ const nothingChanged = "Nothing was changed.";
 const desktopHint =
   "If Executor desktop is running, use its File > Open in browser menu item instead.";
 const KeyFile = Schema.fromJsonString(Schema.Struct({ apiKey: Schema.String }));
-/** What pair says about something on the port that is not a working Executor server. */
 const notExecutor = (port: number) =>
   `Something is listening on 127.0.0.1:${port}, but it did not answer as an Executor server. Run \`executor service status\` to see where the background Executor listens.`;
-/** What pair says when no server is registered for the directory, or the registered one is gone. */
 const noServer = (directory: string) =>
   `No background Executor is running for ${directory}. Start it with \`executor\` or \`executor service start\`.`;
 
@@ -51,7 +48,6 @@ layer(TestLive, { excludeTestServices: true })("Local pair", (it) => {
           const entry = path.resolve(
             Option.isSome(packagedEntry) ? packagedEntry.value : "apps/local/server/src/bin.ts",
           );
-          // Startup deploys the bundled Executor app, which pins this checkout's apps release.
           const registry = yield* Config.NonEmptyString("E2E_NPM_REGISTRY").pipe(Config.option);
           const command = (
             args: ReadonlyArray<string>,
@@ -63,16 +59,12 @@ layer(TestLive, { excludeTestServices: true })("Local pair", (it) => {
               localEntryCommand(entry, args).command,
               localEntryCommand(entry, args).args,
               {
-                // A working directory inside the scenario's folder could not be removed on Windows
-                // while a stopped child finishes exiting.
                 cwd: path.dirname(entry),
                 extendEnv: false,
                 env: {
                   PATH: process.env.PATH ?? "",
-                  // Release scenarios never send product analytics, even from a build with a baked key.
                   DO_NOT_TRACK: "1",
                   EXECUTOR_ENVIRONMENT: "e2e",
-                  // Keys stay in keys.json so no run touches the machine's OS credential store.
                   EXECUTOR_KEY_STORAGE: "file",
                   EXECUTOR_WORKER_BUNDLE: path.resolve(".local/test-runtime/host.json"),
                   ...(Option.isSome(registry) ? { EXECUTOR_NPM_REGISTRY: registry.value } : {}),
@@ -85,7 +77,6 @@ layer(TestLive, { excludeTestServices: true })("Local pair", (it) => {
                 forceKillAfter: "3 seconds",
               },
             );
-          /** Run one CLI command to exit and return its code and complete output. */
           const run = (
             args: ReadonlyArray<string>,
             directory: string,
@@ -114,7 +105,6 @@ layer(TestLive, { excludeTestServices: true })("Local pair", (it) => {
             port: number,
             extra: Readonly<Record<string, string>> = {},
           ) => run(["service", "pair"], directory, port, extra);
-          /** A running server writes its own databases; its key files are what pairing must keep. */
           const keyFiles = (directory: string) =>
             Effect.forEach(["installation.json", "keys.json"], (name) =>
               fs.readFileString(path.join(directory, name)),
@@ -127,8 +117,6 @@ layer(TestLive, { excludeTestServices: true })("Local pair", (it) => {
           const link = new RegExp(`^http://127\\.0\\.0\\.1:${port}/#pair=[a-f0-9]{64}$`, "u");
           const afterRotation = yield* Effect.scoped(
             Effect.gen(function* () {
-              // A foreground server registers itself in its data directory, as the background
-              // server does, so pairing finds it there.
               const server = yield* processes.spawn(command(["serve"], running, port));
               const ready = yield* Deferred.make<void>();
               const log = yield* Ref.make("");
@@ -164,15 +152,12 @@ layer(TestLive, { excludeTestServices: true })("Local pair", (it) => {
                 ),
               );
 
-              // The running server's own directory pairs, and pairing leaves that directory as it was.
               const before = yield* keyFiles(running);
               const paired = yield* pair(running, port);
               expect(paired.code, paired.stderr).toBe(0);
               expect(paired.stdout.trim()).toMatch(link);
               expect(yield* keyFiles(running)).toEqual(before);
 
-              // Pairing reads only the registration, so a setting only the server uses cannot
-              // stop it, and EXECUTOR_PORT need not name the server's port.
               const serverOnly = yield* pair(running, port, {
                 EXECUTOR_MCP_TIMEOUT_MS: "not-a-number",
               });
@@ -184,7 +169,6 @@ layer(TestLive, { excludeTestServices: true })("Local pair", (it) => {
                 expect(elsewhere.stdout.trim()).toMatch(link);
               }
 
-              // A directory no server runs for is refused, and not even the directory is created.
               const refused = yield* pair(missing, port);
               yield* evidence.json("no-server.json", refused);
               expect(refused.code).toBe(1);
@@ -194,7 +178,6 @@ layer(TestLive, { excludeTestServices: true })("Local pair", (it) => {
               expect(refused.stderr).not.toContain("Executor could not start");
               expect(yield* fs.exists(missing)).toBe(false);
 
-              // A supplied key the server did not start with is named as such.
               const supplied = yield* pair(running, port, {
                 EXECUTOR_API_KEY: randomBytes(32).toString("hex"),
               });
@@ -206,8 +189,6 @@ layer(TestLive, { excludeTestServices: true })("Local pair", (it) => {
               expect(supplied.stderr).toContain(nothingChanged);
               expect(yield* keyFiles(running)).toEqual(before);
 
-              // The server's own API key, supplied alone, pairs the server on EXECUTOR_PORT without
-              // a registration in the directory: a client never needs the encryption key.
               const { apiKey } = yield* fs
                 .readFileString(path.join(running, "keys.json"))
                 .pipe(Effect.flatMap(Schema.decodeUnknownEffect(KeyFile)));
@@ -216,8 +197,6 @@ layer(TestLive, { excludeTestServices: true })("Local pair", (it) => {
               expect(suppliedPaired.stdout.trim()).toMatch(link);
               expect(yield* fs.exists(missing)).toBe(false);
 
-              // Then EXECUTOR_PORT is where the server is: an invalid one is named, and a port with
-              // no server says so instead of blaming the key or the port being in use.
               const badPort = yield* pair(missing, port, {
                 EXECUTOR_API_KEY: apiKey,
                 EXECUTOR_PORT: "not-a-port",
@@ -235,8 +214,6 @@ layer(TestLive, { excludeTestServices: true })("Local pair", (it) => {
               expect(silent.stderr).toContain(noServer(missing));
               expect(silent.stderr).not.toContain("already in use");
 
-              // A rotated key takes effect only when the server restarts. Pairing sends the
-              // password the server registered, so it keeps working until then.
               const rotated = yield* run(["service", "rotate-key"], running, port);
               expect(rotated.code, rotated.stderr).toBe(0);
               expect(rotated.stdout).toContain(
@@ -249,7 +226,6 @@ layer(TestLive, { excludeTestServices: true })("Local pair", (it) => {
               expect(afterRotating.stdout.trim()).toMatch(link);
               expect(yield* keyFiles(running)).toEqual(rotatedKeys);
 
-              // Another service on EXECUTOR_PORT answers, but not with a connection link.
               const services = yield* Layer.build(
                 HttpRouter.serve(
                   HttpRouter.add(
@@ -278,12 +254,8 @@ layer(TestLive, { excludeTestServices: true })("Local pair", (it) => {
               expect(unexpected.stderr).toContain(notExecutor(foreign.address.port));
               expect(unexpected.stderr).toContain(nothingChanged);
 
-              // A service that is not HTTP is not "no server" either: one that resets each
-              // connection, and one that reads each request and never answers.
               for (const [name, onConnection] of [
                 ["resets-connection", (socket) => socket.resetAndDestroy()],
-                // Reading each request lets the connection close when pair gives up. A client may
-                // reset it rather than close it, as a Bun-compiled CLI does on exit.
                 ["never-answers", (socket) => socket.on("error", () => {}).resume()],
               ] as const satisfies ReadonlyArray<
                 readonly [string, Parameters<typeof holdPort>[1]]
@@ -306,10 +278,6 @@ layer(TestLive, { excludeTestServices: true })("Local pair", (it) => {
             }),
           );
 
-          // The server stops as its scope closes. On POSIX SIGTERM stops it, and it takes its
-          // registration with it. Windows has no SIGTERM, so the server is ended at once and its
-          // registration stays, naming a process that has exited. Either way pairing says nothing
-          // runs.
           expect(yield* fs.exists(path.join(running, "server.json"))).toBe(
             process.platform === "win32",
           );
@@ -320,7 +288,6 @@ layer(TestLive, { excludeTestServices: true })("Local pair", (it) => {
           expect(yield* keyFiles(running)).toEqual(afterRotation);
         }),
       ),
-    // Readiness and every command have their own timeouts, which record evidence first.
     { timeout: 240_000 },
   );
 });

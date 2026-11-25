@@ -1,8 +1,3 @@
-/**
- * Tool search over listings kept as rows: Okapi BM25 over the words of each tool, its routers and
- * its target's labels. A listing's rows keep each shared `$defs` entry once, as the durable
- * listing text does; only a page's tools are put back together with their definitions.
- */
 import { Effect, JsonPointer, Schema } from "effect";
 import type { HostCrypto } from "./host-crypto.ts";
 import { Digest } from "effect/crypto";
@@ -22,7 +17,6 @@ import type { InvocationSnapshot } from "./tools.ts";
 import { scopedSelection } from "./selection.ts";
 import type { SearchToolRow, ToolSearchStore } from "./tool-search-store.ts";
 
-/** Lowercase words, with camelCase and snake_case split and a plural `s` removed. */
 export const words = (text: string): Array<string> =>
   text
     .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
@@ -39,10 +33,6 @@ const stem = (word: string) =>
       ? word.slice(0, -1)
       : word;
 
-/**
- * The names and descriptions of a tool's top-level input properties, after a top-level reference,
- * read from its listed schema.
- */
 const inputText = (tool: Tool): ReadonlyArray<string> => {
   const input: JsonObject = Schema.is(JsonObject)(tool.inputSchema) ? tool.inputSchema : {};
   const ref = typeof input.$ref === "string" ? input.$ref : undefined;
@@ -64,7 +54,6 @@ const objectOf = (value: unknown): JsonObject => (Schema.is(JsonObject)(value) ?
 
 const encoder = new TextEncoder();
 
-/** The words a tool ranks by, without its target's labels. */
 const toolTerms = (listing: ToolListing, tool: Tool) => {
   const root = listing.routers.find((router) => router.path === "");
   const router =
@@ -90,11 +79,6 @@ export const makeToolSearch = (options: {
   const { store } = options;
   const digest = (text: string) =>
     options.crypto.digest.digest(Digest.sha256, encoder.encode(text)).pipe(Effect.map(Hex.encode));
-  /**
-   * The target a listing belongs to: a digest of the account set it was evaluated with, each
-   * requirement's accounts in ID order. Requirements without accounts name none. Requirement
-   * names are unique across scopes; a listing evaluated without a caller is marked as such.
-   */
   const target = (accounts: AppAccounts) => {
     const named = invocationEntries(accounts)
       .filter(([, ids]) => ids.length > 0)
@@ -102,17 +86,10 @@ export const makeToolSearch = (options: {
       .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
     return digest(JSON.stringify(accounts.user === undefined ? ["app", named] : named));
   };
-  /** The target of an invocation state's listing. */
   const stateTarget = (state: InvocationSnapshot) =>
     target(scopedSelection(state.version.requirements.accounts, state.accounts, state.scope));
-  /**
-   * Digests of definitions, and what makes two targets' tools of one name the same result:
-   * everything agents read but the name. Kept listings share their tool and definition objects,
-   * so a listing written again reuses these.
-   */
   const definitionDigests = new WeakMap<object, string>();
   const signatures = new WeakMap<Tool, string>();
-  /** The rows of a listing, its definitions once, without encoding any tool's JSON. */
   const rows = (listing: ToolListing) =>
     Effect.gen(function* () {
       const { stored } = shareListing(listing);
@@ -132,11 +109,9 @@ export const makeToolSearch = (options: {
       for (const [index, tool] of listing.items.entries()) {
         const kept: StoredTool = stored.tools[index] ?? tool;
         const positions = new Set<number>();
-        /** A stored schema with its definitions' positions replaced by their digests. */
         const digested = (schema: JsonObject | undefined) =>
           Effect.gen(function* () {
             if (schema === undefined) return null;
-            // Entries, not assignment, so a definition named `__proto__` stays an own entry.
             const named: Array<[string, string]> = [];
             for (const [name, at] of Object.entries(objectOf(schema.$defs)))
               if (typeof at === "number") {
@@ -172,12 +147,8 @@ export const makeToolSearch = (options: {
       return { tools: derived, definitions: stored.definitions };
     });
   return {
-    /** The kept rows of the state's listing, if any. */
     listing: (state: InvocationSnapshot, listing: ToolSearchListing) =>
       Effect.flatMap(stateTarget(state), (target) => store.listing(listing, target)),
-    /**
-     * The kept rows of each state's listing, in order, read in one statement; see `listing`.
-     */
     listings: (
       wanted: ReadonlyArray<{
         readonly state: InvocationSnapshot;
@@ -188,11 +159,6 @@ export const makeToolSearch = (options: {
         Effect.map(stateTarget(state), (target) => ({ listing, target })),
       ).pipe(Effect.flatMap(store.listings)),
     revive: store.revive,
-    /**
-     * Keep a listing's rows. The rows' digest covers what ranking and results read, so a listing
-     * evaluated again without changes rewrites none of them. Each tool's JSON is encoded only in
-     * the batch that inserts it. A failure leaves the rows that were kept.
-     */
     write: (state: InvocationSnapshot, id: ToolSearchListing, listing: ToolListing, at: number) =>
       Effect.gen(function* () {
         const content = yield* rows(listing);
@@ -226,12 +192,6 @@ export const makeToolSearch = (options: {
           attributes: { "executor.app.id": state.app.id, "executor.tools": listing.items.length },
         }),
       ),
-    /**
-     * One page of ranked tools. A tool several of an app's targets list with the same name and
-     * signature is one item at its first target, ranked by its best row; ties keep target and
-     * name order, which is also the order of a query without words. Only the page's tools are
-     * put back together with the definitions they name.
-     */
     page: (input: ToolSearchInput) =>
       Effect.gen(function* () {
         const terms = [...new Set(words(input.query))];
@@ -259,7 +219,6 @@ export const makeToolSearch = (options: {
           const tool = restoreTool(item.tool, (position) =>
             definitions.get(`${item.listing}\u0000${position}`),
           );
-          // The statement read the tool and its definitions together; one missing is corrupt.
           if (tool === undefined) return yield* Effect.fail(new StorageError());
           items.push({
             target: item.target,

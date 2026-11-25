@@ -7,6 +7,7 @@
     // Effect.gen bodies without a yield are valid Effect code.
     "require-yield": "off",
     "executor/exportable-schema-pattern": "error",
+    "executor/no-comments": "error",
     "no-restricted-imports": [
       "error",
       {
@@ -161,6 +162,21 @@
         "no-unused-expressions": "off",
       },
     },
+    {
+      "files": [
+        "playground/demo-apps/live-inbox/**",
+        "packages/sdk/src/index.ts",
+        "packages/sdk/src/contracts/**",
+        "packages/apps/src/**",
+        "packages/app-cache/src/contracts/cache.ts",
+        "packages/utils/src/legacy-keys.ts",
+      ],
+      "rules": { "executor/no-comments": ["error", { "allowJsdoc": true }] },
+    },
+    {
+      "files": ["packages/apps/src/contracts/protocols/**"],
+      "rules": { "executor/no-comments": "off" },
+    },
   ],
   "ignorePatterns": [
     ".alchemy/",
@@ -174,8 +190,6 @@
     "bun.lock",
     "*.tsbuildinfo",
     "**/.generated/",
-    "**/routeTree.gen.ts",
-    "**/browser-scripts.gen.ts",
-    "**/executor-intro.gen.ts",
+    "**/*.gen.ts",
   ],
 }

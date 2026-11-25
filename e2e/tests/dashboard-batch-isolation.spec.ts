@@ -35,7 +35,6 @@ const read = (group: string, endpoint: string, params: Record<string, string> = 
   params,
 });
 
-/** Send one batch with an actor's cookies, plus any extra headers, and return answers in read order. */
 const send = (
   session: Session,
   reads: ReadonlyArray<Read>,
@@ -67,14 +66,12 @@ const send = (
     }),
   );
 
-/** The URL each read has as a request of its own. */
 const paths: Readonly<Record<string, (params: Readonly<Record<string, string>>) => string>> = {
   "viewer.get": () => "/api/viewer",
   "organization.access": ({ organization }) => `/api/organizations/${organization}/access`,
   "oauthClients.list": ({ organization }) => `/api/organizations/${organization}/oauth-clients`,
 };
 
-/** Send each read alone, with the same cookies and headers, and return its status. */
 const alone = (
   session: Session,
   reads: ReadonlyArray<Read>,
@@ -111,7 +108,6 @@ const roleOf = (answer: typeof Answer.Type | undefined) =>
     Effect.map(({ role }) => role),
   );
 
-/** A fixed shuffle per round, so concurrent reads start in a different order each time. */
 const rotate = <A>(items: ReadonlyArray<A>, by: number) =>
   items.map((_, index) => items[(index + by) % items.length] as A);
 
@@ -129,7 +125,6 @@ layer(HostedLive, { excludeTestServices: true })("Dashboard batch isolation", (i
           member: yield* body(Viewer, yield* api.request(actors.member, "GET", "/api/viewer")),
         };
 
-        // Concurrent batches from different callers each see only their own identity and role.
         const identity = [
           read("viewer", "get"),
           read("organization", "access", { organization: home.id }),
@@ -162,9 +157,6 @@ layer(HostedLive, { excludeTestServices: true })("Dashboard batch isolation", (i
           { concurrency: 3, discard: true },
         );
 
-        // A bearer grant never uses the batch's shared session checks. Whatever the cookie beside
-        // it, even another user's, every read answers exactly as it does sent alone with the same
-        // headers: the API key's authority on organization reads, and a refusal on browser-only ones.
         const key = yield* body(
           Key,
           yield* api.request(actors.owner, "POST", "/api/auth/api-key/create", {
@@ -184,7 +176,6 @@ layer(HostedLive, { excludeTestServices: true })("Dashboard batch isolation", (i
           expect(batched[0]).toBe(401);
         }
 
-        // A role change between batches is read by the next batch.
         const roster = yield* body(
           Roster,
           yield* api.request(
@@ -214,8 +205,6 @@ layer(HostedLive, { excludeTestServices: true })("Dashboard batch isolation", (i
         expect(demoted[2]?.status).toBe(403);
 
         if (!cloud) return;
-        // Self-host has one organization. On Cloud, one batch spans organizations where the caller
-        // has different roles, one it does not belong to, and aliases of each.
         const suffix = randomUUID().slice(0, 8);
         const foreign = yield* body(
           Organization,
@@ -263,13 +252,11 @@ layer(HostedLive, { excludeTestServices: true })("Dashboard batch isolation", (i
             actors.member,
             order.map((index) => mixed[index] as Read),
           );
-          // Answers come back by position sent; map each to the read it answers.
           const of = (index: number) => answers[order.indexOf(index)];
           expect(mixed.map((_, index) => of(index)?.status)).toEqual(expected);
           const roles = yield* Effect.forEach([0, 4, 6, 8], (index) => roleOf(of(index)));
           expect(roles).toEqual(["member", "owner", "member", "owner"]);
         }
-        // The owner's batch on the same organizations is answered with the owner's roles.
         const owner = yield* send(actors.owner, mixed);
         expect(statuses(owner)).toEqual([200, 200, 200, 200, 403, 403, 200, 200, 403, 200]);
       }),

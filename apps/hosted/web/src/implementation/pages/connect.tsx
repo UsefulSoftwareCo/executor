@@ -24,19 +24,16 @@ import {
 import { useDocumentationUrl } from "../documentation.ts";
 import { useResourceOrigins } from "../resource-origin.ts";
 
-/** The inventory and the member's connections, keyed by the URL. */
 export const connectionPageReads: OrganizationPageReads = (organization) => [
   resourceInventoryAtom(organization),
   mcpConnectionsAtom(organization),
 ];
 
-/** The connection page's reads and the agents connected through them. */
 export const connectPageReads: OrganizationPageReads = (organization, params) => [
   ...connectionPageReads(organization, params),
   mcpAgentsAtom(organization),
 ];
 
-/** Headless setup: a personal access token against this organization's own addresses. */
 function PersonalTokenSetup({
   apiOrigin,
   mcpOrigin,
@@ -99,7 +96,6 @@ function ConnectionLink({ connection, className, children }: ConnectionLinkProps
   );
 }
 
-/** The bindings both connection pages share in this organization. */
 function useConnectionBindings() {
   const origins = useResourceOrigins();
   const { organization } = useOrganizationRoute();
@@ -128,7 +124,6 @@ function useConnectionBindings() {
   };
 }
 
-/** The member's full-access URL, scoped connections and connected agents for this organization. */
 export function ConnectPage() {
   const bindings = useConnectionBindings();
   const { organization } = useOrganizationRoute();
@@ -149,7 +144,6 @@ export function ConnectPage() {
   );
 }
 
-/** One of the member's scoped connections, or `new` to create one. */
 export function ConnectionPage({ connectionId }: { readonly connectionId: string }) {
   const bindings = useConnectionBindings();
   const { organization, slug: organizationSlug } = useOrganizationRoute();

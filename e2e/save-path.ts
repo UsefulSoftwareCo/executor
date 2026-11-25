@@ -1,23 +1,9 @@
-/**
- * The files that can change what saving an account executes, for `webhook-source-lookup.spec.ts`:
- * the routes that create a connection and submit it, how a save links the account, and the
- * schema and migration files whose tables and indexes those statements read, with every file each
- * imports, transitively. A relative import is followed to its file, and a workspace package's
- * import (`@executor-js/sdk/core`) to the source file its package.json exports, so a change in
- * the SDK's storage code or another server module a save runs counts as a change to the save.
- *
- * The scenario plans every statement a save runs beside 100,000 accounts, on managed local Cloud.
- * CI runs it when a pull request changes one of these files since main (see e2e/ci-selection.ts).
- */
 import { Data, Effect, FileSystem, Path, Schema } from "effect";
 import ts from "typescript-5";
 
 class SavePathFailed extends Data.TaggedError("SavePathFailed")<{ readonly message: string }> {}
 
-/** Where a save starts: its routes, its link, and the definitions of what it reads. */
 const roots = [
-  // What mounts the routes: the hosted API and the Cloud Worker that serves it, with its database
-  // layer and its auth and request middleware.
   "apps/hosted/server/src/implementation/api.ts",
   "apps/hosted/cloud/src/main.ts",
   "apps/hosted/server/src/implementation/accounts.ts",
@@ -26,7 +12,6 @@ const roots = [
   "packages/sdk/src/implementation/storage-schema.ts",
   "packages/sdk/src/implementation/storage-migrations.ts",
 ];
-/** Every hosted schema file also defines tables or indexes a save may read. */
 const schemaDirectory = "apps/hosted/server/src/implementation";
 
 const Manifest = Schema.fromJsonString(
@@ -41,7 +26,6 @@ const Workspaces = Schema.fromJsonString(
   Schema.Struct({ workspaces: Schema.Array(Schema.String) }),
 );
 
-/** The repository file an export target names, when it is a source file path. */
 const exportTarget = (target: unknown): string | undefined =>
   typeof target === "string"
     ? target
@@ -53,17 +37,8 @@ const exportTarget = (target: unknown): string | undefined =>
         )
       : undefined;
 
-/** Files whose imports TypeScript reads; any other file in the set (JSON, CSS) imports nothing. */
 const parsed = /\.(?:[cm]?[jt]sx?)$/;
 
-/**
- * The import specifiers of one file, read by TypeScript's own scanner (`preProcessFile`): static
- * imports, re-exports and `import()` with a literal specifier, never text in strings, templates,
- * comments or regular expressions. Type-only imports count too, so the set errs on the side of
- * selecting. The file is parsed first, and one TypeScript cannot parse fails the read, naming it.
- * TypeScript 5's public parser keeps its syntax errors in `parseDiagnostics`; the version is
- * pinned, and the case that fails on an unparsable file breaks if that ever changes.
- */
 const importsOf = (file: string, text: string) => {
   const source = ts.createSourceFile(
     file,
@@ -91,11 +66,6 @@ const importsOf = (file: string, text: string) => {
   return ts.preProcessFile(text, true, true).importedFiles.map((imported) => imported.fileName);
 };
 
-/**
- * Every file of the checkout at `root` that `entries` import, transitively, including the entries.
- * It fails on an import of the repository's own files that it cannot follow, so the set cannot
- * quietly miss what is behind it.
- */
 export const closureOf = (root: string, entries: ReadonlyArray<string>) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -105,7 +75,6 @@ export const closureOf = (root: string, entries: ReadonlyArray<string>) =>
         const absolute = path.join(root, file);
         return (yield* fs.exists(absolute)) && (yield* fs.stat(absolute)).type === "File";
       });
-    // Workspace packages by name, with the files their exports name.
     const packages = new Map<string, { directory: string; exports: Map<string, string> }>();
     for (const pattern of (yield* fs
       .readFileString(path.join(root, "package.json"))
@@ -138,8 +107,6 @@ export const closureOf = (root: string, entries: ReadonlyArray<string>) =>
       Effect.gen(function* () {
         if (specifier.startsWith(".")) {
           const base = path.normalize(path.join(path.dirname(from), specifier));
-          // Build output (git ignores `.generated` directories): what produces it is followed, and
-          // a fresh checkout, as CI's selection reads, does not hold it.
           if (base.split("/").includes(".generated")) return undefined;
           for (const candidate of [base, `${base}.ts`, `${base}.tsx`, path.join(base, "index.ts")])
             if (yield* isFile(candidate)) return candidate;
@@ -152,7 +119,6 @@ export const closureOf = (root: string, entries: ReadonlyArray<string>) =>
         if (workspace === undefined) return undefined;
         const subpath = `.${specifier.slice(name.length)}`;
         const exact = workspace.exports.get(subpath);
-        // A wildcard export (`./contracts/*`) maps the rest of the subpath into its target.
         const wildcard = [...workspace.exports].flatMap(([key, target]) => {
           const star = key.indexOf("*");
           if (star === -1) return [];
@@ -168,9 +134,7 @@ export const closureOf = (root: string, entries: ReadonlyArray<string>) =>
         return undefined;
       });
     const found = new Set<string>();
-    /** Imports of the repository's own files that no file answers, which the closure would miss. */
     const unresolved: Array<string> = [];
-    // Each round reads the files the last one found.
     let round = [...new Set(entries)];
     while (round.length > 0) {
       for (const file of round) {
@@ -198,7 +162,6 @@ export const closureOf = (root: string, entries: ReadonlyArray<string>) =>
     return found as ReadonlySet<string>;
   });
 
-/** The save's files, read from the checkout this module is in. */
 export const savePathFiles = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;

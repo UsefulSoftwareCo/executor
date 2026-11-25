@@ -1,4 +1,3 @@
-/** Local fixture control process. Database credentials stay in memory and never enter the Worker. */
 import { createServer } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
@@ -43,7 +42,6 @@ const TransportCause = Schema.Struct({
   code: Schema.optional(Schema.String.check(Schema.isPattern(/^[A-Z][A-Z0-9_]*$/u))),
   cause: Schema.optional(Schema.Unknown),
 });
-/** A socket, TLS or DNS failure's code, such as `ECONNRESET`; never its message, which can name the request. */
 const transportCode = (cause: unknown, depth = 0): string | undefined => {
   if (depth > 3) return undefined;
   const parsed = Schema.decodeUnknownOption(TransportCause)(cause);
@@ -51,7 +49,6 @@ const transportCode = (cause: unknown, depth = 0): string | undefined => {
     ? undefined
     : (parsed.value.code ?? transportCode(parsed.value.cause, depth + 1));
 };
-// Preserve all 128 bits in at most 27 characters, including the prefix.
 const organizationSlug = (id: string) => `s-${BigInt(`0x${id}`).toString(36)}`;
 const Request = Schema.Struct({ id: Id, label: Schema.NonEmptyString });
 const SessionRequest = Schema.Struct({
@@ -67,26 +64,17 @@ const Removal = Schema.Array(
     finished_at: Schema.NullOr(Schema.String),
   }),
 );
-/** Where `/remove` was when it failed: finding the organization, or getting its removal accepted. */
 type RemovePhase =
   | "find-organization"
   | "start-removal"
   | "confirm-accepted"
   | "confirm-unreachable";
-/** Where an accepted removal is while `/settle` waits for it. */
 type SettlePhase = "wait-for-organization" | "wait-for-removal" | "remove-users";
-/**
- * A clean-up step that did not complete. Its fields reach the runner in the 400's body, so they are
- * built only from this file's own phrases, error class names and error codes (`safeCause`), never
- * from an error's message, a request or a response: those can name the stage's database, its
- * connection string or the bearer token.
- */
 class CleanupFailed extends Schema.TaggedError<CleanupFailed>()("CleanupFailed", {
   phase: Schema.String,
   cause: Schema.String,
 }) {}
 const SqlState = Schema.Struct({ code: Schema.String.check(Schema.isPattern(/^[0-9A-Z]{5}$/u)) });
-/** An unexpected error named by its class and its socket or SQLSTATE code only. */
 const safeCause = (cause: unknown): string => {
   const name =
     cause instanceof Error && /^[A-Za-z][A-Za-z0-9]{0,63}$/u.test(cause.name)
@@ -100,24 +88,9 @@ const safeCause = (cause: unknown): string => {
   return code === undefined ? name : `${name} ${code}`;
 };
 const Settle = Schema.Struct({ ids: Schema.optional(Schema.Array(Id)) });
-/**
- * Removal checks running at once. Each holds one of the pool's 6 connections (`max: 6` below) while
- * it reads the organization and the removal and deletes the scenario's users, so 6 is all the
- * parallelism the pool can serve; more would only queue inside it. The pool is the only database
- * load this process adds, and its size is unchanged: the stage's origin allows 20 connections, and
- * the API Worker's Hyperdrive pool needs the rest.
- */
 const settleConcurrency = 6;
-/**
- * How long one `/settle` look waits for its checks before it answers. After the wait, the status of
- * every removal still unfinished is read in one statement bounded by `statusBudgetMs`, so a look
- * answers within 10 s + 2 s = 12 s however many are unfinished, well inside the 30 s the runner
- * allows each request (`settleRequestTimeout` in e2e/sdk/removal-settlement.ts).
- */
 const lookBudgetMs = 10_000;
-/** The bound on a look's one read of the unfinished removals' status; past it they read as unknown. */
 const statusBudgetMs = 2_000;
-/** A removal `/remove` accepted, until a `/settle` look sees it finished. */
 interface AcceptedRemoval {
   readonly label: string;
   readonly users: Set<string>;
@@ -126,10 +99,8 @@ interface AcceptedRemoval {
   phase: SettlePhase;
   since: number;
   cause: string | undefined;
-  /** The check a look started and has not seen end. */
   inFlight?: Promise<boolean> | undefined;
 }
-/** A finished removal: the product's own times, and when this process saw it and deleted its users. */
 interface SettledRemoval {
   readonly scenario: string;
   readonly label: string;
@@ -153,7 +124,6 @@ const RemovalFailure = Schema.Struct({
 const main = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const origin = yield* Config.NonEmptyString("TEST_FIXTURE_ORIGIN");
-  // Where the dashboard and its cookie-authenticated API are served: Cloud's `app.` host.
   const browserOrigin = yield* Config.NonEmptyString("TEST_FIXTURE_BROWSER_ORIGIN");
   const token = yield* Config.Redacted("TEST_FIXTURE_TOKEN");
   const output = yield* Config.NonEmptyString("TEST_FIXTURE_OUTPUT");
@@ -296,7 +266,6 @@ const main = Effect.gen(function* () {
     if (scenario === undefined) return yield* new TestAccountFailed({ stage: "fixture" });
     return yield* scenario.gate.withPermits(1)(actor(input.id, input.role));
   });
-  // Only this process's synthetic owner can receive platform authority.
   const operator = Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
     const { id } = yield* request.json.pipe(
@@ -324,16 +293,6 @@ const main = Effect.gen(function* () {
       }),
     );
   });
-  /**
-   * The app domain status the product's location read reports for this scenario's team: the row
-   * the coordinator wrote for its current slug, or `absent` before a pass has written one.
-   */
-  /**
-   * The stage's webhook source queue: how many sources wait, pending and unleased, for the sweep;
-   * how many team and member provisioning jobs, which link the default app's accounts and so queue
-   * sources, are still to finish; and the database's clock when it counted. Counts of the test
-   * stage's own rows, never which.
-   */
   const webhookQueue = Effect.gen(function* () {
     const database = pool;
     if (auth === undefined || database === undefined)
@@ -371,8 +330,6 @@ const main = Effect.gen(function* () {
     const result = yield* Effect.tryPromise({
       try: () =>
         database.query(
-          // Read through the row's JSON so a stage whose schema predates the coordinator's
-          // certificate columns answers with its status alone instead of failing.
           `select domain.status, to_jsonb(domain) ->> 'certificate' as certificate,
               to_jsonb(domain) ->> 'status_since' as status_since
             from cloud_app_domain domain
@@ -392,9 +349,6 @@ const main = Effect.gen(function* () {
       ),
     )(result.rows);
     const row = rows[0];
-    // The certificate's label and when the coordinator's status last changed, for a failure
-    // to say what the origin was waiting on; a test stage's own records, never exported. Both are
-    // absent where the stage does not record them.
     const since = row?.status_since == null ? Number.NaN : Date.parse(row.status_since);
     return {
       status: row?.status ?? ("absent" as const),
@@ -402,7 +356,6 @@ const main = Effect.gen(function* () {
       ...(Number.isNaN(since) ? {} : { since: new Date(since).toISOString() }),
     };
   });
-  /** The removal this process accepted for a scenario, until the end-of-run check confirms it. */
   const removalRecord = async (database: Pool, organization: string) =>
     Schema.decodeUnknownSync(Removal)(
       (
@@ -414,12 +367,6 @@ const main = Effect.gen(function* () {
         )
       ).rows,
     )[0];
-  /**
-   * End a scenario's organization the way its owner would, and return once the product has done
-   * what it promises at that moment: the removal is accepted (its tombstone is written) and the
-   * organization refuses its owner. The erasure itself runs afterwards in the removal Workflow;
-   * `/settle`, looked at again and again once per run, waits for it and deletes the scenario's users.
-   */
   const remove = Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
     const { id } = yield* request.json.pipe(
@@ -432,7 +379,6 @@ const main = Effect.gen(function* () {
     if (current === undefined || database === undefined)
       return yield* new TestAccountFailed({ stage: "configuration" });
     let phase: RemovePhase = "find-organization";
-    // The name and message of the failed step, for the log only; the response carries `safeCause`.
     let logged: string | undefined;
     const failed = (cause: unknown) => {
       logged = cause instanceof Error ? `${cause.name}: ${cause.message}` : typeof cause;
@@ -443,7 +389,6 @@ const main = Effect.gen(function* () {
         phase = next;
         return Effect.tryPromise({ try: work, catch: failed });
       });
-    // The owner's read of the organization this clean-up removed, once its removal is accepted.
     let ownerAccess:
       | Effect.Effect<
           { response: HttpClientResponse.HttpClientResponse; text: string },
@@ -463,15 +408,12 @@ const main = Effect.gen(function* () {
             : Schema.decodeUnknownSync(Schema.Struct({ id: Schema.String }))(row).id;
         });
         if (found !== undefined) scenario.organization = found;
-        // A scenario may already have removed its organization: the same removal is checked at
-        // the end of the run. With no organization there is nothing to accept.
         const tombstoned =
           found === undefined
             ? true
             : (yield* step("find-organization", () => removalRecord(database, found))) !==
               undefined;
         if (found !== undefined && !tombstoned) {
-          // Restore cleanup authority only for an organization reserved by this process.
           yield* step("start-removal", async () => {
             const ctx = await current.$context;
             const user = await ctx.internalAdapter.findUserByEmail(
@@ -527,8 +469,6 @@ const main = Effect.gen(function* () {
             });
           ownerAccess = ownerRequest("GET", `/api/organizations/${found}/access`);
         }
-        // The product holds a tombstone for it now (or the organization is gone): the end-of-run
-        // check waits for this removal whatever the owner's answer below.
         const now = yield* Clock.currentTimeMillis;
         accepted.set(id, {
           label: scenario.label,
@@ -541,8 +481,6 @@ const main = Effect.gen(function* () {
         });
         owned.delete(id);
         if (ownerAccess !== undefined) {
-          // The product refuses the organization from the moment its tombstone commits
-          // (organization-removal.spec.ts checks the same answer from the owner's side).
           phase = "confirm-unreachable";
           const access = yield* ownerAccess;
           if (access.response.status !== 403)
@@ -564,10 +502,6 @@ const main = Effect.gen(function* () {
     );
     return { accepted: true };
   });
-  /**
-   * Run at most `settleConcurrency` removal checks at once, however many looks started them, so a
-   * check a look stopped waiting for still holds its place until it ends.
-   */
   let checksRunning = 0;
   const checkQueue: Array<() => void> = [];
   const limited = async <A>(work: () => Promise<A>): Promise<A> => {
@@ -584,14 +518,6 @@ const main = Effect.gen(function* () {
   const settled = new Map<string, SettledRemoval>();
   let deletionMs = 0;
   let deletions = 0;
-  /**
-   * One look at the removals this process accepted, as the end-of-run check
-   * (e2e/sdk/removal-settlement.ts) asks for it again and again: start a check of each one not
-   * finished (no organization row, the removal `done`, then delete the scenario's users), wait up
-   * to `lookBudgetMs` for them, and answer with every removal's state. A check still running when
-   * the look answers carries on and is read by a later look; it is never started twice. `ids`
-   * narrows the look to some scenarios, for the scenario that proves the check.
-   */
   const settle = Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
     const input = yield* request.json.pipe(Effect.flatMap(Schema.decodeUnknownEffect(Settle)));
@@ -626,7 +552,6 @@ const main = Effect.gen(function* () {
       }
       enter(entry, "remove-users");
       const ready = Date.now();
-      // Also discover identities created before a partially failed provisioning returned.
       for (const role of Role) {
         const found = await ctx.internalAdapter.findUserByEmail(`agent-${id}-${role}@example.test`);
         if (found !== null) entry.users.add(found.user.id);
@@ -657,7 +582,6 @@ const main = Effect.gen(function* () {
           entry.cause = undefined;
           return done;
         },
-        // A failed check counts as not finished yet; the next look checks again.
         (cause: unknown) => {
           entry.inFlight = undefined;
           entry.cause = safeCause(cause);
@@ -683,8 +607,6 @@ const main = Effect.gen(function* () {
     const organizations = pending.flatMap(([, entry]) =>
       entry.organization === undefined ? [] : [entry.organization],
     );
-    // One statement for all of them, under one bound: its connection may wait behind checks a lock
-    // holds, and the look must still answer. Past the bound every status reads as unknown.
     const statuses = yield* Effect.promise(() =>
       organizations.length === 0
         ? Promise.resolve(new Map<string, (typeof Removal.Type)[number]>())
@@ -743,20 +665,12 @@ const main = Effect.gen(function* () {
       deletionMs,
     };
   });
-  /**
-   * A scenario's hold on the row of one of its own users' API keys, so its MCP calls' key checks
-   * contend as behind another request's use: `age` makes the key's last use the given number of
-   * seconds old, `hold` updates it to now in a transaction left open, which the calls' checks wait
-   * for, and `release` commits that. One hold per scenario; the fixture rolls back what it still
-   * holds when it ends.
-   */
   const KeyUse = Schema.Struct({
     id: Id,
     key: Schema.NonEmptyString,
     action: Schema.Literals(["age", "hold", "release", "blocked"]),
     seconds: Schema.optional(Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 3600 }))),
   });
-  /** Each scenario's open hold: its connection and that connection's backend, which others wait on. */
   const holds = new Map<string, { readonly client: PoolClient; readonly pid: number }>();
   yield* Effect.addFinalizer(() =>
     Effect.promise(async () => {
@@ -780,7 +694,6 @@ const main = Effect.gen(function* () {
         try: () => database.query(text, [...params]),
         catch: () => new TestAccountFailed({ stage: "database" }),
       });
-    // Only a key of the scenario's own users.
     const mine = `id = $1 and "referenceId" = any($2::text[])`;
     switch (input.action) {
       case "age": {
@@ -830,11 +743,6 @@ const main = Effect.gen(function* () {
         return { released: true };
       }
       case "blocked": {
-        // Sessions waiting on the scenario's hold: those whose blockers include its backend.
-        // Postgres queues later lockers behind the first waiter, so a session counts when the hold
-        // blocks it or blocks a session that blocks it. Only the bearer key check's statement
-        // (`loadPat`) counts as a key check; any other waiter is listed by how its statement
-        // begins (this database is a test stage's or local Cloud's).
         const hold = holds.get(input.id);
         if (hold === undefined) return { keyChecks: 0, others: [] };
         const rows = yield* run(

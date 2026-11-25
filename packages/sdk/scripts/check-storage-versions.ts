@@ -1,10 +1,3 @@
-/**
- * Checks that every SDK storage version built with `indexOnlyVersion` has exactly the tables of
- * the version before it. The hosted migration defers trailing index-only versions until after its
- * product steps, so a deferred version that changed tables would run those steps before its
- * tables exist. Loading the storage module runs the check on the real versions; first the same
- * check runs on check-storage-versions-fixtures.ts, lists it must reject and ones it must accept.
- */
 import {
   IndexOnlyVersionChangesTables,
   trailingIndexVersions,

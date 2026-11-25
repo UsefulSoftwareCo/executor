@@ -1,4 +1,3 @@
-/** Configured-app data dispatch. Platform storage never holds authored rows. */
 import { Effect, Result, Schema, Stream } from "effect";
 import type { WorkflowHostControls } from "apps/contracts";
 import { Json } from "../contracts/shared.ts";
@@ -13,7 +12,6 @@ import { ownsDatabase } from "../contracts/apps.ts";
 import type { HostApi } from "../contracts/executor.ts";
 import { versionHostApi } from "./declarations.ts";
 
-/** Bind data calls to the current app version and the named accounts. */
 export const makeAppData = (
   storage: ExecutorDatabase,
   resolveAccount: ReturnType<typeof makeOAuth>["resolveSelected"],
@@ -62,8 +60,6 @@ export const makeAppData = (
                   Stream.mapEffect(() => snapshot(db, input)),
                   Stream.changesWith((a, b) => a.version.id === b.version.id),
                   Stream.switchMap((state) => {
-                    // The version's first query uses the selections just read for it.
-                    // Later executions reread them, so they see account changes.
                     let fresh: InvocationSnapshot | undefined = state;
                     const current = Effect.suspend(() => {
                       const known = fresh;
@@ -71,9 +67,6 @@ export const makeAppData = (
                       return known === undefined ? snapshot(db, input) : Effect.succeed(known);
                     });
                     return Stream.merge(
-                      // First data does not wait for the notification connection.
-                      // The initial notification is skipped only if its writes were
-                      // already observed by a successful query. Setup races still reread.
                       Stream.succeed(undefined),
                       !ownsDatabase(state.version.requirements)
                         ? Stream.empty

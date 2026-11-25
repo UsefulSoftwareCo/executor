@@ -1,8 +1,3 @@
-/**
- * The site's Apps pages run on the edge (`executor.sh`), where `/api/*` belongs to v1, so they read
- * the public registry from the API host (`api.executor.sh`). The registry's GETs allow any origin
- * without credentials; nothing else on the API host does.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect } from "effect";
 import { randomUUID } from "node:crypto";
@@ -25,7 +20,6 @@ layer(TestLive, { excludeTestServices: true })("Cloud site Apps directory", (it)
         const hosts = targetHosts(yield* Target);
         const browser = yield* Browser;
 
-        // The registry's reads allow any origin, without credentials, and answer a preflight.
         const origin = { origin: hosts.edge };
         for (const path of ["/api/registry/apps", "/api/registry/apps?name=%40example%2Fmissing"]) {
           const read = yield* rawRequest(`${hosts.api}${path}`, { headers: origin });
@@ -43,12 +37,10 @@ layer(TestLive, { excludeTestServices: true })("Cloud site Apps directory", (it)
         expect(preflight.status).toBe(204);
         expect(preflight.allowOrigin).toBe("*");
         expect(preflight.allowMethods).toBe("GET");
-        // Nothing else on the API host is readable from another origin.
         expect(
           (yield* rawRequest(`${hosts.api}/api/context`, { headers: origin })).allowOrigin,
         ).toBeNull();
 
-        // The directory on the edge loads its listings from the API host.
         const listing = yield* browser.use("Open the Apps directory on the edge", (page) =>
           Promise.all([
             page.waitForResponse(
@@ -60,7 +52,6 @@ layer(TestLive, { excludeTestServices: true })("Cloud site Apps directory", (it)
           ]).then(([response]) => response.status()),
         );
         expect(listing).toBe(200);
-        // Search is enabled once the listings have loaded.
         yield* browser.use("The directory has loaded", (page) =>
           page
             .getByRole("searchbox", { name: "Search apps" })
@@ -141,7 +132,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud site Apps publication", 
         expect(source.status).toBe(200);
         expect(source.allowOrigin).toBe("*");
 
-        // The directory on the edge lists the publication.
         yield* browser.use("Open the Apps directory on the edge", (page) =>
           page.goto(`${hosts.edge}/apps`),
         );
@@ -149,14 +139,12 @@ layer(HostedLive, { excludeTestServices: true })("Cloud site Apps publication", 
           page.getByRole("searchbox", { name: "Search apps" }).fill(slug),
         );
         yield* browser.use("The publication is listed", (page) =>
-          // A row names the app by its label and its publisher by the organization's slug.
           page
             .getByRole("link", { name: new RegExp(`^${slug} by ${actors.organization.slug}\\b`) })
             .waitFor(),
         );
         yield* browser.checkpoint("Apps directory lists the publication");
 
-        // Its page shows the published source, read from the same registry.
         yield* browser.use("Open the publication", (page) =>
           page
             .getByRole("heading", { name: `${slug} by ${actors.organization.slug}`, exact: true })

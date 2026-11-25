@@ -1,4 +1,3 @@
-/** Read delivered Cloud traces through Axiom's public query API; never log credentials or raw failures. */
 import { Clock, Config, Effect, Option, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
 import { SpanQuery } from "./contracts.ts";
@@ -21,7 +20,6 @@ const Row = Schema.Struct({
   serviceName: Schema.String,
   startTime: Schema.String,
   durationMs: Schema.Number,
-  // Effect 4.1 leaves a span that did not fail unset, which Axiom stores as no status code.
   status: Schema.NullOr(Schema.String),
   tags: Schema.NullOr(Schema.Record(Schema.String, Schema.Json)),
   standard: Schema.Record(Schema.String, Schema.Json),
@@ -39,7 +37,6 @@ const Row = Schema.Struct({
   ),
   statusMessage: Schema.NullOr(Schema.String),
 });
-/** Delivered values keep their text; structured values are serialized so checks still see them. */
 const text = (values: Readonly<Record<string, Schema.Json>>) =>
   Object.fromEntries(
     Object.entries(values)
@@ -47,11 +44,6 @@ const text = (values: Readonly<Record<string, Schema.Json>>) =>
       .map(([key, value]) => [key, typeof value === "string" ? value : JSON.stringify(value)]),
   );
 
-/**
- * Axiom stores OpenTelemetry attributes it recognizes in their own `attributes.*` columns and only
- * the rest in `attributes.custom`. Read the recognized ones back under their OpenTelemetry names.
- * The list matches the columns Axiom defines for trace datasets.
- */
 const recognizedAttributes = [
   "client.address",
   "cloud.platform",
@@ -102,27 +94,15 @@ const standard = `pack(${recognizedAttributes
   .map((name) => `'${name}', column_ifexists('attributes.${name}', dynamic(null))`)
   .join(", ")})`;
 
-/**
- * Span names, attribute names and attribute values a search may put into its quoted query terms.
- * `/` admits URL paths such as `url.path`; quotes and backslashes stay out, so no term can end
- * or escape its literal.
- */
 const Term = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_.:/-]+$/u));
-/**
- * A span name a search names: a term, or terms joined by single spaces, as an HTTP server span's
- * `http.server POST`. The name goes only inside its single-quoted literal (`name == '…'`), where a
- * space is an ordinary character; quotes, backslashes and every other whitespace stay out.
- */
 const Operation = Schema.String.check(
   Schema.isPattern(/^[A-Za-z0-9_.:/-]+(?: [A-Za-z0-9_.:/-]+)*$/u),
 );
-/** The column that holds a delivered attribute, see `recognizedAttributes`. */
 const attributeColumn = (name: string) =>
   (recognizedAttributes as ReadonlyArray<string>).includes(name)
     ? `['attributes.${name}']`
     : `['attributes.custom']['${name}']`;
 
-/** The longest one Axiom query may take. */
 export const axiomQueryMs = 10_000;
 
 /** The stage name its spans carry, `test-<slug>`, from the stage's origin `https://<slug>.<zone>`. */
@@ -132,10 +112,6 @@ export const stageEnvironment = (origin: string) => {
   return /^[a-z0-9-]+$/u.test(slug) ? `test-${slug}` : undefined;
 };
 
-/**
- * The stage name of an attached stage, needed by every span read; an origin that does not name its
- * stage is a configuration error, raised once when the run starts rather than in each scenario.
- */
 export const attachedStage = (origin: string) => {
   const stage = stageEnvironment(origin);
   return stage === undefined
@@ -147,12 +123,6 @@ export const attachedStage = (origin: string) => {
     : Effect.succeed(stage);
 };
 
-/**
- * Queries remain limited to the current run's time window, to this run's own stage, and to
- * filters built from validated terms: one trace, or one operation whose attributes match exactly,
- * in one trace or any. Every test stage shares one dataset, so a search that named no stage would
- * read other runs' spans.
- */
 export const axiomSpans = (environment: string | undefined) =>
   Effect.gen(function* () {
     const client = yield* HttpClient.HttpClient;
@@ -238,10 +208,6 @@ export const axiomSpans = (environment: string | undefined) =>
         Schema.decodeUnknownEffect(Schema.String.check(Schema.isPattern(/^[a-f0-9]{32}$/u)))(
           traceId,
         ).pipe(Effect.flatMap((id) => query(`trace_id == '${id}'`))),
-      /**
-       * One operation whose attributes match exactly, in one trace when `traceId` names one, from
-       * `since` (epoch milliseconds) when given, else over the run's window.
-       */
       search: (
         operation: string,
         attributes: Readonly<Record<string, string>>,

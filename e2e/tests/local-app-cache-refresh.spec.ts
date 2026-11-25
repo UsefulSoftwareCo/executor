@@ -1,8 +1,3 @@
-/**
- * A stale cache read serves the kept value and refreshes it in the background, after the call has
- * returned. The refreshed value must be stored in an app with a database, whose calls run in its
- * data facet, as in one without.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -12,7 +7,6 @@ import { TestLive, withCase } from "../support/case.ts";
 import { callLocalQuery, localAgent } from "../support/local-links.ts";
 import { scenarios } from "../test-plan.ts";
 
-/** Every read is stale at once and kept for ten minutes; `read`'s loader finishes after the call. */
 const source = (
   database: boolean,
 ) => `import { defineApp, query, object, string, router } from "apps";
@@ -63,9 +57,7 @@ layer(TestLive, { excludeTestServices: true })("Local app cache refresh", (it) =
             apps.push(app);
 
             expect(yield* callLocalQuery(agent, app, "seed")).toBe("v0");
-            // Stale: the kept value, while the loader runs on after the call has returned.
             expect(yield* callLocalQuery(agent, app, "read")).toBe("v0");
-            // The refresh stored its value: a later read serves it. Each read refreshes again.
             let value = "v0";
             for (let attempt = 0; attempt < 20 && value !== "v1"; attempt++) {
               yield* Effect.sleep("500 millis");

@@ -1,4 +1,3 @@
-/** Native Effect PGlite client with FumaDB's UTC temporal contract. */
 import { PgliteClient } from "@effect/sql-pglite";
 import { rmdir } from "node:fs/promises";
 import { Effect, FileSystem, Layer, Path, Schedule } from "effect";
@@ -6,15 +5,9 @@ import { PgliteCreationFailed } from "../contracts/errors.ts";
 
 type Options = Omit<PgliteClient.PgliteClientConfig.Create, "parsers">;
 
-/**
- * Keep naive timestamp/date values as text so the FumaDB codec decodes them as UTC.
- * PGlite otherwise creates Date objects in the machine timezone before the codec runs.
- * The native Effect layer owns serialization, transactions, and closing the database.
- */
 export const pgliteLayer = (options: Options = {}) =>
   PgliteClient.layer({ ...options, parsers: { 1082: (value) => value, 1114: (value) => value } });
 
-/** The system error code of a file system failure, as Node reports it. */
 const systemCode = (error: unknown): string | undefined => {
   for (const candidate of [error, (error as { cause?: unknown } | undefined)?.cause]) {
     const code = (candidate as { code?: unknown } | undefined)?.code;
@@ -25,15 +18,6 @@ const systemCode = (error: unknown): string | undefined => {
 
 const heldCodes = ["EPERM", "EBUSY", "EACCES"];
 
-/**
- * Antivirus scanners and the indexer on Windows briefly hold files just written, so removing or
- * renaming their directory fails with EPERM, EBUSY or EACCES for a moment. There such a step is
- * tried again for up to five seconds, as the desktop's `whileHeld` does, before it fails.
- *
- * A step that is retried logs one warning when it is first refused and one when it goes through or
- * gives up, with the database's directory name, the step, the code and how long it was held. They
- * reach the local server's diagnostics log, which a diagnostics export includes; no path is logged.
- */
 const whileHeld =
   (database: string, step: PgliteCreationFailed["step"]) =>
   <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
@@ -83,18 +67,6 @@ const whileHeld =
           );
         });
 
-/**
- * Create the database at `dataDir` unless it holds one. PGlite takes a directory with PG_VERSION
- * for a database, and writes PG_VERSION before configuration files a database also needs, so a
- * first start ended between the two would leave a directory no later start can open. The database
- * is therefore created in `<dataDir>.new` and renamed into place once PGlite has written and closed
- * it; a `.new` directory is only ever this step's, so one left by an earlier start is replaced.
- *
- * A directory with PG_VERSION is never touched. One without it is removed only when it is empty,
- * by `rmdir`, which refuses a directory with contents; one with contents is moved aside to a name
- * no other start uses and logged. The caller holds the data directory's lock, so no other process
- * creates the database meanwhile.
- */
 export const createPgliteDatabase = (dataDir: string, options: Omit<Options, "dataDir"> = {}) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -112,7 +84,6 @@ export const createPgliteDatabase = (dataDir: string, options: Omit<Options, "da
     yield* fs
       .makeDirectory(staging, { recursive: true, mode: 0o700 })
       .pipe(Effect.mapError(failed("create")));
-    // Building the layer opens the database, which PGlite creates; closing the scope closes it.
     yield* Layer.build(pgliteLayer({ ...options, dataDir: staging })).pipe(
       Effect.scoped,
       Effect.mapError(failed("create")),
@@ -143,11 +114,6 @@ export const createPgliteDatabase = (dataDir: string, options: Omit<Options, "da
     )(fs.rename(staging, dataDir)).pipe(Effect.mapError(failed("move into place")));
   });
 
-/**
- * A PGlite database persisted in `dataDir`, created whole on its first open so that a first start
- * ended at any point leaves either no database or a complete one. The caller holds the directory
- * against other processes.
- */
 export const persistentPgliteLayer = (dataDir: string, options: Omit<Options, "dataDir"> = {}) =>
   Layer.unwrap(
     createPgliteDatabase(dataDir, options).pipe(Effect.as(pgliteLayer({ ...options, dataDir }))),

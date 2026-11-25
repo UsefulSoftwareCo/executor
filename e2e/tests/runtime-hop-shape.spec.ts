@@ -1,16 +1,3 @@
-/**
- * A failed exchange between the local product and its app runtime (workerd) records how far it got,
- * so a failure that passes on rerun can be told apart: a reply lost as its connection ended, a
- * runtime that never answered, a request cut off while it was written, an RPC session that never
- * opened or closed before or after it carried anything, a runtime just replaced. The recording can
- * never change a failure: a value built to break it leaves the same error, classified the same, and
- * the span says the recording failed. Only shapes are kept: a supervisor's context outside its own
- * keys, or with a value that is not a number, a boolean or a short word, is dropped.
- *
- * Each case runs `packages/sdk/scripts/runtime-hop-fixture.ts` against a stub on 127.0.0.1, with
- * the same recording the runtime's hops use. `local-app-runtime-restart.spec.ts` checks the same
- * recording through the product itself, on a call that loses its runtime.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
@@ -33,7 +20,6 @@ const Probe = Schema.Struct({
   longAttributes: Schema.optional(Attributes),
 });
 
-/** One case of the probe: what the exchange recorded. */
 const probe = (name: string) =>
   Effect.gen(function* () {
     const processes = yield* ChildProcessSpawner.ChildProcessSpawner,
@@ -51,7 +37,6 @@ const probe = (name: string) =>
     return result;
   });
 
-/** The keys a recording wrote under `prefix`. */
 const under = (attributes: Record<string, unknown>, prefix: string) =>
   Object.keys(attributes).filter((key) => key.startsWith(prefix));
 
@@ -77,7 +62,6 @@ layer(TestLive, { excludeTestServices: true })("Runtime hop shape", (it) => {
               "executor.runtime.host.restarts": 0,
             });
             expect(unanswered.attributes).not.toHaveProperty("executor.runtime.http.headers_ms");
-            // The stub closed 120 ms after the request arrived.
             expect(unanswered.attributes["executor.runtime.http.failed_ms"]).toBeGreaterThanOrEqual(
               100,
             );
@@ -122,7 +106,6 @@ layer(TestLive, { excludeTestServices: true })("Runtime hop shape", (it) => {
         yield* evidence.step(
           "An exchange that succeeds records nothing",
           Effect.gen(function* () {
-            // The stub answers before reading the request body; this host still reads the reply.
             const { outcome, attributes } = yield* probe("http-unread-body");
             expect(outcome).toBe("answered");
             expect(attributes).toEqual({});
@@ -239,7 +222,6 @@ layer(TestLive, { excludeTestServices: true })("Runtime hop shape", (it) => {
               "executor.runtime.rpc.sent": 1,
               "executor.runtime.rpc.received": 1,
             });
-            // The client asked the stub to close at least 30 ms after it received the reply.
             const failedMs = Number(after.attributes["executor.runtime.rpc.failed_ms"]);
             const lastReceivedMs = Number(
               after.attributes["executor.runtime.rpc.last_received_ms"],

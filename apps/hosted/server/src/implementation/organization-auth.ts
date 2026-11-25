@@ -37,7 +37,6 @@ const StoredInvitation = Schema.Struct({
   organizationId: Schema.NonEmptyString,
   inviterId: Schema.NonEmptyString,
 });
-/** A membership as the remove and role-change routes return it. */
 const ChangedMember = Schema.Struct({
   userId: Schema.NonEmptyString,
   organizationId: Schema.NonEmptyString,
@@ -45,21 +44,10 @@ const ChangedMember = Schema.Struct({
 });
 const RemovedMember = Schema.Struct({ member: ChangedMember });
 
-/**
- * The roles that may send invitations, at either the admin or the member role. Executor checks
- * the role, not its rank: an admin's invitation as admin is as valid as an owner's. An invitation
- * keeps its authority only while its inviter still holds one of these roles in its organization.
- */
 export const invitingRoles = ["owner", "admin"] as const;
 const mayInvite = (role: typeof OrganizationRole.Type) =>
   (invitingRoles as ReadonlyArray<string>).includes(role);
 
-/**
- * Whether the invitation's inviter is still a member who may invite. Acceptance and self-host
- * registration copy the stored role into a new membership, so they check this first, and Cloud's
- * entry and SSO sign-in pass over invitations that fail it. SQL readers state the same rule with
- * `invitingRoles`.
- */
 export const inviterMayInvite = async (
   adapter: Pick<AuthContext["adapter"], "findOne">,
   invitation: { readonly organizationId: string; readonly inviterId: string },
@@ -85,12 +73,6 @@ const SentInvitation = Schema.Struct({
   inviterId: Schema.NonEmptyString,
 });
 
-/**
- * Constrain the native organization's HTTP surface to Executor's explicit operations.
- * Better Auth 1.7 otherwise falls back to a shared session preference. New library
- * endpoints remain blocked until their target semantics have been reviewed.
- * Server-only library calls are private adapter operations, not HTTP authority.
- */
 export const explicitOrganizationAuth = {
   id: "executor-explicit-organization",
   hooks: {
@@ -128,8 +110,6 @@ export const explicitOrganizationAuth = {
                 });
               const session = await getSessionFromCtx(context);
               if (session === null) throw new APIError("UNAUTHORIZED");
-              // Invitation IDs are bearer credentials for self-host signup. Native
-              // Better Auth reads check membership only, including the composite read.
               const member = Schema.decodeUnknownOption(Membership)(
                 await context.context.adapter.findOne({
                   model: "member",
@@ -167,8 +147,6 @@ export const explicitOrganizationAuth = {
                 throw new APIError("BAD_REQUEST", { message: "An invitation is required." });
               const session = await getSessionFromCtx(context);
               if (session === null) throw new APIError("UNAUTHORIZED");
-              // Old pending invitations can predate the request role guard. Native
-              // acceptance copies their stored role directly into a new membership.
               const row = await context.context.adapter.findOne<Record<string, unknown>>({
                 model: "invitation",
                 where: [
@@ -181,9 +159,6 @@ export const explicitOrganizationAuth = {
                 throw new APIError("BAD_REQUEST", {
                   message: "This invitation is invalid. Ask an administrator for a new invitation.",
                 });
-              // Reopening the link after joining repeats an acceptance that already
-              // happened. Native acceptance only takes pending invitations, so answer
-              // with the recipient's current membership, marked so the page can say so.
               if (stored.value.status === "accepted") {
                 const member = await context.context.adapter.findOne<Record<string, unknown>>({
                   model: "member",
@@ -209,9 +184,6 @@ export const explicitOrganizationAuth = {
                     alreadyMember: { name: organization.value.name },
                   });
               }
-              // Known limit: this check and Better Auth's acceptance are separate statements with no
-              // lock between them, so an inviter removed or demoted in that instant does not stop this
-              // acceptance, just as one a moment earlier would have gone through.
               if (!(await inviterMayInvite(context.context.adapter, stored.value)))
                 throw new APIError("BAD_REQUEST", {
                   message:
@@ -219,7 +191,6 @@ export const explicitOrganizationAuth = {
                 });
               return { context: { body: invitation.value } };
             }
-            // The invitation identifies the organization; Better Auth checks its current membership and cancel permission.
             case "/organization/cancel-invitation":
               return require(Invitation, context.body, true);
             default:
@@ -233,8 +204,6 @@ export const explicitOrganizationAuth = {
     after: [
       {
         matcher: (context) => context.path === "/organization/invite-member",
-        // Native resend only reuses an unexpired invitation, so resending an expired one
-        // creates a new row. The sent invitation supersedes every other pending one.
         handler: createAuthMiddleware(async (context) => {
           const sent = Schema.decodeUnknownOption(SentInvitation)(context.context.returned);
           if (Option.isNone(sent)) return;
@@ -248,10 +217,6 @@ export const explicitOrganizationAuth = {
             ],
             update: { status: "canceled" },
           });
-          // Native resend keeps the invitation's inviter and only renews its expiry. The member
-          // resending it has just passed Better Auth's invite permission check, so the invitation
-          // now carries their authority; otherwise an inviter who has since lost the role would
-          // leave the resent invitation unredeemable.
           const session = await getSessionFromCtx(context);
           if (session === null || sent.value.inviterId === session.user.id) return;
           const resent = await context.context.adapter.update<Record<string, unknown>>({
@@ -269,8 +234,6 @@ export const explicitOrganizationAuth = {
         matcher: (context) =>
           context.path === "/organization/remove-member" ||
           context.path === "/organization/update-member-role",
-        // A member who leaves, or loses the role that let them invite, takes back the
-        // invitations they sent that are still pending.
         handler: createAuthMiddleware(async (context) => {
           const returned = context.context.returned;
           const removed = context.path === "/organization/remove-member";

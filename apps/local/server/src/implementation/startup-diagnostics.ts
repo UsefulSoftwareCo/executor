@@ -1,4 +1,3 @@
-/** Keep startup phase and known system codes without serializing paths, configuration or causes. */
 import { Cause, Effect, Option, Schema } from "effect";
 import { StartupCode, StartupFailed } from "../contracts/startup.ts";
 
@@ -16,7 +15,6 @@ const codeFrom = (error: unknown, depth = 0): typeof StartupCode.Type | undefine
   return codeFrom(value.cause, depth + 1) ?? codeFrom(value.reason, depth + 1);
 };
 
-/** Translate at the resource boundary; preserve an already classified inner phase and cancellation. */
 export const startupPhase =
   (stage: StartupFailed["stage"]) =>
   <A, E, R>(work: Effect.Effect<A, E, R>) =>

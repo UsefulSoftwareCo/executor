@@ -1,4 +1,3 @@
-/** Build the product, app host and workflow engine for one shared workerd executable. */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { readExecutorSkills } from "@executor-js/app-templates/executor";
@@ -16,11 +15,6 @@ const InternalWorker = Schema.Struct({
   main: Schema.String,
   modules: Schema.Record(Schema.String, Schema.String),
 });
-/**
- * The self-host image runs Executor's build of workerd (UsefulSoftwareCo/workerd), pinned by
- * release and SHA-256 in `workerd.json`. It adds idle-isolate garbage collection, TCMalloc
- * release and Worker loader idle unloading, configured by `memory` in the generated config.
- */
 const WorkerdPin = Schema.Struct({
   repository: Schema.String,
   release: Schema.String,
@@ -30,7 +24,6 @@ const WorkerdPin = Schema.Struct({
   }),
 });
 
-/** Downloads the pinned Linux workerd for this machine's architecture and verifies its digest. */
 const pinnedWorkerd = (pinFile: string) =>
   Effect.gen(function* () {
     const pin = Schema.decodeUnknownSync(Schema.fromJsonString(WorkerdPin))(
@@ -70,7 +63,6 @@ const packageRuntime = Effect.gen(function* () {
   const alchemyResolve = createRequire(path.join(alchemyRoot, "package.json"));
   yield* fs.remove(output, { recursive: true, force: true });
   yield* fs.makeDirectory(output, { recursive: true });
-  // The product Worker bundles the document renderer; only browser files are served from disk.
   const web = path.join(root, "apps/hosted/self-host/web/dist/client");
   const types: Readonly<Record<string, string>> = {
     ".html": "text/html; charset=utf-8",
@@ -134,8 +126,6 @@ const packageRuntime = Effect.gen(function* () {
         {
           name: "pglite-workerd",
           setup(builder) {
-            // Emscripten only uses these modules to construct trusted PostgreSQL C
-            // callback wrappers. No authored app receives the unsafeEval binding.
             builder.onLoad({ filter: /@electric-sql\/pglite\/dist\/.*\.js$/ }, async (args) => {
               const source = await readFile(args.path, "utf8");
               return {
@@ -208,30 +198,7 @@ const packageRuntime = Effect.gen(function* () {
   yield* fs.writeFile(path.join(output, "workerd"), workerd.binary);
   yield* fs.chmod(path.join(output, "workerd"), 0o755);
   yield* fs.copy(web, path.join(output, "web"), { overwrite: true });
-  // Every workflow run is its own Engine durable object, and pinning engines kept every finished
-  // run resident. workerd unloads an engine about 70 s after its last call once no caller holds
-  // it, even with a step in flight; only a run started by create() has a caller holding it. The
-  // patched engine re-arms its alarm every 30 s while a step runs, so runs woken by an alarm, an
-  // event, a resume or a restart keep their engine loaded. Sleeps, retry delays and event waits
-  // resume from durable alarms, so a finished engine leaves memory, and so could a waiting one,
-  // but the host's reconciliation reads every open run every few seconds, which keeps it loaded.
   const workflowEngines = `(className="Engine",uniqueKey="executor-app-workflows",enableSql=true)`;
-  // Memory settings of Executor's workerd build (see workerd.json). Upstream workerd never shrinks
-  // an idle isolate's heap and never returns freed malloc memory to the OS, so self-host memory
-  // only rises. These settings:
-  // - when the container's working set (cgroup memory.current minus reclaimable page cache)
-  //   passes 60% of its cgroup limit (the native host fills in the threshold; there is none
-  //   without a limit), run a full GC in each isolate that has run since its last one. Busy
-  //   isolates never go idle, so this is what bounds memory under steady load. These collections
-  //   block requests, so a pass spends at most 100 ms per second, starts 10 s after the previous
-  //   one ended, and waits up to 16 times longer while passes leave usage above the threshold;
-  // - after 10 s without JavaScript activity, send the isolate a moderate memory pressure
-  //   notification and run its pending V8 tasks for 30 s, so the memory reducer can finish;
-  // - let TCMalloc return up to 8 MiB/s of free memory in the background, and all of it after
-  //   those collections.
-  // The build can also unload idle Worker Loader entries (workerLoaderIdleTtlMs). That stays off:
-  // the runner's app Worker residency decides which app Workers stay loaded, and it knows about
-  // calls, elicitations and workflows that workerd does not.
   const memory = [
     "maintenanceIntervalMs=1000",
     "idleIsolateGcDelayMs=10000",
@@ -243,16 +210,6 @@ const packageRuntime = Effect.gen(function* () {
     `tcmallocBackgroundReleaseBytesPerSecond=${8 * 1024 * 1024}`,
     "releaseMemoryAfterGc=true",
   ].join(",");
-  // `gc` lets each app bridge collect its isolate's garbage after a call; see worker-bridge.ts.
-  // workerd signals memory pressure whenever it creates an isolate, and V8 then drops the Liftoff
-  // code of every WebAssembly module in the process: the product's PGlite and the runner's esbuild.
-  // Each module compiles that code again on its next use into new code pages, while the dropped
-  // code's pages stay resident. Every deploy and every cold app load creates an isolate, so the
-  // process grew by about 9 MB for each app installed and never shrank. Keeping the code is bounded
-  // by the modules' size.
-  // `enable_request_signal` aborts a request's signal when its client disconnects. The product's
-  // streamed responses end on it; workerd never cancels a Durable Object's response body itself
-  // (see request-lifetime.ts).
   const config = `using Workerd = import "/workerd/workerd.capnp";
 const config :Workerd.Config = (
  memory=(${memory}),
@@ -289,12 +246,6 @@ const config :Workerd.Config = (
  sockets=[(name="http",address="0.0.0.0:4400",http=(),service=@@PRODUCT_SERVICE@@)]
 );
 `;
-  // The telemetry collector is not part of this runtime: the image's own stage builds
-  // executor-collector from the crate and the native host supervises it on a private Unix socket,
-  // which the host passes to the product's COLLECTOR binding (see the Dockerfile and native/main.go).
-  // With no TCP listener, an app's fetch cannot reach its ingest or query routes even when private
-  // fetch is allowed.
-  // Retain dependency notices with the executable image, including the embedded engines.
   const packageDirectories = new Set<string>([pg + "/..", alchemyRoot]);
   for (const input of Object.keys(product.metafile.inputs)) {
     if (input.startsWith("(disabled):")) continue;
@@ -332,8 +283,6 @@ const config :Workerd.Config = (
       if (/^(licen[sc]e|notice|copying|copyright|third.party)([._-]|$)/i.test(name))
         yield* fs.copy(path.join(directory, name), path.join(destination, name));
   }
-  // The fork keeps upstream workerd's license; take its notices from the npm package of the
-  // upstream release it is built from.
   inventory.push(`workerd@${workerd.release}`);
   const workerdNotices = path.dirname(alchemyResolve.resolve("workerd/package.json")),
     workerdLicenses = path.join(output, "licenses", `workerd@${workerd.release}`);
@@ -346,8 +295,6 @@ const config :Workerd.Config = (
     inventory.sort().join("\n") + "\n",
   );
   yield* fs.writeFileString(path.join(output, "workerd.capnp"), config);
-  // Count real files once, including native assets, and reject any link back to
-  // the build tree. This budget covers both supported Linux architectures.
   const runtimeRoot = yield* fs.realPath(output);
   const counted = new Set<string>();
   const size = (file: string): Effect.Effect<number> =>

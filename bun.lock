@@ -41,7 +41,7 @@
     },
     "apps/cli": {
       "name": "executor",
-      "version": "2.0.0-beta.73",
+      "version": "2.0.0-beta.74",
     },
     "apps/docs": {
       "name": "@executor-js/docs",
@@ -490,7 +490,7 @@
     },
     "packages/apps": {
       "name": "apps",
-      "version": "0.0.1-beta.143",
+      "version": "0.0.1-beta.144",
       "dependencies": {
         "@cfworker/json-schema": "4.1.1",
         "@csstools/css-tokenizer": "4.0.2",

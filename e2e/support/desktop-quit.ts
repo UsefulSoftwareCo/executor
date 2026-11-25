@@ -1,10 +1,3 @@
-/**
- * Closing a desktop the way a person quits it, within a bound. Playwright's `close` asks the app
- * to quit and waits, without limit, until its process has exited and every copy of the output
- * pipes it was given is closed. A quit that does not finish would hang the scenario until its
- * test limit, with nothing to say why; past the bound this keeps what the desktop was doing and
- * fails the scenario with it instead.
- */
 import type { ElectronApplication } from "playwright";
 import { expect } from "vitest";
 import {
@@ -25,20 +18,8 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { closeDurationsFile, desktopEvidenceBase } from "./desktop-close-durations.ts";
 import { driver } from "./platform.ts";
 
-/**
- * An orderly quit ends the desktop within a second; one that has not ended it by then has hung.
- * The bound leaves room for a slow runner and stays well inside every desktop scenario's limit.
- */
 export const quitBound = Duration.seconds(20);
 
-/**
- * The most each step of a close that passed `quitBound` may take, so the close as a whole is
- * bounded too: reading the inspector's address before the close, asking the inspector what the
- * main process is doing, listing processes, capturing the display, ending the desktop, and
- * waiting for Playwright to see it gone. A capped program (`ps`, `import`, `taskkill`) that
- * outlives its cap is killed a second later, so it adds at most `programEnd`. Reading `/proc`
- * and writing the evidence files have no cap of their own; they take milliseconds.
- */
 export const closeEvidenceCaps = {
   inspectorAddress: Duration.seconds(5),
   inspector: Duration.seconds(15),
@@ -48,27 +29,19 @@ export const closeEvidenceCaps = {
   desktopGone: Duration.seconds(10),
 };
 
-/** How long a capped program gets to exit once it is told to stop. */
 const programEnd = Duration.seconds(1);
 
-/**
- * The longest a close can take, a hung one included: the bound, every evidence cap and the end of
- * the three capped programs.
- */
 export const closeLimit = Object.values(closeEvidenceCaps).reduce(
   (total, cap) => Duration.sum(total, cap),
   Duration.sum(quitBound, Duration.times(programEnd, 3)),
 );
 
-/** A program the evidence runs, killed `programEnd` after its cap interrupts it. */
 const capped = (command: string, args: ReadonlyArray<string>) =>
   ChildProcess.make(command, [...args], { forceKillAfter: Duration.toMillis(programEnd) });
 
-/** Pairing links carry a one-use credential; kept evidence holds only their shape. */
 export const redactLinks = (text: string) =>
   text.replace(/#pair=[a-f0-9]{64}/g, "#pair=<redacted>");
 
-/** What the desktop's main process wrote to stderr, its last `limit` characters, as it arrives. */
 export const captureOutput = (electron: ElectronApplication, limit = 64 * 1024) => {
   let output = "";
   electron.process().stderr?.on("data", (chunk: Uint8Array) => {
@@ -77,13 +50,11 @@ export const captureOutput = (electron: ElectronApplication, limit = 64 * 1024) 
   return () => output;
 };
 
-/** Where Linux says a process is, from `/proc/<pid>/stat`: its state and, while it sleeps, where. */
 const linuxState = (pid: number) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const stat = yield* fs.readFileString(`/proc/${pid}/stat`).pipe(Effect.option);
     if (Option.isNone(stat)) return { state: "gone" };
-    // The state follows the command name, which is in parentheses and may contain any character.
     const state = stat.value.charAt(stat.value.lastIndexOf(")") + 2);
     const wchan = yield* fs.readFileString(`/proc/${pid}/wchan`).pipe(Effect.option);
     const tasks = yield* fs.readDirectory(`/proc/${pid}/task`).pipe(Effect.orElseSucceed(() => []));
@@ -101,10 +72,6 @@ const linuxState = (pid: number) =>
     return { state, wchan: Option.getOrElse(wchan, () => "?"), threads };
   });
 
-/**
- * The processes that hold any of `targets`, the pipes the desktop's output went to, other than
- * `except`. Read from `/proc` on Linux, so it also finds them after the desktop has exited.
- */
 const linuxHolders = (targets: ReadonlyArray<string>, except: number) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -132,7 +99,6 @@ const linuxHolders = (targets: ReadonlyArray<string>, except: number) =>
     return holders;
   });
 
-/** The pipes `pid`'s standard output and error go to, while it runs (Linux). */
 const linuxOutputPipes = (pid: number) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -144,10 +110,6 @@ const linuxOutputPipes = (pid: number) =>
     );
   });
 
-/**
- * Every process in the desktop's process group, which Playwright makes it lead, and in the group
- * of the server `server.json` names, as `ps` lists them (POSIX).
- */
 const processRows = (groups: ReadonlyArray<number>) =>
   Effect.gen(function* () {
     const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -179,11 +141,6 @@ const PausedParams = Schema.Struct({
   ),
 });
 
-/**
- * Ask the main process's Node inspector what keeps it running: its active handles and requests,
- * and the JavaScript stack of the next code it runs. A main process whose event loop is idle runs
- * none, which says the quit waits on something no callback will end.
- */
 const inspect = (url: string) =>
   Effect.gen(function* () {
     const socket = yield* Effect.acquireRelease(
@@ -246,7 +203,6 @@ const inspect = (url: string) =>
     };
   }).pipe(
     Effect.scoped,
-    // A main process blocked in native code, as in a modal box, answers nothing.
     Effect.timeoutOrElse({
       duration: closeEvidenceCaps.inspector,
       orElse: () =>
@@ -273,11 +229,6 @@ const QuitRecord = Schema.fromJsonString(
   }),
 );
 
-/**
- * What the desktop wrote of its quit to stderr (see the desktop's `quitting.ts`), in order: why it
- * quit, the finalizers a slow quit waits on, the first line of an uncaught exception, and whether
- * its scope closed.
- */
 const quitRecords = (output: string) => {
   const records = output.split("\n").flatMap((line) => {
     const record = Schema.decodeUnknownOption(QuitRecord)(line.trim());
@@ -307,11 +258,6 @@ const quitRecords = (output: string) => {
 
 const ServerPid = Schema.fromJsonString(Schema.Struct({ pid: Schema.Number }));
 
-/**
- * Record how long a close took, so the margin under `quitBound` is measured: one line in the job's
- * log, which every run keeps, and one in `close-durations.jsonl` beside the evidence, which a
- * failed job uploads. `outcome` is `exited`, `already exited` or `did not exit`.
- */
 const recordClose = (
   pid: number | undefined,
   started: number,
@@ -334,15 +280,6 @@ const recordClose = (
     );
   }).pipe(Effect.ignore);
 
-/**
- * Close `electron` as a person quits the desktop, and fail when it has not exited within
- * `quitBound`. The failure keeps, in a new folder under EXECUTOR_E2E_DESKTOP_SCREENSHOTS (by
- * default `.local/desktop-recovery`), what the desktop was doing: whether its main process still
- * runs and where it waits, its threads, its and its server's processes, who else holds its output
- * (Linux), its active handles and next JavaScript stack from its inspector, its stderr, and the
- * desktop's and its server's logs from `data`. Then it ends the desktop's processes, so the
- * scenario's own clean-up runs, and fails with a summary that names the folder.
- */
 export const closeDesktop = (
   electron: ElectronApplication,
   options: { readonly data?: string; readonly output?: () => string },
@@ -350,8 +287,6 @@ export const closeDesktop = (
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    // Playwright no longer has the process of a desktop that has already exited, as one whose
-    // last window closed; closing it then only settles Playwright's side.
     const started = yield* Clock.currentTimeMillis;
     const launched = yield* Effect.try(() => electron.process()).pipe(Effect.option);
     if (Option.isNone(launched)) {
@@ -359,8 +294,6 @@ export const closeDesktop = (
       return yield* recordClose(undefined, started, "already exited");
     }
     const pid = launched.value.pid;
-    // Read while the main process still answers: where its inspector listens, and on Linux the
-    // pipes its output goes to, which say after it quits who else still holds them.
     const inspector = yield* driver("read the desktop's inspector address", () =>
       electron.evaluate(() => process.getBuiltinModule("node:inspector").url() ?? ""),
     ).pipe(
@@ -407,9 +340,6 @@ export const closeDesktop = (
     yield* fs.makeDirectory(directory, { recursive: true });
     const write = (name: string, text: string) =>
       fs.writeFileString(path.join(directory, name), redactLinks(text), { mode: 0o600 });
-    // Which scenario's close hung, so the release workflow's evidence step
-    // (`e2e/release-evidence.ts`) files the folder under that scenario, as it files a failed
-    // scenario's `failed-…` folder (`keepEvidence` in `desktop.ts`).
     const { currentTestName, testPath } = expect.getState();
     yield* write(
       "scenario.json",
@@ -434,8 +364,6 @@ export const closeDesktop = (
       ),
     );
     yield* write("processes.txt", processes.join("\n"));
-    // A native box the main process blocks on, such as Electron's for an uncaught exception, is
-    // in no page Playwright can capture; the display shows it. ImageMagick's `import` is optional.
     if (process.platform === "linux" && process.env.DISPLAY !== undefined) {
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       yield* spawner
@@ -455,9 +383,7 @@ export const closeDesktop = (
         );
     }
 
-    // The scenario fails either way; ending the desktop lets its clean-up run.
     if (pid !== undefined && process.platform === "win32") {
-      // Playwright starts the desktop through cmd.exe there, so its whole tree is ended.
       const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
       yield* processes
         .lines(capped("taskkill", ["/pid", String(pid), "/t", "/f"]))
@@ -472,8 +398,6 @@ export const closeDesktop = (
       state === undefined
         ? ""
         : `, state ${state.state}${"wchan" in state ? ` waiting in ${state.wchan}` : ""}`;
-    // While the main process runs, its own Chromium processes hold its output too; only holders
-    // left once it has exited keep Playwright waiting.
     const holding = [...new Set(holders.map((holder) => holder.pid))].map((holderPid) => {
       const command = holders.find((holder) => holder.pid === holderPid)?.command ?? "";
       const kind = /--type=(\S+)/u.exec(command)?.[1] ?? path.basename(command.split(" ")[0] ?? "");
