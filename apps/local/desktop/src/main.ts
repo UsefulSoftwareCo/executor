@@ -245,8 +245,10 @@ const desktop = Effect.gen(function* () {
   let localRunning = preferences.local || localData;
   const hostedFirst = preferences.lastUsed !== null && preferences.lastUsed !== "local";
   let early: BrowserWindow | undefined = localRunning ? newWindow(browserSession) : undefined;
+  const painted = new WeakSet<BrowserWindow>();
   const opening = early;
   opening?.once("ready-to-show", () => {
+    painted.add(opening);
     if (!opening.isDestroyed() && !hostedFirst && !atLogin) opening.show();
   });
   const stay = (event: Electron.Event) => event.preventDefault();
@@ -348,6 +350,7 @@ const desktop = Effect.gen(function* () {
         running: () => localRunning,
         start: () => startLocal(),
         window: () => localWindow(),
+        painted: (window) => painted.has(window),
         open: (bounds) => openLocal(bounds),
       },
     });
@@ -395,6 +398,7 @@ const desktop = Effect.gen(function* () {
         let view: View = { kind: "starting" };
         let everReady = false;
         let window: BrowserWindow | undefined;
+        const activeWindow = () => (accounts.isActive("local") ? window : undefined);
         const origin = () => (view.kind === "ready" ? view.origin : undefined);
         installedApps.attachSession(browserSession, origin);
         const viewUrl = () => {
@@ -531,7 +535,7 @@ const desktop = Effect.gen(function* () {
                 defaultId: 1,
                 cancelId: 1,
               };
-              const parent = window;
+              const parent = activeWindow();
               const answer = yield* Effect.promise(() =>
                 parent === undefined || parent.isDestroyed()
                   ? dialog.showMessageBox(box)
@@ -619,8 +623,7 @@ const desktop = Effect.gen(function* () {
                       Effect.logWarning("Desktop window could not load an OAuth return"),
                     ),
                   );
-                  current.show();
-                  current.focus();
+                  accounts.showLocal();
                 }),
               onRecovery: showRecovery,
             });
@@ -670,7 +673,7 @@ const desktop = Effect.gen(function* () {
                 backups,
                 appVersion: app.getVersion(),
                 whileMoving: log.value.whileMoving,
-                window: () => window,
+                window: activeWindow,
               })
             : undefined;
 
@@ -745,6 +748,7 @@ const desktop = Effect.gen(function* () {
           if (process.argv.includes("--devtools"))
             current.webContents.openDevTools({ mode: "detach" });
           current.once("ready-to-show", () => {
+            painted.add(current);
             if (
               !current.isDestroyed() &&
               accounts.isActive("local") &&
@@ -858,7 +862,7 @@ const desktop = Effect.gen(function* () {
                     const current = origin();
                     return current === undefined ? undefined : Number(new URL(current).port);
                   },
-                  parent: () => window,
+                  parent: activeWindow,
                   restart: () => run(connection.whileStopped(Effect.void).pipe(Effect.ignore)),
                 });
                 const rotate = connection

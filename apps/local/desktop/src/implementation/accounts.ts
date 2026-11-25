@@ -51,6 +51,7 @@ import {
 } from "./pages.ts";
 
 const localAccount = "local";
+const prewarmLimit = 3;
 const MenuChoice = Schema.Struct({
   action: Schema.String.check(Schema.isMaxLength(32)),
   account: Schema.NullOr(Schema.String.check(Schema.isMaxLength(300))),
@@ -83,6 +84,7 @@ export interface LocalAccount {
   readonly running: () => boolean;
   readonly start: () => void;
   readonly window: () => BrowserWindow | undefined;
+  readonly painted: (window: BrowserWindow) => boolean;
   readonly open: (bounds: Rectangle | undefined) => BrowserWindow | undefined;
 }
 
@@ -108,6 +110,9 @@ export const makeAccounts = (options: {
     let welcomeSignIn: string | undefined;
     let welcomeMessage: string | undefined;
     let prompting: BrowserWindow | undefined;
+    let intent = 0;
+    let warmed = false;
+    const watched = new WeakSet<BrowserWindow>();
 
     const savePreferences = (change: (current: AccountPreferences) => AccountPreferences) =>
       fork(
@@ -145,12 +150,10 @@ export const makeAccounts = (options: {
         ? undefined
         : window.getNormalBounds();
 
-    const leave = (previous: BrowserWindow | undefined, next: BrowserWindow) => {
-      if (previous === undefined || previous === next || previous.isDestroyed()) return;
-      const id = [...hosted.dashboards()].find(([, window]) => window === previous)?.[0];
-      if (id !== undefined) hosted.closeDashboard(id);
-      else previous.destroy();
-    };
+    const accountWindows = () => [
+      ...hosted.dashboards().map(([, window]) => window),
+      ...Option.toArray(Option.fromUndefinedOr(local.window())),
+    ];
 
     const closeWelcome = () => {
       const window = welcome;
@@ -158,41 +161,115 @@ export const makeAccounts = (options: {
       if (window !== undefined && !window.isDestroyed()) window.destroy();
     };
 
+    const leave = (previous: BrowserWindow | undefined, next: BrowserWindow) => {
+      if (previous === welcome && previous !== next) closeWelcome();
+      for (const window of accountWindows())
+        if (window !== next && !window.isDestroyed() && window.isVisible()) window.hide();
+    };
+
+    const dropKept = (closed: BrowserWindow) => {
+      if (closed !== currentWindow()) return;
+      for (const [id, window] of hosted.dashboards())
+        if (window !== closed) hosted.closeDashboard(id);
+      const kept = local.window();
+      if (kept !== undefined && kept !== closed) kept.destroy();
+    };
+
     const reveal = (window: BrowserWindow) => {
       if (window.isDestroyed()) return;
+      if (window !== welcome && !watched.has(window)) {
+        watched.add(window);
+        window.on("close", () => dropKept(window));
+      }
       window.show();
       window.focus();
     };
 
+    const follow = (window: BrowserWindow, previous: BrowserWindow | undefined) => {
+      const bounds = boundsOf(previous);
+      if (
+        bounds === undefined ||
+        window === previous ||
+        window.isMaximized() ||
+        window.isFullScreen()
+      )
+        return;
+      window.setBounds(bounds);
+    };
+
+    const shownNow = () => currentWindow()?.isVisible() === true;
+
+    const prewarm = () => {
+      if (!shownNow()) return;
+      const current = activeId();
+      const cold = hosted
+        .views()
+        .filter(
+          (view) =>
+            view.id !== current &&
+            view.state === "signed-in" &&
+            hosted.dashboard(view.id) === undefined,
+        )
+        .slice(0, prewarmLimit);
+      for (const view of cold)
+        fork(
+          hosted.openDashboard(view.id, undefined).pipe(
+            Effect.matchEffect({
+              onFailure: () =>
+                Effect.logInfo("Could not prepare a hosted account's dashboard ahead of a switch"),
+              onSuccess: (window) =>
+                Effect.sync(() => {
+                  if (!shownNow() && window !== currentWindow()) hosted.closeDashboard(view.id);
+                }),
+            }),
+          ),
+        );
+      if (current !== localAccount && local.running() && local.window() === undefined)
+        local.open(undefined);
+    };
+
+    const warmOnce = () => {
+      if (warmed) return;
+      warmed = true;
+      prewarm();
+    };
+
     const showLocal = (previous: BrowserWindow | undefined) => {
+      const mine = ++intent;
       active = { kind: "account", id: localAccount };
       savePreferences((current) => ({ ...current, lastUsed: localAccount }));
-      const opened = local.open(boundsOf(previous));
+      const kept = local.window();
+      const opened = kept ?? local.open(boundsOf(previous));
       if (opened === undefined) return;
       if (opened === previous) return reveal(opened);
       const done = () => {
+        if (mine !== intent || opened.isDestroyed()) return;
+        if (kept !== undefined) follow(opened, previous);
         reveal(opened);
         leave(previous, opened);
-        if (previous === welcome) closeWelcome();
+        warmOnce();
       };
-      if (previous === undefined || opened.isVisible()) done();
+      if (previous === undefined || opened.isVisible() || local.painted(opened)) done();
       else opened.once("ready-to-show", done);
       push();
     };
 
     const showHosted = (id: string, previous: BrowserWindow | undefined) =>
       Effect.gen(function* () {
+        const mine = ++intent;
         const opened = yield* hosted.openDashboard(id, boundsOf(previous)).pipe(Effect.option);
+        if (mine !== intent) return true;
         if (Option.isNone(opened)) {
           yield* Effect.logWarning("Could not open a hosted account's dashboard");
           return false;
         }
         active = { kind: "account", id };
         savePreferences((current) => ({ ...current, lastUsed: id }));
+        follow(opened.value, previous);
         reveal(opened.value);
         leave(previous, opened.value);
-        if (previous === welcome) closeWelcome();
         push();
+        warmOnce();
         return true;
       });
 
@@ -207,6 +284,7 @@ export const makeAccounts = (options: {
         for (const view of hosted.views())
           if (view.id !== activeId() && usable(view.id) && (yield* showHosted(view.id, previous)))
             return;
+        intent += 1;
         active = { kind: "welcome" };
         showWelcome(undefined);
         const shown = welcome;
@@ -383,8 +461,9 @@ export const makeAccounts = (options: {
         case "signed-in":
           welcomeMessage = undefined;
           if (switchAfter || activeId() === undefined || activeId() === localAccount)
-            return fork(switchTo(outcome.account));
-          return closeWelcome();
+            return fork(switchTo(outcome.account).pipe(Effect.tap(() => Effect.sync(prewarm))));
+          closeWelcome();
+          return prewarm();
         case "cancelled":
           if (hasDashboard) return closeWelcome();
           welcomeMessage = "Sign-in was cancelled.";
@@ -747,7 +826,12 @@ export const makeAccounts = (options: {
     ) =>
       Effect.callback<"settings" | null, DesktopUnavailable>((resume) => {
         const parent = BrowserWindow.fromWebContents(contents);
-        if (parent === null || parent.isDestroyed() || ownAccount(server) === undefined)
+        if (
+          parent === null ||
+          parent.isDestroyed() ||
+          !parent.isVisible() ||
+          ownAccount(server) === undefined
+        )
           return resume(Effect.fail(new DesktopUnavailable()));
         closeMenu();
         const window = new BrowserWindow({
@@ -863,11 +947,7 @@ export const makeAccounts = (options: {
     const push = () =>
       fork(
         Effect.gen(function* () {
-          const windows = [
-            ...hosted.dashboards().map(([, window]) => window),
-            ...Option.toArray(Option.fromUndefinedOr(local.window())),
-          ];
-          for (const window of windows) {
+          for (const window of accountWindows()) {
             if (window.isDestroyed()) continue;
             const server = installedApps.dashboardServer(window.webContents);
             if (server === undefined) continue;
@@ -914,6 +994,7 @@ export const makeAccounts = (options: {
       askToRunLocally,
       dashboardClosed,
       isActive: (id: string) => activeId() === id,
+      showLocal: () => fork(switchTo(localAccount)),
       hostOf,
     };
   });
