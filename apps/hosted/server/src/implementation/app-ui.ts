@@ -33,16 +33,29 @@ import {
 } from "apps/ui/auth";
 import {
   AppUiApi,
+  appIconRoute,
+  appMenuBarRoute,
+  appUiDocuments,
+  appUiIcon,
+  type AppUiDocument,
   UiVersionChanged,
   type UiOperation,
   UiFailed,
   UiForbidden,
   UiUnauthorized,
 } from "apps/ui/contracts";
-import { appAsset, appDocument, appFile, assetPath, storedAppFile } from "apps/ui/serving";
+import {
+  appAsset,
+  appDocument,
+  appFile,
+  appIcon,
+  assetPath,
+  storedAppFile,
+  appUiPages,
+} from "apps/ui/serving";
 import { receiveBrowserTelemetry } from "@executor-js/telemetry/http";
 import { currentTraceContext, recordRoute } from "@executor-js/telemetry";
-import { Clock, Context, Effect, Layer, Option, Redacted, Schema, Stream } from "effect";
+import { Clock, Context, Effect, Exit, Layer, Option, Redacted, Schema, Stream } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import {
@@ -289,39 +302,70 @@ export const hostedAppUi = <R = never>(
       );
     });
   const dashboard = HttpApiBuilder.group(HostedAppUiApi, "appUi", (handlers) =>
-    handlers.handle("location", ({ params }) =>
-      Effect.gen(function* () {
-        const access = yield* CurrentOrganization;
-        yield* requireAppAccess(params.app, "use");
-        const executor = yield* Effect.flatten(HostedExecutor);
-        const app = yield* executor.apps.get({ owner: access.owner, app: params.app });
-        if (app.activeVersion === null) return yield* new AppNotDeployed({ app: app.id });
-        const version = yield* executor.apps.version({
-          owner: app.owner,
-          app: app.id,
-          version: app.activeVersion,
-          versionOwner: app.owner,
-        });
-        const page = yield* assets(version, "index.html").pipe(
-          Effect.mapError(() => new AppUiUnavailable()),
-        );
-        if (page === undefined)
-          return { status: "unavailable" as const, url: null, reason: "no_ui" as const };
-        if (!addresses.enabled)
-          return { status: "unavailable" as const, url: null, reason: "no_app_domain" as const };
-        const sessions = yield* HostedAppSessions;
-        const organization = yield* sessions
-          .organization({ id: access.organization })
-          .pipe(Effect.mapError(() => new AppUiUnavailable()));
-        const url = yield* addresses
-          .origin(app, organization.slug)
-          .pipe(Effect.catchTag("UiFailed", () => Effect.fail(new AppUiUnavailable())));
-        const status = yield* domainStatus(organization).pipe(
-          Effect.catchTag("UiFailed", () => Effect.fail(new AppUiUnavailable())),
-        );
-        return status === "ready" ? { status, url } : { status, url: null };
-      }),
-    ),
+    handlers
+      .handle("location", ({ params }) =>
+        Effect.gen(function* () {
+          const access = yield* CurrentOrganization;
+          yield* requireAppAccess(params.app, "use");
+          const executor = yield* Effect.flatten(HostedExecutor);
+          const app = yield* executor.apps.get({ owner: access.owner, app: params.app });
+          if (app.activeVersion === null) return yield* new AppNotDeployed({ app: app.id });
+          const version = yield* executor.apps.version({
+            owner: app.owner,
+            app: app.id,
+            version: app.activeVersion,
+            versionOwner: app.owner,
+          });
+          const pages = yield* appUiPages((path) => assets(version, path)).pipe(
+            Effect.mapError(() => new AppUiUnavailable()),
+          );
+          if (!pages.main)
+            return { status: "unavailable" as const, url: null, reason: "no_ui" as const };
+          if (!addresses.enabled)
+            return { status: "unavailable" as const, url: null, reason: "no_app_domain" as const };
+          const sessions = yield* HostedAppSessions;
+          const organization = yield* sessions
+            .organization({ id: access.organization })
+            .pipe(Effect.mapError(() => new AppUiUnavailable()));
+          const url = yield* addresses
+            .origin(app, organization.slug)
+            .pipe(Effect.catchTag("UiFailed", () => Effect.fail(new AppUiUnavailable())));
+          const status = yield* domainStatus(organization).pipe(
+            Effect.catchTag("UiFailed", () => Effect.fail(new AppUiUnavailable())),
+          );
+          return status === "ready"
+            ? {
+                status,
+                url,
+                name: app.name,
+                icon: pages.icon,
+                menuBar: pages.menuBar,
+              }
+            : { status, url: null };
+        }),
+      )
+      .handle("icon", ({ params }) =>
+        Effect.gen(function* () {
+          const access = yield* CurrentOrganization;
+          yield* requireAppAccess(params.app, "use");
+          const executor = yield* Effect.flatten(HostedExecutor);
+          const app = yield* executor.apps.get({ owner: access.owner, app: params.app });
+          if (app.activeVersion === null)
+            return HttpServerResponse.empty({ status: 404, headers: appPrivateHeaders });
+          const version = yield* executor.apps.version({
+            owner: app.owner,
+            app: app.id,
+            version: app.activeVersion,
+            versionOwner: app.owner,
+          });
+          const drawing = yield* assets(version, appUiIcon.asset).pipe(
+            Effect.mapError(() => new AppUiUnavailable()),
+          );
+          return yield* appIcon(drawing, version.build).pipe(
+            Effect.mapError(() => new AppUiUnavailable()),
+          );
+        }),
+      ),
   ).pipe(Layer.provide(requestRejections));
   const dataFailure = (error: unknown) =>
     Schema.is(OrganizationForbidden)(error)
@@ -490,108 +534,122 @@ export const hostedAppUi = <R = never>(
       headers: { ...appPrivateHeaders, "x-accel-buffering": "no" },
     });
   }).pipe(htmlFailure);
-  const page = Effect.gen(function* () {
-    yield* recordRoute("/:page");
-    const request = yield* HttpServerRequest.HttpServerRequest;
-    const host = addresses.fromHost(request.headers.host);
-    if (Option.isSome(host) && anonymousNonNavigation(request, sessionCookie(host.value.origin)))
-      return yield* Effect.andThen(
-        recordCredential({ kind: "none" }),
-        refuse("missing", new UiForbidden()),
-      );
-    const resolved = yield* target;
-    const navigation =
-      request.method === "GET" &&
-      (request.headers["sec-fetch-mode"] === "navigate" ||
-        request.headers.accept?.includes("text/html"));
-    const authorized = yield* authorizeTarget(resolved).pipe(
-      Effect.map(Option.some),
-      Effect.catchTag("UiUnauthorized", (error) =>
-        navigation ? Effect.succeed(Option.none()) : Effect.fail(error),
-      ),
-    );
-    if (Option.isNone(authorized)) return yield* beginSignIn(resolved);
-    const current = authorized.value;
-    const version = yield* readVersion(current.app);
-    const file = yield* appFile({
-      origin: current.target.origin,
-      asset: (path) => assets(version, path),
-    });
-    if (Option.isSome(file)) return file.value;
-    const executor = yield* Effect.flatten(HostedExecutor).pipe(Effect.mapError(unavailable));
-    const asCaller = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-      effect.pipe(
-        Effect.provideService(CurrentOrganization, current.access),
-        Effect.provideService(CurrentPolicy, fullAuthority),
-        Effect.provideService(CurrentUserId, current.access.userId),
-      );
-    const fix = new URL(
-      `/org/${encodeURIComponent(current.target.slug)}/apps/${current.app.id}`,
-      addresses.dashboardOrigin,
-    );
-    fix.searchParams.set("view", "accounts");
-    const accountReads = Effect.gen(function* () {
-      const resolution = yield* callerAccounts(current.app).pipe(
-        asCaller,
-        Effect.map((accounts) => ({ kind: "resolved" as const, accounts })),
-        Effect.catchTag("AccountRequired", (error) =>
-          Effect.succeed({ kind: "missing" as const, slot: error.slot }),
-        ),
-        Effect.mapError((error) =>
-          Schema.is(OrganizationForbidden)(error) ? new UiForbidden() : unavailable(),
+  const render = (document: AppUiDocument) =>
+    Effect.gen(function* () {
+      yield* recordRoute(document === "main" ? "/:page" : appMenuBarRoute);
+      const request = yield* HttpServerRequest.HttpServerRequest;
+      const host = addresses.fromHost(request.headers.host);
+      if (Option.isSome(host) && anonymousNonNavigation(request, sessionCookie(host.value.origin)))
+        return yield* Effect.andThen(
+          recordCredential({ kind: "none" }),
+          refuse("missing", new UiForbidden()),
+        );
+      const resolved = yield* target;
+      const navigation =
+        request.method === "GET" &&
+        (request.headers["sec-fetch-mode"] === "navigate" ||
+          request.headers.accept?.includes("text/html"));
+      const authorized = yield* authorizeTarget(resolved).pipe(
+        Effect.map(Option.some),
+        Effect.catchTag("UiUnauthorized", (error) =>
+          navigation ? Effect.succeed(Option.none()) : Effect.fail(error),
         ),
       );
-      if (resolution.kind === "missing") {
-        const requirement = current.app.requirements.accounts[resolution.slot];
-        if (requirement === undefined) return yield* unavailable();
-        return {
-          accounts: undefined,
-          notice: {
-            app: current.app.name,
-            problems: [{ provider: requirement.definition.name, reason: "missing" as const }],
-            fix: fix.href,
-          },
-        };
+      if (Option.isNone(authorized)) return yield* beginSignIn(resolved);
+      const current = authorized.value;
+      const version = yield* readVersion(current.app);
+      if (document === "main") {
+        const file = yield* appFile({
+          origin: current.target.origin,
+          asset: (path) => assets(version, path),
+        });
+        if (Option.isSome(file)) return file.value;
       }
-      const used = accountIds(resolution.accounts);
-      if (used.length === 0) return { accounts: resolution.accounts, notice: undefined };
-      const found = yield* Effect.forEach(used, (account) =>
-        Effect.all({
-          account: executor.accounts.get({ owner: current.access.owner, account }),
-          health: executor.accounts.health({
-            owner: current.access.owner,
-            account,
-            apps: [current.app.id],
-          }),
-        }).pipe(
-          Effect.map((entry) => [[account, entry] as const]),
-          Effect.catchTag("AccountNotFound", () => Effect.succeed([])),
-          Effect.mapError(unavailable),
-        ),
+      const page = appUiDocuments[document].asset;
+      const executor = yield* Effect.flatten(HostedExecutor).pipe(Effect.mapError(unavailable));
+      const asCaller = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+        effect.pipe(
+          Effect.provideService(CurrentOrganization, current.access),
+          Effect.provideService(CurrentPolicy, fullAuthority),
+          Effect.provideService(CurrentUserId, current.access.userId),
+        );
+      const fix = new URL(
+        `/org/${encodeURIComponent(current.target.slug)}/apps/${current.app.id}`,
+        addresses.dashboardOrigin,
       );
-      const problems = accountProblems(current.app, resolution.accounts, new Map(found.flat()));
-      return {
-        accounts: resolution.accounts,
-        notice:
-          problems.length === 0 ? undefined : { app: current.app.name, problems, fix: fix.href },
-      };
-    });
-    const [{ accounts, notice }, index] = yield* Effect.all(
-      [accountReads, Effect.exit(assets(version, "index.html"))],
-      { concurrency: 2 },
-    );
-    const document = yield* appDocument({
-      accountIds: accounts?.user,
-      accounts: notice,
-      version: version.id,
-      asset: (path) => (path === "index.html" ? index : assets(version, path)),
-    });
-    yield* recordUsage("app_viewed", { app_id: current.app.id, version_id: version.id }).pipe(
-      Effect.provideService(CurrentUserId, current.access.userId),
-      Effect.provideService(CurrentOrganization, current.access),
-      Effect.provideService(CurrentUsage, { source: "app_ui" }),
-    );
-    return document;
+      fix.searchParams.set("view", "accounts");
+      const accountReads = Effect.gen(function* () {
+        const resolution = yield* callerAccounts(current.app).pipe(
+          asCaller,
+          Effect.map((accounts) => ({ kind: "resolved" as const, accounts })),
+          Effect.catchTag("AccountRequired", (error) =>
+            Effect.succeed({ kind: "missing" as const, slot: error.slot }),
+          ),
+          Effect.mapError((error) =>
+            Schema.is(OrganizationForbidden)(error) ? new UiForbidden() : unavailable(),
+          ),
+        );
+        if (resolution.kind === "missing") {
+          const requirement = current.app.requirements.accounts[resolution.slot];
+          if (requirement === undefined) return yield* unavailable();
+          return {
+            accounts: undefined,
+            notice: {
+              app: current.app.name,
+              problems: [{ provider: requirement.definition.name, reason: "missing" as const }],
+              fix: fix.href,
+            },
+          };
+        }
+        const used = accountIds(resolution.accounts);
+        if (used.length === 0) return { accounts: resolution.accounts, notice: undefined };
+        const found = yield* Effect.forEach(used, (account) =>
+          Effect.all({
+            account: executor.accounts.get({ owner: current.access.owner, account }),
+            health: executor.accounts.health({
+              owner: current.access.owner,
+              account,
+              apps: [current.app.id],
+            }),
+          }).pipe(
+            Effect.map((entry) => [[account, entry] as const]),
+            Effect.catchTag("AccountNotFound", () => Effect.succeed([])),
+            Effect.mapError(unavailable),
+          ),
+        );
+        const problems = accountProblems(current.app, resolution.accounts, new Map(found.flat()));
+        return {
+          accounts: resolution.accounts,
+          notice:
+            problems.length === 0 ? undefined : { app: current.app.name, problems, fix: fix.href },
+        };
+      });
+      const [{ accounts, notice }, index] = yield* Effect.all(
+        [accountReads, Effect.exit(assets(version, page))],
+        { concurrency: 2 },
+      );
+      const rendered = yield* appDocument({
+        document,
+        accountIds: accounts?.user,
+        accounts: notice,
+        version: version.id,
+        asset: (path) => (path === page ? index : assets(version, path)),
+      });
+      if (Exit.isSuccess(index) && index.value !== undefined)
+        yield* recordUsage("app_viewed", { app_id: current.app.id, version_id: version.id }).pipe(
+          Effect.provideService(CurrentUserId, current.access.userId),
+          Effect.provideService(CurrentOrganization, current.access),
+          Effect.provideService(CurrentUsage, { source: "app_ui" }),
+        );
+      return rendered;
+    }).pipe(htmlFailure);
+  const page = render("main");
+  const menuBar = render("menuBar");
+  const icon = Effect.gen(function* () {
+    yield* recordRoute(appIconRoute);
+    const current = yield* authorize;
+    const version = yield* readVersion(current.app);
+    return yield* appIcon(yield* assets(version, appUiIcon.asset), version.build);
   }).pipe(htmlFailure);
   const callback = Effect.gen(function* () {
     const resolved = yield* target;
@@ -670,6 +728,8 @@ export const hostedAppUi = <R = never>(
     dashboard,
     calls,
     page,
+    menuBar,
+    icon,
     asset,
     versions,
     originAccess,

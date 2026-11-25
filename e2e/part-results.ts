@@ -2,6 +2,7 @@ import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Config, Console, Effect, FileSystem, Path, Schema } from "effect";
 import { scenariosForSuite } from "./test-plan.ts";
+import { recoveryTitles } from "./recovery-suite.ts";
 
 class PartResultsFailed extends Schema.TaggedError<PartResultsFailed>()("PartResultsFailed", {
   message: Schema.String,
@@ -58,32 +59,28 @@ const compare = (directory: string) =>
     const path = yield* Path.Path;
     const pattern = new RegExp(yield* Config.String("CLI_SUITE_PATTERN"));
     const plan = scenariosForSuite("all");
+    const cliTitles = plan
+      .filter(
+        (scenario) => scenario.targets.local.status === "scheduled" && pattern.test(scenario.title),
+      )
+      .map((scenario) => scenario.title);
     const suites = {
-      cli: {
-        parts: yield* matrix("CLI_MATRIX"),
-        titles: plan
-          .filter(
-            (scenario) =>
-              scenario.targets.local.status === "scheduled" && pattern.test(scenario.title),
-          )
-          .map((scenario) => scenario.title),
-      },
+      cli: { parts: yield* matrix("CLI_MATRIX"), titlesOn: (_platform: string) => cliTitles },
       recovery: {
         parts: [
           ...(yield* matrix("RECOVERY_MATRIX")),
           ...(yield* matrix("NOTARIZED_RECOVERY_MATRIX")),
         ],
-        titles: plan
-          .filter((scenario) => scenario.file === "desktop-recovery.spec.ts")
-          .map((scenario) => scenario.title),
+        titlesOn: recoveryTitles,
       },
     };
     const present = (yield* fs.exists(directory)) ? yield* fs.readDirectory(directory) : [];
     const problems: Array<string> = [];
     const expected = new Set<string>();
-    for (const [suite, { parts, titles }] of Object.entries(suites)) {
+    for (const [suite, { parts, titlesOn }] of Object.entries(suites)) {
       const platforms = [...new Set(parts.map((part) => `${part.platform}-${part.arch}`))];
       for (const platform of platforms) {
+        const titles = titlesOn(platform.split("-")[0] ?? "");
         const ran: Array<string> = [];
         for (const part of parts.filter((part) => `${part.platform}-${part.arch}` === platform)) {
           const name = `parts-${suite}-${part.part.split("/")[0]}-${platform}`;

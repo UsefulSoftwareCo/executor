@@ -875,6 +875,9 @@ http.createServer((request, response) => {
           expect(yield* driver("compiled app UI", () => ui.json())).toEqual({
             status: "ready",
             url: expect.stringContaining("http"),
+            name: "Image check",
+            icon: false,
+            menuBar: false,
           });
         }
         if (mode === "local" && nativeBackup !== undefined) {

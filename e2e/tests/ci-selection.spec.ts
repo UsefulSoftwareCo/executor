@@ -4,6 +4,7 @@ import { Effect, FileSystem, Path, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import { collectorChanged, collectorInputs, collectorScenarios } from "../collector-inputs.ts";
+import { desktopServersChanged, desktopServersInputs } from "../desktop-servers-inputs.ts";
 import dockerReleaseConfig from "../docker-release.config.ts";
 import { lanesFor, releaseSources, releaseSuiteConfigs } from "../release-lanes.ts";
 import {
@@ -398,6 +399,7 @@ const startedBy = {
   "release-docker": ["release-docker"],
   "release-local-cli": ["release-local"],
   "release-local-desktop": ["release-local"],
+  "e2e-desktop-servers": ["desktop-servers"],
 } as const;
 type E2eJob = keyof typeof startedBy;
 const e2eJobs = Object.keys(startedBy) as ReadonlyArray<E2eJob>;
@@ -603,6 +605,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
           ...laneOutputs,
           "release-docker-engine",
           "collector",
+          "desktop-servers",
           "full",
           "draft",
           "gate",
@@ -3835,6 +3838,36 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
   );
 
   it.effect(
+    "e2e-desktop-servers runs for a change to what the desktop's hosted servers run, and for nothing else",
+    () =>
+      Effect.sync(() => {
+        for (const file of [
+          "apps/local/desktop/src/implementation/hosted-servers.ts",
+          "apps/local/desktop/README.md",
+          "apps/hosted/server/src/implementation/desktop-sessions.ts",
+          "apps/hosted/server/src/contracts/desktop-sessions.ts",
+          "packages/mcp-auth/src/implementation/oauth.ts",
+          "apps/hosted/web/src/implementation/pages/mcp-authorize.tsx",
+          "e2e/tests/desktop-servers.spec.ts",
+          "e2e/desktop-servers.config.ts",
+          "e2e/desktop-servers-inputs.ts",
+          "e2e/support/desktop.ts",
+        ])
+          expect(desktopServersChanged([file]), file).toBe(true);
+        for (const file of [
+          "apps/local/server/src/implementation/server.ts",
+          "apps/hosted/server/src/implementation/mcp-oauth.ts",
+          "apps/hosted/server/src/desktop-sessions/notes.md",
+          "apps/hosted/web/src/implementation/pages/agent-setup.tsx",
+          "packages/ui/src/implementation/dashboard/mcp-consent.tsx",
+          "e2e/tests/desktop-sign-in.spec.ts",
+        ])
+          expect(desktopServersChanged([file]), file).toBe(false);
+        expect(desktopServersInputs).toHaveLength(8);
+      }),
+  );
+
+  it.effect(
     "the select job starts collector-native when a collector input changed, and only then",
     () =>
       Effect.gen(function* () {
@@ -5368,6 +5401,7 @@ layer(NodeServices.layer)("Release check after a push to main", (it) => {
                         "cloud-runners": "[x]",
                         "release-local": "x",
                         "release-docker": "x",
+                        "desktop-servers": "true",
                       }
                     : {},
               },

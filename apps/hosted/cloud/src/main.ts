@@ -54,6 +54,7 @@ import {
   mcpAuthorizationServer,
   apiChallenge,
   apiProtectedResource,
+  desktopProtectedResource,
 } from "@executor-js/hosted-server";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { cloudSite } from "./infrastructure/site.ts";
@@ -154,6 +155,12 @@ import {
   requestTiming,
 } from "@executor-js/telemetry/http";
 import { recordClientNetwork } from "./implementation/client-network.ts";
+import { executorServerIdentityPath } from "apps/ui/contracts";
+import {
+  publicIdentityCache,
+  serverIdentity,
+  serverIdentityResponse,
+} from "@executor-js/utils/server-identity";
 
 import { appCatalogBinding } from "./infrastructure/app-catalog.ts";
 import { Api } from "./infrastructure/api-worker.ts";
@@ -412,6 +419,7 @@ export default Api.make(
       yield* Config.String("EXECUTOR_CATALOG_URL").pipe(Config.option),
     );
     const apiOrigin = auth.resourceOrigins.api[0];
+    const serverId = yield* serverIdentity("cloud", auth.origin);
     const document = lazyHostedApiDocument(() => executorCloudApiDocument(apiOrigin));
     const authoring = yield* cloudAuthoringReference;
     const api = cloudApi(document).pipe(
@@ -505,6 +513,11 @@ export default Api.make(
     const apiDiscoveryRoutes = Layer.mergeAll(
       HttpRouter.add("GET", "/api", apiChallenge),
       HttpRouter.add("GET", "/.well-known/oauth-protected-resource/api", apiProtectedResource),
+      HttpRouter.add(
+        "GET",
+        "/.well-known/oauth-protected-resource/api/desktop",
+        desktopProtectedResource,
+      ),
     ).pipe(HttpRouter.provideRequest(auth.apiIdentity));
     const appWebhookRoutes = HttpRouter.add(
       "*",
@@ -587,6 +600,19 @@ export default Api.make(
         auth.handler.pipe(Effect.flatMap(hideRemovedOrganizations), Effect.provide(executor)),
       ),
       HttpRouter.add("*", "/api/auth/*", dispatchAfterWrites(auth.handler)),
+      HttpRouter.add(
+        "GET",
+        executorServerIdentityPath,
+        serverIdentityResponse(
+          serverId,
+          {
+            dashboard: auth.hosts.browser,
+            api: auth.hosts.resourceOrigins.api[0],
+            auth: new URL(auth.hosts.issuer).origin,
+          },
+          publicIdentityCache,
+        ),
+      ),
       HttpRouter.add("GET", v1HandoffPath, auth.v1Handoff),
       HttpRouter.add("*", "/api/email/unsubscribe", welcomeEmails.unsubscribe),
       HttpRouter.add(

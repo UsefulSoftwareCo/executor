@@ -125,14 +125,35 @@ export function AppIcon({
 }) {
   const provider = app && Object.values(app.requirements.accounts)[0]?.definition;
   const { sources, pending } = useAppIconSources(app);
+  const dashboard = useOptionalDashboard();
+  const retained =
+    sources === null && !pending && app !== undefined && app.activeVersion !== null
+      ? dashboard?.appIconUrl?.(app)
+      : undefined;
+  const [loaded, setLoaded] = useState<string | null>(null);
+  const shown = retained !== undefined && loaded === retained ? retained : null;
   return (
-    <ProviderIcon
-      name={provider?.name ?? app?.name ?? name ?? "App"}
-      url={providerDisplayUrl(provider)}
-      large={large}
-      declared={sources}
-      pending={pending}
-    />
+    <>
+      <ProviderIcon
+        name={provider?.name ?? app?.name ?? name ?? "App"}
+        url={providerDisplayUrl(provider)}
+        large={large}
+        declared={shown === null ? sources : { light: shown, dark: shown }}
+        pending={pending}
+      />
+      {retained !== undefined && shown === null && (
+        <img
+          src={retained}
+          alt=""
+          hidden
+          referrerPolicy="no-referrer"
+          ref={(image) => {
+            if (image?.complete === true && image.naturalWidth > 0) setLoaded(retained);
+          }}
+          onLoad={() => setLoaded(retained)}
+        />
+      )}
+    </>
   );
 }
 

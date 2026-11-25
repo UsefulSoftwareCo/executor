@@ -5,6 +5,11 @@ import {
   type ReleaseChannel,
 } from "@executor-js/utils/release-version";
 import manifest from "../../apps/cli/package.json" with { type: "json" };
+import {
+  desktopDownloadTargets,
+  desktopReleaseRepository,
+  desktopReleaseSource,
+} from "../../packages/ui/src/contracts/desktop-download.ts";
 
 export {
   compareReleaseVersions,
@@ -65,7 +70,7 @@ export type Platform = (typeof platforms)[number];
 
 const version = Schema.decodeUnknownSync(ReleaseVersion)(manifest.version);
 const channel = releaseChannel(version);
-const repository = "UsefulSoftwareCo/executor";
+const repository = desktopReleaseRepository;
 const tag = `executor@${version}`;
 const nodeEngine = Schema.decodeUnknownSync(
   Schema.String.check(Schema.isPattern(/^>=\d+\.\d+\.\d+$/u)),
@@ -115,13 +120,22 @@ export const desktopAssetSuffix = (target: Platform): string => {
   return `-${target.desktopOs}-${arch}.${target.extension}`;
 };
 
+const unlisted = platforms.filter(
+  (target, index) =>
+    desktopDownloadTargets[index]?.os !== `${target.desktopOs}-${target.arch}` ||
+    desktopDownloadTargets[index]?.asset !== desktopAssetSuffix(target),
+);
+if (unlisted.length > 0 || desktopDownloadTargets.length !== platforms.length)
+  throw new Error(
+    "desktopDownloadTargets in packages/ui/src/contracts/desktop-download.ts must list each desktop platform's installer in the order of platforms.",
+  );
+
 export const desktopAsset = (target: Platform): string =>
   `${release.desktop.artifactPrefix}-${release.version}${desktopAssetSuffix(target)}`;
 
 export const desktopDownloads = {
-  releasesApi: `https://api.github.com/repos/${repository}/releases?per_page=100`,
+  ...desktopReleaseSource(version.split(".")[0] ?? ""),
   releasesPage: `https://github.com/${repository}/releases`,
-  tagPrefix: `executor@${version.split(".")[0]}.`,
   stableOnly: channel === "latest",
 } as const;
 

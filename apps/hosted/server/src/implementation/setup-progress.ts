@@ -27,7 +27,7 @@ export const memberSetupProgress = Effect.gen(function* () {
     resource: organization.organization,
   });
   const [newest] = agents
-    .filter((agent) => agent.access.kind !== "api")
+    .filter((agent) => agent.access.kind !== "api" && agent.access.kind !== "desktop")
     .toSorted((a, b) => b.connectedAt.localeCompare(a.connectedAt));
   return { accounts: linked.length > 0, agent: newest?.id } satisfies SetupProgress;
 }).pipe(Effect.withSpan("setup.progress"));

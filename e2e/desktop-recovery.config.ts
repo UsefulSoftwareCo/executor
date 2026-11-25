@@ -2,9 +2,20 @@ import { defineConfig } from "vitest/config";
 import { snapshotUpdate } from "./snapshot-updates.ts";
 import { scenarios } from "./test-plan.ts";
 import { exactly } from "./scenario-parts.ts";
+import { recoveryFiles, skippedOn } from "./recovery-suite.ts";
 
 const parts = [
-  ["desktopStarterDeadline"],
+  [
+    "desktopStarterDeadline",
+    "desktopInstalledApps",
+    "desktopAppPermissions",
+    "desktopAppColdStart",
+    "desktopAppRevocation",
+    "desktopAppIsolation",
+    "desktopAppWindows",
+    "desktopLocalChoice",
+    "desktopAppStates",
+  ],
   [
     "desktopMigrationReplaced",
     "desktopMigrationMoved",
@@ -12,6 +23,11 @@ const parts = [
     "desktopReset",
     "desktopSlowStop",
     "desktopClipboard",
+    "desktopAppLifecycle",
+    "desktopInstallLink",
+    "desktopAppOpenAtPath",
+    "desktopAppCapture",
+    "desktopLocalLinks",
   ],
   [
     "desktopMigrationReplacedClosed",
@@ -20,19 +36,24 @@ const parts = [
     "desktopSharedService",
     "desktopResetWithheld",
     "desktopLateLoadFailure",
+    "desktopAppStoreUnreadable",
+    "desktopInstallLinkColdStart",
+    "desktopAppStartAtLogin",
+    "desktopResetFailedStart",
+    "desktopAppDownloads",
   ],
 ] as const satisfies ReadonlyArray<ReadonlyArray<keyof typeof scenarios>>;
 
-const file = "desktop-recovery.spec.ts";
+const files = recoveryFiles;
 const listed = parts.flat() as ReadonlyArray<keyof typeof scenarios>;
 const unlisted = Object.entries(scenarios)
-  .filter(([key, scenario]) => scenario.file === file && !listed.includes(key as never))
+  .filter(([key, scenario]) => files.includes(scenario.file) && !listed.includes(key as never))
   .map(([key]) => key);
-const elsewhere = listed.filter((key) => scenarios[key].file !== file);
+const elsewhere = listed.filter((key) => !files.includes(scenarios[key].file));
 const twice = listed.filter((key, index) => listed.indexOf(key) !== index);
 if (unlisted.length + elsewhere.length + twice.length > 0)
   throw new Error(
-    `Each ${file} scenario belongs to exactly one part in e2e/desktop-recovery.config.ts. Not in a part: ${unlisted.join(", ") || "none"}; not in ${file}: ${elsewhere.join(", ") || "none"}; in two parts: ${twice.join(", ") || "none"}.`,
+    `Each ${files.join(" and ")} scenario belongs to exactly one part in e2e/desktop-recovery.config.ts. Not in a part: ${unlisted.join(", ") || "none"}; not in ${files.join(" or ")}: ${elsewhere.join(", ") || "none"}; in two parts: ${twice.join(", ") || "none"}.`,
   );
 
 const part = process.env.EXECUTOR_E2E_DESKTOP_PART;
@@ -48,12 +69,18 @@ if (part !== undefined && selected === undefined)
 export default defineConfig({
   test: {
     update: snapshotUpdate(),
-    include: ["e2e/tests/desktop-recovery.spec.ts"],
+    include: files.map((file) => `e2e/tests/${file}`),
     testTimeout: 180_000,
     fileParallelism: false,
     ...(selected === undefined
       ? {}
-      : { testNamePattern: exactly(selected.map((key) => scenarios[key].title)) }),
+      : {
+          testNamePattern: exactly(
+            selected
+              .filter((key) => !skippedOn(key, process.platform))
+              .map((key) => scenarios[key].title),
+          ),
+        }),
     globalSetup: ["e2e/desktop-close-durations.ts"],
   },
 });

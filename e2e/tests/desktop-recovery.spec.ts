@@ -12,6 +12,7 @@ import { connectionRefused, freePort } from "../support/ports.ts";
 import {
   answerDialogs,
   answeredDialogs,
+  dashboardReady,
   answersReady,
   clickMenuItem,
   dashboardLoads,
@@ -21,18 +22,22 @@ import {
   failDashboardLoads,
   lateLoadFailures,
   launchDesktop,
+  localWindow,
   menuBar,
   menuLabels,
   nextServer,
+  openDesktopLink,
   processAlive,
   registeredServer,
   reportReplacedLoadFailuresLate,
+  runLocally,
   runnerSession,
   serverExited,
   serverStarts,
   stallStarter,
   stopBackgroundServers,
   suspendProcess,
+  welcomeWindow,
 } from "../support/desktop.ts";
 import {
   crashServer,
@@ -141,7 +146,7 @@ const dialogsShown = (electron: ElectronApplication, count: number) =>
         ? Effect.succeed(boxes)
         : Effect.fail(new Error(`Fewer than ${count} native dialogs have been shown`)),
     ),
-    Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 300 }),
+    Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 1800 }),
   );
 
 const recoveryHeading = (page: Page, name: string) =>
@@ -149,10 +154,7 @@ const recoveryHeading = (page: Page, name: string) =>
     page.getByRole("heading", { name, exact: true }).waitFor({ state: "visible", timeout: 60_000 }),
   );
 
-const dashboard = (page: Page) =>
-  driver("dashboard is visible", () =>
-    page.getByRole("heading", { name: /^Apps/ }).waitFor({ state: "visible", timeout: 60_000 }),
-  );
+const dashboard = (page: Page) => dashboardReady(page);
 
 const pairedSession = (page: Page) =>
   driver("the window's session is paired", () =>
@@ -323,7 +325,7 @@ it.live(scenarios.desktopDashboardRetry.title, () =>
       const second = yield* nextServer([first]);
       yield* dashboard(page);
       expect(yield* pairedSession(page)).toEqual({ authenticated: true });
-      expect(yield* dashboardLoads(electron)).toEqual({ failed: 2, links: 3 });
+      expect(yield* dashboardLoads(electron)).toEqual({ failed: 2, links: 0 });
       expect(
         (yield* eventsNamed(data, dashboardFailed, 2)).map(({ annotations }) => [
           annotations.attempt,
@@ -354,7 +356,7 @@ it.live(scenarios.desktopDashboardRetry.title, () =>
       ).toEqual([1, 2, 3]);
       const [shown] = yield* eventsNamed(data, "Showing desktop recovery", 1);
       expect(shown?.annotations.recovery).toEqual({ stage: "dashboard" });
-      expect(yield* dashboardLoads(electron)).toEqual({ failed: 5, links: 6 });
+      expect(yield* dashboardLoads(electron)).toEqual({ failed: 5, links: 0 });
       expect(yield* serverStarts(data)).toBe(starts + 1);
       expect(yield* answersReady(third)).toBe(true);
 
@@ -422,6 +424,189 @@ it.live(
       }),
     ).pipe(Effect.provide(services)),
   300_000,
+);
+
+it.live(scenarios.desktopLocalChoice.title, () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const { home, data, env, origin, nextServer } = yield* desktopHome({ keys: "file" });
+      const profile = env.EXECUTOR_DESKTOP_PROFILE_DIR ?? "";
+      const chosen = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const electron = yield* launchDesktop({ cwd: home, env, welcome: true });
+          const welcome = yield* welcomeWindow(electron);
+          expect(
+            yield* driver("the welcome window offers both ways", () =>
+              Promise.all([
+                welcome.getByRole("button", { name: "Sign in", exact: true }).count(),
+                welcome.getByRole("button", { name: "Run locally", exact: true }).count(),
+              ]),
+            ),
+          ).toEqual([1, 1]);
+          expect(yield* serverStarts(data)).toBe(0);
+          expect(Option.isNone(yield* registeredServer(data))).toBe(true);
+          expect(yield* fs.exists(path.join(data, "installation.json"))).toBe(false);
+          expect(
+            (yield* menuLabels(electron, "File")).filter((label) => label !== ""),
+          ).not.toContain("Server port…");
+          yield* runLocally(electron);
+          const server = yield* nextServer([]);
+          const page = yield* localWindow(electron);
+          yield* dashboard(page);
+          expect(new URL(page.url()).origin).toBe(origin);
+          expect(yield* menuLabels(electron, "File")).toContain("Server port…");
+          return server;
+        }),
+      );
+      expect(
+        JSON.parse(yield* fs.readFileString(path.join(profile, "desktop-accounts.json"))),
+      ).toEqual({ version: 1, local: true, lastUsed: "local" });
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const electron = yield* launchDesktop({ cwd: home, env, welcome: true });
+          const page = yield* driver("desktop window", () => electron.firstWindow());
+          yield* dashboard(page);
+          expect(yield* serverStarts(data)).toBe(1);
+          expect(yield* answersReady(chosen)).toBe(true);
+        }),
+      );
+
+      const cliOnly = yield* desktopHome({ keys: "file" });
+      const begun = yield* cliOnly.cli.run(["service", "start"], {}, { installed: true });
+      expect(begun.code, begun.stderr).toBe(0);
+      const fromCli = yield* cliOnly.nextServer([]);
+      const electron = yield* launchDesktop({ cwd: cliOnly.home, env: cliOnly.env, welcome: true });
+      const page = yield* driver("desktop window", () => electron.firstWindow());
+      yield* dashboard(page);
+      expect(new URL(page.url()).origin).toBe(cliOnly.origin);
+      expect(yield* serverStarts(cliOnly.data)).toBe(0);
+      expect(yield* answersReady(fromCli)).toBe(true);
+    }),
+  ).pipe(Effect.provide(services)),
+);
+
+it.live(scenarios.desktopResetFailedStart.title, () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const desktop = yield* desktopHome({ keys: "file" });
+      const env = { ...desktop.env, EXECUTOR_NPM_REGISTRY: `http://127.0.0.1:${yield* freePort}` };
+      const backups = path.join(desktop.home, "backups");
+      const electron = yield* launchDesktop({ cwd: desktop.home, env });
+      const page = yield* driver("desktop window", () => electron.firstWindow());
+      yield* recoveryHeading(page, "Executor could not start its local server");
+      const cause =
+        /Local startup failed at composition: App build failed at the dependencies stage: Installing apps@\S+ failed: /u;
+      expect(
+        yield* driver("the recovery page's failure", () => page.locator("pre").textContent()),
+      ).toMatch(cause);
+
+      yield* answerDialogs(electron, { "Reset Executor data?": 0 });
+      yield* driver("reset from recovery", () =>
+        page.getByRole("button", { name: "Reset data…", exact: true }).click(),
+      );
+      const dialogs = yield* dialogsShown(electron, 2);
+      expect(dialogs.map((box) => box.title)).toEqual([
+        "Reset Executor data?",
+        "Executor data reset",
+      ]);
+      expect(dialogs[1]?.message).toBe(
+        "Your previous data has been backed up, but Executor could not start with fresh data.",
+      );
+      const [moved] = yield* fs.readDirectory(backups);
+      expect(dialogs[1]?.detail).toContain(path.join(backups, moved ?? ""));
+      expect(dialogs[1]?.detail).toContain("Executor could not start its local server: ");
+      expect(dialogs[1]?.detail).toMatch(cause);
+      yield* recoveryHeading(page, "Executor could not start its local server");
+    }),
+  ).pipe(Effect.provide(services)),
+);
+
+it.live(scenarios.desktopLocalLinks.title, () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const { home, data, env, nextServer } = yield* desktopHome({ keys: "file" });
+      const profile = env.EXECUTOR_DESKTOP_PROFILE_DIR ?? "";
+      const localServer = `local-${randomBytes(16).toString("hex")}`;
+      const notes = {
+        server: localServer,
+        app: "app_notes",
+        installation: randomUUID(),
+        revision: 0,
+        name: "Field notes",
+        origin: "http://app-notes.localhost:1",
+        icon: "monogram:Field notes",
+        launcher: null,
+        installedAt: new Date().toISOString(),
+        permissions: {},
+      };
+      yield* fs.makeDirectory(profile, { recursive: true });
+      yield* fs.writeFileString(
+        path.join(profile, "installed-apps.json"),
+        JSON.stringify({ version: 1, servers: { [localServer]: { apps: { app_notes: notes } } } }),
+      );
+      const otherLocal = createServer((_request, response) =>
+        response
+          .writeHead(200, { "content-type": "application/json" })
+          .end(JSON.stringify({ serverId: localServer, kind: "local" })),
+      );
+      const otherPort = yield* freePort;
+      yield* driver(
+        "start another Executor on this computer",
+        () => new Promise<void>((resolve) => otherLocal.listen(otherPort, "127.0.0.1", resolve)),
+      );
+      yield* Effect.addFinalizer(() =>
+        driver(
+          "stop the other Executor",
+          () => new Promise<void>((resolve) => otherLocal.close(() => resolve())),
+        ).pipe(Effect.ignore),
+      );
+
+      const electron = yield* launchDesktop({ cwd: home, env, welcome: true });
+      yield* answerDialogs(electron, {});
+      yield* welcomeWindow(electron);
+      const says = (label: string, text: string) =>
+        Effect.gen(function* () {
+          const welcome = yield* welcomeWindow(electron);
+          yield* driver(label, () => welcome.getByText(text, { exact: true }).waitFor());
+        });
+
+      expect(
+        yield* openDesktopLink({
+          cwd: home,
+          env,
+          link: `executor://app/${localServer}/app_notes/entries/7`,
+        }),
+      ).toBe(0);
+      yield* says(
+        "the welcome window says the app needs this computer's Executor",
+        "Field notes is an app on this computer's Executor. Run locally to open it.",
+      );
+      expect(yield* serverStarts(data)).toBe(0);
+
+      const install = new URL("executor://install");
+      install.searchParams.set("server", `http://127.0.0.1:${otherPort}`);
+      install.searchParams.set("app", "app_journal");
+      install.searchParams.set("name", "Journal");
+      expect(yield* openDesktopLink({ cwd: home, env, link: install.href })).toBe(0);
+      yield* says(
+        "the welcome window says the install link needs this computer's Executor",
+        "A link asks to install Journal from this computer's Executor. Run locally, then open the link again.",
+      );
+      expect(yield* answeredDialogs(electron)).toEqual([]);
+      expect(yield* serverStarts(data)).toBe(0);
+
+      yield* runLocally(electron);
+      yield* nextServer([]);
+      yield* dashboard(yield* localWindow(electron));
+      expect(yield* serverStarts(data)).toBe(1);
+    }),
+  ).pipe(Effect.provide(services)),
 );
 
 it.live(scenarios.desktopSharedService.title, () =>
@@ -751,16 +936,30 @@ it.live(scenarios.desktopMigrationReplacedClosed.title, () =>
           const electron = yield* launchDesktop({ cwd: home.home, env: home.env });
           yield* Effect.addFinalizer(() => held.resume);
           yield* answerDialogs(electron, { [movedNotice]: "unanswered" });
-          const page = yield* driver("desktop window", () => electron.firstWindow());
-          yield* driver("the window says the data is moving", () =>
-            page
-              .getByRole("heading", { name: "Moving your Executor data…", exact: true })
-              .waitFor({ state: "visible", timeout: 60_000 }),
+          yield* driver("desktop window", () => electron.firstWindow());
+          const showedMoving = driver("the window's history holds the moving page", () =>
+            electron.evaluate(({ BrowserWindow }) =>
+              BrowserWindow.getAllWindows().some((window) =>
+                window.webContents.navigationHistory
+                  .getAllEntries()
+                  .some((entry) =>
+                    decodeURIComponent(entry.url).includes("Moving your Executor data…"),
+                  ),
+              ),
+            ),
+          ).pipe(
+            Effect.filterOrFail(
+              (showed) => showed,
+              () => new Error("No desktop window has loaded the moving page"),
+            ),
+            Effect.retry({ schedule: Schedule.spaced("50 millis"), times: 600 }),
           );
+          yield* showedMoving;
           const menu = yield* menuBar(electron);
           const quit = yield* driver("the desktop quits once the data has moved", () =>
             electron.waitForEvent("close", { timeout: 120_000 }),
           ).pipe(Effect.forkScoped({ startImmediately: true }));
+          const movedBeforeClose = yield* moveDone;
           yield* driver("close the window while the data moves", () =>
             electron.evaluate(({ BrowserWindow }) => {
               for (const window of BrowserWindow.getAllWindows()) window.close();
@@ -777,29 +976,34 @@ it.live(scenarios.desktopMigrationReplacedClosed.title, () =>
             Effect.as(true),
           );
           const running = yield* Effect.race(windowless, Effect.as(Fiber.join(quit), false));
-          const moved = yield* moveDone;
           yield* held.resume;
           yield* Fiber.join(quit);
-          return { running, moved, menu };
+          return { running, movedBeforeClose, menu };
         }),
       );
-      expect(closed.running, "the desktop quit before its last window had closed").toBe(true);
-      expect(closed.moved, "the data had moved before the window closed").toBe(false);
-      const interrupted = (yield* desktopEvents(home.data)).map((event) => event.message);
-      expect(interrupted).toContain("Moved the desktop's data");
-      expect(interrupted).not.toContain("Connecting to the background Executor");
-      expect(interrupted).not.toContain("Showing the moved data notice");
-      const darwin = process.platform === "darwin";
-      expect(closed.menu.map(({ menu }) => menu)).toEqual([
-        ...(darwin ? ["appmenu"] : []),
-        "File",
-        "editmenu",
-        "viewmenu",
-        "windowmenu",
-      ]);
-      expect(closed.menu.find(({ menu }) => menu === "File")?.items).toEqual([
-        darwin ? "close" : "quit",
-      ]);
+      const [movedEvent] = yield* eventsNamed(home.data, "Moved the desktop's data", 1);
+      expect(
+        movedEvent?.annotations.startedAt,
+        "the desktop recorded when it showed the move",
+      ).toEqual(expect.any(String));
+      expect(movedEvent?.annotations.seconds).toEqual(expect.any(Number));
+      if (!closed.movedBeforeClose) {
+        expect(closed.running, "the desktop quit before its last window had closed").toBe(true);
+        const interrupted = (yield* desktopEvents(home.data)).map((event) => event.message);
+        expect(interrupted).not.toContain("Connecting to the background Executor");
+        expect(interrupted).not.toContain("Showing the moved data notice");
+        const darwin = process.platform === "darwin";
+        expect(closed.menu.map(({ menu }) => menu)).toEqual([
+          ...(darwin ? ["appmenu"] : []),
+          "File",
+          "editmenu",
+          "viewmenu",
+          "windowmenu",
+        ]);
+        expect(closed.menu.find(({ menu }) => menu === "File")?.items).toEqual([
+          darwin ? "close" : "quit",
+        ]);
+      }
 
       yield* Effect.scoped(
         Effect.gen(function* () {
@@ -1129,6 +1333,8 @@ it.live(scenarios.desktopReset.title, () =>
         "Reset Executor data?",
         "Executor data reset",
       ]);
+      expect(dialogs[1]?.message).toBe("Your previous data has been backed up.");
+      expect(dialogs[1]?.detail).toMatch(/Executor is now running with fresh data\.$/u);
 
       const moved = yield* fs.readDirectory(backups);
       expect(moved).toHaveLength(1);

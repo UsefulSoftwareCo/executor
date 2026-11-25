@@ -34,12 +34,13 @@ import {
 import { Effect, Layer, Result, Schema, Stream } from "effect";
 import type { SqlClient } from "effect/sql";
 import { ApprovalResponse, approvalElicitation } from "apps/contracts";
+import { type AppUiPages, type UiFailed } from "apps/ui/contracts";
 import {
   ToolRunApprovalRefused,
   type BrowserApprovalView,
   type BrowserToolRun,
 } from "@executor-js/mcp/browser";
-import { HttpServerResponse } from "effect/http";
+import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import { HttpApiBuilder } from "effect/http-api";
 import { localBearer, localRequest, requestOrigin, sessionCookie, type LocalAuth } from "./auth.ts";
 import { createCatalog, deployedCopy } from "@executor-js/catalog";
@@ -105,12 +106,22 @@ export const dashboard = (
     managedAccount,
     ownerMigration,
     wakeWebhookSources,
+    uiPages,
+    uiIcon,
   }: {
     readonly catalogFeedUrl?: string | undefined;
     readonly managedApp?: AppId;
     readonly managedAccount?: AccountId;
     readonly ownerMigration: Effect.Effect<LocalOwnerMigration | null>;
     readonly wakeWebhookSources: Effect.Effect<void>;
+    readonly uiPages: (app: App) => Effect.Effect<AppUiPages, UiFailed>;
+    readonly uiIcon: (
+      app: App,
+    ) => Effect.Effect<
+      HttpServerResponse.HttpServerResponse,
+      never,
+      HttpServerRequest.HttpServerRequest
+    >;
   },
 ) => {
   const appCatalog = createCatalog({
@@ -270,21 +281,12 @@ export const dashboard = (
     Effect.gen(function* () {
       const app = yield* executor.apps.get({ app: appId });
       const versions = yield* executor.apps.versions({ app: appId });
-      const source =
-        app.activeVersion === null
-          ? null
-          : yield* executor.apps.source({ app: appId }).pipe(
-              Effect.catchTags({
-                VersionNotFound: () => new StorageError(),
-                AppNotDeployed: () => new StorageError(),
-              }),
-            );
+      const pages = yield* uiPages(app).pipe(Effect.mapError(() => new StorageError()));
       return {
         app,
-        uiUrl:
-          source !== null && source.files.some((file) => file.path === "ui/index.html")
-            ? HttpUrl.make(appOrigin(app.id, config.port))
-            : null,
+        uiUrl: pages.main ? HttpUrl.make(appOrigin(app.id, config.port)) : null,
+        uiIcon: pages.icon,
+        uiMenuBar: pages.menuBar,
         canDelete: app.id !== managedApp,
         versions,
       };
@@ -449,6 +451,9 @@ export const dashboard = (
       .handle("overview", () => overview)
       .handle("ownerMigration", () => ownerMigration)
       .handle("app", ({ params }) => appDetail(params.app))
+      .handle("appIcon", ({ params }) =>
+        executor.apps.get({ app: params.app }).pipe(Effect.flatMap(uiIcon)),
+      )
       .handle("appList", ({ params }) =>
         executor.apps
           .get(params)

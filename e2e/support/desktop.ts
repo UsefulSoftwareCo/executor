@@ -1,5 +1,5 @@
 import { expect } from "@effect/vitest";
-import { _electron, type ElectronApplication } from "playwright";
+import { _electron, type ElectronApplication, type Page } from "playwright";
 import {
   type Cause,
   Config,
@@ -37,6 +37,7 @@ export const runnerSession = () =>
       "WAYLAND_DISPLAY",
       "XDG_RUNTIME_DIR",
       "XDG_SESSION_TYPE",
+      "XDG_CURRENT_DESKTOP",
       "DBUS_SESSION_BUS_ADDRESS",
       "SystemRoot",
     ].flatMap((name) => {
@@ -60,36 +61,170 @@ export const requestBrowserPairing = (electron: ElectronApplication, origin: str
     }, origin),
   );
 
-export const launchDesktop = (options: {
+const installElectron = (electron: string) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const path = yield* Path.Path;
+      const child = yield* processes.spawn(
+        ChildProcess.make(process.execPath, [path.join(electron, "install.js")], {
+          cwd: electron,
+          stdin: "ignore",
+          stdout: "ignore",
+          stderr: "inherit",
+          forceKillAfter: "5 seconds",
+        }),
+      );
+      const code = Number(yield* child.exitCode.pipe(Effect.timeout("10 minutes")));
+      if (code !== 0)
+        return yield* Effect.fail(new Error(`Electron's installer exited with ${code}`));
+    }),
+  );
+
+const desktopExecutable = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const packaged = yield* Config.String("EXECUTOR_E2E_DESKTOP_EXECUTABLE").pipe(Config.option);
+  if (Option.isSome(packaged)) return { executablePath: packaged.value, args: ["--disable-gpu"] };
+  const desktop = path.resolve("apps/local/desktop");
+  if (!(yield* fs.exists(path.join(desktop, "dist/main.cjs"))))
+    return yield* Effect.fail(
+      new Error("Build the desktop entry first: node apps/local/desktop/scripts/build.mjs"),
+    );
+  const electron = path.join(desktop, "node_modules/electron");
+  const pathFile = path.join(electron, "path.txt");
+  if (!(yield* fs.exists(pathFile))) yield* installElectron(electron);
+  const binary = (yield* fs.readFileString(pathFile)).trim();
+  return {
+    executablePath: path.join(electron, "dist", binary),
+    args: [desktop, "--disable-gpu"],
+  };
+});
+
+export const openDesktopLink = (options: {
   readonly cwd: string;
   readonly env: Readonly<Record<string, string>>;
+  readonly link: string;
 }) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const launch = yield* desktopExecutable;
+      const child = yield* processes.spawn(
+        ChildProcess.make(
+          launch.executablePath,
+          [...launch.args, ...(process.platform === "linux" ? ["--no-sandbox"] : []), options.link],
+          {
+            cwd: options.cwd,
+            extendEnv: false,
+            env: { ...options.env },
+            stdin: "ignore",
+            stdout: "ignore",
+            stderr: "ignore",
+            forceKillAfter: "5 seconds",
+          },
+        ),
+      );
+      return Number(yield* child.exitCode.pipe(Effect.timeout("60 seconds")));
+    }),
+  );
+
+export const choseRunLocally = (profile: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    const packaged = yield* Config.String("EXECUTOR_E2E_DESKTOP_EXECUTABLE").pipe(Config.option);
-    let launch: { readonly executablePath: string; readonly args: ReadonlyArray<string> };
-    if (Option.isSome(packaged))
-      launch = { executablePath: packaged.value, args: ["--disable-gpu"] };
-    else {
-      const desktop = path.resolve("apps/local/desktop");
-      if (!(yield* fs.exists(path.join(desktop, "dist/main.cjs"))))
-        return yield* Effect.fail(
-          new Error("Build the desktop entry first: node apps/local/desktop/scripts/build.mjs"),
-        );
-      const electron = path.join(desktop, "node_modules/electron");
-      const binary = (yield* fs.readFileString(path.join(electron, "path.txt"))).trim();
-      launch = {
-        executablePath: path.join(electron, "dist", binary),
-        args: [desktop, "--disable-gpu"],
-      };
-    }
+    const file = path.join(profile, "desktop-accounts.json");
+    if (yield* fs.exists(file)) return;
+    yield* fs.makeDirectory(profile, { recursive: true });
+    yield* fs.writeFileString(file, JSON.stringify({ version: 1, local: true, lastUsed: null }));
+  });
+
+export const dashboardReady = (page: Page, operation = "dashboard is visible") =>
+  driver(operation, () =>
+    page
+      .getByRole("heading", { name: /^Apps/ })
+      .waitFor({ state: "visible", timeout: 60_000 })
+      .then(() =>
+        page.waitForFunction(
+          () => document.documentElement.hasAttribute("data-hydrated") && !("$_TSR" in window),
+          undefined,
+          { timeout: 60_000 },
+        ),
+      ),
+  );
+
+export const runsScripts = (electron: ElectronApplication, page: Page) =>
+  page.isClosed()
+    ? Promise.resolve(false)
+    : electron
+        .browserWindow(page)
+        .then((window) =>
+          window.evaluate(
+            (shown) => shown.webContents.getLastWebPreferences()?.javascript !== false,
+          ),
+        )
+        .catch(() => false);
+
+export const welcomeWindow = (electron: ElectronApplication) =>
+  driver("find the welcome window", () =>
+    Promise.all(
+      electron.windows().map((page) =>
+        page
+          .title()
+          .then((title) => ({ title, page }))
+          .catch(() => ({ title: "", page })),
+      ),
+    ).then((pages) => {
+      const found = pages.find(({ title }) => title === "Welcome to Executor");
+      if (found === undefined) throw new Error("No window shows the welcome page");
+      return found.page;
+    }),
+  ).pipe(Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 300 }));
+
+export const runLocally = (electron: ElectronApplication) =>
+  Effect.gen(function* () {
+    const welcome = yield* welcomeWindow(electron);
+    yield* driver("choose Run locally", () =>
+      welcome.getByRole("button", { name: "Run locally", exact: true }).click(),
+    );
+  });
+
+export const localWindow = (electron: ElectronApplication) =>
+  driver("find the local window", () =>
+    Promise.all(
+      electron.windows().map((page) =>
+        page.isClosed()
+          ? Promise.resolve({ title: "", page })
+          : page
+              .title()
+              .then((title) => ({ title, page }))
+              .catch(() => ({ title: "", page })),
+      ),
+    ).then((pages) => {
+      const found = pages.find(
+        ({ title, page }) => !page.isClosed() && title !== "Welcome to Executor" && title !== "",
+      );
+      if (found === undefined) throw new Error("No window shows this computer's Executor");
+      return found.page;
+    }),
+  ).pipe(Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 300 }));
+
+export const launchDesktop = (options: {
+  readonly cwd: string;
+  readonly env: Readonly<Record<string, string>>;
+  readonly args?: ReadonlyArray<string>;
+  readonly welcome?: boolean;
+}) =>
+  Effect.gen(function* () {
+    const launch = yield* desktopExecutable;
     const data = options.env.EXECUTOR_DESKTOP_DATA_DIR;
+    const profile = options.env.EXECUTOR_DESKTOP_PROFILE_DIR;
+    if (options.welcome !== true && profile !== undefined) yield* choseRunLocally(profile);
     const electron = yield* Effect.acquireRelease(
       driver("launch desktop", () =>
         _electron.launch({
           executablePath: launch.executablePath,
-          args: [...launch.args],
+          args: [...launch.args, ...(options.args ?? [])],
           cwd: options.cwd,
           env: { ...options.env },
         }),
@@ -227,6 +362,7 @@ const LogLine = Schema.fromJsonString(
       reason: Schema.optional(Schema.String),
       closing: Schema.optional(Schema.String),
       seconds: Schema.optional(Schema.Number),
+      startedAt: Schema.optional(Schema.String),
       outcome: Schema.optional(Schema.String),
       resources: Schema.optional(Schema.Array(Schema.String)),
       error: Schema.optional(Schema.String),
@@ -567,12 +703,15 @@ export const stopBackgroundServers = (
 
 export const answerDialogs = (
   electron: ElectronApplication,
-  answers: Readonly<Record<string, number | "unanswered">>,
+  answers: Readonly<Record<string, number | "unanswered" | "held">>,
 ) =>
   driver("answer native dialogs", () =>
-    electron.evaluate(({ dialog }, answers) => {
+    electron.evaluate(({ dialog, BrowserWindow }, answers) => {
       const record: Array<{ title: string; message: string; detail: string }> = [];
-      Object.assign(globalThis, { executorE2EDialogs: record });
+      const parents: Array<{ title: string; parent: "none" | "hidden" | "visible" }> = [];
+      Object.assign(globalThis, { executorE2EDialogParents: parents });
+      const held = new Map<string, Array<(response: number) => void>>();
+      Object.assign(globalThis, { executorE2EDialogs: record, executorE2EHeldDialogs: held });
       const answer = (...args: ReadonlyArray<unknown>) => {
         const box = args[args.length - 1] as {
           readonly title?: string;
@@ -580,13 +719,144 @@ export const answerDialogs = (
           readonly detail?: string;
           readonly cancelId?: number;
         };
-        record.push({ title: box.title ?? "", message: box.message, detail: box.detail ?? "" });
-        const chosen = answers[box.title ?? ""];
+        const title = box.title ?? "";
+        record.push({ title, message: box.message, detail: box.detail ?? "" });
+        const parent = args.length > 1 ? args[0] : undefined;
+        parents.push({
+          title,
+          parent:
+            parent instanceof BrowserWindow ? (parent.isVisible() ? "visible" : "hidden") : "none",
+        });
+        const chosen = answers[title];
         if (chosen === "unanswered") return new Promise<never>(() => undefined);
+        if (chosen === "held")
+          return new Promise<{ response: number; checkboxChecked: boolean }>((resolve) => {
+            const waiting = held.get(title) ?? [];
+            waiting.push((response) => resolve({ response, checkboxChecked: false }));
+            held.set(title, waiting);
+          });
         return Promise.resolve({ response: chosen ?? box.cancelId ?? 0, checkboxChecked: false });
       };
       Object.assign(dialog, { showMessageBox: answer });
     }, answers),
+  );
+
+export const heldDialogs = (electron: ElectronApplication, title: string) =>
+  driver("count held dialogs", () =>
+    electron.evaluate(
+      (_, title) =>
+        (
+          Reflect.get(globalThis, "executorE2EHeldDialogs") as
+            | Map<string, Array<(response: number) => void>>
+            | undefined
+        )?.get(title)?.length ?? 0,
+      title,
+    ),
+  );
+
+export const releaseHeldDialog = (electron: ElectronApplication, title: string, response: number) =>
+  driver(`answer the held ${title} dialog`, () =>
+    electron.evaluate(
+      (_, [title, response]) => {
+        const held = Reflect.get(globalThis, "executorE2EHeldDialogs") as Map<
+          string,
+          Array<(response: number) => void>
+        >;
+        const next = held.get(title)?.shift();
+        if (next === undefined) throw new Error(`No ${title} dialog is held`);
+        next(response);
+      },
+      [title, response] as const,
+    ),
+  );
+
+export const recordExternalOpens = (electron: ElectronApplication) =>
+  driver("record pages sent to the system browser", () =>
+    electron.evaluate(({ shell }) => {
+      const opened: Array<string> = [];
+      Object.assign(globalThis, { executorE2EExternalOpens: opened });
+      Object.assign(shell, {
+        openExternal: (url: string) => {
+          opened.push(url);
+          return Promise.resolve();
+        },
+      });
+    }),
+  );
+
+export const externalOpens = (electron: ElectronApplication) =>
+  driver("read pages sent to the system browser", () =>
+    electron.evaluate(
+      () =>
+        (Reflect.get(globalThis, "executorE2EExternalOpens") as Array<string> | undefined) ?? [],
+    ),
+  );
+
+export const standInForNotifications = (electron: ElectronApplication) =>
+  driver("stand in for the system's notifications", () =>
+    electron.evaluate(({ Notification }) => {
+      const shown: Array<Electron.Notification> = [];
+      Object.assign(globalThis, { executorE2ENotifications: shown });
+      Notification.prototype.show = function (this: Electron.Notification) {
+        shown.push(this);
+        queueMicrotask(() => this.emit("show", {}));
+      };
+    }),
+  );
+
+export const shownNotifications = (electron: ElectronApplication) =>
+  driver("read the notifications the desktop showed", () =>
+    electron.evaluate(() =>
+      (
+        (Reflect.get(globalThis, "executorE2ENotifications") as
+          | Array<Electron.Notification>
+          | undefined) ?? []
+      ).map((shown) => ({ id: shown.id, title: shown.title, body: shown.body })),
+    ),
+  );
+
+export const clickNotification = (electron: ElectronApplication, index: number) =>
+  driver(`click shown notification ${index + 1}`, () =>
+    electron.evaluate((_, index) => {
+      const shown = (
+        Reflect.get(globalThis, "executorE2ENotifications") as Array<Electron.Notification>
+      )[index];
+      if (shown === undefined) throw new Error(`No notification ${index + 1} was shown`);
+      shown.emit("click", {});
+    }, index),
+  );
+
+export const closeShownNotification = (
+  electron: ElectronApplication,
+  index: number,
+  reason: "timedOut" | "userCanceled",
+) =>
+  driver(`close shown notification ${index + 1} (${reason})`, () =>
+    electron.evaluate(
+      (_, [index, reason]) => {
+        const shown = (
+          Reflect.get(globalThis, "executorE2ENotifications") as Array<Electron.Notification>
+        )[index];
+        if (shown === undefined) throw new Error(`No notification ${index + 1} was shown`);
+        shown.emit("close", { reason });
+      },
+      [index, reason] as const,
+    ),
+  );
+
+export const dialogParents = (electron: ElectronApplication, title: string) =>
+  driver(`read the parents of ${title} dialogs`, () =>
+    electron.evaluate(
+      (_, title) =>
+        (
+          (Reflect.get(globalThis, "executorE2EDialogParents") as
+            | Array<{ title: string; parent: string }>
+            | undefined) ?? []
+        )
+          .filter((entry) => entry.title === title)
+          .map((entry) => entry.parent),
+      title,
+    ),
   );
 
 export const answeredDialogs = (electron: ElectronApplication) =>
@@ -691,6 +961,31 @@ export const clickMenuItem = (electron: ElectronApplication, menu: string, item:
     ),
   );
 
+export const menuPath = (
+  electron: ElectronApplication,
+  path: ReadonlyArray<string>,
+  click: boolean,
+) =>
+  driver(`${click ? "click" : "read"} ${path.join(" → ")}`, () =>
+    electron.evaluate(
+      ({ Menu }, [path, click]) => {
+        let items = Menu.getApplicationMenu()?.items ?? [];
+        let found: Electron.MenuItem | undefined;
+        for (const step of path) {
+          found = items.find((entry) => entry.label === step);
+          if (found === undefined)
+            throw new Error(
+              `Missing menu item ${step} among ${items.map((entry) => entry.label).join(", ")}`,
+            );
+          items = found.submenu?.items ?? [];
+        }
+        if (click) found?.click();
+        return items.map((entry) => (entry.type === "separator" ? "-" : entry.label));
+      },
+      [path, click] as const,
+    ),
+  );
+
 export const menuBar = (electron: ElectronApplication) =>
   driver("read the application menu", () =>
     electron.evaluate(
@@ -729,6 +1024,14 @@ export const desktopCli = (options: {
     const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
     const packaged = yield* Config.String("EXECUTOR_E2E_DESKTOP_EXECUTABLE").pipe(Config.option);
     const sourceCli = ["node", path.resolve("apps/local/server/src/bin.ts")] as const;
+    const installed = Effect.gen(function* () {
+      const entry = yield* Config.NonEmptyString("EXECUTOR_E2E_LOCAL_ENTRY").pipe(Config.option);
+      if (Option.isNone(entry))
+        return yield* Effect.fail(
+          new Error("A packaged desktop run needs EXECUTOR_E2E_LOCAL_ENTRY for the installed CLI"),
+        );
+      return [entry.value] as const;
+    });
     const staged = Effect.gen(function* () {
       const profile = options.env.EXECUTOR_DESKTOP_PROFILE_DIR;
       if (profile === undefined) return yield* Effect.fail(new Error("No desktop profile is set"));
@@ -749,12 +1052,16 @@ export const desktopCli = (options: {
       run: (
         args: ReadonlyArray<string>,
         overrides: Readonly<Record<string, string | undefined>> = {},
-        from: { readonly source?: boolean } = {},
+        from: { readonly source?: boolean; readonly installed?: boolean } = {},
       ) =>
         Effect.scoped(
           Effect.gen(function* () {
             const [command, ...prefix] =
-              Option.isNone(packaged) || from.source === true ? sourceCli : yield* staged;
+              Option.isNone(packaged) || from.source === true
+                ? sourceCli
+                : from.installed === true
+                  ? yield* installed
+                  : yield* staged;
             const env = Object.fromEntries(
               Object.entries({ ...options.env, ...overrides }).flatMap(([name, value]) =>
                 value === undefined ? [] : [[name, value] as const],
@@ -784,3 +1091,147 @@ export const desktopCli = (options: {
         ),
     };
   });
+
+export const watchDesktopShell = (electron: ElectronApplication) =>
+  driver("watch menu-bar items and global shortcuts", () =>
+    electron.evaluate(({ Tray, globalShortcut }) => {
+      type Entry = { tray: Electron.Tray; tooltip: string; menu: Electron.Menu | undefined };
+      const record = { trays: [] as Array<Entry>, shortcuts: new Map<string, () => void>() };
+      Object.assign(globalThis, { executorE2EShell: record });
+      const entry = (tray: Electron.Tray) => {
+        const found = record.trays.find((candidate) => candidate.tray === tray);
+        if (found !== undefined) return found;
+        const created: Entry = { tray, tooltip: "", menu: undefined };
+        record.trays.push(created);
+        return created;
+      };
+      const setToolTip = Tray.prototype.setToolTip;
+      Tray.prototype.setToolTip = function (this: Electron.Tray, text: string) {
+        entry(this).tooltip = text;
+        return setToolTip.call(this, text);
+      };
+      const setContextMenu = Tray.prototype.setContextMenu;
+      Tray.prototype.setContextMenu = function (this: Electron.Tray, menu: Electron.Menu | null) {
+        entry(this).menu = menu ?? undefined;
+        return setContextMenu.call(this, menu);
+      };
+      Tray.prototype.popUpContextMenu = function (this: Electron.Tray, menu?: Electron.Menu) {
+        entry(this).menu = menu;
+      };
+      const register = globalShortcut.register.bind(globalShortcut);
+      globalShortcut.register = (accelerator: Electron.Accelerator, callback: () => void) => {
+        const registered = register(accelerator, callback);
+        if (registered) record.shortcuts.set(accelerator, callback);
+        return registered;
+      };
+    }),
+  );
+
+export const menuBarItems = (electron: ElectronApplication) =>
+  driver("read the menu-bar items", () =>
+    electron.evaluate(() => {
+      const record = Reflect.get(globalThis, "executorE2EShell") as
+        | { trays: Array<{ tray: Electron.Tray; tooltip: string }> }
+        | undefined;
+      return (record?.trays ?? [])
+        .filter((entry) => !entry.tray.isDestroyed())
+        .map((entry) => entry.tooltip);
+    }),
+  );
+
+export const clickMenuBarItem = (electron: ElectronApplication, tooltip: string) =>
+  driver(`click the ${tooltip} menu-bar item`, () =>
+    electron.evaluate((_, tooltip) => {
+      const record = Reflect.get(globalThis, "executorE2EShell") as {
+        trays: Array<{ tray: Electron.Tray; tooltip: string }>;
+      };
+      const found = record.trays.find(
+        (entry) => !entry.tray.isDestroyed() && entry.tooltip === tooltip,
+      );
+      if (found === undefined) throw new Error(`No menu-bar item is named ${tooltip}`);
+      found.tray.emit("click");
+    }, tooltip),
+  );
+
+export const menuBarItemMenu = (electron: ElectronApplication, tooltip: string, click?: string) =>
+  driver(`open the ${tooltip} menu-bar item's menu`, () =>
+    electron.evaluate(
+      (_, [tooltip, click]) => {
+        const record = Reflect.get(globalThis, "executorE2EShell") as {
+          trays: Array<{ tray: Electron.Tray; tooltip: string; menu: Electron.Menu | undefined }>;
+        };
+        const found = record.trays.find(
+          (entry) => !entry.tray.isDestroyed() && entry.tooltip === tooltip,
+        );
+        if (found === undefined) throw new Error(`No menu-bar item is named ${tooltip}`);
+        if (process.platform === "darwin") found.tray.emit("right-click");
+        const items = found.menu?.items ?? [];
+        if (click !== undefined) {
+          const item = items.find((candidate) => candidate.label === click);
+          if (item === undefined) throw new Error(`The ${tooltip} menu has no ${click}`);
+          item.click();
+        }
+        return items.map((item) =>
+          item.type === "separator"
+            ? "-"
+            : item.submenu === undefined || item.submenu === null
+              ? item.label
+              : `${item.label}: ${item.submenu.items
+                  .map((entry) =>
+                    entry.type === "separator"
+                      ? "-"
+                      : entry.type === "checkbox"
+                        ? `${entry.checked ? "[x]" : "[ ]"} ${entry.label}`
+                        : entry.label,
+                  )
+                  .join(", ")}`,
+        );
+      },
+      [tooltip, click] as const,
+    ),
+  );
+
+export const pressShortcut = (electron: ElectronApplication, accelerator: string) =>
+  driver(`press ${accelerator}`, () =>
+    electron.evaluate((_, accelerator) => {
+      const record = Reflect.get(globalThis, "executorE2EShell") as {
+        shortcuts: Map<string, () => void>;
+      };
+      const callback = record.shortcuts.get(accelerator);
+      if (callback === undefined) throw new Error(`${accelerator} was never registered`);
+      callback();
+    }, accelerator),
+  );
+
+export const systemAudioAvailable = process.platform !== "linux";
+
+export const permissionStates = (states: Readonly<Record<string, string>>) => ({
+  menuBar: "prompt",
+  shortcuts: "prompt",
+  floating: "prompt",
+  startAtLogin: "prompt",
+  microphone: "prompt",
+  camera: "prompt",
+  systemAudio: systemAudioAvailable ? "prompt" : "unavailable",
+  clipboardRead: "prompt",
+  notifications: "prompt",
+  ...states,
+});
+
+const permissionMenuLabels: ReadonlyArray<readonly [string, string]> = [
+  ["menuBar", "Menu bar item"],
+  ["shortcuts", "Keyboard shortcuts"],
+  ["floating", "Keep above other windows"],
+  ["startAtLogin", "Start at login"],
+  ["microphone", "Microphone"],
+  ["camera", "Camera"],
+  ["systemAudio", "System audio"],
+  ["clipboardRead", "Read the clipboard"],
+  ["notifications", "Notifications"],
+];
+
+export const permissionsMenu = (granted: ReadonlyArray<string>) =>
+  `Permissions: ${permissionMenuLabels
+    .filter(([name]) => name !== "systemAudio" || systemAudioAvailable)
+    .map(([name, label]) => `${granted.includes(name) ? "[x]" : "[ ]"} ${label}`)
+    .join(", ")}`;

@@ -16,6 +16,7 @@ import {
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { createHash } from "node:crypto";
 import { collectorChanged, collectorScenarios } from "./collector-inputs.ts";
+import { desktopServersChanged } from "./desktop-servers-inputs.ts";
 import { lanesFor, releaseSources } from "./release-lanes.ts";
 import { packagedEngineDependency } from "./packaged-engine.ts";
 import { savePathFiles } from "./save-path.ts";
@@ -619,6 +620,7 @@ const suiteConfigs: Record<string, () => Promise<unknown>> = {
   "desktop-next-server.config.ts": () => import("./desktop-next-server.config.ts"),
   "desktop-recovery.config.ts": () => import("./desktop-recovery.config.ts"),
   "desktop-release.config.ts": () => import("./desktop-release.config.ts"),
+  "desktop-servers.config.ts": () => import("./desktop-servers.config.ts"),
   "desktop-update.config.ts": () => import("./desktop-update.config.ts"),
   "emulator-failures.config.ts": () => import("./emulator-failures.config.ts"),
   "emulators-server.config.ts": () => import("./emulators-server.config.ts"),
@@ -1357,6 +1359,10 @@ runMain(
             }))(lanesFor(yield* releaseSources, compared));
     const collector =
       compared === undefined || compared.length >= compareFileLimit || collectorChanged(compared);
+    const desktopServers =
+      compared === undefined ||
+      compared.length >= compareFileLimit ||
+      desktopServersChanged(compared);
     const engine =
       read === undefined
         ? undefined
@@ -1537,6 +1543,7 @@ runMain(
       ),
       `release-docker-engine=${(engine ?? []).length > 0 ? "true" : ""}`,
       `collector=${collector}`,
+      `desktop-servers=${desktopServers ? "true" : ""}`,
       `full=${files === undefined}`,
       draftLine,
       `gate=${read === undefined ? "push" : draft === true ? "draft" : files === undefined ? "full" : "narrowed"}`,
@@ -1638,6 +1645,9 @@ runMain(
       collector
         ? "collector-native: runs (e2e/collector-inputs.ts)."
         : "collector-native: skipped, no collector input changed (e2e/collector-inputs.ts).",
+      desktopServers
+        ? "e2e-desktop-servers: runs (e2e/desktop-servers-inputs.ts)."
+        : "e2e-desktop-servers: skipped, nothing the desktop's hosted servers run changed (e2e/desktop-servers-inputs.ts).",
       "",
       ...selections
         .filter(({ repeated }) => repeated > 0)

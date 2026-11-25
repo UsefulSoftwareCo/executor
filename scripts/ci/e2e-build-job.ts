@@ -18,7 +18,8 @@ NodeRuntime.runMain(
         `The ${job} job ended ${conclusion}, so this job has no build of this commit to run scenarios against; this failure follows from that one. Rerun the ${job} job, then this one.${url === undefined ? "" : ` ${url}`}`,
       late: (reason, limit) =>
         `The ${job} job did not finish within ${limit} (${reason}). Rerun this job once it has.`,
-      succeeded: `The ${job} job succeeded; fetching its build.`,
+      succeeded: `The ${job} job succeeded, and its build is fetched whole.`,
+      artifact: { name: "e2e-build", into: ".local/e2e-build" },
     });
   }).pipe(Effect.provide([FetchHttpClient.layer, NodeServices.layer])),
 );

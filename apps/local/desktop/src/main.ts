@@ -1,5 +1,6 @@
+import { homedir } from "node:os";
 import { resolve } from "node:path";
-import { app, BrowserWindow, dialog, Menu, nativeTheme, session, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, session, shell } from "electron";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { rotatingJsonLogger } from "@executor-js/telemetry/files";
 import { startProcessMetrics } from "@executor-js/telemetry/process";
@@ -37,6 +38,7 @@ import { makeOpenBrowserAction } from "./implementation/browser.ts";
 import { movingUrl, startupUrl } from "./implementation/startup.ts";
 import { makeConnection, type Connection } from "./implementation/connection.ts";
 import {
+  holdsData,
   migrateDesktopData,
   type MoveNotice,
   noticeShown,
@@ -54,11 +56,20 @@ import { legacyPort, makePortAction, portSource } from "./implementation/setting
 import { makeExportDiagnosticsAction } from "./implementation/diagnostics.ts";
 import { makeQuitRecord } from "./implementation/quitting.ts";
 import { announceRotation, makeRotateKeyAction, rotateKey } from "./implementation/rotation.ts";
+import { makeInstalledApps } from "./implementation/installed-apps.ts";
+import { launchedAtLogin } from "./implementation/login-item.ts";
+import { makeHostedServers, serverOrigin } from "./implementation/hosted-servers.ts";
+import { isInstallLink, makeInstallLinks } from "./implementation/install-links.ts";
+import { makeAccounts, readPreferences } from "./implementation/accounts.ts";
+import { cloudDashboardOrigin, cloudOriginVariable } from "./contracts/servers.ts";
+import { desktopChannels } from "./contracts/bridge-channels.ts";
+import { appProtocol, parseAppLink } from "./contracts/installed-apps.ts";
 
 const root = app.isPackaged
   ? resolve(process.resourcesPath, "runtime")
   : resolve(__dirname, "../../../..");
 app.setName(app.isPackaged ? release.desktop.productName : "Executor (Dev)");
+if (app.isPackaged && process.platform === "win32") app.setAppUserModelId(release.desktop.appId);
 if (process.env.EXECUTOR_DESKTOP_PROFILE_DIR !== undefined)
   app.setPath("userData", resolve(process.env.EXECUTOR_DESKTOP_PROFILE_DIR));
 else
@@ -69,8 +80,14 @@ else
       : resolve(root, ".local/desktop-shell"),
   );
 
+if (process.platform === "darwin")
+  app.commandLine.appendSwitch("enable-features", "MacLoopbackAudioForScreenShare");
+
 const quitting = makeQuitRecord();
 process.on("uncaughtExceptionMonitor", quitting.exception);
+
+const appLinks = (values: ReadonlyArray<string>) =>
+  values.filter((value) => parseAppLink(value) !== undefined || isInstallLink(value));
 
 const rendererReloads = 3;
 const rendererReloadWindowMillis = 60_000;
@@ -93,6 +110,7 @@ const newWindow = (browserSession: Electron.Session) =>
     webPreferences: {
       backgroundThrottling: false,
       session: browserSession,
+      preload: resolve(__dirname, "preload-host.cjs"),
       sandbox: true,
       contextIsolation: true,
       nodeIntegration: false,
@@ -134,7 +152,12 @@ interface EarlyPage {
 
 type View =
   | { readonly kind: "starting" }
-  | { readonly kind: "ready"; readonly origin: string; readonly pairing: string | undefined }
+  | {
+      readonly kind: "ready";
+      readonly origin: string;
+      readonly pairing: string | undefined;
+      readonly signedIn: boolean;
+    }
   | { readonly kind: "recovery"; readonly recovery: DesktopRecovery };
 
 const dataDirectories = Effect.gen(function* () {
@@ -143,7 +166,7 @@ const dataDirectories = Effect.gen(function* () {
   const shared = Option.isSome(chosen)
     ? chosen.value
     : app.isPackaged
-      ? path.join(app.getPath("home"), ".executor", "v2", "cli")
+      ? path.join(homedir(), ".executor", "v2", "cli")
       : yield* Config.String("EXECUTOR_DATA_DIR").pipe(
           Config.withDefault(path.join(root, ".local/dev/local")),
         );
@@ -163,6 +186,16 @@ const dataDirectories = Effect.gen(function* () {
 });
 
 const desktop = Effect.gen(function* () {
+  const launchLinks = appLinks(process.argv);
+  let openLink = (url: string) => {
+    launchLinks.push(url);
+  };
+  const openUrl = (event: Electron.Event, url: string) => {
+    event.preventDefault();
+    openLink(url);
+  };
+  app.on("open-url", openUrl);
+  yield* Effect.addFinalizer(() => Effect.sync(() => app.removeListener("open-url", openUrl)));
   const quit = yield* Deferred.make<void, DesktopFailed>();
   const path = yield* Path.Path;
   const services = yield* Effect.context<FileSystem.FileSystem | Path.Path>();
@@ -193,18 +226,35 @@ const desktop = Effect.gen(function* () {
     catch: () => new DesktopFailed({ stage: "window" }),
   });
   const browserSession = session.fromPartition("executor-desktop");
+  let hostServer = (_event: Electron.IpcMainEvent): string | null => null;
+  const answerHostServer = (event: Electron.IpcMainEvent) => {
+    event.returnValue = hostServer(event);
+  };
+  ipcMain.on(desktopChannels.hostServer, answerHostServer);
+  yield* Effect.addFinalizer(() =>
+    Effect.sync(() => ipcMain.removeListener(desktopChannels.hostServer, answerHostServer)),
+  );
+  if (app.isPackaged && (process.platform === "darwin" || process.platform === "win32"))
+    app.setAsDefaultProtocolClient(appProtocol);
   Menu.setApplicationMenu(applicationMenu({ file: [], updates: [], help: [] }));
-  let early: BrowserWindow | undefined = newWindow(browserSession);
+  const atLogin = launchedAtLogin();
+  const profile = app.getPath("userData");
+  const preferences = yield* readPreferences(profile);
+  const localData =
+    (yield* holdsData(directory)) || (Option.isSome(legacy) && (yield* holdsData(legacy.value)));
+  let localRunning = preferences.local || localData;
+  const hostedFirst = preferences.lastUsed !== null && preferences.lastUsed !== "local";
+  let early: BrowserWindow | undefined = localRunning ? newWindow(browserSession) : undefined;
   const opening = early;
-  opening.once("ready-to-show", () => {
-    if (!opening.isDestroyed()) opening.show();
+  opening?.once("ready-to-show", () => {
+    if (!opening.isDestroyed() && !hostedFirst && !atLogin) opening.show();
   });
   const stay = (event: Electron.Event) => event.preventDefault();
-  opening.webContents.on("will-navigate", stay);
-  opening.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  opening?.webContents.on("will-navigate", stay);
+  opening?.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   let earlyPage: EarlyPage | undefined;
   const showEarly = (url: string) => {
-    if (opening.isDestroyed()) return;
+    if (opening === undefined || opening.isDestroyed()) return;
     const page: EarlyPage = { url, loading: opening.loadURL(url), failed: false };
     page.loading.catch(() => {
       page.failed = true;
@@ -227,6 +277,7 @@ const desktop = Effect.gen(function* () {
             movingSince = Option.some(yield* DateTime.now);
             yield* Effect.logInfo("Moving the desktop's data");
             showEarly(movingUrl);
+            if (opening !== undefined && !opening.isDestroyed()) opening.show();
           }),
         }),
       ),
@@ -257,6 +308,65 @@ const desktop = Effect.gen(function* () {
       FileSystem.FileSystem | Path.Path | ChildProcessSpawner.ChildProcessSpawner
     >();
     yield* closing("its running menu, window and recovery actions");
+    let rebuildMenu = () => {};
+    let accountsChanged = () => {};
+    let signInAgain = (_account: string) => {};
+    let askToRunLocally = (_message: string) => {};
+    let dashboardClosed = (_account: string, _byDesktop: boolean) => {};
+    let localWindow = (): BrowserWindow | undefined => undefined;
+    let openLocal = (_bounds: Electron.Rectangle | undefined): BrowserWindow | undefined =>
+      undefined;
+    let startLocal = () => {};
+    const changed = () => {
+      rebuildMenu();
+      accountsChanged();
+    };
+    const cloudOrigin = yield* Config.String(cloudOriginVariable).pipe(
+      Config.withDefault(cloudDashboardOrigin),
+      Effect.map((value) => serverOrigin(value)?.origin ?? cloudDashboardOrigin),
+    );
+    const installedApps = yield* makeInstalledApps({
+      session: browserSession,
+      profile,
+      changed,
+      signInAgain: (account) => signInAgain(account),
+      askToRunLocally: (message) => askToRunLocally(message),
+    });
+    const hostedServers = yield* makeHostedServers({
+      profile,
+      installedApps,
+      cloudOrigin,
+      changed,
+      dashboardClosed: (account, byDesktop) => dashboardClosed(account, byDesktop),
+    });
+    const accounts = yield* makeAccounts({
+      profile,
+      preferences,
+      hosted: hostedServers,
+      installedApps,
+      local: {
+        running: () => localRunning,
+        start: () => startLocal(),
+        window: () => localWindow(),
+        open: (bounds) => openLocal(bounds),
+      },
+    });
+    accountsChanged = accounts.push;
+    signInAgain = accounts.signInAgain;
+    askToRunLocally = accounts.askToRunLocally;
+    dashboardClosed = accounts.dashboardClosed;
+    const installLinks = yield* makeInstallLinks({
+      installedApps,
+      hostedServers,
+      localRunning: () => localRunning,
+      prompt: accounts.prompt,
+      askToRunLocally: accounts.askToRunLocally,
+      signIn: accounts.signInForLink,
+    });
+    hostServer = installedApps.hostServer;
+    const handleLink = (url: string) =>
+      isInstallLink(url) ? installLinks.open(url) : installedApps.openLink(url);
+    yield* closing("its installed apps");
     yield* Effect.logInfo("Starting Executor desktop").pipe(Effect.annotateLogs({ directory }));
     if (Result.isFailure(migration))
       yield* Effect.logError("Executor could not move the desktop's data", migration.failure).pipe(
@@ -286,13 +396,7 @@ const desktop = Effect.gen(function* () {
         let everReady = false;
         let window: BrowserWindow | undefined;
         const origin = () => (view.kind === "ready" ? view.origin : undefined);
-        browserSession.setPermissionRequestHandler((_contents, permission, callback, details) =>
-          callback(
-            permission === "clipboard-sanitized-write" &&
-              new URL(details.requestingUrl).origin === origin(),
-          ),
-        );
-        browserSession.setPermissionCheckHandler(() => false);
+        installedApps.attachSession(browserSession, origin);
         const viewUrl = () => {
           switch (view.kind) {
             case "starting":
@@ -345,6 +449,7 @@ const desktop = Effect.gen(function* () {
                 });
               yield* Effect.sleep(dashboardRetryDelay);
               if (replaced()) return;
+              if (view.signedIn) return showView();
               const pairing = yield* connection.pairWindow.pipe(Effect.option);
               if (replaced() || view.kind !== "ready") return;
               if (Option.isSome(pairing)) {
@@ -388,7 +493,9 @@ const desktop = Effect.gen(function* () {
               }),
             );
             view = { kind: "recovery", recovery };
-            createWindow();
+            if (window === undefined || window.isDestroyed()) {
+              if (accounts.isActive("local") || early !== undefined) createWindow(undefined);
+            } else showView();
             announceReplaced();
           });
 
@@ -457,16 +564,29 @@ const desktop = Effect.gen(function* () {
               directory,
               runtime,
               onStarting: Effect.sync(() => {
+                installedApps.serverGone();
                 view = { kind: "starting" };
                 showView();
               }),
               onStopped: Effect.sync(() => {
+                installedApps.serverGone();
                 view = { kind: "recovery", recovery: { stage: "stopped" } };
                 showView();
               }),
               onReady: ({ origin: ready, pairing }) =>
                 Effect.gen(function* () {
-                  view = { kind: "ready", origin: ready, pairing };
+                  const signedIn = yield* installedApps.serverReady(
+                    ready,
+                    connection === undefined
+                      ? Effect.fail(new DesktopFailed({ stage: "pairing" }))
+                      : connection.pairWindow,
+                  );
+                  view = {
+                    kind: "ready",
+                    origin: ready,
+                    pairing: signedIn ? undefined : pairing,
+                    signedIn,
+                  };
                   everReady = true;
                   dashboardFailures = 0;
                   showView();
@@ -597,7 +717,7 @@ const desktop = Effect.gen(function* () {
           show: (next) => {
             update = next;
             if (window !== undefined) showUpdate(window);
-            if (menu !== undefined) Menu.setApplicationMenu(menu(update));
+            if (menu !== undefined) installedApps.setBaseMenu(menu(update));
           },
         });
         yield* closing("its updater");
@@ -610,15 +730,14 @@ const desktop = Effect.gen(function* () {
         yield* Effect.addFinalizer(() =>
           Effect.sync(() => nativeTheme.removeListener("updated", followAppearance)),
         );
-        const createWindow = () => {
+        const createWindow = (bounds: Electron.Rectangle | undefined) => {
           if (window !== undefined && !window.isDestroyed()) {
             showView();
-            window.show();
-            window.focus();
-            return;
+            return window;
           }
           const adopted = early !== undefined && !early.isDestroyed() ? early : undefined;
           const current = adopted ?? newWindow(browserSession);
+          if (adopted === undefined && bounds !== undefined) current.setBounds(bounds);
           const shownEarly = adopted === undefined ? undefined : earlyPage;
           early = undefined;
           current.webContents.removeListener("will-navigate", stay);
@@ -626,7 +745,12 @@ const desktop = Effect.gen(function* () {
           if (process.argv.includes("--devtools"))
             current.webContents.openDevTools({ mode: "detach" });
           current.once("ready-to-show", () => {
-            if (!current.isDestroyed()) current.show();
+            if (
+              !current.isDestroyed() &&
+              accounts.isActive("local") &&
+              !(atLogin && adopted !== undefined)
+            )
+              current.show();
           });
           current.webContents.on("dom-ready", () => showUpdate(current));
           current.webContents.on("did-finish-load", () => {
@@ -635,7 +759,7 @@ const desktop = Effect.gen(function* () {
           });
           current.once("closed", () => {
             if (window === current) window = undefined;
-            if (!everReady) stop("window closed before ready");
+            if (!everReady && accounts.isActive("local")) stop("window closed before ready");
           });
           current.webContents.on("will-attach-webview", (event) => event.preventDefault());
           const navigate = (event: Electron.Event, url: string) => {
@@ -690,17 +814,26 @@ const desktop = Effect.gen(function* () {
           if (shownEarly !== undefined && shownEarly.url === url && !shownEarly.failed)
             follow(current, url, shownEarly.loading);
           else load(current, url);
+          return current;
         };
+        localWindow = () => (window === undefined || window.isDestroyed() ? undefined : window);
+        openLocal = createWindow;
         const allClosed = () => {
           if (process.platform !== "darwin") stop("last window closed");
         };
-        app.on("activate", createWindow);
-        app.on("second-instance", createWindow);
+        const showCurrent = () => accounts.showCurrent();
+        const secondInstance = (_event: Electron.Event, argv: ReadonlyArray<string>) => {
+          const links = appLinks(argv);
+          if (links.length === 0) return showCurrent();
+          for (const link of links) openLink(link);
+        };
+        app.on("activate", showCurrent);
+        app.on("second-instance", secondInstance);
         app.on("window-all-closed", allClosed);
         yield* Effect.addFinalizer(() =>
           Effect.sync(() => {
-            app.removeListener("activate", createWindow);
-            app.removeListener("second-instance", createWindow);
+            app.removeListener("activate", showCurrent);
+            app.removeListener("second-instance", secondInstance);
             app.removeListener("window-all-closed", allClosed);
             for (const current of BrowserWindow.getAllWindows()) current.destroy();
           }),
@@ -755,7 +888,9 @@ const desktop = Effect.gen(function* () {
               });
         menu = (current) =>
           applicationMenu({
-            file: [{ label: "Open in browser", click: () => run(openBrowser) }, ...dataActions],
+            file: localRunning
+              ? [{ label: "Open in browser", click: () => run(openBrowser) }, ...dataActions]
+              : [],
             updates: [
               ...Option.toArray(Option.filter(current, ({ state }) => state === "ready")).map(
                 ({ version }) => ({
@@ -770,7 +905,7 @@ const desktop = Effect.gen(function* () {
             help: [
               { label: "Show diagnostics folder", click: () => void shell.openPath(diagnostics) },
               { label: "Export diagnostics…", click: () => run(exportDiagnostics) },
-              ...(reset === undefined
+              ...(reset === undefined || !localRunning
                 ? []
                 : [
                     { type: "separator" as const },
@@ -778,14 +913,34 @@ const desktop = Effect.gen(function* () {
                   ]),
             ],
           });
-        Menu.setApplicationMenu(menu(update));
-        if (Result.isFailure(migration))
+        rebuildMenu = () => {
+          if (menu !== undefined) installedApps.setBaseMenu(menu(update));
+        };
+        rebuildMenu();
+        if (Result.isFailure(migration)) {
           view = {
             kind: "recovery",
             recovery: { stage: "migration", detail: migration.failure.message },
           };
-        createWindow();
-        if (connection !== undefined) yield* connection.start;
+          localRunning = true;
+          rebuildMenu();
+        }
+        startLocal = () => {
+          localRunning = true;
+          rebuildMenu();
+          if (connection !== undefined) run(connection.start);
+          else after(relaunch);
+        };
+        yield* accounts.launch({ hidden: atLogin });
+        openLink = handleLink;
+        for (const url of launchLinks.splice(0)) openLink(url);
+        if (atLogin) yield* hostedServers.prepared.pipe(Effect.andThen(installedApps.openAtLogin));
+        if (!accounts.isActive("local") && early !== undefined) {
+          const unused = early;
+          early = undefined;
+          if (!unused.isDestroyed()) unused.destroy();
+        }
+        if (localRunning && connection !== undefined) yield* connection.start;
         return yield* Effect.never;
       }),
       Deferred.await(quit),
