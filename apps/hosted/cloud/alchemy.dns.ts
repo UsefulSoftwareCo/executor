@@ -164,6 +164,8 @@ const records: ReadonlyArray<
   })),
 ];
 
+const programHosts = (["mcp", "api"] as const).map((role) => `${role}.${productZone}`);
+
 export default Alchemy.Stack(
   "executor-product-dns",
   { providers: Cloudflare.providers(), state: Cloudflare.state() },
@@ -187,5 +189,22 @@ export default Alchemy.Stack(
         ...record,
       }).pipe(adopt(), retain());
     }
+    yield* Cloudflare.Ruleset.Ruleset("ConfigurationRules", {
+      zone: { zoneId: zone.id } as unknown as Cloudflare.Zone.Zone,
+      phase: "http_config_settings",
+      name: "executor.sh configuration rules",
+      description:
+        "Zone configuration rules for executor.sh, declared in executor-next apps/hosted/cloud/alchemy.dns.ts. This ruleset owns the whole http_config_settings phase: a rule added in the dashboard is removed by the next dns:deploy.",
+      rules: [
+        {
+          ref: "bic_off_program_hosts",
+          description: `Browser Integrity Check off for program-only hosts ${programHosts.join(" and ")}. Added 2026-11-24: programs using default HTTP client user agents (Python-urllib) were refused with Error 1010 before reaching Executor.`,
+          expression: `(http.host in {${programHosts.map((host) => `"${host}"`).join(" ")}})`,
+          action: "set_config",
+          actionParameters: { bic: false },
+          enabled: true,
+        },
+      ],
+    }).pipe(adopt(), retain());
   }),
 );
