@@ -1,13 +1,14 @@
 import { expect, layer } from "@effect/vitest";
-import { Effect, Schema } from "effect";
+import { Effect, Layer, Schema } from "effect";
 import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
-import { Api, body } from "../support/api.ts";
+import { Api, body, SessionClients, type Session } from "../support/api.ts";
 import { Actors } from "../support/actors.ts";
-import { HostedLive, withHostedCase } from "../support/case.ts";
+import { HostedLive, TestLive, withCase, withHostedCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
 import { appsManifest } from "../support/apps-release.ts";
 import { credentialUpstream } from "../support/credential-upstream.ts";
+import { startFreshSelfHost } from "../support/managed-server.ts";
 import { Target } from "../support/platform.ts";
 
 const ToolFailed = Schema.Struct({
@@ -21,6 +22,7 @@ const ToolFailed = Schema.Struct({
   }),
 });
 const Reached = Schema.Struct({ status: Schema.Number });
+const Organizations = Schema.NonEmptyArray(Schema.Struct({ id: Schema.String }));
 const Answered = Schema.Struct({
   status: Schema.Number,
   refused: Schema.NullOr(Schema.String),
@@ -57,27 +59,37 @@ export default defineApp({}, {
   }),
 });`;
 
+const deployFetchApp = (api: typeof Api.Service, owner: Session, organization: string) =>
+  Effect.gen(function* () {
+    const prefix = `/api/organizations/${organization}/apps`;
+    const deployed = yield* api.request(owner, "POST", `${prefix}/deploy`, {
+      name: `Fetch errors ${randomUUID().slice(0, 8)}`,
+      files: [{ path: "index.ts", content: fetchApp }, appsManifest],
+    });
+    expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
+    const app = yield* body(App, deployed);
+    yield* Effect.addFinalizer(() =>
+      api.request(owner, "DELETE", `${prefix}/${app.id}`).pipe(Effect.orDie),
+    );
+    const call = (tool: string, input: object) =>
+      api.request(owner, "POST", `${prefix}/${app.id}/tools/call`, {
+        tool,
+        kind: "query",
+        input,
+      });
+    return { call };
+  });
+
 const scenario = Effect.gen(function* () {
   const api = yield* Api,
     actors = yield* Actors;
-  const prefix = `/api/organizations/${actors.organization.id}/apps`;
-  const deployed = yield* api.request(actors.owner, "POST", `${prefix}/deploy`, {
-    name: `Fetch errors ${randomUUID().slice(0, 8)}`,
-    files: [{ path: "index.ts", content: fetchApp }, appsManifest],
-  });
-  expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
-  const app = yield* body(App, deployed);
-  yield* Effect.addFinalizer(() =>
-    api.request(actors.owner, "DELETE", `${prefix}/${app.id}`).pipe(Effect.orDie),
-  );
-  const call = (tool: string, input: object) =>
-    api.request(actors.owner, "POST", `${prefix}/${app.id}/tools/call`, {
-      tool,
-      kind: "query",
-      input,
-    });
-  return { call };
+  return yield* deployFetchApp(api, actors.owner, actors.organization.id);
 });
+
+const privateAddressRefusal = (host: string) => {
+  const message = `Executor refused a request to ${host}: apps on this instance can reach only public addresses, and ${host} is a private, loopback or internal address. The request was not sent.`;
+  return { source: "app", errorName: "NetworkRefused", code: "private_address", message };
+};
 
 layer(HostedLive, { excludeTestServices: true })("App fetch errors", (it) => {
   it.effect(scenarios.appFetchPrivateRefused.title, (context) =>
@@ -177,6 +189,87 @@ layer(HostedLive, { excludeTestServices: true })("App fetch errors", (it) => {
         });
         expect(manual.status, JSON.stringify(manual.body)).toBe(200);
         yield* body(Reached, manual);
+      }),
+    ),
+  );
+});
+
+layer(TestLive, { excludeTestServices: true })("App private origins", (it) => {
+  it.effect(scenarios.appFetchPrivateOriginAllowed.title, (context) =>
+    withCase(
+      context,
+      Effect.gen(function* () {
+        const target = yield* Target;
+        const allowed = yield* credentialUpstream;
+        const other = yield* credentialUpstream;
+        const origin = yield* startFreshSelfHost(target, {
+          EXECUTOR_APPS_ALLOW_PRIVATE_FETCH: "false",
+          EXECUTOR_APPS_ALLOW_PRIVATE_ORIGINS: JSON.stringify([
+            allowed.origin,
+            other.origin.slice(0, -1),
+          ]),
+        });
+        const api = yield* Api.pipe(
+          Effect.provide(Layer.fresh(Api.layer)),
+          Effect.provide(Layer.fresh(SessionClients.layer)),
+          Effect.provideService(Target, { ...target, metadata: { ...target.metadata, origin } }),
+        );
+        const owner = yield* api.session();
+        expect(
+          (yield* api.request(owner, "POST", "/api/auth/self-host/setup", {
+            name: "Egress Owner",
+            email: "egress-owner@example.test",
+            password: "Synthetic-egress-password-123!",
+            organizationName: "Egress lab",
+          })).status,
+        ).toBe(200);
+        const [organization] = yield* body(
+          Organizations,
+          yield* api.request(owner, "GET", "/api/auth/organization/list"),
+        );
+        const { call } = yield* deployFetchApp(api, owner, organization.id);
+        const reached = (url: string) =>
+          call("fetched", { url, init: {} }).pipe(
+            Effect.tap((response) =>
+              Effect.sync(() => expect(response.status, JSON.stringify(response.body)).toBe(200)),
+            ),
+            Effect.flatMap((response) => body(Reached, response)),
+          );
+        const refused = (url: string) =>
+          call("fetched", { url, init: {} }).pipe(
+            Effect.tap((response) =>
+              Effect.sync(() =>
+                expect(response.status, JSON.stringify(response.body)).not.toBe(200),
+              ),
+            ),
+            Effect.flatMap((response) => body(ToolFailed, response)),
+            Effect.map(({ failure }) => failure),
+          );
+        const otherHost = `127.0.0.1:${other.port}`;
+        const allowedHost = `127.0.0.1:${allowed.port}`;
+
+        expect(yield* reached(`${allowed.origin}/allowed`)).toEqual({ status: 200 });
+        expect(
+          yield* reached(`${allowed.origin}/redirect?to=${encodeURIComponent("/landed")}`),
+        ).toEqual({ status: 200 });
+
+        expect(yield* refused(`${allowed.undeclaredOrigin}/by-name`)).toEqual(
+          privateAddressRefusal(`localhost:${allowed.port}`),
+        );
+        expect(yield* refused(`https://${allowedHost}/tls`)).toEqual(
+          privateAddressRefusal(allowedHost),
+        );
+        expect(yield* refused(`${other.origin}/other`)).toEqual(privateAddressRefusal(otherHost));
+        expect(
+          yield* refused(
+            `${allowed.origin}/redirect?to=${encodeURIComponent(`${other.origin}/escaped`)}`,
+          ),
+        ).toEqual(privateAddressRefusal(otherHost));
+
+        expect(
+          (yield* allowed.received).map((request) => new URL(request.url, "http://x").pathname),
+        ).toEqual(["/allowed", "/redirect", "/landed", "/redirect"]);
+        expect(yield* other.received).toEqual([]);
       }),
     ),
   );

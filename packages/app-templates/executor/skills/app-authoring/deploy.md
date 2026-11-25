@@ -581,7 +581,8 @@ that service's answer. Executor refuses only requests it must not send:
 
 - To a private, loopback or internal address named in the URL, on Cloud and on
   self-host. Local allows them; a self-host operator allows them with
-  `EXECUTOR_APPS_ALLOW_PRIVATE_FETCH=true`.
+  `EXECUTOR_APPS_ALLOW_PRIVATE_FETCH=true`, or allows exact origins with
+  `EXECUTOR_APPS_ALLOW_PRIVATE_ORIGINS`.
 - Carrying a credential handle to a host its provider does not allow.
 
 `ctx.fetch` then rejects with `NetworkRefused`, whose `refusal.reason` and

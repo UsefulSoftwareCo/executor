@@ -27,6 +27,7 @@ These settings override the defaults:
 | `EXECUTOR_ENVIRONMENT`               | no       | Label for this deployment. The default is `self-host`.                   |
 | `EXECUTOR_APP_UI_BASE_URL`           | no       | HTTPS origin that serves app web pages. See below.                       |
 | `EXECUTOR_APPS_ALLOW_PRIVATE_FETCH`  | no       | Let app code reach your private network. See below.                      |
+| `EXECUTOR_APPS_ALLOW_PRIVATE_ORIGINS` | no      | JSON array of exact origins on your private network that app code may reach. See below. |
 | `EXECUTOR_TRUSTED_PROXIES`           | no       | Comma-separated addresses of your reverse proxies, so rate limits count each client behind them. List only proxies. See below. |
 | `EXECUTOR_APP_WORKERS` | no | Most app and data Workers kept loaded at once. The default is `64`. See below. |
 | `EXECUTOR_APP_WORKER_IDLE_SECONDS` | no | Unload an app or data Worker not called for this long; `0` keeps idle Workers loaded up to the limit. The default is `300`. See below. |
@@ -59,6 +60,25 @@ so grant it deliberately. App builds follow the same setting for every download
 off the registry's origin: a dependency declared by tarball URL, and a tarball or
 redirect the registry's metadata sends elsewhere. Downloads from the registry's
 own origin, including a private `EXECUTOR_NPM_REGISTRY`, work either way.
+
+To let app code reach only some private services, such as an MCP server on your
+tailnet, leave `EXECUTOR_APPS_ALLOW_PRIVATE_FETCH` off and list their origins in
+`EXECUTOR_APPS_ALLOW_PRIVATE_ORIGINS`, for example
+`'["https://my-mac.example-tailnet.ts.net"]'`. Write each entry as a browser
+prints an origin: the scheme, the lowercase hostname, and a port only when it is
+not the scheme's default, with no path or trailing slash. A request matches only
+by its whole origin. A listed hostname under another scheme or port is refused as
+a private address. Any other private destination, including a redirect target,
+is refused too: as a private address when its hostname shows it, or as a network
+failure when only its DNS answer is private. Listing a name trusts whatever
+address your DNS returns for it. Every app in the instance can reach a listed
+origin.
+
+Executor still places stored credentials only over HTTPS, so a listed `http://`
+origin is reachable but cannot receive an app's credentials. The list does not
+apply to app builds, or to Executor's own MCP import and OAuth requests: those
+follow `EXECUTOR_URL_ALLOW_HTTP_ORIGINS`, so importing an MCP server at a private
+address by URL needs its origin listed there as well.
 
 Each app runs in its own Worker for each set of accounts it is called with, and
 each loaded Worker holds its own memory. The server keeps at most

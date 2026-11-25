@@ -150,6 +150,7 @@ for (const mode of ["explicit", "local", "railway"] as const)
                 RAILWAY_PUBLIC_DOMAIN: "ignored.invalid/path",
                 EXECUTOR_URL_ALLOW_LOOPBACK_HTTP: "false",
                 EXECUTOR_URL_ALLOW_HTTP_ORIGINS: '["http://allowed.example.test:8091"]',
+                EXECUTOR_APPS_ALLOW_PRIVATE_ORIGINS: '["http://allowed.example.test:8091"]',
               }
             : {}),
           ...(mode === "railway" ? { RAILWAY_PUBLIC_DOMAIN: "release.up.railway.app" } : {}),
@@ -606,6 +607,70 @@ http.createServer((request, response) => {
                 _tag: "CatalogImportFailed",
               });
             }
+            const egress: Array<string> = [];
+            if (restart) {
+              const deployed = yield* request(
+                `${prefix}/apps/deploy`,
+                {
+                  name: "Private origin probe",
+                  files: [
+                    {
+                      path: "index.ts",
+                      content: `import { defineApp, query, object, string, router } from "apps";
+export default defineApp({}, async () => ({
+  tools: router({
+    probe: query({ input: object({ url: string() }) }, async (ctx, input) => {
+      try { return "reached:" + (await ctx.fetch(input.url)).status; }
+      catch (error) { return "refused:" + (error instanceof Error ? error.message : String(error)); }
+    }),
+  })
+}));`,
+                    },
+                    appsManifest,
+                  ],
+                },
+                cookie,
+              );
+              expect(
+                deployed.status,
+                yield* driver("deploy private origin probe", () => deployed.clone().text()),
+              ).toBe(200);
+              const app = yield* Schema.decodeUnknownEffect(Schema.Struct({ id: Schema.String }))(
+                yield* driver("private origin probe app", () => deployed.json()),
+              );
+              const probe = (url: string) =>
+                request(
+                  `${prefix}/apps/${app.id}/tools/call`,
+                  { tool: "probe", kind: "query", input: { url } },
+                  cookie,
+                ).pipe(
+                  Effect.flatMap((response) => driver(`probe ${url}`, () => response.json())),
+                  Effect.flatMap(Schema.decodeUnknownEffect(Schema.String)),
+                );
+              expect(
+                yield* probe("http://allowed.example.test:8091/egress"),
+                "an app reaches the private origin its operator lists",
+              ).toBe("reached:404");
+              const otherPort = "allowed.example.test:8092";
+              expect(
+                yield* probe(`http://${otherPort}/egress`),
+                "a listed name on another port stays refused",
+              ).toBe(
+                `refused:Executor refused a request to ${otherPort}: apps on this instance can reach only public addresses, and ${otherPort} is a private, loopback or internal address. The request was not sent.`,
+              );
+              for (const url of [
+                "https://blocked.example.test:8092/mcp",
+                "http://allowed.example.test:8091/redirect",
+              ]) {
+                const blocked = yield* probe(url);
+                expect(blocked, `the network refuses ${url}`).toMatch(/^refused:/);
+                expect(blocked).not.toMatch(/^refused:Executor refused/);
+              }
+              egress.push(
+                "GET allowed.example.test:8091/egress",
+                "GET allowed.example.test:8091/redirect",
+              );
+            }
             const observed = yield* stats;
             expect(observed.requests).toEqual([
               "POST allowed.example.test:8091/mcp",
@@ -614,6 +679,7 @@ http.createServer((request, response) => {
               "GET allowed.example.test:8091/.well-known/oauth-protected-resource/mcp",
               "GET allowed.example.test:8091/.well-known/oauth-protected-resource",
               "POST allowed.example.test:8091/redirect",
+              ...egress,
             ]);
             expect(observed.blockedConnections).toBe(0);
           }

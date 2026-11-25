@@ -348,6 +348,14 @@ tarball URL, and a tarball or redirect the registry's metadata sends elsewhere.
 Downloads from the registry's own origin, including a private
 `EXECUTOR_NPM_REGISTRY`, work either way.
 
+To let app code reach only named private services, leave private fetch off and
+set `EXECUTOR_APPS_ALLOW_PRIVATE_ORIGINS` to a JSON array of exact origins, for
+example `'["https://my-mac.example-tailnet.ts.net"]'`. Requests match by the
+whole origin. Every other private destination, including a redirect target,
+stays refused: as a private address when its hostname or a listed hostname shows
+it, or as a network failure when only its DNS answer is private. Every app in the
+instance can reach a listed origin, and credentials still go only over HTTPS.
+
 Host-side MCP import and OAuth requests have a separate exact-origin allowlist.
 Set `EXECUTOR_URL_ALLOW_HTTP_ORIGINS` to a JSON array of HTTP or HTTPS origins,
 for example `'["https://mcp.example.com"]'`, to reach that origin when it resolves

@@ -1,4 +1,5 @@
 import { AppUiBaseUrl } from "@executor-js/hosted-server/app-ui/contracts";
+import { HttpOrigin } from "@executor-js/utils/url-policy";
 import { Config, Effect, Option, Schema } from "effect";
 
 export const dataDirectory = Config.NonEmptyString("EXECUTOR_DATA_DIR").pipe(
@@ -19,6 +20,11 @@ export const appUiBaseUrl = (dashboardOrigin: string) =>
 export const allowPrivateAppFetch = Config.Boolean("EXECUTOR_APPS_ALLOW_PRIVATE_FETCH").pipe(
   Config.withDefault(false),
 );
+
+export const allowedPrivateAppOrigins = Config.schema(
+  Schema.fromJsonString(Schema.Array(HttpOrigin)),
+  "EXECUTOR_APPS_ALLOW_PRIVATE_ORIGINS",
+).pipe(Config.withDefault([]));
 
 export const npmRegistry = Config.String("EXECUTOR_NPM_REGISTRY").pipe(Config.option);
 

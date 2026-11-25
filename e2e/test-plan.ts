@@ -4390,6 +4390,18 @@ export const scenarios = plan({
       local: na("Local lets app code reach private addresses by design."),
     },
   },
+  appFetchPrivateOriginAllowed: {
+    file: "app-fetch-errors.spec.ts",
+    title:
+      "with private fetch off, an app reaches only the private origins its operator allows, and a redirect cannot leave them",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Cloud Workers reach only public addresses; the allowed origin is on loopback."),
+      local: na(
+        "Local lets app code reach private addresses by design; only self-host starts a scenario-owned server.",
+      ),
+    },
+  },
   appEgressFailures: {
     fixtures: "actors",
     file: "app-egress-failures.spec.ts",

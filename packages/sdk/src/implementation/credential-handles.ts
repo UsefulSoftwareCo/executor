@@ -548,16 +548,24 @@ const placeManaged = (
 export interface AppEgress {
   readonly refusePrivateAddresses: boolean;
   readonly selfOrigin: string | undefined;
+  readonly privateOrigins?: ReadonlyArray<string>;
 }
+
+export const allowedPrivateOrigin = (url: URL, egress: AppEgress) =>
+  egress.privateOrigins?.includes(url.origin) === true;
 
 const secureTransport = (url: URL, egress: AppEgress) =>
   url.protocol === "https:" ||
   (url.protocol === "http:" && !egress.refusePrivateAddresses && isLoopbackHostname(url.hostname));
 
+const listedPrivateHost = (url: URL, egress: AppEgress) =>
+  egress.privateOrigins?.some((origin) => URL.parse(origin)?.hostname === url.hostname) === true;
+
 const egressRefusal = (url: URL, egress: AppEgress) =>
   !egress.refusePrivateAddresses ||
   url.origin === egress.selfOrigin ||
-  !isPrivateHostname(url.hostname)
+  allowedPrivateOrigin(url, egress) ||
+  (!isPrivateHostname(url.hostname) && !listedPrivateHost(url, egress))
     ? undefined
     : new NetworkRefused({ host: url.host, refusal: { reason: "private_address" } });
 
