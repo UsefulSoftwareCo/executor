@@ -108,6 +108,7 @@ export type JobWait = {
 const attemptSeconds = 30;
 const pollSeconds = 10;
 const fetchSeconds = 300;
+const mismatchedDownloads = 3;
 
 const seconds = (name: string, fallback: number) =>
   Config.Number(name).pipe(
@@ -189,6 +190,7 @@ export const waitForJob = (options: JobWait) =>
         );
     const page = (number: number) =>
       get(number === 1 ? url : `${url}&page=${number}`, Jobs, "jobs");
+    const mismatched = new Map<number, number>();
     const acquired = (
       artifact: { readonly name: string; readonly into: string },
       job: typeof Job.Type,
@@ -205,16 +207,25 @@ export const waitForJob = (options: JobWait) =>
           Artifacts,
           "artifacts",
         );
-        const usable = found.artifacts.filter((each) => {
-          const created = each.created_at === null ? Number.NaN : Date.parse(each.created_at);
-          return (
+        const since = found.artifacts.filter(
+          (each) =>
             each.name === name &&
+            (each.created_at === null ? Number.NaN : Date.parse(each.created_at)) >= from,
+        );
+        const usable = since.filter(
+          (each) =>
             !each.expired &&
             each.size_in_bytes > 0 &&
-            /^sha256:[0-9a-f]{64}$/u.test(each.digest ?? "") &&
-            created >= from
-          );
-        });
+            /^sha256:[0-9a-f]{64}$/u.test(each.digest ?? ""),
+        );
+        if (
+          found.total_count === found.artifacts.length &&
+          since.length > 0 &&
+          since.every((each) => each.expired)
+        )
+          return yield* new JobWaitFailed({
+            message: `The ${options.job} job succeeded, but run ${run}'s artifact${since.length === 1 ? "" : "s"} named ${name} uploaded since it started (${since.map((each) => each.id).join(", ")}) expired, so this job cannot fetch its build. Rerun the ${options.job} job, then this one.`,
+          });
         const chosen = usable[0];
         if (
           chosen === undefined ||
@@ -247,10 +258,18 @@ export const waitForJob = (options: JobWait) =>
         );
         const bytes = new Uint8Array(response);
         const digest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
-        if (digest !== chosen.digest)
+        if (digest !== chosen.digest) {
+          const times = (mismatched.get(chosen.id) ?? 0) + 1;
+          mismatched.set(chosen.id, times);
+          if (times >= mismatchedDownloads)
+            return yield* new JobWaitFailed({
+              message: `Artifact ${chosen.id} (${name}) downloaded ${times} times in a row as bytes whose SHA-256 is not the one listed for its ${chosen.size_in_bytes} bytes (the last ${bytes.length} bytes), so nothing was unpacked into ${artifact.into}. Rerun the ${options.job} job, then this one.`,
+            });
           return yield* new NotFinished({
             reason: `artifact ${chosen.id} downloaded as ${bytes.length} bytes whose SHA-256 is not the one listed for its ${chosen.size_in_bytes} bytes`,
           });
+        }
+        mismatched.delete(chosen.id);
         const unreadable = new JobWaitFailed({
           message: `Artifact ${chosen.id} (${name}) matches its listed SHA-256 but is not a zip of plain relative paths, so it cannot be unpacked into ${artifact.into}.`,
         });
