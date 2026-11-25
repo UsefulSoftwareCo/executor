@@ -26,7 +26,10 @@ export const startAnalyticsCollector = (directory: string) =>
     yield* fs.makeDirectory(`${directory}/flags`, { recursive: true, mode: 0o700 });
     const flagsFile = `${directory}/flags.ndjson`;
     yield* fs.writeFileString(flagsFile, "", { mode: 0o600 });
-    const FlagRequest = Schema.Struct({ distinct_id: Schema.String });
+    const FlagRequest = Schema.Struct({
+      distinct_id: Schema.String,
+      flag_keys_to_evaluate: Schema.optionalKey(Schema.Array(Schema.String)),
+    });
     const FlagStub = Schema.Struct({ status: Schema.Number, body: Schema.Json });
     const flags = Effect.gen(function* () {
       const request = yield* HttpServerRequest.HttpServerRequest;
@@ -40,7 +43,8 @@ export const startAnalyticsCollector = (directory: string) =>
           errorsWhileComputingFlags: false,
         });
       const distinct = person.value.distinct_id;
-      yield* fs.writeFileString(flagsFile, `${JSON.stringify({ distinct_id: distinct })}\n`, {
+      // Each evaluation is kept with the flags it asked for, so a scenario can tell which it asked.
+      yield* fs.writeFileString(flagsFile, `${JSON.stringify(person.value)}\n`, {
         flag: "a",
         mode: 0o600,
       });

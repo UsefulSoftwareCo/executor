@@ -188,7 +188,8 @@ it.live("released image lists the official app feed without a catalog setting", 
 
     // Each arm runs its own image container, removed before the next starts, so this scenario
     // never runs two at once beside the other release scenarios.
-    // A stock image: first-run setup's account step offers the feed's apps that take an account.
+    // A stock image: first-run setup's account step, after the assistant step, offers the feed's
+    // apps that take an account.
     yield* Effect.scoped(
       Effect.gen(function* () {
         const stock = yield* start("stock", {});
@@ -214,6 +215,14 @@ it.live("released image lists the official app feed without a catalog setting", 
         );
         yield* driver("create the administrator", () =>
           page.getByRole("button", { name: "Create administrator account", exact: true }).click(),
+        );
+        yield* reportStall(
+          driver("setup opens the assistant step", () =>
+            page.waitForURL(/\/org\/[^/]+\/setup\/assistant$/u),
+          ),
+        );
+        yield* driver("skip the assistant step", () =>
+          page.getByRole("link", { name: "Skip for now", exact: true }).click(),
         );
         yield* reportStall(
           driver("setup opens the account step", () =>

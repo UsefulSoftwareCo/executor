@@ -93,7 +93,7 @@ layer(TestLive, { excludeTestServices: true })("Cloud onboarding", (it) => {
           ),
         ).toBe(name);
         yield* browser.checkpoint("Team details retained for retry");
-        const team = yield* onboarding.confirmTeam(name, "skip", { checkInstall: false });
+        const team = yield* onboarding.confirmTeam(name, { checkInstall: false });
         yield* browser.use("Existing members can revisit the setup URL", (page) =>
           page.goto("/create"),
         );
@@ -125,7 +125,7 @@ layer(TestLive, { excludeTestServices: true })("Cloud onboarding", (it) => {
         yield* onboarding.emailSignIn(yield* onboarding.freshEmail, "signup");
         yield* authenticator.register;
         expect(yield* onboarding.organizations).toEqual([]);
-        const team = yield* onboarding.confirmTeam(yield* onboarding.prepareTeam, "skip", {
+        const team = yield* onboarding.confirmTeam(yield* onboarding.prepareTeam, {
           checkInstall: false,
         });
         yield* onboarding.signOut;
@@ -185,7 +185,7 @@ layer(TestLive, { excludeTestServices: true })("Cloud onboarding", (it) => {
         yield* browser.use("Choose Not now", (page) =>
           page.getByRole("button", { name: "Not now", exact: true }).click(),
         );
-        const team = yield* onboarding.confirmTeam(yield* onboarding.prepareTeam, "skip", {
+        const team = yield* onboarding.confirmTeam(yield* onboarding.prepareTeam, {
           checkInstall: false,
         });
         yield* onboarding.signOut;

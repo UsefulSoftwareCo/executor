@@ -75,11 +75,12 @@ export default Alchemy.Stack(
         ...report,
       }).pipe(retain());
     }
-    // Running: deploying launches it, and changing the status here pauses, resumes or ends it.
+    // Ended: the assistant-first order won and is the only order Cloud serves. Deploying `stopped`
+    // ends it in PostHog and freezes its results; a later release stops declaring it.
     const onboarding = yield* PostHogExperiment("OnboardingOrderExperiment", {
       projectId: project.id,
       definition: onboardingExperimentDefinition,
-      status: "running",
+      status: "stopped",
     }).pipe(retain());
     // Independent of the order experiment. Ended in PostHog on 2026-10-30; an ended experiment
     // cannot run again.

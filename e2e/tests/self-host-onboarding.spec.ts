@@ -96,20 +96,96 @@ layer(TestLive, { excludeTestServices: true })("Self-host onboarding", (it) => {
         yield* browser.use("Create the administrator", (page) =>
           page.getByRole("button", { name: "Create administrator account", exact: true }).click(),
         );
-        yield* browser.use("Administrator setup opens the organization's account step", (page) =>
-          page.waitForURL(new RegExp(`^${origin}/org/[^/]+/setup/accounts$`, "u")),
+        // Setup starts with the assistant, then accounts, then the first prompt.
+        yield* browser.use("Administrator setup opens the organization's assistant step", (page) =>
+          page.waitForURL(new RegExp(`^${origin}/org/[^/]+/setup/assistant$`, "u")),
         );
         const setup = yield* browser.use("Read the setup address", (page) =>
-          Promise.resolve(new URL(page.url()).pathname.replace(/\/accounts$/u, "")),
-        );
-        yield* browser.use("The account step lists the catalog", (page) =>
-          page.locator("[aria-label='Loading apps']").waitFor({ state: "detached" }),
+          Promise.resolve(new URL(page.url()).pathname.replace(/\/assistant$/u, "")),
         );
         expect(
           yield* browser.use("Onboarding stays outside the dashboard shell", (page) =>
             page.locator(".shell").count(),
           ),
         ).toBe(0);
+        yield* browser.use("The assistant choices are visible", (page) =>
+          page.getByRole("heading", { name: "Connect your assistant", exact: true }).waitFor(),
+        );
+        yield* browser.use("Reload the handoff", (page) => page.reload());
+        yield* browser.use("Reload retains the assistant choices", (page) =>
+          page.getByRole("heading", { name: "Connect your assistant", exact: true }).waitFor(),
+        );
+        yield* browser.checkpoint("Self-host administrator agent handoff");
+        yield* browser.use("Use a phone viewport", (page) =>
+          page.setViewportSize({ width: 390, height: 844 }),
+        );
+        yield* browser.checkpoint("Self-host agent handoff on mobile");
+        yield* browser.use("Restore desktop viewport", (page) =>
+          page.setViewportSize({ width: 1440, height: 960 }),
+        );
+        yield* browser.use("Allow clipboard access", (page) =>
+          page.context().grantPermissions(["clipboard-read", "clipboard-write"]),
+        );
+        yield* browser.use("Copy the instance MCP URL for any client", (page) =>
+          page.getByRole("button", { name: "Copy MCP URL", exact: true }).click(),
+        );
+        expect(
+          yield* browser.use("Read the MCP URL copied from the assistants", (page) =>
+            page.evaluate(() => navigator.clipboard.readText()),
+          ),
+        ).toBe(`${origin}/mcp`);
+        yield* browser.use("Choose Claude", (page) =>
+          page.getByRole("button", { name: "Claude", exact: true }).click(),
+        );
+        yield* browser.use("Claude's guide replaces the choices", (page) =>
+          page.getByRole("heading", { name: "Add Executor to Claude", exact: true }).waitFor(),
+        );
+        yield* browser.use("Copy the instance MCP URL", (page) =>
+          page.getByRole("button", { name: "Copy MCP URL", exact: true }).click(),
+        );
+        expect(
+          yield* browser.use("Read the copied MCP URL", (page) =>
+            page.evaluate(() => navigator.clipboard.readText()),
+          ),
+        ).toBe(`${origin}/mcp`);
+        yield* browser.use("Setup waits for Claude", (page) =>
+          page.getByText("Waiting for Claude to connect…", { exact: true }).waitFor(),
+        );
+        // The assistant signs in from its own tab, so agent setup keeps its state.
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            yield* browser.omitNetworkTrace;
+            const tab = yield* Effect.acquireRelease(
+              browser.use("Open the assistant's sign-in tab", (page) => page.context().newPage()),
+              (tab) =>
+                driver("Close the assistant's sign-in tab", () => tab.close()).pipe(Effect.orDie),
+            );
+            yield* authorizeBrowserMcp(tab, origin, { client: "Self-host assistant" });
+            yield* browser.use("Return to agent setup", (page) => page.bringToFront());
+          }),
+        );
+        yield* browser.use("The new agent is detected", (page) =>
+          page.getByText("Approved for Self-host assistant", { exact: true }).waitFor(),
+        );
+        yield* browser.checkpoint("Claude connected in the self-host handoff");
+        yield* browser.use("Continue to the account step", (page) =>
+          page.getByRole("link", { name: "Next: connect accounts", exact: true }).click(),
+        );
+        // The account step carries the assistant and its agent on to the first prompt.
+        yield* browser.use("Next opens the account step with the agent", (page) =>
+          page.waitForURL(
+            (url) => url.pathname === `${setup}/accounts` && url.search.startsWith("?assistant="),
+          ),
+        );
+        const accounts = yield* browser.use("Read the account step's address", (page) =>
+          Promise.resolve(new URL(page.url()).pathname + new URL(page.url()).search),
+        );
+        expect(accounts).toMatch(
+          new RegExp(`^${setup}/accounts\\?assistant=claude&agent=[^&]+$`, "u"),
+        );
+        yield* browser.use("The account step lists the catalog", (page) =>
+          page.locator("[aria-label='Loading apps']").waitFor({ state: "detached" }),
+        );
         // Only apps that take an account are offered; the search counts them.
         expect(
           yield* browser.use("Read the listed apps", (page) =>
@@ -395,80 +471,25 @@ layer(TestLive, { excludeTestServices: true })("Self-host onboarding", (it) => {
         yield* browser.use("Return to setup", (page) =>
           page.getByRole("link", { name: "Back to setup", exact: true }).click(),
         );
-        yield* browser.use("The account step reopens with its accounts", (page) =>
+        yield* browser.use("The account step reopens with its accounts and the agent", (page) =>
           page
-            .waitForURL(`${origin}${setup}/accounts`)
+            .waitForURL(`${origin}${accounts}`)
             .then(() => page.getByRole("link", { name: "Continue with 2 accounts" }).waitFor()),
         );
-        yield* browser.use("Continue with the connected accounts", (page) =>
+        yield* browser.use("Continue with the connected accounts to the first prompt", (page) =>
           page.getByRole("link", { name: "Continue with 2 accounts" }).click(),
         );
-        yield* browser.use("Accounts continue to the agent handoff", (page) =>
-          page.waitForURL(`${origin}${setup}/assistant`),
-        );
-        yield* browser.use("The assistant choices are visible", (page) =>
-          page.getByRole("heading", { name: "Connect your assistant", exact: true }).waitFor(),
-        );
-        yield* browser.use("Reload the handoff", (page) => page.reload());
-        yield* browser.use("Reload retains the assistant choices", (page) =>
-          page.getByRole("heading", { name: "Connect your assistant", exact: true }).waitFor(),
-        );
-        yield* browser.checkpoint("Self-host administrator agent handoff");
-        yield* browser.use("Use a phone viewport", (page) =>
-          page.setViewportSize({ width: 390, height: 844 }),
-        );
-        yield* browser.checkpoint("Self-host agent handoff on mobile");
-        yield* browser.use("Restore desktop viewport", (page) =>
-          page.setViewportSize({ width: 1440, height: 960 }),
-        );
-        yield* browser.use("Allow clipboard access", (page) =>
-          page.context().grantPermissions(["clipboard-read", "clipboard-write"]),
-        );
-        yield* browser.use("Copy the instance MCP URL for any client", (page) =>
-          page.getByRole("button", { name: "Copy MCP URL", exact: true }).click(),
+        yield* browser.use("The first prompt is shown", (page) =>
+          page.getByRole("button", { name: "Copy starter prompt", exact: true }).waitFor(),
         );
         expect(
-          yield* browser.use("Read the MCP URL copied from the assistants", (page) =>
-            page.evaluate(() => navigator.clipboard.readText()),
+          yield* browser.use("Read the first prompt's address", (page) =>
+            Promise.resolve(new URL(page.url()).pathname + new URL(page.url()).search),
           ),
-        ).toBe(`${origin}/mcp`);
-        yield* browser.use("Choose Claude", (page) =>
-          page.getByRole("button", { name: "Claude", exact: true }).click(),
+        ).toMatch(
+          new RegExp(`^${setup}/assistant\\?assistant=claude&step=prompt&agent=[^&]+$`, "u"),
         );
-        yield* browser.use("Claude's guide replaces the choices", (page) =>
-          page.getByRole("heading", { name: "Add Executor to Claude", exact: true }).waitFor(),
-        );
-        yield* browser.use("Copy the instance MCP URL", (page) =>
-          page.getByRole("button", { name: "Copy MCP URL", exact: true }).click(),
-        );
-        expect(
-          yield* browser.use("Read the copied MCP URL", (page) =>
-            page.evaluate(() => navigator.clipboard.readText()),
-          ),
-        ).toBe(`${origin}/mcp`);
-        yield* browser.use("Setup waits for Claude", (page) =>
-          page.getByText("Waiting for Claude to connect…", { exact: true }).waitFor(),
-        );
-        // The assistant signs in from its own tab, so agent setup keeps its state.
-        yield* Effect.scoped(
-          Effect.gen(function* () {
-            yield* browser.omitNetworkTrace;
-            const tab = yield* Effect.acquireRelease(
-              browser.use("Open the assistant's sign-in tab", (page) => page.context().newPage()),
-              (tab) =>
-                driver("Close the assistant's sign-in tab", () => tab.close()).pipe(Effect.orDie),
-            );
-            yield* authorizeBrowserMcp(tab, origin, { client: "Self-host assistant" });
-            yield* browser.use("Return to agent setup", (page) => page.bringToFront());
-          }),
-        );
-        yield* browser.use("The new agent is detected", (page) =>
-          page.getByText("Approved for Self-host assistant", { exact: true }).waitFor(),
-        );
-        yield* browser.checkpoint("Claude connected in the self-host handoff");
-        yield* browser.use("Continue to the first prompt", (page) =>
-          page.getByRole("link", { name: "Next: first prompt", exact: true }).click(),
-        );
+
         yield* browser.checkpoint("First prompt names the connected accounts");
         yield* browser.use("Copy the starter prompt", (page) =>
           page.getByRole("button", { name: "Copy starter prompt", exact: true }).click(),

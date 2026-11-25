@@ -1,6 +1,6 @@
 /** Explicit browser actions carry only authored labels and outcomes, never form values or URLs. */
 import { Effect, Exit, Cause, Schema } from "effect";
-import { SetupOrder, SetupSkip } from "@executor-js/hosted-server/setup";
+import { SetupSkip } from "@executor-js/hosted-server/setup";
 import { AssistantId } from "@executor-js/ui/contracts/dashboard";
 
 const Label = Schema.String.check(Schema.isPattern(/^[a-z][a-z0-9_.-]{0,79}$/u));
@@ -10,8 +10,6 @@ export const BrowserUsage = Schema.Struct({
   area: Label,
   action: Label,
   outcome: Schema.Literals(["started", "success", "failure", "cancelled", "viewed"]),
-  /** The setup order an onboarding step showed, set only for a team in the onboarding experiment. */
-  onboarding_variant: Schema.optionalKey(SetupOrder),
   /** Whether its steps could be skipped, set only for a member in the onboarding skip experiment. */
   onboarding_skip_variant: Schema.optionalKey(SetupSkip),
   /** The assistant a setup step's guide is for, on the steps that follow picking one. */

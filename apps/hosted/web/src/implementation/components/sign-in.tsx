@@ -67,7 +67,7 @@ function FirstOrganizationDestination({
   children,
 }: {
   readonly verified: boolean;
-  readonly page: "apps" | "setup/accounts";
+  readonly page: "apps" | "setup/assistant";
   readonly children: ReactNode;
 }) {
   const organizations = useAtomValue(organizationsAtom);
@@ -119,13 +119,13 @@ export function ContinueAfterSignIn({
   );
 }
 
-/** First-run setup continues with the accounts step of the organization it created. */
+/** First-run setup continues with the first step, the assistant, of the organization it created. */
 export function ContinueToSetup({ userId }: { readonly userId: string }) {
   const session = useAtomValue(sessionAtom);
   const verified =
     AsyncResult.isSuccess(session) && !session.waiting && session.value?.user.id === userId;
   return (
-    <FirstOrganizationDestination verified={verified} page="setup/accounts">
+    <FirstOrganizationDestination verified={verified} page="setup/assistant">
       <SignInPending />
     </FirstOrganizationDestination>
   );

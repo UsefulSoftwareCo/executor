@@ -6,7 +6,18 @@ import { isResolved } from "alchemy/Diff";
 import * as Provider from "alchemy/Provider";
 import { Effect, Redacted, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
-import { onboardingExperiment, onboardingSkipExperiment } from "../contracts/onboarding.ts";
+import { onboardingSkipExperiment } from "../contracts/onboarding.ts";
+
+/**
+ * The ended onboarding order experiment's flag: `accounts_first` (the control) against
+ * `assistant_first`, which won and is now the only order. No team is assigned any more; it is
+ * declared `stopped` so its results stay readable. See `notes/posthog.md#onboarding-order-experiment`.
+ */
+const onboardingExperiment = {
+  flag: "onboarding-order-v1",
+  /** How long after exposure a metric's event still counts. */
+  attributionDays: 7,
+} as const;
 import { PostHogProvisioningFailed } from "./posthog-provider.ts";
 
 const ownership = (key: string) => `[executor-next:${key}]`;

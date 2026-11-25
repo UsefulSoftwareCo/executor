@@ -8,7 +8,7 @@ import {
   OrganizationReference,
   RequireOrganization,
 } from "@executor-js/hosted-server/organization";
-import { SetupOrder, SetupSkip, SetupStep } from "@executor-js/hosted-server/setup";
+import { SetupSkip, SetupStep } from "@executor-js/hosted-server/setup";
 import { GrantId } from "@executor-js/mcp-auth/grants";
 import { ApiError } from "@executor-js/utils/api-error";
 import { Context, Effect, Schema } from "effect";
@@ -47,7 +47,7 @@ export const CreateTeam = Schema.Struct({
   logo: Schema.Union([OrganizationLogo, UploadedOrganizationIcon]),
   /**
    * `setup` when the team setup page confirms, which opens the team's setup steps next. Only
-   * those teams join the onboarding experiment; MCP consent and device approval create a team
+   * those teams join the onboarding skip experiment; MCP consent and device approval create a team
    * on the way to their client and omit it.
    */
   next: Schema.optionalKey(Schema.Literal("setup")),
@@ -98,18 +98,7 @@ export const OnboardingEntry = Schema.Union([
 ]);
 
 /**
- * The onboarding experiment: a native PostHog multivariate flag whose variants are the setup
- * orders, `accounts_first` the control. See `notes/posthog.md#onboarding-order-experiment`.
- */
-export const onboardingExperiment = {
-  flag: "onboarding-order-v1",
-  control: "accounts_first",
-  /** How long after exposure a metric's event still counts. */
-  attributionDays: 7,
-} as const satisfies { readonly control: SetupOrder } & Record<string, unknown>;
-
-/**
- * The onboarding skip experiment, assigned beside the order experiment and independently of it:
+ * The onboarding skip experiment, assigned to members creating their first team through setup:
  * `skippable` (the control) keeps today's "Skip for now", `required` takes it away and keeps the
  * dashboard closed until both steps are done. See `notes/posthog.md#onboarding-skip-experiment`.
  */
@@ -124,12 +113,18 @@ export const SetupSkipAssignment = Schema.Struct({ variant: SetupSkip, enrolled:
 export type SetupSkipAssignment = typeof SetupSkipAssignment.Type;
 
 /**
- * The setup this member sees for this team: the order of its steps and whether they can be
- * skipped. Each `enrolled` marks the member in that experiment; every other member, including one
- * whose evaluation failed, sees that experiment's control untracked.
+ * The setup this member sees for this team: whether its steps can be skipped. `skip.enrolled` marks
+ * the member in the skip experiment; every other member, including one whose evaluation failed,
+ * sees its control untracked. The steps always run assistant first (`setupSteps`).
+ *
+ * `order` and `enrolled` are what the ended order experiment answered. This server answers the
+ * order that won, untracked; no page reads them. They keep the previous build working across the
+ * deploy in both directions: its pages require both, and its API, which this dashboard can meet
+ * while the Workers roll out, may still answer an assignment. Remove them in the release that stops
+ * declaring the experiment in `alchemy.posthog.ts`.
  */
 export const SetupSequence = Schema.Struct({
-  order: SetupOrder,
+  order: Schema.Literals(["accounts_first", "assistant_first"]),
   enrolled: Schema.Boolean,
   skip: SetupSkipAssignment,
 });
@@ -137,9 +132,9 @@ export type SetupSequence = typeof SetupSequence.Type;
 
 /**
  * Whether the team's dashboard is open to this member. It is closed only to a member whose setup
- * is `required` and who has not done both steps; `step` is the one to do next. When the assistant
- * came first and is connected, `agent` is the agent it connected, which the account step carries
- * to the first prompt.
+ * is `required` and who has not done both steps; `step` is the first not done. When the assistant
+ * is connected, `agent` is the agent it connected, which the account step carries to the first
+ * prompt.
  */
 export const SetupGate = Schema.Union([
   Schema.Struct({ status: Schema.Literal("open") }),
@@ -152,8 +147,8 @@ export const SetupGate = Schema.Union([
 export type SetupGate = typeof SetupGate.Type;
 
 /**
- * A team created for its setup carries its setup order, so its first step opens without reading
- * the order again. The order is left out when it could not be read; setup then reads it.
+ * A team created for its setup carries its setup, so its first step opens without reading it
+ * again. The setup is left out when it could not be read; the setup layout then reads it.
  */
 export const OnboardingTeamCreated = Schema.Struct({
   ...OnboardingReady.fields,
@@ -194,8 +189,8 @@ export class Onboarding extends Context.Service<
       details: CreateTeam,
     ) => Effect.Effect<typeof OnboardingCreated.Type, OnboardingUnavailable>;
     /**
-     * The setup order for a team this member created through team setup. The first read for an
-     * enrolled team records the experiment exposure; later reads return the same order.
+     * The setup for a team this member created through team setup. The first read for an enrolled
+     * member records the skip experiment's exposure; later reads return the same setup.
      */
     readonly setup: (
       userId: string,
@@ -247,7 +242,7 @@ export const onboardingGroup = HttpApiGroup.make("onboarding")
   .middleware(RequireBrowserSession);
 
 /**
- * A new team's setup steps read their order with the page, and dashboard pages whether setup still
+ * A new team's setup steps read their setup with the page, and dashboard pages whether setup still
  * holds them; membership is checked first.
  */
 export const setupGroup = HttpApiGroup.make("setup")

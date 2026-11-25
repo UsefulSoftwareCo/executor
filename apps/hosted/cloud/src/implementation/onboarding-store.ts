@@ -4,7 +4,7 @@ import { fumadb } from "fumadb-effect";
 import { column, idColumn, schema, table } from "fumadb-effect/schema";
 import { sqlAdapter } from "fumadb-effect/sql";
 import { invitingRoles } from "@executor-js/hosted-server";
-import { SetupOrder, SetupSkip } from "@executor-js/hosted-server/setup";
+import { SetupSkip } from "@executor-js/hosted-server/setup";
 import {
   CompanyProfile,
   OnboardingReady,
@@ -153,28 +153,7 @@ export const makeOnboardingStore = Effect.gen(function* () {
         rows[0] ? Effect.succeed(rows[0].allowed) : Effect.fail(new OnboardingUnavailable()),
       ),
     );
-  /** Keep the first assignment: a retried creation never changes the order already shown. */
-  const assignSetup = (userId: string, organizationId: string, variant: SetupOrder) =>
-    sql`insert into cloud_setup_assignment (user_id, organization_id, variant)
-      values (${userId}, ${organizationId}, ${variant})
-      on conflict (user_id) do nothing`.pipe(Effect.asVoid);
-  const Assignment = Schema.Array(Schema.Struct({ variant: SetupOrder }));
-  /** The member's assignment for this team, which exists only for their first one. */
-  const setupAssignment = (userId: string, organizationId: string) =>
-    sql`select variant from cloud_setup_assignment
-      where user_id = ${userId} and organization_id = ${organizationId}`.pipe(
-      Effect.flatMap(Schema.decodeUnknownEffect(Assignment)),
-      Effect.map((rows) => rows[0]?.variant),
-    );
-  /** Marks the assignment seen; only the one request that marks it gets the variant back. */
-  const claimSetupExposure = (userId: string, organizationId: string) =>
-    sql`update cloud_setup_assignment set exposed_at = now()
-      where user_id = ${userId} and organization_id = ${organizationId} and exposed_at is null
-      returning variant`.pipe(
-      Effect.flatMap(Schema.decodeUnknownEffect(Assignment)),
-      Effect.map((rows) => rows[0]?.variant),
-    );
-  /** Keep the first assignment, as the order's: a retried creation never changes it. */
+  /** Keep the first assignment: a retried creation never changes what was already shown. */
   const assignSkip = (userId: string, organizationId: string, variant: SetupSkip) =>
     sql`insert into cloud_setup_skip_assignment (user_id, organization_id, variant)
       values (${userId}, ${organizationId}, ${variant})
@@ -209,9 +188,6 @@ export const makeOnboardingStore = Effect.gen(function* () {
     skipAssignment,
     claimSkipExposure,
     completeSetup,
-    assignSetup,
-    setupAssignment,
-    claimSetupExposure,
     canReadIcon,
     user,
     lockUser,

@@ -87,21 +87,12 @@ layer(LanBrowserLive, { excludeTestServices: true })("LAN HTTP dashboard", (it) 
         yield* browser.use("Create the administrator", (page) =>
           page.getByRole("button", { name: "Create administrator account", exact: true }).click(),
         );
-        const organization = yield* browser.use("Setup opens the account step", (page) =>
+        const organization = yield* browser.use("Setup opens the assistant step", (page) =>
           page
-            .waitForURL(new RegExp(`^${lan}/org/[^/]+/setup/accounts$`, "u"))
+            .waitForURL(new RegExp(`^${lan}/org/[^/]+/setup/assistant$`, "u"))
             .then(() => new URL(page.url()).pathname.split("/")[2] ?? ""),
         );
         const org = `${lan}/org/${organization}`;
-        // Every dashboard request names its page with a UUID, so a missing one failed them all.
-        yield* browser.use("The account step lists the catalog", (page) =>
-          page.getByRole("searchbox", { name: "Search apps" }).waitFor(),
-        );
-        yield* browser.checkpoint("Account step loads over plain HTTP");
-
-        yield* browser.use("Open the assistant step", (page) =>
-          page.goto(`${org}/setup/assistant`),
-        );
         yield* browser.use("Copy the MCP URL", (page) =>
           page.getByRole("button", { name: "Copy MCP URL" }).click(),
         );
@@ -111,6 +102,19 @@ layer(LanBrowserLive, { excludeTestServices: true })("LAN HTTP dashboard", (it) 
             .getByText("Copied", { exact: true })
             .waitFor(),
         );
+        // Skipping the assistant opens the account step.
+        yield* browser.use("Skip the assistant step", (page) =>
+          page.getByRole("link", { name: "Skip for now", exact: true }).click(),
+        );
+        yield* browser.use("Skipping opens the account step", (page) =>
+          page.waitForURL(`${org}/setup/accounts`),
+        );
+        // Every dashboard request names its page with a UUID, so a missing one failed them all.
+        yield* browser.use("The account step lists the catalog", (page) =>
+          page.getByRole("searchbox", { name: "Search apps" }).waitFor(),
+        );
+        yield* browser.checkpoint("Account step loads over plain HTTP");
+
         // Only a secure context can read the clipboard back; the server's loopback origin is one.
         yield* browser.use("Allow clipboard reads on loopback", (page) =>
           page.context().grantPermissions(["clipboard-read"], { origin: loopback }),

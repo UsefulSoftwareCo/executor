@@ -10796,31 +10796,25 @@ export const scenarios = plan({
   onboardingAssistantFirst: {
     file: "cloud-onboarding-experiment.spec.ts",
     title:
-      "Cloud onboarding experiment assistant_first connects the assistant, then accounts, then sends the first prompt",
+      "Cloud onboarding experiment's winning order connects the assistant, then accounts, then reaches the first prompt",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
-  onboardingAccountsFirst: {
+  onboardingOrderIgnored: {
     file: "cloud-onboarding-experiment.spec.ts",
     title:
-      "Cloud onboarding experiment accounts_first connects accounts, then the assistant, then sends the first prompt",
+      "Cloud onboarding experiment has ended: a new team opens on the assistant step even when PostHog answers accounts_first, and the order flag is never asked for or exposed",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
   onboardingExperimentUnavailable: {
     file: "cloud-onboarding-experiment.spec.ts",
     title:
-      "Cloud onboarding experiment serves accounts first without an exposure when its flag is unavailable",
+      "Cloud onboarding experiment serves the assistant first, then accounts, without an exposure when flags are unavailable",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
-  onboardingRequiredAccountsFirst: {
+  onboardingRequired: {
     file: "cloud-onboarding-skip-experiment.spec.ts",
     title:
-      "Cloud onboarding skip experiment required keeps accounts_first setup until both steps are done",
-    targets: { ...cloudOnboarding, cloud: managedCloud },
-  },
-  onboardingRequiredAssistantFirst: {
-    file: "cloud-onboarding-skip-experiment.spec.ts",
-    title:
-      "Cloud onboarding skip experiment required keeps assistant_first setup until both steps are done",
+      "Cloud onboarding skip experiment required keeps setup, the assistant then accounts, until both steps are done",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
   onboardingSkippable: {

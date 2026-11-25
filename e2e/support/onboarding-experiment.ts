@@ -1,24 +1,28 @@
 /**
- * Cloud's onboarding experiment through the managed loopback collector: answer one person's flag
+ * Cloud's onboarding experiments through the managed loopback collector: answer one person's flag
  * evaluations, and read the events and evaluations the collector received for them.
  */
 import { Effect, FileSystem, Schedule } from "effect";
 import { analyticsEvents, type AnalyticsEvent } from "./collector-events.ts";
 import { Target } from "./platform.ts";
 
-export const onboardingFlag = "onboarding-order-v1";
+/**
+ * The ended onboarding order experiment's flag. The product no longer asks for it; PostHog can
+ * still answer it, so a scenario can prove the product ignores the answer.
+ */
+export const onboardingOrderFlag = "onboarding-order-v1";
 export type OnboardingOrder = "accounts_first" | "assistant_first";
 export const onboardingSkipFlag = "onboarding-skip-v1";
 export type OnboardingSkip = "skippable" | "required";
 
 /**
- * What PostHog answers this person's flag evaluations with: a variant of each onboarding
- * experiment named, or an unavailable service. A flag left out is not in the answer, so its
- * experiment serves its control. The collector answers everyone else with no flags.
+ * What PostHog answers this person's flag evaluations with, whatever flags they ask for: a variant
+ * of each onboarding flag named, or an unavailable service. A flag left out is not in the answer,
+ * so its experiment serves its control. The collector answers everyone else with no flags.
  */
 export const answerOnboardingFlag = (
   userId: string,
-  answer: { readonly variant?: OnboardingOrder; readonly skip?: OnboardingSkip } | "unavailable",
+  answer: { readonly order?: OnboardingOrder; readonly skip?: OnboardingSkip } | "unavailable",
 ) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -33,7 +37,7 @@ export const answerOnboardingFlag = (
             status: 200,
             body: {
               flags: {
-                ...(answer.variant === undefined ? {} : flag(onboardingFlag, answer.variant)),
+                ...(answer.order === undefined ? {} : flag(onboardingOrderFlag, answer.order)),
                 ...(answer.skip === undefined ? {} : flag(onboardingSkipFlag, answer.skip)),
               },
               errorsWhileComputingFlags: false,
@@ -61,8 +65,8 @@ export const awaitPersonEvents = (
     Effect.timeout("15 seconds"),
   );
 
-/** How many times the Worker asked PostHog for this person's flags. */
-export { flagEvaluations } from "./collector-events.ts";
+/** How many times the Worker asked PostHog for this person's flags, and which flags each asked. */
+export { flagEvaluations, flagRequests } from "./collector-events.ts";
 
 /** The onboarding `product_action` events this person's setup reported, in order. */
 export const onboardingActions = (events: readonly Captured[]) =>

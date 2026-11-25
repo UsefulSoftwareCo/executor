@@ -538,22 +538,27 @@ export default defineApp({}, async () => ({ tools: router({
         expect(creation).not.toContain(teamName);
         const created = snapshots().length;
 
+        // Team creation opens its first setup step, the assistant.
         yield* browser.use("Create the team", (page) =>
           page
             .getByRole("button", { name: "Continue", exact: true })
             .click()
             .then(() =>
-              page.waitForURL((url) => /^\/org\/[^/]+\/setup\/accounts$/u.test(url.pathname)),
+              page.waitForURL((url) => /^\/org\/[^/]+\/setup\/assistant$/u.test(url.pathname)),
             )
             .then(() =>
-              page.getByRole("heading", { name: "Connect your accounts", exact: true }).waitFor(),
+              page.getByRole("heading", { name: "Connect your assistant", exact: true }).waitFor(),
             ),
         );
         const setup = yield* browser.use("Read the setup path", (page) =>
-          Promise.resolve(new URL(page.url()).pathname.replace(/\/accounts$/u, "")),
+          Promise.resolve(new URL(page.url()).pathname.replace(/\/assistant$/u, "")),
         );
         yield* recordedAfter(created);
-        expect(recorded(created)).toContain("Connect your accounts");
+        expect(recorded(created)).toContain("Connect your assistant");
+        const assistant = snapshots().length;
+        yield* open(`${setup}/accounts`, "Connect your accounts");
+        yield* recordedAfter(assistant);
+        expect(recorded(assistant)).toContain("Connect your accounts");
         const accounts = snapshots().length;
         yield* browser.use("Insert setup content and synthetic secrets", (page) =>
           page.evaluate(() => {

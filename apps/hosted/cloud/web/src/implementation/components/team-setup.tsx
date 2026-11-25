@@ -5,7 +5,6 @@ import { SetupActions, SetupLede, SetupPage, SetupTitle } from "@executor-js/hos
 import {
   SetupRedirect,
   SetupSequenceProvider,
-  firstSetupStep,
   useSetupSequence,
 } from "@executor-js/hosted-web/setup-sequence";
 import { useOrganizationRoute } from "@executor-js/hosted-web/organization";
@@ -185,17 +184,14 @@ function TeamEntry({
   // setup. A confirmation that found other memberships instead leaves the choice to the entry.
   const team = entry.organizations.length === 1 ? entry.organizations[0] : undefined;
   if (!mcp && team !== undefined && (created.waiting || AsyncResult.isSuccess(created))) {
-    // A confirmation that carried the team's setup order opens its first step directly.
+    // A confirmation that carried the team's setup opens its first step, the assistant, directly.
     const setup = Schema.is(OnboardingTeamCreated)(entry) ? entry.setup : undefined;
-    const first = setup === undefined ? undefined : firstSetupStep(setup);
     return (
       <Navigate
         to={
-          first === "accounts"
-            ? "/org/$organizationSlug/setup/accounts"
-            : first === "assistant"
-              ? "/org/$organizationSlug/setup/assistant"
-              : "/org/$organizationSlug/setup"
+          setup === undefined
+            ? "/org/$organizationSlug/setup"
+            : "/org/$organizationSlug/setup/assistant"
         }
         params={{ organizationSlug: team.slug }}
         replace
@@ -310,8 +306,8 @@ function TeamForm({
 }
 
 /**
- * The team's setup steps in the order its setup sequence names. They render only once the order
- * is known, which the setup document reads with the page, so no step shows in the wrong place.
+ * The team's setup steps. They render only once the team's setup is known (whether its steps can
+ * be skipped), which the setup document reads with the page, so no step shows the wrong buttons.
  */
 export function CloudSetupSequence({ children }: { readonly children: ReactNode }) {
   const { organization } = useOrganizationRoute();

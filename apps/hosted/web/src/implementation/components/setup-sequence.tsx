@@ -7,26 +7,22 @@ import {
   type ReactNode,
 } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
-import type { SetupOrder, SetupSkip, SetupStep } from "@executor-js/hosted-server/setup";
+import { setupSteps, type SetupSkip, type SetupStep } from "@executor-js/hosted-server/setup";
 import type { AssistantId } from "@executor-js/ui/contracts/dashboard";
 import type { SetupHandoff } from "../../contracts/navigation.ts";
 import { reportBrowserUsage, type BrowserUsage } from "../../contracts/product-analytics.ts";
 import { useOrganizationRoute } from "./organization.tsx";
 
 /**
- * The order a team's setup steps run in and whether they can be skipped, each with whether the
- * member is in that Cloud onboarding experiment. Cloud reads it for the team before the first step
- * renders; other hosts provide none and show skippable steps, accounts first.
+ * Whether a team's setup steps can be skipped, with whether the member is in Cloud's onboarding
+ * skip experiment. Cloud reads it for the team before the first step renders; other hosts provide
+ * none and show skippable steps. Every host runs the steps in `setupSteps`' order.
  */
 export interface SetupSequence {
-  readonly order: SetupOrder;
-  readonly enrolled: boolean;
   readonly skip: { readonly variant: SetupSkip; readonly enrolled: boolean };
 }
 
 const SetupSequenceContext = createContext<SetupSequence>({
-  order: "accounts_first",
-  enrolled: false,
   skip: { variant: "skippable", enrolled: false },
 });
 
@@ -42,18 +38,9 @@ export function SetupSequenceProvider({
 
 export type { SetupStep };
 
-const steps: Record<SetupOrder, readonly [SetupStep, SetupStep]> = {
-  accounts_first: ["accounts", "assistant"],
-  assistant_first: ["assistant", "accounts"],
-};
-
-/** The step a team's setup opens on. */
-export const firstSetupStep = (sequence: SetupSequence): SetupStep => steps[sequence.order][0];
-
 /**
- * Where a step leads. The account step carries the assistant's handoff when the assistant came
- * first; the first prompt needs it. Without one, because the member skipped the assistant, setup
- * ends at the dashboard.
+ * Where a step leads. The account step carries the assistant's handoff; the first prompt needs it.
+ * Without one, because the member skipped the assistant, setup ends at the dashboard.
  */
 export type SetupDestination =
   | { readonly screen: "accounts"; readonly handoff: SetupHandoff | undefined }
@@ -74,15 +61,15 @@ const destination = (
         : { screen: "prompt", handoff };
 
 /**
- * The team's setup order as destinations: the first step, and the one after each step, given
+ * The team's setup steps as destinations: the first step, and the one after each step, given
  * the assistant handoff known there. A step's one forward action leads to `after` whether it
  * skips or continues; skipping the assistant just carries no handoff. Steps report their onboarding
- * events through `report`, which adds each experiment's variant for an enrolled member and the
+ * events through `report`, which adds the skip experiment's variant for an enrolled member and the
  * assistant a step is for.
  */
 export function useSetupSequence() {
   const sequence = use(SetupSequenceContext);
-  const order = steps[sequence.order];
+  const order: readonly SetupStep[] = setupSteps;
   return {
     /**
      * The member's steps cannot be skipped: each forward button waits until its step is done, and
@@ -90,8 +77,6 @@ export function useSetupSequence() {
      */
     required: sequence.skip.variant === "required",
     first: destination(order[0], undefined),
-    /** The step after `step`; none after the last one, which leads to the first prompt. */
-    ahead: (step: SetupStep): SetupStep | undefined => order[order.indexOf(step) + 1],
     after: (step: SetupStep, handoff: SetupHandoff | undefined) =>
       destination(order[order.indexOf(step) + 1], handoff),
     report: (action: string, outcome: BrowserUsage["outcome"], assistant?: AssistantId) =>
@@ -99,7 +84,6 @@ export function useSetupSequence() {
         area: "onboarding",
         action,
         outcome,
-        ...(sequence.enrolled ? { onboarding_variant: sequence.order } : {}),
         ...(sequence.skip.enrolled ? { onboarding_skip_variant: sequence.skip.variant } : {}),
         ...(assistant === undefined ? {} : { assistant }),
       }),

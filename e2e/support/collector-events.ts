@@ -103,3 +103,21 @@ export const flagEvaluations = (person: string) =>
         lines.filter((line) => field(parseLeniently(line), "distinct_id") === person).length,
     ),
   );
+
+/**
+ * The flags each of the product's evaluations for one person asked for, in order; `undefined` for
+ * one that named none, which PostHog answers with every flag.
+ */
+export const flagRequests = (person: string) =>
+  scopeOf("A flag evaluation read", { person }).pipe(
+    Effect.andThen(collectorLinesWholeEnvironment("flags.ndjson")),
+    Effect.map((lines) =>
+      lines
+        .map(parseLeniently)
+        .filter((request) => field(request, "distinct_id") === person)
+        .map((request) => {
+          const keys = field(request, "flag_keys_to_evaluate");
+          return Array.isArray(keys) ? keys.map(String) : undefined;
+        }),
+    ),
+  );

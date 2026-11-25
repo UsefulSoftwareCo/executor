@@ -277,9 +277,7 @@ function AssistantNext({
       done={agent !== undefined}
       required={sequence.required}
       hint="Connect your assistant to continue"
-      label={
-        sequence.ahead("assistant") === "accounts" ? "Next: connect accounts" : "Next: first prompt"
-      }
+      label="Next: connect accounts"
     >
       {(content) => (
         <SetupLink

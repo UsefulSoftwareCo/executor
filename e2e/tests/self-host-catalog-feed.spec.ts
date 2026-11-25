@@ -92,7 +92,10 @@ const heldRetry = (where: string) =>
     }),
   );
 
-/** Run first-run setup in the browser and wait for onboarding's account step to settle. */
+/**
+ * Run first-run setup in the browser, which opens the assistant step first, skip it, and wait for
+ * onboarding's account step to settle.
+ */
 const setUp = (origin: string, email: string) =>
   Effect.gen(function* () {
     const browser = yield* Browser;
@@ -112,7 +115,13 @@ const setUp = (origin: string, email: string) =>
     yield* browser.use("Create the administrator", (page) =>
       page.getByRole("button", { name: "Create administrator account", exact: true }).click(),
     );
-    yield* browser.use("Setup opens the account step", (page) =>
+    yield* browser.use("Setup opens the assistant step", (page) =>
+      page.waitForURL(new RegExp(`^${origin}/org/[^/]+/setup/assistant$`, "u")),
+    );
+    yield* browser.use("Skip the assistant step", (page) =>
+      page.getByRole("link", { name: "Skip for now", exact: true }).click(),
+    );
+    yield* browser.use("Skipping opens the account step", (page) =>
       page.waitForURL(new RegExp(`^${origin}/org/[^/]+/setup/accounts$`, "u")),
     );
     yield* browser.use("The account step settles", (page) =>
