@@ -38,6 +38,15 @@ export const kindOfNote = (line: string): { readonly kind: NoteKind; readonly te
   return { kind: marked[1]!.toLowerCase() as NoteKind, text: marked[2] ?? "" };
 };
 
+export const noteProducts = ["cloud", "local", "self-host"] as const;
+export type NoteProduct = (typeof noteProducts)[number];
+
+export const noteProductNames: Readonly<Record<NoteProduct, string>> = {
+  cloud: "Cloud",
+  local: "CLI and desktop",
+  "self-host": "Self-host",
+};
+
 export const releasePageUrl = (version: string) =>
   `https://github.com/UsefulSoftwareCo/executor/releases/tag/${encodeURIComponent(`executor@${version}`)}`;
 

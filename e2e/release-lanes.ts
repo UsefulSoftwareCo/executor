@@ -90,13 +90,15 @@ const SuiteConfig = Schema.Struct({
 const globExpression = (glob: string) =>
   new RegExp(
     `^${glob
-      .split(/(\*\*|\*)/)
+      .split(/(\*\*\/|\*\*|\*)/)
       .map((part) =>
-        part === "**"
-          ? "[\\s\\S]*"
-          : part === "*"
-            ? "[^/]*"
-            : part.replace(/[.+?^${}()|[\]\\]/g, "\\$&"),
+        part === "**/"
+          ? "(?:[\\s\\S]*/)?"
+          : part === "**"
+            ? "[\\s\\S]*"
+            : part === "*"
+              ? "[^/]*"
+              : part.replace(/[.+?^${}()|[\]\\]/g, "\\$&"),
       )
       .join("")}$`,
   );

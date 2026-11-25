@@ -299,6 +299,13 @@ const program = Effect.gen(function* () {
   const failed = outcomes.filter((outcome) => !outcome.passed);
   for (const outcome of failed)
     yield* Console.log(`\n=== ${outcome.name} failed:\n${outcome.output.trimEnd()}`);
+  const notes = outcomes.find(
+    (outcome) => outcome.name === "release-notes" && outcome.passed && outcome.output !== "",
+  );
+  if (notes !== undefined)
+    yield* Console.log(
+      `\n=== release-notes: check each note's kind and who it will be shown to:\n${notes.output.trimEnd()}`,
+    );
   yield* Console.log(
     `\nNot checked here; CI runs these after the push:\n${[
       ...(only === undefined

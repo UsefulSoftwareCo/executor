@@ -1543,7 +1543,7 @@ layer(NodeServices.layer, { excludeTestServices: true })("Release notes", (it) =
   );
 
   it.effect(
-    "--cloud lists the newest notes of the last 30 days on changes that reach Cloud and no other product's own code, Cloud-only ones included, without asking the public repository",
+    "--cloud lists the newest notes of the last 30 days on changes that reach Cloud, Cloud-only ones and ones that also change another product's own code included, without asking the public repository",
     () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -1577,7 +1577,7 @@ layer(NodeServices.layer, { excludeTestServices: true })("Release notes", (it) =
           },
           {
             title: "Share sign-in limits per client (#309)",
-            body: "Release-note: PRIVATE Local Executor and Cloud alike.",
+            body: "Release-note: Sign-in limits apply to each client on its own.",
             files: ["apps/hosted/cloud/src/limits.ts", "apps/local/server/src/limits.ts"],
           },
           {
@@ -1627,6 +1627,7 @@ layer(NodeServices.layer, { excludeTestServices: true })("Release notes", (it) =
           notes: [
             { date: today, text: "Teams have names.", kind: "fix" },
             { date: today, text: "A team's name shows on its page.", kind: "fix" },
+            { date: today, text: "Sign-in limits apply to each client on its own.", kind: "fix" },
             { date: today, text: "Each app's card now shows its accounts.", kind: "fix" },
             { date: today, text: "The dashboard opens faster.", kind: "fix" },
             { date: today, text: "Cloud members see what is new.", kind: "fix" },
@@ -1644,6 +1645,312 @@ layer(NodeServices.layer, { excludeTestServices: true })("Release notes", (it) =
         });
         expect(newest.stdout + selected.stdout).not.toContain("PRIVATE");
         expect(yield* fs.readFileString(`${directory}/cloud.json`)).not.toContain("PRIVATE");
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "scripts/releases/note-audiences.ts gives any note with an entry's hash exactly the products the entry names, narrower or wider than its files, in Cloud's notes, a release's headings and the desktop feed alike, and any other note goes to every product its change reaches",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const desktop =
+          "The desktop app no longer interrupts you with a dialog when an update is ready; a card in the sidebar shows it, and you can restart to install it from there.";
+        const tokens =
+          "Revoking the Executor app's automatically created token no longer breaks its management tools, the Tokens page marks that token, and connecting an Executor API key account checks the organization first.";
+        const updates =
+          "Self-hosted servers now check once a day for a newer release and show owners and admins how to update; the docs explain what the check sends and how to turn it off.";
+        const skills =
+          "MCP clients that support the Skills extension now list and load the skills of every app you can see, straight from Executor.";
+        const shared = ["packages/ui/src/shell.ts", "apps/local/desktop/src/updates.ts"];
+        const merges: ReadonlyArray<Merge> = [
+          {
+            title: "Change the SDK long ago (#4799)",
+            files: ["packages/sdk/src/old.ts"],
+            date: new Date(Date.now() - 40 * 24 * 60 * 60 * 1000).toISOString(),
+          },
+          {
+            title: "Move a notice (#4877)",
+            body: `Release-note: ${desktop}\nRelease-note: The sidebar draws faster.`,
+            files: shared,
+          },
+          {
+            title: "Copy the notice (#4878)",
+            body: `Release-note: ${desktop}`,
+            files: [...shared, "packages/ui/src/copy.ts"],
+          },
+          {
+            title: "Mark a token (#5143)",
+            body: `Release-note: ${tokens}`,
+            files: ["apps/hosted/cloud/src/tokens.ts"],
+          },
+          {
+            title: "Check for updates (#4924)",
+            body: `Release-note: ${updates}`,
+            files: ["apps/docs/content/run/self-host.mdx"],
+          },
+          {
+            title: "Serve a feature (#5407)",
+            body: `Release-note: Feature: ${skills}`,
+            files: ["apps/hosted/server/src/mcp.ts", "apps/local/server/src/mcp.ts"],
+          },
+        ];
+        const repos = yield* repositories(merges);
+        const today = new Date().toISOString().slice(0, 10);
+        const cloud = yield* notes({ ...repos, publicRepo: "file:///nonexistent/public" }, [
+          "--cloud",
+          "-",
+        ]);
+        expect(cloud.exitCode, cloud.stdout + cloud.stderr).toBe(0);
+        expect(JSON.parse(cloud.stdout)).toEqual({
+          notes: [
+            { date: today, text: skills, kind: "feature" },
+            { date: today, text: tokens, kind: "fix" },
+            { date: today, text: "The sidebar draws faster.", kind: "fix" },
+          ],
+        });
+
+        const version = JSON.parse(yield* fs.readFileString("apps/cli/package.json")).version;
+        const channel = version.includes("-beta.") ? "beta" : "latest";
+        const published = repos.publicRepo.replace(/^file:\/\//u, "");
+        yield* git(published, "commit", "--quiet", "--allow-empty", "-m", `Export ${repos.beta4}`);
+        yield* git(published, "tag", "executor@2.0.0-beta.7");
+        const directory = yield* fs.makeTempDirectoryScoped({ prefix: "executor-note-audiences-" });
+        const json = path.join(directory, "notes.json");
+        const release = yield* notes(repos, [
+          "--version",
+          version,
+          "--output",
+          `${directory}/notes.md`,
+          "--json",
+          json,
+        ]);
+        expect(release.exitCode, release.stderr).toBe(0);
+        expect(JSON.parse(yield* fs.readFileString(json)).releases[0]).toEqual({
+          version,
+          notes: [
+            { area: "CLI and desktop", text: desktop },
+            { area: "All installs", text: "The sidebar draws faster." },
+            { area: "CLI and desktop", text: desktop },
+            { area: "Self-host", text: tokens },
+            { area: "Self-host", text: updates },
+            { area: "All installs", text: skills },
+          ],
+        });
+        const checkUpdates =
+          repos.merged[merges.findIndex((merge) => merge.title.includes("#4924"))]!;
+        expect(release.stderr).not.toContain(checkUpdates);
+        const markdown = yield* fs.readFileString(`${directory}/notes.md`);
+        expect(markdown.slice(0, markdown.indexOf("## Install"))).toBe(
+          [
+            "## Changes since 2.0.0-beta.7",
+            "",
+            "### All installs",
+            "",
+            "- The sidebar draws faster.",
+            `- ${skills}`,
+            "",
+            "### CLI and desktop",
+            "",
+            `- ${desktop}`,
+            `- ${desktop}`,
+            "",
+            "### Self-host",
+            "",
+            `- ${tokens}`,
+            `- ${updates}`,
+            "",
+            "Not listed: 1 other change.",
+            "",
+            "",
+          ].join("\n"),
+        );
+
+        const files = [
+          ["darwin", "arm64", `executor-v2-${channel}-mac.yml`],
+          ["darwin", "x64", `executor-v2-${channel}-mac.yml`],
+          ["linux", "x64", `executor-v2-${channel}-linux.yml`],
+          ["linux", "arm64", `executor-v2-${channel}-linux-arm64.yml`],
+          ["win32", "x64", `executor-v2-${channel}.yml`],
+        ] as const;
+        for (const [platform, arch, file] of files) {
+          const artifacts = path.join(
+            directory,
+            "artifacts",
+            `${version}-${platform}-${arch}`,
+            "desktop-artifacts",
+          );
+          yield* fs.makeDirectory(artifacts, { recursive: true });
+          const bytes = Buffer.from(`${platform}-${arch}`);
+          const installer = `executor-desktop-${version}-${platform}-${arch}.zip`;
+          yield* fs.writeFile(path.join(artifacts, installer), bytes);
+          yield* fs.writeFileString(
+            path.join(artifacts, file),
+            JSON.stringify({
+              version,
+              files: [
+                {
+                  url: installer,
+                  sha512: createHash("sha512").update(bytes).digest("base64"),
+                  size: bytes.length,
+                },
+              ],
+              releaseDate: "2026-11-17T00:00:00.000Z",
+            }),
+          );
+        }
+        const output = path.join(directory, "feed");
+        const child = yield* processes.spawn(
+          ChildProcess.make(
+            "node",
+            ["scripts/releases/desktop-feed.ts", path.join(directory, "artifacts"), output, json],
+            { stdout: "pipe", stderr: "pipe" },
+          ),
+        );
+        const [log, exitCode] = yield* Effect.all(
+          [
+            Stream.merge(child.stdout, child.stderr).pipe(Stream.decodeText(), Stream.mkString),
+            child.exitCode,
+          ],
+          { concurrency: "unbounded" },
+        );
+        expect(Number(exitCode), log).toBe(0);
+        for (const [, , file] of files) {
+          const feed = JSON.parse(yield* fs.readFileString(path.join(output, file)));
+          expect(feed.releaseNotes[0], file).toEqual({
+            version,
+            note: [desktop, "The sidebar draws faster.", desktop, skills].join("\n"),
+          });
+        }
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "--check says who each note is shown to and why, with the entry for its hash or the files that reach each product, prints its hash, and says how to change it",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const hash = (text: string) => createHash("sha256").update(text).digest("hex").slice(0, 16);
+        const desktop =
+          "The desktop app no longer interrupts you with a dialog when an update is ready; a card in the sidebar shows it, and you can restart to install it from there.";
+        const repos = yield* repositories([]);
+        const commitAll = (subject: string, body: string) =>
+          Effect.gen(function* () {
+            yield* git(repos.main, "add", "--all");
+            yield* git(repos.main, "commit", "--quiet", "--allow-empty", "-m", subject, "-m", body);
+          });
+        const write = (file: string, text: string) =>
+          Effect.gen(function* () {
+            yield* fs.makeDirectory(`${repos.main}/${file.slice(0, file.lastIndexOf("/"))}`, {
+              recursive: true,
+            });
+            yield* fs.writeFileString(`${repos.main}/${file}`, text);
+          });
+        const change =
+          "to change that, add an entry with its hash and the products it is for to scripts/releases/note-audiences.ts.";
+        const base = yield* git(repos.main, "rev-parse", "HEAD");
+        yield* write("apps/hosted/server/src/skills.ts", "skills\n");
+        yield* write("apps/local/server/src/skills.ts", "skills\n");
+        yield* write("scripts/tool.ts", "tool\n");
+        yield* commitAll(
+          "Move a notice",
+          `Release-note: ${desktop}\nRelease-note: Improvement: The skills page loads faster.`,
+        );
+        const reached =
+          "(Cloud: apps/hosted/server/src/skills.ts; CLI and desktop: apps/local/server/src/skills.ts; Self-host: apps/hosted/server/src/skills.ts)";
+        const checked = yield* notes(repos, ["--check", base]);
+        expect(checked.exitCode, checked.stdout + checked.stderr).toBe(0);
+        expect(checked.stdout).toBe(
+          [
+            `Release-note accepted: ${desktop}`,
+            "  Kind: fix, so Cloud's what's new never leads with it (write Feature: or Improvement: before a note that is one)",
+            `  Shown to: CLI and desktop, as scripts/releases/note-audiences.ts says for its hash. By its files this change reaches Cloud, CLI and desktop, Self-host ${reached}.`,
+            "  Hash: e393b4780407fa27",
+            "Release-note accepted: The skills page loads faster.",
+            "  Kind: improvement",
+            `  Shown to: Cloud, CLI and desktop, Self-host, the products this change reaches ${reached}.`,
+            `  If the users of one of them would not notice it, ${change}`,
+            `  Hash: ${hash("The skills page loads faster.")}`,
+            'Who a note is for is the writer\'s call: see "Who a note is for" in RELEASING.md.',
+            "",
+          ].join("\n"),
+        );
+        expect(hash(desktop)).toBe("e393b4780407fa27");
+
+        const toolBase = yield* git(repos.main, "rev-parse", "HEAD");
+        yield* write("scripts/tool.ts", "tool, again\n");
+        yield* commitAll("Fix the tool", `Release-note: The tool runs.\nRelease-note: ${desktop}`);
+        const tool = yield* notes(repos, ["--check", toolBase]);
+        expect(tool.exitCode, tool.stdout + tool.stderr).toBe(0);
+        expect(tool.stdout).toContain(
+          [
+            "Release-note accepted: The tool runs.",
+            "  Kind: fix, so Cloud's what's new never leads with it (write Feature: or Improvement: before a note that is one)",
+            "  Shown to: no product, since this change touches only scripts, tests, fixtures, documents, CI or tooling, which no product ships.",
+            `  If users will notice it, ${change}`,
+            `  Hash: ${hash("The tool runs.")}`,
+            `Release-note accepted: ${desktop}`,
+            "  Kind: fix, so Cloud's what's new never leads with it (write Feature: or Improvement: before a note that is one)",
+            "  Shown to: CLI and desktop, as scripts/releases/note-audiences.ts says for its hash. By its files this change reaches no product.",
+            "  The entry names CLI and desktop, which this change's files do not reach: keep that only if their users will notice the change.",
+            "  Hash: e393b4780407fa27",
+          ].join("\n"),
+        );
+
+        const portBase = yield* git(repos.main, "rev-parse", "HEAD");
+        yield* write("apps/docs/content/guide.mdx", "guide\n");
+        yield* commitAll(
+          "Port the guide",
+          `Release-note: The guide explains approvals.\n\n${portMarker}`,
+        );
+        const ported = yield* notes(repos, ["--check", portBase]);
+        expect(ported.exitCode, ported.stdout + ported.stderr).toBe(0);
+        expect(ported.stdout).toContain(
+          "  As a port of a public pull request, it is also listed in the public release under Other, with its credit.",
+        );
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "every entry of scripts/releases/note-audiences.ts has a hash no other entry has, as --check prints it, and at least one known product, once each",
+    () =>
+      Effect.gen(function* () {
+        const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const path = yield* Path.Path;
+        const child = yield* processes.spawn(
+          ChildProcess.make(
+            "node",
+            [
+              "--input-type=module",
+              "--eval",
+              "const { noteAudiences } = await import(process.argv[1]); process.stdout.write(JSON.stringify(noteAudiences));",
+              path.resolve("scripts/releases/note-audiences.ts"),
+            ],
+            { stdout: "pipe", stderr: "pipe" },
+          ),
+        );
+        const [stdout, stderr, exitCode] = yield* Effect.all(
+          [
+            child.stdout.pipe(Stream.decodeText(), Stream.mkString),
+            child.stderr.pipe(Stream.decodeText(), Stream.mkString),
+            child.exitCode,
+          ],
+          { concurrency: "unbounded" },
+        );
+        expect(Number(exitCode), stderr).toBe(0);
+        const entries: ReadonlyArray<{ hash: string; audience: ReadonlyArray<string> }> =
+          JSON.parse(stdout);
+        expect(entries.length).toBeGreaterThan(0);
+        const hashes = entries.map(({ hash }) => hash);
+        expect(hashes.filter((hash, index) => hashes.indexOf(hash) !== index)).toEqual([]);
+        for (const { hash, audience } of entries) {
+          expect(hash).toMatch(/^[0-9a-f]{16}$/u);
+          expect(audience.length, hash).toBeGreaterThan(0);
+          expect(new Set(audience).size, hash).toBe(audience.length);
+          for (const product of audience)
+            expect(["cloud", "local", "self-host"], hash).toContain(product);
+        }
       }).pipe(Effect.scoped),
   );
 

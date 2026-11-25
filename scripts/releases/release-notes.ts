@@ -8,10 +8,14 @@ import {
   cloudNoteDays,
   kindOfNote,
   type NoteKind,
+  type NoteProduct,
+  noteProductNames,
+  noteProducts,
   refusal,
 } from "@executor-js/utils/release-notes";
 import { notDeployInputs } from "../../apps/hosted/cloud/src/infrastructure/deploy-inputs.ts";
 import { type NotesHistory, notesHistoryProblem } from "./notes-history.ts";
+import { noteAudience, noteHash } from "./note-audiences.ts";
 import { earlierNoteKind } from "./note-kinds.ts";
 
 class ReleaseNotesFailed extends Schema.TaggedError<ReleaseNotesFailed>()("ReleaseNotesFailed", {
@@ -276,7 +280,19 @@ const squashed = (title: string, commits: ReadonlyArray<{ subject: string; body:
     ? `${commits[0]!.subject}\n\n${commits[0]!.body}`
     : [title, ...commits.map(({ subject, body }) => `* ${subject}\n\n${body}`)].join("\n\n");
 
-const checkBranch = (base: string, title: string) =>
+const audienceText = (audience: ReadonlyArray<NoteProduct>) =>
+  audience.map((product) => noteProductNames[product]).join(", ");
+
+const someFiles = (files: ReadonlyArray<string>) =>
+  files.length <= 3
+    ? files.join(", ")
+    : `${files.slice(0, 3).join(", ")} and ${files.length - 3} more`;
+
+const checkBranch = (
+  base: string,
+  title: string,
+  reachOf: (files: ReadonlyArray<string>) => Readonly<Record<NoteProduct, ReadonlyArray<string>>>,
+) =>
   Effect.gen(function* () {
     const log = yield* gitOk(["log", "--reverse", "--format=%x1e%s%x1f%b", `${base}..HEAD`]);
     const commits = log
@@ -287,7 +303,15 @@ const checkBranch = (base: string, title: string) =>
         return { subject, body: body.trimEnd() };
       });
     if (commits.length === 0) return yield* Console.log(`No commits since ${base}.`);
-    const { notes, ignored, refused, hiddenBy } = notesOf(squashed(title, commits));
+    const message = squashed(title, commits);
+    const { notes, ignored, refused, hiddenBy } = notesOf(message);
+    const ported = port(message).number !== undefined;
+    const reaching = reachOf(
+      (yield* gitOk(["diff", "--no-renames", "--name-only", `${base}...HEAD`]))
+        .split("\n")
+        .filter((file) => file !== ""),
+    );
+    const reached = noteProducts.filter((product) => reaching[product].length > 0);
     const problems = [
       ...(hiddenBy === undefined
         ? []
@@ -302,13 +326,64 @@ const checkBranch = (base: string, title: string) =>
           `line ${line} of the squashed message has a Release-note: line that ${reason}`,
       ),
     ];
-    for (const note of notes)
+    for (const note of notes) {
+      const audience = noteAudience(note.text);
+      const hash = noteHash(note.text);
+      const change =
+        "to change that, add an entry with its hash and the products it is for to scripts/releases/note-audiences.ts";
+      const why = reached
+        .map((product) => `${noteProductNames[product]}: ${someFiles(reaching[product])}`)
+        .join("; ");
+      const unreached = (audience ?? []).filter((product) => !reached.includes(product));
+      const portLine =
+        ported &&
+        audience === undefined &&
+        !reached.includes("local") &&
+        !reached.includes("self-host")
+          ? [
+              "  As a port of a public pull request, it is also listed in the public release under Other, with its credit.",
+            ]
+          : [];
+      const shown =
+        audience !== undefined
+          ? [
+              `  Shown to: ${audienceText(audience)}, as scripts/releases/note-audiences.ts says for its hash. ${
+                reached.length === 0
+                  ? "By its files this change reaches no product."
+                  : `By its files this change reaches ${audienceText(reached)} (${why}).`
+              }`,
+              ...(unreached.length === 0
+                ? []
+                : [
+                    `  The entry names ${audienceText(unreached)}, which this change's files do not reach: keep that only if their users will notice the change.`,
+                  ]),
+            ]
+          : reached.length === 0
+            ? [
+                "  Shown to: no product, since this change touches only scripts, tests, fixtures, documents, CI or tooling, which no product ships.",
+                `  If users will notice it, ${change}.`,
+              ]
+            : [
+                `  Shown to: ${audienceText(reached)}, the products this change reaches (${why}).`,
+                `  If the users of one of them would not notice it, ${change}.`,
+              ];
       yield* Console.log(
-        `Release-note accepted: ${note.text}\n  Kind: ${note.kind}${
-          note.kind === "fix"
-            ? ", so Cloud's what's new never leads with it (write Feature: or Improvement: before a note that is one)"
-            : ""
-        }`,
+        [
+          `Release-note accepted: ${note.text}`,
+          `  Kind: ${note.kind}${
+            note.kind === "fix"
+              ? ", so Cloud's what's new never leads with it (write Feature: or Improvement: before a note that is one)"
+              : ""
+          }`,
+          ...shown,
+          `  Hash: ${hash}`,
+          ...portLine,
+        ].join("\n"),
+      );
+    }
+    if (notes.length > 0)
+      yield* Console.log(
+        'Who a note is for is the writer\'s call: see "Who a note is for" in RELEASING.md.',
       );
     if (problems.length > 0)
       return yield* new ReleaseNotesFailed({
@@ -352,8 +427,23 @@ NodeRuntime.runMain(
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const options = yield* parseArguments(process.argv.slice(2));
+    const shipped = yield* shippedSources;
+    const localOnly = shipped.local.filter((glob) => !shipped.image.includes(glob));
+    const reachesCloud = (file: string) =>
+      !notDeployInputs.some((entry) => entry.path.test(file)) &&
+      !matchesAny([...notShipped, ...documents], file) &&
+      !matchesAny([...localOnly, ...selfHostOnly], file);
+    const reachOf = (files: ReadonlyArray<string>): Record<NoteProduct, ReadonlyArray<string>> => {
+      const builtFrom = (globs: ReadonlyArray<string>) =>
+        files.filter((file) => matchesAny(globs, file) && !matchesAny(notShipped, file));
+      return {
+        cloud: files.filter(reachesCloud),
+        local: builtFrom(shipped.local),
+        "self-host": builtFrom(shipped.image),
+      };
+    };
     if (options.check !== undefined)
-      return yield* checkBranch(options.check, options.title ?? "Pull request title");
+      return yield* checkBranch(options.check, options.title ?? "Pull request title", reachOf);
     const version = yield* Schema.decodeUnknownEffect(ReleaseVersion)(
       options.version ?? release.version,
     ).pipe(
@@ -362,20 +452,14 @@ NodeRuntime.runMain(
       ),
     );
     const to = (yield* gitOk(["rev-parse", "--verify", `${options.to ?? "HEAD"}^{commit}`])).trim();
-    const shipped = yield* shippedSources;
-    const everything = [...new Set([...shipped.local, ...shipped.image])];
-    const localOnly = shipped.local.filter((glob) => !shipped.image.includes(glob));
-    const imageOnly = shipped.image.filter((glob) => !shipped.local.includes(glob));
-    const reachesCloud = (file: string) =>
-      !notDeployInputs.some((entry) => entry.path.test(file)) &&
-      !matchesAny([...notShipped, ...documents], file) &&
-      !matchesAny([...localOnly, ...selfHostOnly], file);
-    const anotherProducts = (files: ReadonlyArray<string>) =>
-      files.some(
-        (file) =>
-          matchesAny([...localOnly, ...selfHostOnly], file) &&
-          !matchesAny([...notShipped, ...documents], file),
-      );
+    const areaOf = (audience: ReadonlyArray<NoteProduct>): Area | undefined =>
+      audience.includes("local") && audience.includes("self-host")
+        ? "All installs"
+        : audience.includes("local")
+          ? "CLI and desktop"
+          : audience.includes("self-host")
+            ? "Self-host"
+            : undefined;
 
     const warn = (sha: string, message: string) =>
       Console.warn(`::warning title=Release notes::${sha} ${message}`);
@@ -447,11 +531,6 @@ NodeRuntime.runMain(
             other += 1;
             continue;
           }
-          const files = commit.files.filter((file) =>
-            reach === "release"
-              ? matchesAny(everything, file) && !matchesAny(notShipped, file)
-              : reachesCloud(file),
-          );
           const { number: ported, handles, unread, unnamed } = port(commit.message);
           for (const line of unread)
             yield* warn(
@@ -464,15 +543,32 @@ NodeRuntime.runMain(
                 commit.sha,
                 `line ${line} has a Co-authored-by: trailer without a users.noreply.github.com address that names a GitHub handle, so the notes thank no one for it.`,
               );
-          if (reach === "cloud" && (files.length === 0 || anotherProducts(commit.files))) {
-            other += 1;
-            continue;
-          }
-          if (ported === undefined && files.length === 0) {
+          const reaching = reachOf(commit.files);
+          const reached = noteProducts.filter((product) => reaching[product].length > 0);
+          const addressed = notes.map((note) => {
+            const audience = noteAudience(note.text);
+            return { ...note, stated: audience !== undefined, audience: audience ?? reached };
+          });
+          const shown = addressed.flatMap((note) => {
+            if (reach === "cloud")
+              return note.audience.includes("cloud")
+                ? [{ ...note, area: areaOf(note.audience) ?? "Other" }]
+                : [];
+            const area =
+              areaOf(note.audience) ?? (ported !== undefined && !note.stated ? "Other" : undefined);
+            return area === undefined ? [] : [{ ...note, area }];
+          });
+          if (
+            reach === "release" &&
+            ported === undefined &&
+            areaOf(reached) === undefined &&
+            addressed.some((note) => !note.stated)
+          )
             yield* warn(
               commit.sha,
               "has a Release-note: line on a change to nothing a release ships (Cloud-only, CI, tests or tooling), so the notes leave it out.",
             );
+          if (shown.length === 0) {
             other += 1;
             continue;
           }
@@ -492,8 +588,8 @@ NodeRuntime.runMain(
                     ? `, thanks ${handles.map((handle) => `@${handle}`).join(", ")}`
                     : ""
                 })`;
-          const lines = notes.map((note) => `- ${note.text}${credit}`);
-          const added = lines.reduce((total, line) => total + line.length, 0);
+          const lines = shown.map((note) => ({ area: note.area, line: `- ${note.text}${credit}` }));
+          const added = lines.reduce((total, { line }) => total + line.length, 0);
           if (reach === "release" && length + added > maxNotesLength) {
             length = maxNotesLength;
             yield* warn(
@@ -504,18 +600,10 @@ NodeRuntime.runMain(
             continue;
           }
           length += added;
-          const area: Area =
-            files.length === 0
-              ? "Other"
-              : files.every((file) => matchesAny(localOnly, file))
-                ? "CLI and desktop"
-                : files.every((file) => matchesAny(imageOnly, file))
-                  ? "Self-host"
-                  : "All installs";
           if (ported !== undefined) credited.add(ported);
-          listed.get(area)!.push(...lines);
+          for (const { area, line } of lines) listed.get(area)!.push(line);
           plain.push(
-            ...notes.map(({ text, kind }) => ({
+            ...shown.map(({ area, text, kind }) => ({
               area,
               text,
               kind: kind === "fix" ? (earlierNoteKind(commit.title, text) ?? kind) : kind,
