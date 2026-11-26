@@ -1,9 +1,8 @@
-/** Removing an organization is a separate capability; a host composes it only where it applies. */
 import { Context, Effect, Schema } from "effect";
 import { ApiError } from "@executor-js/utils/api-error";
 import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
 import { StorageError, AppWorkflowsActive, AccountWorkflowsActive } from "@executor-js/sdk/core";
-import { AuthenticationUnavailable } from "./auth.ts";
+import { AuthenticationUnavailable, BrowserSessionOnly, Forbidden } from "./auth.ts";
 import {
   OrganizationForbidden,
   OrganizationId,
@@ -11,7 +10,6 @@ import {
   RequireOrganization,
 } from "./organization.ts";
 
-/** What the organization held when removal started, so the browser can report a real result. */
 export const OrganizationRemoved = Schema.Struct({
   organization: OrganizationId,
   apps: Schema.Int,
@@ -19,7 +17,6 @@ export const OrganizationRemoved = Schema.Struct({
 });
 export type OrganizationRemoved = typeof OrganizationRemoved.Type;
 
-/** The tombstone store is unreachable, so removal can neither start nor be hidden safely. */
 export const OrganizationRemovalUnavailable = ApiError.define({
   tag: "OrganizationRemovalUnavailable",
   status: 503,
@@ -27,11 +24,6 @@ export const OrganizationRemovalUnavailable = ApiError.define({
 });
 export type OrganizationRemovalUnavailable = typeof OrganizationRemovalUnavailable.Type;
 
-/**
- * The ordered durable steps. Each name is the step identity in the engine's
- * journal, so renaming one abandons the recorded progress of every run in
- * flight. Names are also what failure reports carry.
- */
 export const OrganizationRemovalStepName = Schema.Literals([
   "unregister-webhooks",
   "purge-owner-store",
@@ -43,11 +35,6 @@ export const OrganizationRemovalStepName = Schema.Literals([
 ]);
 export type OrganizationRemovalStepName = typeof OrganizationRemovalStepName.Type;
 
-/**
- * A step that exhausted its retries. The organization and step name are the
- * two facts an operator needs to finish the removal by hand, so both travel
- * with the failure rather than only appearing in a log line.
- */
 export class OrganizationRemovalFailed extends Schema.TaggedError<OrganizationRemovalFailed>()(
   "OrganizationRemovalFailed",
   { organization: Schema.String, step: OrganizationRemovalStepName },
@@ -57,18 +44,12 @@ export class OrganizationRemovalFailed extends Schema.TaggedError<OrganizationRe
   }
 }
 
-/** Retry policy for one durable step, in the shape both engines accept. */
 export interface OrganizationRemovalRetries {
   readonly limit: number;
   readonly delay: string;
   readonly backoff: "constant" | "linear" | "exponential";
 }
 
-/**
- * One durable step. The runner owns journaling and retries; the body must be
- * idempotent, because at-least-once delivery replays a step whose result was
- * never recorded. A test substitutes a recorder for the engine here.
- */
 export interface OrganizationRemovalStepRunner<R = never> {
   <A>(
     name: OrganizationRemovalStepName,
@@ -77,7 +58,6 @@ export interface OrganizationRemovalStepRunner<R = never> {
   ): Effect.Effect<A, OrganizationRemovalFailed, R>;
 }
 
-/** A removal in flight, or one that has finished and is retained as its record. */
 export const OrganizationRemovalRecord = Schema.Struct({
   organization: OrganizationId,
   instance: Schema.NonEmptyString,
@@ -86,20 +66,14 @@ export const OrganizationRemovalRecord = Schema.Struct({
 });
 export type OrganizationRemovalRecord = typeof OrganizationRemovalRecord.Type;
 
-/**
- * The tombstone read consulted by organization middleware. Every host that serves organization
- * requests provides it; one with no removal capability provides `noOrganizationRemovals`.
- */
 export class OrganizationTombstones extends Context.Service<
   OrganizationTombstones,
   (organization: OrganizationId) => Effect.Effect<boolean, OrganizationRemovalUnavailable>
 >()("hosted/OrganizationTombstones") {}
 
-/** The write side, provided only by a host that composes organization removal. */
 export class OrganizationRemovals extends Context.Service<
   OrganizationRemovals,
   {
-    /** Record the tombstone and claim the instance id. Repeating returns the existing record. */
     readonly begin: (
       organization: OrganizationId,
       instance: string,
@@ -107,7 +81,6 @@ export class OrganizationRemovals extends Context.Service<
     readonly read: (
       organization: OrganizationId,
     ) => Effect.Effect<OrganizationRemovalRecord | null, OrganizationRemovalUnavailable>;
-    /** Retain the removed organization's saved icon so a replayed step can still release it. */
     readonly recordLogo: (
       organization: OrganizationId,
       logo: string | null,
@@ -118,16 +91,10 @@ export class OrganizationRemovals extends Context.Service<
   }
 >()("hosted/OrganizationRemovals") {}
 
-/**
- * Cancelling paid subscriptions for an organization that is going away. The
- * default does nothing, which is correct for a host with no billing service;
- * cloud provides one backed by its billing provider.
- */
 export const OrganizationBilling = Context.Reference<{
   readonly cancel: (organization: OrganizationId) => Effect.Effect<void, unknown>;
 }>("hosted/OrganizationBilling", { defaultValue: () => ({ cancel: () => Effect.void }) });
 
-/** Owner-only and irreversible: the request refuses or commits, then a workflow finishes it. */
 export const HostedOrganizationRemoval = HttpApiGroup.make("organizationRemoval")
   .add(
     HttpApiEndpoint.get("preview", "/api/organizations/:organization/removal", {
@@ -145,15 +112,18 @@ export const HostedOrganizationRemoval = HttpApiGroup.make("organizationRemoval"
       success: OrganizationRemoved,
       error: [
         OrganizationForbidden,
+        Forbidden,
         AuthenticationUnavailable,
         OrganizationRemovalUnavailable,
         StorageError,
         AppWorkflowsActive,
         AccountWorkflowsActive,
       ],
-    }).annotate(
-      OpenApi.Description,
-      "Delete an organization with every app, account, credential, version and MCP grant it owns. Requires the owner role. The request refuses while a workflow or a pinned account is still in flight; otherwise the organization becomes unreachable immediately and a durable workflow completes the erasure.",
-    ),
+    })
+      .annotate(BrowserSessionOnly, true)
+      .annotate(
+        OpenApi.Description,
+        "Delete an organization with every app, account, credential, version and MCP grant it owns. Requires the owner role and a browser session; API keys and OAuth tokens are refused. The request refuses while a workflow or a pinned account is still in flight; otherwise the organization becomes unreachable immediately and a durable workflow completes the erasure.",
+      ),
   )
   .middleware(RequireOrganization);

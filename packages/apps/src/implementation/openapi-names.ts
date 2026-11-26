@@ -53,10 +53,7 @@ const resourceSegments = (path: string) =>
   );
 
 const groupOf = (input: OperationNameInput) =>
-  camel(input.tag ?? "") ||
-  camel(resourceSegments(input.path)[0] ?? "") ||
-  // Keep "root" for an operation on `/` or a path of only versions and parameters.
-  "root";
+  camel(input.tag ?? "") || camel(resourceSegments(input.path)[0] ?? "") || "root";
 
 /**
  * `method` plus the resource segments other than the group: `GET /users/{id}/keys` is
@@ -73,8 +70,6 @@ const fallbackLeaf = (input: OperationNameInput, group: string) => {
 const leafOf = (input: OperationNameInput, group: string) => {
   if (input.operationId === undefined) return fallbackLeaf(input, group);
   const [first, ...rest] = input.operationId.split(/[._/]+/).filter((part) => part.length > 0);
-  // `accounts_completeOAuth`, `accounts.completeOAuth` and `accounts/completeOAuth` under the
-  // `accounts` group all become `completeOAuth`.
   const seed =
     first !== undefined && rest.length > 0 && camel(first).toLowerCase() === group.toLowerCase()
       ? rest.join(" ")
@@ -132,17 +127,19 @@ export const planOperationNames = <I extends OperationNameInput>(
     return { input, group, leaf, prefix, versionSegment, tokens, name: `${group}.${leaf}` };
   });
   type Staged = (typeof staged)[number];
+  const wanted = new Map<string, number>();
+  for (const item of staged) wanted.set(item.name, (wanted.get(item.name) ?? 0) + 1);
+  const settled = new Set(staged.filter((item) => wanted.get(item.name) === 1));
   const refine = (rename: (item: Staged, bucket: readonly Staged[]) => string) => {
     const buckets = new Map<string, Staged[]>();
     for (const item of staged) buckets.set(item.name, [...(buckets.get(item.name) ?? []), item]);
     for (const bucket of buckets.values())
       if (bucket.length > 1) {
-        const names = bucket.map((item) => rename(item, bucket));
+        const names = bucket.map((item) => (settled.has(item) ? item.name : rename(item, bucket)));
         for (const [index, item] of bucket.entries()) item.name = names[index] ?? item.name;
       }
   };
   refine((item) => (item.versionSegment === undefined ? item.name : `${item.prefix}.${item.leaf}`));
-  // Segments every colliding path shares say nothing; the rest, in path order, tell them apart.
   refine((item, bucket) => {
     const shared = new Set(
       item.tokens

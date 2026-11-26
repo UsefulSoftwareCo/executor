@@ -1,10 +1,3 @@
-/**
- * Token endpoint client authentication against services shaped like real providers: Notion
- * accepts only HTTP Basic, Google and PlanetScale (Doorkeeper) compare Basic credentials without
- * form-decoding them, and HubSpot reads client credentials only from the request body. A client
- * entered by hand keeps Basic even where discovery advertises both forms. Client IDs
- * and secrets carry the `-`, `_` and `.` those services issue.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schedule, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
@@ -23,7 +16,6 @@ const Redirect = Schema.Struct({
   authorizationUrl: Schema.String,
   redirectUri: Schema.String,
 });
-// An agent tells the user which callback to register before they open the connection link.
 const Connection = Schema.Struct({ id: Schema.String, redirectUri: Schema.String });
 const Read = Schema.Struct({ refreshed: Schema.Boolean });
 const googleClient = {
@@ -53,7 +45,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth client authentication", 
           http = yield* HttpClient.HttpClient;
         const issuer = yield* oauthSetupIssuer;
         const prefix = `/api/organizations/${actors.organization.id}`;
-        // Tokens are issued inside the host's renewal window, so using the account refreshes it.
         yield* issuer.configure({ refreshTokens: true, expiresIn: 20, revocation: "recorded" });
 
         const deploy = (name: string, config: object) =>
@@ -86,11 +77,6 @@ export default defineApp({user: { accounts:{service} }},async({user: { accounts 
             ...(tokenEndpointAuthMethod === undefined ? {} : { tokenEndpointAuthMethod }),
           });
 
-        /**
-         * Sign in through the real start, consent and callback boundaries, renew the tokens by
-         * using the account, then delete it and read the revocation the deletion sent.
-         * A client entered by hand is posted exactly as the account form submits it.
-         */
         const lifecycle = (
           app: typeof Resource.Type,
           client?: {
@@ -150,6 +136,7 @@ export default defineApp({user: { accounts:{service} }},async({user: { accounts 
             const account = yield* body(Resource, completed);
 
             const refreshes = exchanged.refreshes;
+            yield* issuer.configure({ requireRefreshRedirectUri: redirect.redirectUri });
             const read = yield* api.request(
               actors.owner,
               "POST",
@@ -163,13 +150,14 @@ export default defineApp({user: { accounts:{service} }},async({user: { accounts 
             ).toBe(200);
             expect(yield* body(Read, read)).toEqual({ refreshed: true });
             expect(renewed.refreshes).toBeGreaterThan(refreshes);
+            expect(renewed.refreshRedirectUri).toBe(redirect.redirectUri);
+            expect(renewed.refreshChecks).toMatchObject({ redirect: true });
 
             const revocations = renewed.revocations.length;
             expect(
               (yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account.id}`))
                 .status,
             ).toBe(200);
-            // Revocation runs after the response, so wait for the issuer to observe it.
             const revocation = yield* issuer.metrics.pipe(
               Effect.flatMap((metrics) => {
                 const received = metrics.revocations[revocations];
@@ -193,7 +181,6 @@ export default defineApp({user: { accounts:{service} }},async({user: { accounts 
           "client_secret_basic",
         );
 
-        // HubSpot reads only the request body, so its declaration names that method.
         expect(
           yield* lifecycle(yield* declared("Body-only service", "client_secret_post"), {
             ...hubspotClient,
@@ -201,7 +188,6 @@ export default defineApp({user: { accounts:{service} }},async({user: { accounts 
           }),
         ).toBe("client_secret_post");
 
-        // Google compares Basic credentials as sent: `-` and `.` must not be percent-encoded.
         yield* issuer.configure({ basicCredentials: "literal" });
         expect(
           yield* lifecycle(
@@ -218,8 +204,6 @@ export default defineApp({user: { accounts:{service} }},async({user: { accounts 
           yield* lifecycle(yield* deploy("Entered Basic client", discovered), notionClient),
         ).toBe("client_secret_basic");
 
-        // PlanetScale's Doorkeeper advertises both methods and compares Basic literally.
-        // A client Executor registers requests the body form, which it then accepts.
         yield* issuer.configure({
           authMethods: ["client_secret_basic", "client_secret_post"],
           registeredClient: doorkeeperClient,
@@ -229,9 +213,6 @@ export default defineApp({user: { accounts:{service} }},async({user: { accounts 
         );
         expect((yield* issuer.metrics).lastRegistration?.method).toBe("client_secret_post");
 
-        // A server that advertises only Basic still matches when it compares literally. Its
-        // registration asks for Basic, so it is another client: the service issues new details.
-        // (The same details would be the client already stored for this server.)
         yield* issuer.configure({
           authMethods: ["client_secret_basic"],
           registeredClient: { ...doorkeeperClient, clientId: `${doorkeeperClient.clientId}-basic` },

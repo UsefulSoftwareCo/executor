@@ -1,16 +1,14 @@
-/**
- * A dashboard that gets no response from Executor says so and recovers when it can reach it again.
- * The error reporter receives the failure unless the browser explains it: an offline device or a
- * page that is leaving is expected, while an online, visible page whose connection is reset before
- * a response is reported, because Executor or its edge may have dropped it. A navigation explains
- * only the requests it interrupted, so one that stays on the page explains nothing, whether it is
- * still in progress or done.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schedule } from "effect";
+import { randomUUID } from "node:crypto";
 import type { Page, Route } from "playwright";
 import { scenarios } from "../test-plan.ts";
-import { awaitSentry, captureThroughPage, sentryEvents } from "../support/browser-observability.ts";
+import {
+  awaitSentry,
+  awaitSentryWholeEnvironment,
+  captureThroughPage,
+  sentryEvents,
+} from "../support/browser-observability.ts";
 import { Actors } from "../support/actors.ts";
 import { Browser } from "../support/browser.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
@@ -24,15 +22,9 @@ const connectionNotice = (page: Page) =>
     .getByRole("alert")
     .filter({ has: unreachable(page) })
     .first();
-/** The answered list of private apps: the organization has none. */
 const noPrivateApps = (page: Page) =>
   page.getByRole("heading", { name: "No apps match these filters", exact: true });
-/**
- * The batch request that carries the dashboard's reads. Routing a single read's URL would answer it
- * outside the batch (see `read-batches.ts`), so the reset applies to the whole batch request.
- */
 const readBatch = (url: URL) => url.pathname === batchPath;
-/** Same-origin pages the scenario opens; the test answers them, not Executor. */
 const heldPage = "/connection-scenario/held";
 const noContentPage = "/connection-scenario/no-content";
 const attachmentPage = "/connection-scenario/attachment";
@@ -54,7 +46,6 @@ layer(HostedLive, { excludeTestServices: true })("Browser connection failures", 
             window.addEventListener("executor:operation-failed", (event) => {
               if (!(event instanceof CustomEvent)) return;
               failures.push(String(event.detail.error_type));
-              // A leaving page's reports outlive it in the tab's session storage.
               const tab: unknown = JSON.parse(sessionStorage.getItem("reportedFailures") ?? "[]");
               sessionStorage.setItem(
                 "reportedFailures",
@@ -66,8 +57,6 @@ layer(HostedLive, { excludeTestServices: true })("Browser connection failures", 
         yield* browser.use("Open the organization's apps", (page) =>
           page.goto(`/org/${actors.organization.slug}/apps`),
         );
-        // The organization's default app installs in the background and shows a placeholder card
-        // meanwhile. Private apps exclude it, so an answered read has one definite result.
         yield* browser.use("Open filters", (page) =>
           page.getByRole("button", { name: "Filters", exact: true }).click(),
         );
@@ -87,10 +76,9 @@ layer(HostedLive, { excludeTestServices: true })("Browser connection failures", 
         yield* browser.use("The organization has no private apps", (page) =>
           noPrivateApps(page).waitFor(),
         );
-        // Every request below comes from this one document, which the reporter tags.
-        const marker = "connection scenario marker";
+        const marker = `connection scenario marker ${randomUUID()}`;
         yield* captureThroughPage(marker);
-        const [markerEvent] = yield* awaitSentry(
+        const [markerEvent] = yield* awaitSentryWholeEnvironment(
           (event) => event.exception?.values.some((value) => value.value === marker) === true,
         );
         expect(typeof markerEvent?.tags?.page_id).toBe("string");
@@ -143,17 +131,16 @@ layer(HostedLive, { excludeTestServices: true })("Browser connection failures", 
             yield* evidence.attach(screenshot, "image/png", recovered);
           });
         type Tags = Readonly<Record<string, string>>;
-        /** The page's lost-connection spans, once every awaited kind has been delivered. */
         const connectionSpans = (
           expected: string,
           delivered: (spans: ReadonlyArray<Tags>) => boolean,
         ) =>
           telemetry
-            .search("ui.api.transport", {
-              "error.type": "BrowserConnectionFailed",
-              "executor.page.id": pageId,
-              "executor.error.expected": expected,
-            })
+            .search(
+              "ui.api.transport",
+              { page: pageId },
+              { "error.type": "BrowserConnectionFailed", "executor.error.expected": expected },
+            )
             .pipe(
               Effect.map((found) => found.data.map(({ span }): Tags => span.tags)),
               Effect.flatMap((spans) =>
@@ -164,7 +151,6 @@ layer(HostedLive, { excludeTestServices: true })("Browser connection failures", 
               Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 30 }),
             );
 
-        // Offline: a tab that returns while the device is offline gets no response to its reads.
         yield* browser.use("Lose the network", (page) => page.context().setOffline(true));
         yield* returnToTab;
         yield* explainsLostConnection;
@@ -172,14 +158,11 @@ layer(HostedLive, { excludeTestServices: true })("Browser connection failures", 
           page.screenshot(),
         );
         yield* evidence.attach("connection-failed.png", "image/png", shown);
-        // The notice renders after the failed read settles, so any report was already handed over.
         expect(yield* reportedFailures).toEqual([]);
         yield* browser.use("Restore the network", (page) => page.context().setOffline(false));
         yield* recovers("connection-recovered.png");
         expect(yield* reportedFailures).toEqual([]);
 
-        // Online and visible: the connection is reset before any response. Nothing on the device
-        // explains it, so it is reported even though the page shows the same notice.
         expect(
           yield* browser.use("The page is online and visible", (page) =>
             page.evaluate(() => [navigator.onLine, document.visibilityState]),
@@ -196,14 +179,13 @@ layer(HostedLive, { excludeTestServices: true })("Browser connection failures", 
         yield* evidence.attach("connection-reset.png", "image/png", reset);
         expect(yield* reportedFailures).toContain("BrowserConnectionFailed");
         yield* awaitSentry(
+          { page: pageId },
           (event) =>
             event.tags?.page_id === pageId && event.tags.error_type === "BrowserConnectionFailed",
         );
         yield* browser.use("Stop resetting read batches", (page) => page.unroute(readBatch));
         yield* recovers("connection-reset-recovered.png");
 
-        // Leaving: Chromium fails a page's requests after `pagehide` while it still reads as
-        // visible, so a failure once the page is leaving is not reported.
         const reportedBeforeLeaving = yield* reportedFailures;
         yield* browser.use("Reset the connection of every read batch", (page) =>
           page.route(readBatch, (route) => route.abort("connectionreset")),
@@ -224,8 +206,6 @@ layer(HostedLive, { excludeTestServices: true })("Browser connection failures", 
         yield* browser.use("Stop resetting read batches", (page) => page.unroute(readBatch));
         yield* recovers("connection-leaving-recovered.png");
 
-        // Every lost connection is still on the page's spans, with the browser's explanation. Wait
-        // for them before cancelling a navigation below, which also cancels a pending export.
         const offline = (tags: Tags) => tags["executor.browser.online"] === "false";
         const leaving = (tags: Tags) => tags["executor.page.leaving"] === "true";
         const expected = yield* connectionSpans(
@@ -240,8 +220,6 @@ layer(HostedLive, { excludeTestServices: true })("Browser connection failures", 
           expect(tags["executor.page.leaving"]).toBe("false");
         }
 
-        // A navigation that stays on the page explains nothing afterwards: a reset connection after
-        // it is reported. Each move below starts a navigation that never leaves this document.
         const reportsResetAfter = (
           move: Effect.Effect<unknown, DriverFailed>,
           screenshot: string,
@@ -318,9 +296,6 @@ layer(HostedLive, { excludeTestServices: true })("Browser connection failures", 
           }),
           "connection-attachment-recovered.png",
         );
-        // A navigation a single-page router intercepts stays in this document, so a read that was in
-        // flight when it started and is reset is still reported, while the navigation is in progress
-        // and after it has finished.
         const reportsHeldReadResetAcross = (
           navigate: Effect.Effect<unknown, DriverFailed>,
           settle: Effect.Effect<unknown, DriverFailed>,
@@ -396,7 +371,6 @@ layer(HostedLive, { excludeTestServices: true })("Browser connection failures", 
           ),
           "connection-intercepted-navigation-recovered.png",
         );
-        // The transition can finish before the in-flight read fails, as it does here.
         yield* reportsHeldReadResetAcross(
           browser.use("Navigate within the page and wait for the navigation to finish", (page) =>
             page.evaluate(() => {
@@ -426,7 +400,6 @@ layer(HostedLive, { excludeTestServices: true })("Browser connection failures", 
           "connection-intercepted-navigation-finished-recovered.png",
         );
 
-        // The connections reset after each navigation that stayed are reported as on a settled page.
         const reportedAfterNavigations = yield* connectionSpans(
           "false",
           (spans) => spans.length > reported.length,
@@ -440,8 +413,7 @@ layer(HostedLive, { excludeTestServices: true })("Browser connection failures", 
           expected,
           reported: reportedAfterNavigations,
         });
-        // Only the reset connection reached the error reporter, under its own kind.
-        const fromPage = (yield* sentryEvents).filter(
+        const fromPage = (yield* sentryEvents({ page: pageId })).filter(
           (event) => event.tags?.page_id === pageId && event.tags.error_type !== undefined,
         );
         expect(fromPage.length).toBeGreaterThan(0);
@@ -449,8 +421,6 @@ layer(HostedLive, { excludeTestServices: true })("Browser connection failures", 
           new Set(["BrowserConnectionFailed"]),
         );
 
-        // Leaving for real: the page navigates away while a read is in flight. The browser fails
-        // that read as the page goes, and nothing is reported.
         const tabReports = browser.use("Read the reports kept by the tab", (page) =>
           page.evaluate(() => sessionStorage.getItem("reportedFailures")),
         );

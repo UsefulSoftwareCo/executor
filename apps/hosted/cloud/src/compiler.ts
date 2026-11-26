@@ -1,4 +1,3 @@
-/** Private compiler entry point. The esbuild WASM module belongs only to this Worker. */
 import { WorkerEnvironment } from "alchemy/Cloudflare";
 import { CodeFiles, RuntimeBuildFailed } from "@executor-js/sdk/core";
 import { CloudCompileResult } from "./contracts/builds.ts";
@@ -23,7 +22,6 @@ const FrameworkFiles = Schema.Record(Schema.String, Schema.String);
 export default AppCompiler.make(
   Effect.gen(function* () {
     if (globalThis.__ALCHEMY_RUNTIME__) return { main: import.meta.url };
-    // Only a test stage deploy supplies its checkout's `apps` package, as this Worker's own assets.
     const framework = yield* Config.String("EXECUTOR_APPS_FRAMEWORK").pipe(Config.option);
     return {
       main: import.meta.url,
@@ -36,9 +34,6 @@ export default AppCompiler.make(
     };
   }),
   Effect.gen(function* () {
-    // Resolved during initialization so Alchemy binds them into the Worker environment. Only local
-    // Cloud development and tests set a registry; deployed stages use the public registry. Only a
-    // test stage deploy sets an `apps` version, whose package files this Worker serves itself.
     const registry = Option.getOrUndefined(
       yield* Config.String("EXECUTOR_NPM_REGISTRY").pipe(Config.option),
     );
@@ -55,9 +50,6 @@ export default AppCompiler.make(
     }).pipe(
       Effect.mapError(() => new RuntimeBuildFailed({ stage: "dependencies", dependency: "apps" })),
     );
-    // Only read files are kept for later compiles. A compile that finds none reads them itself:
-    // waiting on another request's read would resume in that request's I/O context, whose timers
-    // are dropped when it ends, and the compile would never finish.
     let kept: typeof FrameworkFiles.Type | undefined;
     const files = Effect.suspend(() =>
       kept !== undefined
@@ -70,9 +62,6 @@ export default AppCompiler.make(
             ),
           ),
     );
-    // Two builds still overlap one's npm downloads with the other's bundling, and a build
-    // stalled on the registry leaves the other slot free. A slot is reclaimed after the API's
-    // own compiler deadline, when no caller still waits for that build.
     const admitted = makeBuildAdmission(2, "50 seconds");
     const host = {
       ...(registry === undefined ? {} : { registry }),

@@ -1,6 +1,12 @@
 import { Schema } from "effect";
 import { OrganizationId } from "./organization.ts";
-/** Public identifier, never the bearer credential. */
+export const managedKeyName = "Executor app (created automatically)";
+export const isManagedKey = (key: {
+  readonly metadata?:
+    | { readonly organization?: string | undefined; readonly executorApp?: true | undefined }
+    | null
+    | undefined;
+}) => key.metadata?.executorApp === true && key.metadata.organization !== undefined;
 export const ApiKeyId = Schema.NonEmptyString.pipe(Schema.brand("ApiKeyId"));
 /** Restrict a native key to tool discovery and execution without account administration. */
 export const ApiKeyScope = Schema.Literal("tools");
@@ -11,9 +17,9 @@ export const ApiKeyScope = Schema.Literal("tools");
 export const ApiKeyMetadata = Schema.Struct({
   organization: Schema.optional(OrganizationId),
   scope: Schema.optional(ApiKeyScope),
+  executorApp: Schema.optional(Schema.Literal(true)),
 });
 export type ApiKeyMetadata = typeof ApiKeyMetadata.Type;
-/** Native Better Auth key metadata; secret hashes are excluded. */
 export const ApiKeySummary = Schema.Struct({
   id: ApiKeyId,
   name: Schema.NullOr(Schema.String),
@@ -25,7 +31,6 @@ export const ApiKeySummary = Schema.Struct({
   metadata: Schema.optional(Schema.NullOr(ApiKeyMetadata)),
 });
 export type ApiKeySummary = typeof ApiKeySummary.Type;
-/** PAT creation uses Better Auth's expiry duration in seconds and an optional organization pin. */
 export const CreateApiKey = Schema.Struct({
   name: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(80), Schema.isPattern(/\S/u)),
   expiresIn: Schema.optional(Schema.Number.check(Schema.isInt(), Schema.isGreaterThan(0))),
@@ -36,12 +41,10 @@ export const CreateApiKey = Schema.Struct({
     }),
   ),
 });
-/** Only the native creation response contains the secret. */
 export const CreatedApiKey = Schema.Struct({
   ...ApiKeySummary.fields,
   key: Schema.RedactedFromValue(Schema.NonEmptyString),
 });
-/** Native paginated response from Better Auth. */
 export const ApiKeyPage = Schema.Struct({
   apiKeys: Schema.Array(ApiKeySummary),
   total: Schema.Number,

@@ -7,10 +7,15 @@ import { fullAuthority, selectedAuthority } from "@executor-js/authorization";
 import { authCall } from "@executor-js/mcp-auth/oauth";
 import { APIError, createAuthMiddleware, getSessionFromCtx } from "better-auth/api";
 import { Effect, Option, Redacted, Schema } from "effect";
-import { ApiKeyId, ApiKeyMetadata, ApiKeyScope, CreateApiKey } from "../contracts/api-keys.ts";
+import {
+  ApiKeyId,
+  ApiKeyMetadata,
+  ApiKeyScope,
+  CreateApiKey,
+  managedKeyName,
+} from "../contracts/api-keys.ts";
 import { OrganizationId } from "../contracts/organization.ts";
 
-/** Better Auth owns the only key store and lifecycle for personal and saved Executor accounts. */
 export const apiKeys = apiKey({
   defaultPrefix: "exp_",
   requireName: true,
@@ -18,12 +23,9 @@ export const apiKeys = apiKey({
   enableSessionForAPIKeys: false,
   rateLimit: { enabled: false },
   keyExpiration: { minExpiresIn: 1 / 86400 },
-  // Metadata records the key's scope; apiKeyManagement's strict body schema
-  // limits browser-created keys to a single organization pin.
   enableMetadata: true,
 });
 
-/** Stored metadata; keys created before pinning existed carry none. */
 const KeyMetadata = Schema.NullOr(ApiKeyMetadata);
 
 // Older hosts reject this prefix instead of ignoring a scope they do not understand.
@@ -35,7 +37,6 @@ export const apiKeyAuthorization = (scope: typeof ApiKeyScope.Type | undefined) 
 /** Pin a key to one organization; the auto-minted Executor app key always uses this. */
 export const pinnedKeyMetadata = (organization: OrganizationId) => ({ organization });
 
-/** Constrain native key management to browser sessions and the PAT inputs. */
 export const apiKeyManagement = createAuthMiddleware(async (ctx) => {
   if (!ctx.path?.startsWith("/api-key/") || ctx.request === undefined) return;
   if (ctx.headers?.has("authorization")) throw new APIError("FORBIDDEN");
@@ -44,7 +45,10 @@ export const apiKeyManagement = createAuthMiddleware(async (ctx) => {
   if (ctx.path === "/api-key/create") {
     const input = Schema.decodeUnknownOption(CreateApiKey, { onExcessProperty: "error" })(ctx.body);
     if (Option.isNone(input)) throw new APIError("BAD_REQUEST");
-    // A pinned key must belong to an organization the creator is a member of today.
+    if (input.value.name.trim() === managedKeyName)
+      throw new APIError("BAD_REQUEST", {
+        message: "That name is reserved for the Executor app's own key. Choose another name.",
+      });
     const organization = input.value.metadata?.organization;
     if (organization !== undefined) {
       const session = await getSessionFromCtx(ctx);
@@ -71,13 +75,12 @@ export const apiKeyManagement = createAuthMiddleware(async (ctx) => {
 
 /** Native PATs select key authentication instead of the OAuth bearer path. */
 export const isApiKey = (token: string) =>
-  token.startsWith("exp_") || token.startsWith(toolsKeyPrefix);
+  token.startsWith("exp_") || token.startsWith("sk_") || token.startsWith(toolsKeyPrefix);
 
 /** A scoped key cannot become unrestricted if its metadata is missing or damaged. */
 export const apiKeyScopeMatches = (token: string, scope: typeof ApiKeyScope.Type | undefined) =>
   token.startsWith(toolsKeyPrefix) === (scope === "tools");
 
-/** Project a native key into current-user authority; deleted users cannot retain access. */
 const identity = (
   ctx: GenericEndpointContext,
   key: { id: string; referenceId: string; metadata: unknown; prefix: string | null },
@@ -94,7 +97,6 @@ const identity = (
     const id = yield* Schema.decodeUnknownEffect(ApiKeyId)(key.id).pipe(
       Effect.mapError(() => new APIError("SERVICE_UNAVAILABLE")),
     );
-    // Unreadable metadata fails closed: it cannot prove the key is an unpinned PAT.
     const metadata = yield* Schema.decodeUnknownEffect(KeyMetadata)(key.metadata).pipe(
       Effect.mapError(() => new APIError("UNAUTHORIZED")),
     );
@@ -108,7 +110,6 @@ const identity = (
     };
   });
 
-/** A full-account key carries no organization; a pinned key never authorizes another organization. */
 export const requirePinnedOrganization = (
   identity: { readonly organization: OrganizationId | undefined },
   organization: OrganizationId,
@@ -121,11 +122,6 @@ export const requirePinnedOrganization = (
         }),
       );
 
-/**
- * Verify expiry, revocation and usage through Better Auth before applying product authorization.
- * `valid: false` means Better Auth refused the key. A storage failure rejects instead (see the
- * pinned api-key patch), and `authCall` reports it as SERVICE_UNAVAILABLE, never as a bad key.
- */
 export const apiKeyAccess = (ctx: GenericEndpointContext, token: Redacted.Redacted<string>) =>
   Effect.gen(function* () {
     const result = yield* authCall(() =>
@@ -139,7 +135,6 @@ export const apiKeyAccess = (ctx: GenericEndpointContext, token: Redacted.Redact
     return yield* identity(ctx, result.key);
   });
 
-/** The signed-in owner can review a live native key's pending MCP approval. */
 export const browserPersonalTokenAccess = (
   ctx: GenericEndpointContext,
   origin: string,
@@ -163,13 +158,6 @@ export const browserPersonalTokenAccess = (
     return yield* identity(ctx, key);
   });
 
-/**
- * Insert a native Better Auth key in the caller's account transaction. The only cleartext
- * copy is returned redacted for encrypted SDK storage; rollback removes both records.
- * Fields follow the pinned api-key plugin's public schema and native create endpoint.
- */
-/** Names the key on the Tokens page so its owner knows where it came from. */
-export const managedKeyName = "Executor app (created automatically)";
 export const managedAccountKey = (organization: OrganizationId, user: string) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -181,6 +169,6 @@ export const managedAccountKey = (organization: OrganizationId, user: string) =>
     yield* sql`insert into apikey (id, "configId", name, prefix, start, key, "referenceId", enabled,
       "rateLimitEnabled", "rateLimitTimeWindow", "rateLimitMax", "requestCount", "createdAt", "updatedAt", metadata)
       values (${crypto.randomUUID()}, 'default', ${managedKeyName}, 'exp_', ${Redacted.value(token).slice(0, 6)}, ${hash}, ${user}, true,
-        false, 86400000, 10, 0, now(), now(), ${JSON.stringify(pinnedKeyMetadata(organization))})`;
+        false, 86400000, 10, 0, now(), now(), ${JSON.stringify({ ...pinnedKeyMetadata(organization), executorApp: true })})`;
     return token;
   }).pipe(Effect.mapError(() => new StorageError()));

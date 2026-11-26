@@ -13,6 +13,6 @@
     "@opencode-ai/codemode": "0.0.0-dev-19272",
     "acorn": "8.15.0",
     "apps": "workspace:*",
-    "effect": "4.0.1"
+    "effect": "4.1.4"
   }
 }

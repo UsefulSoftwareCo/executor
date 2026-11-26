@@ -8,7 +8,6 @@ import { oauthDestination } from "../oauth.ts";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { Empty, Failure } from "../components/common.tsx";
 
-/** The provider returns here; authenticated Atom calls complete the saved sign-in. */
 export function OAuthCallbackPage() {
   const navigate = useNavigate();
   const result = useAtomValue(completeOAuthAtom);
@@ -16,7 +15,6 @@ export function OAuthCallbackPage() {
   useEffect(() => {
     if (!AsyncResult.isSuccess(result) || result.value === undefined) return;
     const { destination, reconnect } = Effect.runSync(oauthDestination(result.value.id));
-    // A new account is named on the page that follows.
     if (!reconnect)
       requestName({
         account: result.value.id,

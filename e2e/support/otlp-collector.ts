@@ -1,6 +1,5 @@
-/** Run the shipped collector as separate processes; query only their public HTTP API. */
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
-import { Deferred, Effect, FileSystem, Layer, Path, Schema, Stream } from "effect";
+import { Deferred, Effect, FileSystem, Layer, Option, Path, Ref, Schema, Stream } from "effect";
 import {
   HttpBody,
   HttpClient,
@@ -13,65 +12,60 @@ import {
 } from "effect/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { createServer } from "node:http";
+import { SpanQuery } from "./contracts.ts";
+import { refuseTruncated, searchLimit } from "./evidence.ts";
 
-/** workerd's control message once the collector socket accepts connections. */
-const Listening = Schema.Struct({
-  event: Schema.Literal("listen"),
-  socket: Schema.Literal("motel"),
-  port: Schema.Number,
-});
+const Listening = Schema.Struct({ event: Schema.Literal("listening"), port: Schema.Number });
 
-/**
- * Serve one Motel from the bundle `e2e:prepare` built, storing its data in `diagnostics/<name>`
- * and its output in `<name>.log`. Every target in a run serves the same bundle directory, and a
- * build replaces it, so nothing in a run builds it.
- */
-const serveMotel = (directory: string, name: string, log: string) =>
+export interface CollectorBounds {
+  readonly maxStoreMb?: number | undefined;
+  readonly retentionHours?: number | undefined;
+  readonly maxPending?: number | undefined;
+  readonly maxExportBytes?: number | undefined;
+}
+
+const serveCollector = (
+  directory: string,
+  name: string,
+  log: string,
+  bounds: CollectorBounds = {},
+) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
     const data = path.join(directory, "data/diagnostics", name);
     yield* fs.makeDirectory(data, { recursive: true });
-    const bundle = path.resolve("packages/telemetry/dist/motel");
-    if (!(yield* fs.exists(path.join(bundle, "motel.capnp"))))
-      return yield* Effect.die("Run bun run e2e:prepare to build the telemetry collector first.");
-    // The bundle's config names its directories and socket; this supplies their paths and a free port.
-    const child = yield* processes.spawn(
-      ChildProcess.make(
-        path.resolve("node_modules/.bin", process.platform === "win32" ? "workerd.exe" : "workerd"),
-        [
-          "serve",
-          "--control-fd=3",
-          `--directory-path=motel-data=${data}`,
-          `--directory-path=motel-assets=${path.join(bundle, "web/dist")}`,
-          "--socket-addr=motel=127.0.0.1:0",
-          path.join(bundle, "motel.capnp"),
-        ],
-        {
-          cwd: data,
-          stdin: "ignore",
-          stdout: "pipe",
-          stderr: "pipe",
-          additionalFds: { fd3: { type: "output" } },
-          forceKillAfter: "3 seconds",
-        },
-      ),
+    const executable = path.resolve(
+      "packages/telemetry/dist/collector",
+      process.platform === "win32" ? "executor-collector.exe" : "executor-collector",
     );
-    yield* Effect.forEach(
-      [child.stdout, child.stderr],
-      (output) =>
-        output.pipe(
-          Stream.decodeText,
-          Stream.runForEach((text) =>
-            fs.writeFileString(path.join(directory, log), text, { flag: "a", mode: 0o600 }),
-          ),
-          Effect.forkScoped,
-        ),
-      { discard: true },
+    if (!(yield* fs.exists(executable)))
+      return yield* Effect.die("Run bun run e2e:prepare to build the telemetry collector first.");
+    const flags = [
+      ["--max-store-mb", bounds.maxStoreMb],
+      ["--retention-hours", bounds.retentionHours],
+      ["--max-pending", bounds.maxPending],
+      ["--max-export-bytes", bounds.maxExportBytes],
+    ].flatMap(([flag, value]) => (value === undefined ? [] : [`${flag}=${value}`]));
+    const child = yield* processes.spawn(
+      ChildProcess.make(executable, ["serve", `--data=${data}`, "--listen=127.0.0.1:0", ...flags], {
+        cwd: directory,
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+        forceKillAfter: "3 seconds",
+      }),
+    );
+    yield* child.stderr.pipe(
+      Stream.decodeText,
+      Stream.runForEach((text) =>
+        fs.writeFileString(path.join(directory, log), text, { flag: "a", mode: 0o600 }),
+      ),
+      Effect.forkScoped,
     );
     const ready = yield* Deferred.make<string>();
-    yield* child.getOutputFd(3).pipe(
+    yield* child.stdout.pipe(
       Stream.decodeText,
       Stream.splitLines,
       Stream.runForEach((line) =>
@@ -82,10 +76,18 @@ const serveMotel = (directory: string, name: string, log: string) =>
       ),
       Effect.forkScoped,
     );
-    return yield* Deferred.await(ready).pipe(Effect.timeout("20 seconds"));
+    return yield* Deferred.await(ready).pipe(
+      Effect.raceFirst(
+        child.exitCode.pipe(
+          Effect.flatMap((code) =>
+            Effect.die(`The collector exited ${code} before listening; see ${log}.`),
+          ),
+        ),
+      ),
+      Effect.timeout("20 seconds"),
+    );
   });
 
-/** Name the collector's query URL in `data/diagnostics/collector.json`, where readers find it. */
 const announce = (directory: string, url: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -97,16 +99,43 @@ const announce = (directory: string, url: string) =>
     );
   });
 
-/** One Motel, as a scenario that owns its own collector uses it. */
-export const serveOtlpCollector = (directory: string) =>
+export const serveOtlpCollector = (directory: string, bounds: CollectorBounds = {}) =>
   Effect.gen(function* () {
-    const url = yield* serveMotel(directory, "motel", "collector.log");
+    const url = yield* serveCollector(directory, "collector", "collector.log", bounds);
     yield* announce(directory, url);
     return url;
   });
 
+export const ownCollectorSpans = (
+  collector: string,
+  window: { readonly from: number; readonly to: number; readonly operation?: string | undefined },
+) =>
+  Effect.gen(function* () {
+    const http = yield* HttpClient.HttpClient;
+    return yield* Effect.scoped(
+      Effect.gen(function* () {
+        const url = new URL("/api/spans/search", collector);
+        if (window.operation !== undefined) url.searchParams.set("operation", window.operation);
+        const minutes = Math.max(1, Math.ceil((Date.now() - window.from) / 60_000) + 1);
+        url.searchParams.set("lookback", `${minutes}m`);
+        url.searchParams.set("limit", String(searchLimit));
+        const response = yield* http.get(url.href);
+        return yield* response.json.pipe(
+          Effect.flatMap(Schema.decodeUnknownEffect(SpanQuery)),
+          Effect.tap((found) => refuseTruncated(found, url)),
+        );
+      }),
+    ).pipe(
+      Effect.map(({ data }) =>
+        data.filter(({ span }) => {
+          const at = Date.parse(span.startTime);
+          return at >= window.from && at < window.to;
+        }),
+      ),
+    );
+  });
+
 const Json = Schema.Record(Schema.String, Schema.Json);
-/** An OTLP JSON record, keeping every field; only its trace ID is read. */
 const Traced = Schema.StructWithRest(Schema.Struct({ traceId: Schema.optional(Schema.String) }), [
   Json,
 ]);
@@ -144,14 +173,10 @@ const LogExport = Schema.fromJsonString(
     [Json],
   ),
 );
-/** The parts of a query answer the router merges: its items, and the limit that bounds them. */
 const Listing = Schema.StructWithRest(Schema.Struct({ data: Schema.Array(Schema.Json) }), [Json]);
 const SpanItem = Schema.Struct({ span: Schema.Struct({ startTime: Schema.String }) });
+const Truncated = Schema.Struct({ meta: Schema.Struct({ truncated: Schema.Literal(true) }) });
 
-/**
- * Which collector holds a trace. OTLP JSON names a trace in hex, or in base64 from exporters that
- * follow protobuf's JSON mapping; both name the same 16 bytes.
- */
 const shardOf = (traceId: string | undefined, shards: number) => {
   if (traceId === undefined || traceId === "") return 0;
   const hex = /^[0-9a-f]{32}$/i.test(traceId)
@@ -160,27 +185,12 @@ const shardOf = (traceId: string | undefined, shards: number) => {
   return Number.parseInt(hex.slice(-8), 16) % shards;
 };
 
-/**
- * Several Motels behind one OTLP and query endpoint, each holding the traces whose ID it is given.
- *
- * One Motel stores about 1,500 spans a second: SQLite indexes every attribute of every span on a
- * single thread. The managed Cloud job's six workers send more than that while they provision their
- * organizations, so one collector refused exports with 429 until the product's three-second export
- * budget ran out and dropped them, and scenarios waiting for those spans failed. A deployed stage
- * exports to a collector that keeps up. Splitting the traces gives each Motel a share of the load and
- * of the data its queries read.
- *
- * Each export is split by trace and sent to the Motels holding those traces. When one refuses its
- * part, the export is answered with that refusal, so the exporter resends it as it would to one
- * Motel; spans are stored by their IDs, so the parts already stored are replaced, not repeated. A
- * trace's reads go to its Motel; a search across traces asks every Motel and merges the answers.
- */
 export const serveShardedOtlpCollector = (directory: string, shards: number) =>
   Effect.gen(function* () {
     const http = yield* HttpClient.HttpClient;
-    const motels = yield* Effect.forEach(
+    const collectors = yield* Effect.forEach(
       Array.from({ length: shards }, (_, index) => index),
-      (index) => serveMotel(directory, `motel-${index}`, `collector-${index}.log`),
+      (index) => serveCollector(directory, `collector-${index}`, `collector-${index}.log`),
       { concurrency: "unbounded" },
     );
     const answer = (response: HttpClientResponse.HttpClientResponse) =>
@@ -196,16 +206,17 @@ export const serveShardedOtlpCollector = (directory: string, shards: number) =>
           }),
         ),
       );
-    const post = (motel: string, path: string, body: HttpBody.HttpBody) =>
-      Effect.scoped(http.post(new URL(path, motel).href, { body }).pipe(Effect.flatMap(answer)));
-    const get = (motel: string, url: string) =>
-      Effect.scoped(http.get(new URL(url, motel).href).pipe(Effect.flatMap(answer)));
+    const post = (collector: string, path: string, body: HttpBody.HttpBody) =>
+      Effect.scoped(
+        http.post(new URL(path, collector).href, { body }).pipe(Effect.flatMap(answer)),
+      );
+    const get = (collector: string, url: string) =>
+      Effect.scoped(http.get(new URL(url, collector).href).pipe(Effect.flatMap(answer)));
 
-    /** Send each Motel its part; the first refusal, if any, answers the whole export. */
     const ingest = (parts: ReadonlyMap<number, unknown>, path: string) =>
       Effect.forEach(
         [...parts],
-        ([shard, part]) => post(motels[shard]!, path, HttpBody.jsonUnsafe(part)),
+        ([shard, part]) => post(collectors[shard]!, path, HttpBody.jsonUnsafe(part)),
         { concurrency: "unbounded" },
       ).pipe(
         Effect.map(
@@ -243,19 +254,71 @@ export const serveShardedOtlpCollector = (directory: string, shards: number) =>
           ]);
       return parts;
     };
+    const watched = new Map<string, Map<string, number>>();
+    const watch = Effect.gen(function* () {
+      const request = yield* HttpServerRequest.HttpServerRequest;
+      const trace = new URL(request.url, "http://collector").searchParams.get("trace") ?? "";
+      if (!watched.has(trace)) watched.set(trace, new Map());
+      return HttpServerResponse.empty({ status: 204 });
+    });
+    const received = Effect.gen(function* () {
+      const request = yield* HttpServerRequest.HttpServerRequest;
+      const trace = new URL(request.url, "http://collector").searchParams.get("trace") ?? "";
+      const seen = [...(watched.get(trace) ?? new Map<string, number>()).values()];
+      return HttpServerResponse.jsonUnsafe({
+        spans: seen.length,
+        duplicated: seen.filter((count) => count > 1).length,
+      });
+    });
+    const held = yield* Ref.make(Option.none<Deferred.Deferred<void>>());
+    const hold = Effect.gen(function* () {
+      const released = yield* Deferred.make<void>();
+      yield* Ref.set(held, Option.some(released));
+      return HttpServerResponse.empty({ status: 204 });
+    });
+    const release = Effect.gen(function* () {
+      const current = yield* Ref.getAndSet(held, Option.none());
+      if (Option.isSome(current)) yield* Deferred.succeed(current.value, undefined);
+      return HttpServerResponse.empty({ status: 204 });
+    });
+    const refusing = yield* Ref.make(Option.none<string>());
+    const refuse = Effect.gen(function* () {
+      const request = yield* HttpServerRequest.HttpServerRequest;
+      const after = new URL(request.url, "http://collector").searchParams.get("retryAfter") ?? "1";
+      yield* Ref.set(refusing, Option.some(after));
+      return HttpServerResponse.empty({ status: 204 });
+    });
+    const accept = Ref.set(refusing, Option.none()).pipe(
+      Effect.as(HttpServerResponse.empty({ status: 204 })),
+    );
     const exported = Effect.gen(function* () {
+      const refused = yield* Ref.get(refusing);
+      if (Option.isSome(refused))
+        return HttpServerResponse.empty({ status: 503, headers: { "retry-after": refused.value } });
+      const holding = yield* Ref.get(held);
+      if (Option.isSome(holding)) {
+        yield* Deferred.await(holding.value);
+        return HttpServerResponse.empty({ status: 503 });
+      }
       const request = yield* HttpServerRequest.HttpServerRequest;
       const bytes = new Uint8Array(yield* request.arrayBuffer);
       const text = new TextDecoder().decode(bytes);
       const path = new URL(request.url, "http://collector").pathname;
       const unchanged = post(
-        motels[0]!,
+        collectors[0]!,
         path,
         HttpBody.uint8Array(bytes, request.headers["content-type"]),
       );
       if (path === "/v1/traces") {
         const decoded = Schema.decodeUnknownOption(TraceExport)(text);
         if (decoded._tag === "None") return yield* unchanged;
+        for (const resource of decoded.value.resourceSpans)
+          for (const scope of resource.scopeSpans)
+            for (const span of scope.spans) {
+              const id = `${span.traceId ?? ""}:${String(span["spanId"] ?? "")}`;
+              for (const seen of [watched.get(span.traceId ?? ""), watched.get("*")])
+                seen?.set(id, (seen.get(id) ?? 0) + 1);
+            }
         const parts = split(
           decoded.value.resourceSpans,
           (resource) => resource.scopeSpans,
@@ -286,25 +349,22 @@ export const serveShardedOtlpCollector = (directory: string, shards: number) =>
       return yield* unchanged;
     });
 
-    /** A trace's reads go to the Motel holding it. */
     const trace = Effect.gen(function* () {
       const request = yield* HttpServerRequest.HttpServerRequest;
       const id = new URL(request.url, "http://collector").pathname.split("/")[3];
-      return yield* get(motels[shardOf(id, shards)]!, request.url);
+      return yield* get(collectors[shardOf(id, shards)]!, request.url);
     });
-    /** A search names one trace, or asks every Motel and returns the newest matches first. */
     const search = Effect.gen(function* () {
       const request = yield* HttpServerRequest.HttpServerRequest;
       const url = new URL(request.url, "http://collector");
       const traceId = url.searchParams.get("traceId");
-      if (traceId !== null) return yield* get(motels[shardOf(traceId, shards)]!, request.url);
-      // Each Motel's matches, or the answer of the first that could not search.
+      if (traceId !== null) return yield* get(collectors[shardOf(traceId, shards)]!, request.url);
       const answers = yield* Effect.forEach(
-        motels,
-        (motel) =>
+        collectors,
+        (collector) =>
           Effect.scoped(
             http
-              .get(new URL(request.url, motel).href)
+              .get(new URL(request.url, collector).href)
               .pipe(
                 Effect.flatMap(
                   (
@@ -331,15 +391,20 @@ export const serveShardedOtlpCollector = (directory: string, shards: number) =>
           found._tag === "Some" ? found.value.span.startTime : "",
         );
       const limit = Number(url.searchParams.get("limit") ?? Number.POSITIVE_INFINITY);
-      const data = listings
+      const matched = listings
         .flatMap((listing) => listing.data)
-        .sort((a, b) => start(b).localeCompare(start(a)))
-        .slice(0, limit);
-      return HttpServerResponse.jsonUnsafe({ data });
+        .sort((a, b) => start(b).localeCompare(start(a)));
+      const data = matched.slice(0, limit);
+      const truncated =
+        matched.length > data.length ||
+        listings.some((listing) =>
+          Schema.decodeUnknownOption(Truncated)(listing).pipe(Option.isSome),
+        );
+      return HttpServerResponse.jsonUnsafe({ data, meta: { truncated, returned: data.length } });
     });
-    const ingestStatus = Effect.forEach(motels, (motel) =>
+    const ingestStatus = Effect.forEach(collectors, (collector) =>
       Effect.scoped(
-        http.get(new URL("/api/ingest", motel).href).pipe(Effect.flatMap((r) => r.json)),
+        http.get(new URL("/api/ingest", collector).href).pipe(Effect.flatMap((r) => r.json)),
       ),
     ).pipe(Effect.map((shards) => HttpServerResponse.jsonUnsafe({ shards })));
 
@@ -352,6 +417,12 @@ export const serveShardedOtlpCollector = (directory: string, shards: number) =>
           HttpRouter.add("GET", "/api/spans/search", search),
           HttpRouter.add("GET", "/api/logs/search", search),
           HttpRouter.add("GET", "/api/ingest", ingestStatus),
+          HttpRouter.add("POST", "/api/e2e/exports/hold", hold),
+          HttpRouter.add("POST", "/api/e2e/exports/release", release),
+          HttpRouter.add("POST", "/api/e2e/exports/refuse", refuse),
+          HttpRouter.add("POST", "/api/e2e/exports/accept", accept),
+          HttpRouter.add("POST", "/api/e2e/exports/watch", watch),
+          HttpRouter.add("GET", "/api/e2e/exports/received", received),
         ),
         { disableLogger: true, disableListenLog: true },
       ).pipe(

@@ -1,13 +1,3 @@
-/**
- * A local app saved but never deployed may still have had profiles. SDK 4.0.13 plans a copy for
- * each other account set, and data step `10_profile_app_copies` saves that copy undeployed, as its
- * app is: it declares no requirements until it is deployed. Its profiles' accounts are linked all
- * the same, so deploying the copy runs it with them.
- *
- * The fixture rebuilds the database as an upgrade from 4.0.12 finds it, as the local MCP profile
- * targets scenario does: it undoes 4.0.14 and 4.0.13, labels the database 4.0.12, makes local step
- * `2_app_account_links` and data step 10 pending again, and writes the profiles.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -25,7 +15,6 @@ import {
 import { serverControl } from "../support/server-control.ts";
 import { scenarios } from "../test-plan.ts";
 
-/** The same provider in every app, so the accounts one app saved fill the other's requirement. */
 const source = `import { defineApp, defineProvider, secrets, query, object, string, router } from "apps";
 const service = defineProvider({ name: "Undeployed copy fixture", auth: { key: secrets({ label: "Key", fields: object({ token: string() }) }) } });
 export default defineApp({ user: { accounts: { service } } }, async () => ({
@@ -56,7 +45,6 @@ layer(TestLive, { excludeTestServices: true })("Legacy profile undeployed copy",
           }).pipe(Effect.orDie),
         );
 
-        // A deployed app to save the accounts from.
         const deployed = yield* agent.send("POST", "/v1/apps/deploy", {
           owner: "local",
           name: `Undeployed copy accounts ${suffix}`,
@@ -80,7 +68,6 @@ layer(TestLive, { excludeTestServices: true })("Legacy profile undeployed copy",
         const first = yield* connect("synthetic-undeployed-first");
         const second = yield* connect("synthetic-undeployed-second");
 
-        // The app the profiles were for, saved and never deployed.
         const name = `Undeployed profiles ${suffix}`;
         const created = yield* agent.send("POST", "/v1/apps", { owner: "local", name, files });
         expect(created.status, JSON.stringify(created.body)).toBe(200);
@@ -88,8 +75,6 @@ layer(TestLive, { excludeTestServices: true })("Legacy profile undeployed copy",
         apps.push(app.id);
         expect(app.activeVersion).toBeNull();
 
-        // Two enabled profiles of it with different accounts: the oldest keeps the app, the other
-        // becomes "(Profile 2)".
         const profile = (id: string, account: string, createdAt: string) => ({
           sql: `INSERT INTO executor_installations
             (id, app, owner, subject, name, idempotency_key, accounts, webhook_config, revision,
@@ -118,13 +103,10 @@ layer(TestLive, { excludeTestServices: true })("Legacy profile undeployed copy",
         const copy = listed.find((item) => item.name === `${name} (Profile 2)`);
         expect(copy, "the second profile's copy").toBeDefined();
         apps.unshift(copy!.id);
-        // Copied as its app is: saved, not deployed.
         expect(copy!.activeVersion).toBeNull();
-        // Each keeps its profile's account linked, though neither declares a requirement yet.
         expect(yield* localAccountLinks(agent, app.id)).toEqual([["service", first]]);
         expect(yield* localAccountLinks(agent, copy!.id)).toEqual([["service", second]]);
 
-        // Deploying the copy runs it with the account its profile selected.
         const deployedCopy = yield* agent.send("POST", "/v1/apps/deploy", {
           owner: "local",
           app: copy!.id,

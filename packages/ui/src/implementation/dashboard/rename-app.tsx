@@ -13,7 +13,6 @@ import {
 import { Button } from "../components/button.tsx";
 import { Input } from "../components/input.tsx";
 
-/** One rename interaction; products supply their authorized mutation and exact error renderer. */
 export function RenameApp<E>({
   app,
   rename,

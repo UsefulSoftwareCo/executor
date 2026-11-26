@@ -1,30 +1,9 @@
-/**
- * Readers that misbehave the way real ones do: one that closes the pipe early, as `head -c` does,
- * one that stops reading while the command still has output to write, and one that goes away
- * while a server keeps running.
- *
- * Each runs as a Node program that starts the command itself, since only the process holding a
- * pipe's ends can close or stall it, and prints what it saw as JSON.
- */
 import { Effect, FileSystem, Path, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
-/** What the reader does with the command's output. */
 export type Reader =
-  /** Read at least `bytes` of stdout, then close the pipe. */
   | { readonly mode: "head"; readonly bytes: number }
-  /**
-   * Give the command a stderr pipe already full and never read. Read stdout until the server
-   * prints its connection link, which it prints only after logging its startup on stderr, and wait
-   * until the server at `origin` is ready, then stop it.
-   */
   | { readonly mode: "stalled"; readonly origin: string }
-  /**
-   * Read stdout until the server prints its connection link and is ready at `origin`, or without
-   * one at the `Executor:` origin it prints, then close the `stream` pipe and create the `gate`
-   * file, if any. After `holdMs`, in which the server writes that stream again, check that it
-   * is still ready, stop it and check that its origin then refuses connections.
-   */
   | {
       readonly mode: "late";
       readonly origin?: string;
@@ -33,15 +12,8 @@ export type Reader =
       readonly holdMs: number;
     };
 
-/**
- * A server is stopped with SIGTERM, except on Windows, where a signal ends a process at once and
- * skips its shutdown; there the reader writes to the private fd3 pipe, which `e2e-process.ts`
- * turns into the SIGTERM event the product listens for. `late` always uses that pipe, so it stops
- * the server the same way on every platform.
- */
-const reader = `import { spawn } from "node:child_process";
+const reader = `import { execFileSync, spawn } from "node:child_process";
 import { writeFileSync } from "node:fs";
-import { connect } from "node:net";
 const [spec, command, ...args] = process.argv.slice(2);
 const reader = JSON.parse(spec);
 const report = (fields) => console.log(JSON.stringify(fields));
@@ -60,7 +32,7 @@ if (reader.mode === "head") {
     report({ code, signal, read, stderr, millisecondsAfterClose: performance.now() - (closedAt ?? NaN) }),
   );
 } else {
-  let child, stderr = "", signalledAt, hung, reported = false, answeredAfterClose, refusedAfterExit;
+  let child, stderr = "", signalledAt, hung, reported = false, answeredAfterClose, stoppedAfterExit, startedProcesses;
   let pipeFullAtSignal;
   let origin = reader.origin;
   // What the report waits for once the command exits.
@@ -89,7 +61,8 @@ if (reader.mode === "head") {
             signal,
             stderr,
             answeredAfterClose,
-            refusedAfterExit,
+            stoppedAfterExit,
+            startedProcesses,
             pipeFullAtSignal,
             millisecondsAfterSignal: exitedAt - (signalledAt ?? NaN),
           }),
@@ -114,20 +87,29 @@ if (reader.mode === "head") {
       async (response) => response.status === 200 && (await response.json()).status === "ready",
       () => false,
     );
-  // Only a refused connection shows that nothing listens; a listener that accepts and never
-  // answers is still there.
-  const refuses = () =>
-    new Promise((resolve) => {
-      const { hostname, port } = new URL(origin);
-      const socket = connect({ host: hostname, port: Number(port) });
-      const settle = (refused) => {
-        socket.destroy();
-        resolve(refused);
-      };
-      socket.setTimeout(2_000, () => settle(false));
-      socket.once("connect", () => settle(false));
-      socket.once("error", (error) => settle(error.code === "ECONNREFUSED"));
-    });
+  // The processes the command started, read from the process table. Its server is told apart by
+  // these, not by its port: once free, the port can be handed to another server, which answers.
+  const descendants = () => {
+    const rows = execFileSync("ps", ["-A", "-o", "pid=,ppid="], { encoding: "utf8" })
+      .trim()
+      .split("\\n")
+      .map((row) => row.trim().split(/\\s+/).map(Number));
+    const below = new Set([child.pid]);
+    for (let size = 0; size !== below.size; ) {
+      size = below.size;
+      for (const [pid, parent] of rows) if (below.has(parent)) below.add(pid);
+    }
+    below.delete(child.pid);
+    return [...below];
+  };
+  const exists = (pid) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (error) {
+      return error.code === "EPERM";
+    }
+  };
   const deadline = Date.now() + 120_000;
   const ready = async () => {
     while (running() && Date.now() < deadline) {
@@ -179,17 +161,20 @@ if (reader.mode === "head") {
         if (reader.gate !== undefined) writeFileSync(reader.gate, "");
         await wait(reader.holdMs);
         answeredAfterClose = running() && (await isReady());
-        // A server in another process, as \`--standalone\` runs, stops with the command: its
-        // origin refuses connections within 15 seconds of the command's exit.
-        if (running())
+        // A server in another process, as \`--standalone\` runs, stops with the command: every
+        // process the command had started exits within 15 seconds of the command's exit.
+        if (running() && process.platform !== "win32") {
+          const started = descendants();
+          startedProcesses = started.length;
           afterExit = new Promise((resolve) => child.once("exit", resolve)).then(async () => {
             const until = Date.now() + 15_000;
             while (Date.now() < until) {
-              if (await refuses()) return void (refusedAfterExit = true);
+              if (!started.some(exists)) return void (stoppedAfterExit = true);
               await wait(200);
             }
-            refusedAfterExit = false;
+            stoppedAfterExit = false;
           });
+        }
         stop(request);
       });
   }
@@ -205,12 +190,12 @@ const Observed = Schema.fromJsonString(
     millisecondsAfterClose: Schema.optional(Schema.NullOr(Schema.Number)),
     millisecondsAfterSignal: Schema.optional(Schema.NullOr(Schema.Number)),
     answeredAfterClose: Schema.optional(Schema.Boolean),
-    refusedAfterExit: Schema.optional(Schema.Boolean),
+    stoppedAfterExit: Schema.optional(Schema.Boolean),
+    startedProcesses: Schema.optional(Schema.Number),
     pipeFullAtSignal: Schema.optional(Schema.Boolean),
   }),
 );
 
-/** Run the command under one of the readers, with this environment, and return what it saw. */
 export const throughPipe = (
   spec: Reader,
   command: { readonly command: string; readonly args: ReadonlyArray<string> },

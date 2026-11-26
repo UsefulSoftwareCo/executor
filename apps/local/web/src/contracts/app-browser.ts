@@ -3,17 +3,12 @@ import { revalidated } from "@executor-js/ui/contracts/refresh";
 import { workflowBindings } from "./resources.ts";
 import type { DashboardError } from "./errors.ts";
 import type { SkillBindings, WorkflowBindings } from "@executor-js/ui/contracts/app-browser";
-/**
- * One discovery cache per app and version. Linking or unlinking an account reads it again, as
- * does the page's normal refresh.
- */
 import type { App, AppId, VersionId } from "@executor-js/sdk";
 import { Cause, Data, Match, Option } from "effect";
 import { Atom, AsyncResult } from "effect/reactivity";
 import { DashboardClient } from "./api.ts";
 import { acknowledgedQuery } from "@executor-js/ui/contracts/mutations";
 
-// Local sessions must also discard protected data after an authoritative denial.
 const denied = Match.type<DashboardError>().pipe(
   Match.tags({
     DashboardUnauthorized: () => true,
@@ -57,7 +52,6 @@ const bundle = Atom.family((key: AppKey) =>
     }),
   ).pipe(revalidated, protectedQuery),
 );
-/** Product-owned query bindings share stable identities between overview and detail sections. */
 export function appBrowserBindings(
   app: App,
 ): SkillBindings<DashboardError> & WorkflowBindings<DashboardError> {
@@ -71,7 +65,6 @@ export function appBrowserBindings(
     bundle: bundle(key),
   };
 }
-/** Read the app's skills again, as after linking or unlinking an account. */
 export const refreshSkillDiscovery = (
   get: Atom.FnContext,
   key: ConstructorParameters<typeof AppKey>[0],

@@ -39,10 +39,8 @@ import {
 } from "../contracts/detection.ts";
 
 const protocolVersion = "2025-11-25";
-/** Bound each answer read, matching the largest single result other app reads accept. */
 const maxAnswer = 16 * 1024 * 1024;
 
-/** The transport could not complete one request. */
 class McpRequestFailed extends Schema.TaggedError<McpRequestFailed>()("McpRequestFailed", {
   reason: Schema.Literals(["unreachable", "timeout"]),
 }) {}
@@ -64,7 +62,6 @@ const mediaOf = (contentType: string | undefined): McpMedia => {
   return type.startsWith("text/") ? "text" : "other";
 };
 
-/** The challenge's scheme and which Bearer parameters it names; their values stay unread. */
 const challengeOf = (header: string | undefined): McpChallenge | undefined => {
   if (header === undefined || header.trim() === "") return undefined;
   const bearer = bearerChallenge(header);
@@ -82,14 +79,12 @@ const challengeOf = (header: string | undefined): McpChallenge | undefined => {
   };
 };
 
-/** The JSON-RPC response to `id` in a JSON body or the first matching Server-Sent Event. */
 const readResponse = (response: HttpClientResponse.HttpClientResponse, id: number) => {
   const matching = (text: string) =>
     decodeResponse(text).pipe(Option.filter((message) => message.id === id));
   const read =
     mediaOf(response.headers["content-type"]) === "event-stream"
-      ? // The server may keep the stream open after answering, so stop at the answer.
-        response.stream.pipe(
+      ? response.stream.pipe(
           Stream.decodeText,
           Stream.pipeThroughChannel(Sse.decode({ maxEventSize: maxAnswer })),
           Stream.map((event) => matching(event.data)),
@@ -122,7 +117,6 @@ type Exchange = {
   readonly session?: string;
 };
 
-/** POST one JSON-RPC message without credentials; read only a 2xx answer to a request. */
 const post = (
   egress: HostEgress,
   url: string,
@@ -177,11 +171,6 @@ const signalOf = (method: McpRequestSignal["method"], exchange: Exchange) => {
 
 const successful = (exchange: Exchange) => exchange.status >= 200 && exchange.status < 300;
 
-/**
- * Detect how to connect the MCP server at `url`. `discovery` is the resource whose OAuth is
- * inspected; it differs from `url` only when a product default added transport options. OAuth is
- * inspected with the host's own client settings, so the outcome matches its account setup.
- */
 export const detectMcpAccess = (
   input: { readonly url: string; readonly discovery: string },
   host: CatalogHost,
@@ -207,11 +196,9 @@ export const detectMcpAccess = (
         { resourceMetadata: bearerChallenge(authenticate)?.resourceMetadata, originFallback },
       ).pipe(Effect.tap((found) => Effect.sync(() => signals.push(...found.signals))));
 
-    /** Anonymous use was rejected: OAuth the server advertises, or other credentials. */
     const rejected = (exchange: Exchange) =>
       Effect.gen(function* () {
         const challenge = challengeOf(exchange.authenticate);
-        // A 403 without a challenge may come from a firewall rather than the server's sign-in.
         const signIn = exchange.status === 401 || challenge !== undefined;
         const oauth = yield* inspectOAuth(exchange.authenticate, signIn);
         return ResourceOAuth.match(oauth, {
@@ -229,7 +216,6 @@ export const detectMcpAccess = (
         });
       });
 
-    /** A request that did not succeed: a sign-in rejection, or why nothing could be decided. */
     const unsuccessful = (exchange: Exchange, otherwise: McpUndeterminedReason) =>
       exchange.status === 401 || exchange.status === 403
         ? rejected(exchange)
@@ -256,12 +242,8 @@ export const detectMcpAccess = (
       signals.push(signalOf("initialize", initialized));
       if (!successful(initialized)) return yield* unsuccessful(initialized, "not_mcp");
       const session = initialized.session;
-      // The release names the version the server negotiated, as every request after initialize
-      // does. A server that predates the version requested refuses a DELETE naming it, and keeps
-      // the session. Without a negotiated version the header is left out.
       let negotiatedVersion: string | undefined;
       if (session !== undefined)
-        // A public server can allocate a session for this check; release it.
         yield* Effect.addFinalizer(() =>
           Effect.scoped(
             HttpClient.withScope(egress.client).del(input.url, {
@@ -287,7 +269,6 @@ export const detectMcpAccess = (
       signals.push(signalOf("tools/list", tools));
       if (!successful(tools)) return yield* unsuccessful(tools, "tools_error");
       if (tools.answer !== "result") return undetermined("tools_error");
-      // A public server may still advertise OAuth, on a challenge or in its metadata.
       const oauth = yield* inspectOAuth(tools.authenticate ?? initialized.authenticate, false);
       return McpDetection.cases.Anonymous.make({
         ...ResourceOAuth.match(oauth, {
@@ -299,13 +280,11 @@ export const detectMcpAccess = (
       });
     }).pipe(
       Effect.scoped,
-      // Each MCP request is bounded on its own; this bounds the metadata lookups too.
       Effect.timeout("30 seconds"),
       Effect.catchTag("TimeoutError", () => Effect.succeed(undetermined("timeout"))),
       Effect.catchTag("McpRequestFailed", ({ reason }) => Effect.succeed(undetermined(reason))),
     );
   }).pipe(
-    // Only the outcome and its fixed detail are recorded; the server's address never is.
     Effect.tap((detection) =>
       Effect.annotateCurrentSpan(
         McpDetection.match(detection, {

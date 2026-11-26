@@ -1,4 +1,3 @@
-/** The credential form explains why an app's account check could not verify the entered credentials. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -15,7 +14,6 @@ const Check = Schema.Struct({
   message: Schema.optionalKey(Schema.String),
 });
 
-/** Long enough for the host to redact it. */
 const missingScope = "synthetic-missing-scope";
 
 layer(HostedLive, { excludeTestServices: true })("Account check failures", (it) => {
@@ -27,7 +25,6 @@ layer(HostedLive, { excludeTestServices: true })("Account check failures", (it) 
         const api = yield* Api;
         const browser = yield* Browser;
         const prefix = `/api/organizations/${actors.organization.id}`;
-        // The check answers without a network by throwing its own message.
         const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
           name: `Checks ${randomUUID().slice(0, 8)}`,
           files: [
@@ -81,7 +78,7 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
                         response.request().method() === "POST" &&
                         new URL(response.url()).pathname.endsWith("/credential-checks"),
                     ),
-                    connect.getByRole("button", { name: "Validate API key", exact: true }).click(),
+                    connect.getByRole("button", { name: "Validate", exact: true }).click(),
                   ]),
                 )
                 .then(([response]) => response.json() as Promise<unknown>),
@@ -90,7 +87,6 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
         const verdict = (step: string) =>
           browser.use(step, () => {
             const line = connect.locator('[data-credential-check="check_failed"]');
-            // Let the result's fade-in finish so the checkpoint shows the settled form.
             return line
               .waitFor({ state: "visible" })
               .then(() =>
@@ -107,15 +103,37 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
           });
 
         const explained = yield* validate("Validate a token the app explains", missingScope);
-        // The app's own message crosses the runtime with the checked credential replaced.
         expect(explained).toEqual({
           status: "check_failed",
           message: "403: token [redacted] lacks the accounts scope",
         });
         expect(yield* verdict("The form shows the app's explanation")).toBe(
-          "Couldn't verify this API key: 403: token [redacted] lacks the accounts scope",
+          "Couldn't verify these credentials: 403: token [redacted] lacks the accounts scope\n" +
+            "The app's check may be wrong. You can still add these credentials and ask your agent to fix the check.\n" +
+            "Copy fix prompt",
         );
         yield* browser.checkpoint("App explains why the check failed");
+        const prompt = yield* browser.use(
+          "Copy the prompt that asks an agent to fix the check",
+          (page) =>
+            page
+              .context()
+              .grantPermissions(["clipboard-read", "clipboard-write"])
+              .then(() =>
+                connect.getByRole("button", { name: "Copy fix prompt", exact: true }).click(),
+              )
+              .then(() => page.evaluate(() => navigator.clipboard.readText())),
+        );
+        expect(prompt).toBe(
+          [
+            `The account check in my Executor app (app ID: ${app.id}) failed for my Check fixture credentials (sign-in method: API key), and the check itself may be wrong.`,
+            "",
+            "The check reported: Couldn't verify these credentials: 403: token [redacted] lacks the accounts scope",
+            "",
+            "Start with the Executor app's executor skill. Read the app's source, find the health check for the Check fixture provider, and fix it so it accepts working credentials and still rejects bad ones. Deploy the updated app. Don't ask me to paste the credentials into chat.",
+          ].join("\n"),
+        );
+        expect(prompt).not.toContain(missingScope);
         yield* browser.use("Narrow screen", (page) =>
           page.setViewportSize({ width: 390, height: 844 }),
         );

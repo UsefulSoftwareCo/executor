@@ -6,26 +6,22 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowRight01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
 import { DropdownMenu as DropdownMenuPrimitive } from "radix-ui";
 
-/** Dropdown Menu primitive; accepts native props and composes caller styles. */
 function DropdownMenu({ ...props }: React.ComponentProps<typeof DropdownMenuPrimitive.Root>) {
   return <DropdownMenuPrimitive.Root data-slot="dropdown-menu" {...props} />;
 }
 
-/** Dropdown Menu Portal primitive; accepts native props and composes caller styles. */
 function DropdownMenuPortal({
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.Portal>) {
   return <DropdownMenuPrimitive.Portal data-slot="dropdown-menu-portal" {...props} />;
 }
 
-/** Dropdown Menu Trigger primitive; accepts native props and composes caller styles. */
 function DropdownMenuTrigger({
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.Trigger>) {
   return <DropdownMenuPrimitive.Trigger data-slot="dropdown-menu-trigger" {...props} />;
 }
 
-/** Dropdown Menu Content primitive; accepts native props and composes caller styles. */
 function DropdownMenuContent({
   className,
   sideOffset = 4,
@@ -46,12 +42,10 @@ function DropdownMenuContent({
   );
 }
 
-/** Dropdown Menu Group primitive; accepts native props and composes caller styles. */
 function DropdownMenuGroup({ ...props }: React.ComponentProps<typeof DropdownMenuPrimitive.Group>) {
   return <DropdownMenuPrimitive.Group data-slot="dropdown-menu-group" {...props} />;
 }
 
-/** Dropdown Menu Item primitive; accepts native props and composes caller styles. */
 function DropdownMenuItem({
   className,
   inset,
@@ -75,7 +69,6 @@ function DropdownMenuItem({
   );
 }
 
-/** Dropdown Menu Checkbox Item primitive; accepts native props and composes caller styles. */
 function DropdownMenuCheckboxItem({
   className,
   children,
@@ -103,14 +96,12 @@ function DropdownMenuCheckboxItem({
   );
 }
 
-/** Dropdown Menu Radio Group primitive; accepts native props and composes caller styles. */
 function DropdownMenuRadioGroup({
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.RadioGroup>) {
   return <DropdownMenuPrimitive.RadioGroup data-slot="dropdown-menu-radio-group" {...props} />;
 }
 
-/** Dropdown Menu Radio Item primitive; accepts native props and composes caller styles. */
 function DropdownMenuRadioItem({
   className,
   children,
@@ -138,7 +129,6 @@ function DropdownMenuRadioItem({
   );
 }
 
-/** Dropdown Menu Label primitive; accepts native props and composes caller styles. */
 function DropdownMenuLabel({
   className,
   inset,
@@ -156,7 +146,6 @@ function DropdownMenuLabel({
   );
 }
 
-/** Dropdown Menu Separator primitive; accepts native props and composes caller styles. */
 function DropdownMenuSeparator({
   className,
   ...props
@@ -170,7 +159,6 @@ function DropdownMenuSeparator({
   );
 }
 
-/** Dropdown Menu Shortcut primitive; accepts native props and composes caller styles. */
 function DropdownMenuShortcut({ className, ...props }: React.ComponentProps<"span">) {
   return (
     <span
@@ -181,12 +169,10 @@ function DropdownMenuShortcut({ className, ...props }: React.ComponentProps<"spa
   );
 }
 
-/** Dropdown Menu Sub primitive; accepts native props and composes caller styles. */
 function DropdownMenuSub({ ...props }: React.ComponentProps<typeof DropdownMenuPrimitive.Sub>) {
   return <DropdownMenuPrimitive.Sub data-slot="dropdown-menu-sub" {...props} />;
 }
 
-/** Dropdown Menu Sub Trigger primitive; accepts native props and composes caller styles. */
 function DropdownMenuSubTrigger({
   className,
   inset,
@@ -216,7 +202,6 @@ function DropdownMenuSubTrigger({
   );
 }
 
-/** Dropdown Menu Sub Content primitive; accepts native props and composes caller styles. */
 function DropdownMenuSubContent({
   className,
   ...props

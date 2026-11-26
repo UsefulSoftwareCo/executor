@@ -1,4 +1,3 @@
-/** Deploy a small older snapshot after unrelated source has grown. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -46,7 +45,6 @@ layer(HostedLive, { excludeTestServices: true })("Historical source", (it) => {
         const initial = yield* read();
         let current = initial;
         for (let revision = 0; revision < 2; revision += 1) {
-          // Workspace reads list files by path, so the saved list keeps that order.
           const later = [
             ...files,
             { path: "later.txt", content: randomBytes(256 * 1024).toString("base64") },
@@ -76,7 +74,6 @@ layer(HostedLive, { excludeTestServices: true })("Historical source", (it) => {
         const invalid = yield* api.request(actors.owner, "POST", `${path}/deploy`, {
           commit: "f".repeat(40),
         });
-        // A commit the repository does not have is missing, on every host.
         expect(invalid.status).toBe(404);
         const afterFailure = yield* api.request(actors.owner, "GET", `${path}/source`);
         expect(afterFailure.status).toBe(200);

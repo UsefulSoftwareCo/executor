@@ -13,25 +13,15 @@ import {
 } from "./account-description.tsx";
 import { ProviderIcon } from "./common.tsx";
 
-/**
- * A new account waiting to be named. `saved` is present when the prompt follows the form that saved
- * it; the prompt then renders at once and takes that dialog's place without animating.
- */
 export interface AccountToName {
   readonly account: Account["id"];
-  /** The app about to select this account; the prompt waits for that app's check. */
   readonly app?: AppId;
   readonly saved?: { readonly account: Pick<Account, "label">; readonly provider: Provider };
 }
 
-/**
- * A name to offer when naming an account, from the identity its checks reported. It lives here, not
- * with the health views, because the naming prompt is mounted on every page and must stay small.
- */
 export const suggestedAccountName = (health: AccountHealth | undefined) =>
   health?.info?.displayName ?? health?.info?.username ?? health?.info?.email;
 
-/** The dialog shell for naming a new account; hosts supply the form or its loading state. */
 export function NameAccountModal({
   handoff,
   busy,
@@ -61,7 +51,6 @@ export function NameAccountModal({
   );
 }
 
-/** The provider's identity and the dialog's accessible title. */
 export function NameAccountHeader({ provider }: { readonly provider?: Provider | undefined }) {
   return (
     <div className="flex items-center gap-3 pr-7">
@@ -81,10 +70,6 @@ export function NameAccountHeader({ provider }: { readonly provider?: Provider |
   );
 }
 
-/**
- * Name an account once it is connected and optionally describe it for agents; the host owns the
- * update and what follows.
- */
 export function NameAccountForm<E>({
   account,
   providerName,
@@ -96,10 +81,6 @@ export function NameAccountForm<E>({
 }: {
   readonly account: Pick<Account, "label">;
   readonly providerName: string;
-  /**
-   * The account's reported name while its check runs. The field waits for it, then starts from
-   * the reported name, or from the saved label when there is none.
-   */
   readonly identity?:
     | { readonly resolving: true }
     | { readonly resolving: false; readonly name: string | undefined };

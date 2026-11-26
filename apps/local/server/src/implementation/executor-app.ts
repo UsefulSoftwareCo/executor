@@ -1,4 +1,3 @@
-/** Install the bundled management app using the same deploy and account operations as user apps. */
 import { StorageError, sourceFilesEqual, type Executor } from "@executor-js/sdk/core";
 import { Effect, Redacted } from "effect";
 import type { SqlClient } from "effect/sql";
@@ -7,7 +6,6 @@ import type { ServerConfig } from "../contracts/config.ts";
 import { executorAppSource } from "./executor-app-source.ts";
 import { executorAppOwner as owner } from "./owners.ts";
 
-/** Keep the host's bundled source and explicitly configured local API connection ready across restarts. */
 export const installExecutorApp = (
   executor: Executor,
   sql: SqlClient.SqlClient,
@@ -31,12 +29,10 @@ export const installExecutorApp = (
             })).app;
     const requirement = app.requirements.accounts.executor;
     if (requirement === undefined) return yield* Effect.fail(new StorageError());
-    // Every accepted local API caller already holds this exact key. No separate administrator key is created.
     const fields = Redacted.make({
       baseUrl: `http://127.0.0.1:${config.port}`,
       apiKey: Redacted.value(config.apiKey),
     });
-    // The host's owner holds only this account.
     const [saved] = (yield* executor.accounts.list({ owner })).filter(
       (account) => account.provider === requirement.provider,
     );
@@ -50,9 +46,7 @@ export const installExecutorApp = (
             label: "Local Executor",
             fields,
           });
-    // Update the host-owned connection in place when its configured port/key changes; keep the account ID stable.
     yield* executor.managedAccounts.replaceCredentials({ owner, account: account.id, fields });
-    // It is the app's one linked account; linking it again changes nothing.
     yield* linkAccount(sql, executor, {
       app: app.id,
       scope: "user",

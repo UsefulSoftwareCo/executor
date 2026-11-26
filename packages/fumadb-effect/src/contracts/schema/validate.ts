@@ -1,6 +1,3 @@
-/**
- * Structural validation run when a schema is constructed.
- */
 import { SchemaDefinitionError } from "../errors.ts";
 import { isValid } from "../version.ts";
 import { type AnyColumn, isIdColumn } from "./column.ts";
@@ -17,10 +14,6 @@ const isCompositeUnique = (table: AnyTable, columns: ReadonlyArray<AnyColumn>): 
   return table.getUniqueConstraints().some((con) => sameNames(con.columns, columns));
 };
 
-/**
- * A foreign key must point at a table of the same schema. A stale reference
- * would compile to SQL that names a table the migration never creates.
- */
 const validateForeignKeyTarget = (key: ForeignKey, tables: Record<string, AnyTable>): void => {
   for (const table of [key.table, key.referencedTable]) {
     if (tables[table.ormName] === table) continue;
@@ -92,18 +85,10 @@ const validateRelation = (relation: AnyRelation): void => {
   }
 };
 
-/**
- * Check a schema's version, foreign keys, and relations.
- *
- * Throws a `SchemaDefinitionError` (a defect: an invalid definition is a
- * programmer error) for the first problem found.
- */
 export const validateSchema = (schema: AnySchema): void => {
   if (!isValid(schema.version))
     throw new SchemaDefinitionError(`the version ${schema.version} is invalid.`);
   for (const table of Object.values(schema.tables)) {
-    // Two keys of one name compile to the same constraint twice, which the
-    // migration only discovers as "constraint already exists".
     const keyNames = new Set<string>();
     for (const key of table.foreignKeys) {
       if (keyNames.has(key.name))

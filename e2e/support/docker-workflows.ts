@@ -1,14 +1,7 @@
-/** Released-image workflow engine fixtures shared by the docker-release workflow specs. */
 import { Effect, Schema, Schedule } from "effect";
 import { appsManifest } from "./apps-release.ts";
 import { releasedServer } from "./docker-release-server.ts";
 
-// Each workflow run is its own durable engine in the image's workerd process. An engine that
-// stays loaded after its run finishes keeps its database and state resident, so memory grows
-// with every run a server has ever executed. Engines therefore unload once idle, and a run that
-// is sleeping or waiting to retry resumes from its durable alarm in a newly loaded engine.
-
-/** A fresh released image with an owner and one deployed app; removed when the scope closes. */
 export const workflowServer = (source: string) =>
   Effect.gen(function* () {
     const server = yield* releasedServer;
@@ -17,9 +10,6 @@ export const workflowServer = (source: string) =>
       appsManifest,
     ]);
     const runs = `${server.prefix}/apps/${app.id}/workflow-runs`;
-    // A loaded engine maps its database's shared-memory index into the workerd process; the
-    // namespace's own metadata database stays mapped. workerd unloads an idle object after it
-    // has been inactive and its callers have gone, within about two and a half minutes.
     const loadedEngines = server
       .exec(
         'for process in /proc/[0-9]*; do read name < "$process/comm"; [ "$name" = workerd ] && cat "$process/maps"; done',
@@ -58,7 +48,6 @@ export const WorkflowRun = Schema.Struct({
 
 export type WorkflowServer = Effect.Success<ReturnType<typeof workflowServer>>;
 
-/** Polls a run until it reaches a final status. */
 export const finishedRun = (server: WorkflowServer, run: string) =>
   server.json(WorkflowRun, `${server.runs}/${run}`).pipe(
     Effect.flatMap((current) =>
@@ -69,7 +58,6 @@ export const finishedRun = (server: WorkflowServer, run: string) =>
     Effect.retry({ schedule: Schedule.spaced("2 seconds"), times: 150 }),
   );
 
-/** Polls until no engine is loaded, and returns how many remain if some never unload. */
 export const unloadedEngines = (server: WorkflowServer) =>
   server.loadedEngines.pipe(
     Effect.flatMap((loaded) => (loaded === 0 ? Effect.succeed(loaded) : Effect.fail(loaded))),

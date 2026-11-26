@@ -1,12 +1,3 @@
-/**
- * MCP and API bearer authentication reads the token, its grant, consent and connection, and
- * the caller's membership in one SQL statement. MCP authenticates every request and every tool
- * call inside `execute`, and each statement is a network round trip to Cloud's database, so the
- * statement count under `auth.authenticate` is the regression guard. The PAT and OAuth paths
- * read different rows, so both are checked, through MCP and through the Executor API. Each
- * `auth.authenticate` also names the organization it resolved, by its opaque ID, so its latency
- * can be split by organization.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Layer, Redacted, Schedule, Schema } from "effect";
 import { Actors } from "../support/actors.ts";
@@ -34,10 +25,6 @@ layer(HostedLive, { excludeTestServices: true })("Bearer authentication", (it) =
           mcp = yield* McpClient;
         const organization = actors.organization.id;
 
-        /**
-         * SQL statements under each `auth.authenticate` span of a completed request's trace, and
-         * the organization each recorded.
-         */
         const statements = (traceId: string) =>
           telemetry.query(traceId).pipe(
             Effect.flatMap((result) => {
@@ -48,7 +35,9 @@ layer(HostedLive, { excludeTestServices: true })("Bearer authentication", (it) =
                 (entry) => entry.span.tags["http.response.status_code"] === "200",
               );
               if (roots.length === 0 || !complete)
-                return Effect.fail(new Error("The completed server trace must reach Motel"));
+                return Effect.fail(
+                  new Error("The completed server trace must reach the collector"),
+                );
               const byId = new Map(result.data.map(({ span }) => [span.spanId, span]));
               const under = (root: string, spanId: string | null) => {
                 const visited = new Set<string>();

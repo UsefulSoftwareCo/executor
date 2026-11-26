@@ -1,4 +1,3 @@
-/** Run npm without a shell. Windows npm is a shell wrapper, so Node runs its JavaScript entry. */
 import { Effect, Path } from "effect";
 
 export const npmCommand = Effect.gen(function* () {

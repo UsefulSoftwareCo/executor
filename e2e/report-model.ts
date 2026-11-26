@@ -1,9 +1,7 @@
 import { Schema } from "effect";
 import { TestPlan } from "./test-plan.ts";
 
-/** Each run names the product, deployment mode and exact server being tested. */
 export const Target = Schema.Literals(["self-host", "local", "cloud"]);
-/** Persisted run metadata contains no credentials or session state. */
 export const RunMetadata = Schema.Struct({
   target: Target,
   origin: Schema.String,
@@ -14,24 +12,14 @@ export const RunMetadata = Schema.Struct({
   startedAt: Schema.String,
   interactive: Schema.Boolean,
   diagnostics: Schema.String,
-  /**
-   * Where a managed Cloud serves its dashboard and sign-in when it is not `app.` of `origin`:
-   * `deployment` under its rollback switch.
-   */
   browserOrigin: Schema.optional(Schema.Literal("deployment")),
-  /**
-   * The deployment origin of the OAuth proxy's production when the run tests a stage that signs in
-   * through it (`e2e:cloud --oauth-proxy-preview`).
-   */
   oauthProxyProduction: Schema.optional(Schema.String),
 });
-/** Portable evidence links copied into the report folder. */
 export const Attachment = Schema.Struct({
   name: Schema.String,
   contentType: Schema.String,
   href: Schema.String,
 });
-/** Test identities include the Vitest scenario, target and source file. */
 export const EvidenceEntry = Schema.Struct({
   id: Schema.String,
   title: Schema.String,
@@ -39,18 +27,18 @@ export const EvidenceEntry = Schema.Struct({
   target: Target,
   origin: Schema.optional(Schema.String),
   status: Schema.String,
+  startedAt: Schema.optional(Schema.Number),
   duration: Schema.Number,
   errors: Schema.Array(Schema.String),
   annotations: Schema.Array(Schema.Struct({ type: Schema.String, description: Schema.String })),
   attachments: Schema.Array(Attachment),
 });
-/** Result list retained by one or more target runs. */
 export const EvidenceEntries = Schema.Array(EvidenceEntry);
-/** Serialized report boundary shared by the reporter and React reader. */
 export const EvidenceReport = Schema.Struct({
   runs: Schema.Array(RunMetadata),
   entries: EvidenceEntries,
   plan: Schema.Array(TestPlan),
+  outcome: Schema.optional(Schema.Literals(["passed", "failed"])),
 }).check(
   Schema.makeFilter(
     (report) =>

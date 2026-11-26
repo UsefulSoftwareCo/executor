@@ -1,4 +1,3 @@
-/** Local setup separates the agent's link operation from cookie-only secret exchange. */
 import { Schema } from "effect";
 import {
   HttpApi,
@@ -18,12 +17,10 @@ import {
 } from "@executor-js/sdk/core";
 import { AuthForbidden, AuthStorageError, PairingUnauthorized } from "./auth.ts";
 import { DashboardUnauthorized } from "./dashboard.ts";
-/** Browser cookies alone authorize secret reads; API keys can issue only setup links. */
 export class WebhookSetupAccess extends HttpApiMiddleware.Service<WebhookSetupAccess>()(
   "local/WebhookSetupAccess",
   { error: [AuthForbidden, AuthStorageError, DashboardUnauthorized] },
 ) {}
-/** The product owns these routes. They are outside ExecutorApi and its generated management surface. */
 export const LocalWebhookSetupApi = HttpApi.make("local-webhook-setup")
   .add(
     HttpApiGroup.make("webhookLinks").add(

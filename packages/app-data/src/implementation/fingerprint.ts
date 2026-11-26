@@ -1,4 +1,3 @@
-/** Stable SHA-256 fingerprints, so names and keys never carry the raw values they identify. */
 import { Effect } from "effect";
 import { Base64Url } from "effect/encoding";
 import { AppDatabaseError } from "../contracts/database.ts";

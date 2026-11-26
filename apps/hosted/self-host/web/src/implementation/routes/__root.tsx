@@ -15,14 +15,12 @@ import { fontPreloads } from "@executor-js/ui/lib/fonts";
 import { requireSession, restoreLastOrganization } from "@executor-js/hosted-web/document";
 import { serverDocument } from "../document.ts";
 
-/** Global auth, invitation and callback routes have no selected organization. */
 export const Route = createRootRoute({
   head: () => ({
     links: [...fontPreloads, { rel: "stylesheet", href: styles }],
     meta: [{ title: "Executor" }],
   }),
   shellComponent: DashboardDocument,
-  // Sign-in is decided before any HTML; the browser's session check only revalidates.
   beforeLoad: async ({ location }) => {
     if (!import.meta.env.SSR) return;
     requireSession(serverDocument(), location.pathname, ["/login"]);
@@ -43,7 +41,6 @@ function Root() {
           <Outlet />
         </OrganizationResumeBoundary>
       </AuthBoundary>
-      {/* A development overlay; it reads the browser origin and has no server markup. */}
       <ClientOnly>
         <ExecutorDevtools
           onSessionChange={clearSessionDisplay}

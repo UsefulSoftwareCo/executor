@@ -40,11 +40,9 @@ layer(HostedLive, { excludeTestServices: true })("Cloud API host clients", (it) 
         const hosts = targetHosts(yield* Target);
         const api = yield* Api,
           actors = yield* Actors;
-        // The SDK's default registry.
         const registry = yield* rawRequest(`${hosts.api}/api/registry/apps`);
         expect(registry.status).toBe(200);
         expect(Array.isArray(JSON.parse(registry.text))).toBe(true);
-        // The CLI's discovery, from the API host to the endpoints it signs in with.
         const resource = yield* Schema.decodeUnknownEffect(Resource)(
           (yield* rawRequest(`${hosts.api}/.well-known/oauth-protected-resource/api`)).text,
         );
@@ -63,8 +61,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud API host clients", (it) 
           registration_endpoint: `${hosts.browser}/api/auth/oauth2/register`,
         });
 
-        // The CLI signs in at the API host, which names the edge and then the deployment origin
-        // as where its Git remotes live.
         const tools = yield* appsCli;
         const login = yield* tools.login(hosts.api);
         expect(login.verificationUri).toBe(`${hosts.browser}/device`);
@@ -83,7 +79,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud API host clients", (it) 
         );
         const path = `/git/${actors.organization.id}/${app.slug}.git`;
 
-        // The API and the CLI name the edge's remote, though the CLI called the API host.
         expect(
           yield* body(
             Schema.Struct({ path: Schema.String, url: Schema.String }),
@@ -94,8 +89,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud API host clients", (it) 
         expect(printed.code, printed.stderr).toBe(0);
         expect(printed.stdout.trim()).toBe(`${hosts.edge}${path}`);
 
-        // Git asks the helper for each remote's origin. The session signed in at the API host
-        // answers for the edge and the deployment origin, and never for another origin.
         const credential = (origin: string) =>
           tools
             .git(

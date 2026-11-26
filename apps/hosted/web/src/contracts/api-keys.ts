@@ -13,7 +13,6 @@ import {
 import { sessionAtom } from "./auth.ts";
 import { BrowserAtoms } from "./telemetry.ts";
 
-/** Safe actionable lifecycle failures; raw HTTP responses never reach diagnostics. */
 export class ApiKeyFailed extends Schema.TaggedError<ApiKeyFailed>()("ApiKeyFailed", {
   message: Schema.String,
 }) {}
@@ -67,7 +66,6 @@ const request = <A>(
     Effect.provide(dashboardHttpClient),
   );
 
-/** User-owned token metadata; session changes invalidate cached reads. */
 const apiKeyPageAtom = Atom.family((offset: number) =>
   BrowserAtoms.atom((get) => {
     get(sessionAtom);
@@ -93,11 +91,9 @@ export const apiKeysAtom = Atom.family((offset: number) =>
     (refresh) => refresh(apiKeyPageAtom(offset)),
   ).pipe(revalidated),
 );
-/** Creation returns a redacted token; the page keeps it only in the one-time copy dialog. */
 export const createApiKeyAtom = BrowserAtoms.fn((input: typeof CreateApiKey.Type) =>
   request("create", input, CreatedApiKey),
 );
-/** Delete one of the current user's tokens through Better Auth. */
 export const revokeApiKeyAtom = BrowserAtoms.fn((id: typeof ApiKeyId.Type) =>
   request("delete", { keyId: id }, Schema.Struct({ success: Schema.Boolean })),
 );

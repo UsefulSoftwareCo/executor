@@ -1,8 +1,7 @@
-import { CurrentAuthorization } from "../contracts/authorization.ts";
+import { CurrentPolicy } from "../contracts/authorization.ts";
 import { checkInvocationAccounts } from "./access.ts";
 import { invocationAccounts } from "@executor-js/sdk/core";
 import { CurrentUserId } from "../contracts/auth.ts";
-/** Browser identity selects the same MCP host partition as the original bearer grant. */
 import {
   BrowserApprovalAddress,
   BrowserApprovalAnswer,
@@ -36,7 +35,6 @@ const browserAccess = Effect.gen(function* () {
   const query = yield* Schema.decodeUnknownEffect(HostedApprovalQuery)(
     HttpServerRequest.searchParamsFromURL(url),
   );
-  // The incoming Origin was checked above. Internal cookie verification also needs it on GET.
   headers.set("origin", auth.origin);
   const access = yield* auth.browserGrant(headers, query.grantId);
   const address = yield* Schema.decodeUnknownEffect(BrowserApprovalAddress)({
@@ -53,7 +51,6 @@ const browserAccess = Effect.gen(function* () {
   }),
 );
 
-/** Authenticate cookies and current membership on both gateway and session-host boundaries. */
 export const browserMcpRequest = <E, R>(
   handle: (
     access: McpAccess,
@@ -74,7 +71,6 @@ export const browserMcpRequest = <E, R>(
     ),
   );
 
-/** Inspect and answer through the shared manager, after checking app/account access with browser authority. */
 export const hostedMcpApproval = (
   approvals: BrowserApprovals,
   access: McpAccess,
@@ -88,7 +84,7 @@ export const hostedMcpApproval = (
     if (view.status === "pending") {
       const backend = yield* hostedMcpBackend.pipe(
         Effect.provideService(CurrentOrganization, access.access),
-        Effect.provideService(CurrentAuthorization, access.policy),
+        Effect.provideService(CurrentPolicy, access.policy),
         Effect.provideService(CurrentUserId, access.userId),
       );
       const restricted = restrictMcpBackend<Error, never>(backend, Effect.succeed(access.grant));

@@ -2,15 +2,16 @@ import { ApiKeyId } from "../contracts/api-keys.ts";
 import { browserPersonalTokenAccess, apiKeyAccess, requirePinnedOrganization } from "./api-keys.ts";
 import {
   ApprovalMode,
-  type ConnectionId,
+  ConnectionId,
   GrantId,
   grantAuthorization,
+  desktopResource,
   mcpOAuthResources,
 } from "@executor-js/mcp-auth";
 
-/** Hosted membership composes with the shared OAuth grant lifecycle. */
 import type { BetterAuthPlugin, GenericEndpointContext } from "@better-auth/core";
 import { APIError, createAuthEndpoint, isAPIError } from "better-auth/api";
+import { desktopSessions } from "./desktop-sessions.ts";
 import { Effect, Option, Schema } from "effect";
 import {
   grantOAuthPlugins,
@@ -63,18 +64,15 @@ const membership = (
     ),
   );
 
-/**
- * The browser origin serves sign-in and consent; the resource origins name MCP and API audiences;
- * the issuer identifies the authorization server, possibly on another host.
- */
 export type HostedOAuthOrigins = Pick<GrantOAuthOptions, "origin" | "resourceOrigins" | "issuer">;
 
 export type { RefreshRejection };
 
-/** What a host observes about grants: why a refresh was refused and which grants were approved. */
-export type GrantObservers = Pick<GrantOAuthOptions, "onRefreshRejected" | "onGrantCreated">;
+export type GrantObservers = Pick<
+  GrantOAuthOptions,
+  "onRefreshRejected" | "onGrantCreated" | "resolveResource"
+>;
 
-/** The hosted grant's origins plus the host's grant observers. */
 export type HostedOAuthOptions = HostedOAuthOrigins & GrantObservers;
 
 const hostedGrantOAuth = ({
@@ -83,6 +81,7 @@ const hostedGrantOAuth = ({
   issuer,
   onRefreshRejected,
   onGrantCreated,
+  resolveResource,
 }: HostedOAuthOptions) =>
   grantOAuthPlugins({
     origin,
@@ -90,21 +89,22 @@ const hostedGrantOAuth = ({
     issuer,
     onRefreshRejected,
     onGrantCreated,
-    scopes: ["mcp", "executor", "offline_access"],
-    // The CLI signs in on machines without a browser, approving on the dashboard's device page.
+    resolveResource,
+    scopes: ["mcp", "executor", "desktop", "offline_access"],
     deviceAuthorization: true,
     resources: [
       ...mcpOAuthResources(resourceOrigins.mcp),
-      ...resourceOrigins.api.map((resourceOrigin) => ({
-        identifier: `${resourceOrigin}/api`,
-        allowedScopes: ["executor", "offline_access"],
-      })),
+      ...resourceOrigins.api.flatMap((resourceOrigin) => [
+        { identifier: `${resourceOrigin}/api`, allowedScopes: ["executor", "offline_access"] },
+        {
+          identifier: desktopResource(resourceOrigin),
+          allowedScopes: ["desktop", "offline_access"],
+        },
+      ]),
     ],
     selectResource: (ctx, userId, required) =>
       Effect.gen(function* () {
         const header = ctx.headers?.get("x-executor-organization") ?? undefined;
-        // A connection belongs to one organization. The consent page may omit the choice,
-        // but it cannot name a different organization.
         const organization = yield* Schema.decodeUnknownEffect(OrganizationId)(
           required ?? header,
         ).pipe(Effect.mapError(() => new APIError("BAD_REQUEST")));
@@ -129,9 +129,9 @@ export const PatGrant = Schema.Struct({
   token: ApiKeyId,
   organization: OrganizationId,
   mode: ApprovalMode,
+  connection: Schema.optionalKey(ConnectionId),
 });
 const patGrantPrefix = "pat:";
-/** The PAT a synthetic grant ID names, or none for an OAuth grant ID. */
 export const patGrantOf = (id: string) =>
   id.startsWith(patGrantPrefix)
     ? Schema.decodeUnknownOption(Schema.fromJsonString(PatGrant))(
@@ -154,7 +154,6 @@ const parsePatGrant = (id: GrantId) =>
     Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(PatGrant))),
     Effect.mapError(() => new APIError("UNAUTHORIZED")),
   );
-/** Stable metadata identifies the PAT/organization/mode partition; it is never a credential. */
 const projectPatAccess = (
   ctx: GenericEndpointContext,
   identity: Effect.Success<ReturnType<typeof apiKeyAccess>>,
@@ -177,23 +176,17 @@ const projectPatAccess = (
     });
   });
 
-/** Provision the host's fixed resources before serving OAuth requests. */
 export const provisionHostedOAuthResources = (
   origins: HostedOAuthOrigins,
   context: OAuthResourceSeedContext,
 ) => hostedGrantOAuth(origins).provisionResources(context);
 
-/**
- * Insert one existing connection's missing resources at every resource origin, as a new
- * connection gets them. Existing resource rows are never changed.
- */
 export const provisionHostedConnectionResources = (
   origins: HostedOAuthOrigins,
   context: OAuthResourceSeedContext,
   connection: ConnectionId,
 ) => hostedGrantOAuth(origins).provisionConnectionResources(context, connection);
 
-/** A consent binds a new grant to the selected organization; refresh retains its identity. */
 export const mcpOAuthPlugins = (options: HostedOAuthOptions) => {
   const oauth = hostedGrantOAuth(options);
   const projectAccess = (ctx: GenericEndpointContext, grant: GrantAccess) =>
@@ -236,10 +229,14 @@ export const mcpOAuthPlugins = (options: HostedOAuthOptions) => {
       ),
     },
   } satisfies BetterAuthPlugin;
-  return [...oauth.plugins, hosted] as const;
+  const desktop = desktopSessions({
+    origin: options.origin,
+    authenticate: (ctx) => oauth.authenticate(ctx, "desktop"),
+    bindSession: oauth.bindSession,
+  });
+  return [...oauth.plugins, hosted, desktop] as const;
 };
 
-/** Browser approval pages state no cause, so every refusal there is one outcome. */
 export const mcpBrowserGrantError = (cause: unknown) =>
   isAPIError(cause) && cause.statusCode === 403
     ? new McpApprovalForbidden()
@@ -254,7 +251,6 @@ type ConnectionBody = {
   name: string;
   policy: typeof ConnectionPolicy.Encoded;
 };
-/** The server-only Better Auth endpoints that store connections. */
 export interface McpConnectionApi {
   readonly listMcpConnections: (input: {
     body: { userId: string; resource: string };
@@ -273,10 +269,6 @@ export interface McpConnectionApi {
 }
 const storeFailure = (cause: unknown) =>
   isAPIError(cause) ? cause.statusCode : ("unavailable" as const);
-/**
- * Adapt a host's native auth instance to the connection store. Results cross the Better Auth
- * boundary and are parsed again; missing records and storage outages stay distinct.
- */
 export const mcpConnectionStore = (
   call: <A>(run: (api: McpConnectionApi) => Promise<A>) => Effect.Effect<A, unknown>,
 ): McpConnectionStore => {
@@ -317,9 +309,10 @@ export const mcpConnectionStore = (
     revoke: (owner, id) =>
       request(
         (api) => api.revokeMcpConnection({ body: { ...owner, id } }),
-        Schema.Struct({ revoked: Schema.Literal(true) }),
+        Schema.Struct({ revoked: Schema.Literal(true), id: ConnectionId }),
       ).pipe(
-        Effect.asVoid,
+        Effect.map((revoked) => revoked.id),
+        Effect.uninterruptible,
         Effect.mapError((status) =>
           status === 404
             ? new ConnectionNotFound({ connection: id })
@@ -333,9 +326,10 @@ export const mcpConnectionStore = (
     revokeAgent: (owner, id) =>
       request(
         (api) => api.revokeMcpAgent({ body: { ...owner, id } }),
-        Schema.Struct({ revoked: Schema.Literal(true) }),
+        Schema.Struct({ revoked: Schema.Literal(true), id: GrantId }),
       ).pipe(
-        Effect.asVoid,
+        Effect.map((revoked) => revoked.id),
+        Effect.uninterruptible,
         Effect.mapError((status) =>
           status === 404
             ? new ConnectedAgentNotFound({ agent: id })

@@ -9,7 +9,6 @@ type Work =
   | { kind: "capture"; event: typeof UIObservation.Type; sequence: number }
   | { kind: "fence"; done: Deferred.Deferred<void> };
 
-/** Own direct screenshots and optional request holds; ordinary runs acquire neither. */
 export const captureUIObservations = (
   page: Page,
   evidence: typeof Evidence.Service,
@@ -40,7 +39,6 @@ export const captureUIObservations = (
     }).pipe(Effect.timeout("15 seconds"), Effect.orDie);
     const painted = driver("wait for browser frames", () =>
       page.evaluate(() => {
-        // Re-sample bounds so CSS-only motion cannot leave stale geometry on a screenshot.
         window.dispatchEvent(new Event("executor-ui-observation-sample"));
         return new Promise<void>((resolve) =>
           requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
@@ -64,8 +62,6 @@ export const captureUIObservations = (
         const expected = latest;
         settlePhase = "capture queue";
         yield* fence;
-        // A view can arrive behind the fence while an earlier screenshot is in flight.
-        // Drain that view too before the test's next interaction can replace it.
         if (
           pending.size === 0 &&
           latest === expected &&
@@ -93,13 +89,10 @@ export const captureUIObservations = (
           const navigation = navigationSequence;
           const result = yield* Effect.gen(function* () {
             yield* painted;
-            // Once capture starts, keep the transition even if another view arrives.
-            // A navigation still invalidates work belonging to the departing document.
             if (navigationSequence !== navigation || !onApplication()) return null;
             const bytes = yield* driver("capture observed UI state", () =>
               page.screenshot({ type: "png", caret: "hide", timeout: 5000 }),
             );
-            // The pixels remain useful even if navigation or another view interrupts validation.
             const validation = yield* painted.pipe(Effect.option);
             return {
               bytes,
@@ -167,9 +160,6 @@ export const captureUIObservations = (
       Effect.runPromise(
         Effect.gen(function* () {
           const request = route.request();
-          // Page-owned keepalive telemetry can outlive the document that sent it.
-          // It never changes the UI, so it must not hold the next document's capture.
-          // Send it normally; only UI requests participate in controlled loading.
           if (new URL(request.url()).pathname.startsWith("/api/telemetry/")) {
             yield* driver("send background telemetry", () => route.continue());
             return;
@@ -179,7 +169,6 @@ export const captureUIObservations = (
           yield* Effect.sleep(requestHoldMs);
           yield* fence;
           const elapsed = (yield* Clock.currentTimeMillis) - started;
-          // A navigation or unmount may cancel the browser's request while it is held.
           const status = yield* driver("release observed request", () => route.continue()).pipe(
             Effect.matchEffect({
               onSuccess: () => Effect.succeed("released" as const),
@@ -208,7 +197,6 @@ export const captureUIObservations = (
     const failed = (request: Request) => pending.delete(request);
     const requested = (request: Request) => {
       if (request.isNavigationRequest() && request.frame() === page.mainFrame()) {
-        // Requests from a departing document no longer gate the next document's UI.
         pending.clear();
         latest = null;
       }
@@ -223,7 +211,6 @@ export const captureUIObservations = (
     yield* Scope.addFinalizer(
       scope,
       Effect.gen(function* () {
-        // Drain in-flight handlers while the capture worker is still alive.
         yield* driver("finish state capture routing", () =>
           page.context().unrouteAll({ behavior: "wait" }),
         ).pipe(Effect.orDie);

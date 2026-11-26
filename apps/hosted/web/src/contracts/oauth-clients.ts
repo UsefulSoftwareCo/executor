@@ -1,4 +1,3 @@
-/** The organization's OAuth clients for administrators, with confirmed writes acknowledged. */
 import { hydrated } from "@executor-js/ui/contracts/http";
 import { revalidated } from "@executor-js/ui/contracts/refresh";
 import { acknowledge, acknowledgedQuery } from "@executor-js/ui/contracts/mutations";
@@ -10,7 +9,6 @@ import type { AppAudience, AccessRevision } from "@executor-js/hosted-server/res
 import { HostedClient } from "./api.ts";
 import { groupsAtom } from "./groups.ts";
 
-/** Every client with its policy, and the servers a new one can be registered for. */
 export const oauthClientsAtom = Atom.family((organization: OrganizationReference) =>
   HostedClient.query("oauthClients", "list", hydrated({ params: { organization } })).pipe(
     revalidated,
@@ -18,7 +16,6 @@ export const oauthClientsAtom = Atom.family((organization: OrganizationReference
   ),
 );
 
-/** Register a client with its audience; the confirmed metadata joins the list. The secret is never read back. */
 export const registerOAuthClientAtom = Atom.family((organization: OrganizationReference) =>
   HostedClient.runtime.fn(
     (
@@ -64,7 +61,6 @@ const removeClient = Atom.family((key: ClientKey) =>
     ),
   ),
 );
-/** Removing one client is independent of every other client's mutations. */
 export const removeOAuthClientAtom = (key: {
   organization: OrganizationReference;
   client: OAuthClientId;
@@ -94,7 +90,6 @@ const updateClient = Atom.family((key: ClientKey) =>
             })),
           ),
         ),
-        // Nothing was saved, but the client or its audience may have changed elsewhere.
         Effect.tapError(() =>
           Effect.sync(() => {
             get.refresh(oauthClientsAtom(key.organization));
@@ -104,7 +99,6 @@ const updateClient = Atom.family((key: ClientKey) =>
       ),
   ),
 );
-/** Editing one client is independent of every other client's mutations. */
 export const updateOAuthClientAtom = (key: {
   organization: OrganizationReference;
   client: OAuthClientId;
