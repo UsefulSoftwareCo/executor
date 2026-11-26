@@ -1,25 +1,3 @@
-/**
- * The `executor` npm package is a launcher. It holds no runtime: the first start of a version
- * downloads that release's archive for this platform, checks it against the SHA-256 the launcher's
- * package.json records, and unpacks it into ~/.executor/v2/launcher/<version>. Later starts run it
- * from there, pass signals on and exit as the executable exits.
- *
- * Package managers create a command shim from the launcher's declared bin path. Executor 1 declared
- * `bin/executor`; Executor 2 declares `bin.mjs`. An upgrade that replaces the package without
- * relinking, such as `bun add executor@beta` run inside Bun's global directory, leaves the old shim
- * starting `bin/executor`, so the launcher must keep that path working. The launcher needs no
- * particular Node: set EXECUTOR_E2E_OLD_NODE to the oldest Node its package.json accepts to start
- * it there too, including its first download.
- *
- * Through 2.0.0-beta.36 each runtime was published as a version of the `executor` package itself,
- * such as `2.0.0-beta.36-win32-x64`, which semver ranks above the launcher it belongs to. A
- * `bun update -g` then replaced the launcher with a runtime archive, which has no `bin.mjs`. Those
- * versions are deprecated, so package managers skip them; the second scenario installs and updates
- * the launcher with Bun from a registry that still lists one.
- *
- * EXECUTOR_E2E_LAUNCHER_ARCHIVE is the packed launcher (`bun run release:wrapper`) and
- * EXECUTOR_E2E_RUNTIME_ARCHIVE this platform's release archive, which the launcher records.
- */
 import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { createHash } from "node:crypto";
@@ -49,10 +27,6 @@ const Manifest = Schema.fromJsonString(
 const target = `${process.platform}-${process.arch}`;
 const executableName = process.platform === "win32" ? "executor.exe" : "executor";
 
-/**
- * Serve `files` by URL path on loopback, counting requests per path, for the scenario's scope:
- * the public release's downloads and, for Bun, the npm registry.
- */
 const serve = (files: Map<string, Uint8Array>) =>
   Effect.gen(function* () {
     const requests = new Map<string, number>();
@@ -99,8 +73,6 @@ const scenario = Effect.gen(function* () {
         const child = yield* processes.spawn(
           ChildProcess.make(command, args, {
             cwd,
-            // Release scenarios never send product analytics, even from a build with a baked key.
-            // The launcher keeps its runtimes in the home directory.
             env: { DO_NOT_TRACK: "1", HOME: home, USERPROFILE: home, ...env },
             extendEnv: true,
             stdout: "pipe",
@@ -118,12 +90,10 @@ const scenario = Effect.gen(function* () {
         return { code: Number(code), stdout: stdout.trim(), stderr };
       }),
     );
-  // Unpack as npm lays out an install: the archive's package/ becomes `directory`.
   const unpack = Effect.fnUntraced(function* (archive: string, directory: string) {
     const staging = path.join(root, `unpack-${path.basename(directory)}`);
     yield* fs.makeDirectory(staging);
     yield* fs.copyFile(archive, path.join(staging, "package.tgz"));
-    // A relative archive path: GNU tar on Windows reads a drive letter as a remote host.
     const result = yield* run("tar", ["-xzf", "package.tgz"], staging);
     expect(result.code, result.stderr).toBe(0);
     yield* fs.makeDirectory(path.dirname(directory), { recursive: true });
@@ -180,8 +150,6 @@ it.live(
         const download = { EXECUTOR_DOWNLOAD_URL: `http://127.0.0.1:${releases.port}/` };
         const entry = path.join(launcher, "bin.mjs");
 
-        // Versions from earlier downloads: the newest stays, as the version a background Executor
-        // started before an update may run from; older ones and abandoned downloads go.
         const day = 24 * 60 * 60 * 1000;
         const now = Date.now();
         for (const [name, age] of [
@@ -194,7 +162,6 @@ it.live(
           yield* fs.utimes(path.join(runtimes, name), time, time);
         }
 
-        // The first start downloads, on the oldest Node the launcher supports when one is given.
         const first = yield* run(
           Option.getOrElse(oldNode, () => process.execPath),
           [entry, "--version"],
@@ -218,11 +185,9 @@ it.live(
 
         for (const file of ["bin.mjs", "bin/executor"]) {
           const script = path.join(launcher, file);
-          // Windows shims (npm's .cmd and .ps1, Bun's .exe) start the entry with Node.
           const viaNode = yield* run(process.execPath, [script, "--version"], root, download);
           expect(viaNode.code, viaNode.stderr).toBe(0);
           expect(viaNode.stdout).toBe(`executor v${manifest.version}`);
-          // Unix shims are symlinks to the entry, started through its shebang.
           if (process.platform !== "win32") {
             const viaShebang = yield* run(script, ["--version"], root, download);
             expect(viaShebang.code, viaShebang.stderr).toBe(0);
@@ -233,10 +198,8 @@ it.live(
           const old = yield* run(oldNode.value, ["--version"], root);
           expect(manifest.engines.node).toBe(`>=${old.stdout.replace(/^v/u, "")}`);
         }
-        // Every later start runs the downloaded runtime.
         expect(releases.requests.get(releaseFile)).toBe(1);
 
-        // A failing command exits with the executable's code and message.
         const executable = path.join(installed, executableName);
         const direct = yield* run(executable, ["web"], root);
         const launched = yield* run(process.execPath, [entry, "web"], root);
@@ -244,7 +207,6 @@ it.live(
         expect(launched.code).toBe(direct.code);
         expect(launched.stderr).toBe(direct.stderr);
 
-        // A service manager's SIGTERM reaches the server, which stops cleanly with the launcher.
         if (process.platform !== "win32") {
           const registry = yield* localNpmRegistry;
           const port = yield* freePort;
@@ -284,8 +246,6 @@ it.live(
               return yield* child.exitCode.pipe(Effect.timeout("20 seconds"));
             }),
           );
-          // The server ran its own shutdown, which ends an interrupted program with 130, and the
-          // launcher exited with it. It removed its registration, and nothing listens on its port.
           expect(Number(stopped)).toBe(130);
           expect(yield* fs.exists(path.join(root, "data", "server.json"))).toBe(false);
           const status = yield* run(executable, ["service", "status"], root, {
@@ -296,7 +256,6 @@ it.live(
           expect(yield* connectionRefused(port)).toBe(true);
         }
 
-        // A download that does not match the recorded SHA-256 installs nothing.
         yield* fs.remove(installed, { recursive: true });
         files.set(releaseFile, new Uint8Array([...runtimeBytes.subarray(0, 1024), 0]));
         const tampered = yield* run(process.execPath, [entry, "--version"], root, download);
@@ -308,7 +267,6 @@ it.live(
           [],
         );
 
-        // A release that serves no archive says where it looked and how to use a mirror.
         files.delete(releaseFile);
         const missing = yield* run(process.execPath, [entry, "--version"], root, download);
         expect(missing.code).toBe(1);
@@ -331,7 +289,6 @@ it.live(
         const launcherBytes = yield* fs.readFile(
           path.resolve(yield* Config.String("EXECUTOR_E2E_LAUNCHER_ARCHIVE")),
         );
-        // A later launcher for `bun update -g` to move to, which semver ranks above this one.
         const next = manifest.version.includes("-")
           ? `${manifest.version}.1`
           : manifest.version.replace(/\d+$/u, (patch) => String(Number(patch) + 1));
@@ -349,7 +306,6 @@ it.live(
         const packed = yield* run("tar", ["-czf", "next.tgz", "package"], repack);
         expect(packed.code, packed.stderr).toBe(0);
         const nextBytes = yield* fs.readFile(path.join(repack, "next.tgz"));
-        // The same runtime serves as the later release's, so it still reports this version.
         const nextReleaseFile = `/executor@${next}/executor-${next}-${target}.tgz`;
 
         const runtimeVersion = `${manifest.version}-${target}`;
@@ -374,8 +330,6 @@ it.live(
             integrity: integrity(bytes),
           },
         });
-        // As npm holds `executor`: the launcher on `beta`, and the runtime published as a version
-        // of the same package, which semver ranks above it, now deprecated.
         const publish = (versions: Record<string, unknown>, beta: string) =>
           files.set(
             "/executor",
@@ -454,8 +408,6 @@ it.live(
         yield* started;
         expect(server.requests.get(releaseFile)).toBe(1);
 
-        // The background Executor runs from the downloaded runtime, outside node_modules, so
-        // replacing the launcher package touches no file it holds open; Windows refuses that.
         yield* Effect.addFinalizer(() => executor(["service", "stop"]).pipe(Effect.ignore));
         const service = yield* executor(["service", "start"]);
         expect(service.code, service.stderr).toBe(0);
@@ -470,8 +422,6 @@ it.live(
         expect(updated.code, updated.stderr).toBe(0);
         expect(yield* installedVersion).toBe(next);
         yield* started;
-        // The new launcher downloaded its release's runtime once. The one the background Executor
-        // runs from stays installed beside it.
         expect(server.requests.get(nextReleaseFile)).toBe(1);
         expect((yield* fs.readDirectory(runtimes)).sort()).toEqual([manifest.version, next].sort());
         const status = yield* executor(["service", "status"]);

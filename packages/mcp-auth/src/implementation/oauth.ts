@@ -1,6 +1,5 @@
 import { isToolSelectionSubset } from "@executor-js/authorization";
-/** Better Auth owns OAuth and token rotation; this plugin owns explicit, revocable grants. */
-import type { BetterAuthPlugin, GenericEndpointContext } from "@better-auth/core";
+import type { AuthContext, BetterAuthPlugin, GenericEndpointContext } from "@better-auth/core";
 import { defineRequestState } from "@better-auth/core/context";
 import {
   oauthProvider,
@@ -21,18 +20,24 @@ import { Clock, Effect, Option, Schema } from "effect";
 import { authCall, parse, runAuth } from "./auth-call.ts";
 import { deviceAuthorizationPlugin, devicePollsPerRequest } from "./device-authorization.ts";
 import {
+  ApprovalMode,
   ConnectionId,
   Grant,
   GrantId,
   GrantPolicy,
+  GrantSettings,
   GrantTarget,
-  approvalRefusal,
   defaultResource,
+  grantScope,
+  grantSettingsHeader,
   grantTarget,
   mcpOAuthResources,
   OAuthResourceProvisioningFailed,
+  recordedTarget,
   type ResourceOrigins,
+  legacyMcpTarget,
 } from "../contracts/grant.ts";
+import { approvalRefusal } from "../contracts/grant-enforcement.ts";
 import {
   Connection,
   ConnectionName,
@@ -53,6 +58,7 @@ const Record = Schema.Struct({
   policy: Schema.String,
   revoked: Schema.Boolean,
   connection: Schema.optionalKey(Schema.NullOr(ConnectionId)),
+  mode: Schema.optionalKey(Schema.NullOr(ApprovalMode)),
 });
 const ConnectionRecord = Schema.Struct({
   id: ConnectionId,
@@ -64,9 +70,7 @@ const ConnectionRecord = Schema.Struct({
   createdAt: Schema.Date,
   updatedAt: Schema.Date,
 });
-/** Server-only connection calls name the verified user and host resource explicitly. */
 const ConnectionOwner = { userId: Schema.NonEmptyString, resource: Schema.NonEmptyString };
-/** Verified credential identity plus the current persisted grant, independent of host ownership. */
 export const GrantAccess = Schema.Struct({
   userId: Schema.String,
   clientId: Schema.String,
@@ -82,7 +86,6 @@ const Claims = Schema.Struct({
   aud: Schema.Union([Schema.String, Schema.Array(Schema.String)]),
   cnf: Schema.optionalKey(Schema.Unknown),
 });
-/** Authorization parameters this plugin reads; every other parameter passes through unchanged. */
 const AuthorizeRequest = Schema.StructWithRest(
   Schema.Struct({
     scope: Schema.optionalKey(Schema.String),
@@ -92,7 +95,6 @@ const AuthorizeRequest = Schema.StructWithRest(
   [Schema.Record(Schema.String, Schema.Unknown)],
 );
 const selected = defineRequestState<{ userId: string; id: GrantId } | null>(() => null);
-/** What `authEndpointTemplates` reads of a Better Auth endpoint. */
 interface AuthEndpoint {
   readonly path?: string;
   readonly options?: {
@@ -101,13 +103,6 @@ interface AuthEndpoint {
   };
 }
 
-/**
- * The endpoints Better Auth's router serves under `/api/auth`, by template, such as
- * `/api/auth/sign-in/social` or `/api/auth/sso/callback/:providerId`. Request spans record the
- * template of the endpoint a path reaches, or the `/api/auth/*` wildcard for a path none serves:
- * an SSO provider's ID is chosen by an organization's administrator, and an unknown path by its
- * caller (`routeTemplates` in `@executor-js/telemetry`).
- */
 export const authEndpointTemplates = (api: Readonly<Record<string, AuthEndpoint>>) =>
   Object.values(api).flatMap((endpoint) =>
     endpoint.path === undefined || endpoint.options?.metadata?.["SERVER_ONLY"] === true
@@ -124,7 +119,11 @@ const loopback = (value: string) => {
   }
 };
 
-/** A redirect URI as a client identity: native clients listen on a new loopback port each time. */
+const desktopLoopback = (value: string) => {
+  const url = URL.parse(value);
+  return url !== null && url.protocol === "http:" && ["127.0.0.1", "[::1]"].includes(url.hostname);
+};
+
 const redirectIdentity = (value: string) => {
   if (!loopback(value)) return value;
   const url = new URL(value);
@@ -132,21 +131,30 @@ const redirectIdentity = (value: string) => {
   return url.href;
 };
 
-/** Hosts select and authorize their own resource (an organization for hosted, an instance for local). */
-/** Why Better Auth refused a refresh grant, and when the presented token was revoked. */
 export type RefreshRejection = Parameters<
   NonNullable<OAuthOptions<Scope[]>["onRefreshRejected"]>
 >[0];
-/** What a host learns about a newly approved grant: who approved which client, for which surface. */
 export interface CreatedGrant {
   readonly userId: string;
   readonly clientId: string;
-  readonly kind: "mcp" | "api";
+  readonly kind: GrantTarget["kind"];
+  readonly organization: string;
+}
+const resolveBinding = (
+  resolve: NonNullable<GrantOAuthOptions["resolveResource"]>,
+  input: Parameters<NonNullable<GrantOAuthOptions["resolveResource"]>>[0],
+) =>
+  Effect.tryPromise({
+    try: () => resolve(input),
+    catch: (error) => (isAPIError(error) ? error : new APIError("SERVICE_UNAVAILABLE")),
+  });
+
+export interface ResourceBinding {
+  readonly organization: string;
+  readonly connection?: ConnectionId | undefined;
 }
 export interface GrantOAuthOptions {
-  /** The browser origin that serves sign-in and consent; same-origin checks compare against it. */
   readonly origin: string;
-  /** Where the MCP and API resources that tokens are issued for are served. */
   readonly resourceOrigins: ResourceOrigins;
   /**
    * The authorization server's issuer identifier, exact and without a trailing slash. It may
@@ -154,10 +162,6 @@ export interface GrantOAuthOptions {
    * every endpoint stays on `origin`. Hosts that serve one origin use `${origin}/api/auth`.
    */
   readonly issuer: string;
-  /**
-   * Choose and authorize the consent's resource. A scoped connection fixes it as `required`;
-   * the host still checks access and rejects a conflicting explicit choice.
-   */
   readonly selectResource: (
     context: GenericEndpointContext,
     userId: string,
@@ -170,13 +174,15 @@ export interface GrantOAuthOptions {
   ) => Effect.Effect<void, APIError>;
   readonly resources: NonNullable<OAuthOptions<Scope[]>["resources"]>;
   readonly scopes: Scope[];
-  /** Observe why a refresh grant was refused, including reuse detection revoking its family. */
   readonly onRefreshRejected?: ((rejection: RefreshRejection) => void) | undefined;
-  /**
-   * Observe a grant a person just approved, by consent or by a device's code, for analytics.
-   * Called once per grant, in the approving request; its failure never refuses the approval.
-   */
   readonly onGrantCreated?: ((grant: CreatedGrant) => Promise<void>) | undefined;
+  readonly resolveResource?:
+    | ((input: {
+        readonly userId: string;
+        readonly resource: string;
+        readonly organization: string | undefined;
+      }) => Promise<ResourceBinding>)
+    | undefined;
   /**
    * Offer RFC 8628 device authorization, approved on the browser origin's verification page.
    * Only hosts that serve that page and a signed-in browser session enable it.
@@ -184,35 +190,69 @@ export interface GrantOAuthOptions {
   readonly deviceAuthorization: boolean;
 }
 const accessTokenSeconds = 3600;
-/** Better Auth's default refresh token lifetime, stated because idle grant expiry follows it. */
 const refreshTokenSeconds = 30 * 24 * 3600;
-/** How long after rotation a stale copy is refused without revoking its family. */
 const supersededRefreshSeconds = 24 * 3600;
-/** Why a grant was or was not expired; see `idleGrants`. */
 export const GrantExpiryOutcome = Schema.Literals([
-  /** Revoked now: no usable token and idle for the whole window. */
   "revoked",
-  /** A report found it idle; applying would revoke it. */
   "idle",
-  /** It holds an unexpired, unrevoked token. */
   "live",
-  /** A consent, token issue or rotation falls inside the window. */
   "recent",
-  /** No consent row, so its age is unknown; it may still be being written. */
   "unconsented",
-  /** Missing or already revoked. */
   "absent",
 ]);
 export type GrantExpiryOutcome = typeof GrantExpiryOutcome.Type;
 const GrantExpiryResults = Schema.Struct({
   grants: Schema.Array(Schema.Struct({ id: GrantId, outcome: GrantExpiryOutcome })),
 });
+export const GrantModeOutcome = Schema.Literals([
+  "stored",
+  "missing",
+  "present",
+  "api",
+  "unreadable",
+  "absent",
+]);
+export type GrantModeOutcome = typeof GrantModeOutcome.Type;
+const GrantModeResults = Schema.Struct({
+  grants: Schema.Array(Schema.Struct({ id: GrantId, outcome: GrantModeOutcome })),
+});
 const GrantPage = Schema.Struct({
   grants: Schema.Array(Schema.Struct({ id: GrantId, userId: Schema.NonEmptyString })),
 });
-/** The most grants one expiry call lists or checks. */
 const grantBatch = 200;
-/** Missing grant records fail closed, including credentials issued before this plugin was installed. */
+const grantSessionPrefix = "executor-grant-session:v1:";
+const grantSessionBatch = 100;
+const GrantSessionRecords = Schema.Array(Schema.Struct({ identifier: Schema.String }));
+const GrantSessionRecord = Schema.Struct({ value: GrantId });
+const BoundGrant = Schema.Struct({ resource: Schema.NonEmptyString, revoked: Schema.Boolean });
+
+export const sessionGrantResource = (
+  adapter: Pick<AuthContext["adapter"], "findOne">,
+  session: string,
+) =>
+  Effect.gen(function* () {
+    const bound = yield* authCall(() =>
+      adapter.findOne({
+        model: "verification",
+        where: [{ field: "identifier", value: `${grantSessionPrefix}${session}` }],
+      }),
+    );
+    if (bound === null) return Option.none<string>();
+    const record = yield* Schema.decodeUnknownEffect(GrantSessionRecord)(bound).pipe(
+      Effect.mapError(() => new APIError("SERVICE_UNAVAILABLE")),
+    );
+    const grant = yield* authCall(() =>
+      adapter.findOne({ model: "mcpGrant", where: [{ field: "id", value: record.value }] }),
+    );
+    if (grant === null) return yield* Effect.fail(new APIError("UNAUTHORIZED"));
+    const row = yield* Schema.decodeUnknownEffect(BoundGrant)(grant).pipe(
+      Effect.mapError(() => new APIError("SERVICE_UNAVAILABLE")),
+    );
+    if (row.revoked) return yield* Effect.fail(new APIError("UNAUTHORIZED"));
+    return Option.some(row.resource);
+  });
+const SessionToken = Schema.Struct({ token: Schema.String });
+const SlidSession = Schema.Struct({ id: Schema.String, expiresAt: Schema.Date });
 export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
   const { origin, resourceOrigins } = settings;
   const options = {
@@ -231,11 +271,6 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
     // is checked against the native rules; any other stays a web client. The OpenID default of
     // `web` refused such registrations, including Cursor's.
     clientRegistrationDefaultApplicationType: "infer",
-    // Hosted MCP clients such as Cursor register from a shared backend address, and Cursor
-    // spends two requests per attempt. The default of 5 per minute rejected real sign-ins.
-    // Better Auth's count resets only after a whole window without requests, so a device client
-    // polling at its interval adds every poll until approval. The default twenty failed sign-ins
-    // approved after about a hundred seconds; allow one request's full polling beside that.
     rateLimit: {
       register: { window: 60, max: 60 },
       token: {
@@ -247,13 +282,7 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
     disableJwtPlugin: true,
     accessTokenExpiresIn: accessTokenSeconds,
     refreshTokenExpiresIn: refreshTokenSeconds,
-    // MCP clients often run several instances from one stored grant, each refreshing its own
-    // copy. A sibling presenting a token rotated while that rotation's access token is still
-    // live receives the same response instead of revoking every token for the client and user.
     refreshTokenReuseInterval: accessTokenSeconds,
-    // An idle instance can hold a copy rotated hours ago and present it when it closes or
-    // reconnects; Codex does so without rereading the shared store. Refuse that copy alone for a
-    // day after its rotation. Later reuse, or reuse of a revoked token, still revokes the family.
     refreshTokenSupersededInterval: supersededRefreshSeconds,
     ...(settings.onRefreshRejected === undefined
       ? {}
@@ -277,11 +306,8 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
         ),
     },
     customAccessTokenClaims: ({ referenceId }) => ({ grant_id: referenceId }),
-    // Connections add resources after clients register. Every resource here is an Executor
-    // audience, and grants still bind each token to exactly one of them.
     enforcePerClientResources: false,
   } satisfies OAuthOptions<Scope[]>;
-  /** Insert a connection's missing resources at every MCP origin; existing rows are kept. */
   const seedConnectionResources = (context: OAuthResourceSeedContext, connection: ConnectionId) =>
     seedOAuthResources(context, {
       ...options,
@@ -312,7 +338,6 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
             ),
       ),
     );
-  /** Missing, revoked, or someone else's connections are all the same absence. */
   const ownedConnection = (
     context: GenericEndpointContext,
     owner: { readonly userId: string; readonly resource?: string },
@@ -344,16 +369,9 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
         }),
       ),
     );
-  /** A connection grant has no authority of its own; it reads the connection on every use. */
-  const currentPolicy = (
-    context: GenericEndpointContext,
-    row: typeof Record.Type,
-    target: GrantTarget,
-  ) =>
+  const currentPolicy = (context: GenericEndpointContext, row: typeof Record.Type) =>
     Effect.gen(function* () {
       const connection = row.connection ?? undefined;
-      const requested = target.kind === "mcp" ? target.connection : undefined;
-      if (connection !== requested) return yield* Effect.fail(new APIError("UNAUTHORIZED"));
       if (connection === undefined)
         return yield* parse(Schema.fromJsonString(GrantPolicy), row.policy);
       const current = yield* ownedConnection(
@@ -366,7 +384,7 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
       Effect.mapError((error) => (error.statusCode === 503 ? error : new APIError("UNAUTHORIZED"))),
     );
   const project = (context: GenericEndpointContext, row: typeof Record.Type, target: GrantTarget) =>
-    currentPolicy(context, row, target).pipe(
+    currentPolicy(context, row).pipe(
       Effect.map((policy) =>
         GrantAccess.make({
           userId: row.userId,
@@ -376,7 +394,6 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
         }),
       ),
     );
-  /** A same-origin request with the signed-in browser's cookie; never a bearer credential. */
   const browserSession = (context: GenericEndpointContext) =>
     Effect.gen(function* () {
       if (
@@ -392,7 +409,6 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
     });
   const browser = (context: GenericEndpointContext) =>
     browserSession(context).pipe(Effect.map((session) => session.userId));
-  /** The consent's one resource and what it names; its tokens carry exactly that audience. */
   const consentTarget = (value: unknown) =>
     parse(Schema.Struct({ resources: Schema.Array(Schema.String) }), value).pipe(
       Effect.flatMap(({ resources }) => {
@@ -414,19 +430,26 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
         ],
       }),
     ).pipe(Effect.flatMap(consentTarget));
+  const recordFor = (context: GenericEndpointContext, row: typeof Record.Type) =>
+    consentFor(context, row).pipe(
+      Effect.flatMap(({ target: consented, resource }) => {
+        const target = recordedTarget(row, consented);
+        return target === undefined
+          ? Effect.fail(new APIError("UNAUTHORIZED"))
+          : Effect.succeed({ consented, target, resource });
+      }),
+    );
   const targetFor = (context: GenericEndpointContext, row: typeof Record.Type) =>
-    consentFor(context, row).pipe(Effect.map(({ target }) => target));
-  /** Consent and narrowing refuse a policy that even the grant's own URL could not serve. */
+    recordFor(context, row).pipe(Effect.map(({ target }) => target));
   const requireServable = (policy: GrantPolicy, target: GrantTarget) =>
     approvalRefusal(policy, target) === undefined
       ? Effect.void
       : Effect.fail(
           new APIError("FORBIDDEN", {
-            message:
-              "Browser approval needs a grant issued at an MCP URL with elicitation_mode=browser.",
+            message: "Browser approval needs a grant whose approval mode is browser.",
           }),
         );
-  const access = (context: GenericEndpointContext, kind: "mcp" | "api") =>
+  const access = (context: GenericEndpointContext, kind: GrantTarget["kind"]) =>
     Effect.gen(function* () {
       const token = context.headers?.get("authorization")?.match(/^Bearer ([^\s]+)$/i)?.[1];
       if (token === undefined) return yield* Effect.fail(new APIError("UNAUTHORIZED"));
@@ -440,17 +463,63 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
       const row = yield* get(context, claims.grant_id);
       if (row.userId !== claims.sub || row.clientId !== claims.client_id)
         return yield* Effect.fail(new APIError("UNAUTHORIZED"));
-      const { target, resource } = yield* consentFor(context, row);
+      const { consented, target, resource } = yield* recordFor(context, row);
       const audiences = typeof claims.aud === "string" ? [claims.aud] : claims.aud;
       if (
         audiences.length !== 1 ||
         audiences[0] !== resource ||
-        target.kind !== kind ||
-        !claims.scope.split(" ").includes(kind === "api" ? "executor" : "mcp")
+        consented.kind !== kind ||
+        !claims.scope.split(" ").includes(grantScope(kind))
       )
         return yield* Effect.fail(new APIError("UNAUTHORIZED"));
       yield* settings.checkResource(context, row.userId, row.resource);
       return yield* project(context, row, target);
+    });
+  const grantSessions = (ctx: GenericEndpointContext, id: GrantId) =>
+    authCall(() =>
+      ctx.context.adapter.findMany({
+        model: "verification",
+        where: [
+          { field: "identifier", operator: "starts_with", value: grantSessionPrefix },
+          { field: "value", value: id },
+        ],
+        limit: grantSessionBatch,
+      }),
+    ).pipe(Effect.flatMap((rows) => parse(GrantSessionRecords, rows)));
+  const endSessions = (ctx: GenericEndpointContext, id: GrantId): Effect.Effect<void, APIError> =>
+    Effect.gen(function* () {
+      const records = yield* grantSessions(ctx, id);
+      if (records.length === 0) return;
+      const sessions = yield* authCall(() =>
+        ctx.context.adapter.findMany({
+          model: "session",
+          where: [
+            {
+              field: "id",
+              operator: "in",
+              value: records.map((record) => record.identifier.slice(grantSessionPrefix.length)),
+            },
+          ],
+          limit: grantSessionBatch,
+        }),
+      ).pipe(Effect.flatMap((rows) => parse(Schema.Array(SessionToken), rows)));
+      if (sessions.length > 0)
+        yield* authCall(() =>
+          ctx.context.internalAdapter.deleteSessions(sessions.map((session) => session.token)),
+        );
+      yield* authCall(() =>
+        ctx.context.adapter.deleteMany({
+          model: "verification",
+          where: [
+            {
+              field: "identifier",
+              operator: "in",
+              value: records.map((record) => record.identifier),
+            },
+          ],
+        }),
+      );
+      if (records.length === grantSessionBatch) yield* endSessions(ctx, id);
     });
   const revoke = (ctx: GenericEndpointContext, id: GrantId) =>
     Effect.gen(function* () {
@@ -465,8 +534,35 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
         yield* authCall(() =>
           ctx.context.adapter.deleteMany({ model, where: [{ field: "referenceId", value: id }] }),
         );
+      yield* endSessions(ctx, id);
     });
-  /** New grants and tokens for a revoked connection fail; its grants lose their tokens now. */
+  const bindSession = (
+    ctx: GenericEndpointContext,
+    id: GrantId,
+    session: { readonly id: string; readonly expiresAt: Date },
+  ) =>
+    Effect.gen(function* () {
+      const now = new Date(yield* Clock.currentTimeMillis);
+      yield* authCall(() =>
+        ctx.context.adapter.create({
+          model: "verification",
+          data: {
+            identifier: `${grantSessionPrefix}${session.id}`,
+            value: id,
+            expiresAt: session.expiresAt,
+            createdAt: now,
+            updatedAt: now,
+          },
+        }),
+      );
+      yield* get(ctx, id).pipe(
+        Effect.catchIf(
+          (error) => error.status === "UNAUTHORIZED",
+          () =>
+            endSessions(ctx, id).pipe(Effect.andThen(Effect.fail(new APIError("UNAUTHORIZED")))),
+        ),
+      );
+    });
   const revokeConnection = (ctx: GenericEndpointContext, row: typeof ConnectionRecord.Type) =>
     Effect.gen(function* () {
       yield* authCall(() =>
@@ -501,14 +597,6 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
       yield* Effect.forEach(grants, (grant) => revoke(ctx, grant.id), { discard: true });
     });
   const serverOnly = { method: "POST", metadata: { SERVER_ONLY: true } } as const;
-  /**
-   * Grants that still hold a token Better Auth would accept: an unexpired, unrevoked access
-   * token, or an unexpired, unrevoked refresh token that can mint one. Rotated refresh tokens are
-   * revoked and only replay their successor, so they never count. Tokens name the approving
-   * browser session while it exists and are refused once it expires. Signing out deletes it:
-   * Better Auth revokes its access tokens and detaches its `offline_access` refresh tokens,
-   * which then keep working.
-   */
   const usableGrants = (ctx: GenericEndpointContext, ids: readonly GrantId[]) =>
     Effect.gen(function* () {
       const now = new Date(yield* Clock.currentTimeMillis);
@@ -516,6 +604,7 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
         Schema.Struct({
           referenceId: GrantId,
           sessionId: Schema.optionalKey(Schema.NullOr(Schema.String)),
+          scopes: Schema.optionalKey(Schema.NullOr(Schema.Array(Schema.String))),
         }),
       );
       const live = (model: "oauthAccessToken" | "oauthRefreshToken") =>
@@ -529,7 +618,13 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
             ],
           }),
         ).pipe(Effect.flatMap((rows) => parse(Live, rows)));
-      const tokens = [...(yield* live("oauthAccessToken")), ...(yield* live("oauthRefreshToken"))];
+      const accessTokens = yield* live("oauthAccessToken");
+      const refreshTokens = yield* live("oauthRefreshToken");
+      const offline = refreshTokens.filter((token) => token.scopes?.includes("offline_access"));
+      const tokens = [
+        ...accessTokens,
+        ...refreshTokens.filter((token) => !token.scopes?.includes("offline_access")),
+      ];
       const sessionIds = [
         ...new Set(tokens.flatMap((token) => (token.sessionId == null ? [] : [token.sessionId]))),
       ];
@@ -550,21 +645,13 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
               ),
             );
       const liveSessions = new Set(sessions.map((session) => session.id));
-      return new Set(
-        tokens.flatMap((token) =>
+      return new Set([
+        ...offline.map((token) => token.referenceId),
+        ...tokens.flatMap((token) =>
           token.sessionId == null || liveSessions.has(token.sessionId) ? [token.referenceId] : [],
         ),
-      );
+      ]);
     });
-  /**
-   * Why each grant is or is not idle since `since`. A grant receives tokens only by exchanging a
-   * code issued with its own consent, which lasts ten minutes, or by refreshing one of its own
-   * unexpired, unrevoked refresh tokens: each authorization creates a new grant. A grant with no
-   * such token, whose consent and every token issue and rotation precede `since`, can never be
-   * used again. Any unexpired, unrevoked token keeps a grant live, whatever its session, so
-   * nothing Better Auth might still accept is expired. A rotation revokes the old refresh token
-   * before it stores the new one; the rotation's own time keeps that grant recent meanwhile.
-   */
   const idleGrants = (ctx: GenericEndpointContext, ids: readonly GrantId[], since: Date) =>
     Effect.gen(function* () {
       const outcome = new Map<GrantId, "idle" | "live" | "recent" | "unconsented">();
@@ -607,7 +694,6 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
         ),
       );
       const consentOf = new Map(consents.map((consent) => [consent.referenceId, consent]));
-      // One row in the window is enough, so each check reads at most one.
       const touched = (id: GrantId) =>
         Effect.gen(function* () {
           for (const [model, field] of [
@@ -635,7 +721,6 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
           Effect.gen(function* () {
             const consent = consentOf.get(id);
             if (held.has(id)) return outcome.set(id, "live");
-            // The consent is written after its grant, so a grant without one may be mid-consent.
             if (consent === undefined) return outcome.set(id, "unconsented");
             if (consent.createdAt >= since || consent.updatedAt >= since || (yield* touched(id)))
               return outcome.set(id, "recent");
@@ -645,7 +730,6 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
       );
       return outcome;
     });
-  /** Check the given unrevoked grants and, when applying, revoke those idle for 30 days. */
   const expireIdle = (ctx: GenericEndpointContext, ids: readonly GrantId[], apply: boolean) =>
     Effect.gen(function* () {
       if (ids.length === 0) return [];
@@ -675,15 +759,44 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
         }),
       );
     });
-  /**
-   * When a user authorizes a client, revoke their idle grants for the same organization and URL
-   * from the same client: the same registration or a re-registration of it. MCP clients that lose
-   * their credentials register again under a new client ID, so two registrations match when both
-   * declare the same name, software ID and redirect URIs, ignoring loopback ports, which native
-   * clients choose afresh. Names are self-declared, but only grants that can never be used again
-   * are revoked, and only once idle for an hour: past the code lifetime and the refresh reuse
-   * window, so a sibling authorization or refresh in flight is never cut off.
-   */
+  const storeModes = (ctx: GenericEndpointContext, ids: readonly GrantId[], apply: boolean) =>
+    Effect.forEach(ids, (id) =>
+      Effect.gen(function* () {
+        const outcome = (value: GrantModeOutcome) => ({ id, outcome: value });
+        const found = yield* authCall(() =>
+          ctx.context.adapter.findOne({ model: "mcpGrant", where: [{ field: "id", value: id }] }),
+        );
+        if (found === null) return outcome("absent");
+        const decoded = Schema.decodeUnknownOption(Record)(found);
+        if (Option.isNone(decoded)) return outcome("unreadable");
+        const row = decoded.value;
+        if (row.revoked) return outcome("absent");
+        if (row.mode != null) return outcome("present");
+        const consent = yield* consentFor(ctx, row).pipe(
+          Effect.map(Option.some),
+          Effect.catchIf(
+            (error) => error.statusCode !== 503,
+            () => Effect.succeed(Option.none()),
+          ),
+        );
+        if (Option.isNone(consent)) return outcome("unreadable");
+        const target = recordedTarget(row, consent.value.target);
+        if (target === undefined) return outcome("unreadable");
+        if (target.kind !== "mcp") return outcome("api");
+        if (!apply) return outcome("missing");
+        const changed = yield* authCall(() =>
+          ctx.context.adapter.update({
+            model: "mcpGrant",
+            where: [
+              { field: "id", value: id },
+              { field: "mode", operator: "eq", value: null },
+            ],
+            update: { mode: target.mode },
+          }),
+        );
+        return outcome(changed === null ? "present" : "stored");
+      }),
+    );
   const retireReplaced = (
     ctx: GenericEndpointContext,
     created: typeof Record.Type,
@@ -781,11 +894,6 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
       );
       for (const [id, outcome] of checked) if (outcome === "idle") yield* revoke(ctx, id);
     });
-  /**
-   * The owner's grants that hold a usable token, with their client, consent time and newest
-   * access token, most recently used first. Grants without a usable token, a readable consent or
-   * their connection authorize nothing and are omitted; idle ones are revoked by `expireIdle`.
-   */
   const listAgents = (
     ctx: GenericEndpointContext,
     owner: { readonly userId: string; readonly resource: string },
@@ -884,10 +992,11 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
           Effect.gen(function* () {
             if (!usable.has(grant.id) || disabled.has(grant.clientId)) return [];
             const consent = consentOf.get(grant.id);
-            const target =
+            const consented =
               consent === undefined
                 ? undefined
                 : grantTarget(resourceOrigins, consent.resources ?? []);
+            const target = consented === undefined ? undefined : recordedTarget(grant, consented);
             if (consent === undefined || target === undefined) return [];
             const connection =
               grant.connection == null ? undefined : connectionOf.get(grant.connection);
@@ -906,8 +1015,8 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
                   )
                 : undefined;
             const access: ConnectedAgentAccess =
-              target.kind === "api"
-                ? { kind: "api" }
+              target.kind !== "mcp"
+                ? { kind: target.kind }
                 : connection !== undefined
                   ? { kind: "connection", connection: connection.id, name: connection.name }
                   : policy?.kind === "tools"
@@ -948,6 +1057,27 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
             b.connectedAt.localeCompare(a.connectedAt),
         );
     });
+  const requireNativeClient = (ctx: GenericEndpointContext, clientId: string) =>
+    authCall(() =>
+      ctx.context.adapter.findOne({
+        model: "oauthClient",
+        where: [{ field: "clientId", value: clientId }],
+      }),
+    ).pipe(
+      Effect.flatMap((row) =>
+        parse(Schema.Struct({ redirectUris: Schema.Array(Schema.String) }), row),
+      ),
+      Effect.flatMap(({ redirectUris }) =>
+        redirectUris.length > 0 && redirectUris.every(desktopLoopback)
+          ? Effect.void
+          : Effect.fail(
+              new APIError("BAD_REQUEST", {
+                message:
+                  "Only an app on this computer can sign in to the Executor desktop. Every redirect it registers must be http://127.0.0.1 or http://[::1].",
+              }),
+            ),
+      ),
+    );
   const lookupBrowser = (ctx: GenericEndpointContext) =>
     Effect.gen(function* () {
       const userId = yield* browser(ctx);
@@ -957,10 +1087,6 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
       yield* settings.checkResource(ctx, userId, row.resource);
       return yield* project(ctx, row, yield* targetFor(ctx, row));
     });
-  /**
-   * The grant one approval authorizes: its resource, policy and organization. Consent and device
-   * approval both create grants here, so their tokens carry the same authority.
-   */
   const createGrant = (
     ctx: GenericEndpointContext,
     userId: string,
@@ -968,45 +1094,95 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
     resources: readonly string[],
   ) =>
     Effect.gen(function* () {
-      const target = grantTarget(resourceOrigins, resources);
-      if (target === undefined)
+      const named = grantTarget(resourceOrigins, resources);
+      if (named === undefined)
         return yield* Effect.fail(
           new APIError("BAD_REQUEST", {
             message: "Choose one Executor connection URL and try again.",
           }),
         );
-      const policyHeader = ctx.headers?.get("x-executor-grant");
+      const policyHeader = ctx.headers?.get("x-executor-grant") ?? undefined;
+      const settingsHeader = ctx.headers?.get(grantSettingsHeader) ?? undefined;
+      if (named.kind !== "mcp" && settingsHeader !== undefined)
+        return yield* Effect.fail(new APIError("BAD_REQUEST"));
+      if (named.kind === "desktop") yield* requireNativeClient(ctx, clientId);
+      const chosen =
+        settingsHeader === undefined
+          ? {}
+          : yield* parse(Schema.fromJsonString(GrantSettings), settingsHeader);
+      const resource = resources[0];
+      const legacy =
+        resource === undefined ? undefined : legacyMcpTarget(resourceOrigins, resource)?.path;
+      const bound =
+        resource === undefined ||
+        settings.resolveResource === undefined ||
+        legacy === undefined ||
+        (legacy.selector === undefined && legacy.toolkit === undefined)
+          ? undefined
+          : yield* resolveBinding(settings.resolveResource, {
+              userId,
+              resource,
+              organization: ctx.headers?.get("x-executor-organization") ?? undefined,
+            });
+      if (
+        bound?.connection !== undefined &&
+        chosen.access !== undefined &&
+        !(chosen.access.kind === "connection" && chosen.access.id === bound.connection)
+      )
+        return yield* Effect.fail(
+          new APIError("BAD_REQUEST", { message: "This URL names its own toolkit." }),
+        );
+      const connectionId =
+        named.kind !== "mcp"
+          ? undefined
+          : bound?.connection !== undefined
+            ? bound.connection
+            : chosen.access === undefined
+              ? named.connection
+              : chosen.access.kind === "connection"
+                ? chosen.access.id
+                : undefined;
       const connection =
-        target.kind === "mcp" && target.connection !== undefined
-          ? yield* ownedConnection(ctx, { userId }, target.connection).pipe(
+        connectionId === undefined
+          ? undefined
+          : yield* ownedConnection(ctx, { userId }, connectionId).pipe(
               Effect.mapError(
                 (error) =>
                   new APIError(error.statusCode === 503 ? "SERVICE_UNAVAILABLE" : "FORBIDDEN", {
                     message: "This connection is no longer available.",
                   }),
               ),
-            )
-          : undefined;
-      // A connection's access comes from its record; the consent page cannot widen it.
-      if (connection !== undefined && policyHeader !== null && policyHeader !== undefined)
+            );
+      if (connection !== undefined && policyHeader !== undefined)
         return yield* Effect.fail(new APIError("BAD_REQUEST"));
+      const target: GrantTarget =
+        named.kind !== "mcp"
+          ? named
+          : connection === undefined
+            ? { kind: "mcp", mode: chosen.mode ?? named.mode }
+            : { kind: "mcp", mode: chosen.mode ?? named.mode, connection: connection.id };
       const policy =
         connection !== undefined
           ? connectionGrantPlaceholder
-          : policyHeader === null || policyHeader === undefined
+          : policyHeader === undefined
             ? GrantPolicy.make({ kind: "all" })
             : yield* parse(Schema.fromJsonString(GrantPolicy), policyHeader);
       yield* requireServable(policy, target);
-      const resource = yield* settings.selectResource(ctx, userId, connection?.resource);
+      const organization = yield* settings.selectResource(
+        ctx,
+        userId,
+        connection?.resource ?? bound?.organization,
+      );
       const row = yield* authCall(() =>
         ctx.context.adapter.create({
           model: "mcpGrant",
           data: {
             userId,
             clientId,
-            resource,
+            resource: organization,
             policy: JSON.stringify(policy),
             revoked: false,
+            ...(target.kind === "mcp" ? { mode: target.mode } : {}),
             ...(connection === undefined ? {} : { connection: connection.id }),
           },
         }),
@@ -1015,11 +1191,10 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
       const observe = settings.onGrantCreated;
       if (observe !== undefined)
         yield* Effect.tryPromise(() =>
-          observe({ userId, clientId, kind: target.kind === "mcp" ? "mcp" : "api" }),
+          observe({ userId, clientId, kind: target.kind, organization }),
         ).pipe(
           Effect.catchCause((cause) => Effect.logWarning("Agent grant was not observed", cause)),
         );
-      // Cleanup must not block the authorization; daily expiry retries what fails here.
       yield* retireReplaced(ctx, grant, resources).pipe(
         Effect.catchCause((cause) =>
           Effect.logWarning("Replaced agent grants were not revoked", cause),
@@ -1027,14 +1202,13 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
       );
       return grant;
     });
-  /**
-   * Device approval records the consent that authorization codes record for themselves, so its
-   * tokens resolve their grant and audience the same way.
-   */
   const device = deviceAuthorizationPlugin({
     origin,
     provider: options,
-    accepts: (resource) => grantTarget(resourceOrigins, [resource]) !== undefined,
+    accepts: (resource) => {
+      const target = grantTarget(resourceOrigins, [resource]);
+      return target !== undefined && target.kind !== "desktop";
+    },
     session: browserSession,
     approve: (ctx, request) =>
       Effect.gen(function* () {
@@ -1060,6 +1234,42 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
   });
   const plugin = {
     id: "executor-grants",
+    init: (context: AuthContext) => ({
+      options: {
+        databaseHooks: {
+          session: {
+            update: {
+              after: (row: unknown) =>
+                runAuth(
+                  Effect.gen(function* () {
+                    const session = Schema.decodeUnknownOption(SlidSession)(row);
+                    if (Option.isNone(session)) return;
+                    yield* authCall(() =>
+                      context.adapter.updateMany({
+                        model: "verification",
+                        where: [
+                          {
+                            field: "identifier",
+                            value: `${grantSessionPrefix}${session.value.id}`,
+                          },
+                        ],
+                        update: { expiresAt: session.value.expiresAt },
+                      }),
+                    );
+                  }).pipe(
+                    Effect.catchCause((cause) =>
+                      Effect.logError(
+                        "A session a grant signed in kept its old expiry; revoking the grant may leave it signed in after that expiry",
+                        cause,
+                      ),
+                    ),
+                  ),
+                ),
+            },
+          },
+        },
+      },
+    }),
     schema: {
       mcpGrant: {
         fields: {
@@ -1072,9 +1282,8 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
           resource: { type: "string", required: true },
           policy: { type: "string", required: true },
           revoked: { type: "boolean", required: true, defaultValue: false },
-          // Nullable and unreferenced so existing grant rows keep their own policy unchanged.
-          // Better Auth adds columns before creating tables, so a foreign key could not apply.
           connection: { type: "string", required: false },
+          mode: { type: "string", required: false },
         },
       },
       mcpConnection: {
@@ -1104,10 +1313,6 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
         { method: "GET", requireHeaders: true, metadata: { SERVER_ONLY: true } },
         (ctx) => runAuth(access(ctx, "api")),
       ),
-      /**
-       * A grant's current authority, without a credential: for background work saved under it,
-       * such as an event subscription. A revoked or deleted grant fails as unauthorized.
-       */
       getMcpGrant: createAuthEndpoint(
         "/mcp/grant",
         {
@@ -1173,14 +1378,12 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
             Effect.gen(function* () {
               const input = ctx.body;
               const existing = yield* findConnection(ctx, input.id);
-              // The client chose this ID for one editor, so a retry returns the first result.
               if (existing !== undefined)
                 return existing.userId === input.userId &&
                   existing.resource === input.resource &&
                   !existing.revoked
                   ? yield* connectionView(existing)
                   : yield* Effect.fail(new APIError("CONFLICT"));
-              // Resources exist before the URL is shown, so the first authorization can use it.
               yield* authCall(() => seedConnectionResources(ctx.context, input.id));
               const now = new Date();
               const row = yield* authCall(() =>
@@ -1221,7 +1424,6 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
             Effect.gen(function* () {
               const input = ctx.body;
               yield* ownedConnection(ctx, input, input.id);
-              // Connected agents read this record on their next request.
               const row = yield* authCall(() =>
                 ctx.context.adapter.update({
                   model: "mcpConnection",
@@ -1252,7 +1454,6 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
             Effect.gen(function* () {
               const row = yield* ownedConnection(ctx, ctx.body, ctx.body.id);
               yield* revokeConnection(ctx, row);
-              // The stored connection's ID, for callers that record which one was revoked.
               return { revoked: true, id: row.id };
             }),
           ),
@@ -1334,13 +1535,30 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
             ),
           ),
       ),
+      storeMcpGrantModes: createAuthEndpoint(
+        "/mcp/grants/store-modes",
+        {
+          ...serverOnly,
+          body: Schema.toStandardSchemaV1(
+            Schema.Struct({
+              ids: Schema.Array(GrantId).check(Schema.isMaxLength(grantBatch)),
+              apply: Schema.Boolean,
+            }),
+          ),
+        },
+        (ctx) =>
+          runAuth(
+            storeModes(ctx, ctx.body.ids, ctx.body.apply).pipe(
+              Effect.map((grants) => ({ grants })),
+            ),
+          ),
+      ),
       listMcpGrants: createAuthEndpoint(
         "/mcp/grants",
         { method: "GET", requireHeaders: true },
         (ctx) =>
           runAuth(
             Effect.gen(function* () {
-              // GET still requires same-origin browser authority, supplied by the dashboard client.
               const userId = yield* browser(ctx);
               const consents = yield* authCall(() =>
                 ctx.context.adapter.findMany({
@@ -1380,10 +1598,11 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
               const listed = yield* Effect.forEach(rows, (row) =>
                 parse(Record, row).pipe(
                   Effect.flatMap((record) => {
-                    const target = targets.get(record.id);
-                    if (target === undefined) return Effect.fail(new APIError("UNAUTHORIZED"));
+                    const consented = targets.get(record.id);
+                    if (consented === undefined) return Effect.fail(new APIError("UNAUTHORIZED"));
+                    const target = recordedTarget(record, consented);
+                    if (target === undefined) return Effect.succeed(Option.none());
                     const current = project(ctx, record, target).pipe(Effect.map(Option.some));
-                    // A grant whose connection was just revoked grants nothing; omit it.
                     return (record.connection ?? undefined) === undefined
                       ? current
                       : current.pipe(
@@ -1411,7 +1630,6 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
                 ctx.body,
               );
               const row = yield* get(ctx, id);
-              // A connection's grants follow the connection; edit the connection instead.
               if (row.userId !== userId || (row.connection ?? undefined) !== undefined)
                 return yield* Effect.fail(new APIError("FORBIDDEN"));
               const target = yield* targetFor(ctx, row);
@@ -1424,8 +1642,6 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
                   policy.approval !== "browser")
               )
                 return yield* Effect.fail(new APIError("FORBIDDEN"));
-              // Narrowing a full-access grant to browser approval at a model- or native-mode URL
-              // would leave no URL that could use it.
               yield* requireServable(policy, target);
               yield* authCall(() =>
                 ctx.context.adapter.update({
@@ -1465,8 +1681,6 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
     hooks: {
       before: [
         {
-          // Bind a request without `resource` before Better Auth signs and stores it, so consent,
-          // the authorization code and its tokens all carry the same single audience.
           matcher: (ctx: { path?: string }) => ctx.path === "/oauth2/authorize",
           handler: createAuthMiddleware(async (ctx) => {
             const post = ctx.method === "POST";
@@ -1537,30 +1751,27 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
     plugins: settings.deviceAuthorization
       ? ([oauthProvider(options), plugin, device] as const)
       : ([oauthProvider(options), plugin] as const),
-    /** Insert missing resources once during host setup; never overwrite persisted policy. */
     provisionResources: (context: OAuthResourceSeedContext) =>
       Effect.tryPromise({
         try: () => seedOAuthResources(context, options),
         catch: () => new OAuthResourceProvisioningFailed(),
       }),
-    /** The same insert-only seed a new connection gets, for a connection that already exists. */
     provisionConnectionResources: (context: OAuthResourceSeedContext, connection: ConnectionId) =>
       Effect.tryPromise({
         try: () => seedConnectionResources(context, connection),
         catch: () => new OAuthResourceProvisioningFailed(),
       }),
     authenticate: access,
+    bindSession,
     lookupBrowser,
   };
 };
 
-/** Grant storage could not be read or written; the next run tries again. */
 export class GrantExpiryUnavailable extends Schema.TaggedError<GrantExpiryUnavailable>()(
   "GrantExpiryUnavailable",
   {},
 ) {}
 
-/** The server-only endpoints that expire idle grants, as a host's own auth instance exposes them. */
 export interface GrantExpiryApi {
   readonly listMcpGrantIds: (input: {
     body: { after: string | null; limit: number };
@@ -1568,12 +1779,11 @@ export interface GrantExpiryApi {
   readonly expireIdleMcpGrants: (input: {
     body: { ids: readonly string[]; apply: boolean };
   }) => Promise<unknown>;
+  readonly storeMcpGrantModes: (input: {
+    body: { ids: readonly string[]; apply: boolean };
+  }) => Promise<unknown>;
 }
 
-/**
- * Grant expiry through a host's auth instance: list unrevoked grants in ID order, and check a
- * batch, revoking those idle for 30 days when applying. Results are parsed again at the boundary.
- */
 export const grantExpiry = (
   call: <A>(run: (api: GrantExpiryApi) => Promise<A>) => Effect.Effect<A, unknown>,
 ) => ({
@@ -1587,6 +1797,12 @@ export const grantExpiry = (
   expire: (ids: readonly string[], apply: boolean) =>
     call((api) => api.expireIdleMcpGrants({ body: { ids, apply } })).pipe(
       Effect.flatMap(Schema.decodeUnknownEffect(GrantExpiryResults)),
+      Effect.map((result) => result.grants),
+      Effect.mapError(() => new GrantExpiryUnavailable()),
+    ),
+  storeModes: (ids: readonly string[], apply: boolean) =>
+    call((api) => api.storeMcpGrantModes({ body: { ids, apply } })).pipe(
+      Effect.flatMap(Schema.decodeUnknownEffect(GrantModeResults)),
       Effect.map((result) => result.grants),
       Effect.mapError(() => new GrantExpiryUnavailable()),
     ),

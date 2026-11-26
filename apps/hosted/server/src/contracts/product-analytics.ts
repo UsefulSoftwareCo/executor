@@ -1,4 +1,3 @@
-/** Product analytics are optional host capabilities. Cloud and self-host install their own sinks. */
 import { Cause, Clock, Context, Effect, Exit, Option, Schema } from "effect";
 import {
   feedbackDisabled,
@@ -9,7 +8,6 @@ import { CurrentUserId } from "./auth.ts";
 import { CurrentOrganization } from "./organization.ts";
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
 
-/** Explicit metadata only. Never add request bodies, URLs, credentials, or operation results. */
 export interface UsageProperties {
   readonly event_id?: string;
   readonly trace_id?: string;
@@ -37,11 +35,9 @@ export interface UsageProperties {
   readonly result_count?: number;
   readonly run_id?: string;
   readonly schedule_id?: string;
-  /** Which Executor surface a newly approved agent grant reaches. */
   readonly grant_kind?: "mcp" | "api";
 }
 
-/** Stable product events; detailed API features use area and operation rather than dynamic event names. */
 export type UsageEvent =
   | "product_operation_started"
   | "product_operation_completed"
@@ -62,7 +58,6 @@ export type UsageEvent =
   | "workflow_attempt_completed"
   | "schedule_run_completed";
 
-/** The transport supplies verified client identity, never a caller-controlled analytics payload. */
 export interface UsageContext {
   readonly source: "dashboard" | "api" | "mcp" | "app_ui" | "schedule" | "workflow" | "unknown";
   readonly client_id?: string;
@@ -71,15 +66,10 @@ export interface UsageContext {
   readonly tool_name?: string;
 }
 
-/** Request-local attribution is inherited by nested product operations. */
 export const CurrentUsage = Context.Reference<UsageContext>("hosted/CurrentUsage", {
   defaultValue: () => ({ source: "unknown" }),
 });
 
-/**
- * The host's sink. Cloud installs one per request; self-host installs its process sink unless the
- * operator opted out. The default performs no collection or network I/O and refuses feedback.
- */
 export const ProductAnalytics = Context.Reference<{
   readonly enabled: boolean;
   readonly capture: (event: {
@@ -89,7 +79,6 @@ export const ProductAnalytics = Context.Reference<{
     readonly context: UsageContext;
     readonly properties: UsageProperties;
   }) => void;
-  /** Send explicitly submitted feedback and wait for ingestion to accept it. */
   readonly submitFeedback: (feedback: {
     readonly message: string;
     readonly userId: string;
@@ -103,14 +92,22 @@ export const ProductAnalytics = Context.Reference<{
   }),
 });
 
-/** Record only authenticated activity with the current resolved organization. */
-export const recordUsage = (event: UsageEvent, properties: UsageProperties = {}) =>
+export const recordUsage = (
+  event: UsageEvent,
+  properties: UsageProperties = {},
+  organizationId?: string,
+) =>
   Effect.gen(function* () {
     const sink = yield* ProductAnalytics;
     if (!sink.enabled) return;
     const userId = yield* CurrentUserId;
     if (userId === undefined) return;
-    const organization = yield* Effect.serviceOption(CurrentOrganization);
+    const current = yield* Effect.serviceOption(CurrentOrganization);
+    const organization = Option.isSome(current)
+      ? Option.some(current.value)
+      : organizationId === undefined
+        ? Option.none()
+        : Option.some({ organization: organizationId });
     const span = yield* Effect.currentSpan.pipe(Effect.option);
     sink.capture({
       event,
@@ -138,7 +135,6 @@ const ErrorReason = Schema.Struct({
   reason: Schema.String.check(Schema.isPattern(/^[a-z][a-z0-9_-]{0,63}$/u)),
 });
 
-/** Export bounded error discriminators only, never a message, cause, or other serialized field. */
 export const usageFailure = (cause: Cause.Cause<unknown>): UsageProperties => {
   if (Cause.hasInterrupts(cause)) return { outcome: "cancelled", ok: false };
   const failure = Cause.findErrorOption(cause);
@@ -149,7 +145,6 @@ export const usageFailure = (cause: Cause.Cause<unknown>): UsageProperties => {
     ok: false,
     error_type: Option.isSome(error) ? error.value._tag : "UnhandledFailure",
     ...(Option.isSome(reason) ? { error_reason: reason.value.reason } : {}),
-    // A report is curated safe evidence for failures the Executor team must fix.
     ...Option.match(failure, {
       onNone: () => ({}),
       onSome: (value) =>
@@ -160,7 +155,6 @@ export const usageFailure = (cause: Cause.Cause<unknown>): UsageProperties => {
   };
 };
 
-/** Observe the caller's actual exit without changing its result, failure, or cancellation. */
 export const observeUsage = <A, E, R>(
   event: UsageEvent,
   properties: UsageProperties,
@@ -195,7 +189,6 @@ const productOperationSpan = (properties: ProductOperation) =>
     },
   });
 
-/** Count attempted and finished operations separately so failures and abandoned work remain visible. */
 export const observeProductOperation = <A, E, R>(
   properties: ProductOperation,
   effect: Effect.Effect<A, E, R>,
@@ -206,14 +199,9 @@ export const observeProductOperation = <A, E, R>(
     productOperationSpan(properties),
   );
 
-/**
- * Trace a read without product analytics. Dashboard refetches and MCP discovery repeat
- * constantly and do not represent product use; failures still reach tracing and error reporting.
- */
 export const traceProductRead = <A, E, R>(
   properties: ProductOperation,
   effect: Effect.Effect<A, E, R>,
 ) => effect.pipe(productOperationSpan(properties));
 
-/** Safe HTTP methods are reads; every other method is recorded as a product operation. */
 export const isReadMethod = (method: string) => method === "GET" || method === "HEAD";

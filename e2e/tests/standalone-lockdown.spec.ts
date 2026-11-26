@@ -1,11 +1,3 @@
-/**
- * A local process must not run its own code inside the release executable, which a macOS
- * Keychain item trusts by its signature, nor attach a debugger to it. Stock Bun reads overrides
- * for both from the environment and the working directory before the executable's first line
- * runs; the release is built on a Bun runtime that ignores them (scripts/releases/bun-runtime).
- * Each override here is one a local process could set. Set EXECUTOR_E2E_LOCAL_ENTRY to the
- * executable.
- */
 import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Config, Effect, FileSystem, Path, Schema, Stream } from "effect";
@@ -27,7 +19,6 @@ it.live(
         expect(isScript(executable), "EXECUTOR_E2E_LOCAL_ENTRY must be the executable").toBe(false);
         const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "executor-lockdown-" });
         const marker = path.join(cwd, "ran.txt");
-        // Code a preload would run: it leaves a file behind.
         const payload = path.join(cwd, "payload.mjs");
         yield* fs.writeFileString(
           payload,
@@ -60,7 +51,6 @@ it.live(
               return { code: Number(code), stdout: stdout.trim(), stderr: stderr.trim() };
             }),
           );
-        /** Start with `env`; the executable answers as itself and nothing else runs. */
         const ignores = (label: string, env: Readonly<Record<string, string>>) =>
           Effect.gen(function* () {
             const result = yield* start(env);
@@ -70,9 +60,7 @@ it.live(
             expect(yield* fs.exists(marker), label).toBe(false);
           });
 
-        // BUN_BE_BUN would turn the executable into the bun CLI, which runs any script.
         yield* ignores("BUN_BE_BUN", { BUN_BE_BUN: "1" });
-        // BUN_OPTIONS would add Bun flags: a preload, or a config file that names one.
         yield* fs.writeFileString(
           path.join(cwd, "preload.toml"),
           `preload = [${JSON.stringify(payload)}]\n`,
@@ -82,12 +70,9 @@ it.live(
           BUN_OPTIONS: `--config ${path.join(cwd, "preload.toml")}`,
         });
         yield* ignores("BUN_INSPECT_PRELOAD", { BUN_INSPECT_PRELOAD: payload });
-        // JavaScriptCore options; an unknown one stops stock Bun before it starts.
         yield* ignores("BUN_JSC_*", { BUN_JSC_dumpOptions: "1", BUN_JSC_notAnOption: "1" });
-        // A debugger that waits for a client would stop the executable at its first line.
         const inspect = yield* freePort;
         yield* ignores("BUN_INSPECT", { BUN_INSPECT: `ws://127.0.0.1:${inspect}/x?wait=1` });
-        // A debugger that dials out would hand the executable to whoever listens.
         let dialed = 0;
         const listener = yield* holdPort(0, (socket) => {
           dialed += 1;
@@ -97,13 +82,11 @@ it.live(
           BUN_INSPECT_CONNECT_TO: `tcp://127.0.0.1:${listener}`,
         });
         expect(dialed).toBe(0);
-        // A working directory's bunfig.toml and .env are not read either.
         yield* fs.writeFileString(
           path.join(cwd, "bunfig.toml"),
           `preload = [${JSON.stringify(payload)}]\n`,
         );
         yield* ignores("bunfig.toml", {});
-        // Read, this .env would make the executable believe npx started it.
         yield* fs.writeFileString(
           path.join(cwd, ".env"),
           "EXECUTOR_LAUNCHER=/cache/_npx/0a1b/node_modules/executor/bin.mjs\n",

@@ -32,6 +32,10 @@ services:
       EXECUTOR_APP_WORKERS:
       # Seconds a Worker stays loaded without a call (default 300); 0 keeps idle ones until the limit.
       EXECUTOR_APP_WORKER_IDLE_SECONDS:
+      # Most MCP clients (API keys or OAuth grants in use) kept at once (default 512), and most
+      # per member (default 256). Past either, the least recently used idle one is forgotten.
+      EXECUTOR_MCP_CLIENTS:
+      EXECUTOR_MCP_CLIENTS_PER_USER:
       EXECUTOR_OAUTH_CALLBACK_URL:
       # Off by default. <BETTER_AUTH_URL>/oauth/client-metadata.json serves a client metadata
       # document there, which authorization servers must be able to fetch over public HTTPS.
@@ -41,9 +45,13 @@ services:
       EXECUTOR_CATALOG_URL:
       # Public app registry origin. The default is https://api.executor.sh.
       EXECUTOR_REGISTRY_URL:
+      # Set to 1 to turn off the daily check for a newer release, which asks the npm registry
+      # (EXECUTOR_NPM_REGISTRY) for the executor package's dist-tags and sends nothing about this
+      # instance.
+      EXECUTOR_NO_UPDATE_CHECK:
       # Optional HTTPS app origin base. Localhost derives it from BETTER_AUTH_URL.
       EXECUTOR_APP_UI_BASE_URL:
-      # Unset passthrough entries stay absent; the default is bundled Motel.
+      # Unset passthrough entries stay absent; the default is the bundled collector.
       OTEL_EXPORTER_OTLP_ENDPOINT:
       OTEL_EXPORTER_OTLP_HEADERS:
       OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:

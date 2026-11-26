@@ -1,14 +1,6 @@
-/**
- * Storage types: what the database stores for a column, independent of the
- * Effect schema that describes the column's value.
- *
- * `inferStorageType` reads the encoded side of a schema and picks a storage
- * type, so brands, refinements, and transformations never change the DDL.
- */
 import { Schema, SchemaAST } from "effect";
 import { SchemaDefinitionError } from "../errors.ts";
 
-/** Every storage type FumaDB can create and migrate. */
 export type StorageType =
   | "string"
   | `varchar(${number})`
@@ -22,12 +14,10 @@ export type StorageType =
   | "date"
   | "timestamp";
 
-/** Storage types an id column may use. */
 export type IdStorageType = `varchar(${number})` | "uuid";
 
 const VARCHAR = /^varchar\((\d+)\)$/;
 
-/** Whether a string names a storage type. */
 export const isStorageType = (value: string): value is StorageType =>
   value === "string" ||
   value === "uuid" ||
@@ -41,20 +31,16 @@ export const isStorageType = (value: string): value is StorageType =>
   value === "timestamp" ||
   VARCHAR.test(value);
 
-/** Whether a storage type may back an id column. */
 export const isIdStorageType = (type: StorageType): type is IdStorageType =>
   type === "uuid" || VARCHAR.test(type);
 
-/** The `n` of `varchar(n)`, or `undefined` for other storage types. */
 export const varcharLength = (type: StorageType): number | undefined => {
   const match = VARCHAR.exec(type);
   return match?.[1] === undefined ? undefined : Number(match[1]);
 };
 
-/** What `inferStorageType` learned from a schema. */
 export interface InferredStorage {
   readonly type: StorageType;
-  /** `true` when the encoded side accepts `null`. */
   readonly nullable: boolean;
 }
 
@@ -96,7 +82,6 @@ const declarationId = (ast: SchemaAST.AST): string | undefined => {
     : undefined;
 };
 
-/** The storage type of a literal, by the type of its value. */
 const literalStorageType = (literal: unknown): StorageType => {
   switch (typeof literal) {
     case "number":
@@ -151,7 +136,6 @@ const scalarStorageType = (ast: SchemaAST.AST): StorageType => {
   }
 };
 
-/** Flatten nested unions and drop `Null` / `Undefined` members, reporting whether any were present. */
 const unionMembers = (
   ast: SchemaAST.AST,
 ): { readonly members: ReadonlyArray<SchemaAST.AST>; readonly nullable: boolean } => {
@@ -170,13 +154,6 @@ const unionMembers = (
   return { members, nullable };
 };
 
-/**
- * Pick the storage type for a schema from its encoded side.
- *
- * A union with `Null` marks the column nullable; a union of literals or of
- * several scalars is stored as the scalar when every member agrees (a union
- * of string literals is a `string`), and as `json` otherwise.
- */
 export const inferStorageType = (schema: Schema.Top): InferredStorage => {
   if (SchemaAST.isOptional(schema.ast)) {
     throw new SchemaDefinitionError(
@@ -193,16 +170,11 @@ export const inferStorageType = (schema: Schema.Top): InferredStorage => {
     throw new SchemaDefinitionError("A column schema must accept at least one non-null value.");
   const types = new Set(members.map(scalarStorageType));
   if (types.size === 1) return { type: scalarStorageType(first), nullable };
-  // integer and decimal literals mixed together still fit a decimal column
   if (types.size === 2 && types.has("integer") && types.has("decimal"))
     return { type: "decimal", nullable };
   return { type: "json", nullable };
 };
 
-/**
- * The plain Effect schema for a storage type: what a column reads as when
- * nothing more specific is known (introspection, the settings table).
- */
 export const schemaForStorageType = (type: StorageType, nullable: boolean): Schema.Top => {
   const base = ((): Schema.Top => {
     const length = varcharLength(type);

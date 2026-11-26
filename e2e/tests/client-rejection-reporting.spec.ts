@@ -1,4 +1,3 @@
-/** Client request rejections are recorded on their request span and stay out of incident reporting. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -19,14 +18,12 @@ import { connectionsPath } from "../support/app-accounts.ts";
 const Token = Schema.Struct({ key: Schema.RedactedFromValue(Schema.String), id: Schema.String });
 const kindTag = "executor.request.rejection.kind",
   issuesTag = "executor.request.rejection.issues";
-/** Values sent in rejected requests. None may appear in telemetry. */
 const privateValues = ["a".repeat(40), "service-requirement", "many-items", "unscoped-name"];
 
 interface Rejection {
   readonly label: string;
   readonly trace: string;
   readonly status: number;
-  /** The span attributes the rejected Executor request must carry; undefined for declared errors. */
   readonly expected?: { readonly kind: string; readonly issue: string };
 }
 
@@ -72,7 +69,6 @@ export default defineApp({}, async () => ({
           }),
         );
         const rejections: Array<Rejection> = [];
-        // Callers holding a previous contract send shapes the server now rejects.
         for (const [label, method, path, payload, status, expected] of [
           [
             "deploy payload from before deploying was separated from Git writes",
@@ -88,7 +84,6 @@ export default defineApp({}, async () => ({
             connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
             { account: 42 },
             400,
-            // `account` is optional, so a number matches neither an account ID nor its absence.
             { kind: "Payload", issue: "$.account: AnyOf" },
           ],
           [
@@ -99,7 +94,6 @@ export default defineApp({}, async () => ({
             400,
             { kind: "Params", issue: "$.app: Filter" },
           ],
-          // A declared tool input rejection is already typed; it has no schema rejection to record.
           [
             "tool input that does not match the declared input schema",
             "POST",
@@ -108,7 +102,6 @@ export default defineApp({}, async () => ({
             422,
             undefined,
           ],
-          // Cloud serves the public registry.
           ...(cloud
             ? ([
                 [
@@ -131,8 +124,6 @@ export default defineApp({}, async () => ({
             ...(expected === undefined ? {} : { expected }),
           });
         }
-        // The first-party failure behind these reports: an OpenAPI app built from an older
-        // contract calls Executor, which rejects the request inside the tool call's trace.
         const stale = cloud
           ? yield* Effect.gen(function* () {
               const name = `Stale registry ${randomUUID().slice(0, 8)}`;
@@ -205,7 +196,6 @@ export default defineApp({}, async () => ({
               return { rest: rest.body, mcp: mcp.structuredContent ?? mcp.content };
             })
           : undefined;
-        // A failing app operation is a server-side failure and still reaches reporting.
         const crashed = yield* api.request(
           actors.owner,
           "POST",
@@ -214,7 +204,6 @@ export default defineApp({}, async () => ({
         );
         expect(crashed.status).toBeGreaterThanOrEqual(500);
         const crashTrace = yield* latestTrace;
-        // Find the server span of each Executor request that answered 400.
         const spans = yield* Effect.forEach(rejections, (rejection) =>
           rejection.expected === undefined
             ? Effect.succeed(undefined)
@@ -223,6 +212,7 @@ export default defineApp({}, async () => ({
                   const span = result.data.find(
                     ({ span }) =>
                       span.operationName.startsWith("http.server") &&
+                      span.tags["http.route"] !== "/:upstream" &&
                       span.tags["http.response.status_code"] === "400",
                   );
                   return span === undefined
@@ -250,10 +240,10 @@ export default defineApp({}, async () => ({
                   },
           };
         });
-        // The server failure is the barrier for incident exports; every rejected request's span has arrived.
         const events = cloud
-          ? yield* awaitSentryEvents((events) =>
-              events.some((event) => event.contexts?.trace?.trace_id === crashTrace),
+          ? yield* awaitSentryEvents(
+              [crashTrace, ...rejections.map(({ trace }) => trace)],
+              (events) => events.some((event) => event.contexts?.trace?.trace_id === crashTrace),
             )
           : [];
         const reported = rejections.map((rejection) =>
@@ -281,8 +271,6 @@ export default defineApp({}, async () => ({
         if (!cloud) return;
         for (const [index, rejection] of rejections.entries()) {
           const types = reported[index] ?? [];
-          // The REST tool call reports its public ToolCallFailed today; whether an upstream
-          // client rejection is an incident is outside this scenario. Internal errors never are.
           if (rejection.label === "stale OpenAPI app over REST")
             expect(
               types.filter(
@@ -295,7 +283,6 @@ export default defineApp({}, async () => ({
             ).toEqual([]);
           else expect(types, rejection.label).toEqual([]);
         }
-        // The public failure is reported once; internal host protocol errors never are.
         expect(traceExceptionTypes(events, crashTrace)).toEqual(["ToolCallFailed"]);
         expect(JSON.stringify(events)).not.toContain("private-fixture-message");
         for (const value of privateValues) expect(JSON.stringify(events)).not.toContain(value);

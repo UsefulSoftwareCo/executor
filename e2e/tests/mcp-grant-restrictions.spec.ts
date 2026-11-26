@@ -21,12 +21,6 @@ const Execution = Schema.Struct({
   status: Schema.Literal("completed"),
   execution: Schema.Struct({ ok: Schema.Boolean, value: Schema.optional(Schema.Unknown) }),
 });
-/**
- * An app with a `read` query and a `write` mutation and two of the owner's accounts, `first` and
- * `second`, connected from the app for one requirement, in that order. A plain requirement links
- * only the newer; many() links both. The MCP grant has two entries for the app: reading with the
- * first account and writing with the second.
- */
 const grantEntryFixture = (requirement: "service" | "service.many()") =>
   Effect.gen(function* () {
     const api = yield* Api,
@@ -89,7 +83,6 @@ export default defineApp({ user: { accounts: { service: ${requirement} } } }, as
     const ids = { first: yield* connectAccount("first"), second: yield* connectAccount("second") };
     yield* browser.login(actors.owner);
     const grant = yield* oauth.authorize;
-    // Two entries for one app: reading with the first account, writing with the second.
     expect(
       (yield* api.request(actors.owner, "POST", "/api/auth/mcp/grants/narrow", {
         id: grant.grantId,
@@ -125,10 +118,8 @@ export default defineApp({ user: { accounts: { service: ${requirement} } } }, as
             Schema.decodeUnknownEffect(Execution)(result.structuredContent),
           ),
         );
-    /** Call a tool with the owner's linked accounts. */
     const call = (tool: "read" | "write") =>
       run(`return await tools[${JSON.stringify(app.slug)}].${tool}({})`);
-    /** The owner's linked accounts, by name, oldest link first. */
     const linked = linkedAccountIds(actors.owner, path).pipe(
       Effect.map((linked) =>
         linked.map((id) => (id === ids.first ? "first" : id === ids.second ? "second" : id)),
@@ -137,7 +128,6 @@ export default defineApp({ user: { accounts: { service: ${requirement} } } }, as
     const link = (name: keyof typeof ids) => linkAccount(actors.owner, path, "service", ids[name]);
     const unlink = (name: keyof typeof ids) =>
       unlinkAccount(actors.owner, path, "service", ids[name]);
-    /** Why a call with the owner's linked accounts is refused, from its tool error. */
     const refusal = (tool: "read" | "write") =>
       run(
         `try { await tools[${JSON.stringify(app.slug)}].${tool}({}); return null; } catch (error) { return String(error.message); }`,
@@ -208,22 +198,18 @@ layer(HostedLive, { excludeTestServices: true })("Shared authorization", (it) =>
       context,
       Effect.gen(function* () {
         const { call, linked, link } = yield* grantEntryFixture("service");
-        // Connecting the second account replaced the first in the plain requirement.
         expect(yield* linked).toEqual(["second"]);
         const [writeSecond, readSecond] = yield* Effect.all([call("write"), call("read")], {
           concurrency: 2,
         });
         expect(writeSecond.execution).toEqual({ ok: true, value: "write second" });
-        // Neither entry permits reading with the second account.
         expect(readSecond.execution.ok, JSON.stringify(readSecond)).toBe(false);
-        // Linking the first account again replaces the second.
         yield* link("first");
         expect(yield* linked).toEqual(["first"]);
         const [readFirst, writeFirst] = yield* Effect.all([call("read"), call("write")], {
           concurrency: 2,
         });
         expect(readFirst.execution).toEqual({ ok: true, value: "read first" });
-        // Neither entry permits writing with the first account.
         expect(writeFirst.execution.ok, JSON.stringify(writeFirst)).toBe(false);
       }).pipe(Effect.provide(Layer.mergeAll(McpOAuth.layer, McpClient.layer))),
     ),
@@ -235,10 +221,7 @@ layer(HostedLive, { excludeTestServices: true })("Shared authorization", (it) =>
       Effect.gen(function* () {
         const { app, call, linked, link, unlink, refusal } =
           yield* grantEntryFixture("service.many()");
-        // many() links both accounts, and a call uses every linked account.
         expect(yield* linked).toEqual(["first", "second"]);
-        // Discovery lists an entry's tools with the accounts a call uses, which must all be ones
-        // the entry permits. No entry permits both linked accounts, so neither tool is listed.
         const [readBoth, writeBoth] = yield* Effect.all([refusal("read"), refusal("write")], {
           concurrency: 2,
         });
@@ -246,7 +229,6 @@ layer(HostedLive, { excludeTestServices: true })("Shared authorization", (it) =>
           readBoth: { ok: true, value: `Unknown tool '${app.slug}.read'.` },
           writeBoth: { ok: true, value: `Unknown tool '${app.slug}.write'.` },
         });
-        // With only the first account linked, reading runs and writing is refused.
         yield* unlink("second");
         expect(yield* linked).toEqual(["first"]);
         const [readFirst, writeFirst] = yield* Effect.all([call("read"), call("write")], {
@@ -257,7 +239,6 @@ layer(HostedLive, { excludeTestServices: true })("Shared authorization", (it) =>
           value: "read first",
         });
         expect(writeFirst.execution.ok, JSON.stringify(writeFirst)).toBe(false);
-        // With only the second, writing runs and reading is refused.
         yield* link("second");
         yield* unlink("first");
         expect(yield* linked).toEqual(["second"]);

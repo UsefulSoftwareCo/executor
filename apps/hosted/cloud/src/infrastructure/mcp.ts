@@ -1,4 +1,3 @@
-/** Native Effect MCP protocol sessions; product data and grants stay in Postgres. */
 import type { DurableObjectNamespace } from "@cloudflare/workers-types";
 import { traceHeaders } from "@executor-js/telemetry";
 import {
@@ -18,7 +17,11 @@ import {
   forwardMcpRequest,
   refuseTooDeep,
 } from "../implementation/mcp-forward.ts";
-import { mcpRequestAttributes, parseMcpBody } from "../implementation/mcp-request-method.ts";
+import {
+  mcpMethodHeader,
+  mcpRequestAttributes,
+  parseMcpBody,
+} from "../implementation/mcp-request-method.ts";
 import {
   mcpSessionNotFound,
   sessionOrganizationHeader,
@@ -30,17 +33,10 @@ import type { McpSessionObject } from "./mcp-session.ts";
 import { mcpSessionKeys } from "./mcp-session-keys.ts";
 import { McpServer } from "./mcp-server-worker.ts";
 
-/**
- * The gateway selects one private object per authenticated user/client/organization. The MCP
- * server Worker hosts them, so a wake never starts the API Worker. An object keeps its MCP
- * sessions' negotiated protocol state in its storage (`mcp-session-store.ts`), so a session
- * continues after the object is evicted or redeployed; programs and connections live in memory.
- */
 export class McpSession extends Cloudflare.DurableObject<McpSession, McpSessionObject>()(
   "McpSession",
 ) {}
 
-/** The namespace's native binding, for addressing an object by the id it issued. */
 export const SessionNamespace = Schema.declare(
   (value): value is Pick<DurableObjectNamespace, "get" | "idFromName" | "idFromString"> =>
     typeof value === "object" &&
@@ -53,23 +49,10 @@ export const SessionNamespace = Schema.declare(
     typeof value.idFromString === "function",
 );
 
-/**
- * Resolve the session binding at startup; return a handler for each request.
- *
- * A request without a session id (initialize, the stateless 2026-07-28 protocol, approvals) is
- * authenticated here and sent to the object its user/client/organization/grant names. A request
- * inside a session is sent to the object its signed id names, with no bearer check and no
- * database here: the object checks the bearer and that the bearer's key names it before any work.
- */
 export const cloudMcp = Effect.gen(function* () {
   const sessions = yield* McpSession.from(McpServer);
   const environment = yield* Cloudflare.WorkerEnvironment;
   const keys = yield* mcpSessionKeys;
-  /**
-   * Forward one request to its session object. An authenticated request's forward names its
-   * organization and user from the start, so a forward the object never answers still names them;
-   * one routed by its session id learns only the organization, from the object's answer.
-   */
   const send = (
     route:
       | {
@@ -77,7 +60,6 @@ export const cloudMcp = Effect.gen(function* () {
           readonly caller: ReturnType<typeof callerSpanAttributes>;
         }
       | { readonly kind: "session" },
-    /** An approval page's request carries no JSON-RPC message. */
     carries: "json-rpc" | "approval",
     fetch: (
       attempt: HttpServerRequest.HttpServerRequest,
@@ -91,8 +73,6 @@ export const cloudMcp = Effect.gen(function* () {
             : { "executor.mcp.route": route.kind },
         );
         const request = yield* HttpServerRequest.HttpServerRequest;
-        // Read from a copy, so the forwarded body is untouched; only a lost response and the
-        // method attributes need it.
         const body = parseMcpBody(
           request.method === "POST"
             ? yield* HttpServerRequest.toWeb(request).pipe(
@@ -102,9 +82,10 @@ export const cloudMcp = Effect.gen(function* () {
               )
             : undefined,
         );
+        let method: string | undefined;
         if (carries === "json-rpc" && request.method === "POST") {
-          // Both the forward and the gateway's request span, which records the response status.
           const attributes = mcpRequestAttributes(body);
+          method = attributes["rpc.method"];
           yield* Effect.annotateCurrentSpan(attributes);
           if (Option.isSome(server))
             for (const [key, value] of Object.entries(attributes))
@@ -112,12 +93,17 @@ export const cloudMcp = Effect.gen(function* () {
         }
         return yield* Effect.gen(function* () {
           const headers = yield* traceHeaders;
-          const traced = request.modify({ headers: { ...request.headers, ...headers } });
+          const { [mcpMethodHeader]: _sent, ...received } = request.headers;
+          const traced = request.modify({
+            headers: {
+              ...received,
+              ...headers,
+              ...(method === undefined ? {} : { [mcpMethodHeader]: method }),
+            },
+          });
           const response = yield* refuseTooDeep(
             forwardMcpRequest(traced, (attempt) => timedForward(fetch(attempt))),
           );
-          // A request routed by its session id learns its organization here, from the object,
-          // which sets it once the bearer's own key names it. Its user is on the object's spans.
           const organization = response.headers[sessionOrganizationHeader];
           if (organization !== undefined)
             yield* Effect.annotateCurrentSpan("executor.organization.id", organization);
@@ -140,10 +126,8 @@ export const cloudMcp = Effect.gen(function* () {
     Effect.gen(function* () {
       const auth = yield* McpAuthentication;
       const request = yield* HttpServerRequest.HttpServerRequest;
-      // Programmatic clients have no Origin. Untrusted browser pages cannot call MCP.
       if (request.headers.origin !== undefined && request.headers.origin !== auth.origin)
         return HttpServerResponse.empty({ status: 403 });
-      // A request with no bearer is refused here, as before, so it cannot wake the object.
       if (!/^Bearer \S+$/iu.test(request.headers.authorization ?? "")) {
         yield* Effect.annotateCurrentSpan("executor.mcp.session_id", "unauthenticated");
         return yield* mcpChallenge;
@@ -156,8 +140,6 @@ export const cloudMcp = Effect.gen(function* () {
       const namespace = yield* Schema.decodeUnknownEffect(SessionNamespace)(
         environment.McpSession,
       ).pipe(Effect.orDie);
-      // Only ids this namespace generated are signed, so this refuses only an id minted under a
-      // namespace the class has since moved from; its sessions are gone with that namespace.
       const id = yield* Effect.try(() => namespace.idFromString(address.value.objectId)).pipe(
         Effect.option,
       );

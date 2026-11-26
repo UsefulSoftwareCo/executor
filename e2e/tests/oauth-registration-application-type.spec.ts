@@ -17,7 +17,6 @@ const Registered = Schema.Struct({
 });
 const Refused = Schema.Struct({ error: Schema.String, error_description: Schema.String });
 
-/** Register a public client anonymously, as an MCP client does. */
 const register = (redirectUris: ReadonlyArray<string>) =>
   Effect.gen(function* () {
     const target = yield* Target,
@@ -64,7 +63,6 @@ layer(TestLive, { excludeTestServices: true })("OAuth registration application t
     withCase(
       context,
       Effect.gen(function* () {
-        // A web callback beside a loopback one, as Cursor registers, is one native client with both.
         const both = yield* registered([web, loopback]);
         expect(both.application_type).toBe("native");
         expect(both.redirect_uris).toEqual([web, loopback]);
@@ -75,16 +73,13 @@ layer(TestLive, { excludeTestServices: true })("OAuth registration application t
         );
         expect((yield* registered([web])).application_type).toBe("web");
 
-        // Plain HTTP off the loopback host is refused whatever the client's type, and the refusal
-        // names the callback that broke the rule.
-        const mixed = yield* refused([loopback, "http://client.example.test/callback"]);
+        const cleartext = "http://client.example.test/callback";
+        const mixed = yield* refused([loopback, cleartext]);
         expect(mixed.error).toBe("invalid_redirect_uri");
         expect(mixed.error_description).toBe(
-          "redirect_uris[1]: Redirect URI must use HTTPS (HTTP allowed only for loopback hosts)",
+          `native clients may use http only on the exact loopback hosts localhost, 127.0.0.1, or [::1]: ${cleartext}`,
         );
 
-        // Without a loopback or private-use callback the client is a web client, which may not
-        // use a loopback host even over HTTPS.
         const httpsLoopback = "https://localhost:8443/callback";
         const plain = yield* refused([httpsLoopback]);
         expect(plain.error).toBe("invalid_redirect_uri");

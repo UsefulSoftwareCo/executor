@@ -1,8 +1,3 @@
-/**
- * The routes that link accounts to an app's requirements, in either scope. App links need edit
- * access to the app and, to link, use of the account; reading them needs use of the app. User links
- * are the caller's own: linking another person's account is never possible.
- */
 import {
   AccountNotFound,
   StorageError,
@@ -52,7 +47,6 @@ const LinkRecord = Schema.Struct({
 });
 type LinkRecord = typeof LinkRecord.Type;
 
-/** A linked account's saved sign-in state, without its credentials fingerprint. */
 const signIn = (executor: Executor, owner: OwnerId, account: AccountId) =>
   executor.accounts
     .signIn({ owner, account })
@@ -64,11 +58,6 @@ const signIn = (executor: Executor, owner: OwnerId, account: AccountId) =>
       ),
     );
 
-/**
- * Links with each account, its sign-in and its checks by this app, in the records' order. A link
- * whose account no longer exists, or belongs to another owner, is left out. Without `identity`, the
- * upstream identity the checks reported is left out.
- */
 const linkViews = (
   executor: Executor,
   owner: OwnerId,
@@ -109,7 +98,6 @@ const linkViews = (
                   }),
             },
           ]),
-          // The account was removed since it was listed.
           Effect.catchTag("AccountNotFound", () => Effect.succeed([])),
         );
       },
@@ -118,7 +106,6 @@ const linkViews = (
     return views.flat();
   });
 
-/** The app's links in one scope, oldest first per requirement, optionally of one requirement. */
 const linkRecords = (app: AppId, subject: string | null, requirement?: string) =>
   Effect.gen(function* () {
     const sql = yield* policyDatabase;
@@ -133,10 +120,6 @@ const linkRecords = (app: AppId, subject: string | null, requirement?: string) =
     );
   });
 
-/**
- * The caller's user links to an app whose accounts they may still use and their grant permits,
- * oldest first per requirement.
- */
 const userLinkRecords = (app: AppId, requirement?: string) =>
   Effect.gen(function* () {
     const subject = yield* caller;
@@ -148,7 +131,6 @@ const userLinkRecords = (app: AppId, requirement?: string) =>
     );
   });
 
-/** The requirement in this scope of the app's active version, or `RequirementMismatch`. */
 const scopedRequirement = (app: App, scope: AccountScope, requirement: string) => {
   const required = Object.hasOwn(app.requirements.accounts, requirement)
     ? app.requirements.accounts[requirement]
@@ -160,10 +142,6 @@ const scopedRequirement = (app: App, scope: AccountScope, requirement: string) =
     : Effect.succeed(required);
 };
 
-/**
- * One requirement: its linked accounts, oldest first, then the other accounts of its provider the
- * caller can use, which they could link.
- */
 const requirementView = (
   executor: Executor,
   owner: OwnerId,
@@ -196,7 +174,6 @@ const requirementView = (
 
 const wake = Effect.flatten(ScheduleWakeup);
 
-/** The link a route just made, as the scope's list shows it. */
 const savedLink = (
   executor: Executor,
   owner: OwnerId,
@@ -238,11 +215,6 @@ const connect = (
     };
   });
 
-/**
- * Links change webhook sources, whose reconciliation is woken once the change commits. Editing the
- * app is what links its app accounts; linking also needs use of the account. Each change checks
- * that access again under the app's link lock (see `lockedChange`).
- */
 export const hostedAppAccountHandlers = HttpApiBuilder.group(HostedApi, "appAccounts", (handlers) =>
   Effect.gen(function* () {
     const services = { auth: yield* SessionAuthentication, api: yield* BearerAuthentication };
@@ -251,12 +223,9 @@ export const hostedAppAccountHandlers = HttpApiBuilder.group(HostedApi, "appAcco
         Effect.gen(function* () {
           const owner = yield* currentOwner;
           const executor = yield* Effect.flatten(HostedExecutor);
-          // Reading needs use of the app, or edit access to it, which links its app accounts.
           const { access } = yield* requireCurrentAppAccess(params.app, "read");
           yield* executor.apps.get({ owner, app: params.app });
           const records = yield* linkRecords(params.app, null);
-          // Members who cannot edit the app see which account fills each requirement and whether it
-          // works, not the upstream identity behind it.
           return yield* linkViews(executor, owner, params.app, records, access.canManage);
         }),
       )
@@ -302,8 +271,6 @@ export const hostedAppAccountHandlers = HttpApiBuilder.group(HostedApi, "appAcco
       )
       .handle("appUnlink", ({ params }) =>
         Effect.gen(function* () {
-          // Unlinking needs edit access to the app, not use of the account: an editor can stop the
-          // app using an account they cannot use.
           const owner = yield* appManagerOwner(params.app);
           const executor = yield* Effect.flatten(HostedExecutor);
           yield* executor.apps.get({ owner, app: params.app });
@@ -378,7 +345,6 @@ export const hostedAppAccountHandlers = HttpApiBuilder.group(HostedApi, "appAcco
           const user = yield* caller;
           const owner = yield* currentOwner;
           const executor = yield* Effect.flatten(HostedExecutor);
-          // Unlinking needs no current access, so a member can clean up after losing it.
           yield* executor.apps.get({ owner, app: params.app });
           const sql = yield* policyDatabase;
           const removed = yield* executor[StorageHost].transaction(

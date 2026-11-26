@@ -1,4 +1,3 @@
-/** Read persistent PostHog stack outputs and bind only ingestion settings into the app. */
 import { AlchemyContext } from "alchemy/AlchemyContext";
 import * as Output from "alchemy/Output";
 import { Stage } from "alchemy/Stage";

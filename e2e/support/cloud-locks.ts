@@ -1,10 +1,3 @@
-/**
- * Row locks in the managed Cloud's own database, so a scenario can hold one of the server's
- * statements at a chosen moment and watch the server meanwhile, and stop the database backend
- * serving one of the server's connections. Runs the local lock fixture,
- * which ends with the scenario and rolls back what it still holds. Statements must be scoped to
- * rows the scenario created: the Cloud database is shared by every scenario of the run.
- */
 import { Effect, Queue, Schema, Stream, type Cause, type PlatformError } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { Target } from "./platform.ts";
@@ -40,7 +33,6 @@ export const cloudLocks = Effect.gen(function* () {
       },
     ),
   );
-  // Ending its input rolls back the held transaction before the fixture exits.
   yield* Effect.addFinalizer(() => Queue.end(commands));
   const replies = yield* Queue.unbounded<string, PlatformError.PlatformError | Cause.Done>();
   yield* child.stdout.pipe(
@@ -58,26 +50,14 @@ export const cloudLocks = Effect.gen(function* () {
     );
   const resume = (pid: number) => Effect.asVoid(send({ signal: { pid, stop: false } }));
   return {
-    /** Run a statement in the transaction the fixture keeps open until `release`. */
     hold: (statement: Statement) => send({ hold: statement }),
-    /** Run a statement on another connection, outside the held transaction. */
     run: (statement: Statement) => send({ run: statement }),
-    /** Commit the held transaction, releasing its locks. */
     release: Effect.asVoid(send({ release: true })),
-    /**
-     * Stop a database backend process: its connection stops answering until `resume` or until
-     * the caller's scope closes, which resumes it. The fixture also resumes it when it exits.
-     */
     stop: (pid: number) =>
       Effect.acquireRelease(Effect.asVoid(send({ signal: { pid, stop: true } })), () =>
         resume(pid),
       ),
-    /** Resume a backend process `stop` stopped; any other process is left alone. */
     resume,
-    /**
-     * Refuse new connections to the database until the caller's scope closes; open ones stay.
-     * The fixture also allows them again when it exits.
-     */
     refuseConnections: Effect.acquireRelease(Effect.asVoid(send({ connections: false })), () =>
       Effect.asVoid(send({ connections: true })),
     ),

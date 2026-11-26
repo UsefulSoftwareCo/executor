@@ -1,5 +1,4 @@
-/** Group writes commit metadata and memberships together, after locking current authority. */
-import { Effect, Schema } from "effect";
+import { Array as Arr, Effect, Schema } from "effect";
 import { SqlClient, SqlError } from "effect/sql";
 import { HttpApiBuilder } from "effect/http-api";
 import { HostedApi } from "../contracts/api.ts";
@@ -38,7 +37,6 @@ const decodeRows = <A>(schema: Schema.Decoder<A>, rows: unknown) =>
     Effect.mapError(() => new GroupsUnavailable()),
   );
 
-/** Protect writes from role removal racing middleware; no client-supplied owner is accepted. */
 const lockAdmin = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const organization = yield* CurrentOrganization;
@@ -124,7 +122,6 @@ const saveGroup = (
     const organization = yield* lockAdmin;
     if (current !== undefined && (yield* readGroup(current.id, true)).revision !== current.revision)
       return yield* new GroupConflict({ reason: "changed" });
-    // Membership row locks and foreign keys prevent deletion between validation and insert.
     if (input.memberIds.length > 0) {
       const members =
         yield* sql`select id from member where "organizationId" = ${organization} and ${sql.in("id", input.memberIds)} for key share`;
@@ -138,8 +135,9 @@ const saveGroup = (
     const group = (yield* decodeRows(StoredGroup, changed))[0];
     if (group === undefined) return yield* new GroupNotFound();
     yield* sql`delete from hosted_group_members where group_id = ${group.id}`;
-    if (input.memberIds.length > 0)
-      yield* sql`insert into hosted_group_members ${sql.insert(input.memberIds.map((member) => ({ group_id: group.id, member_id: member })))}`;
+    const members = input.memberIds.map((member) => ({ group_id: group.id, member_id: member }));
+    if (Arr.isArrayNonEmpty(members))
+      yield* sql`insert into hosted_group_members ${sql.insert(members)}`;
     return { ...group, memberIds: input.memberIds } satisfies Group;
   });
 const removeGroup = (id: GroupId, revision: typeof GroupRevision.Type) =>
@@ -171,7 +169,6 @@ const run = <A, R>(
     );
   }).pipe(Effect.catchTag("SqlError", (error) => Effect.fail(storageFailure(error))));
 
-/** Shared typed handlers acquire storage only after request authentication and write permission. */
 export const hostedGroupHandlers = HttpApiBuilder.group(HostedApi, "groups", (handlers) =>
   handlers
     .handle("list", () => run(listGroups))

@@ -494,40 +494,42 @@ func serve(mode string) error {
 		return err
 	}
 	defer os.RemoveAll(temporary)
-	motel, err := filepath.Abs(setting("EXECUTOR_MOTEL_DATA_DIR", "/app/motel-data"))
+	// The telemetry collector's data directory. The variable's name is historical: it named the
+	// directory of Motel, the collector earlier images ran, and operators may have set it.
+	telemetry, err := filepath.Abs(setting("EXECUTOR_MOTEL_DATA_DIR", "/app/motel-data"))
 	if err != nil {
 		return err
 	}
-	if motel == directory || strings.HasPrefix(motel, directory+string(os.PathSeparator)) || strings.HasPrefix(directory, motel+string(os.PathSeparator)) {
+	if telemetry == directory || strings.HasPrefix(telemetry, directory+string(os.PathSeparator)) || strings.HasPrefix(directory, telemetry+string(os.PathSeparator)) {
 		return errors.New("EXECUTOR_MOTEL_DATA_DIR must be separate from the product data directory")
 	}
 	if mode == "export" {
-		motel = filepath.Join(temporary, "motel")
+		telemetry = filepath.Join(temporary, "telemetry")
 	}
-	if err = os.MkdirAll(motel, 0700); err != nil {
+	if err = os.MkdirAll(telemetry, 0700); err != nil {
 		return err
 	}
 	productRoot, err := filepath.EvalSymlinks(directory)
 	if err != nil {
 		return err
 	}
-	motelRoot, err := filepath.EvalSymlinks(motel)
+	telemetryRoot, err := filepath.EvalSymlinks(telemetry)
 	if err != nil {
 		return err
 	}
-	if motelRoot == productRoot || strings.HasPrefix(motelRoot, productRoot+string(os.PathSeparator)) || strings.HasPrefix(productRoot, motelRoot+string(os.PathSeparator)) {
-		return errors.New("Motel and product data cannot share a datastore")
+	if telemetryRoot == productRoot || strings.HasPrefix(telemetryRoot, productRoot+string(os.PathSeparator)) || strings.HasPrefix(productRoot, telemetryRoot+string(os.PathSeparator)) {
+		return errors.New("Telemetry and product data cannot share a datastore")
 	}
 	productInfo, err := os.Stat(productRoot)
 	if err != nil {
 		return err
 	}
-	motelInfo, err := os.Stat(motelRoot)
+	telemetryInfo, err := os.Stat(telemetryRoot)
 	if err != nil {
 		return err
 	}
-	if os.SameFile(productInfo, motelInfo) {
-		return errors.New("Motel and product data cannot share a datastore")
+	if os.SameFile(productInfo, telemetryInfo) {
+		return errors.New("Telemetry and product data cannot share a datastore")
 	}
 	paths := map[string]string{"product-data": filepath.Join(directory, "product"), "legacy-data": filepath.Join(directory, "hosted.pglite"), "app-data": filepath.Join(directory, "workerd"), "workflow-data": filepath.Join(directory, "workerd", "workflows"), "builds": filepath.Join(directory, "builds")}
 	if mode == "export" {
@@ -596,6 +598,10 @@ func serve(mode string) error {
 		appWorkerIdle = strconv.Itoa(number)
 	}
 	config = bytes.ReplaceAll(config, []byte("@@APP_WORKER_IDLE_SECONDS@@"), []byte(appWorkerIdle))
+	stall, err := readStallSettings(values)
+	if err != nil {
+		return err
+	}
 	config = bytes.ReplaceAll(config, []byte("@@MEMORY_PRESSURE_MB@@"), []byte(strconv.FormatUint(memoryPressureMiB("/sys/fs/cgroup/memory.max"), 10)))
 	config = bytes.ReplaceAll(config, []byte("@@SELF_ORIGIN@@"), []byte(strconv.Quote(values["BETTER_AUTH_URL"])))
 	// App builds install packages from this registry; empty selects the public registry.
@@ -645,12 +651,13 @@ func serve(mode string) error {
 	if err != nil {
 		return err
 	}
-	// The collector listens only on a private Unix socket. The product reaches it through its MOTEL
-	// binding and operators through `executor-host telemetry`; no address an app can fetch reaches it.
-	// The socket lives in this host's own temporary directory, so containers that share TMPDIR and
-	// mount their product volumes at the same path never share or remove each other's collector.
-	collector := filepath.Join(temporary, "motel.sock")
-	args := []string{"serve", configPath, "-I/", "--experimental", "--external-addr=native=unix:" + socket, "--external-addr=motel=unix:" + collector, "--socket-addr=http=unix:" + filepath.Join(temporary, "product.sock")}
+	// The collector listens only on a private Unix socket. The product reaches it through its
+	// COLLECTOR binding and operators through `executor-host telemetry`; no address an app or a
+	// browser can fetch reaches it. The socket lives in this host's own temporary directory, so
+	// containers that share TMPDIR and mount their product volumes at the same path never share or
+	// remove each other's collector.
+	collector := filepath.Join(temporary, "collector.sock")
+	args := []string{"serve", configPath, "-I/", "--experimental", "--external-addr=native=unix:" + socket, "--external-addr=collector=unix:" + collector, "--socket-addr=http=unix:" + filepath.Join(temporary, "product.sock")}
 	for name, path := range paths {
 		args = append(args, "--directory-path="+name+"="+path)
 	}
@@ -692,18 +699,6 @@ func serve(mode string) error {
 		}
 		return exportDatabase(filepath.Join(temporary, "export.sock"), os.Args[2])
 	}
-	motelConfig, err := os.ReadFile(filepath.Join(runtime, "motel.capnp"))
-	if err != nil {
-		command.Process.Kill()
-		<-stopped
-		return err
-	}
-	motelConfigPath := filepath.Join(temporary, "motel.capnp")
-	if err = os.WriteFile(motelConfigPath, bytes.ReplaceAll(motelConfig, []byte("@@RUNTIME@@"), []byte(strings.Trim(strconv.Quote(runtime), "\""))), 0600); err != nil {
-		command.Process.Kill()
-		<-stopped
-		return err
-	}
 	forget, err := recordTelemetrySocket(directory, collector)
 	if err != nil {
 		command.Process.Kill()
@@ -711,20 +706,25 @@ func serve(mode string) error {
 		return err
 	}
 	defer forget()
-	stopMotel := supervise(func() *exec.Cmd {
-		// A collector that exited leaves its socket file behind; the next one binds the same path.
+	stopCollector := supervise(func() *exec.Cmd {
+		// A collector that was killed leaves its socket file behind, and the collector never
+		// removes a path it did not create; this directory is the host's own, so the next one
+		// binds the same path.
 		os.Remove(collector)
-		command := exec.Command(filepath.Join(runtime, "workerd"), "serve", motelConfigPath, "-I/", "--experimental", "--directory-path=motel-data="+motel, "--socket-addr=motel=unix:"+collector)
+		command := exec.Command(filepath.Join(runtime, "executor-collector"), append([]string{"serve", "--data=" + telemetry, "--listen=unix:" + collector}, collectorBounds...)...)
 		configureChild(command)
+		// Its one stdout line says it is listening; its log is JSON lines on stderr.
 		command.Stdout = os.Stderr
 		command.Stderr = os.Stderr
 		command.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + temporary}
 		command.Dir = runtime
 		return command
 	}, time.Second, 30*time.Second, time.After)
-	defer stopMotel()
+	defer stopCollector()
 
+	life := &lifeSigns{}
 	proxy := productProxy(filepath.Join(temporary, "product.sock"), workerdIdleTimeout, proxies...)
+	proxy.Transport = lifeTransport{RoundTripper: proxy.Transport, life: life}
 	publicListener, err := net.Listen("tcp", net.JoinHostPort(setting("HOST", "0.0.0.0"), port))
 	if err != nil {
 		command.Process.Kill()
@@ -737,19 +737,43 @@ func serve(mode string) error {
 	go func() { serverError <- public.Serve(publicListener) }()
 	stopAnnouncing := make(chan struct{})
 	defer close(stopAnnouncing)
-	go announceReady(filepath.Join(temporary, "product.sock"), values["BETTER_AUTH_URL"], startupProgressInterval, time.Second, os.Stderr, opened, stopAnnouncing)
+	// The stall check arms on the product's first ready answer.
+	ready := make(chan struct{})
+	go func() {
+		if announceReady(filepath.Join(temporary, "product.sock"), values["BETTER_AUTH_URL"], startupProgressInterval, time.Second, os.Stderr, opened, stopAnnouncing) {
+			close(ready)
+		}
+	}()
+	stalled := make(chan stallReport)
+	stopWatching := make(chan struct{})
+	var watching sync.WaitGroup
+	if stall.seconds > 0 {
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		pid := command.Process.Pid
+		watching.Go(func() {
+			watchStalls(stall, ready, ticker.C, func() (threadSample, error) { return readThread(pid) }, healthProbe(filepath.Join(temporary, "product.sock"), stallProbeTimeout), life, busyCPU("/sys/fs/cgroup/cpu.max"), os.Stderr, stalled, stopWatching)
+		})
+	}
+	// The check stops before any shutdown begins, so a slow stop is never counted as a stall.
+	endWatching := sync.OnceFunc(func() { close(stopWatching); watching.Wait() })
+	defer endWatching()
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(signals)
 	select {
 	case err := <-stopped:
 		return err
+	case <-stalled:
+		endWatching()
+		return stopStalled(command.Process, stopped, stallGrace)
 	case <-signals:
 	case err := <-serverError:
 		if !errors.Is(err, http.ErrServerClosed) {
 			fmt.Fprintln(os.Stderr, "Native host stopped")
 		}
 	}
+	endWatching()
 	command.Process.Signal(syscall.SIGTERM)
 	select {
 	case err := <-stopped:
@@ -760,6 +784,10 @@ func serve(mode string) error {
 	}
 }
 
+// collectorBounds are the bounds the image gives its telemetry collector, the ones it gave Motel:
+// four exports at once of at most 16 MiB each, a week of telemetry in at most 1 GiB.
+var collectorBounds = []string{"--max-pending=4", "--max-export-bytes=16777216", "--max-store-mb=1024", "--retention-hours=168"}
+
 // startupProgressInterval is how often the log says the product is still opening.
 const startupProgressInterval = 15 * time.Second
 
@@ -768,8 +796,9 @@ const startupProgressInterval = 15 * time.Second
 // would otherwise initialize only once the first visitor or health probe arrived. It asks the
 // product's /health until one answers 200, waiting retry after the first failure and doubling up
 // to 30 seconds, and logs every progress interval while it waits. It closes opened when the
-// product first answers, ready or not, and returns once the product is ready or done closes.
-func announceReady(socket, origin string, progress, retry time.Duration, log io.Writer, opened chan<- struct{}, done <-chan struct{}) {
+// product first answers, ready or not, and returns once the product is ready, with true, or done
+// closes.
+func announceReady(socket, origin string, progress, retry time.Duration, log io.Writer, opened chan<- struct{}, done <-chan struct{}) bool {
 	started := time.Now()
 	fmt.Fprintln(log, "Executor is starting. The first start initializes the database, which can take a minute or more on slower hardware.")
 	ctx, cancel := context.WithCancel(context.Background())
@@ -812,14 +841,14 @@ func announceReady(socket, origin string, progress, retry time.Duration, log io.
 	for {
 		select {
 		case <-done:
-			return
+			return false
 		case <-ticker.C:
 			fmt.Fprintf(log, "Executor is still starting (%s)\n", time.Since(started).Round(time.Second))
 		case ok := <-answer:
 			answer = nil
 			if ok {
 				fmt.Fprintf(log, "Executor is ready at %s (started in %s)\n", origin, time.Since(started).Round(time.Second))
-				return
+				return true
 			}
 			again = time.After(retry)
 			retry = min(retry*2, 30*time.Second)
@@ -941,6 +970,8 @@ func productProxy(socket string, upstreamIdleTimeout time.Duration, trusted ...n
 			request.Out.Close = request.In.ContentLength != 0
 			address := clientAddress(request.In.RemoteAddr, request.In.Header.Values("X-Forwarded-For"), trusted)
 			request.Out.Header.Set("x-executor-client-ip", address)
+			// Only the host's own stall check may ask for an untraced /health.
+			request.Out.Header.Del(hostProbeHeader)
 		},
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -1017,6 +1048,27 @@ func supervise(newCommand func() *exec.Cmd, minDelay, maxDelay time.Duration, af
 	}
 }
 
+// healthTimeout is how long `executor-host health` waits for /health. Every response, /health
+// included, waits while the product commits its storage: SQLite syncs each commit to disk on the
+// thread that runs all of the product's JavaScript. On a slow disk under 30 apps' schedules one
+// commit held /health for up to 16.5 seconds, and a 4-second wait failed 3.6% of checks. 29 seconds
+// covers those stalls and gives up just before the image's HEALTHCHECK, which allows 30, ends it.
+const healthTimeout = 29 * time.Second
+
+// checkHealth reports whether the product on port answers /health with 200 within timeout.
+func checkHealth(port string, timeout time.Duration) error {
+	client := http.Client{Timeout: timeout}
+	response, err := client.Get("http://127.0.0.1:" + port + "/health")
+	if err != nil {
+		return err
+	}
+	response.Body.Close()
+	if response.StatusCode != 200 {
+		return errors.New("Executor is not ready")
+	}
+	return nil
+}
+
 func main() {
 	mode := "serve"
 	if len(os.Args) > 1 {
@@ -1029,15 +1081,7 @@ func main() {
 	case "telemetry":
 		err = queryTelemetry(os.Args[2:], os.Stdout)
 	case "health":
-		client := http.Client{Timeout: 4 * time.Second}
-		var response *http.Response
-		response, err = client.Get("http://127.0.0.1:" + setting("PORT", "4400") + "/health")
-		if err == nil {
-			response.Body.Close()
-			if response.StatusCode != 200 {
-				err = errors.New("Executor is not ready")
-			}
-		}
+		err = checkHealth(setting("PORT", "4400"), healthTimeout)
 	default:
 		err = errors.New("expected serve, export, health, or telemetry")
 	}
@@ -1095,7 +1139,7 @@ func queryTelemetry(args []string, output io.Writer) error {
 	}}
 	defer transport.CloseIdleConnections()
 	client := http.Client{Transport: transport, Timeout: 30 * time.Second}
-	response, err := client.Get("http://motel.internal" + args[0])
+	response, err := client.Get("http://collector.internal" + args[0])
 	if err != nil {
 		return errors.New("the telemetry collector is not running")
 	}

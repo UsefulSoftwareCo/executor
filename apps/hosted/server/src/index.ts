@@ -1,4 +1,3 @@
-/** Hosted product composition, shared by cloud and self-host only. */
 export { requestServices } from "./implementation/request-services.ts";
 export * from "./contracts/product-analytics.ts";
 export { withExecutorAnalytics } from "./implementation/product-analytics.ts";
@@ -58,14 +57,17 @@ export { OrganizationDefaults } from "./contracts/organization-defaults.ts";
 export { organizationDefaults } from "./implementation/organization-defaults.ts";
 export { executorDefaultRedeployed } from "./implementation/executor-app-upgrades.ts";
 export { hostedAppCopies } from "./implementation/profile-app-copies.ts";
-export { linkAppAccount, linkUserAccount } from "./implementation/app-accounts.ts";
 export { memberSetupProgress, type SetupProgress } from "./implementation/setup-progress.ts";
 export {
   lookupMembership,
   lookupOrganizationSlug,
   noOrganizationRemovals,
 } from "./implementation/organization.ts";
-export { requireOrganizationAdmin, requireOrganizationOwner } from "./implementation/access.ts";
+export {
+  currentOrganizationSlug,
+  requireOrganizationAdmin,
+  requireOrganizationOwner,
+} from "./implementation/access.ts";
 export { hostedMiddlewareLive } from "./implementation/middleware.ts";
 export * from "./contracts/organization-removal.ts";
 export {
@@ -79,6 +81,7 @@ export { migrateOrganizationRemovals } from "./implementation/organization-remov
 export * from "./contracts/user-removal.ts";
 export { previewUserRemoval, removeUser } from "./implementation/user-removal.ts";
 export { deleteUserRecords } from "./implementation/user-records.ts";
+export { inviterMayInvite, invitingRoles } from "./implementation/organization-auth.ts";
 
 export { hostedOAuthCallback } from "./implementation/accounts.ts";
 export * from "./contracts/oauth-client-metadata.ts";
@@ -105,6 +108,8 @@ export * from "./contracts/mcp.ts";
 export {
   mcpBrowserGrantError,
   mcpConnectionStore,
+  patGrantId,
+  patGrantOf,
   provisionHostedConnectionResources,
   provisionHostedOAuthResources,
   type HostedOAuthOrigins,
@@ -113,8 +118,18 @@ export {
 } from "./implementation/mcp-oauth.ts";
 export { authEndpointTemplates, grantExpiry, type GrantExpiry } from "@executor-js/mcp-auth/oauth";
 export type { OriginList, ResourceOrigins } from "@executor-js/mcp-auth";
-export { ConnectionId, mcpOAuthResources, singleResourceOrigin } from "@executor-js/mcp-auth";
-export { apiBearerAccess, mcpBearerAccess } from "./implementation/bearer-access.ts";
+export {
+  ConnectionId,
+  mcpOAuthResources,
+  mcpWhoamiPath,
+  singleResourceOrigin,
+} from "@executor-js/mcp-auth";
+export {
+  apiBearerAccess,
+  describeMcpAccess,
+  mcpBearerAccess,
+  type UnknownApiKeys,
+} from "./implementation/bearer-access.ts";
 export {
   makeHostedMcp,
   mcpSessionKey,
@@ -123,9 +138,14 @@ export {
   mcpChallenge,
   mcpProtectedResource,
   mcpAuthorizationServer,
+  mcpWhoami,
 } from "./implementation/mcp-http.ts";
 
-export { apiChallenge, apiProtectedResource } from "./implementation/api-oauth.ts";
+export {
+  apiChallenge,
+  apiProtectedResource,
+  desktopProtectedResource,
+} from "./implementation/api-oauth.ts";
 
 export { browserTelemetry } from "./implementation/telemetry.ts";
 

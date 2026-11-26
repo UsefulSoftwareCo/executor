@@ -1,9 +1,9 @@
 import { recordUnclassifiedRefusals, requestServices } from "@executor-js/hosted-server";
+import { previewActivity } from "./infrastructure/preview-activity.ts";
 import { previewLifetime } from "./infrastructure/test-stage-expiry.ts";
-/** Private app-origin entry point. Dashboard assets and management APIs are never mounted here. */
-import { hostedAppUi, appAddresses } from "@executor-js/hosted-server/app-ui";
+import { appSessionCookie, hostedAppUi, appAddresses } from "@executor-js/hosted-server/app-ui";
 import { appPrivateHeaders, appSignInCallbackPath } from "apps/ui/auth";
-import { AppUiApi } from "apps/ui/contracts";
+import { AppUiApi, appIconRoute, appMenuBarRoute } from "apps/ui/contracts";
 import { AlchemyContext } from "alchemy/AlchemyContext";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { Config, Effect, Layer, Option } from "effect";
@@ -33,8 +33,8 @@ import {
 } from "./infrastructure/telemetry.ts";
 
 import { workerBuild } from "./infrastructure/worker-build.ts";
+import { servedRequest } from "./infrastructure/served-request.ts";
 
-/** A dedicated native Worker guarantees that every private HTML/JS/CSS request passes app authentication. */
 export default class AppPages extends Cloudflare.Worker<AppPages>()(
   "AppPages",
   Effect.gen(function* () {
@@ -79,7 +79,6 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
     const appSessions = yield* cloudAppSessions;
     const executor = yield* cloudServingProduct(yield* appDataSupervisors);
     const base = yield* cloudAppUiBase.pipe(Effect.orDie);
-    // App pages send sign-in to the dashboard, on the browser origin.
     const appUi = hostedAppUi(appAddresses((yield* cloudHosts.pipe(Effect.orDie)).browser, base));
     const services = requestServices(Layer.mergeAll(appSessions, executor));
     const notFound = HttpServerResponse.empty({ status: 404 });
@@ -87,6 +86,8 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
       HttpRouter.add("GET", appSignInCallbackPath, appUi.callback),
       HttpRouter.add("GET", "/_executor/assets/:version/*", appUi.asset),
       HttpRouter.add("GET", "/_executor/version", appUi.versions),
+      HttpRouter.add("GET", appMenuBarRoute, appUi.menuBar),
+      HttpRouter.add("GET", appIconRoute, appUi.icon),
       HttpRouter.add("POST", "/_executor/api/telemetry/traces", appUi.telemetry("traces")),
       HttpRouter.add("POST", "/_executor/api/telemetry/logs", appUi.telemetry("logs")),
       HttpRouter.add("GET", "*", appUi.page),
@@ -108,10 +109,9 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
       Effect.provideService(Layer.CurrentMemoMap, yield* Layer.makeMemoMap),
     );
     const lifetime = yield* previewLifetime;
+    const activity = yield* previewActivity;
     return {
       fetch: handle.pipe(
-        // Every GET reaches the page route, so an unmatched route is another method. Not found,
-        // as on self-host.
         Effect.catchIf(
           (error): error is HttpServerError.HttpServerError =>
             HttpServerError.isHttpServerError(error) && error.reason._tag === "RouteNotFound",
@@ -121,8 +121,6 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
         analytics.wrap,
         recordRequestRejections,
         reportErrors,
-        // Request errors keep their status at the Worker's boundary. Anything else was reported
-        // above and is Executor's fault; the response does not reveal it.
         Effect.catch((error) =>
           HttpServerError.isHttpServerError(error)
             ? Effect.fail(error)
@@ -131,7 +129,11 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
         requestTiming,
         recordClientNetwork,
         recordUnclassifiedRefusals,
+        activity.http(
+          (request) => base !== undefined && Object.hasOwn(request.cookies, appSessionCookie(base)),
+        ),
         lifetime.http,
+        servedRequest,
       ),
     };
   }).pipe(Effect.provide(Layer.mergeAll(cloudAuthDatabase, cloudTelemetry))),

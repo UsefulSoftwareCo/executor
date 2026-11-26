@@ -40,19 +40,13 @@ import {
   updateOAuthClientAtom,
 } from "../../contracts/oauth-clients.ts";
 
-/**
- * A page other than the app's own that starts account sign-ins, such as onboarding, provides where
- * the callback returns. Without it the callback opens the app's Accounts view.
- */
 export const OAuthReturnContext = createContext<OAuthReturn | undefined>(undefined);
 
-/** Retain only the return context; OAuth state and credentials remain owned by the server. */
 export function openAccountOAuth(pending: typeof PendingOAuth.Type, authorizationUrl: string) {
   sessionStorage.setItem("executor:hosted:oauth", JSON.stringify(pending));
   window.location.assign(authorizationUrl);
 }
 
-/** Resume the existing request in a connection dialog without creating a new attempt. */
 export function ConnectionFields({
   connection,
   onSaved,
@@ -123,7 +117,6 @@ export function ConnectionFields({
   );
 }
 
-/** Render known provider metadata; the caller owns creating or resuming the connection attempt. */
 export function HostedAccountForm<A extends HostedOAuthSignIn>({
   provider,
   account,
@@ -139,18 +132,17 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
   app,
 }: {
   readonly provider: Provider;
-  /** The app that will use the account; its check confirms entered credentials. */
   readonly app?: AppId | null | undefined;
   readonly account?: Account;
   readonly redirectUri: string;
   readonly initialMethod?: string | undefined;
   readonly manualClient?: boolean | undefined;
-  /** A registered client whose details reopen to be corrected before signing in again. */
   readonly editClient?: OAuthClientId | undefined;
   readonly submit: (input: AccountSubmission) => Promise<Exit.Exit<Account, HostedError>>;
   readonly start: (input: {
     readonly method: string;
     readonly client?: OAuthClientSelection;
+    readonly chooseAgain?: true;
   }) => Promise<
     Exit.Exit<A | Extract<HostedOAuthStartResult, { status: "completed" }>, HostedError>
   >;
@@ -163,27 +155,20 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
   const { organization } = useOrganizationRoute();
   const requestName = useAtomSet(accountToNameAtom);
   const checkCredentials = useAtomSet(checkCredentialsAtom, { mode: "promiseExit" });
-  // Only administrators register clients, so members are told to enter their own details.
   const role = useOrganizationDetails()?.role;
   const admin = role !== undefined && role !== "member";
   const registry = useContext(RegistryContext);
   const register = useAtomSet(registerOAuthClientAtom(organization), { mode: "promiseExit" });
-  // A client registered before sign-in failed to start is updated on retry, not registered again.
   const registered = useRef<{
     readonly issuer: string;
     readonly clientId: string;
     readonly id: OAuthClientId;
   }>(undefined);
-  // Reconnects keep their name; a new account is named once saved.
   const saved = (value: Account) => {
     if (!account)
       requestName({ organization, account: value.id, saved: { account: value, provider } });
     onSaved(value);
   };
-  /**
-   * An administrator's entered client is registered, or a registered one updated, before sign-in
-   * starts, so a failed or cancelled sign-in keeps it. A failure here stays in the form.
-   */
   const savedClient = (
     input: OAuthSubmission,
     issuer: typeof HttpUrl.Type | undefined,
@@ -298,10 +283,10 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
                     : input.client !== undefined
                       ? { client: input.client }
                       : {}),
+                  ...(input.chooseAgain === true ? { chooseAgain: true } : {}),
                 });
                 return Exit.map(exit, (value) => ({
                   ...value,
-                  // Entered details reopen after a failed return; chosen clients do not.
                   manualClient:
                     registeredClient === undefined &&
                     input.client !== undefined &&

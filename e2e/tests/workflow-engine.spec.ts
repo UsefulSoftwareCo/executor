@@ -6,13 +6,6 @@ import { Config, Console, Effect, Exit, FileSystem, Path, Schedule, Schema } fro
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { driver } from "../support/platform.ts";
 
-// The self-host image lets workflow engines leave memory (no preventEviction). workerd then
-// unloads an engine about 70 s after its last call once no caller holds it, whatever work is in
-// flight. create() holds the engine it starts; a run woken by its alarm or resumed after a pause
-// has no such caller. The self-host host reads running runs every few seconds, which also keeps
-// their engines loaded, so this runs the image's packaged engine alone in the image's workerd,
-// declared exactly as the image declares it, with nothing reading the runs.
-
 const stepSeconds = 150;
 
 const user = `import { WorkflowEntrypoint } from "cloudflare:workers";
@@ -44,13 +37,11 @@ export default {
   },
 };`;
 
-// /create answers with the run id only; the other routes answer with the run status.
 const Status = Schema.Struct({
   status: Schema.optionalKey(Schema.String),
   output: Schema.optionalKey(Schema.Json),
 });
 
-/** The image's workflow engine and a user workflow in one workerd container, restartable. */
 const engineServer = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -58,7 +49,6 @@ const engineServer = Effect.gen(function* () {
   const image = yield* Config.String("EXECUTOR_E2E_DOCKER_IMAGE");
   const docker = (args: readonly string[]) =>
     processes.string(ChildProcess.make("docker", args), { includeStderr: args[0] === "logs" });
-  // The shipped config declares the engine's modules, bindings and durable object namespace.
   const shipped = yield* docker([
     "run",
     "--rm",
@@ -157,7 +147,6 @@ ${service}
   );
   yield* docker(["start", id]);
   yield* ready;
-  // Kills the process as a crash would, then starts it over the same storage.
   const crash = docker(["kill", "--signal", "KILL", id]).pipe(
     Effect.andThen(docker(["start", id])),
     Effect.andThen(ready),
@@ -184,12 +173,9 @@ it.live(
         yield* server.call("/create?id=resumed");
         yield* Effect.sleep("1 second");
         expect((yield* server.call("/pause?id=resumed")).status).toBe("paused");
-        // Only the durable alarm can end the sleep of a run whose process crashed.
         yield* server.crash;
         yield* Effect.sleep("8 seconds");
-        // A resumed run is started by the resume call, which returns at once.
         expect((yield* server.call("/resume?id=resumed")).status).toBe("running");
-        // Nothing calls either engine while their long steps run.
         yield* Effect.sleep(`${stepSeconds + 25} seconds`);
         for (const run of ["woken", "resumed"]) {
           const state = yield* server.call(`/status?id=${run}`);

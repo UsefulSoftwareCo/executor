@@ -14,7 +14,6 @@ import { accountNeedsSignIn } from "../../contracts/dashboard.ts";
 import { Empty, ProviderIcon, SearchInput } from "./common.tsx";
 import { Button } from "../components/button.tsx";
 
-/** Saved account metadata is shared across app references, without exposing credential values. */
 export function AccountsPage<E>({
   query,
   Failure,
@@ -22,11 +21,9 @@ export function AccountsPage<E>({
   ...props
 }: QueryProps<Inventory, E> & {
   readonly filters?: ReactNode;
-  /** A page action beside the title, such as managing OAuth clients; hidden while there are none. */
   readonly action?: ReactNode;
   readonly empty?: ReactNode;
   readonly accountActions?: (account: AccountSummary) => ReactNode;
-  /** A linked account is scrolled into view and marked, since accounts have no page of their own. */
   readonly highlight?: AccountId | undefined;
 }) {
   const { result, data, refresh } = useQuery(query);
@@ -118,7 +115,9 @@ function AccountsList({
           </div>
           {accounts.map((account) => {
             const apps = data.apps.filter((app) =>
-              data.links.some((link) => link.app === app.id && link.account === account.id),
+              [...data.links, ...data.appLinks].some(
+                (link) => link.app === app.id && link.account === account.id,
+              ),
             );
             return (
               <div

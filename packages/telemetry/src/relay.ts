@@ -1,5 +1,14 @@
-/** Bounded OTLP return channel for credential-free app isolates. The parent owns export. */
-import { Effect, FiberSet, Option, Redacted, Schema, Semaphore, Tracer } from "effect";
+import {
+  Context,
+  Effect,
+  FiberSet,
+  Option,
+  Redacted,
+  Schema,
+  Scope,
+  Semaphore,
+  Tracer,
+} from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 import { CurrentTelemetryConfig } from "./config.ts";
 import { telemetryLayer } from "./layer.ts";
@@ -7,18 +16,9 @@ import { retryTelemetryExport, telemetryHttpClient } from "./transport.ts";
 import { recordExportFailure } from "./measurements.ts";
 import { appLog, appSpan } from "./app-records.ts";
 
-/**
- * Forward app telemetry in the host scope without delaying an app result.
- * Batches wait in one queue and a single sender exports everything waiting as one request per
- * signal, so a burst of finished runs costs a few exports instead of one each. The queue holds at
- * most eight MiB of payload and one export carries at most four. Overload and shutdown loss are
- * reported through the normal safe export-failure signal. Scope release drains for the same
- * three-second budget as the other exporters.
- */
-export const makeTelemetryForwarder = Effect.gen(function* () {
+const forwarder = Effect.gen(function* () {
   const fibers = yield* FiberSet.make();
   const sender = yield* Semaphore.make(1);
-  // Sizes are payload string lengths: UTF-16 code units, at most the payload's UTF-8 bytes.
   const pending: Array<Forward & { readonly size: number }> = [];
   let queued = 0;
   const failed = (reason: "capacity" | "timeout" | "relay" | "shutdown") =>
@@ -31,17 +31,22 @@ export const makeTelemetryForwarder = Effect.gen(function* () {
     queued -= size;
     return pending.splice(0, count);
   };
+  let closing = false;
+  let deadlineWhileClosing = false;
   const sendAll: Effect.Effect<void> = Effect.suspend(() => {
     const forwards = take();
     return forwards.length === 0
       ? Effect.void
       : exportForwards(forwards, "executor-app").pipe(
-          Effect.catchTag("TimeoutError", () => failed("timeout")),
+          Effect.catchTag("TimeoutError", () =>
+            Effect.sync(() => {
+              if (closing) deadlineWhileClosing = true;
+            }).pipe(Effect.andThen(failed("timeout"))),
+          ),
           Effect.catch(() => failed("relay")),
           Effect.andThen(sendAll),
         );
   });
-  // A batch queued after the sender's last look but before it lets go is sent by its recheck.
   const drain: Effect.Effect<void> = Effect.suspend(() =>
     sender
       .withPermitsIfAvailable(1)(sendAll)
@@ -49,9 +54,16 @@ export const makeTelemetryForwarder = Effect.gen(function* () {
         Effect.flatMap((sent) => (Option.isSome(sent) && pending.length > 0 ? drain : Effect.void)),
       ),
   );
+  const reportWait = yield* TelemetryWaitReport;
   yield* Effect.addFinalizer(() =>
-    FiberSet.awaitEmpty(fibers).pipe(
+    Effect.sync(() => {
+      closing = true;
+    }).pipe(
+      Effect.andThen(FiberSet.awaitEmpty(fibers)),
       Effect.timeoutOption("3 seconds"),
+      Effect.tap((drained) =>
+        Option.isNone(drained) || deadlineWhileClosing ? reportWait("forwarder") : Effect.void,
+      ),
       Effect.flatMap((drained) =>
         Option.isNone(drained) || pending.length > 0 ? failed("shutdown") : Effect.void,
       ),
@@ -67,6 +79,23 @@ export const makeTelemetryForwarder = Effect.gen(function* () {
     });
 });
 
+export type TelemetryWait = "forwarder" | "analytics";
+export const TelemetryWaitReport = Context.Reference<(wait: TelemetryWait) => Effect.Effect<void>>(
+  "@executor-js/telemetry/TelemetryWaitReport",
+  { defaultValue: () => () => Effect.void },
+);
+
+export const TelemetryDrainScope = Context.Reference<Scope.Scope | undefined>(
+  "@executor-js/telemetry/TelemetryDrainScope",
+  { defaultValue: () => undefined },
+);
+
+export const makeTelemetryForwarder = Effect.flatMap(TelemetryDrainScope, (scope) =>
+  scope === undefined
+    ? forwarder
+    : Effect.flatMap(Scope.fork(scope, "sequential"), (own) => Scope.provide(forwarder, own)),
+);
+
 const queueBudget = 8 * 1_048_576;
 const exportBudget = 4 * 1_048_576;
 
@@ -76,16 +105,13 @@ const Payload = Schema.String.check(
   Schema.isMaxLength(payloadBytes),
   Schema.makeFilter((body) => encoder.encode(body).byteLength <= payloadBytes),
 );
-/** Untrusted isolate batches are bounded before decoding; no endpoint or credential crosses back. */
 export const TelemetryBatch = Schema.Struct({
   traces: Schema.Array(Payload).check(Schema.isMaxLength(4)),
   logs: Schema.Array(Payload).check(Schema.isMaxLength(4)),
   dropped: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
 });
-/** Parsed isolate telemetry envelope. */
 export type TelemetryBatch = typeof TelemetryBatch.Type;
 
-/** Collect one invocation into memory, flush before returning, and never contact a remote collector. */
 export const collectTelemetry = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   Effect.gen(function* () {
     const traces = recordPacker('{"resourceSpans":[{"scopeSpans":[{"spans":[', "]}]}]}");
@@ -131,9 +157,6 @@ export const collectTelemetry = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     return { value, telemetry: { traces: traces.finish(), logs: logs.finish(), dropped } };
   });
 
-// Native exporters split an invocation into several batches. Keep its last
-// envelope open across batches so a partial envelope does not consume a slot.
-// Both the four-envelope memory bound and 1,000-record decode bound still apply.
 const recordPacker = (prefix: string, suffix: string) => {
   const target: string[] = [];
   let parts: string[] = [];
@@ -175,7 +198,6 @@ const recordPacker = (prefix: string, suffix: string) => {
 
 const HexTrace = Schema.String.check(Schema.isPattern(/^[a-f0-9]{32}$/u));
 const HexSpan = Schema.String.check(Schema.isPattern(/^[a-f0-9]{16}$/u));
-// Parse correlation fields and retain the rest of each native OTLP record verbatim.
 const Span = Schema.StructWithRest(Schema.Struct({ traceId: HexTrace, spanId: HexSpan }), [
   Schema.Record(Schema.String, Schema.Json),
 ]);
@@ -206,23 +228,17 @@ const LogPayload = Schema.fromJsonString(
   }),
 );
 
-/**
- * What the host knows about the records' source, from its own invocation rather than the records:
- * the build that ran and, for an app isolate, the app's opaque ID. Both become resource attributes.
- */
 export interface TelemetrySource {
   readonly build?: string | undefined;
   readonly app?: string | undefined;
 }
 
-/** One forwarded batch: the records, the trace they must belong to, and who sent them. */
 interface Forward {
   readonly batch: TelemetryBatch;
   readonly traceId: string | undefined;
   readonly source: TelemetrySource;
 }
 
-/** Validate isolated records and export only this call's trace, using parent-owned credentials/identity. */
 export const forwardTelemetry = (
   batch: TelemetryBatch,
   traceId: string | undefined,
@@ -230,10 +246,6 @@ export const forwardTelemetry = (
   service: "executor-app" | "executor-web" = "executor-app",
 ) => exportForwards([{ batch, traceId, source }], service);
 
-/**
- * Export several batches as one request per signal. Each batch keeps its own resource entry, so
- * batches from different apps and builds share a request without sharing attributes.
- */
 const exportForwards = (
   forwards: ReadonlyArray<Forward>,
   service: "executor-app" | "executor-web",
@@ -252,7 +264,6 @@ const exportForwards = (
         ...(app === undefined ? [] : [{ key: "executor.app.id", value: { stringValue: app } }]),
       ],
     });
-    // A collector that refuses an export for now gets it again inside the three-second budget.
     const client = retryTelemetryExport(yield* HttpClient.HttpClient);
     const dropped = forwards.reduce((total, { batch }) => total + batch.dropped, 0);
     if (dropped > 0) yield* recordExportFailure("app", "capacity", dropped);
@@ -261,9 +272,6 @@ const exportForwards = (
         const target = config[signal];
         const sending = forwards.filter(({ batch }) => batch[signal].length > 0);
         if (target === undefined || sending.length === 0) return;
-        // The isolate return channel is already bounded to four 256 KiB envelopes.
-        // Send each signal once instead of serializing four network acknowledgements
-        // inside the same three-second drain budget; the two signals go out at once.
         const data =
           signal === "traces"
             ? {
@@ -280,7 +288,6 @@ const exportForwards = (
                             .flatMap((payload) => payload.resourceSpans)
                             .flatMap((r) => r.scopeSpans.flatMap((s) => s.spans))
                             .filter((span) => traceId === undefined || span.traceId === traceId)
-                            // An app isolate's records are rebuilt from the host's vocabulary.
                             .flatMap((span) => {
                               if (service !== "executor-app") return [span];
                               const kept = appSpan(span);
@@ -322,7 +329,6 @@ const exportForwards = (
           ),
         );
       });
-    // Each signal is sent even when the other fails; the first failure in order is reported.
     const sent = yield* Effect.forEach(
       ["traces", "logs"] as const,
       (signal) => Effect.result(send(signal)),

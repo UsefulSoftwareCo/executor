@@ -1,7 +1,9 @@
-/** Import descriptions and generated files; no product HTTP or installation policy. */
 export {
   CatalogAuth,
   CatalogEntry,
+  CatalogFeedState,
+  CatalogListing,
+  catalogTurnedOff,
   CatalogFeed,
   CatalogFeedSource,
   CatalogIcon,
@@ -10,6 +12,7 @@ export {
   CatalogQuery,
   CatalogRecovery,
   CatalogUnavailable,
+  CatalogFeedUnavailable,
   filterCatalog,
   PreparedApp,
   officialCatalogUrl,

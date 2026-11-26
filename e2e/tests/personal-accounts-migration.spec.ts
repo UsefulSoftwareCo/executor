@@ -1,22 +1,3 @@
-/**
- * Upgrading a hosted instance that has shared accounts. Hosted product step
- * `12_personal_accounts` makes each shared account one member's personal account: its creator's
- * while they are a member, otherwise the organization's oldest owner's. Its app links keep serving
- * every caller; other members' user links to it are removed, since they cannot use another
- * member's account; its group grants go; and a pending sign-in saved to create a shared account,
- * for everyone or for groups, is refused.
- *
- * The fixture builds the accounts, links, a group and unfinished connections through the product,
- * then rewrites them as an older version stored them: one account shared with everyone, linked by
- * another member and for the app; one shared with the group whose creator is gone; the
- * connections asking for shared accounts; and step 12's ledger row removed so the next start runs
- * it. The old columns (`audience`, `destination`, `hosted_account_groups`) still exist.
- *
- * A member's user link to a shared account becomes an app link instead when the app takes accounts
- * of that provider for everyone in one many() app requirement, as an app imported with
- * `appLinkedAccounts` does with `workspace`. Every row the step changes is recorded in
- * `hosted_personal_accounts_backup`.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -42,11 +23,6 @@ export default defineApp({ app: { accounts: { team: service } }, user: { account
   }),
 }));`;
 
-/**
- * The account requirements and reads of an app imported with `appLinkedAccounts`
- * (`accountScopes` in packages/app-templates): the accounts linked for everyone in `workspace`,
- * then the caller's own `service` accounts not among them. Step 12 reads only the declaration.
- */
 const importedSource = `import { defineApp, defineProvider, secrets, query, object, string, router } from "apps";
 const provider = defineProvider({ name: "Personal accounts imported", auth: {
   key: secrets({ label: "API key", fields: object({ token: string() }) })
@@ -57,7 +33,6 @@ export default defineApp({ app: { accounts: { workspace: provider.many() } }, us
   }),
 }));`;
 
-/** An app with only a user requirement of the same provider. */
 const userOnlySource = `import { defineApp, defineProvider, secrets, query, object, string, router } from "apps";
 const provider = defineProvider({ name: "Personal accounts imported", auth: {
   key: secrets({ label: "API key", fields: object({ token: string() }) })
@@ -93,7 +68,6 @@ layer(HostedLive, { excludeTestServices: true })("Personal accounts migration", 
           admin = yield* userId(actors.admin),
           member = yield* userId(actors.member);
 
-        // Everything but the shared state is created through the current product.
         const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
           name: `Personal accounts upgrade ${suffix}`,
           files: [{ path: "index.ts", content: source }, appsManifest],
@@ -142,11 +116,8 @@ layer(HostedLive, { excludeTestServices: true })("Personal accounts migration", 
             expect(saved.status, JSON.stringify(saved.body)).toBe(200);
             return (yield* body(Resource, saved)).id;
           });
-        // The admin's account, which becomes shared with everyone, and the member's, which
-        // becomes shared with the group by a creator who is gone. Each is linked for its creator.
         const everyone = yield* connect(actors.admin, "synthetic-admin");
         const grouped = yield* connect(actors.member, "synthetic-member");
-        // Sign-ins the member started and never finished.
         const pendingEveryone = yield* start(actors.member);
         const pendingGroup = yield* start(actors.member);
 
@@ -198,11 +169,8 @@ layer(HostedLive, { excludeTestServices: true })("Personal accounts migration", 
           },
         ] as const;
 
-        // The database as an older version left it, with step 12 pending.
         const [removedStep, ...written] = yield* legacyStorage([
           { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 12 RETURNING name" },
-          // The admin's account is shared with everyone. The owner linked it for themselves and
-          // for the app.
           {
             sql: `UPDATE hosted_account_access SET kind = 'shared', personal_user_id = NULL,
               audience = 'everyone' WHERE account_id = $1`,
@@ -213,7 +181,6 @@ layer(HostedLive, { excludeTestServices: true })("Personal accounts migration", 
               VALUES ($1, 'service', $2, $3, $2), ($1, 'team', NULL, $3, $2)`,
             params: [app, owner, everyone],
           },
-          // The member's account is shared with the group, and its creator's user is gone.
           {
             sql: `UPDATE hosted_account_access SET kind = 'shared', personal_user_id = NULL,
               audience = 'groups', creator_id = NULL WHERE account_id = $1`,
@@ -224,7 +191,6 @@ layer(HostedLive, { excludeTestServices: true })("Personal accounts migration", 
               VALUES ($1, $2, $3)`,
             params: [actors.organization.id, grouped, group.id],
           },
-          // The pending sign-ins ask for a shared account, for everyone and for the group.
           {
             sql: `UPDATE hosted_connection_access SET destination = $2::jsonb
               WHERE connection_id = $1`,
@@ -281,8 +247,6 @@ layer(HostedLive, { excludeTestServices: true })("Personal accounts migration", 
             recorded,
             backup,
           });
-          // The admin's account is the admin's own; the group's account, whose creator is gone,
-          // is the organization's owner's. Each gets a new revision.
           expect(converted).toEqual(
             [
               {
@@ -308,8 +272,6 @@ layer(HostedLive, { excludeTestServices: true })("Personal accounts migration", 
               before?.find((old) => old.account_id === row.account_id)?.revision,
             );
           expect(groups, "the account's group grants are gone").toEqual([]);
-          // The app link and the admin's own link stay. The owner's link to the admin's account
-          // and the member's link to the account that is now the owner's are removed.
           expect(links).toEqual([
             { requirement: "service", subject: admin, account: everyone },
             { requirement: "team", subject: null, account: everyone },
@@ -317,10 +279,6 @@ layer(HostedLive, { excludeTestServices: true })("Personal accounts migration", 
           expect(pending, "the pending shared sign-ins lost their access records").toEqual([]);
           expect(recorded).toEqual([{ name: "personal_accounts" }]);
 
-          // Every changed row is recorded under one run. The owner's link to the admin's account
-          // stays deleted: the app takes that provider for everyone only in a plain requirement,
-          // which already has its account. The member's link served nobody, since its account was
-          // shared with a group.
           const entry = (fields: Record<string, unknown>) => ({
             run: expect.any(String),
             account_id: null,
@@ -356,7 +314,6 @@ layer(HostedLive, { excludeTestServices: true })("Personal accounts migration", 
           expect(backup).toEqual(expect.arrayContaining(expected));
           expect(new Set(backup?.map((row) => row.run)).size, "one run").toBe(1);
 
-          // The app link keeps serving every caller with the admin's account.
           for (const actor of [actors.owner, actors.admin, actors.member]) {
             const called = yield* api.request(actor, "POST", `${path}/tools/call`, {
               tool: "team",
@@ -366,8 +323,6 @@ layer(HostedLive, { excludeTestServices: true })("Personal accounts migration", 
             expect(called.status, JSON.stringify(called.body)).toBe(200);
             expect(called.body).toBe("synthetic-admin");
           }
-          // Only the admin still runs with their own account for themselves; the member and the
-          // owner lost the links to accounts that are no longer theirs to use.
           const mine = (actor: Session) =>
             api.request(actor, "POST", `${path}/tools/call`, {
               tool: "mine",
@@ -386,7 +341,6 @@ layer(HostedLive, { excludeTestServices: true })("Personal accounts migration", 
           expect(yield* accountLinks(actors.member, path)).toEqual([]);
           expect(yield* accountLinks(actors.owner, path)).toEqual([]);
 
-          // Each account is readable only by its new owner, organization admins included.
           const read = (actor: Session, account: string) =>
             api
               .request(actor, "GET", `${prefix}/accounts/${account}`)
@@ -398,7 +352,6 @@ layer(HostedLive, { excludeTestServices: true })("Personal accounts migration", 
           expect(yield* read(actors.admin, grouped)).toBe(403);
           expect(yield* read(actors.member, grouped)).toBe(403);
 
-          // The pending sign-ins are refused, so neither saves an account.
           for (const connection of [pendingEveryone, pendingGroup]) {
             const refused = yield* submit(actors.member, connection, "synthetic-pending");
             expect(refused.status, JSON.stringify(refused.body)).toBe(403);
@@ -411,7 +364,6 @@ layer(HostedLive, { excludeTestServices: true })("Personal accounts migration", 
         yield* serverControl("start");
         expect(kept, "the group itself stays").toEqual([{ id: group.id }]);
 
-        // Step 12 is recorded once; starting again changes nothing.
         yield* serverControl("start");
         yield* upgraded;
       }),
@@ -482,7 +434,6 @@ layer(HostedLive, { excludeTestServices: true })("Personal accounts migration", 
             expect(saved.status, JSON.stringify(saved.body)).toBe(200);
             return (yield* body(Resource, saved)).id;
           });
-        // The admin's account, linked for the admin; and the owner's, linked for everyone.
         const linked = yield* connect(actors.admin, "user", "service", "synthetic-one");
         const covered = yield* connect(actors.owner, "app", "workspace", "synthetic-two");
 
@@ -519,8 +470,6 @@ layer(HostedLive, { excludeTestServices: true })("Personal accounts migration", 
           },
         ] as const;
 
-        // Both accounts are shared with everyone. The member linked the admin's account for
-        // themselves to both apps, and the admin linked the owner's account for themselves.
         const [removedStep, , , ...written] = yield* legacyStorage([
           { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 12 RETURNING name" },
           {
@@ -561,7 +510,6 @@ layer(HostedLive, { excludeTestServices: true })("Personal accounts migration", 
         ];
         expect(beforeLinks).toHaveLength(beforeExpected.length);
         expect(beforeLinks).toEqual(expect.arrayContaining(beforeExpected));
-        // The admin's account serves the admin's link; the owner's, its app link.
         expect(beforeSources).toEqual([
           { app: imported.app, account: linked, actor: admin, revision: expect.any(Number) },
           { app: imported.app, account: covered, actor: null, revision: expect.any(Number) },
@@ -574,10 +522,6 @@ layer(HostedLive, { excludeTestServices: true })("Personal accounts migration", 
           const [links, sources, backup] = yield* legacyStorage(stored);
           yield* serverControl("start");
           yield* evidence.json("after.json", { links, sources, backup });
-          // The member's link to the imported app is now the app's link for everyone, after the
-          // app's existing one. The admin's link to the owner's account is gone without a second
-          // app link, and so is the member's link to the app with only user accounts. Each
-          // creator keeps their own links.
           expect(links).toEqual([
             {
               app: imported.app,
@@ -601,8 +545,6 @@ layer(HostedLive, { excludeTestServices: true })("Personal accounts migration", 
               linked_by: member,
             },
           ]);
-          // The admin's account now serves the app link from the app's own source, with new
-          // intent; the owner's source is unchanged.
           expect(sources).toEqual([
             { app: imported.app, account: linked, actor: null, revision: expect.any(Number) },
             beforeSources?.[1],
@@ -678,8 +620,6 @@ layer(HostedLive, { excludeTestServices: true })("Personal accounts migration", 
           expect(backup).toEqual(expect.arrayContaining(expected));
           expect(new Set(backup?.map((row) => row.run)).size, "one run").toBe(1);
 
-          // Every caller of the imported app runs with both accounts linked for everyone, the
-          // member included; the app with only user accounts gives the member none.
           const tokens = (actor: Session, path: string) =>
             Effect.gen(function* () {
               const called = yield* api.request(actor, "POST", `${path}/tools/call`, {
@@ -702,7 +642,6 @@ layer(HostedLive, { excludeTestServices: true })("Personal accounts migration", 
         });
         yield* upgraded;
 
-        // Step 12 is recorded once; starting again changes nothing, its backup included.
         yield* serverControl("start");
         yield* upgraded;
       }),

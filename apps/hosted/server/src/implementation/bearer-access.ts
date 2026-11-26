@@ -1,31 +1,23 @@
-/**
- * MCP and API bearer authentication in one SQL statement.
- *
- * Every MCP request, and every tool call inside `execute`, authenticates its bearer again.
- * Cloud reaches its database across the network, so each statement costs a round trip of
- * 3–6 ms. Better Auth's token check, the grant, consent, connection, membership and
- * organization reads used to run one after another: ten round trips for an OAuth token and
- * five, two of them writes, for a PAT. This module reads every row one authentication
- * needs in one statement and applies the same checks to the result.
- *
- * The checks mirror `@better-auth/oauth-provider`'s opaque access token validation and
- * `@better-auth/api-key`'s verification (both 1.7.16, as configured in `auth.ts` and
- * `api-keys.ts`), followed by the grant rules in `@executor-js/mcp-auth`. Expiry is decided
- * with the application clock after the statement returns, as Better Auth decides it, never
- * with the database clock.
- */
 import { defaultKeyHasher } from "@better-auth/api-key";
-import { fullAuthority, type AuthorizationPolicy } from "@executor-js/authorization";
 import {
+  fullAuthority,
+  selectedAuthority,
+  type AuthorizationPolicy,
+} from "@executor-js/authorization";
+import {
+  ApprovalMode,
+  ConnectionId,
   GrantId,
   GrantPolicy,
   grantAuthorization,
+  grantScope,
   grantTarget,
-  type ApprovalMode,
+  recordedTarget,
+  McpWhoami,
   type GrantTarget,
 } from "@executor-js/mcp-auth";
 import { ConnectionPolicy, connectionGrantPolicy } from "@executor-js/mcp-auth/connections";
-import { Clock, Context, Effect, Option, Schema } from "effect";
+import { Clock, Context, Effect, Option, Redacted, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import { ApiKeyId, ApiKeyMetadata } from "../contracts/api-keys.ts";
 import {
@@ -42,13 +34,8 @@ import { OrganizationForbidden } from "../contracts/organization.ts";
 import { isApiKey } from "./api-keys.ts";
 import { patGrantId, type HostedOAuthOrigins } from "./mcp-oauth.ts";
 
-/**
- * Why a bearer was refused, before translation into the MCP or API contract. A valid credential
- * that may not make the request names why, because each reason needs a different fix.
- */
 class BearerRejected extends Schema.TaggedError<BearerRejected>()("BearerRejected", {
   reason: Schema.Union([Schema.Literals(["unauthorized", "unavailable"]), McpForbiddenReason]),
-  /** Why, as the request's span records it. An outage is not a refusal and has none. */
   failure: Schema.optionalKey(AuthFailureReason),
 }) {}
 
@@ -58,11 +45,11 @@ const unavailable = new BearerRejected({ reason: "unavailable" });
 const forbidden = (reason: McpForbiddenReason, failure: AuthFailureReason) =>
   new BearerRejected({ reason, failure });
 
-/** What the request names: the presented credential and any organization it selects. */
 export interface BearerRequest {
   readonly headers: Headers;
-  /** The organization in the URL (`/org/<ref>/mcp`) or the API's `organization` parameter. */
   readonly organization?: OrganizationReference | undefined;
+  readonly desktop?: boolean | undefined;
+  readonly tools?: boolean | undefined;
 }
 
 export interface ApiBearerAccess {
@@ -72,24 +59,21 @@ export interface ApiBearerAccess {
   readonly policy: AuthorizationPolicy;
   readonly key?: { readonly id: typeof ApiKeyId.Type };
   readonly grant?: { readonly id: GrantId };
+  readonly desktop?: true;
 }
+
+const desktopAuthority = selectedAuthority(["discover"], { kind: "all" });
 
 const bearer = (headers: Headers) => headers.get("authorization")?.match(/^Bearer ([^\s]+)$/i)?.[1];
 
-/** A request without a bearer: none at all, or an Authorization header of another form. */
 const noBearer = (headers: Headers) =>
   headers.has("authorization")
     ? Effect.fail(unauthorized("malformed"))
     : Effect.andThen(recordCredential({ kind: "none" }), Effect.fail(unauthorized("missing")));
 
-/** Record why a bearer was refused on the request's span, before translating it. */
 const recordRefusal = (error: BearerRejected) =>
   error.failure === undefined ? Effect.void : recordAuthFailure(error.failure);
 
-/**
- * Better Auth stores opaque access tokens and API keys as the unpadded base64url SHA-256 of
- * the credential (oauth-provider's default `storeTokens: "hashed"`, api-key's default hasher).
- */
 const storedHash = (token: string) =>
   Effect.gen(function* () {
     const hashes = yield* BearerHashes;
@@ -103,25 +87,11 @@ const storedHash = (token: string) =>
     return hash;
   });
 
-/**
- * The stored hashes of the bearer tokens one HTTP request has already checked, provided for that
- * request only. Hashing waits for Web Crypto, so a recheck that hashes again sends its statement
- * after an event-loop turn, apart from reads issued with it; from a Worker that second write waits
- * for the first one's acknowledgement, a whole round trip. A hash is a pure function of the
- * token, so reusing it within the request skips no check.
- */
 export const BearerHashes = Context.Reference<Map<string, string> | undefined>(
   "hosted/BearerHashes",
   { defaultValue: () => undefined },
 );
 
-/**
- * A stored `string[]` (a `jsonb` column), as Better Auth reads it: the driver decodes the
- * `jsonb` value, and the Kysely adapter (`supportsArrays: false`) parses it again when that
- * value is a string. A JSON string holding an array therefore reads as the array; anything
- * deeper stays a string and fails the array schema. The api-key plugin reads `metadata` the
- * same way: its output transform parses the text, then a string result is parsed once more.
- */
 const jsonText = (text: string | null): unknown => {
   if (text === null) return null;
   try {
@@ -135,10 +105,6 @@ const Strings = Schema.Array(Schema.String);
 const strings = (text: string | null) =>
   Option.getOrUndefined(Schema.decodeUnknownOption(Strings)(jsonText(text)));
 
-/**
- * The organization a request names, URL first, then `X-Executor-Organization`. Each reference
- * must match exactly one organization by ID or slug, and the two must agree.
- */
 const requestedOrganization = (
   request: BearerRequest,
   header: string | null,
@@ -164,32 +130,14 @@ const requestedOrganization = (
     return byUrl ?? byHeader;
   });
 
-/*
- * `recordCaller` names the caller's own organization and the caller on the caller's span
- * (`auth.authenticate`) and the request's span, by their opaque IDs, once the caller's current
- * membership there holds, so a refusal after this point still names both: an OAuth grant's
- * organization once its user's membership there holds, a pinned key's while its user is still a
- * member there, and the organization an unpinned key names once its user's membership there
- * holds. No organization is recorded before then, so refused requests for another organization,
- * or for one the caller has left, never count against it. The request's span names the verified
- * credential's user earlier (`recordCredential`), so such a refusal is still attributed to its
- * caller.
- */
-
-/** Organizations matching a reference by ID or slug; two rows prove the reference ambiguous. */
 const matches = (sql: SqlClient.SqlClient, reference: string | null) =>
   sql`(select coalesce(json_agg(o.id), '[]'::json)::text from (
     select id from organization where id = ${reference} or slug = ${reference} limit 2) o)`;
 
-/** Stored resources that a token's audience names: the identifier and its `customClaims`. */
 const ResourceRows = Schema.fromJsonString(
   Schema.Array(Schema.Struct({ identifier: Schema.String, claims: Schema.Unknown })),
 );
 
-/**
- * Timestamps are selected as epoch milliseconds, truncated as the driver truncates them into a
- * `Date`, so the caller can compare them with its own clock.
- */
 const OAuthRow = Schema.Struct({
   expiresAt: Schema.NullOr(Schema.Number),
   revoked: Schema.Boolean,
@@ -210,6 +158,7 @@ const OAuthRow = Schema.Struct({
   grantPolicy: Schema.NullOr(Schema.String),
   grantRevoked: Schema.NullOr(Schema.Boolean),
   grantConnection: Schema.NullOr(Schema.String),
+  grantMode: Schema.NullOr(Schema.String),
   consentResources: Schema.NullOr(Schema.String),
   role: Schema.NullOr(Schema.String),
   organizationSlug: Schema.NullOr(Schema.String),
@@ -222,12 +171,6 @@ const OAuthRow = Schema.Struct({
   headerOrganizations: Schema.String,
 });
 
-/**
- * An OAuth access token, its grant, consent and connection, and the grant's membership.
- * Resource rows are every stored resource the token's audience can name; a JSON-string
- * audience (see {@link jsonText}) matches by its quoted identifier, and the caller keeps only
- * the identifiers the decoded audience actually lists.
- */
 const loadOAuth = (
   sql: SqlClient.SqlClient,
   hash: string,
@@ -267,6 +210,7 @@ const loadOAuth = (
     g.policy as "grantPolicy",
     g.revoked as "grantRevoked",
     g.connection as "grantConnection",
+    g.mode as "grantMode",
     consent.resources::text as "consentResources",
     m.role as role,
     o.slug as "organizationSlug",
@@ -291,11 +235,10 @@ const loadOAuth = (
   left join "mcpConnection" mc on mc.id = g.connection
   where t.token = ${hash}`.pipe(Effect.mapError(() => unavailable));
 
-/** An OAuth grant for `kind`, as `@executor-js/mcp-auth` and hosted membership authorize it. */
 const oauthAccess = (
   sql: SqlClient.SqlClient,
   { origin, resourceOrigins }: HostedOAuthOrigins,
-  kind: "mcp" | "api",
+  accepted: readonly GrantTarget["kind"][],
   token: string,
   request: BearerRequest,
 ) =>
@@ -312,20 +255,15 @@ const oauthAccess = (
     const row = yield* Schema.decodeUnknownEffect(OAuthRow)(rows[0]).pipe(
       Effect.mapError(() => unavailable),
     );
-    // Better Auth's opaque token validation: live token, enabled client, live session. It reads
-    // the clock after its reads, so a token that expires during the round trip is refused.
     const now = yield* Clock.currentTimeMillis;
     if (row.revoked) return yield* unauthorized("revoked");
     if (row.expiresAt === null || row.expiresAt < now) return yield* unauthorized("expired");
     if (!row.clientActive) return yield* unauthorized("revoked");
-    // A sender-constrained token is not a bearer credential for any resource here.
     if (row.bound) return yield* unauthorized("wrong_resource");
     if (row.session !== null && (row.sessionExpiresAt === null || row.sessionExpiresAt < now))
       return yield* unauthorized("expired");
     if (row.subject === null || row.tokenClient === null) return yield* unauthorized("revoked");
-    // The token is live; its client ID is public, and its subject is the caller.
     yield* recordCredential({ kind: "oauth_access_token", id: row.tokenClient, user: row.subject });
-    // Every audience must still name a stored resource; `openid` adds the userinfo audience.
     const scopes = strings(row.scopes) ?? [];
     const resources = strings(row.resources) ?? [];
     const userInfo = `${origin}/api/auth/oauth2/userinfo`;
@@ -343,10 +281,6 @@ const oauthAccess = (
       scopes.includes("openid") && !resources.includes(userInfo)
         ? [...resources, userInfo]
         : resources;
-    // Better Auth merges each audience resource's `customClaims` over the configured claims, in
-    // audience order, and `grant_id` is not a reserved claim: a resource's `grant_id` selects
-    // the grant. A token is only accepted for the grant it was issued for, so a resource that
-    // names any other grant refuses it.
     const claimedGrant = resources
       .map((resource) => stored.get(resource))
       .filter(
@@ -356,7 +290,6 @@ const oauthAccess = (
       .at(-1);
     if (claimedGrant !== undefined && Reflect.get(claimedGrant, "grant_id") !== row.grantReference)
       return yield* unauthorized("wrong_resource");
-    // The grant this token was issued for, held by the same user and client.
     const grantId = yield* Schema.decodeUnknownEffect(GrantId)(row.grantReference).pipe(
       Effect.mapError(() => unauthorized("wrong_resource")),
     );
@@ -368,28 +301,35 @@ const oauthAccess = (
       row.grantResource.length === 0
     )
       return yield* unauthorized("wrong_resource");
-    // The consent's one resource, at any of this deployment's origins, is the token's audience.
     const consented = row.consentResources === null ? [] : (strings(row.consentResources) ?? []);
-    const target: GrantTarget | undefined = grantTarget(resourceOrigins, consented);
-    if (target === undefined) return yield* unauthorized("wrong_resource");
-    if (audiences.length !== 1 || audiences[0] !== consented[0] || target.kind !== kind)
+    const audience: GrantTarget | undefined = grantTarget(resourceOrigins, consented);
+    if (audience === undefined) return yield* unauthorized("wrong_resource");
+    if (
+      audiences.length !== 1 ||
+      audiences[0] !== consented[0] ||
+      !accepted.includes(audience.kind)
+    )
       return yield* unauthorized("wrong_resource");
-    if (!scopes.includes(kind === "api" ? "executor" : "mcp"))
+    const record = {
+      mode: yield* Schema.decodeUnknownEffect(Schema.NullOr(ApprovalMode))(row.grantMode).pipe(
+        Effect.mapError(() => unauthorized("unknown")),
+      ),
+      connection: yield* Schema.decodeUnknownEffect(Schema.NullOr(ConnectionId))(
+        row.grantConnection,
+      ).pipe(Effect.mapError(() => unauthorized("unknown"))),
+    };
+    const target = recordedTarget(record, audience);
+    if (target === undefined) return yield* unauthorized("wrong_resource");
+    if (!scopes.includes(grantScope(audience.kind)))
       return yield* unauthorized("insufficient_scope");
-    // Live membership in the grant's organization.
     const organization = yield* Schema.decodeUnknownEffect(OrganizationId)(row.grantResource).pipe(
       Effect.mapError(() => forbidden("membership", "not_member")),
     );
     const role = yield* Schema.decodeUnknownEffect(OrganizationRole)(row.role).pipe(
       Effect.mapError(() => forbidden("membership", "not_member")),
     );
-    // The grant's organization and user are the caller's own while the membership holds, whatever
-    // organization the request names; the grant's user is the token's subject (checked above).
     yield* recordCaller(organization, row.subject);
-    // A connection grant has no authority of its own; it reads the connection on every use.
-    const connection = row.grantConnection ?? undefined;
-    if (connection !== (target.kind === "mcp" ? target.connection : undefined))
-      return yield* unauthorized("wrong_resource");
+    const connection = record.connection ?? undefined;
     const policy =
       connection === undefined
         ? yield* Schema.decodeUnknownEffect(Schema.fromJsonString(GrantPolicy))(
@@ -413,6 +353,7 @@ const oauthAccess = (
     if (requested !== undefined && requested !== organization)
       return yield* forbidden("organization_mismatch", "organization_mismatch");
     return {
+      kind: audience.kind,
       userId: row.subject,
       clientId: row.tokenClient,
       grant: { id: grantId, policy, target },
@@ -441,28 +382,8 @@ const Memberships = Schema.Array(
   }),
 );
 
-/**
- * How stale a key's recorded last use may be. API keys list it to the minute; writing it on every
- * request would make each bearer call, reads included, a database write.
- */
 const lastRequestPrecision = 60_000;
 
-/**
- * A personal access token, its owner and the owner's memberships. The statement applies Better
- * Auth's writes with the application clock `at` (epoch milliseconds): a live key records its use
- * (`lastRequest`, `updatedAt`) at most once per `lastRequestPrecision`, and an enabled key past
- * its expiry is deleted, so an expired credential's hash does not outlive its first refused use.
- * The caller still decides expiry with its clock after the statement, as Better Auth does.
- * Executor never sets per-key quotas, so a key with `remaining` set is refused rather than used
- * without consuming its quota.
- *
- * The statement reads the key from its snapshot. A key whose use is already recorded is accepted
- * without a write, so it does not wait for a concurrent revocation that has not committed: as for
- * session reads, a revocation applies to requests whose statement starts after it commits. A key
- * whose use is stale is updated, and the update rechecks the row it locks, so concurrent requests
- * record the use once. When a concurrent commit changed the row first, the update matches nothing
- * and `contended` asks the caller to read the key again from a fresh snapshot.
- */
 const loadPat = (
   sql: SqlClient.SqlClient,
   hash: string,
@@ -510,7 +431,6 @@ const loadPat = (
 
 const KeyMetadata = Schema.NullOr(ApiKeyMetadata);
 
-/** Whether the statement's memberships give the key's user a role in `organization`. */
 const holdsRole = (memberships: string, organization: string) =>
   Option.match(Schema.decodeUnknownOption(Memberships)(jsonText(memberships)), {
     onNone: () => false,
@@ -520,12 +440,23 @@ const holdsRole = (memberships: string, organization: string) =>
       ),
   });
 
-const patAccess = (sql: SqlClient.SqlClient, token: string, request: BearerRequest) =>
+export interface UnknownApiKeys {
+  readonly store: (
+    token: Redacted.Redacted<string>,
+  ) => Effect.Effect<boolean, AuthenticationUnavailable, SqlClient.SqlClient>;
+}
+
+const patAccess = (
+  sql: SqlClient.SqlClient,
+  token: string,
+  request: BearerRequest,
+  unknownKeys: UnknownApiKeys | undefined,
+) =>
   Effect.gen(function* () {
     const header = request.headers.get("x-executor-organization");
     yield* recordCredential({ kind: "api_key" });
     const hash = yield* storedHash(token);
-    const load = Effect.gen(function* () {
+    const read = Effect.gen(function* () {
       const rows = yield* loadPat(
         sql,
         hash,
@@ -533,20 +464,27 @@ const patAccess = (sql: SqlClient.SqlClient, token: string, request: BearerReque
         request.organization ?? null,
         header,
       );
-      if (rows[0] === undefined) return yield* unauthorized("unknown");
-      return yield* Schema.decodeUnknownEffect(PatRow)(rows[0]).pipe(
-        Effect.mapError(() => unavailable),
+      if (rows[0] === undefined) return Option.none();
+      return Option.some(
+        yield* Schema.decodeUnknownEffect(PatRow)(rows[0]).pipe(Effect.mapError(() => unavailable)),
       );
     });
-    const first = yield* load;
-    // A concurrent commit changed the key first; its committed state decides. Another change
-    // again is an outage to retry, not a refused key. In a tool call's batch (StatementBatch) only
-    // the first statement joins the batch; this second read runs after it, in its own snapshot.
+    const load = Effect.flatMap(read, (row) =>
+      Option.isSome(row) ? Effect.succeed(row.value) : Effect.fail(unauthorized("unknown")),
+    );
+    const found = yield* read;
+    const stored =
+      Option.isNone(found) &&
+      unknownKeys !== undefined &&
+      (yield* unknownKeys.store(Redacted.make(token)).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+        Effect.mapError(() => unavailable),
+      ));
+    const first = Option.isSome(found) ? found.value : stored ? yield* load : undefined;
+    if (first === undefined) return yield* unauthorized("unknown");
     const row = first.contended ? yield* load : first;
     if (row.contended) return yield* unavailable;
-    // Disabled, expired and deleted-user keys are refused.
     const now = yield* Clock.currentTimeMillis;
-    // The key's ID is not a secret; a refused key still names which one was presented.
     yield* recordCredential({ kind: "api_key", id: row.id });
     if (row.expiresAt !== null && now > row.expiresAt) return yield* unauthorized("expired");
     if (!row.usable || !row.userExists) return yield* unauthorized("revoked");
@@ -554,17 +492,12 @@ const patAccess = (sql: SqlClient.SqlClient, token: string, request: BearerReque
       Effect.mapError(() => unavailable),
     );
     yield* recordCredential({ kind: "api_key", id, user: row.userId });
-    // Unreadable metadata fails closed: it cannot prove the key is an unpinned PAT.
     const metadata = yield* Schema.decodeUnknownEffect(KeyMetadata)(jsonText(row.metadata)).pipe(
       Effect.mapError(() => unauthorized("unknown")),
     );
     const pinned = metadata?.organization;
-    // A pinned key's organization is its own while its user is still a member there, so a refusal
-    // from here on names that one and the key's user, never another organization the request
-    // names. The refusals keep their order; this only reads the statement's memberships.
     if (pinned !== undefined && holdsRole(row.memberships, pinned))
       yield* recordCaller(pinned, row.userId);
-    // The named organization, else the one the key is pinned to.
     const organization =
       (yield* requestedOrganization(
         request,
@@ -574,7 +507,6 @@ const patAccess = (sql: SqlClient.SqlClient, token: string, request: BearerReque
       )) ?? pinned;
     if (organization === undefined)
       return yield* forbidden("organization_required", "organization_required");
-    // A pinned key never authorizes another organization.
     if (pinned !== undefined && pinned !== organization)
       return yield* forbidden("organization_mismatch", "organization_mismatch");
     const memberships = yield* Schema.decodeUnknownEffect(Memberships)(
@@ -584,7 +516,6 @@ const patAccess = (sql: SqlClient.SqlClient, token: string, request: BearerReque
     const role = yield* Schema.decodeUnknownEffect(OrganizationRole)(membership?.role).pipe(
       Effect.mapError(() => forbidden("membership", "not_member")),
     );
-    // An unpinned key can name any organization; it is the caller's own once membership holds.
     if (pinned === undefined) yield* recordCaller(organization, row.userId);
     return {
       userId: row.userId,
@@ -594,17 +525,17 @@ const patAccess = (sql: SqlClient.SqlClient, token: string, request: BearerReque
     };
   });
 
-/** MCP authority for an OAuth grant or a PAT, with live grant, connection and membership. */
 export const mcpBearerAccess = (
   origins: HostedOAuthOrigins,
   request: BearerRequest & { readonly mode?: ApprovalMode | undefined },
+  unknownKeys?: UnknownApiKeys,
 ) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     const token = bearer(request.headers);
     if (token === undefined) return yield* noBearer(request.headers);
     if (!isApiKey(token)) {
-      const grant = yield* oauthAccess(sql, origins, "mcp", token, request);
+      const grant = yield* oauthAccess(sql, origins, ["mcp"], token, request);
       return McpAccess.make({
         userId: grant.userId,
         clientId: grant.clientId,
@@ -612,8 +543,8 @@ export const mcpBearerAccess = (
         access: grant.access,
       });
     }
-    const key = yield* patAccess(sql, token, request);
-    const mode = request.mode ?? "model";
+    const key = yield* patAccess(sql, token, request, unknownKeys);
+    const mode = request.mode ?? "automatic";
     return McpAccess.make({
       userId: key.userId,
       clientId: `pat:${key.id}`,
@@ -635,16 +566,58 @@ export const mcpBearerAccess = (
     ),
   );
 
-/** Executor API authority for an OAuth grant or a PAT, with the organization's slug. */
-export const apiBearerAccess = (origins: HostedOAuthOrigins, request: BearerRequest) =>
+const WhoamiRow = Schema.Struct({
+  slug: Schema.String,
+  name: Schema.String,
+  connectionName: Schema.NullOr(Schema.String),
+});
+
+export const describeMcpAccess = (access: McpAccess) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
-    const token = bearer(request.headers);
+    const target = access.grant.target;
+    if (target.kind !== "mcp") return yield* new McpUnauthorized();
+    const connection = target.connection ?? null;
+    const rows = yield* sql`
+      select o.slug, o.name,
+        (select mc.name from "mcpConnection" mc
+          where mc.id = ${connection} and mc.revoked is false) as "connectionName"
+      from organization o where o.id = ${access.access.organization}`.pipe(
+      Effect.mapError(() => new AuthenticationUnavailable()),
+    );
+    const row = yield* Schema.decodeUnknownEffect(WhoamiRow)(rows[0]).pipe(
+      Effect.mapError(() => new AuthenticationUnavailable()),
+    );
+    const policy = access.grant.policy;
+    const apps = policy.kind === "tools" ? policy.apps.length : 0;
+    if (target.connection !== undefined && row.connectionName === null)
+      return yield* new McpUnauthorized();
+    return McpWhoami.make({
+      organization: { id: access.access.organization, slug: row.slug, name: row.name },
+      access:
+        target.connection !== undefined && row.connectionName !== null
+          ? { kind: "connection", id: target.connection, name: row.connectionName, apps }
+          : policy.kind === "tools"
+            ? { kind: "tools", apps }
+            : { kind: "all" },
+      mode: target.mode,
+    });
+  });
+
+export const apiBearerAccess = (
+  origins: HostedOAuthOrigins,
+  request: BearerRequest,
+  unknownKeys?: UnknownApiKeys,
+) => {
+  const token = bearer(request.headers);
+  const presentedKey = token !== undefined && isApiKey(token);
+  return Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
     if (token === undefined) return yield* noBearer(request.headers);
     const access: Omit<ApiBearerAccess, "organizationSlug"> & {
       readonly organizationSlug: string | null;
     } = isApiKey(token)
-      ? yield* patAccess(sql, token, request).pipe(
+      ? yield* patAccess(sql, token, request, unknownKeys).pipe(
           Effect.map((key) => ({
             userId: key.userId,
             key: { id: key.id },
@@ -653,12 +626,24 @@ export const apiBearerAccess = (origins: HostedOAuthOrigins, request: BearerRequ
             organizationSlug: key.organizationSlug,
           })),
         )
-      : yield* oauthAccess(sql, origins, "api", token, request).pipe(
+      : yield* oauthAccess(
+          sql,
+          origins,
+          [
+            "api",
+            ...(request.desktop === true ? (["desktop"] as const) : []),
+            ...(request.tools === true ? (["mcp"] as const) : []),
+          ],
+          token,
+          request,
+        ).pipe(
           Effect.map((grant) => ({
             userId: grant.userId,
             grant: { id: grant.grant.id },
             access: grant.access,
-            policy: grantAuthorization(grant.grant.policy),
+            ...(grant.kind === "desktop"
+              ? { policy: desktopAuthority, desktop: true as const }
+              : { policy: grantAuthorization(grant.grant.policy) }),
             organizationSlug: grant.organizationSlug,
           })),
         );
@@ -668,11 +653,17 @@ export const apiBearerAccess = (origins: HostedOAuthOrigins, request: BearerRequ
     return { ...access, organizationSlug } satisfies ApiBearerAccess;
   }).pipe(
     Effect.tapError(recordRefusal),
-    Effect.mapError(({ reason }) =>
+    Effect.mapError(({ reason, failure }) =>
       reason === "unauthorized"
-        ? new Unauthorized()
+        ? new Unauthorized(
+            presentedKey &&
+              (failure === "unknown" || failure === "revoked" || failure === "expired")
+              ? { credential: "apiKey" }
+              : {},
+          )
         : reason === "unavailable"
           ? new AuthenticationUnavailable()
           : new OrganizationForbidden(),
     ),
   );
+};

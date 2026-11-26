@@ -1,8 +1,3 @@
-/**
- * A repository deploy key whose key pair is minted by an `Alchemy.KeyPair` in the same stack, so
- * the private half never leaves the stack's encrypted state and the Actions secret it writes.
- * Alchemy's GitHub providers have no deploy key resource.
- */
 import { createPublicKey } from "node:crypto";
 import { Resource } from "alchemy";
 import { isResolved } from "alchemy/Diff";
@@ -15,7 +10,6 @@ export interface GitHubDeployKeyProps {
   readonly owner: string;
   readonly repository: string;
   readonly title: string;
-  /** The PEM `spki` public key of a P-256 `Alchemy.KeyPair` (`algorithm: "ec"`). */
   readonly publicKey: string;
   readonly readOnly: boolean;
 }
@@ -27,7 +21,6 @@ export type GitHubDeployKey = Resource<
     readonly keyId: number;
     readonly owner: string;
     readonly repository: string;
-    /** The key as GitHub stores it, `ecdsa-sha2-nistp256 <base64>`. */
     readonly key: string;
     readonly readOnly: boolean;
   }
@@ -49,10 +42,6 @@ const Jwk = Schema.Struct({
   y: Schema.String,
 });
 
-/**
- * OpenSSH's form of a P-256 public key. OpenSSH 9.6, the runners' version, cannot load an ed25519
- * key in the PKCS#8 PEM that `Alchemy.KeyPair` writes, but loads a P-256 one, so the stack uses EC.
- */
 const openSshPublicKey = (pem: string) =>
   Effect.gen(function* () {
     const jwk = yield* Schema.decodeUnknownEffect(Jwk)(
@@ -84,7 +73,6 @@ const openSshPublicKey = (pem: string) =>
     ),
   );
 
-/** GitHub cannot edit a deploy key, so any change replaces it: the new key is added, then the old one removed. */
 export const gitHubDeployKeyProvider = () =>
   Provider.effect(
     GitHubDeployKey,

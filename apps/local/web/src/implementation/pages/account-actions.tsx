@@ -22,15 +22,10 @@ import {
 import { AccountHealthPanel } from "@executor-js/ui/dashboard/account-health";
 import { Failure, LoadingRows } from "../components/common.tsx";
 
-/** The list page owns an open dialog, so it outlives the row if the account changes underneath it. */
 export type AccountDialogKind = "edit" | "disconnect" | "health";
 
 const managed = "This account is managed by the local server.";
 
-/**
- * Row actions replace the account page: name, health and disconnection, in place. Credentials
- * are replaced from an app that uses the account, which knows the hosts they are sent to.
- */
 export function LocalAccountActions({
   account,
   open,
@@ -50,7 +45,6 @@ export function LocalAccountActions({
   );
 }
 
-/** Editing and disconnecting load the account themselves and report it if it disappears. */
 export function LocalAccountDialog({
   id,
   dialog,

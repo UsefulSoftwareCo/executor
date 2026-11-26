@@ -1,17 +1,3 @@
-/**
- * The hosted management API's request span names the organization it serves and the caller by
- * their opaque IDs, so one organization's failures can be told apart from another's and the users
- * they reach counted. A route names its organization by slug or ID, and any signed-in caller can
- * send one, so the span names an organization only once it is the caller's own: a signed-in
- * session's once its membership there holds, a bearer's once its check knows the grant's or key's
- * organization. A request refused after that, such as for an icon the organization does not have,
- * keeps both. A request refused for an organization the caller never joined (only Cloud lets a
- * user hold several) or one it left never names that organization, so it cannot count against it.
- * It still names its verified caller, the kind of credential (`auth.credential.kind`) and why it
- * was refused (`auth.failure.reason`), so refusals can be attributed to who made them. A batched
- * dashboard read's span (`dashboard.batch.read`) follows the same rules, and a bearer's check
- * (`auth.authenticate`) names only its own organization and user.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schedule, Schema } from "effect";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -60,7 +46,6 @@ layer(HostedLive, { excludeTestServices: true })("Organization request spans", (
             const traceId = randomBytes(16).toString("hex");
             return { traceId, traceparent: `00-${traceId}-${randomBytes(8).toString("hex")}-01` };
           };
-          /** A trace's delivered spans, once `ready` holds for them. */
           const delivered = (
             label: string,
             traceId: string,
@@ -77,17 +62,11 @@ layer(HostedLive, { excludeTestServices: true })("Organization request spans", (
               Effect.tap((spans) => evidence.json(`${label}.json`, spans)),
             );
           const names = (span: Span) => [span.tags[organizationId], span.tags[userId]];
-          /** A request span's organization, user, credential kind and refusal reason. */
           const requestNames = (span: Span) => [
             ...names(span),
             span.tags["auth.credential.kind"],
             span.tags["auth.failure.reason"],
           ];
-          /**
-           * `GET path` (whose route is `route`) as `actor`'s session or with `credential`, the status
-           * and the organization and user its delivered request span records, and for a bearer the
-           * status, organization and user its check (`auth.authenticate`) records.
-           */
           const request = (
             label: string,
             actor: Session,
@@ -132,7 +111,6 @@ layer(HostedLive, { excludeTestServices: true })("Organization request spans", (
               accessRoute,
               credential,
             );
-          /** `GET /access` of `reference` as one batched dashboard read of `actor`'s session. */
           const batched = (label: string, actor: Session, reference: string) =>
             Effect.gen(function* () {
               const { traceId, traceparent } = traced();
@@ -198,8 +176,6 @@ layer(HostedLive, { excludeTestServices: true })("Organization request spans", (
                 status: 200,
                 spans: [["200", organization.id, member.id, "session", undefined]],
               });
-              // The organization has no icon under this key, so the request is refused after its
-              // membership holds.
               const icon = `/api/organizations/${organization.slug}/icons/${randomBytes(32).toString("hex")}`;
               expect(
                 yield* request("member-icon", actors.member, icon, iconRoute),
@@ -302,8 +278,6 @@ layer(HostedLive, { excludeTestServices: true })("Organization request spans", (
               }),
             );
 
-          // On both products the member then leaves the organization. Its session and its key
-          // outlive the membership.
           yield* evidence.step(
             "A request for an organization the caller left names its caller, not it",
             Effect.gen(function* () {

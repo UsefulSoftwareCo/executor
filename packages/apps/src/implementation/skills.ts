@@ -144,12 +144,10 @@ export const reader = (transport: SkillTransport) =>
                 body: HttpBody.uint8Array(request.body, request.headers?.["Content-Type"]),
               })
         ).pipe(
-          // `ctx.fetch` rejects with a network refusal; any other failed request got no answer.
           Effect.mapError((error) =>
             Schema.is(NetworkRefused)(error.cause) ? refusal(error.cause) : failed("request"),
           ),
         );
-        // A response marked as a network refusal fails as one, whatever its status.
         yield* failOnNetworkRefusal(response).pipe(Effect.mapError(refusal));
         if (response.status < 200 || response.status >= 300)
           return yield* rejected(response.status, response.headers);
@@ -216,7 +214,6 @@ const githubHosts = ["github.com", "raw.githubusercontent.com"] as const;
  * replaced with the value only on requests to the provider's hosts.
  */
 const githubRequests = (remote: Remote, repo: string, token: string | undefined) => {
-  // The loader names the host it requested, which the app's fetch may have redirected.
   const refused = (host: string) => (refusal: NetworkRefused) =>
     refusal.refusal.reason === "credential_host"
       ? new SkillLoadFailed({
@@ -257,9 +254,6 @@ const resolveCommit = (github: GitHub, ref: string | undefined) =>
     const response = yield* github.upload(lsRefsRequest(names)).pipe(
       Effect.mapError((error) => {
         if (!Schema.is(SkillLoadFailed)(error) || error.reason !== "request") return error;
-        // Without credentials GitHub asks for them when a repository is missing or private. The
-        // status reached the app's code, which may have replaced the fetch, so the repository is
-        // not claimed missing.
         if (!github.authenticated && (error.status === 404 || error.status === 401))
           return new SkillLoadFailed({
             reason: "source",
@@ -267,8 +261,6 @@ const resolveCommit = (github: GitHub, ref: string | undefined) =>
             status: error.status,
             missing: "repository",
           });
-        // With them, GitHub answers 404 for a repository the token cannot read as for one that
-        // does not exist, and the token is Executor's to send, so neither is claimed.
         if (github.authenticated && error.status === 404)
           return new SkillLoadFailed({
             reason: "request",
@@ -280,7 +272,6 @@ const resolveCommit = (github: GitHub, ref: string | undefined) =>
     );
     const refs = yield* git(() => parseLsRefs(response));
     const commit = names.map((name) => refs.get(name)).find((sha) => sha !== undefined);
-    // The refs read from the repository include none with this name.
     if (commit === undefined)
       return yield* new SkillLoadFailed({
         reason: "source",
@@ -351,10 +342,8 @@ const cachedSkillDirectories = (
     key: ["apps/githubSkills/directories", 1, options.repo, commit, options.path ?? null],
     schema: wrap(SkillDirectories, false),
     freshFor: "7 days",
-    // Executor's own loader: the app's cache runs it natively, so only its requests are upstream.
     load: toPromise(
       (context: CacheLoadContext) =>
-        // Keep the author's fetch and this read's token, as every other request in it does.
         reader({ fetch: transport.fetch, signal: context.signal }).pipe(
           Effect.flatMap((remote) =>
             skillDirectories(
@@ -364,7 +353,6 @@ const cachedSkillDirectories = (
             ),
           ),
         ),
-      // A cache may call the loader as a Promise; its own signal cancels that load.
       (context) => context.signal,
     ),
   }).pipe(
@@ -431,8 +419,6 @@ const cachedCatalog = (
         summary: { schema: AppSkillMetadata, of: ({ files: _files, ...metadata }) => metadata },
         load: (context, kept) =>
           Effect.gen(function* () {
-            // The check and the kept catalog's manifest are read together. The kept read decides
-            // nothing until the check succeeds with an identified publication.
             const [checkedSource, keptCatalog] = yield* Effect.all(
               [
                 Effect.result(

@@ -1,19 +1,3 @@
-// Scroll-spy for the sidebar rail.
-//
-// The rail renders a `.rail__toc` whose links point at the page's section
-// anchors. This marks the link for the section the reader is in with
-// `aria-current="true"`, and mirrors the id onto the aside as
-// `data-active-section` so CSS can react without extra classes.
-//
-// "The section the reader is in" is the last section whose top has crossed a
-// line a little below the top of the viewport. An anchor jump lands a section
-// exactly on that line, so a clicked link is always the one that lights up,
-// even for short sections near the end of the page. At the very bottom of the
-// page the final section wins, since the reader cannot scroll any further.
-//
-// Tolerates missing sections and stays idempotent if the initializer runs
-// again on the same element.
-
 const BOUND = "railSpyBound";
 const LINE_PX = 120;
 

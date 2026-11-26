@@ -1,5 +1,4 @@
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
-/** The last card on the cloud profile page: irreversible deletion of the signed-in user. */
 import { Exit, Option } from "effect";
 import { AsyncResult } from "effect/reactivity";
 import { useState } from "react";
@@ -37,7 +36,6 @@ const outcomeLabel = {
   blocked: "You are its only owner. Delete it first",
 } as const;
 
-/** One plain sentence per consequence, so the dialog says exactly what is about to go. */
 const summary = (preview: UserRemovalPreview) => {
   const deleted = preview.organizations.filter((entry) => entry.outcome === "delete").length;
   return [
@@ -101,7 +99,6 @@ export function DeleteUser({ email }: { readonly email: string }) {
     setConfirmation("");
     setError(undefined);
   };
-  // The server refuses this too; the reason is shown before anyone types a confirmation.
   const disabledReason =
     held === undefined
       ? "Checking what deleting your account would remove."
@@ -197,7 +194,6 @@ export function DeleteUser({ email }: { readonly email: string }) {
                   retry();
                   return;
                 }
-                // Every session is gone; load the public root, as signing out does.
                 clearLastOrganization();
                 window.location.replace("/");
               }}

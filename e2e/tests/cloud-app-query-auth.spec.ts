@@ -123,7 +123,9 @@ export default defineApp({}, async () => ({ tools: router({
               result.data.some(({ span }) => span.operationName === "runtime.cloud.query") &&
               result.data.filter(({ span }) => span.operationName === "auth.sql.timing").length >= 3
                 ? Effect.succeed(result.data)
-                : Effect.fail(new Error("The completed app query trace has not reached Motel")),
+                : Effect.fail(
+                    new Error("The completed app query trace has not reached the collector"),
+                  ),
             ),
             Effect.retry({ schedule: Schedule.spaced("1 second"), times: 40 }),
           );

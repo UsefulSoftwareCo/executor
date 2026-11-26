@@ -1,4 +1,3 @@
-/** OAuth runs through the public server and recorded consent UI. Tokens stay private. */
 import { createServer } from "node:http";
 import type { Page } from "playwright";
 import { createHash, randomBytes } from "node:crypto";
@@ -11,6 +10,8 @@ import { Browser } from "./browser.ts";
 import { Evidence } from "./evidence.ts";
 import { Target, driver } from "./platform.ts";
 import { targetHosts } from "./role-hosts.ts";
+import { chooseConsent, chooseConsentOrganization, consentValue } from "./consent-page.ts";
+import { heldValue, reveal, secret } from "./failure-text.ts";
 
 const Tokens = Schema.Struct({
   access_token: Schema.NonEmptyString,
@@ -26,22 +27,17 @@ interface Authorized {
   readonly grantId: string;
   readonly resource: string;
   readonly consentId: string;
-  /** The trace of the authorization code exchange, so its server span can be found exactly. */
   readonly codeExchangeTraceId: string;
 }
-/** A real OAuth grant; credentials cannot appear in assertion diagnostics. */
 export interface Grant extends Authorized {
   readonly tokens: Redacted.Redacted<typeof Tokens.Type>;
 }
-/** A grant for a client that asked for no `offline_access`: one access token and no refresh. */
 export interface AccessGrant extends Authorized {
   readonly tokens: Redacted.Redacted<typeof AccessTokens.Type>;
 }
-/** The registering client's self-declared name, and whether it asks to refresh. */
 interface ClientOptions {
   readonly name: string;
   readonly offlineAccess: boolean;
-  /** The `logo_uri` it registers, if any. */
   readonly logoUri?: string;
 }
 const e2eClient: ClientOptions = { name: "Executor E2E client", offlineAccess: true };
@@ -70,7 +66,6 @@ const Grants = Schema.Array(
 const ok = (operation: string, status: number) =>
   status >= 200 && status < 300 ? Effect.void : Effect.fail(new OAuthFailed({ operation, status }));
 
-/** Own the client loopback receiver, including browser preconnect sockets at shutdown. */
 export const oauthCallback = (state: string) =>
   Effect.gen(function* () {
     const received = yield* Deferred.make<Redacted.Redacted<string>>();
@@ -93,7 +88,7 @@ export const oauthCallback = (state: string) =>
               : "<h1>Authorization was not completed</h1>",
           );
           // oxlint-disable-next-line executor/no-manual-effect-runtime-in-tests -- node:http request handlers are plain callbacks
-          if (valid) Effect.runSync(Deferred.succeed(received, Redacted.make(code)));
+          if (valid) Effect.runSync(Deferred.succeed(received, secret(code)));
         }),
       ),
       (server) =>
@@ -102,7 +97,6 @@ export const oauthCallback = (state: string) =>
           () =>
             new Promise<void>((resolve, reject) => {
               server.close((error) => (error ? reject(error) : resolve()));
-              // Chromium may leave a preconnect socket that never sends an HTTP request.
               server.closeAllConnections();
             }),
         ).pipe(Effect.orDie),
@@ -125,11 +119,6 @@ export const oauthCallback = (state: string) =>
     };
   });
 
-/**
- * Authorize the official MCP client through a signed-in browser, without an API key. The client
- * registers and signs in on `origin`; `resource` is the MCP URL it was given, which Cloud serves
- * on its own host. An Executor HTTP API client passes the API resource with the `executor` scope.
- */
 export const authorizeBrowserMcp = (
   page: Page,
   origin: string,
@@ -137,6 +126,7 @@ export const authorizeBrowserMcp = (
     resource = `${origin}/mcp`,
     client = "Release verification",
     scope = "mcp offline_access",
+    beforeHydration = false,
   } = {},
 ) =>
   Effect.gen(function* () {
@@ -179,14 +169,105 @@ export const authorizeBrowserMcp = (
       resource,
       state,
     }).toString();
-    yield* driver("open release MCP consent", () => page.goto(authorization.href));
-    yield* driver("verify the requesting MCP client", () =>
-      page.getByText(client, { exact: true }).waitFor({ state: "visible" }),
-    );
-    yield* driver("approve release MCP connection", () =>
-      page.getByRole("button", { name: "Connect", exact: true }).click(),
-    );
+    const addresses: string[] = [];
+    let consents = 0;
+    const consentPath = /\/api\/auth\/oauth2\/consent$/u;
+    if (beforeHydration) {
+      page.on("framenavigated", (frame) => {
+        if (frame === page.mainFrame()) addresses.push(frame.url());
+      });
+      let releaseScripts = () => {};
+      const scriptsHeld = new Promise<void>((resolve) => {
+        releaseScripts = resolve;
+      });
+      let releaseConsent = () => {};
+      const consentHeld = new Promise<void>((resolve) => {
+        releaseConsent = resolve;
+      });
+      let consentArrived = () => {};
+      const consentSent = new Promise<void>((resolve) => {
+        consentArrived = resolve;
+      });
+      const scripts = /\/assets\/[^/]+\.js$/u;
+      yield* driver("hold the consent page's scripts and decisions", () =>
+        Promise.all([
+          page.route(scripts, (route) => scriptsHeld.then(() => route.fallback())),
+          page.route(consentPath, (route) => {
+            consents += 1;
+            consentArrived();
+            return consentHeld.then(() => route.fallback());
+          }),
+        ]),
+      );
+      const early = yield* driver("approve on the consent page before it is interactive", () =>
+        page
+          .bringToFront()
+          .then(() => page.goto(authorization.href, { waitUntil: "commit" }))
+          .then(() =>
+            page.getByRole("button", { name: "Connect", exact: true }).waitFor({ timeout: 15000 }),
+          )
+          .then(() => page.locator("strong").filter({ hasText: client }).waitFor({ timeout: 5000 }))
+          .then(() => page.getByRole("button", { name: "Connect", exact: true }).click())
+          .then(() => page.evaluate(() => document.documentElement.hasAttribute("data-hydrated")))
+          .catch((error: unknown) => {
+            releaseScripts();
+            releaseConsent();
+            throw error;
+          }),
+      );
+      if (early)
+        return yield* new OAuthFailed({ operation: "approve before hydration", status: 0 });
+      if (addresses.some((address) => new URL(address).searchParams.has("decision")))
+        return yield* new OAuthFailed({ operation: "early approval was sent natively", status: 0 });
+      yield* driver("let the consent page hydrate", () => {
+        releaseScripts();
+        return page
+          .unroute(scripts)
+          .then(() =>
+            Promise.race([
+              consentSent,
+              new Promise<never>((_, reject) =>
+                setTimeout(
+                  () => reject(new Error("The held decision sent no consent request in 15 s")),
+                  15000,
+                ),
+              ),
+            ]),
+          );
+      });
+      yield* driver("submit Cancel while the approval is in flight", () =>
+        page.evaluate(() => {
+          const cancel = document.querySelector<HTMLButtonElement>(
+            "form.mcp-consent-actions button[value='decline']",
+          );
+          if (cancel === null || cancel.form === null) throw new Error("Missing Cancel");
+          cancel.form.requestSubmit(cancel);
+        }),
+      );
+      yield* driver("send the approval", () => {
+        releaseConsent();
+        return Promise.resolve();
+      });
+    } else {
+      yield* driver("open release MCP consent", () => page.goto(authorization.href));
+      yield* driver("verify the requesting MCP client", () =>
+        page.getByText(client, { exact: true }).waitFor({ state: "visible" }),
+      );
+      yield* driver("approve release MCP connection", () =>
+        page.getByRole("button", { name: "Connect", exact: true }).click(),
+      );
+    }
     const code = yield* receiver.code;
+    if (beforeHydration) {
+      yield* driver("stop holding consent requests", () => page.unroute(consentPath));
+      if (consents !== 1)
+        return yield* new OAuthFailed({
+          operation: `one consent request, not ${consents}`,
+          status: 0,
+        });
+      if (addresses.some((address) => new URL(address).searchParams.has("decision")))
+        return yield* new OAuthFailed({ operation: "a decision was sent natively", status: 0 });
+    }
     yield* driver("OAuth returns to the MCP client", () =>
       page.getByRole("heading", { name: "Connected to Executor" }).waitFor({ state: "visible" }),
     );
@@ -197,7 +278,7 @@ export const authorizeBrowserMcp = (
         body: new URLSearchParams({
           grant_type: "authorization_code",
           client_id,
-          code: Redacted.value(code),
+          code: reveal(code),
           code_verifier: verifier,
           redirect_uri: receiver.url,
           resource,
@@ -210,7 +291,7 @@ export const authorizeBrowserMcp = (
       Effect.flatMap(
         Schema.decodeUnknownEffect(
           Schema.Struct({
-            access_token: Schema.RedactedFromValue(Schema.NonEmptyString),
+            access_token: heldValue(Schema.RedactedFromValue(Schema.NonEmptyString)),
           }),
         ),
       ),
@@ -227,9 +308,7 @@ const make = Effect.gen(function* () {
     evidence = yield* Evidence;
   const origin = target.metadata.origin;
   const hosts = targetHosts(target);
-  // Cloud names its issuer on the edge (`executor.sh`), with every endpoint on the browser origin.
   const issuer = `${target.metadata.target === "cloud" ? hosts.edge : origin}/api/auth`;
-  /** Each exchange runs under a new trace of its own. */
   const exchange = (fields: Record<string, string>, tokenOrigin: string = hosts.browser) =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -243,7 +322,6 @@ const make = Effect.gen(function* () {
           ),
         );
         const value = yield* response.json;
-        // Record only the outcome. Neither success nor error bodies belong in evidence.
         yield* evidence.json(`oauth-${fields.grant_type}-${response.status}.json`, {
           status: response.status,
         });
@@ -254,13 +332,14 @@ const make = Effect.gen(function* () {
       Effect.timeout("30 seconds"),
       Effect.mapError(() => new OAuthFailed({ operation: "token exchange", status: 0 })),
     );
-  const refreshResponse = (grant: Grant, tokenOrigin?: string) =>
+  const refreshResponse = (grant: Grant, tokenOrigin?: string, scope?: string) =>
     exchange(
       {
         grant_type: "refresh_token",
         client_id: grant.clientId,
-        refresh_token: Redacted.value(grant.tokens).refresh_token,
+        refresh_token: reveal(grant.tokens).refresh_token,
         resource: grant.resource,
+        ...(scope === undefined ? {} : { scope }),
       },
       tokenOrigin,
     );
@@ -268,7 +347,6 @@ const make = Effect.gen(function* () {
    * `omitted` sends no RFC 8707 `resource` to the authorization or token endpoint, as some
    * MCP clients do; the grant must still bind to the discovered resource.
    */
-  /** Discovery at another host the product serves, such as a Cloud role host; no cookies. */
   const discoverAt = (resourceOrigin: string, path: string) =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -279,26 +357,20 @@ const make = Effect.gen(function* () {
       Effect.timeout("30 seconds"),
       Effect.mapError(() => new OAuthFailed({ operation: "resource discovery", status: 0 })),
     );
-  /**
-   * `resourceOrigin` is where the client found the resource: the product's own origin, or another
-   * origin that serves the same resources. Discovery runs as a client's does, without cookies:
-   * the resource names the issuer, and the issuer's own origin serves its metadata. Sign-in and
-   * consent stay on the browser origin.
-   */
-  const authorizeClient = (
-    kind: "mcp" | "api",
+  const authorizeClient = <E = never, R = never>(
+    kind: "mcp" | "api" | "desktop",
     connection?: string,
     resourceParameter: "sent" | "omitted" = "sent",
     client: ClientOptions = e2eClient,
     resourceOrigin: string = origin,
+    review?: Effect.Effect<void, E, R>,
   ) =>
     Effect.gen(function* () {
-      // A scoped connection has its own MCP URL, OAuth resource and discovery document.
       const query = connection === undefined ? "" : `?connection=${encodeURIComponent(connection)}`;
-      const resourceUrl = `${resourceOrigin}/${kind}${query}`;
-      // Playwright network traces contain cookies and authorization codes. Keep the video only.
+      const resourcePath = kind === "desktop" ? "api/desktop" : kind;
+      const resourceUrl = `${resourceOrigin}/${resourcePath}${query}`;
       yield* browser.omitNetworkTrace;
-      const discoveryPath = `/.well-known/oauth-protected-resource/${kind}${query}`;
+      const discoveryPath = `/.well-known/oauth-protected-resource/${resourcePath}${query}`;
       const resource = yield* discoverAt(resourceOrigin, discoveryPath);
       yield* ok("resource discovery", resource.status);
       const metadata = yield* body(
@@ -353,7 +425,6 @@ const make = Effect.gen(function* () {
         Schema.Struct({ client_id: Schema.NonEmptyString }),
         registered,
       );
-      // DCR clients register anonymously. The product permits revoking their grants, not deleting registrations.
       yield* Effect.addFinalizer(() =>
         Effect.gen(function* () {
           const response = yield* api.request(actors.owner, "GET", "/api/auth/oauth2/get-consents");
@@ -376,7 +447,7 @@ const make = Effect.gen(function* () {
           });
         }).pipe(Effect.orDie),
       );
-      const scope = `${kind === "mcp" ? "mcp" : "executor"}${client.offlineAccess ? " offline_access" : ""}`;
+      const scope = `${kind === "api" ? "executor" : kind}${client.offlineAccess ? " offline_access" : ""}`;
       const resourceField: Record<string, string> =
         resourceParameter === "sent" ? { resource: resourceUrl } : {};
       const authorization = new URL(endpoints.authorization_endpoint);
@@ -393,7 +464,6 @@ const make = Effect.gen(function* () {
       yield* browser.use("Open the client's OAuth authorization request", (page) =>
         page.goto(authorization.href),
       );
-      // The page settles on either the consent or its load failure; only the consent passes.
       const shown = yield* browser.use("The consent page names the requesting client", (page) => {
         const outcome = page
           .getByText(client.name, { exact: true })
@@ -413,33 +483,48 @@ const make = Effect.gen(function* () {
           operation: "find intended organization",
           status: organizations.status,
         });
-      if (connection === undefined) {
-        yield* browser.use("Select the intended organization", (page) =>
-          page.getByRole("combobox").click(),
+      if (review !== undefined) yield* review;
+      else if (connection === undefined) {
+        yield* browser.use("Approve for the intended organization", (page) =>
+          chooseConsentOrganization(page, organization.name),
         );
-        yield* browser.use("Confirm the organization selection", (page) =>
-          page.getByRole("option", { name: organization.name, exact: true }).click(),
+        expect(
+          yield* browser.use("Consent states the requested access", (page) =>
+            consentValue(page, "Access"),
+          ),
+        ).toBe(
+          kind === "api"
+            ? "Executor API"
+            : kind === "desktop"
+              ? "Your Executor account"
+              : "All apps",
         );
       } else {
-        // The connection fixes its organization; consent names the scoped access instead.
-        yield* browser.use("Consent describes the scoped connection", (page) =>
-          page
-            .getByRole("heading", { name: "Access to one of your connections", exact: true })
-            .waitFor({ state: "visible" }),
+        const listed = yield* api.request(
+          actors.owner,
+          "GET",
+          `/api/organizations/${actors.organization.id}/mcp-connections`,
         );
-        if (
-          (yield* browser.use("No organization choice", (page) =>
-            page.getByRole("combobox").count(),
-          )) !== 0
-        )
-          return yield* new OAuthFailed({ operation: "connection organization choice", status: 0 });
+        yield* ok("read connections", listed.status);
+        const named = (yield* body(
+          Schema.Array(Schema.Struct({ id: Schema.String, name: Schema.String })),
+          listed,
+        )).find((item) => item.id === connection);
+        if (named === undefined)
+          return yield* new OAuthFailed({ operation: "find the named connection", status: 0 });
+        const shown = yield* browser.use("Consent preselects the URL's connection", (page) =>
+          Promise.all([consentValue(page, "Organization"), consentValue(page, "Access")]),
+        );
+        expect(shown).toEqual([organization.name, named.name]);
       }
+      if (review === undefined && kind === "mcp")
+        yield* browser.use("Answer approvals through the agent", (page) =>
+          chooseConsent(page, "Approvals", "Through your agent"),
+        );
       yield* browser.checkpoint("OAuth consent before approval");
       yield* browser.use("Approve the client connection", (page) =>
         page.getByRole("button", { name: "Connect", exact: true }).click(),
       );
-      // The receiver validates the callback path and state before releasing the code.
-      // A browser load event can abort even after this response is visibly rendered.
       const code = yield* receiver.code;
       yield* browser.use("The callback accepted the authorization", (page) =>
         page.getByRole("heading", { name: "Connected to Executor", exact: true }).waitFor(),
@@ -452,7 +537,7 @@ const make = Effect.gen(function* () {
       const exchanged = yield* exchange({
         grant_type: "authorization_code",
         client_id: clientId,
-        code: Redacted.value(code),
+        code: reveal(code),
         code_verifier: verifier,
         redirect_uri: receiver.url,
         ...resourceField,
@@ -465,7 +550,9 @@ const make = Effect.gen(function* () {
       yield* ok("read grants", listed.status);
       const grants = yield* body(Grants, listed);
       const grant = grants.find(
-        (item) => item.clientId === clientId && item.resource === actors.organization.id,
+        (item) =>
+          item.clientId === clientId &&
+          (review !== undefined || item.resource === actors.organization.id),
       );
       const consent = consentRows.find(
         (item) => item.clientId === clientId && item.referenceId === grant?.grant.id,
@@ -498,19 +585,20 @@ const make = Effect.gen(function* () {
     exchanged: Parameters<typeof body>[1],
   ) =>
     body(schema, exchanged).pipe(
-      Effect.map(Redacted.make),
+      Effect.map(secret),
       Effect.mapError(
         () => new OAuthFailed({ operation: "token response", status: exchanged.status }),
       ),
     );
-  const authorize = (
-    kind: "mcp" | "api",
+  const authorize = <E = never, R = never>(
+    kind: "mcp" | "api" | "desktop",
     connection?: string,
     resourceParameter: "sent" | "omitted" = "sent",
     client: ClientOptions = e2eClient,
     resourceOrigin: string = origin,
+    review?: Effect.Effect<void, E, R>,
   ) =>
-    authorizeClient(kind, connection, resourceParameter, client, resourceOrigin).pipe(
+    authorizeClient(kind, connection, resourceParameter, client, resourceOrigin, review).pipe(
       Effect.flatMap(({ authorized, exchanged }) =>
         tokensOf(Tokens, exchanged).pipe(
           Effect.map((tokens): Grant => ({ ...authorized, tokens })),
@@ -520,21 +608,22 @@ const make = Effect.gen(function* () {
   return {
     authorize: authorize("mcp"),
     authorizeApi: authorize("api"),
-    /** Authorize the plain MCP URL for a client that sends no `resource` parameter. */
+    authorizeDesktop: authorize("desktop", undefined, "sent", {
+      name: "Executor desktop",
+      offlineAccess: true,
+    }),
     authorizeWithoutResource: authorize("mcp", undefined, "omitted"),
-    /** Authorize a scoped connection's own MCP URL through the same browser consent. */
     authorizeConnection: (connection: string) => authorize("mcp", connection),
-    /** Authorize the MCP or API resource a client discovered at another origin. */
+    authorizeReviewing: <E, R>(review: Effect.Effect<void, E, R>, connection?: string) =>
+      authorize("mcp", connection, "sent", e2eClient, origin, review),
     authorizeAt: (kind: "mcp" | "api", resourceOrigin: string) =>
       authorize(kind, undefined, "sent", e2eClient, resourceOrigin),
-    /** Authorize the plain MCP URL for a client registered under its own name and logo. */
     authorizeNamed: (name: string, logoUri?: string) =>
       authorize("mcp", undefined, "sent", {
         name,
         offlineAccess: true,
         ...(logoUri === undefined ? {} : { logoUri }),
       }),
-    /** Authorize a named client that asks for no refresh token, so its access ends in an hour. */
     authorizeWithoutRefresh: (name: string) =>
       authorizeClient("mcp", undefined, "sent", { name, offlineAccess: false }).pipe(
         Effect.flatMap(({ authorized, exchanged }) =>
@@ -543,16 +632,12 @@ const make = Effect.gen(function* () {
           ),
         ),
       ),
-    /**
-     * Refresh at the token endpoint on `tokenOrigin`, by default the browser origin's: another
-     * origin's is where a client that discovered the endpoints elsewhere keeps sending it.
-     */
-    refresh: (grant: Grant, tokenOrigin?: string) =>
+    refresh: (grant: Grant, tokenOrigin?: string, scope?: string) =>
       Effect.gen(function* () {
-        const response = yield* refreshResponse(grant, tokenOrigin);
+        const response = yield* refreshResponse(grant, tokenOrigin, scope);
         yield* ok("refresh grant", response.status);
         const tokens = yield* body(Tokens, response).pipe(
-          Effect.map(Redacted.make),
+          Effect.map(secret),
           Effect.mapError(
             () => new OAuthFailed({ operation: "refresh response", status: response.status }),
           ),
@@ -567,7 +652,6 @@ const make = Effect.gen(function* () {
         .pipe(Effect.flatMap((response) => ok("revoke consent", response.status))),
   };
 });
-/** Shared OAuth/browser driver for both hosted targets; it imports no product code. */
 export class McpOAuth extends Context.Service<McpOAuth, Effect.Success<typeof make>>()(
   "e2e/McpOAuth",
 ) {

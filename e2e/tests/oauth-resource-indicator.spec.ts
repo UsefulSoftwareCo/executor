@@ -60,16 +60,10 @@ const Health = Schema.Struct({
   ),
 });
 
-/** The app's own settings can change what its sign-in sends. */
 const appRecovery = "Set the resource the service documents in the app’s OAuth settings.";
-/** The operator's client is the instance's, so its administrator can change what it sends. */
 const administratorRecovery =
   "Ask the instance administrator to check the OAuth client’s resource.";
 
-/**
- * The operator's OAuth client for the service, with its own resource or none. An E2E host adds it
- * to the reviewed clients from `EXECUTOR_TEST_OAUTH_CLIENT_DEFINITIONS`.
- */
 const operatorSettings = (origin: string, resource: string | undefined) => ({
   EXECUTOR_TEST_OAUTH_CLIENT_DEFINITIONS: JSON.stringify([
     {
@@ -95,7 +89,6 @@ const noOperatorClients = {
   EXECUTOR_OAUTH_SYNTHETIC_MAIL_CLIENT_ID: "",
   EXECUTOR_OAUTH_SYNTHETIC_MAIL_CLIENT_SECRET: "",
 };
-/** Restart the product with the operator's client settings changed to `settings`. */
 const restartWith = (settings: Readonly<Record<string, string>>) =>
   Effect.gen(function* () {
     yield* serverControl("stop");
@@ -103,7 +96,6 @@ const restartWith = (settings: Readonly<Record<string, string>>) =>
     yield* serverControl("start");
   });
 
-/** An app whose one OAuth account reads the service's API, and whose check does the same read. */
 const source = (
   config: object,
   api: string,
@@ -149,7 +141,6 @@ const resourceApp = Effect.gen(function* () {
       if (provider === undefined) return yield* Effect.die("The app declares no account");
       return { app: app.id, provider };
     });
-  /** What account setup reports it will send, before any sign-in. */
   const setup = (provider: string) =>
     Effect.gen(function* () {
       const response = yield* api.request(
@@ -160,7 +151,6 @@ const resourceApp = Effect.gen(function* () {
       expect(response.status, JSON.stringify(response.body)).toBe(200);
       return yield* body(Setup, response);
     });
-  /** Start a sign-in, consent at the service and complete it with the callback it returns. */
   const connect = (app: string) =>
     Effect.gen(function* () {
       const connection = yield* body(
@@ -233,15 +223,12 @@ layer(HostedLive, { excludeTestServices: true })("OAuth resource indicators", (i
         const app = yield* resourceApp;
         const service = yield* resourceIndicatorIssuer("refuses-unknown");
 
-        // The service's metadata names its origin, so setup reports that it will send it.
         const discovered = yield* app.deploy({ discover: service.origin }, service.apiResource);
         expect((yield* app.setup(discovered.provider)).resource).toEqual({
           value: service.origin,
           source: "metadata",
         });
 
-        // Its token endpoint does not know that resource. The failure names what was sent, where
-        // it came from, and that declaring the same value would send the same request.
         const refused = yield* app.connect(discovered.app);
         expect(refused.authorizationUrl.searchParams.get("resource")).toBe(service.origin);
         expect(refused.completed.status, JSON.stringify(refused.completed.body)).toBe(400);
@@ -256,10 +243,8 @@ layer(HostedLive, { excludeTestServices: true })("OAuth resource indicators", (i
         expect(failure.recovery.instructions).toContain(service.origin);
         expect(failure.recovery.instructions).toContain("protected-resource metadata");
         expect(failure.recovery.instructions).toContain("resource: null");
-        // The previous copy pointed at the client and the callback instead.
         expect(failure.recovery.instructions).not.toContain("callback configuration");
 
-        // A provider that declares the same value sends the same request, and is told so.
         const same = yield* app.deploy(
           { discover: service.origin, resource: service.origin },
           service.apiResource,
@@ -274,7 +259,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth resource indicators", (i
           resource: { value: service.origin, source: "declared" },
         });
 
-        // Declaring the resource the service serves replaces the discovered one everywhere.
         const declared = yield* app.deploy(
           { discover: service.origin, resource: service.apiResource },
           service.apiResource,
@@ -301,15 +285,11 @@ layer(HostedLive, { excludeTestServices: true })("OAuth resource indicators", (i
         const app = yield* resourceApp;
         const service = yield* resourceIndicatorIssuer("binds-audience");
 
-        // Sign-in completes with the resource the metadata names, but the API refuses the token.
         const discovered = yield* app.deploy({ discover: service.origin }, service.apiResource);
         const signIn = yield* app.connect(discovered.app);
         expect(signIn.completed.status, JSON.stringify(signIn.completed.body)).toBe(200);
         const account = (yield* body(Resource, signIn.completed)).id;
         expect((yield* app.check(account, discovered.app))?.status).toBe("credentials_rejected");
-        // The dashboard says the credentials don't work, not that sign-in was rejected: the
-        // sign-in completed. The same status also covers a sign-in that expired before any
-        // request, so the label does not say the service refused them.
         const actors = yield* Actors,
           browser = yield* Browser;
         yield* browser.login(actors.owner);
@@ -332,7 +312,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth resource indicators", (i
         yield* browser.use("Close the account's health", (page) =>
           page.getByRole("button", { name: "Close", exact: true }).first().click(),
         );
-        // The refusal renews the grant once, with the same resource, and the API refuses that too.
         const metrics = yield* service.metrics;
         expect(metrics.tokenRequests).toEqual([
           { grant: "authorization_code", resource: service.origin, issued: true },
@@ -341,14 +320,11 @@ layer(HostedLive, { excludeTestServices: true })("OAuth resource indicators", (i
         expect(new Set(metrics.apiRequests.map((request) => request.audience))).toEqual(
           new Set([service.origin]),
         );
-        // Setup reports the resource the token was issued for, which the agent can compare with
-        // the API's own identifier.
         expect((yield* app.setup(discovered.provider)).resource).toEqual({
           value: service.origin,
           source: "metadata",
         });
 
-        // With the API's resource declared, the token it issues is accepted.
         const declared = yield* app.deploy(
           { discover: service.origin, resource: service.apiResource },
           service.apiResource,
@@ -366,8 +342,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth resource indicators", (i
       Effect.gen(function* () {
         const app = yield* resourceApp;
 
-        // `resource: null` sends none although the service's metadata names one. Its refusal says
-        // the provider declared none, not that nothing names one.
         const service = yield* resourceIndicatorIssuer("refuses-unknown");
         const declaredNone = yield* app.deploy(
           { discover: service.origin, resource: null },
@@ -397,8 +371,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth resource indicators", (i
           { grant: "authorization_code", resource: null, issued: false },
         ]);
 
-        // A service that publishes no protected-resource metadata, for a provider that declares
-        // no resource: nothing names one.
         const unnamed = yield* resourceIndicatorIssuer("refuses-unknown", { metadata: false });
         const undeclared = yield* app.deploy({ discover: unnamed.origin }, unnamed.apiResource);
         expect((yield* app.setup(undeclared.provider)).resource).toEqual({
@@ -415,8 +387,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth resource indicators", (i
           "the provider declares no `resource`, and no protected-resource metadata it discovers from names one",
         );
 
-        // Microsoft's authorization server takes the audience from the scopes, so the resource
-        // its metadata names is not sent, and setup says that Executor inferred why.
         const entra = yield* oauthInteropIssuer("entra-tenant");
         const scoped = yield* app.deploy(
           { discover: `${entra.origin}/mcp` },
@@ -427,9 +397,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth resource indicators", (i
           source: "inferred_scope_audience",
         });
 
-        // Any service can publish that metadata. One that still requires its resource refuses the
-        // sign-in, which then reports the omission as Executor's inference, not the server's
-        // behavior, and points at declaring the resource.
         const claims = yield* resourceIndicatorIssuer("refuses-unknown", {
           scopeAudienceClaim: true,
         });
@@ -456,9 +423,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth resource indicators", (i
         expect(guessed.recovery.instructions).toContain(
           "declare the identifier the service documents as the provider's `resource`",
         );
-        // The service's metadata is its own claim, so the copy does not state it as fact.
         expect(guessed.recovery.instructions).not.toContain("authorization server takes");
-        // The declared resource is sent despite the metadata, and the service issues a token.
         const declaredApi = yield* app.deploy(
           { discover: claims.origin, resource: claims.apiResource },
           claims.apiResource,
@@ -485,11 +450,8 @@ layer(HostedLive, { excludeTestServices: true })("OAuth resource indicators", (i
         const app = yield* resourceApp;
         const service = yield* resourceIndicatorIssuer("refuses-unknown");
         yield* service.addClient("first-party-client", "first-party-secret");
-        // Whatever happens, the next scenario finds the product without the operator's client.
         yield* Effect.addFinalizer(() => restartWith(noOperatorClients).pipe(Effect.orDie));
 
-        // The provider declares the resource the service accepts, but the operator's client, which
-        // signs in for it, sends its own. Only the administrator can change that.
         for (const [operatorResource, expected] of [
           [service.origin, { value: service.origin, source: "operator" }],
           [undefined, { value: null, source: "operator" }],
@@ -532,8 +494,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth resource indicators", (i
         const service = yield* resourceIndicatorIssuer("refuses-unknown");
         const discovered = yield* app.deploy({ discover: service.origin }, service.apiResource);
 
-        // A 429 is the service limiting requests, whatever its body says: the failure keeps the
-        // time its Retry-After names and asks for no configuration change.
         yield* service.refuseWith({ status: 429, retryAfter: "120" });
         const limited = yield* app.connect(discovered.app);
         expect(limited.completed.status, JSON.stringify(limited.completed.body)).toBe(400);
@@ -548,7 +508,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth resource indicators", (i
         expect(rateLimited.resource).toBeUndefined();
         expect(rateLimited.recovery.instructions).toContain("Retry-After");
 
-        // A 503 is an outage, not a refusal of the resource.
         yield* service.refuseWith({ status: 503 });
         const unavailable = yield* body(Failure, (yield* app.connect(discovered.app)).completed);
         expect(unavailable).toMatchObject({
@@ -559,7 +518,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth resource indicators", (i
         expect(unavailable.retryAfter).toBeUndefined();
         expect(unavailable.resource).toBeUndefined();
 
-        // The same answer with a 400 is a refusal of the resource the sign-in sent.
         yield* service.refuseWith({ status: 400 });
         const refused = yield* body(Failure, (yield* app.connect(discovered.app)).completed);
         expect(refused).toMatchObject({

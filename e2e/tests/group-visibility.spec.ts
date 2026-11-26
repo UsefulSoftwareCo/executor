@@ -1,4 +1,3 @@
-/** Group boundaries apply to discovery and app sharing. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -180,7 +179,6 @@ layer(HostedLive, { excludeTestServices: true })("Group visibility", (it) => {
               audience,
             });
           });
-        // The server refuses a group the member is not in, even for the app they created.
         expect((yield* share(salesAudience)).status).toBe(403);
         expect((yield* share(ownAudience)).status).toBe(200);
 

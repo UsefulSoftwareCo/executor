@@ -17,7 +17,6 @@ import { readSettings, serviceDirectory, writeSettings } from "./service-files.t
 const invalid = (message: string) =>
   new ServiceSettingInvalid({ message: `${message} Nothing was changed.` });
 
-/** `executor service start`: start the background server, or find it running, and print its URL. */
 export const serviceStart = Effect.gen(function* () {
   const directory = yield* serviceDirectory;
   const service = yield* withKeyFileNotice(directory, ensure(directory, { version: "ignore" }));
@@ -28,10 +27,6 @@ export const serviceStop = Effect.gen(function* () {
   yield* stop(yield* serviceDirectory);
 });
 
-/**
- * `executor service restart`: this CLI's version starts in place of whatever ran, including a
- * server of another version that another client, such as the desktop, started meanwhile.
- */
 export const serviceRestart = Effect.gen(function* () {
   const directory = yield* serviceDirectory;
   yield* stop(directory);
@@ -39,7 +34,6 @@ export const serviceRestart = Effect.gen(function* () {
   yield* Console.log(service.url);
 });
 
-/** What `executor service status` prints before the URL in each state of the registered server. */
 const statusPrefix = {
   ready: "",
   starting: "starting ",
@@ -47,11 +41,6 @@ const statusPrefix = {
   unresponsive: "not responding ",
 };
 
-/**
- * The registered server's URL, version and process, `starting …` while it boots, `stopping …` until
- * it exits once asked to stop, `not responding …` while it holds the data directory without
- * answering, or `stopped`.
- */
 export const serviceStatus = Effect.gen(function* () {
   const service = yield* registered(yield* serviceDirectory);
   yield* Console.log(
@@ -63,7 +52,6 @@ export const serviceStatus = Effect.gen(function* () {
   );
 });
 
-/** Print every setting as JSON, or one setting's value; an unset value prints nothing. */
 export const serviceGet = (input: {
   readonly key: Option.Option<ServiceSettingKey>;
   readonly name: Option.Option<string>;
@@ -85,7 +73,6 @@ export const serviceGet = (input: {
     if (value !== undefined) yield* Console.log(value);
   });
 
-/** `settings` with one setting changed, once its value has been checked. */
 const changed = (
   settings: ServiceSettings,
   key: ServiceSettingKey,
@@ -114,10 +101,6 @@ const changed = (
   }
 };
 
-/**
- * Save one setting. The value is checked before anything changes, and the new settings are saved
- * before the running server stops. Turning the service back on needs no stop.
- */
 export const serviceSet = (
   platform: string,
   input: {
@@ -138,7 +121,6 @@ export const serviceSet = (
     if (input.key !== "disabled" || next.disabled === true) yield* stop(directory);
   });
 
-/** Remove one setting, then stop the running server unless that only turns the service on. */
 export const serviceUnset = (
   platform: string,
   input: { readonly key: ServiceSettingKey; readonly name: Option.Option<string> },

@@ -60,23 +60,110 @@ instructions for your client. MCP uses browser sign-in.
 
 The health endpoint is [http://localhost:4400/health](http://localhost:4400/health).
 
+### Health checks
+
+`/health` answers `200` once the server is ready. The thread that answers it also runs the rest of
+the product and commits its storage, syncing each commit to disk before it continues, so on a slow
+disk every response, `/health` included, can wait seconds behind one commit. With 30 apps running
+schedules on a desktop disk, `/health` took up to 16.5 seconds (99th percentile 12.9 seconds); on a
+disk limited to 5 writes a second, up to 34 seconds.
+
+The image's own check allows 30 seconds a probe and marks the container unhealthy after three
+failures in a row: a server that stops answering is marked unhealthy within three minutes, and one
+that never answers from its first boot after about five. 30 seconds covers every stall measured on
+the desktop disk but not the slowest answer on the throttled one, so on a disk that slow a check can
+still fail now and then; only three failures in a row count. Give your own probes the same room:
+
+- **Kubernetes.** A probe's `timeoutSeconds` defaults to 1 second, which ordinary commit stalls on a
+  slow disk exceed. When a liveness probe fails `failureThreshold` times in a row, the kubelet
+  restarts the container; one failed probe does not. Give a readiness probe the liveness probe's
+  timeout.
+
+  ```yaml
+  startupProbe:
+    httpGet: { path: /health, port: 4400 }
+    periodSeconds: 10
+    timeoutSeconds: 10
+    failureThreshold: 18 # about three minutes, whether probes fail at once or time out
+  livenessProbe:
+    httpGet: { path: /health, port: 4400 }
+    periodSeconds: 30
+    timeoutSeconds: 30
+    failureThreshold: 3
+  ```
+
+  Until the server is ready, `/health` answers `503` at once, and one success ends the startup
+  probe, so it can wait less than the liveness probe: its 18 attempts take about three minutes
+  either way. With these settings a server that stops answering is restarted 90 to 120 seconds
+  later, or 60 to 90 seconds once its connections are refused, plus the pod's termination grace
+  period.
+
+  On a very slow disk the first start, which creates the database, can outlast that: with the disk
+  limited to 5 writes a second it took 204 seconds. On storage that slow, raise the startup probe's
+  `failureThreshold`, for example to 36 for about six minutes.
+
+- **Railway** checks `/health` only while a deployment starts, to decide when to send it traffic,
+  and does not probe a running service. Set the path to `/health` and the timeout to 120 seconds.
+- **Docker Compose or another supervisor** with its own check: allow 30 seconds a probe and three
+  failures, for example `timeout: 30s`, `interval: 30s` and `retries: 3`.
+
+### When the server stops answering
+
+Everything the server does runs on one thread, so app code that never returns, or any other fault
+that holds that thread, stops the whole instance from answering. The image's health check only
+marks such a container unhealthy; Docker does not restart an unhealthy container.
+
+Once the server is ready, the image's host checks every second whether the server answered and how
+its main thread spent that second. It decides the server has stalled when, since its last answer,
+the thread was busy in `EXECUTOR_HOST_STALL_SECONDS` of those seconds (60 by default), or sleeping or
+stopped in five times as many. A busy second is one in which the thread used at least half a
+CPU-second, or proportionally less when the container may use less than one CPU: a quarter of a
+CPU-second at half a CPU. Seconds the thread spends waiting on disk count toward neither, so a slow
+disk does not trip it; nor does a paused container or a sleeping host, since the check counts only
+the seconds it was itself running. `0` turns the check off; the most it accepts is `3600`.
+
+By default the check only logs. Its line starts with `Executor stopped responding:` and gives the
+rule, the counts, the CPU the thread used, the thread states it saw and what it would have done; if
+the server answers again, a line starting with `Executor answered again` follows. Set
+`EXECUTOR_HOST_STALL_RESTART=true` to have it act instead: the host stops the server and exits with
+an error, and the container's restart policy starts it again, which took a few seconds in our tests.
+Restart is off by default. It needs a restart policy, or the container stays stopped, and a restart
+ends every open session, call in progress and paused approval; stored data is kept.
+
+The check cannot tell a long stretch of real work from a server that will never answer: in both, the
+thread stays busy without answering. So before turning restart on, run with the default, which only
+logs, through a period of normal use and watch for the `Executor stopped responding:` line. If
+`Executor answered again` follows it, the server answered after the reported stall. Long-running
+work can cause this too; restarting may interrupt it again if it is retried. If normal work needs
+longer, raise `EXECUTOR_HOST_STALL_SECONDS` or leave restart off. If no recovery line appears while
+the check is still running, it has not observed another answer. If the server remains unresponsive,
+restart it to try to restore service. In two earlier loaded test runs, the check reached the default
+limit; neither retained log recorded an answer again before the test ended.
+
+Use `--restart unless-stopped` or `always` rather than `--restart on-failure`. `on-failure` restarts
+only a container that exits with an error, and the server can exit cleanly without Docker asking it
+to stop, for example when something else in the container sends its runtime a stop signal; the
+container then stays stopped.
+
 ### Runtime packaging
 
 The Docker build produces a standalone server bundle. It prepares the trusted
 Worker host and framework once; authored apps still compile inside workerd.
-The image retains PGlite, one native workerd binary, the dashboard, and a small native host for Git, keys, locks, and HTTP. Executor,
-authored apps, workflows, and Motel share one workerd executable. Motel runs as
-its own workerd process, so its indexing no longer blocks the product's JavaScript
-thread; the two still share the container's CPU, memory and disk. Neither Bun nor
-Node ships in the runtime image. Build tools
-and the workspace dependency tree stay in the build stage.
+The image retains PGlite, one native workerd binary, the dashboard, a small native host for Git, keys, locks, and HTTP, and the
+telemetry collector. Executor, authored apps and workflows share one workerd executable. The
+collector is `executor-collector` (`packages/telemetry/collector`), a separate Rust process the
+native host supervises on a private Unix socket; it shares the container's CPU, memory and disk with
+the product. Its `collector` build stage builds it from the crate with the toolchain the crate pins,
+and its notices are under `/usr/share/doc/executor-collector/`. The image does not serve the
+trace viewer: the collector has no address a browser can reach. Neither Bun, Node nor Rust ships in
+the runtime image. Build tools and the workspace dependency tree stay in the build stages.
 
 The image runs Executor's build of workerd from
 [UsefulSoftwareCo/workerd](https://github.com/UsefulSoftwareCo/workerd), pinned by
 release and SHA-256 in `workerd.json`; packaging downloads it and fails on any other
 digest. It adds idle-isolate and memory-pressure garbage collection and TCMalloc
-memory release, set by `memory` in the generated `workerd.capnp`. Cloud and local
-development keep upstream workerd.
+memory release, set by `memory` in the generated `workerd.capnp`. Cloud and local development keep
+upstream workerd.
 
 The runtime uses Debian 12 distroless with Git's native commands and HTTP backend,
 their shared libraries, and the small set of tools used to prepare data volumes.
@@ -123,9 +210,12 @@ wildcard DNS as described below.
 The named `pglite-data` volume stores the database, app source, builds, app data,
 and generated `auth-secret.key` and `encryption.key` files under `/app/data`. Keep one server instance per data volume.
 
-Motel uses a separate store at `/app/motel-data`. Container replacement discards
-telemetry by default. Mount a separate volume there only if retention is wanted.
-Product upgrades do not import old Motel data. See [workerd storage and rollback](../../../notes/self-host-workerd.md)
+The telemetry collector keeps its store in `EXECUTOR_MOTEL_DATA_DIR`, by default `/app/motel-data`; the
+name is historical, from Motel, the collector earlier images ran. Container replacement discards
+telemetry by default. Mount a separate volume there only if retention is wanted. The collector
+neither reads nor removes the `motel/` directory Motel left there (up to about 1 GiB); an image that
+runs Motel again finds it as it was. Without a volume there it goes with the old container; with
+one, `docker exec <container> rm -rf /app/motel-data/motel` deletes it. See [workerd storage and rollback](../../../notes/self-host-workerd.md)
 for the native PostgreSQL import and an export that preserves later product writes.
 
 Before an upgrade, stop the server and back up the whole volume, including the
@@ -147,13 +237,51 @@ docker compose -f apps/hosted/self-host/compose.yaml down
 ## App catalog
 
 Onboarding and **Add app** list Executor's official apps from the published
-feed at `https://catalog.executor.sh/index.json`. The server fetches the feed's
-index when the list opens, and each app's source when it is added; the browser
-loads app icons from the same host. To read another copy of the feed, set
-`EXECUTOR_CATALOG_URL` to its `index.json`. On an instance without outbound
-internet access, set `EXECUTOR_CATALOG_URL=off`: the lists then show only the
-built-in Executor app, and you can still add apps by URL or build your own. A
-feed that cannot be reached shows an error with a retry in both places.
+feed at `https://catalog.executor.sh/index.json`. The server reads the feed's
+index whenever the catalog is listed, which is more often than those two pages
+open: each dashboard page load lists it once to show app icons, and each catalog
+query from an agent lists it again. Reads that overlap share one request. When
+the feed sends an `ETag`, as the published feed does, the server asks whether
+the index changed since its last read and downloads it again only when it has;
+a feed that sends no `ETag` is downloaded and decoded on every read, and so is
+the first read after the server restarts. Adding an app fetches that app's source, and the
+browser loads app icons from the same host.
+
+To read another copy of the feed, set `EXECUTOR_CATALOG_URL` to its
+`index.json`. On an instance without outbound internet access, set
+`EXECUTOR_CATALOG_URL=off`: onboarding and Add app then say the catalog is off
+and list only the built-in Executor app, and you can still add apps by URL or
+build your own. When the feed cannot be reached or read, both pages say so with
+a retry, and the built-in Executor app stays listed. An agent's catalog query
+fails with the same explanation, as it failed before.
+
+## Update check
+
+The server checks once a day whether a newer Executor release exists, and shows
+owners and admins an **Update available** note at the bottom of the sidebar, with
+how to update. Members see nothing. It sends one `GET` of
+`/-/package/executor/dist-tags` to the npm registry the server already installs
+app packages from: `EXECUTOR_NPM_REGISTRY`, by default `https://registry.npmjs.org`.
+That request has no query string, cookie or header of its own, and nothing that
+identifies this instance, its version, its organizations or its users. The app
+runtime that installs app packages sends it, in the image and on the native
+server built from source alike, so it reaches the registry exactly as installs
+do: a mirror that installs can use, on a private network or over plain HTTP,
+works for the check too, and both connect directly, without reading `HTTP_PROXY`
+or `HTTPS_PROXY`. It follows no redirect and gives up after 5 seconds. Each attempt is saved with the instance's
+data before the request goes out, so it asks at most once a day: a failed or
+unanswered request, or a restart, doesn't ask again within the day. If the
+attempt can't be saved, the check is off: the server doesn't ask, and logs one
+warning that says where it tried to save it, then one line once saving works
+again. With `EXECUTOR_NPM_REGISTRY` set it asks only your mirror, never the
+public registry. Members' browsers never contact the registry; they ask only
+this server. A beta image compares against betas and newer stable releases; a
+stable image compares against stable releases only. The server keeps the last
+answer it got, with the time of its last check, with the instance's data. When
+the registry can't be reached, it keeps showing the newer release from that
+answer, since that release still exists, and logs one debug line; startup and
+requests never wait for it. Set `EXECUTOR_NO_UPDATE_CHECK=1`
+to turn the check off, as for the CLI: the server then makes no request at all.
 
 ## Serve other users
 
@@ -214,7 +342,11 @@ same server, with a matching TLS certificate. App addresses take the form
 App code can reach only public addresses. Requests to the dashboard origin go
 straight to the server, so the built-in Executor app works when that origin
 resolves to a private address. Set `EXECUTOR_APPS_ALLOW_PRIVATE_FETCH=true` to
-let app code reach other private network addresses.
+let app code reach other private network addresses. App builds follow the same
+setting for every download off the registry's origin: a dependency declared by
+tarball URL, and a tarball or redirect the registry's metadata sends elsewhere.
+Downloads from the registry's own origin, including a private
+`EXECUTOR_NPM_REGISTRY`, work either way.
 
 Host-side MCP import and OAuth requests have a separate exact-origin allowlist.
 Set `EXECUTOR_URL_ALLOW_HTTP_ORIGINS` to a JSON array of HTTP or HTTPS origins,

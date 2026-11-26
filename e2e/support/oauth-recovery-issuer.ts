@@ -1,11 +1,9 @@
-/** A scoped external issuer for client replacement, consent callbacks, and PKCE validation. */
 import { createServer } from "node:http";
 import { createHash, randomUUID } from "node:crypto";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Deferred, Effect, Layer, Schema } from "effect";
 import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
 
-/** Synthetic clients accepted by the issuer; neither secret is returned in protocol observations. */
 export const recoveryClients = {
   original: { clientId: "original-client", clientSecret: "synthetic-original-secret" },
   replacement: { clientId: "replacement-client", clientSecret: "synthetic-replacement-secret" },
@@ -26,11 +24,6 @@ const basicCredentials = (header: string | undefined) => {
   }
 };
 
-/**
- * The browser simulates consent; the real Executor validates state and completes its own callback.
- * Hosted Executor advertises a callback relay, so by default the browser returns to its
- * `/oauth/callback` page. Local Executor serves its redirect URI directly; pass `"redirect"`.
- */
 export const oauthRecoveryIssuer = (
   callbackOrigin: string,
   interactive = false,
@@ -144,8 +137,6 @@ export const oauthRecoveryIssuer = (
           const callback = new URL(redirect);
           callback.searchParams.set("code", code);
           callback.searchParams.set("state", parameters.get("state") ?? "");
-          // The managed host advertises a separate callback relay. Keep its exact
-          // URI for the token exchange and model the relay's browser return here.
           const browserReturn = browserReturnUrl(callback);
           return HttpServerResponse.empty({
             status: 302,

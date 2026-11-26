@@ -121,7 +121,6 @@ const write = (value: JsonValue, keep: number, indent: string, output: Output): 
   if (typeof value === "string") {
     if (value.length > keep)
       emit(output, `${JSON.stringify(prefix(value, keep))}… (${characters(value)} characters)`);
-    // A string's JSON is never shorter than the string, so encode only the part that can be shown.
     else
       emit(
         output,
@@ -131,7 +130,6 @@ const write = (value: JsonValue, keep: number, indent: string, output: Output): 
   }
   if (typeof value !== "object" || value === null) return emit(output, JSON.stringify(value));
   const inner = `${indent}  `;
-  // Each item continues only while there is room, so a huge array or object is not walked.
   const member = (index: number, key: string | undefined, entry: JsonValue) => {
     emit(
       output,

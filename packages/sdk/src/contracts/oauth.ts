@@ -2,14 +2,9 @@ import { UserFacingError, type ErrorPresentation } from "@executor-js/utils/user
 import { ApiError } from "@executor-js/utils/api-error";
 /** Host-owned OAuth configuration and encrypted protocol records. */
 import type { UrlPolicy } from "@executor-js/utils/url-policy";
-import {
-  AuthMethodName,
-  type AuthMethodInvalid,
-  type ProviderDefinition,
-  type ProviderNotFound,
-} from "./provider.ts";
-import { AccountConnectionId, type CredentialsError, type StorageError } from "./shared.ts";
-import { Match, Schema, type Effect, type Redacted } from "effect";
+import { AuthMethodName } from "./provider.ts";
+import { AccountConnectionId } from "./shared.ts";
+import { Match, Schema } from "effect";
 import {
   CredentialHost,
   OAuthAuthorizationParams,
@@ -19,7 +14,7 @@ import {
   OAuthTokenResponse,
   PlacementHeaderName,
 } from "apps/contracts";
-import { Account, type AccountFieldsInvalid } from "./account.ts";
+import { Account } from "./account.ts";
 export { OAuthClientAuth } from "apps/contracts";
 import type { HttpClient } from "effect/http";
 import { AccountId, HttpUrl, JsonObject, OwnerId, ProviderId } from "./shared.ts";
@@ -39,6 +34,15 @@ export type OAuthSignIn = typeof OAuthSignIn.Type;
 export const OAuthClientId = Schema.NonEmptyString.pipe(Schema.brand("OAuthClientId"));
 export type OAuthClientId = typeof OAuthClientId.Type;
 
+/**
+ * Why a sign-in that needed a client of its own signs in with one it already had: the service
+ * refused to register another, or the organization already holds as many clients of one connection
+ * each as Executor registers at one service. The service may then skip its account or organization
+ * chooser.
+ */
+export const OAuthOwnClientUnavailable = Schema.Literals(["registration_refused", "limit_reached"]);
+export type OAuthOwnClientUnavailable = typeof OAuthOwnClientUnavailable.Type;
+
 /** Authorization code needs a redirect; client credentials completes the same connection immediately. */
 export const OAuthStartResult = Schema.Union([
   Schema.Struct({
@@ -46,6 +50,11 @@ export const OAuthStartResult = Schema.Union([
     ...OAuthSignIn.fields,
     /** The stored client this sign-in uses, such as the automatic client it found or created. */
     oauthClient: Schema.optional(OAuthClientId),
+    /**
+     * This sign-in needed a client of its own and could not register one, so the service may skip
+     * its account or organization chooser and reuse an earlier choice.
+     */
+    ownClientUnavailable: Schema.optionalKey(OAuthOwnClientUnavailable),
   }),
   Schema.Struct({ status: Schema.Literal("completed"), account: Account }),
 ]);
@@ -88,12 +97,33 @@ export const OAuthResourceIndicator = Schema.Union([
 ]);
 export type OAuthResourceIndicator = typeof OAuthResourceIndicator.Type;
 
+/**
+ * The operator's client matches a sign-in's authorization server, but may not ask for some of the
+ * scopes the sign-in requests. `scopes` are those, as the provider declares them; `instead` names,
+ * for each one the client records a replacement for, the allowed scopes that cover it, which grant
+ * more than it does.
+ */
+export const OperatorScopeRefusal = Schema.Struct({
+  /** The client's label, such as "Executor for Google". */
+  client: Schema.NonEmptyString,
+  scopes: Schema.NonEmptyArray(Schema.String),
+  instead: Schema.Array(
+    Schema.Struct({ scope: Schema.String, scopes: Schema.NonEmptyArray(Schema.String) }),
+  ),
+});
+export type OperatorScopeRefusal = typeof OperatorScopeRefusal.Type;
+
 const clientSetup = {
   /** `automatic`: a client metadata document or dynamic registration can supply a client. */
   mode: Schema.Literals(["automatic", "client-required"]),
   scopes: Schema.Array(Schema.String),
   /** Signing in uses the instance's own OAuth client, named here; see `FirstPartyOAuthClient`. */
   firstParty: Schema.optionalKey(Schema.Struct({ label: Schema.NonEmptyString })),
+  /**
+   * The instance's own OAuth client matches the service but may not ask for these scopes, so this
+   * sign-in needs another client. Only with `client-required`.
+   */
+  operatorScopeRefusal: Schema.optionalKey(OperatorScopeRefusal),
   /** The resource indicator sign-in sends, or why it sends none. */
   resource: OAuthResourceIndicator,
 };
@@ -114,6 +144,12 @@ export const OAuthClientSetup = Schema.Union([
      * authorization parameter, beside `scopes`. Omitted when the provider sends none.
      */
     userScopes: Schema.optional(Schema.Array(Schema.String)),
+    /**
+     * A reconnect may pass `chooseAgain` to sign in with a client registered for it alone, so the
+     * service asks again which account or organization to use. Present only where the service
+     * registers clients.
+     */
+    chooseAgain: Schema.optionalKey(Schema.Literal(true)),
   }),
   Schema.Struct({
     ...clientSetup,
@@ -434,11 +470,15 @@ export type FirstPartyOAuthClientId = typeof FirstPartyOAuthClientId.Type;
  * An OAuth client the instance's operator provides, such as one-click Google sign-in. It is offered
  * for a provider method only when the method's authorization and token endpoints are exactly the
  * client's and the scopes it asks for are among `allowedScopes`; scopes the method only discovered
- * in the resource's advertised list are narrowed to `allowedScopes` instead. Signing in, renewal and
- * revocation then use only the operator's server configuration, and the access token it issues
- * is managed: it reaches app code sealed, goes only as `placement` says, and a token response
- * reporting a scope outside `allowedScopes` is refused. Its secret never leaves the host: grants
- * keep only its ID, so rotating or removing it applies to every account.
+ * in the resource's advertised list are narrowed to `allowedScopes` instead. When the endpoints
+ * match but a requested scope is one of its `heldScopes`, the sign-in is refused before it reaches
+ * the service (`OAuthSetupFailed` with `operator_scope_refused`) unless another automatic client
+ * signs in.
+ * Signing in, renewal and revocation then use only the operator's server configuration, and the
+ * access token it issues is managed: it reaches app code sealed, goes only as `placement` says,
+ * and a token response reporting a scope outside `allowedScopes` and `heldScopes` is refused. Its
+ * secret never leaves the host: grants keep only its ID, so rotating or removing it applies to
+ * every account.
  */
 export const FirstPartyOAuthClient = Schema.Struct({
   id: FirstPartyOAuthClientId,
@@ -452,6 +492,16 @@ export const FirstPartyOAuthClient = Schema.Struct({
   defaultScopes: Schema.Array(ScopeToken),
   /** Every scope a sign-in may ask for and a grant may hold. Defaults to `defaultScopes`. */
   allowedScopes: Schema.optionalKey(Schema.Array(ScopeToken)),
+  /**
+   * Scopes a grant may hold that no sign-in asks for: ones the service does not let this client ask
+   * for, which grants it issued earlier hold. Those grants keep renewing; a sign-in, a reconnect
+   * included, that asks for one is refused before it reaches the service. The refusal leads with
+   * the user's own client, then names `instead`, when it has any: allowed scopes that cover the
+   * held one and grant more than it, which an app may ask for only if its user accepts that.
+   */
+  heldScopes: Schema.optionalKey(
+    Schema.Array(Schema.Struct({ scope: ScopeToken, instead: Schema.Array(ScopeToken) })),
+  ),
   placement: ManagedPlacement,
   /**
    * Withheld from new sign-ins: offered only to reconnect an account whose grant it issued. Its
@@ -467,9 +517,11 @@ export const FirstPartyOAuthClient = Schema.Struct({
   ),
   Schema.makeFilter(
     (client) =>
-      [...client.defaultScopes, ...(client.allowedScopes ?? [])].every(
-        (scope) => !scope.includes(client.server.scopeSeparator ?? " "),
-      ),
+      [
+        ...client.defaultScopes,
+        ...(client.allowedScopes ?? []),
+        ...(client.heldScopes ?? []).flatMap((held) => [held.scope, ...held.instead]),
+      ].every((scope) => !scope.includes(client.server.scopeSeparator ?? " ")),
     { message: "A scope cannot contain the server's scope separator." },
   ),
   Schema.makeFilter(
@@ -478,12 +530,31 @@ export const FirstPartyOAuthClient = Schema.Struct({
       client.defaultScopes.every((scope) => client.allowedScopes?.includes(scope) === true),
     { message: "Every default scope must be allowed." },
   ),
+  Schema.makeFilter(
+    (client) =>
+      (client.heldScopes ?? []).every(
+        (held) =>
+          !allowedScopes(client).includes(held.scope) &&
+          held.instead.every((scope) => allowedScopes(client).includes(scope)),
+      ),
+    { message: "A held scope cannot be allowed, and every scope it names instead must be." },
+  ),
 );
 export type FirstPartyOAuthClient = typeof FirstPartyOAuthClient.Type;
 
 /** The scopes a client allows: `allowedScopes`, or its defaults when it lists none. */
-export const allowedScopes = (client: FirstPartyOAuthClient) =>
-  client.allowedScopes ?? client.defaultScopes;
+export function allowedScopes(client: {
+  readonly defaultScopes: readonly string[];
+  readonly allowedScopes?: readonly string[];
+}) {
+  return client.allowedScopes ?? client.defaultScopes;
+}
+
+/** The scopes a grant the client issued may hold: those it allows, and its held scopes. */
+export const grantableScopes = (client: FirstPartyOAuthClient) => [
+  ...allowedScopes(client),
+  ...(client.heldScopes ?? []).map((held) => held.scope),
+];
 
 /** Network transport and client identity belong to the product hosting this SDK. */
 export interface OAuthOptions {
@@ -523,6 +594,59 @@ export interface OAuthOptions {
   readonly firstPartyClients?: readonly FirstPartyOAuthClient[];
 }
 
+/** At most five scopes, each at most 120 characters, and how many more there are. */
+const scopeList = (scopes: ReadonlyArray<string>) => {
+  const shown = scopes
+    .slice(0, 5)
+    .map((scope) => (scope.length > 120 ? `${scope.slice(0, 119)}…` : scope));
+  const more = scopes.length - shown.length;
+  return more > 0 ? `${shown.join(", ")} and ${more} more` : shown.join(", ");
+};
+
+/**
+ * The operator's client matches the service but may not ask for some of the requested scopes. The
+ * scopes are the app's own declaration, shown to that app's user. Recovery leads with the user's
+ * own client, which asks for the same scopes. When every refused scope has a replacement it then
+ * names them, saying they grant more, since a replacement covers what it replaces.
+ */
+const operatorScopeRefused = (
+  refusal: OperatorScopeRefusal | undefined,
+  callback: string,
+): ErrorPresentation => {
+  const ownClient =
+    "create an OAuth client in the service’s developer console that allows Executor’s callback URL, and connect with its client ID and secret (in the dashboard, Enter client details; through the API, pass `client: { clientId, clientSecret }` to the connection’s `oauth/start`).";
+  const unchanged =
+    "Do not start the same sign-in again unchanged: it is refused the same way. The refusal changes no saved account.";
+  if (refusal === undefined)
+    return {
+      title: "Sign-in needs your own OAuth client",
+      description:
+        "This instance’s own OAuth client for the service can’t ask for every permission this app requests, so Executor didn’t start the sign-in.",
+      recovery: {
+        action: "Enter your own OAuth client for this service.",
+        instructions: `The instance's own OAuth client matches the provider's authorization server but may not request every scope the provider declares, so Executor refused the sign-in before redirecting. Compare the provider's declared scopes with what the instance's client allows, or ${ownClient} ${unchanged}${callback}`,
+      },
+    };
+  const { client, scopes, instead } = refusal;
+  const one = scopes.length === 1;
+  const replaced = scopes.every((scope) => instead.some((entry) => entry.scope === scope));
+  const swaps = instead.map((entry) => `${entry.scopes.join(" ")} instead of ${entry.scope}`);
+  return {
+    title: `${client} can’t ask for ${one ? "this permission" : "these permissions"}`,
+    description: `This app asks for ${scopeList(scopes)}, which ${client} isn’t approved to request, so Executor didn’t start the sign-in.`,
+    recovery: {
+      action: replaced
+        ? `Enter your own OAuth client for this service. Or, if broader access is acceptable, change the app to ask for ${scopeList(instead.flatMap((entry) => entry.scopes))} instead, which grants more than ${scopeList(instead.map((entry) => entry.scope))}.`
+        : `Enter your own OAuth client for this service, or change the app to ask only for permissions ${client} allows.`,
+      instructions: `The provider's OAuth method requests ${scopes.join(" ")}. ${client}, this instance's own OAuth client, matches the provider's authorization and token endpoints but may not request ${one ? "that scope" : "those scopes"}, so Executor refused the sign-in before redirecting to the service. First choice: ${ownClient.charAt(0).toUpperCase()}${ownClient.slice(1)} A client of the person's own can ask for these scopes without changing the app. ${
+        swaps.length === 0
+          ? "Otherwise, change the provider's declared scopes to ones the instance's client allows, redeploy the app and start a new sign-in."
+          : `Second choice, only if the person accepts broader access: change the provider's declared scopes to ask for ${swaps.join("; ")}. Each replacement covers the scope it replaces and grants more access than it, so tell the person what more it allows and get their agreement before changing the app. Then redeploy the app and start a new sign-in, which ${client} signs in.`
+      } ${unchanged}${callback}`,
+    },
+  };
+};
+
 /**
  * OAuth setup failed without exposing upstream bodies, URLs containing codes, or secrets. The
  * service's own error, when it sent one, is kept apart in `serviceError`.
@@ -552,16 +676,18 @@ export const OAuthSetupFailed = UserFacingError.define({
       "invalid_redirect",
       "token_exchange",
       "unsupported",
+      "operator_scope_refused",
     ]),
     /** Executor's own public callback, which some services must approve. Forms show it with client entry. */
     callbackUrl: Schema.optional(HttpUrl),
+    /** With `operator_scope_refused`: the operator's client and the scopes it may not ask for. */
+    operatorScopes: Schema.optional(OperatorScopeRefusal),
     cause: Schema.optional(OAuthFailureCause),
     serviceError: Schema.optional(OAuthServiceError),
     retryAfter: RetryAfter,
   },
   recorded: ({ reason, cause }) => oauthRecorded("OAuth setup failed", reason, cause),
-  presentation: ({ reason, callbackUrl, cause, serviceError, retryAfter }) => {
-    // Forms that open client entry already show the callback, so only the fix prompt repeats it.
+  presentation: ({ reason, callbackUrl, cause, serviceError, retryAfter, operatorScopes }) => {
     const callback = callbackUrl === undefined ? "" : ` Executor’s callback URL is ${callbackUrl}.`;
     return withCause(
       (
@@ -710,6 +836,7 @@ export const OAuthSetupFailed = UserFacingError.define({
                 "Compare the app’s provider definition with the service’s supported OAuth flow and Executor’s supported configuration. Update the app to a documented compatible method. Do not replace required authentication with an unauthenticated connection.",
             },
           },
+          operator_scope_refused: operatorScopeRefused(operatorScopes, callback),
         } satisfies Record<typeof reason, ErrorPresentation>
       )[reason],
       cause,
@@ -719,6 +846,7 @@ export const OAuthSetupFailed = UserFacingError.define({
 });
 /** Setup failures that a user-supplied OAuth client can resolve, so forms open client entry. */
 export const oauthClientEntryReasons: ReadonlySet<OAuthSetupFailed["reason"]> = new Set([
+  "operator_scope_refused",
   "invalid_client",
   "client_not_approved",
   "client_registration_required",
@@ -733,7 +861,6 @@ export type OAuthSetupFailed = typeof OAuthSetupFailed.Type;
  * failures recorded with it.
  */
 export const OAuthCompletionReason = Schema.Literals([
-  // Executor matches the callback to the sign-in it started.
   "callback_malformed",
   "sign_in_not_found",
   "sign_in_replaced",
@@ -741,15 +868,12 @@ export const OAuthCompletionReason = Schema.Literals([
   "sign_in_expired",
   "sign_in_used",
   "account_unavailable",
-  // The stored client the sign-in started with is no longer one the caller may use.
   "client_unavailable",
-  // The service's authorization response, validated before its `error` is read.
   "issuer_mismatch",
   "denied",
   "invalid_scope",
   "invalid_client",
   "authorization_rejected",
-  // The token exchange.
   "authorization_code_rejected",
   "registered_client_rejected",
   "registered_client_incompatible",
@@ -762,7 +886,6 @@ export const OAuthCompletionReason = Schema.Literals([
   "incompatible_response",
   "unsupported",
   "oauth_unavailable",
-  // The operator's client was granted scopes it does not allow.
   "scope_exceeded",
 ]);
 export type OAuthCompletionReason = typeof OAuthCompletionReason.Type;
@@ -1046,7 +1169,6 @@ export const OAuthCompletionFailed = UserFacingError.define({
             },
             retryable: false,
           },
-          // The sign-in was claimed before the token request, so only a new one can finish.
           rate_limited: rateLimited(retryAfter, {
             description: "The service asked Executor to wait before sending more sign-in requests.",
             action: "Start the connection again",
@@ -1075,8 +1197,6 @@ export const OAuthCompletionFailed = UserFacingError.define({
             },
             agentFixable: false,
           },
-          // Revocation runs beside the answer and the service may refuse or not support it, so the
-          // text does not say it happened.
           scope_exceeded: {
             title: "The service granted more access than allowed",
             description:
@@ -1322,6 +1442,11 @@ export const OAuthTokenServer = Schema.Struct({
   authorization_response_iss_parameter_supported: Schema.optional(Schema.Boolean),
   client_id_metadata_document_supported: Schema.optional(Schema.Boolean),
   code_challenge_methods_supported: Schema.optional(Schema.Array(Schema.String)),
+  /**
+   * The `prompt` values the server says it honours (OpenID Connect Prompt Create). Discovery keeps
+   * only the string entries of a published list and drops any other value, as main ignores it.
+   */
+  prompt_values_supported: Schema.optional(Schema.Array(Schema.String)),
   token_endpoint_auth_methods_supported: Schema.optional(Schema.Array(Schema.String)),
   /** RFC 8414 grant types. Registration requests only advertised ones when present. */
   grant_types_supported: Schema.optional(Schema.Array(Schema.String)),
@@ -1443,6 +1568,23 @@ export const OAuthClientUse = Schema.Struct({
   fresh: Schema.Boolean,
 });
 export type OAuthClientUse = typeof OAuthClientUse.Type;
+/**
+ * A client Executor registered for one connection alone, so the service keeps that connection's
+ * consent apart from every other. RFC 7592 lets Executor delete it when the connection goes, with
+ * the URI and token the registration answered; a service that gave neither keeps it.
+ */
+export const OAuthConnectionClient = Schema.Struct({
+  registrationClientUri: Schema.optionalKey(HttpUrl),
+  registrationAccessToken: Schema.optionalKey(Schema.NonEmptyString),
+  /** The service refused this client on a reconnect, so the next one registers another. */
+  rejected: Schema.optionalKey(Schema.Literal(true)),
+});
+export type OAuthConnectionClient = typeof OAuthConnectionClient.Type;
+/**
+ * At most this many clients registered for one connection each are kept alive per organization and
+ * authorization server. A further connection past it signs in with the shared client.
+ */
+export const connectionClientsPerServer = 20;
 /** What every sign-in attempt keeps, whichever client it uses. */
 const attemptFields = {
   connection: AccountConnectionId,
@@ -1455,7 +1597,8 @@ const attemptFields = {
   reconnect: Schema.optional(Schema.Boolean),
   redirectUri: HttpUrl,
   state: Schema.NonEmptyString,
-  verifier: Schema.NonEmptyString,
+  /** Absent when the provider declares `pkce: false`; only a secret client signs in so. */
+  verifier: Schema.optionalKey(Schema.NonEmptyString),
   response: JsonObject,
 };
 /** Protocol context frozen when authorization starts, preventing callback-supplied identity changes. */
@@ -1467,6 +1610,8 @@ export const OAuthAttempt = Schema.Struct({
   storedClient: Schema.optionalKey(OAuthClientUse),
   /** An entered client registered under the attempt's owner once it completes. */
   saveClient: Schema.optionalKey(Schema.Literal(true)),
+  /** `client` was registered for this connection alone. */
+  connectionClient: Schema.optionalKey(OAuthConnectionClient),
   resource: Schema.optional(HttpUrl),
   /** Where `resource` came from, so a refusal can say. Attempts started before it was kept lack it. */
   resourceSource: Schema.optional(OAuthResourceSource),
@@ -1520,6 +1665,8 @@ export const OAuthGrant = Schema.Union([
     client: OAuthRegistration,
     /** The stored client signed in with. The grant keeps its own copy for renewal. */
     oauthClient: Schema.optionalKey(OAuthClientId),
+    /** `client` was registered for this connection alone; a reconnect keeps it. */
+    connectionClient: Schema.optionalKey(OAuthConnectionClient),
     refreshToken: Schema.optional(Schema.NonEmptyString),
     /**
      * The callback the sign-in sent, sent again on each refresh for servers that require it.
@@ -1579,154 +1726,3 @@ export type OAuthFirstPartyGrant = Extract<
 /** Whether a grant was issued to the operator's client. */
 export const isFirstPartyGrant = (grant: OAuthGrant): grant is OAuthFirstPartyGrant =>
   "firstParty" in grant;
-
-/**
- * An account whose OAuth grant was issued by another product, as the Executor v1 importer saves
- * it (`notes/v1-import.md`). Internal to that importer and deleted with it; not part of the HTTP
- * or Promise API. The grant was issued either to a client the product registered, which the
- * account keeps (`client`), or to one of the operator's own clients (`firstParty`), which must
- * be the same client at the authorization server: the same client ID, so its refresh token is
- * valid for it.
- */
-export type ImportOAuthGrant = {
-  readonly owner: OwnerId;
-  readonly provider: ProviderId;
-  readonly method: string;
-  readonly label: string;
-  /** The callback the client was registered with, for an authorization-code grant. */
-  readonly redirectUri?: string | undefined;
-  readonly accessToken: Redacted.Redacted<string>;
-  readonly refreshToken?: Redacted.Redacted<string> | undefined;
-  /** Epoch milliseconds when the access token expires. */
-  readonly expiresAt?: number | undefined;
-} & (
-  | {
-      /** The client the grant was issued to, with its secret. */
-      readonly client: Redacted.Redacted<OAuthRegistration>;
-      /**
-       * How renewals ask for a token, as the product that issued the grant did. It replaces what
-       * the provider's method declares: the token endpoint, the scopes asked for again (none when
-       * empty) and the RFC 8707 resource (none when absent).
-       */
-      readonly renewal: {
-        readonly tokenEndpoint: string;
-        readonly scopes: readonly string[];
-        readonly resource?: string | undefined;
-      };
-    }
-  | {
-      /**
-       * The operator's client the grant was issued to. The account's token is managed, and the
-       * grant renews and is revoked with the operator's current configuration, as one a sign-in
-       * with that client saves.
-       */
-      readonly firstParty: FirstPartyOAuthClientId;
-      /**
-       * The hosts the app the account is imported for declares for the provider, which a
-       * connection would grant it; the client's tokens must reach every one of them, or the
-       * app's calls to the others would be refused.
-       */
-      readonly hosts: readonly string[];
-      /** The scopes renewals ask for again (none when empty); each must be one the client allows. */
-      readonly renewal: { readonly scopes: readonly string[] };
-    }
-);
-/**
- * Why a grant to one of the operator's clients cannot be imported: the operator does not offer
- * that client (`unavailable`), the provider's method would not sign in with it (`method`), the
- * grant holds a scope the client does not allow (`scopes`), or the client's tokens do not reach
- * every host the account's app declares (`hosts`, with the `unreachable` ones). Internal to the v1
- * importer.
- */
-export class OAuthGrantNotImportable extends Schema.TaggedError<OAuthGrantNotImportable>()(
-  "OAuthGrantNotImportable",
-  {
-    reason: Schema.Literals(["unavailable", "method", "scopes", "hosts"]),
-    unreachable: Schema.optionalKey(Schema.Array(Schema.String)),
-  },
-) {}
-/**
- * One of the operator's clients as the importer checks a grant against it, without its secret. Its
- * client ID is public; the importer compares it with the one v1's grants were issued to.
- */
-export type FirstPartyOAuthClientDescription = Omit<FirstPartyOAuthClient, "clientSecret">;
-/** Host-only access to {@link ImportOAuthGrant}. */
-export const OAuthGrantImport = Symbol("executor.OAuthGrantImport");
-export interface OAuthGrantImport {
-  /**
-   * Save the account, its encrypted grant (ready to use and renew) and its client in one
-   * transaction, as completing a sign-in does. The provider's method must be OAuth with the same
-   * grant. Runs the provider's discovery, but no token request.
-   */
-  readonly importOAuthGrant: (
-    input: ImportOAuthGrant,
-  ) => Effect.Effect<
-    typeof Account.Type,
-    | StorageError
-    | CredentialsError
-    | ProviderNotFound
-    | AuthMethodInvalid
-    | OAuthSetupFailed
-    | OAuthGrantNotImportable
-  >;
-  /**
-   * Check the grant as `importOAuthGrant` would, against `definition`, the provider an app that is
-   * not deployed declares, and save nothing: the v1 import's dry run refuses exactly the grants an
-   * import would. Runs the provider's discovery, but no token request.
-   */
-  readonly checkOAuthGrant: (
-    input: ImportOAuthGrant & { readonly definition: ProviderDefinition },
-  ) => Effect.Effect<void, AuthMethodInvalid | OAuthSetupFailed | OAuthGrantNotImportable>;
-  /**
-   * Check an account's fields as `managedAccounts.add` would, against `definition`, the provider an
-   * app that is not deployed declares, and save nothing.
-   */
-  readonly checkAccountFields: (input: {
-    readonly provider: ProviderId;
-    readonly definition: ProviderDefinition;
-    readonly method: string;
-    readonly fields: Redacted.Redacted<JsonObject>;
-  }) => Effect.Effect<void, AuthMethodInvalid | AccountFieldsInvalid>;
-  /** The operator's client `id` when it is offered here, which its credentials being set decides. */
-  readonly firstPartyClient: (id: string) => FirstPartyOAuthClientDescription | undefined;
-  /**
-   * Whether an imported account's stored credentials, and its OAuth grant when its method signs in
-   * with one, decrypt with this deployment's key. Reads only and returns no value; an import
-   * verifies its accounts with it.
-   */
-  readonly credentialsReadable: (account: AccountId) => Effect.Effect<boolean, StorageError>;
-  /**
-   * Move an imported account to another provider, under `method`, when that method's definition is
-   * the one the account was saved for, so its credentials fit unchanged. An importer that
-   * generates an app again uses it for the accounts an earlier run saved: the app's provider
-   * changes with any method it gains or loses, or a new name. Returns whether it moved.
-   */
-  readonly moveImportedAccount: (input: {
-    readonly account: AccountId;
-    readonly provider: ProviderId;
-    readonly method: string;
-  }) => Effect.Effect<boolean, StorageError>;
-  /**
-   * Replace an imported account's tokens with those the issuing product holds now, when the
-   * product holds another refresh token and the grant needs reconnecting or the product renewed
-   * the grant after this account did: a service that rotates refresh tokens keeps only the last
-   * renewal's. Keeps the grant's client and renewal settings, and keeps a grant reconnected since
-   * the import. A grant being renewed is decided once its renewal saved the result. Makes no token
-   * request.
-   */
-  readonly refreshImportedGrant: (
-    account: AccountId,
-    tokens: ImportedGrantTokens,
-  ) => Effect.Effect<"kept" | "replaced", StorageError | CredentialsError>;
-  /**
-   * Remove an account an import saved, as `accounts.remove` does, without revoking its grant at
-   * the provider: the issuing product holds the same grant and keeps using it once the import is
-   * rolled back.
-   */
-  readonly removeImportedAccount: import("./executor.ts").Executor["accounts"]["remove"];
-}
-/** An imported grant's tokens as the issuing product holds them (`refreshImportedGrant`). */
-export type ImportedGrantTokens = Pick<
-  ImportOAuthGrant,
-  "accessToken" | "refreshToken" | "expiresAt"
->;

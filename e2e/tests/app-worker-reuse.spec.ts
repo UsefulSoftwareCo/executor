@@ -1,8 +1,3 @@
-/**
- * An app's runtime Worker is identified by its code and the accounts a call uses, never by the
- * caller, credential values or workflow runs. Each authored module reports a per-isolate identifier from module
- * state, so a Worker that the runtime loaded again shows up as a new identifier.
- */
 import { expect, layer } from "@effect/vitest";
 import { Clock, Effect, Schedule, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
@@ -30,11 +25,8 @@ import {
 import { scenarios } from "../test-plan.ts";
 import { appsManifest, databaseFiles } from "../support/apps-release.ts";
 
-/** Token renewals and workflow runs, each a single request to the product. */
 const rounds = 50;
-/** Saved-key replacements take three requests each, so fewer fit the scenario deadline. */
 const rotations = 25;
-/** Serial, alternating tool calls and workflow runs per account; two accounts run concurrently. */
 const interleaved = 16;
 const App = Schema.Struct({ id: Schema.String });
 const Viewer = Schema.Struct({ userId: Schema.String });
@@ -63,16 +55,11 @@ const scenario = Effect.gen(function* () {
       );
       return app;
     });
-  /**
-   * The webhook source status of a linked account, which its background setup settles, as the
-   * account's owner reads it.
-   */
   const status = (app: string, account: string, reader: Session = actors.owner) =>
     api.request(reader, "GET", `${prefix}/apps/${app}/webhook-sources`).pipe(
       Effect.flatMap((response) => body(Schema.Array(SourceStatus), response)),
       Effect.map((sources) => sources.find((source) => source.account === account)?.status),
     );
-  /** Wait until linking the account has finished its background webhook source setup. */
   const settled = (app: string, account: string, reader: Session = actors.owner) =>
     status(app, account, reader).pipe(
       Effect.flatMap((current) =>
@@ -82,10 +69,6 @@ const scenario = Effect.gen(function* () {
       ),
       Effect.retry({ schedule: Schedule.spaced("200 millis"), times: 100 }),
     );
-  /**
-   * One call with the actor's linked account. The app's one requirement is plain, so connecting or
-   * linking another account replaces the link and the call uses the account linked last.
-   */
   const observe = (app: string, actor = actors.owner) =>
     Effect.gen(function* () {
       const response = yield* api.request(actor, "POST", `${prefix}/apps/${app}/tools/call`, {
@@ -95,12 +78,10 @@ const scenario = Effect.gen(function* () {
       expect(response.status, JSON.stringify(response.body)).toBe(200);
       return yield* body(Observation, response);
     });
-  /** Delete the account when the scenario ends, as its owner: only they may delete it. */
   const removeAccount = (account: string, owner: Session = actors.owner) =>
     Effect.addFinalizer(() =>
       api.request(owner, "DELETE", `${prefix}/accounts/${account}`).pipe(Effect.orDie),
     );
-  /** Link the owner's `account` in place of the app's linked one, once its webhook source is set up. */
   const link = (app: string, account: string) =>
     linkAccount(actors.owner, `${prefix}/apps/${app}`, "service", account).pipe(
       Effect.andThen(settled(app, account)),
@@ -108,10 +89,6 @@ const scenario = Effect.gen(function* () {
   return { api, actors, prefix, deploy, settled, observe, removeAccount, link };
 });
 
-/**
- * The observer app with its key requirement in `scope`. In app scope, someone who can edit the app
- * links one account for everyone, so every caller's calls use it.
- */
 const observerSource = (
   options: { readonly name: string; readonly database: boolean; readonly resource: string | null },
   scope: LinkScope,
@@ -130,7 +107,6 @@ const observerSource = (
   return appScoped;
 };
 
-/** An observer app with a key account, whose saved credential can be replaced in place. */
 const keyApp = (options: {
   readonly database: boolean;
   readonly resource: string | null;
@@ -165,10 +141,6 @@ const keyApp = (options: {
           ),
           Effect.flatMap((saved) => body(Resource, saved)),
         );
-    /**
-     * Connect a new account of `actor`, the owner unless named, from the app. In user scope it is
-     * linked for `actor`; in app scope, for everyone.
-     */
     const connect = (
       token: string,
       options: { readonly settle?: boolean; readonly actor?: Session } = {},
@@ -187,10 +159,8 @@ const keyApp = (options: {
         if (options.settle !== false) yield* settled(app.id, account, actor);
         return account;
       });
-    /** Replace the saved credential of the same account, as a user's key rotation does. */
     const rotate = (account: string, token: string) =>
       Effect.gen(function* () {
-        // Connecting from the app with an existing account replaces its credentials.
         const reconnect = yield* api.request(
           actors.owner,
           "POST",
@@ -202,7 +172,6 @@ const keyApp = (options: {
         expect(reconnect.status, JSON.stringify(reconnect.body)).toBe(200);
         expect((yield* submit((yield* body(Resource, reconnect)).id, token)).id).toBe(account);
       });
-    /** Start one workflow run with the actor's linked account and wait for its observation. */
     const run = (actor = actors.owner) =>
       Effect.gen(function* () {
         const started = yield* api.request(actor, "POST", `${path}/workflow-runs`, {
@@ -226,7 +195,6 @@ const keyApp = (options: {
           yield* Effect.sleep("100 millis");
         }
       });
-    /** Let everyone use the app, and return the member, who may then connect their own account. */
     const share = Effect.gen(function* () {
       const access = yield* body(
         Schema.Struct({ revision: Schema.String }),
@@ -239,7 +207,6 @@ const keyApp = (options: {
       expect(shared.status, JSON.stringify(shared.body)).toBe(200);
       return actors.member;
     });
-    /** Save the account's webhook source configuration again, which sets the source up anew. */
     const reconfigure = (account: string) =>
       Effect.gen(function* () {
         const saved = yield* api.request(
@@ -270,18 +237,14 @@ layer(HostedLive, { excludeTestServices: true })("App worker reuse", (it) => {
           const token = `synthetic-rotation-${round}`;
           yield* rotate(first, token);
           const current = yield* observe(app.id);
-          // Every call receives the current credential, never one captured by an earlier call.
           expect(current.token).toBe(token);
           observed.push(current);
         }
-        // Rotating one account's credential reuses its loaded app Worker.
         expect(new Set(observed.map((entry) => entry.isolate)).size).toBe(1);
         expect(observed.map((entry) => entry.calls)).toEqual(
           observed.map((_, index) => observed[0]!.calls + index),
         );
 
-        // Another account, connected in place of the first, runs in another Worker, with no
-        // module state from the first.
         yield* connect("synthetic-other-account");
         const other = yield* observe(app.id);
         expect(other).toMatchObject({ previous: null, token: "synthetic-other-account" });
@@ -289,15 +252,12 @@ layer(HostedLive, { excludeTestServices: true })("App worker reuse", (it) => {
         yield* link(app.id, first);
         const back = yield* observe(app.id);
         if ((yield* Target).metadata.target === "cloud") {
-          // Returning to the first account resumes its loaded Worker and its module state.
           expect(back).toMatchObject({
             isolate: observed[0]!.isolate,
             previous: `synthetic-rotation-${rotations}`,
             token: `synthetic-rotation-${rotations}`,
           });
         } else {
-          // Self-host unloads the data facet another account replaced, so memory does not grow
-          // with the accounts ever used: the first account loads a fresh one.
           expect(back).toMatchObject({ previous: null, token: `synthetic-rotation-${rotations}` });
           expect(back.isolate).not.toBe(observed[0]!.isolate);
         }
@@ -311,7 +271,6 @@ layer(HostedLive, { excludeTestServices: true })("App worker reuse", (it) => {
       Effect.gen(function* () {
         const { app, connect, run } = yield* keyApp({ database: true, resource: null });
         yield* connect("synthetic-workflow-token");
-        // Each workflow run receives its own run capability without loading another Worker.
         const runs = yield* Effect.forEach(
           Array.from({ length: rounds }, (_, index) => index),
           () => run(),
@@ -322,9 +281,6 @@ layer(HostedLive, { excludeTestServices: true })("App worker reuse", (it) => {
           expect(run.token).toBe("synthetic-workflow-token");
         }
         expect(new Set(runs.map((run) => run.isolate)).size).toBe(1);
-        // The runs share one app Worker, and webhook source setup starts the data facet; each loaded the
-        // build once. A workflow cold start records its load under the Worker name the runtime
-        // loads it by, so it adds no second Worker runtime.
         const loads = yield* appBuildLoads(app.id);
         expect(
           Object.values(loads).every((count) => count === 1),
@@ -347,14 +303,10 @@ layer(HostedLive, { excludeTestServices: true })("App worker reuse", (it) => {
           database: false,
           resource: `${issuer.origin}/resource`,
         });
-        // A member links only one account per plain requirement, so the second account runs for
-        // another member: the owner lets everyone use the app, and the member connects their own.
         yield* connect("synthetic-shared-first");
         const member = yield* share;
         yield* connect("synthetic-shared-second", { actor: member });
         const { owner } = yield* Actors;
-        // Each self-host call has its own session context and each run its own workflow instance,
-        // so every observation after an account's first uses a Worker loaded by a finished context.
         const alternate = (actor: typeof member, workflowFirst: boolean) =>
           Effect.forEach(
             Array.from({ length: interleaved }, (_, index) => index),
@@ -368,17 +320,14 @@ layer(HostedLive, { excludeTestServices: true })("App worker reuse", (it) => {
           [firstObserved, "synthetic-shared-first"],
           [secondObserved, "synthetic-shared-second"],
         ] as const) {
-          // Outbound fetch works from a reused Worker and carries this account's credential.
           for (const entry of observed)
             expect(entry).toMatchObject({ token, fetched: `Bearer ${token}` });
-          // One account's calls and runs share one Worker and its module state.
           expect(new Set(observed.map((entry) => entry.isolate)).size).toBe(1);
           expect(observed.map((entry) => entry.previous)).toEqual([
             null,
             ...observed.slice(1).map(() => token),
           ]);
         }
-        // Another account's calls and runs use another Worker.
         expect(firstObserved[0]!.isolate).not.toBe(secondObserved[0]!.isolate);
       }),
     ),
@@ -392,8 +341,6 @@ layer(HostedLive, { excludeTestServices: true })("App worker reuse", (it) => {
           yield* scenario;
         const http = yield* HttpClient.HttpClient;
         const issuer = yield* oauthSetupIssuer;
-        // Tokens issued inside the host's 30-second renewal window renew on every call. As with
-        // rotating providers, each renewal replaces the refresh token and refuses the old one.
         yield* issuer.configure({ refreshTokens: true, rotateRefreshTokens: true, expiresIn: 20 });
         const name = `Worker refresh ${randomUUID().slice(0, 8)}`;
         const app = yield* deploy(name, [
@@ -457,19 +404,15 @@ export default defineApp({ user: { accounts: { service } } }, {
         for (let round = 0; round < rounds; round++) {
           const generation = (yield* refreshes) + 1;
           const current = yield* observe(app.id);
-          // Each call renews the grant once, with the latest refresh token, and presents the result.
           expect(yield* refreshes).toBe(generation);
           expect(current.token).toBe(`synthetic-refreshed-token-${generation}`);
           observed.push(current);
         }
-        // Renewing the account's token reuses its loaded app Worker.
         expect(new Set(observed.map((entry) => entry.isolate)).size).toBe(1);
         expect(observed.map((entry) => entry.calls)).toEqual(
           observed.map((_, index) => observed[0]!.calls + index),
         );
 
-        // A different account's grant, connected in place of the first, never reaches the first
-        // account's module state.
         yield* connect("Synthetic other account");
         const other = yield* observe(app.id);
         expect(other.previous).toBeNull();
@@ -490,17 +433,11 @@ export default defineApp({ user: { accounts: { service } } }, {
             database,
             resource: null,
           });
-          // Webhook source setup reads the app's webhook definitions, which cold-starts the data
-          // facet of an app with a database and the app Worker otherwise. The account is linked
-          // while the build is unreadable, so that first cold start of its runtime cannot load it.
           const token = `synthetic-cold-start-${database}`;
           const restore = yield* unreadableBuild(name);
           const account = yield* connect(token, { settle: false });
           expect(yield* settled(app.id, account)).toBe("failed");
           yield* restore;
-          // Once the build is readable, the source is set up again. Its setup cold-starts the same
-          // runtime by the same name, which loads the build rather than keeping the failed cold
-          // start for the rest of the runtime's life.
           expect(yield* reconfigure(account)).toBe("ready");
           const observed = [yield* observe(app.id)];
           for (let round = 0; round < 3; round++) observed.push(yield* observe(app.id));
@@ -510,7 +447,6 @@ export default defineApp({ user: { accounts: { service } } }, {
             observed.map((_, index) => observed[0]!.calls + index),
           );
           if (!database) {
-            // Workflow runs share the recovered Worker.
             const workflow = yield* run();
             expect(workflow).toMatchObject({ isolate: observed[0]!.isolate, token });
           }
@@ -519,8 +455,6 @@ export default defineApp({ user: { accounts: { service } } }, {
     ),
   );
 
-  // Twenty serial calls per app wait for each call's delivered trace, and on hosts that unload
-  // replaced data facets every switch between the two accounts cold-starts a facet.
   it.effect(
     scenarios.appBuildLoads.title,
     (context) =>
@@ -542,9 +476,6 @@ export default defineApp({ user: { accounts: { service } } }, {
             for (let round = 0; round < loadRounds; round++) yield* call(round);
             expectOneLoadPerColdStart(calls);
 
-            // An account linked for everyone serves every caller from one loaded Worker, and a
-            // second caller loads nothing: the Worker belongs to the accounts a call uses, not to
-            // its caller.
             const forEveryone = yield* keyApp({ database, resource: null, scope: "app" });
             yield* forEveryone.connect("synthetic-loads-everyone");
             const member = yield* forEveryone.share;
@@ -558,8 +489,6 @@ export default defineApp({ user: { accounts: { service } } }, {
             });
             expect(yield* latestRequestBuildLoads(`${database}-shared`)).toBe(0);
 
-            // Another account's Worker never sees the first account's credential. The member
-            // connects their own account while the owner still uses the first.
             yield* share;
             yield* connect("synthetic-loads-other", { actor: member });
             const [firstCalls, secondCalls] = yield* Effect.all(
@@ -569,9 +498,6 @@ export default defineApp({ user: { accounts: { service } } }, {
               ],
               { concurrency: 2 },
             );
-            // Self-host unloads the data facet a call of the other account replaced, so memory does
-            // not grow with the accounts ever used: alternating calls start fresh facets.
-            // Cloud keeps each account's facet Worker loaded.
             const replacesFacets = database && (yield* Target).metadata.target !== "cloud";
             if (replacesFacets)
               expectIsolatedAccountsAcrossReplacedFacets(
@@ -593,8 +519,6 @@ export default defineApp({ user: { accounts: { service } } }, {
                 ...secondCalls,
               ]);
             else
-              // Each app Worker and data facet loaded the build once, at its cold start, whichever
-              // call or background discovery started it.
               expect(loads, "one build load per runtime").toEqual(
                 Object.fromEntries(Object.keys(loads).map((runtime) => [runtime, 1])),
               );
@@ -619,12 +543,12 @@ export default defineApp({ user: { accounts: { service } } }, {
             const { app, connect, observe } = yield* keyApp({ database, resource: null });
             yield* connect("synthetic-attribution");
             yield* observe(app.id);
-            // Each call's invocation names the Worker it ran in and the caller it ran for.
             const identities = yield* telemetry
-              .spans("runtime.app.invoke", {
-                "executor.organization.id": actors.organization.id,
-                "executor.user.id": viewer.userId,
-              })
+              .spans(
+                "runtime.app.invoke",
+                { organization: actors.organization.id },
+                { "executor.user.id": viewer.userId },
+              )
               .pipe(
                 Effect.map((spans) =>
                   spans

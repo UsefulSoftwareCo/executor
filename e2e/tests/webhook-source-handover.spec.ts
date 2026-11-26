@@ -1,9 +1,3 @@
-/**
- * A member's account is the webhook source of the app's user requirement while they link it: it
- * registers again after a relink, refuses callbacks while its actor cannot use the app, stays through
- * a concurrent move between the account's app link and user link, and removes its registration with
- * the accounts it registered with. No other member can take a member's source over.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -42,10 +36,6 @@ const incoming={account:{ user: "service" },config:object({}),state:object({}),
 export default defineApp({user: { accounts:{service} }},{tools: router({
   identity:query({input:object({})},async ctx=>ctx.user.accounts.service.id),
 }),webhooks:{incoming}});`;
-/**
- * The same provider for an app requirement as well, with its own webhook. It accepts any number of
- * app links, so the user requirement's source registers while it has none.
- */
 const bothScopes = `import {defineApp,defineProvider,secrets,query,object,string,router} from "apps";
 const service=defineProvider({name:"Handover fixture",auth:{key:secrets({label:"Key",fields:object({token:string()})})}});
 const hook=(account)=>({account,config:object({}),state:object({}),
@@ -54,7 +44,6 @@ export default defineApp({app:{accounts:{appService:service.many()}},user:{accou
   identity:query({input:object({})},async ctx=>ctx.user.accounts.service.id),
 }),webhooks:{incoming:hook({user:"service"}),appIncoming:hook({app:"appService"})}});`;
 
-/** A deployed webhook app every member can use, removed with its links and accounts. */
 const handoverFixture = (content: string = source) =>
   Effect.gen(function* () {
     const api = yield* Api,
@@ -71,7 +60,6 @@ const handoverFixture = (content: string = source) =>
     const accounts: { actor: Session; id: string }[] = [];
     yield* Effect.addFinalizer(() =>
       Effect.gen(function* () {
-        // An app with live webhooks is not removed, so each account's links go first.
         for (const account of accounts) {
           yield* api.request(
             account.actor,
@@ -85,8 +73,6 @@ const handoverFixture = (content: string = source) =>
               `${requirementPath(path, "app", "appService")}/${account.id}`,
             );
         }
-        // Removal waits for every subscription to stop; the last ones stop in the background
-        // after their links go, including ones still registering when they did.
         for (const account of accounts)
           yield* settleWebhookSubscriptions(account.actor, path, (hooks) =>
             hooks.every((hook) => hook.status === "stopped"),
@@ -115,7 +101,6 @@ const handoverFixture = (content: string = source) =>
     const [owner, admin, member] = userIds;
     if (owner === undefined || admin === undefined || member === undefined)
       return yield* Effect.die(new Error("Missing viewers"));
-    /** Connect the actor's own account from the app, which links it for them. */
     const connect = (actor: Session) =>
       Effect.gen(function* () {
         const connection = yield* body(
@@ -133,7 +118,6 @@ const handoverFixture = (content: string = source) =>
         accounts.push({ actor, id: account });
         return account;
       });
-    /** Wait until the account's only source runs as `actor` and is registered. */
     const sourceRunsAs = (reader: Session, account: string, actor: string) =>
       settleWebhookSources(
         reader,
@@ -144,7 +128,6 @@ const handoverFixture = (content: string = source) =>
           sources[0].actor === actor &&
           sources[0].status === "ready",
       );
-    /** The account's active subscription, once it runs as `actor`. */
     const subscriptionRunsAs = (reader: Session, account: string, actor: string) =>
       settleWebhookSubscriptions(reader, path, (hooks) => {
         const active = hooks.filter(
@@ -159,7 +142,6 @@ const handoverFixture = (content: string = source) =>
           hook === undefined ? Effect.die(new Error("Webhook missing")) : Effect.succeed(hook),
         ),
       );
-    /** Deliver an anonymous callback and require the source account to handle it. */
     const deliver = (callbackUrl: string, account: string) =>
       Effect.gen(function* () {
         const delivered = yield* api.request(
@@ -194,14 +176,12 @@ layer(HostedLive, { excludeTestServices: true })("Webhook source handover", (it)
         const account = yield* connect(actors.member);
         yield* sourceRunsAs(actors.member, account, ids.member);
         const first = yield* subscriptionRunsAs(actors.member, account, ids.member);
-        // Unlinking stops the subscription; its stopped row stays as history.
         yield* unlinkAccount(actors.member, path, "service", account);
         yield* settleWebhookSources(actors.member, path, (sources) => sources.length === 0);
         yield* settleWebhookSubscriptions(actors.member, path, (hooks) =>
           hooks.some((hook) => hook.id === first.id && hook.status === "stopped"),
         );
         expect(yield* linkedAccountIds(actors.member, path)).toEqual([]);
-        // Linking the same account again registers a new subscription beside the stopped one.
         yield* linkAccount(actors.member, path, "service", account);
         yield* sourceRunsAs(actors.member, account, ids.member);
         const relinked = yield* subscriptionRunsAs(actors.member, account, ids.member);
@@ -240,13 +220,10 @@ layer(HostedLive, { excludeTestServices: true })("Webhook source handover", (it)
             });
             expect(changed.status, JSON.stringify(changed.body)).toBe(200);
           });
-        // The member connects their account from the app, so the member runs its source.
         const account = yield* connect(actors.member);
         yield* sourceRunsAs(actors.member, account, ids.member);
         const hook = yield* subscriptionRunsAs(actors.member, account, ids.member);
         yield* deliver(hook.callbackUrl, account);
-        // The app becomes private to its creator. The member still links a usable account, but
-        // can no longer use the app, so a callback must not run its code as the member.
         yield* audience("private");
         const refused = yield* api.request(
           yield* api.session(),
@@ -254,10 +231,8 @@ layer(HostedLive, { excludeTestServices: true })("Webhook source handover", (it)
           new URL(hook.callbackUrl).pathname,
           {},
         );
-        // Refused as retryable, like a source whose actor lost its account.
         expect(refused.status, JSON.stringify(refused.body)).toBe(503);
         expect(JSON.stringify(refused.body)).not.toContain("synthetic-handover");
-        // Using the app again resumes delivery as the member.
         yield* audience("everyone");
         yield* deliver(hook.callbackUrl, account);
       }),
@@ -270,9 +245,6 @@ layer(HostedLive, { excludeTestServices: true })("Webhook source handover", (it)
         const { actors, path, ids, connect, sourceRunsAs } = yield* handoverFixture(bothScopes);
         const account = yield* connect(actors.owner);
         yield* sourceRunsAs(actors.owner, account, ids.owner);
-        // Each round, the account's only link is removed while the owner links it in the other
-        // scope, concurrently: its user link while it is linked for the app, or the reverse.
-        // Whichever commits first, the account stays linked, so its source must stay.
         type Link = { readonly requirement: string; readonly scope: LinkScope };
         let linked: Link = { requirement: "service", scope: "user" },
           other: Link = { requirement: "appService", scope: "app" };
@@ -293,6 +265,12 @@ layer(HostedLive, { excludeTestServices: true })("Webhook source handover", (it)
             `Round ${round} left the linked account without a source`,
           ).toEqual([account]);
         }
+        yield* settleWebhookSubscriptions(actors.owner, path, (hooks) =>
+          hooks.every(
+            (hook) =>
+              (hook.actor === null) === (linked.scope === "app") || hook.status === "stopped",
+          ),
+        );
       }),
     ),
   );
@@ -303,7 +281,6 @@ layer(HostedLive, { excludeTestServices: true })("Webhook source handover", (it)
         const api = yield* Api,
           actors = yield* Actors;
         const prefix = `/api/organizations/${actors.organization.id}`;
-        // Unregistering needs the app's other account: it throws without one.
         const removal = `import {defineApp,defineProvider,secrets,query,object,string,router} from "apps";
 const service=defineProvider({name:"Removal source fixture",auth:{key:secrets({label:"Key",fields:object({token:string()})})}});
 const other=defineProvider({name:"Removal other fixture",auth:{key:secrets({label:"Key",fields:object({token:string()})})}});
@@ -353,7 +330,6 @@ export default defineApp({user: { accounts:{service,other} }},{tools: router({
             accounts.push(account);
             return account;
           });
-        // The other account first, so the source registers as soon as its account is linked.
         const other = yield* connect("other", "synthetic-other");
         const service = yield* connect("service", "synthetic-service");
         const [hook] = yield* settleWebhookSubscriptions(actors.owner, path, (hooks) =>
@@ -368,8 +344,6 @@ export default defineApp({user: { accounts:{service,other} }},{tools: router({
         );
         expect(delivered.status, JSON.stringify(delivered.body)).toBe(200);
         expect(delivered.body).toEqual({ account: service, other });
-        // Unlinking both accounts leaves the owner no account for the other requirement. Removing
-        // the registration still reaches the provider with the accounts it registered with.
         yield* unlinkAccount(actors.owner, path, "other", other);
         yield* unlinkAccount(actors.owner, path, "service", service);
         yield* settleWebhookSubscriptions(actors.owner, path, (hooks) =>
@@ -388,7 +362,6 @@ export default defineApp({user: { accounts:{service,other} }},{tools: router({
         const api = yield* Api,
           actors = yield* Actors;
         const prefix = `/api/organizations/${actors.organization.id}`;
-        // Unregistering needs the other account the registration ran with: the member's.
         const registration = `import {defineApp,defineProvider,secrets,query,object,string,router} from "apps";
 const service=defineProvider({name:"Registration source fixture",auth:{key:secrets({label:"Key",fields:object({token:string()})})}});
 const other=defineProvider({name:"Registration other fixture",auth:{key:secrets({label:"Key",fields:object({token:string()})})}});
@@ -432,8 +405,6 @@ export default defineApp({user: { accounts:{service,other} }},{tools: router({
                   `${requirementPath(path, "user", item.requirement)}/${item.account}`,
                 );
             yield* removeAppWhenStopped(actors.owner, path);
-            // Only an account's owner deletes it. The member has left by now, so the accounts
-            // they connected stay with the departed member, used by nobody.
             for (const item of owned)
               yield* api.request(item.actor, "DELETE", `${prefix}/accounts/${item.account}`);
           }).pipe(Effect.orDie),
@@ -455,10 +426,6 @@ export default defineApp({user: { accounts:{service,other} }},{tools: router({
             owned.push({ actor, requirement, account });
             return account;
           });
-        /**
-         * The source account's only live subscription, once `settled` accepts it, as the member
-         * reads it: nobody else can use their account, so nobody else lists its subscription.
-         */
         const subscription = (
           account: string,
           settled: (hook: WebhookSubscriptionRow) => boolean,
@@ -480,8 +447,6 @@ export default defineApp({user: { accounts:{service,other} }},{tools: router({
           settleWebhookSubscriptions(actors.member, path, (hooks) =>
             hooks.some((hook) => hook.id === id && hook.status === "stopped"),
           );
-        // Each member links their own account for the other requirement; the member also
-        // connects their own service account, so the source registers as the member.
         yield* connect(actors.member, "other", "member-other");
         yield* connect(actors.admin, "other", "admin-other");
         const own = yield* connect(actors.member, "service", "member-service");
@@ -489,24 +454,17 @@ export default defineApp({user: { accounts:{service,other} }},{tools: router({
           own,
           (hook) => hook.actor === member && hook.status === "active",
         );
-        // Nobody else can take the source over or see it: the account is the member's alone.
         expect((yield* linkAccountResponse(actors.admin, path, "service", own)).status).toBe(403);
         expect(
           (yield* webhookSubscriptions(actors.admin, path)).some((hook) => hook.id === first.id),
         ).toBe(false);
 
-        // The member unlinks. Removing the registration runs as the member, with their account.
         yield* unlinkAccount(actors.member, path, "service", own);
         yield* stopped(first.id);
         yield* settleWebhookSources(actors.member, path, (sources) =>
           sources.every((source) => source.account !== own),
         );
 
-        // Another of the member's accounts registers as the member. The member then leaves the
-        // organization, and the next delivery is refused. No other member can use the account, so
-        // the source stops, and removal cannot run as the member any more: the subscription
-        // waits, disabled, until a manager confirms it was removed at the provider. Confirming
-        // is refused as a conflict until it is disabled.
         const second = yield* connect(actors.member, "service", "member-service-2");
         const registered = yield* subscription(
           second,

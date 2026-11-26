@@ -257,7 +257,7 @@ Only the selected tool's callback runs, after input validation. Omitted approval
 permits execution. Invalid decisions and callback failures prevent the tool body
 from running. There is no app-level `policy` or `createExecutor` policy option.
 
-In the default model mode, when execute returns `approval-required`, show its `elicitation.message` and reviewed
+In model mode, when execute returns `approval-required`, show its `elicitation.message` and reviewed
 invocation to the user. This is an MCP form request with an empty `requestedSchema`.
 After the user answers, call `resume({ requestId, response: { action: "accept", content: {} } })`,
 `resume({ requestId, response: { action: "decline" } })`, or

@@ -1,4 +1,3 @@
-/** Synthetic accounts that members save and link to one hosted app; each is its saver's own. */
 import { expect } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -10,19 +9,16 @@ import { appsManifest } from "./apps-release.ts";
 import { connectionsPath, linkAccount } from "./app-accounts.ts";
 
 export const Access = Schema.Struct({ revision: Schema.String });
-/** The `who` tool's result: the context it ran in and the accounts it received. */
 export const Who = Schema.Struct({
   context: Schema.Struct({ auth: Schema.Boolean, profile: Schema.Boolean }),
   account: Schema.String,
   extra: Schema.Array(Schema.String),
 });
-/** Require a successful `who` call and decode its result. */
 export const who = (response: Response) =>
   Effect.gen(function* () {
     expect(response.status, JSON.stringify(response.body)).toBe(200);
     return yield* body(Who, response);
   });
-/** The fixture app's source. Its `service` requirement is the one the skill text depends on. */
 export const appAccountsSource = `import { defineApp, defineProvider, secrets, query, mutation, workflow, userInterval, object, string, router,
   type QueryContext, type MutationContext, type WorkflowContext } from "apps";
 const service = defineProvider({ name: "Linked account fixture", auth: { key: secrets({ label: "Key", fields: object({ token: string() }) }) } });
@@ -47,17 +43,11 @@ export default defineApp(requirements, async (ctx) => ({
   skills: [{ name: "selected-account", description: "Instructions for the selected account", files: [{ path: "SKILL.md",
     content: "---\\nname: selected-account\\ndescription: Instructions for the selected account\\n---\\n" + ctx.user.accounts.service.id }] }],
 }));`;
-/** The fixture app's `ticks` table. */
 export const appAccountsMigration = {
   path: "migrations/0001_ticks.sql",
   content: "CREATE TABLE ticks (seq INTEGER PRIMARY KEY AUTOINCREMENT, account TEXT NOT NULL);\n",
 };
 
-/**
- * An app everyone may use, with a personal account the member (Alice) and the admin (Bob) each
- * connected from the app for its plain `service` requirement, which links it there for them; their
- * many() `extra` requirement has no links yet. The owner links nothing.
- */
 export const appAccountsFixture = Effect.gen(function* () {
   const api = yield* Api,
     actors = yield* Actors;
@@ -92,11 +82,6 @@ export const appAccountsFixture = Effect.gen(function* () {
     [identity(actors.member), identity(actors.admin)],
     { concurrency: 2 },
   );
-  /**
-   * Save an account of `actor` from the app for one of its user requirements, `service` unless
-   * named. The connection links the new account to that requirement only, for `actor`: it replaces
-   * their link of a plain requirement and joins a many() one.
-   */
   const connect = (
     actor: Session,
     label: string,
@@ -126,14 +111,12 @@ export const appAccountsFixture = Effect.gen(function* () {
     [connect(actors.member, "Alice mail"), connect(actors.admin, "Bob mail")],
     { concurrency: 2 },
   );
-  /** Call a tool as `actor`. It runs with the accounts `actor` linked to the app. */
   const call = (actor: Session, tool: "who" | "tick" | "ticks" = "who") =>
     api.request(actor, "POST", `${path}/tools/call`, {
       tool,
       kind: tool === "tick" ? "mutation" : "query",
       input: {},
     });
-  /** The accounts `actor` links to this app, as the inventory reports them. */
   const inventoryLinks = (actor: Session) =>
     api.request(actor, "GET", `${prefix}/inventory`).pipe(
       Effect.flatMap((response) => body(Inventory, response)),
@@ -157,10 +140,6 @@ export const appAccountsFixture = Effect.gen(function* () {
   };
 });
 
-/**
- * Alice and Bob each save a second account from the app for `service`, which replaces their first
- * there. Each then links their first account and their second, in that order, to `extra`.
- */
 export const secondAccountFixture = Effect.gen(function* () {
   const fixture = yield* appAccountsFixture;
   const { actors, path, connect, mailA, mailB } = fixture;

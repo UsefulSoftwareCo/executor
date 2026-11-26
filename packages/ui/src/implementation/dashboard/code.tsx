@@ -8,7 +8,6 @@ import { highlightedAtom } from "../../contracts/highlight.ts";
 import { Button, type ButtonProps } from "../components/button.tsx";
 import { copyText } from "../lib/clipboard.ts";
 
-/** Render and copy the supplied display text unchanged, with local syntax highlighting. */
 export function Code({
   code,
   path = "schema.json",
@@ -74,7 +73,6 @@ export function Code({
 const copyStates = ["idle", "copied", "failed"] as const;
 type CopyState = (typeof copyStates)[number];
 
-/** Copy the raw value with local feedback; unknown values keep the control disabled. Clipboard contents never enter logs. */
 export function CopyButton({
   code,
   label,
@@ -137,7 +135,6 @@ export function CopyButton({
         {text === "" ? (
           <span className="sr-only">{labels[state]}</span>
         ) : (
-          // Every label stays laid out in one cell, so the feedback never resizes the button.
           <span className="grid justify-items-center">
             {copyStates.map((label) => (
               <span

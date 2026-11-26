@@ -11,23 +11,15 @@ import { cn } from "../lib/utils.ts";
 
 type ErrorNoticeProps = {
   readonly error: UserFacingError;
-  /** Product navigation or recovery controls; error contracts remain independent of routing. */
   readonly action?: ReactNode;
-  /** The operation supplies task context without changing the error's reusable explanation. */
   readonly context: string;
-  /**
-   * The product's next step when it does not offer the one the error's recovery names, such as a
-   * page that cannot start account setup itself. The explanation and fix prompt stay the error's.
-   */
   readonly recovery?: string | undefined;
   readonly retry?: (() => void) | undefined;
   readonly retrying?: boolean | undefined;
-  /** `compact` sits among a form's fields: one short block, without the error code. */
   readonly layout?: "inline" | "panel" | "compact" | undefined;
   readonly retryStatus?: string;
 };
 
-/** Explain the failure and recovery inline; retain the card while a retry is pending. */
 export function ErrorNotice(props: ErrorNoticeProps) {
   return props.layout === "compact" ? <CompactNotice {...props} /> : <CardNotice {...props} />;
 }
@@ -131,10 +123,6 @@ function CardNotice({
   );
 }
 
-/**
- * A failure as one short block among a form's fields: an icon, a title, and what to do. Products
- * use it for failures they explain without a shared error presentation.
- */
 export function CompactFailure({
   title,
   busy = false,
@@ -142,7 +130,6 @@ export function CompactFailure({
 }: {
   readonly title: string;
   readonly busy?: boolean | undefined;
-  /** The explanation, then any detail and actions, stacked. */
   readonly children: ReactNode;
 }) {
   const heading = useId();
@@ -168,10 +155,6 @@ export function CompactFailure({
   );
 }
 
-/**
- * A shared error as a compact failure: one explanation, and the detail as inline monospace text.
- * The error code stays in the fix prompt, which agents read.
- */
 function CompactNotice({
   error,
   action,
@@ -226,10 +209,6 @@ function CompactNotice({
   );
 }
 
-/**
- * A labelled value, such as a service's own response, as inline monospace text. Long values stop
- * after four lines until shown in full; Copy always takes the whole value.
- */
 function InlineDetail({ label, value }: { readonly label: string; readonly value: string }) {
   const text = useRef<HTMLDivElement>(null);
   const [expanded, setExpanded] = useState(false);

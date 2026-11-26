@@ -7,7 +7,6 @@ import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
 import { OrganizationReference, RequireOrganization } from "./organization.ts";
 
-/** Organization members can submit feedback through a browser session or API authorization. */
 export const HostedFeedback = HttpApiGroup.make("feedback")
   .add(
     HttpApiEndpoint.post("submit", "/api/organizations/:organization/feedback", {

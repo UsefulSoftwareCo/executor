@@ -1,10 +1,3 @@
-/**
- * Google issues a refresh token only for `access_type=offline`, and on a later sign-in only with
- * `prompt=consent`, and its metadata says neither. Every sign-in at Google's authorization endpoint
- * asks for both, so an app that declares only Google's endpoints, as an app imported from Executor
- * v1 does, still keeps its accounts signed in past the first hour. An app's own values win, and
- * no other server receives them. Starting a sign-in never contacts Google.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -27,7 +20,6 @@ layer(HostedLive, { excludeTestServices: true })("Google renewable grant", (it) 
         const api = yield* Api,
           actors = yield* Actors;
         const prefix = `/api/organizations/${actors.organization.id}`;
-        /** The sign-in URL for an app whose one OAuth method has these settings. */
         const signIn = (config: object) =>
           Effect.gen(function* () {
             const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
@@ -84,12 +76,10 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
           prompt: url.searchParams.getAll("prompt"),
         });
 
-        // Only Google's endpoints, as v1 stored them and its import declares them.
         const plain = yield* signIn({ authorizationUrl: google });
         expect(`${plain.origin}${plain.pathname}`).toBe(google);
         expect(sent(plain)).toEqual({ access_type: ["offline"], prompt: ["consent"] });
 
-        // A declared parameter replaces the default it names and keeps the other.
         expect(
           sent(
             yield* signIn({
@@ -98,13 +88,11 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
             }),
           ),
         ).toEqual({ access_type: ["offline"], prompt: ["select_account consent"] });
-        // So does the declared URL's own query.
         expect(sent(yield* signIn({ authorizationUrl: `${google}?access_type=online` }))).toEqual({
           access_type: ["online"],
           prompt: ["consent"],
         });
 
-        // Another server, even one whose name starts with Google's, receives neither.
         expect(
           sent(
             yield* signIn({

@@ -22,7 +22,8 @@ bun run e2e:prepare
 bun run e2e:self-host
 ```
 
-`e2e:prepare` builds the dashboards, app framework, bundled Motel and shared
+`e2e:prepare` builds the dashboards, app framework, the telemetry collector (with cargo; it needs
+[rustup](https://rustup.rs), which installs the toolchain the crate pins) and its viewer, and the shared
 workerd runtime artifact. Run it again after changing these inputs. It caches each
 build step's outputs in `~/.cache/executor-e2e-prepare` (or `$EXECUTOR_E2E_CACHE`)
 under a hash of the step's inputs: the files git sees in its packages and their
@@ -51,10 +52,31 @@ E2E_ROWS=12 bun run e2e:self-host
 bun run e2e:self-host --test-name 'password login'
 ```
 
-The default data-volume scenario remains 1,000 accounts with four concurrent
+The default data-volume scenario saves 300 accounts with four concurrent
 writers. Smaller runs use the same assertions. `--test-name` is a regular expression
 matched against scenario titles, without the enclosing Vitest suite name.
 Filtered cases are not counted as executed cases in the evidence view.
+
+## Snapshots
+
+Use an inline snapshot (`toMatchInlineSnapshot`) when the whole text is the behaviour, such as
+rendered output or the error an agent reads, and it would otherwise take a row of `toContain`
+checks. Assert one field directly, keep `toMatchObject` where it ignores fields on purpose, and
+replace ids, times and paths with stable labels first. A snapshot is an assertion: a changed one
+is a changed assertion, so read every line of its diff and accept only what the change intends.
+Keep it under 30 lines and inline; lint refuses larger ones, interpolated ones and `.snap` files.
+
+No run writes a snapshot unless asked (`e2e/snapshot-updates.ts`): a missing, empty or changed
+one fails, and under the runner its failure shows what the scenario produced. To record one on purpose, on your machine, run its
+scenario alone with `--update-snapshots`, then read the result in `git diff`:
+
+```sh
+bun run e2e:self-host --test-name '<scenario title>' --update-snapshots
+```
+
+The runner refuses `--update-snapshots` in CI, without `--test-name` and with `--part`. A tooling
+suite (`bun run e2e:<name>`) records when asked with `E2E_UPDATE_SNAPSHOTS=1` or Vitest's own `-u`;
+in CI every config refuses both, however Vitest was started.
 
 ## Line coverage
 
@@ -65,7 +87,10 @@ starts its own product, so each report under `<run>/<target>/coverage/<scenario 
 belongs to one scenario. Chromium also records each scenario's page scripts on every
 target; `e2e:prepare` builds the dashboards with unreferenced source maps, which map
 that coverage to the dashboards' sources. Managed Cloud's Worker serves every scenario
-at once, so Cloud counts only browser coverage.
+at once, so Cloud counts only browser coverage. On local, every process a scenario starts
+itself, such as `executor pair`, `executor service start` and the server it starts, writes
+V8 coverage into the scenario's `processes/` directory too (see
+`support/process-coverage.ts`), so a scenario that drives the CLI counts the CLI's lines.
 
 The code each product runs inside workerd is profiled too: the host Worker, and the app
 framework in every app and data facet Worker. The runner starts workerd with V8's
@@ -87,11 +112,13 @@ node e2e/coverage.ts report .local/line-coverage.json
 
 `report` prints coverage by target and package, and the scenarios that cover no line
 another scenario does not. On a full run, CI's `line-coverage` job fails when a target
-covers fewer lines than `e2e/coverage-baseline.json` records, less a tolerance for
-paths that timing decides. Before deleting a scenario as redundant, check that it adds
-no line; a change that removes product code records a new baseline with
+covers fewer lines than `e2e/coverage-baseline.json` records, less that target's
+tolerance for paths that timing decides (twice the target's measured run-to-run spread).
+Before deleting a scenario as redundant, check that it adds no line; a change that
+removes product code records a new baseline with
 `node e2e/coverage.ts baseline e2e/coverage-baseline.json <collected files>` from the
-`line-coverage-*` artifacts of a full run.
+`line-coverage-*` artifacts of one full run. A rise past the tolerance does not fail the
+job; it adds a warning and a line to the run's summary with that command for the run.
 
 ## Dependency injection
 
@@ -105,7 +132,8 @@ no line; a change that removes product code records a new baseline with
 - `BrowserDriver`: scoped Playwright process, shared by a suite.
 - `Browser`: isolated context per case, with an Effect `use` boundary for SDK calls.
 - `Evidence`: named steps, screenshots, request timings and the final outcome.
-- `Telemetry`: queries spans that actually reached Motel over HTTP.
+- `Telemetry`: queries spans that actually reached the collector over HTTP. A trace the collector
+  answered in part fails the read; failure evidence keeps its `meta` marker.
 - `McpOAuth`: public discovery, registration, PKCE, recorded browser consent, refresh and revocation.
 - `McpClient`: scoped official MCP protocol clients with safe method/revision/trace evidence.
 - `ClaudeClient`: real Claude Code in a Terminal Control PTY, with an injected model API.
@@ -130,6 +158,142 @@ and stop child processes. Owned server process groups get a 15-second graceful
 shutdown window before Effect escalates to SIGKILL. `Effect.forEach` bounds concurrent writes and waits for
 interrupted children. Transport failures are typed and do not expose credentials.
 
+A failed driver step or request reports its cause's name, code and message: for
+Playwright, its first line, the elements it matched and its call log. The raw error stays
+`Redacted`; `support/failure-text.ts` masks the text that reaches the job log, the Vitest
+message, `result.json` and the step's `error` in `steps.json`. It masks every secret the
+harness registered, drops URL userinfo and the query and fragment of URLs and paths, masks
+header, cookie, `Bearer`, key-value and typed-text values, and masks unbroken 40-character
+tokens. Its header lists what it cannot catch. Read secrets with `reveal`, and create them with
+`secret`, `secretConfig` or a `heldValue` schema, so they are registered; a secret read with
+`Redacted.value` is not, so a failure text that echoes it is not masked. Scenarios that
+expect no page errors use `noPageErrors`, which lists each message, and the browser keeps every
+page and console error in `page-errors.json`.
+
+`e2e:prepare` builds the dashboards, app framework, the telemetry collector (with cargo; it needs
+[rustup](https://rustup.rs), which installs the toolchain the crate pins) and its viewer, and the shared
+workerd runtime artifact. Run it again after changing these inputs. It caches each
+build step's outputs in `~/.cache/executor-e2e-prepare` (or `$EXECUTOR_E2E_CACHE`)
+under a hash of the step's inputs: the files git sees in its packages and their
+workspace dependencies, the lockfile, patches and root config, and the Node and Bun
+versions. A step whose inputs have not changed, in any rift, is restored instead of
+built. `scripts/e2e-prepare.ts` lists each step's inputs; add a file there when a
+build starts reading one outside them. CI and `--no-cache` build every step. The Node server runs current TypeScript source; the workerd host bundle is prebuilt, so a change to the SDK's app runner needs `bun run e2e:runtime` before a self-host run sees it. `bun run e2e:check` runs the
+boundary check and TypeScript check; the root `check` includes it.
+
+Scenarios on the self-host, local and managed Cloud targets do not install npm
+packages from the internet. Products install them from the run's loopback registry
+(`support/npm-registry.ts`). It serves the staged `apps` package and only the
+versions pinned in `e2e/npm-packages.json`, from archives that `e2e:prepare`
+downloads once and checks against their integrity. It refuses any other package with
+a 404 that names the lock. When a scenario declares a new package, add it to the
+roots in `scripts/e2e-npm-packages.ts`, then run
+`node scripts/e2e-npm-packages.ts --update`. Self-host and local read a
+synthetic official app feed and the public app registry from a loopback copy
+(`support/public-catalogs.ts`), through `EXECUTOR_CATALOG_URL` and
+`EXECUTOR_REGISTRY_URL`. A scenario that checks interoperation with a real
+third-party service, such as `remoteMcpCloudflare`, runs only in Cloud tests on main.
+
+```sh
+bun run e2e:local
+E2E_ROWS=12 bun run e2e:self-host
+bun run e2e:self-host --test-name 'password login'
+```
+
+The default data-volume scenario saves 300 accounts with four concurrent
+writers. Smaller runs use the same assertions. `--test-name` is a regular expression
+matched against scenario titles, without the enclosing Vitest suite name.
+Filtered cases are not counted as executed cases in the evidence view.
+
+## Line coverage
+
+`E2E_COVERAGE=1` profiles every self-host and local product process. Self-host runs
+under `bun test --coverage` through `apps/hosted/self-host/scripts/coverage-main.ts`,
+because Bun profiles nothing else; local runs with `NODE_V8_COVERAGE`. Each scenario
+starts its own product, so each report under `<run>/<target>/coverage/<scenario id>/`
+belongs to one scenario. Chromium also records each scenario's page scripts on every
+target; `e2e:prepare` builds the dashboards with unreferenced source maps, which map
+that coverage to the dashboards' sources. Managed Cloud's Worker serves every scenario
+at once, so Cloud counts only browser coverage. On local, every process a scenario starts
+itself, such as `executor pair`, `executor service start` and the server it starts, writes
+V8 coverage into the scenario's `processes/` directory too (see
+`support/process-coverage.ts`), so a scenario that drives the CLI counts the CLI's lines.
+
+The code each product runs inside workerd is profiled too: the host Worker, and the app
+framework in every app and data facet Worker. The runner starts workerd with V8's
+`--log-function-events` (through `ALCHEMY_WORKERD_V8_FLAGS`), and
+`support/workerd-coverage.ts` reads each isolate's log once the product stops. A function
+counts as run when V8 compiled it lazily, which only a call does, or logged its first
+execution: a function that ran counts all its lines, including branches it skipped.
+Nothing attaches to the product. workerd's inspector stays closed: with it open, an app
+Worker the runtime unloaded fails to load again under the same name. `e2e:prepare` writes
+source maps beside the host bundle (`.local/test-runtime/host.json.map`) and the framework
+modules (`packages/apps/dist/runtime.json.map`, outside the package's files), which map that
+coverage to `packages/`. An app's own bundle is not product code and is not counted.
+
+```sh
+E2E_COVERAGE=1 bun run e2e:self-host --test-name 'password login'
+node e2e/coverage.ts collect .local/line-coverage.json .local/e2e/<run>
+node e2e/coverage.ts report .local/line-coverage.json
+```
+
+`report` prints coverage by target and package, and the scenarios that cover no line
+another scenario does not. On a full run, CI's `line-coverage` job fails when a target
+covers fewer lines than `e2e/coverage-baseline.json` records, less that target's
+tolerance for paths that timing decides (twice the target's measured run-to-run spread).
+Before deleting a scenario as redundant, check that it adds no line; a change that
+removes product code records a new baseline with
+`node e2e/coverage.ts baseline e2e/coverage-baseline.json <collected files>` from the
+`line-coverage-*` artifacts of one full run. A rise past the tolerance does not fail the
+job; it adds a warning and a line to the run's summary with that command for the run.
+
+## Dependency injection
+
+`support/platform.ts` supplies target configuration and native platform services.
+`support/case.ts` composes the Layers used by Effect Vitest:
+
+- `Target`: exact origin, runtime, data directory and private configuration.
+- `SessionClients`: native Effect HTTP clients with independent cookie jars.
+- `Actors`: fresh owner/admin/member sessions and an organization for each hosted case.
+- `Api`: records each real request while preserving the test trace ID.
+- `BrowserDriver`: scoped Playwright process, shared by a suite.
+- `Browser`: isolated context per case, with an Effect `use` boundary for SDK calls.
+- `Evidence`: named steps, screenshots, request timings and the final outcome.
+- `Telemetry`: queries spans that actually reached the collector over HTTP. A trace the collector
+  answered in part fails the read; failure evidence keeps its `meta` marker.
+- `McpOAuth`: public discovery, registration, PKCE, recorded browser consent, refresh and revocation.
+- `McpClient`: scoped official MCP protocol clients with safe method/revision/trace evidence.
+- `ClaudeClient`: real Claude Code in a Terminal Control PTY, with an injected model API.
+- `RecordingFocus`: one clock and an ordered activity log for every recorded window.
+- `Terminal`: scoped Terminal Control sessions; each `use` call selects that window in the recording.
+
+Each test yields the services it needs. Native Vitest setup hooks start the isolated
+server and provision the actors declared in the test plan. Provisioning belongs to
+the setup deadline; scenario actions retain their full deadline. Scenarios that need
+the default management app can declare `managementApps` with the required actor
+roles. Setup waits for the app and each actor's linked Executor key through public APIs. Scenarios that
+exercise provisioning progress leave that prerequisite undeclared. Scenarios that need
+another Testing SDK scenario declare `sdkScenarios`; setup creates each one in a
+child scope the test may close. Native cleanup
+hooks release those fixtures and close the server scope. `withCase` provides the per-case Layers;
+`@effect/vitest` owns suite sharing and test interruption. The scenario deadline
+is 60 seconds, with separate 60-second setup and cleanup deadlines and no retries.
+`report/lifecycle/` records setup, scenario, cleanup and total elapsed times.
+The report uses Vitest's final result so a cleanup failure cannot appear as a pass.
+Effect scopes close browsers, save evidence,
+and stop child processes. Owned server process groups get a 15-second graceful
+shutdown window before Effect escalates to SIGKILL. `Effect.forEach` bounds concurrent writes and waits for
+interrupted children. Transport failures are typed and do not expose credentials.
+
+A failed driver step or request reports its cause's name, code and message: for
+Playwright, its first line, the elements it matched and its call log. The raw error stays
+`Redacted`; `support/failure-text.ts` masks the text that reaches the job log, the Vitest
+message, `result.json` and the step's `error` in `steps.json`. It masks each secret the
+harness revealed through `reveal`, drops URL userinfo, queries and fragments and header
+values, and masks unbroken 40-character tokens. Its header lists what it cannot catch.
+Scenarios that expect no page errors use `noPageErrors`, which lists each message, and the
+browser keeps every page and console error in `page-errors.json`.
+
 `e2e:prepare` builds `.local/test-runtime/host.json` once. Each isolated local or
 self-host process reads that explicit artifact instead of rebuilding the same
 trusted runtime. Rebuild with `e2e:prepare` after source changes; scenario data
@@ -142,6 +306,13 @@ processes. It is never packaged. The control API's `kill` ends the product proce
 group with SIGKILL, running none of its shutdown, to model a crash.
 Sleep timers and duration measurements stay real. This tests
 minute-based scheduling without adding a minute of sleep to each scenario.
+
+A product keeps its origin through every stop and start. Its port is reserved for the
+managed server's whole life (`reservedPort` in `support/ports.ts`): it lies outside the
+range the OS hands to sockets that bind port zero or connect out, which the harness
+checks, and a file per port in the machine's temporary directory gives no port to two
+owners across suites and worker processes. `freePort` draws from the same reservations.
+`product-port.spec.ts` checks that nothing else can be given a stopped product's port.
 
 ### Legacy storage
 
@@ -197,7 +368,7 @@ inventory case, which has 120 seconds. Cleanup hooks retain a separate
 Within a scenario, use `Effect.all` or `Effect.forEach` with a concurrency bound
 when operations are independent. Keep dependent actions ordered.
 
-The self-host load case creates 1,000 accounts through four concurrent API
+The self-host load case creates 300 accounts through four concurrent API
 writers. The MCP catalog scale case deploys 29 apps with 7,000 tools and about
 46 MB of input schemas, plus nine MCP apps whose server never answers, and bounds
 execute and search latency. CI gives both cases their own 16-vCPU Linux runner, one
@@ -206,9 +377,9 @@ invalidate the load timing. The normal self-host command still includes every
 applicable case. To reproduce the CI split, use separate machines:
 
 ```sh
-bun run e2e:self-host --test-name '^(?!.*(?:Claude Code connects|concurrent owners and admins save every account|MCP execute over 7,000 tools))'
+bun run e2e:self-host --test-name '^(?!.*(?:Claude Code connects|concurrent owners and admins save every account|MCP execute over 7,000 tools|MCP execute beside stalled apps))'
 bun run e2e:self-host --test-name 'concurrent owners and admins save every account'
-bun run e2e:self-host --test-name 'MCP execute over 7,000 tools'
+bun run e2e:self-host --test-name 'MCP execute over 7,000 tools|MCP execute beside stalled apps'
 ```
 
 ## Shared SDK and interactive CLI
@@ -353,13 +524,13 @@ refresh tokens. A slow renewal holds its claim while other calls wait, a renewal
 survives its caller disconnecting, and `docker kill` mid-renewal followed by an
 immediate `docker start` recovers the grant within an execute deadline.
 
-| Command                 | Target                                                          | Current coverage                                              |
-| ----------------------- | --------------------------------------------------------------- | ------------------------------------------------------------- |
-| `bun run e2e:self-host` | Fresh Node/PGlite self-host                                     | Shared hosted scenario, password login, account volume, Motel |
-| `bun run e2e:local`     | Fresh Node/PGlite local product                                 | Pairing, replay rejection, dashboard access and reload        |
-| `bun run e2e:cloud`     | Managed local Cloud Worker + Postgres, or explicit attached URL | Cloud onboarding, shared hosted behavior and MCP              |
-| `bun run e2e:parity`    | Self-host and Cloudflare                                        | Identical role/account and MCP scenarios on both              |
-| `bun run e2e:all`       | All three                                                       | All applicable tests in one combined report                   |
+| Command                 | Target                                                          | Current coverage                                                  |
+| ----------------------- | --------------------------------------------------------------- | ----------------------------------------------------------------- |
+| `bun run e2e:self-host` | Fresh Node/PGlite self-host                                     | Shared hosted scenario, password login, account volume, collector |
+| `bun run e2e:local`     | Fresh Node/PGlite local product                                 | Pairing, replay rejection, dashboard access and reload            |
+| `bun run e2e:cloud`     | Managed local Cloud Worker + Postgres, or explicit attached URL | Cloud onboarding, shared hosted behavior and MCP                  |
+| `bun run e2e:parity`    | Self-host and Cloudflare                                        | Identical role/account and MCP scenarios on both                  |
+| `bun run e2e:all`       | All three                                                       | All applicable tests in one combined report                       |
 
 With no `E2E_CLOUD_URL`, the Cloud target starts the real Alchemy Worker and a
 throwaway Postgres container on fresh ports. It provisions its external services
@@ -479,6 +650,17 @@ The runner prints the saved run directory and an explicit render command. It kee
 raw case results, screenshots, browser/terminal captures, traces, Vitest JSON
 results, and a combined `evidence.json` manifest. No rendering runs automatically,
 even on failure. Test failures and empty filters still fail the test command.
+Outside CI, each run starts by removing older run folders in its workspace's `.local/e2e`,
+printing how many and the space freed: it keeps runs from the last three days, the newest five
+passed ones and every other one, up to 3 GB (passed runs go first), and any run another process
+is writing or rendering; copy evidence you must keep outside any `.local/e2e`.
+`bun run e2e:*` does not start when the workspace's disk has less than 20 GB free
+(`scripts/disk-floor.ts`), so a shared host does not fill up and stop every agent on it. It prints
+how much is free and the floor. Set `EXECUTOR_DISK_FLOOR_GB` to change the floor, or to `0` to turn
+it off. In CI the floor applies only when that variable is set: runners start with about 14 GB
+free on a fresh disk.
+
+Every CI e2e job, passed or failed, also uploads `<job>-resources-evidence-<index>-attempt-<N>`, and the `tooling`, `tooling-release` and `tooling-cloud` jobs `tooling-resources-evidence-attempt-<N>`, `tooling-release-resources-evidence-attempt-<N>` and `tooling-cloud-resources-evidence-attempt-<N>`: the runner's load, CPU (busy, iowait, steal, cores busy), memory and busiest command names every 5 s in `samples.ndjson`, with totals in `summary.json` (`scripts/ci/resource-sampler.ts`; read with `ci-evidence.ts --file summary.json --artifact <name>`).
 
 When evidence needs review, render the retained run, then serve the report on
 loopback. Rendering needs Playwright Chromium installed, plus ffmpeg and ffprobe
@@ -511,7 +693,8 @@ kept, the `dropped` ones and the `unfetched` ones, and its `state`: `collecting`
 end, then `complete` or `partial` when the deadline stopped the reads. `telemetry.json`
 is written a batch at a time, one compact entry per line: first the newest request, then
 the other traces always kept, then the rest newest first. A trace not read before the
-deadline has an entry with only an `error`. `unanswered-requests.json` lists every
+deadline has an entry with only an `error`. The deadline, like the budget, leaves out only
+the oldest: every trace kept is newer than every trace not read, except those always kept. `unanswered-requests.json` lists every
 request that never answered. `failure-evidence.spec.ts` checks this with cases that fail
 on purpose.
 
@@ -594,18 +777,18 @@ the recorded page. Query strings/fragments are omitted. Playwright renders the
 bar images and scoped ffmpeg processes compose the MP4; the tested page is never
 modified. Raw video and trace artifacts remain in the case directory.
 
-The server log and complete Motel database remain under each target's run folder.
+The server log and the collector's complete database remain under each target's run folder.
 Saved trace samples are not a full trace archive. The telemetry test checks actual
 server spans, status and the presence of SQL spans; client spans cannot satisfy it. While
 running, `data/diagnostics/collector.json` identifies the collector query URL.
 
-Managed Cloud's collector is four Motels behind one router (`serveShardedOtlpCollector` in
-`support/otlp-collector.ts`). One Motel stores about 1,500 spans a second, and six workers
-provisioning their organizations export more than that; a single Motel refused thousands of
-exports a run, which the product dropped once its three-second export budget ran out. The router
-splits each export by trace ID, sends a trace's reads to its Motel, and merges searches across
-all four. Each Motel keeps its database in `data/diagnostics/motel-<n>` and its log in
-`collector-<n>.log`; `GET /api/ingest` on the router lists each one's refused exports.
+Managed Cloud's collector is four collectors behind one router (`serveShardedOtlpCollector` in
+`support/otlp-collector.ts`). The split dates from Motel, which stored about 1,500 spans a second
+while six workers provisioning their organizations exported more; a single Motel refused thousands
+of exports a run. Whether one Rust collector keeps up there has not been measured, so the split
+stays. The router splits each export by trace ID, sends a trace's reads to its collector, and
+merges searches across all four. Each keeps its database in `data/diagnostics/collector-<n>` and
+its log in `collector-<n>.log`; `GET /api/ingest` on the router lists each one's refused exports.
 
 All runs use synthetic identities. Private run directories and session files are
 ignored by Git. They can still contain session cookies and should not be published.
@@ -703,6 +886,36 @@ Provider emulation does not claim coverage of Google's/GitHub's live UI or nativ
 Cloudflare mail delivery. The separate interactive Claude journey still takes
 its model-endpoint configuration documented above; onboarding does not need it.
 
+### Hosted emulators
+
+The harness's own calls to emulators.dev, which set an emulator up, read or reset its state, or
+read what it recorded, go through `emulatorRequest` in `e2e/support/emulators.ts`. When the
+service fails to answer one (a 5xx that is not a fault the harness armed, a refused, reset or
+closed connection, or no answer in time), the call is sent again: at most three attempts, each
+within 10 s, 1 s and then 3 s apart, all within the call's 30 s deadline. A 4xx is never retried.
+In CI on 10-13 November 2026, 14 red jobs failed on such a harness call, each a single bad
+answer that the same service did not repeat seconds later.
+
+Only calls whose second copy cannot change what a scenario observes are retried; `repeatability`
+lists each route and why. Arming or clearing a fault, the harness's writes through a provider's
+own API (WorkOS Vault, invitations, organization and membership changes, Autumn balances) and
+seeds of services not checked there are sent once. A WorkOS seed that creates an organization is
+sent again only after reading back shows the first copy did not apply, within what is left of the
+same 30 s. Every fault the harness arms answers with the `x-executor-e2e-armed-fault` header, and
+such an answer is never retried; while a fault the harness armed may still be live on an emulator,
+every call to that emulator is sent once, so a delayed fault cannot pass for an outage.
+
+Calls the product makes to its providers are not affected: how the product behaves when a
+provider fails is what scenarios test.
+
+Each retried call is saved in the run's `report/emulator-retries/`, passed scenarios included,
+and logged. The jobs that call hosted emulators (`e2e-cloud`, `e2e-self-host`, the deployed
+suite) add a "Hosted emulators" section to their summary: how many calls needed a retry, in how
+many scenarios, how many still failed, and the worst one. A job that passed only after retrying
+says so, and adds a warning annotation to the run. Counting never fails a job. The deployed suite
+uploads the records in their own artifact, so `deployed-*-results` still means its scenarios ran. The coverage summaries of full runs count them beside the platform signatures. When the
+attempts run out, `EmulatorFailed` lists every attempt with its status, ray or how far it got.
+
 ### Signed-in actors for other hosted tests
 
 Use `bun run e2e:deployed --test-name 'Testing SDK|hosted roles' --workers 2`.
@@ -758,7 +971,7 @@ hold duration, never deployment credentials, into the test process.
 ## Existing failure
 
 The original 1,000-account run preserved every account and selection but lost later
-server telemetry before it reached Motel. That delivery assertion remains enabled;
+server telemetry before it reached the collector. That delivery assertion remains enabled;
 this runner migration does not relax its timeout or reduce the default data volume.
 
 ## Driver references
@@ -789,7 +1002,7 @@ a failed subscription followed by a linked retry, and live access revocation.
 Each scenario owns its app and organization. The retry scenario requires both
 the failed attempt and its native link to reach the collector.
 
-Self-host reads actual delivery through Motel. For a dedicated deployed Cloud
+Self-host reads actual delivery through the bundled collector. For a dedicated deployed Cloud
 stage, bind `E2E_AXIOM_TOKEN` through the credential launcher and set
 `E2E_AXIOM_DATASET=executor-next-test-traces` together with the normal attached
 stage URL and private synthetic actor file. The query adapter reads only the
@@ -837,7 +1050,17 @@ only the scenarios declaring `runtime: "rolled-back"`. Managed local Cloud runs
 with Better Auth's OAuth proxy on, as the proxy's production (its edge), as
 production does. `bun run e2e:cloud --oauth-proxy-preview` also starts a second
 local Cloud as that production and tests a stage that signs in through it,
-running only the scenarios declaring `runtime: "oauth-proxy-preview"`. Production (`v2`),
+running only the scenarios declaring `runtime: "oauth-proxy-preview"`.
+`bun run e2e:cloud --removal-revocation-budget` starts it with organization
+removal's revocation budget shortened to five seconds and runs only the
+scenarios declaring `runtime: "revocation-budget"`; every other local Cloud
+keeps the deployed five minutes. `bun run e2e:cloud --release-notes empty`
+builds its dashboard with an empty notes file and runs only the scenarios
+declaring `runtime: "empty-release-notes"`; `--release-notes fixes` and
+`--release-notes feature` build it with notes the deploy's notes script writes
+from commit messages (`cloudChanges` in `e2e/support/cloud-release-notes.ts`)
+and run only those declaring `runtime: "fix-release-notes"` or
+`"feature-release-notes"`; every other local Cloud builds it with fixed notes. Production (`v2`),
 ordinary previews and every other deployed stage always retain rate limits,
 whatever their configuration; `bun run auth:rate-limit` (part of `check`)
 proves it. Local and
@@ -894,6 +1117,27 @@ The release executable runs no preload, so the local CLI owns the runner's two p
 executable loads from disk, such as the OS credential store binding, start it from a shadow
 copy of its install (`support/stand-in-package.ts`).
 
+Test-only hooks in the product. Each is read only when `EXECUTOR_ENVIRONMENT=e2e` (Cloud: only
+with emulated providers, on loopback Cloud and `test-e2e-` stages); any other run ignores it:
+
+- `EXECUTOR_TEST_CLOCK_OFFSET_MS`, `EXECUTOR_TEST_CLOCK_CONTROL` and `EXECUTOR_TEST_STOP_FD`:
+  the local CLI's clock and stop requests (`apps/local/server/src/implementation/e2e-process.ts`).
+- `EXECUTOR_TEST_OAUTH_CLIENT_DEFINITIONS`: synthetic first-party OAuth clients
+  (`apps/hosted/server/src/implementation/first-party-oauth.ts`; self-host allows them only in e2e
+  at `apps/hosted/self-host/src/implementation/executor-services.ts`). Set outside e2e, it stops
+  the server instead of being ignored.
+- `EXECUTOR_TEST_COMPILER_UNAVAILABLE`: calls to the compiler fail as a lost connection does,
+  `all` or only `retained` builds (`packages/sdk/src/implementation/workerd-client.ts`).
+- `EXECUTOR_TEST_CATALOG_COPY_REBUILD_PACE`: paces the catalog copy rebuild at each start, as
+  Cloud paces each tick (`packages/app-management/src/implementation/host-data-steps.ts`).
+- `EXECUTOR_TEST_WORKFLOW_ENGINE_FAULTS`: workflow engine call faults
+  (`packages/sdk/src/contracts/engine-faults.ts`).
+- `EXECUTOR_TEST_SUPERVISOR_RESET_DELAY_MS`, `EXECUTOR_TEST_SUPERVISOR_RESET_HOLD_MS` and
+  `EXECUTOR_TEST_SUPERVISOR_REPLY_DELAY_MS`: delays that make a data supervisor's reset meet other
+  work on purpose. The first waits before the reset's checks with its input open, the second holds
+  its input after them, and the third holds a call's reply after the call has left the facet
+  (`packages/sdk/src/implementation/workerd-apps.ts`; the `app-data-reset-*` scenarios).
+
 The first-launch key scenarios also run against an installed entry:
 
 ```sh
@@ -948,6 +1192,22 @@ starts the server again:
 ```sh
 EXECUTOR_E2E_DESKTOP_EXECUTABLE='/path/to/Executor Preview.app/Contents/MacOS/Executor Preview' \
   bunx vitest run --config e2e/desktop-release.config.ts
+```
+
+### Desktop update
+
+The desktop update scenario (`desktopUpdate`) runs the desktop's updater from its feed to its
+restart: the sidebar's block and the Updates menu offer a downloaded version, a newer download that
+fails verification clears both, and the menu's item and the block's link each install. It runs
+only on macOS, against a development build, which reads the loopback feed the scenario serves from
+`EXECUTOR_DESKTOP_DEV_UPDATE_CONFIG` (a release build does not contain that setting). Squirrel.Mac, which installs a
+macOS update and accepts only Executor's signed app, is played through Electron's `autoUpdater`.
+No CI job runs it; run it before merging a change to the desktop's updater or its menu:
+
+```sh
+node apps/local/desktop/scripts/build.mjs
+bun run web:build
+bunx vitest run --config e2e/desktop-update.config.ts
 ```
 
 Verify a locally built image without pushing it:

@@ -90,7 +90,7 @@ function fieldInput(
       case "String":
         return { type: "string" };
       default:
-        return {}; // A custom scalar's wire format belongs to the upstream server.
+        return {};
     }
   };
   const argsSchema = (args: GraphqlField["args"]): JsonObject => ({
@@ -287,26 +287,21 @@ export const graphqlClientEffect = (input: GraphqlToolsOptions) =>
     const headers = Redacted.make({ ...options.headers });
     const request = (phase: "discover" | "call", query: string, variables: JsonObject = {}) =>
       Effect.gen(function* () {
-        // The status of a refused request, so a body still arriving at the deadline keeps it.
         const refusal = yield* Ref.make(Option.none<number>());
         return yield* Effect.scoped(
           Effect.gen(function* () {
             const client = yield* HttpClient.HttpClient;
             const response = yield* HttpClient.withScope(client).execute(
               HttpClientRequest.post(url.href).pipe(
-                // GitHub requires this header; Workers do not supply one by default.
                 HttpClientRequest.setHeader("user-agent", "Executor"),
                 HttpClientRequest.setHeaders(Redacted.value(headers)),
                 HttpClientRequest.bodyJsonUnsafe({ query, variables }),
               ),
             );
-            // Executor's network refused the request; its reason names the host or credential at fault.
             yield* failOnNetworkRefusal(response);
             if (response.status < 200 || response.status >= 300) {
               const classified = httpProviderError(response.status, response.headers);
               if (classified !== undefined) return yield* classified;
-              // A server can answer a request it refuses, such as one that fails validation, with
-              // a client error status and its errors in a GraphQL response body.
               yield* Ref.set(refusal, Option.some(response.status));
               const refused = yield* refusedBody(response).pipe(
                 owned("upstream", "provider.http.response.read"),

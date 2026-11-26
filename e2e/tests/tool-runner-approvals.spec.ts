@@ -1,13 +1,10 @@
-/**
- * A person running an approval-gated tool from the hosted dashboard reviews and answers it there,
- * and only there: the dashboard refuses approvals issued by MCP, schedules or another member.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body, type Session } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
+import { replaceResponses } from "../support/browser-responses.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
 import { McpClient } from "../support/mcp-client.ts";
@@ -25,7 +22,6 @@ export default defineApp({}, async () => ({
   tools: router({ publish }),
   schedules: { nightly: userInterval({ minutes: 1 }, publish, { title: "From the schedule" }) },
 }));`;
-// Approving `fails` resumes the saved call, which throws.
 const failingSource = `import { defineApp, mutation, object, router } from "apps";
 const fails = mutation(
   { input: object({}), approval: () => "user-approval" },
@@ -54,11 +50,9 @@ const Runs = Schema.Array(
 );
 class Waiting extends Schema.TaggedError<Waiting>()("Waiting", {}) {}
 const accept = { response: { action: "accept", content: {} } };
-/** Another flow's request records no dashboard run; another member's belongs to their run. */
 const unrecorded = { _tag: "ToolRunApprovalRefused", reason: "unrecorded" };
 const anotherPerson = { _tag: "ToolRunApprovalRefused", reason: "another-person" };
 
-/** What the current dashboard shows for each answer the cb81bce6b release's server sends. */
 const previousServerCopy: Record<string, string> = {
   "execution-failed":
     "The tool failed after you approved it. It may have already made changes. Check before running it again.",
@@ -75,7 +69,6 @@ const previousServerCopy: Record<string, string> = {
 const unreadableReply =
   "Executor received your answer, but this page could not read its reply. If you approved, the tool may have run and made changes. Reload the page, and check before running it again.";
 
-/** The owner deploys the publisher; the scenario removes it when it ends. */
 const deployPublisher = (files = source) =>
   Effect.gen(function* () {
     const actors = yield* Actors,
@@ -93,7 +86,6 @@ const deployPublisher = (files = source) =>
     yield* Effect.addFinalizer(() => api.request(actors.owner, "DELETE", path).pipe(Effect.orDie));
     return { actors, api, prefix, name, app, path };
   });
-/** Read and answer a request through the dashboard routes, as `actor`. */
 const throughDashboard = (actor: Session, approval: string, response: unknown = accept) =>
   Effect.gen(function* () {
     const api = yield* Api;
@@ -117,7 +109,6 @@ layer(HostedLive, { excludeTestServices: true })("Hosted tool runner approvals",
         const bearer = { authorization: `Bearer ${Redacted.value(grant.tokens).access_token}` };
         const call = { tool: "publish", kind: "mutation", input: { title: "From the API" } };
 
-        // An API credential cannot present an approval, so its call still fails without running.
         const refused = yield* api.request(agent, "POST", `${path}/tools/call`, call, bearer);
         expect(refused.status).toBe(409);
         expect(refused.body).toMatchObject({ _tag: "ToolApprovalRequired" });
@@ -126,7 +117,6 @@ layer(HostedLive, { excludeTestServices: true })("Hosted tool runner approvals",
           "an API credential cannot start a dashboard run",
         ).toBe(403);
 
-        // The API document lists only the browser session for the dashboard's run and review.
         const spec = yield* body(
           Schema.Struct({ paths: Schema.Record(Schema.String, Schema.Unknown) }),
           yield* api.request(agent, "GET", "/openapi.json"),
@@ -141,12 +131,10 @@ layer(HostedLive, { excludeTestServices: true })("Hosted tool runner approvals",
         expect(spec.paths[`${tools}/call`]).toMatchObject({
           post: { security: [{ oauth: ["executor"] }, { browserSession: [] }] },
         });
-        // Scheduled-run reviews refuse bearer credentials too.
         expect(
           spec.paths["/api/organizations/{organization}/scheduled-runs/{run}/approval"],
         ).toMatchObject({ get: { security: browserSession }, post: { security: browserSession } });
 
-        // The signed-in person starts a run; the review reads the saved call from the server.
         const started = yield* body(
           Pending,
           yield* api.request(actors.owner, "POST", `${path}/tools/run`, call),
@@ -263,9 +251,9 @@ layer(HostedLive, { excludeTestServices: true })("Hosted tool runner approvals",
             .pipe(Effect.orDie),
         );
 
-        // The owner's own MCP program pauses. Its request is answered only by MCP resume.
         const client = yield* mcp.connect(token.key, "dashboard-refusal", {
           organization: actors.organization.id,
+          mode: "model",
         });
         const paused = yield* client.use("Pause an approval-gated MCP call", (client, signal) =>
           client.callTool(
@@ -303,7 +291,6 @@ layer(HostedLive, { excludeTestServices: true })("Hosted tool runner approvals",
           execution: { ok: true, value: { published: "From MCP" } },
         });
 
-        // A scheduled run waits for its own review, which an app manager answers.
         const schedule = `${path}/schedules/nightly`;
         expect(
           (yield* api.request(actors.owner, "PATCH", schedule, {
@@ -360,7 +347,6 @@ layer(HostedLive, { excludeTestServices: true })("Hosted tool runner approvals",
       context,
       Effect.gen(function* () {
         const { actors, api, app, path } = yield* deployPublisher();
-        // Every member may run the app, so only the run's own person decides it.
         const access = yield* body(
           Schema.Struct({ revision: Schema.String }),
           yield* api.request(actors.owner, "GET", `${path}/access`),
@@ -396,21 +382,23 @@ layer(HostedLive, { excludeTestServices: true })("Hosted tool runner approvals",
           expect(answer.status, `another member cannot ${response.action} it`).toBe(403);
           expect(answer.body).toMatchObject(anotherPerson);
         }
-        // The member's runner, handed the owner's request through one run response, shows whose
-        // run it is and what to do instead of a retry. The review's refusal is the real server's.
         const browser = yield* Browser;
         yield* browser.login(actors.member);
+        // The route stays registered after its one answer. Removing a page's last route, as an
+        // expiring `{ times: 1 }` route does, turns off Chromium's request interception, and
+        // Playwright never resumes a request Chromium paused just before that took effect
+        // (microsoft/playwright#43619). Here that request is the runner's review read.
+        let handed = 0;
         yield* browser.use("Hand the member's runner the owner's request", (page) =>
-          page.route(
-            `**/apps/${app.id}/tools/run`,
-            (route) =>
-              route.fulfill({
-                status: 200,
-                contentType: "application/json",
-                body: JSON.stringify(owners),
-              }),
-            { times: 1 },
-          ),
+          page.route(`**/apps/${app.id}/tools/run`, (route) => {
+            if (handed > 0) return route.fallback();
+            handed++;
+            return route.fulfill({
+              status: 200,
+              contentType: "application/json",
+              body: JSON.stringify(owners),
+            });
+          }),
         );
         yield* browser.use("The member opens the tool", (page) =>
           page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=tools&tool=publish`),
@@ -441,9 +429,9 @@ layer(HostedLive, { excludeTestServices: true })("Hosted tool runner approvals",
           0,
         ]);
         expect(notice[2]).not.toContain(secret);
+        expect(handed, "the runner's one run got the owner's request").toBe(1);
         yield* browser.checkpoint("Another person's run");
 
-        // The member answers their own run; the owner cannot read it.
         const members = yield* run(actors.member, "Member draft");
         const own = `${path}/tools/approvals/${members.requestId}`;
         expect((yield* api.request(actors.member, "GET", own)).body).toMatchObject({
@@ -458,11 +446,9 @@ layer(HostedLive, { excludeTestServices: true })("Hosted tool runner approvals",
         ).toEqual({
           status: "answered",
           result: { status: "denied", requestId: members.requestId },
-          // A refused call carries its reference in the tool call log.
           reference: expect.stringMatching(/^call_[0-9a-hjkmnp-tv-z]{14}$/u),
         });
 
-        // The refused answers consumed nothing: the owner still reviews and runs the call.
         const review = yield* body(Review, yield* api.request(actors.owner, "GET", approval));
         expect(review.request.invocation.input).toEqual({ title: secret });
         expect((yield* api.request(actors.owner, "POST", approval, accept)).body).toEqual({
@@ -479,28 +465,27 @@ layer(HostedLive, { excludeTestServices: true })("Hosted tool runner approvals",
         const { actors, api, app, path } = yield* deployPublisher(failingSource);
         const browser = yield* Browser;
         yield* browser.login(actors.owner);
-        // Each answer reaches this server, which resumes the saved call and uses the request up.
-        // The page then receives the next reply queued here in place of this server's.
         const replies: Array<(requestId: string) => unknown> = [];
         const sent: Array<unknown> = [];
-        yield* browser.use("Replace the review's replies", (page) =>
-          page.route(`**/apps/${app.id}/tools/approvals/*`, (route) => {
-            if (route.request().method() !== "POST") return route.fallback();
-            const reply = replies.shift();
-            if (reply === undefined) return route.fallback();
-            const requestId = new URL(route.request().url()).pathname.split("/").at(-1) ?? "";
-            return route.fetch().then((response) =>
-              response.json().then((body) => {
-                sent.push(body);
-                return route.fulfill({ response, json: reply(requestId) });
-              }),
-            );
-          }),
-        );
+        const approvals = `/apps/${app.id}/tools/approvals/`;
+        yield* replaceResponses(`*${approvals}*`, (response) => {
+          const url = new URL(response.url);
+          if (response.method !== "POST" || !url.pathname.includes(approvals)) return "unchanged";
+          const reply = replies.shift();
+          if (reply === undefined) return "unchanged";
+          const requestId = url.pathname.split("/").at(-1) ?? "";
+          return response.body().then((text) => {
+            sent.push(JSON.parse(text));
+            return {
+              status: response.status,
+              body: JSON.stringify(reply(requestId)),
+              contentType: "application/json",
+            };
+          });
+        });
         yield* browser.use("Open the tool that fails after approval", (page) =>
           page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=tools&tool=fails`),
         );
-        /** Run the tool, approve its review, wait for `text` and count the answer buttons left. */
         const approve = (label: string, text: string) =>
           browser.use(label, (page) =>
             page
@@ -517,8 +502,6 @@ layer(HostedLive, { excludeTestServices: true })("Hosted tool runner approvals",
               ),
           );
 
-        // A dashboard from this release reads every answer the previous release's server sends,
-        // including its execution failure without an error, and shows that answer's outcome.
         const answers = (requestId: string) => new Map(previousServerAnswers(requestId));
         expect([...answers("apr_shown").keys()]).toEqual(Object.keys(previousServerCopy));
         for (const [label, copy] of Object.entries(previousServerCopy)) {
@@ -529,7 +512,6 @@ layer(HostedLive, { excludeTestServices: true })("Hosted tool runner approvals",
             `no answer is offered after ${label}`,
           ).toEqual([0, 0, 0]);
           if (label === "execution-failed") {
-            // This server reported the same outcome, with the error the previous one dropped.
             expect(sent.at(-1)).toMatchObject({
               status: "answered",
               result: {
@@ -542,7 +524,6 @@ layer(HostedLive, { excludeTestServices: true })("Hosted tool runner approvals",
           }
         }
 
-        // A reply no release decodes still followed an accepted answer, so the card ends there.
         let unread = "";
         replies.push((requestId) => {
           unread = requestId;

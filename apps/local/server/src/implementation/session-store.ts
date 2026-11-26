@@ -1,11 +1,11 @@
-/** Local product sessions survive host restarts without entering the SDK schema. */
-import { localDatabase } from "./storage.ts";
+import { localDatabase } from "./local-database.ts";
 import { Context, Effect, FileSystem, Layer, Option, Path, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import { fumadb } from "fumadb-effect";
 import { sqlAdapter } from "fumadb-effect/sql";
 import { column, idColumn, schema, table } from "fumadb-effect/schema";
 import { AuthStorageError, StoredBrowserSession, type BrowserSessions } from "../contracts/auth.ts";
+import { StartupFailed } from "../contracts/startup.ts";
 
 const sessionSchema = schema({
   version: "1.1.0",
@@ -19,7 +19,6 @@ const sessionSchema = schema({
 });
 const database = fumadb({ namespace: "local-auth", schemas: [sessionSchema] });
 
-/** Store token digests, expiry dates and access restrictions for all browser sessions. */
 export const openBrowserSessions = (directory: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -54,7 +53,6 @@ export const openBrowserSessions = (directory: string) =>
           orm.transaction(
             Effect.gen(function* () {
               yield* orm.deleteMany("sessions", { where: (b) => b("expiresAt", "<=", now) });
-              // App launches cannot evict their parent login or another app's sessions.
               const rows = yield* orm.findMany("sessions", {
                 where: (b) => b("access", "=", session.access),
                 orderBy: ["expiresAt", "desc"],
@@ -73,4 +71,6 @@ export const openBrowserSessions = (directory: string) =>
       revoke: (hash) => query(orm.deleteMany("sessions", { where: (b) => b("hash", "=", hash) })),
     };
     return store;
-  }).pipe(Effect.mapError(() => new AuthStorageError()));
+  }).pipe(
+    Effect.mapError((error) => (Schema.is(StartupFailed)(error) ? error : new AuthStorageError())),
+  );

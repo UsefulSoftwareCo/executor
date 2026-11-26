@@ -30,7 +30,6 @@ layer(HostedLive, { excludeTestServices: true })("App caching", (it) => {
             `/api/organizations/${actors.organization.id}/connections/${id}/submit`,
             { method: "key", label: "Synthetic cache scope", fields: { token } },
           );
-        // The third token alone exceeds the cache's 8 KB key limit, like a large OAuth grant.
         const largeToken = `synthetic-large-${"x".repeat(9000)}`;
         for (const token of ["synthetic-cache-a", "synthetic-cache-b", largeToken]) {
           const connection = yield* body(
@@ -43,7 +42,6 @@ layer(HostedLive, { excludeTestServices: true })("App caching", (it) => {
         const [one, two, large] = accountIds;
         if (one === undefined || two === undefined || large === undefined)
           return yield* Effect.die("Expected three accounts");
-        // Account scopes hold the account's identity, never its credentials.
         const largeValue = yield* call("private", { id: large });
         expect(yield* call("private", { id: large })).toBe(largeValue);
         const privateValue = yield* call("private", { id: one });
@@ -58,8 +56,6 @@ layer(HostedLive, { excludeTestServices: true })("App caching", (it) => {
         expect((yield* submit(reconnect.id, "synthetic-rotated")).status).toBe(200);
         const rotated = yield* call("private", { id: one });
         expect(rotated).not.toBe(privateValue);
-        // A call cannot reach the scope of an account it does not use: once unlinked, the
-        // account's scope is out of reach, though the account stays saved.
         yield* unlinkAccount(actors.owner, path, "service", two);
         expect(yield* linkedAccountIds(actors.owner, path)).toEqual([one, large]);
         expect((yield* request("private", { id: two })).status).toBeGreaterThanOrEqual(400);

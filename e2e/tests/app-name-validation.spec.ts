@@ -1,4 +1,3 @@
-/** App names that storage cannot hold or that would list as blank are refused, not stored or failed. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -10,7 +9,6 @@ import { scenarios } from "../test-plan.ts";
 
 const App = Schema.Struct({ id: Schema.String, name: Schema.String });
 
-/** A NUL cannot be stored, a newline breaks the one-line name, and invisible text lists as blank. */
 const refused = ["Zero\u0000Width", "Two\nlines", "Tabbed\tname", "\u200b\u200b", "\u200d"];
 
 layer(HostedLive, { excludeTestServices: true })("App name validation", (it) => {
@@ -38,7 +36,6 @@ layer(HostedLive, { excludeTestServices: true })("App name validation", (it) => 
 
         for (const name of refused) {
           const label = JSON.stringify(name);
-          // Quick add and rename both refuse the name as a bad request, never a storage error.
           const add = yield* api.request(actors.owner, "POST", `${prefix}/apps/import`, {
             source: { kind: "mcp", name, url },
           });
@@ -49,7 +46,6 @@ layer(HostedLive, { excludeTestServices: true })("App name validation", (it) => 
         const unchanged = yield* body(App, yield* api.request(actors.owner, "GET", appPath));
         expect(unchanged.name).toBe(`Named ${suffix}`);
 
-        // Names in other scripts, with accents or joined emoji, stay valid.
         const kept = `Café 日本語 👨‍👩‍👧 ${suffix}`;
         const renamed = yield* api.request(actors.owner, "PATCH", `${appPath}/name`, {
           name: kept,

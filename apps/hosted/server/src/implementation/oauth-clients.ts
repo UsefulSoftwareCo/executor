@@ -1,8 +1,3 @@
-/**
- * The organization's OAuth sign-in clients. The executor stores them under the organization's
- * owner; this product decides who may manage them (administrators) and who may connect with
- * them (each client's audience), and rechecks both on every call.
- */
 import {
   OAuthClientNotEditable,
   OAuthClientReference,
@@ -39,23 +34,15 @@ import {
   type ResourceAuthority,
 } from "./resource-policy.ts";
 
-/** Current administrators only; the role is read again rather than trusted from the session. */
 const administrator = Effect.gen(function* () {
   const actor = yield* currentResourceAuthority;
   if (actor.role === "member") return yield* new OrganizationForbidden();
   return actor;
 });
 
-/** A browser sign-in method: an OAuth method other than client credentials. */
 const signsInWithClient = (method: { readonly type: string; readonly grant?: string }) =>
   method.type === "oauth2" && method.grant !== "client_credentials";
 
-/**
- * Every client of the organization with its policy, and the authorization servers its apps sign in
- * at, for administrators. A server is found as a sign-in finds it: declared endpoints name it, and
- * a provider that discovers its server is asked now. A provider whose discovery fails is listed as
- * unresolved rather than failing the whole view.
- */
 export const oauthClientDirectory = (redirectUri: typeof HttpUrl.Type) =>
   Effect.gen(function* () {
     const actor = yield* administrator;
@@ -111,10 +98,6 @@ export const oauthClientDirectory = (redirectUri: typeof HttpUrl.Type) =>
     };
   });
 
-/**
- * Register a client for the organization with its audience, everyone by default. The access
- * record is written with that audience, so the client is never usable by anyone else first.
- */
 export const registerOAuthClient = ({
   audience = { kind: "everyone" },
   ...input
@@ -123,7 +106,6 @@ export const registerOAuthClient = ({
 }) =>
   Effect.gen(function* () {
     const actor = yield* administrator;
-    // Refuse unknown groups before the client exists rather than leave it hidden.
     if (audience.kind === "groups")
       yield* requireGroupSharing(
         yield* policyDatabase,
@@ -145,7 +127,6 @@ export const registerOAuthClient = ({
     }),
   );
 
-/** Remove a client; accounts connected with it keep the copy their grants hold. */
 export const removeOAuthClient = (client: OAuthClientId) =>
   Effect.gen(function* () {
     const actor = yield* administrator;
@@ -157,7 +138,6 @@ export const removeOAuthClient = (client: OAuthClientId) =>
     });
     return { removed, client: access.client };
   }).pipe(
-    // The stored client the caller was allowed to manage.
     audited("provider_oauth_client.delete", {
       kind: "provider_oauth_client",
       id: ({ client }) => client,
@@ -165,20 +145,11 @@ export const removeOAuthClient = (client: OAuthClientId) =>
     Effect.map(({ removed }) => removed),
   );
 
-/** Group order carries no meaning; the policy reads them sorted. */
 const sameAudience = (a: typeof AppAudience.Type, b: typeof AppAudience.Type) =>
   a.kind === "groups" && b.kind === "groups"
     ? [...a.groups].sort().join("\n") === [...b.groups].sort().join("\n")
     : a.kind === b.kind;
 
-/**
- * Edit a registered client's details and audience. The client's credentials, its audience, its
- * group grants and its access revision commit in one transaction, the way registering a client
- * records its access: through the executor's tracked transaction, which this product's SQL shares,
- * so new details are never offered to an old audience, nor old details to a new one. The access row
- * is locked first and every edit is checked against the revision it was made from. Any change to
- * the credentials, audience or groups advances the revision.
- */
 export const updateOAuthClient = (
   client: OAuthClientId,
   {
@@ -200,7 +171,6 @@ export const updateOAuthClient = (
         yield* sql`select client_id from hosted_oauth_client_access
       where client_id = ${client} and organization_id = ${actor.organization} for update`;
         const access = yield* requireOAuthClientAccessAs(actor, client, "manage");
-        // Automatic clients are everyone's and keep the service's registration, so neither changes.
         const current = yield* executor.oauthClients.get({ owner, client });
         if (current.source !== "manual") return yield* new OAuthClientNotEditable({ client });
         if (access.revision !== revision) return yield* new AccessConflict({ reason: "changed" });
@@ -236,7 +206,6 @@ export const updateOAuthClient = (
     Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new StorageError() }),
   );
 
-/** Registered clients for the server a sign-in uses that this member may sign in with. */
 export const usableOAuthClients = (
   executor: Executor,
   owner: OwnerId,
@@ -244,7 +213,6 @@ export const usableOAuthClients = (
   issuer: typeof HttpUrl.Type,
 ) =>
   Effect.gen(function* () {
-    // Automatically registered clients are offered as the automatic choice, not one by one.
     const clients = (yield* executor.oauthClients.list({ owner, issuer })).filter(
       (client) => client.source === "manual",
     );
@@ -259,12 +227,6 @@ export const usableOAuthClients = (
     return clients.filter((client): client is OAuthClient => usable.has(client.id));
   });
 
-/**
- * The client a member's connection names, refused early, as forbidden, outside its audience.
- * Without a choice the SDK signs in automatically, or a reconnect keeps its account's client.
- * Whatever the SDK resolves, it asks `oauthClientResolving` in the resource lifecycle before using
- * the client's credentials and again before completing, so this check is not the only one.
- */
 export const connectionClient = (
   executor: Executor,
   owner: OwnerId,
@@ -274,12 +236,10 @@ export const connectionClient = (
     const selected = input.client;
     if (selected === undefined || !Schema.is(OAuthClientReference)(selected)) return selected;
     yield* requireOAuthClientAccessAs(yield* currentResourceAuthority, selected.id, "use");
-    // The client must be the organization's; the SDK checks it against the connection again.
     const client = yield* executor.oauthClients.get({ owner, client: selected.id });
     return { id: client.id };
   });
 
-/** Administrator management of the organization's OAuth clients. */
 export const hostedOAuthClientHandlers = HttpApiBuilder.group(
   HostedApi,
   "oauthClients",

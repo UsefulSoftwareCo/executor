@@ -1,22 +1,3 @@
-/**
- * Upgrading a hosted instance whose members used profiles and shared accounts. Hosted product step
- * `9_app_account_links` converts each profile's account selections into the member's user links,
- * each to the requirement the selection named, after the SDK schema steps. Step
- * `12_personal_accounts` then makes each shared account its creator's own, so a member's link to
- * the shared account they created keeps working.
- *
- * The fixture rebuilds the database as step 9 finds it inside the upgrade transaction. The
- * product's migration ledger is per step: SDK schema versions in FumaDB's settings and hosted
- * steps in `private_hosted_migrations`, which runs every step above its latest recorded one. The
- * fixture removes the ledger rows of steps 9 to 12 and the table step 9 creates, turns one
- * account back into the shared account an older version created, and writes the profiles an
- * older version left in `executor_installations`. SDK 4.0.13 and 4.0.14 stay applied because, in
- * a real upgrade, they have already run when step 9 starts, and 4.0.13 keeps
- * `executor_installations` unchanged for step 9. Step 9 reads only that table, apps, deployments,
- * accounts and users, so it sees the same input as in a real upgrade. What 4.0.13 converts for
- * these seeded profiles (schedules, workflow runs, webhook sources) is outside step 9 and outside
- * this scenario; the fixture app declares none of them.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -50,8 +31,7 @@ export default defineApp({ user: { accounts: { primary: service, extras: service
   }),
 }));`;
 
-/** The hosted steps a current database has recorded, in order. */
-const ledger = [
+const before = [
   "baseline",
   "api_key_memberships",
   "upgrade_executor_apps",
@@ -60,16 +40,15 @@ const ledger = [
   "upgrade_pinned_executor_apps",
   "require_connection_targets",
   "oauth_client_access",
-  "app_account_links",
-  "group_account_connections",
-  "tool_call_log",
-  "personal_accounts",
 ].map((name, index) => ({ migration_id: index + 1, name }));
+const proved = [
+  { migration_id: 9, name: "app_account_links" },
+  { migration_id: 12, name: "personal_accounts" },
+];
 
 const AuthSession = Schema.Struct({ user: Schema.Struct({ id: Schema.String }) });
 const Tokens = Schema.Struct({ primary: Schema.String, extras: Schema.Array(Schema.String) });
 
-/** A profile row as the last profile version wrote it. */
 const profile = (row: {
   readonly id: string;
   readonly app: string;
@@ -119,7 +98,6 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile links", (it) =>
         yield* Effect.addFinalizer(() =>
           serverControl("start").pipe(
             Effect.andThen(
-              // Only an account's owner may delete it.
               Effect.forEach(
                 [
                   ...created.apps.map((app) => ({
@@ -181,7 +159,6 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile links", (it) =>
             input: {},
           });
 
-        // Everything that is not profile-era state is created through the current product.
         const fixture = yield* evidence.step(
           "Create apps, accounts and members through the product",
           Effect.gen(function* () {
@@ -201,7 +178,6 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile links", (it) =>
               second = yield* connect(actors.owner, app, "second-token"),
               disabled = yield* connect(actors.owner, app, "disabled-token"),
               removed = yield* connect(actors.owner, app, "removed-token"),
-              // The member's account, which the fixture turns back into a shared account.
               shared = yield* connect(actors.member, app, "shared-token");
             expect(
               (yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${removed}`)).status,
@@ -231,15 +207,12 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile links", (it) =>
         );
         yield* evidence.json("fixture.json", fixture);
 
-        // The database as step 9 finds it: profiles, a shared account, no links, ledger through
-        // step 8.
         const [recorded, rolledBack, , sharedBack] = yield* legacyStorage([
           { sql: "SELECT migration_id, name FROM private_hosted_migrations ORDER BY migration_id" },
           {
             sql: "DELETE FROM private_hosted_migrations WHERE migration_id >= 9 RETURNING migration_id",
           },
           { sql: "DROP TABLE hosted_app_account_links" },
-          // The member created a shared account that everyone may use.
           {
             sql: `UPDATE hosted_account_access
               SET kind = 'shared', personal_user_id = NULL, audience = 'everyone'
@@ -257,8 +230,6 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile links", (it) =>
             status: "ready",
             createdAt: "2026-01-01 00:00:00",
           }),
-          // A second profile of the same member and app with the same plain account; `.many()`
-          // selections convert too, and a selection of an account deleted since adds nothing.
           profile({
             id: `ins_second_${suffix}`,
             app: fixture.app,
@@ -303,7 +274,6 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile links", (it) =>
             status: "ready",
             createdAt: "2026-01-05 00:00:00",
           }),
-          // The member selected the shared account the member created.
           profile({
             id: `ins_shared_${suffix}`,
             app: fixture.app,
@@ -315,7 +285,6 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile links", (it) =>
             status: "ready",
             createdAt: "2026-01-06 00:00:00",
           }),
-          // Member setup's default Executor profiles: the owner's active, the admin's disabled.
           profile({
             id: `ins_owner_executor_${suffix}`,
             app: fixture.executor,
@@ -339,14 +308,14 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile links", (it) =>
             createdAt: "2026-01-08 00:00:00",
           }),
         ]);
-        // The current ledger, rolled back to before step 9: steps 9 and later run again on start.
-        expect(recorded, "current hosted ledger").toEqual(ledger);
-        expect(rolledBack, "step 9 and every later step are pending again").toEqual([
-          { migration_id: 9 },
-          { migration_id: 10 },
-          { migration_id: 11 },
-          { migration_id: 12 },
-        ]);
+        expect(recorded?.slice(0, before.length), "steps 1 to 8 stay recorded").toEqual(before);
+        expect(recorded, "this build records steps 9 and 12").toEqual(
+          expect.arrayContaining(proved),
+        );
+        expect(
+          rolledBack?.map((row) => Number(row.migration_id)).toSorted((a, b) => a - b),
+          "step 9 and every later step are pending again",
+        ).toEqual(recorded?.slice(before.length).map((row) => row.migration_id));
         expect(sharedBack, "the member's account is shared again").toEqual([
           { account_id: fixture.shared },
         ]);
@@ -417,10 +386,6 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile links", (it) =>
         yield* evidence.step(
           "Converted links run calls",
           Effect.gen(function* () {
-            // Each requirement uses the accounts linked to it: the plain one the account the
-            // profiles used for it, the many() one, which shares the provider, only the accounts
-            // selected for it. The disabled and removing profiles' account is the owner's, but not
-            // linked, so no call uses it.
             const owner = yield* call(actors.owner, fixture.app);
             expect(owner.status, JSON.stringify(owner.body)).toBe(200);
             expect(yield* body(Tokens, owner)).toEqual({
@@ -436,7 +401,6 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile links", (it) =>
           }),
         );
 
-        // Step 9 is recorded once. Restarts must not replay it over the profiles that remain.
         yield* unlinkAccount(
           actors.owner,
           `${prefix}/apps/${fixture.app}`,
@@ -477,7 +441,6 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile links", (it) =>
         }
         const [after, stored, ownership] = yield* legacyStorage([
           { sql: "SELECT migration_id, name FROM private_hosted_migrations ORDER BY migration_id" },
-          // Every stored link, including any a read would filter out.
           {
             sql: "SELECT app, requirement, subject, account, linked_by FROM hosted_app_account_links",
           },
@@ -486,7 +449,7 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile links", (it) =>
             params: [fixture.shared],
           },
         ]);
-        expect(after, "steps 9 to 12 are recorded once").toEqual(ledger);
+        expect(after, "steps 9 and later are recorded again, each once").toEqual(recorded);
         expect(ownership, "the former shared account is stored as its creator's").toEqual([
           { kind: "personal", personal_user_id: fixture.member, audience: null },
         ]);

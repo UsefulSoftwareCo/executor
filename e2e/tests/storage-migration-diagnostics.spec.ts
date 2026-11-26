@@ -18,7 +18,6 @@ layer(TestLive, { excludeTestServices: true })("Storage migration diagnostics", 
         const fs = yield* FileSystem.FileSystem;
         const [current] = yield* legacyStorage([readVersion]);
         const [{ value: version }] = Schema.decodeUnknownSync(Version)(current);
-        // The journal is put back as it was, whatever version this release records.
         yield* Effect.addFinalizer(() =>
           legacyStorage([
             {
@@ -27,7 +26,6 @@ layer(TestLive, { excludeTestServices: true })("Storage migration diagnostics", 
             },
           ]).pipe(Effect.andThen(serverControl("start")), Effect.orDie),
         );
-        // An interrupted upgrade can leave the column present while its journal needs repair.
         yield* legacyStorage([
           { sql: "UPDATE private_executor_settings SET value = '4.0.1' WHERE key = 'version'" },
         ]);
@@ -36,7 +34,6 @@ layer(TestLive, { excludeTestServices: true })("Storage migration diagnostics", 
         expect(log).toContain("StorageMigrationFailed");
         expect(log).toContain("at executor version 4.0.2:");
         expect(log).toContain("(SQLSTATE 42701)");
-        // Neither the statement nor the driver's message, which names the table, is kept.
         expect(log).not.toContain("Failed to execute migration statement:");
         expect(log.toLowerCase()).not.toContain('add column "generation"');
         expect(log.toLowerCase()).not.toContain('column "generation"');

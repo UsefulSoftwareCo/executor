@@ -3,7 +3,6 @@ import {
   requireWorkflowReplayAccess,
   workflowRunAccessAs,
 } from "./workflow-access.ts";
-/** Keep product permissions outside the reusable workflow SDK. */
 import { Effect } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 import { HostedApi } from "../contracts/api.ts";
@@ -11,7 +10,6 @@ import { HostedExecutor } from "../contracts/executor.ts";
 import { requireCurrentAppAccess } from "./resource-policy.ts";
 import { actorManagerOwner, currentOwner, selectedApp } from "./access.ts";
 
-/** Run reads check current membership and the run's accounts; starts use the caller's accounts. */
 export const hostedWorkflowHandlers = HttpApiBuilder.group(HostedApi, "workflows", (handlers) =>
   handlers
     .handle("definitions", ({ params, query }) =>
@@ -29,7 +27,6 @@ export const hostedWorkflowHandlers = HttpApiBuilder.group(HostedApi, "workflows
         const { accounts } = yield* selectedApp(executor, owner, params.app);
         yield* requireWorkflowReplayAccess(executor, owner, params.app, payload);
         const run = yield* executor.apps.workflowRuns.start({ ...params, ...payload, accounts });
-        // A concurrent start may have saved this key after the preflight read.
         yield* requireWorkflowAccess(executor, owner, params.app, run.id);
         return run;
       }),

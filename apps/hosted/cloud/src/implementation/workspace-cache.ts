@@ -1,7 +1,3 @@
-/**
- * Cloud Git reads need a credential coordinator call and a clone. An unchanged workspace is
- * served from one object per app code instead. Git stays authoritative; see `cachedWorkspaces`.
- */
 import {
   SourceCommit,
   SourceError,
@@ -12,7 +8,6 @@ import {
 } from "@executor-js/sdk/core";
 import { Effect, Option, Schedule, Schema } from "effect";
 
-/** A strongly consistent object store with compare-and-swap on the version it returned. */
 export interface WorkspaceObjects {
   readonly get: (
     code: AppCodeId,
@@ -20,9 +15,7 @@ export interface WorkspaceObjects {
     Option.Option<{ readonly etag: string; readonly body: Uint8Array }>,
     BlobStoreError
   >;
-  /** Unconditional replacement; returns the new version. */
   readonly put: (code: AppCodeId, body: Uint8Array) => Effect.Effect<string, BlobStoreError>;
-  /** Replace only the version read earlier; false when anything replaced it since. */
   readonly replace: (
     code: AppCodeId,
     body: Uint8Array,
@@ -30,10 +23,6 @@ export interface WorkspaceObjects {
   ) => Effect.Effect<boolean, BlobStoreError>;
 }
 
-/**
- * An unknown entry carries a fresh marker, so every invalidation changes the stored version and fences
- * a reader that saw the object before the write.
- */
 const Entry = Schema.Union([
   Schema.Struct({ commit: SourceCommit, files: SourceFiles }),
   Schema.Struct({ commit: Schema.Null, invalidation: Schema.String }),
@@ -46,13 +35,6 @@ const unknownEntry = Effect.sync(
   () => ({ commit: null, invalidation: crypto.randomUUID() }) as const,
 );
 
-/**
- * Only the working branch is cached. Every host write to it replaces the object with a new
- * unknown entry after Git settles and before the write returns, so later reads miss. A miss
- * reads Git and records the snapshot only if the object still holds the version seen before
- * that read. A hit is rechecked against the Git head in the background, which repairs an entry
- * left behind when an invalidation could not be stored.
- */
 export const cachedWorkspaces = (
   git: RepositoryBackend,
   objects: WorkspaceObjects,
@@ -69,7 +51,6 @@ export const cachedWorkspaces = (
       ),
       Effect.withSpan("source.workspace.cache.invalidate"),
     );
-  /** Storage failures and unreadable objects are misses; they never replace a Git read. */
   const stored = (code: AppCodeId) =>
     objects.get(code).pipe(
       Effect.map(
@@ -114,7 +95,6 @@ export const cachedWorkspaces = (
         yield* background(revalidate(code, hit.value.commit));
         return hit.value;
       }
-      // Claim a version before reading Git. Any write that lands after this point replaces it.
       const version = Option.isSome(current)
         ? Option.some(current.value.etag)
         : yield* unknownEntry.pipe(
@@ -137,7 +117,6 @@ export const cachedWorkspaces = (
         );
       return snapshot;
     }).pipe(Effect.withSpan("source.workspace.cache.read"));
-  /** A commit's files never change, so the current entry also answers reads of that commit. */
   const revision = (code: AppCodeId, commit: string) =>
     stored(code).pipe(
       Effect.flatMap((current) => {
@@ -155,7 +134,6 @@ export const cachedWorkspaces = (
         : Schema.is(SourceCommit)(ref)
           ? revision(code, ref)
           : git.read(code, ref),
-    // A failed or interrupted push may still have landed, so every outcome invalidates.
     commit: (input) =>
       input.branch === "main"
         ? git.commit(input).pipe(Effect.ensuring(invalidate(input.id)))
@@ -164,8 +142,6 @@ export const cachedWorkspaces = (
       new URL(request.url).pathname.endsWith("/git-receive-pack")
         ? Effect.gen(function* () {
             const response = yield* git.request(code, request);
-            // The report arrives after Git updates its refs. Read it before invalidating so the
-            // client cannot observe a completed push while the old snapshot is still stored.
             const body = yield* Effect.tryPromise({
               try: () => response.arrayBuffer(),
               catch: () => new SourceError({ reason: "git" }),

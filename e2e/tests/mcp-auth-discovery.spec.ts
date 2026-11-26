@@ -1,7 +1,3 @@
-/**
- * Quick add checks the MCP server itself; only public and OAuth servers are added directly. An OAuth
- * app checks a connected account by opening a session with it on the server.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
@@ -72,8 +68,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP auth discovery", (it) => {
             expect(inventory.apps.map((app) => app.name)).not.toContain(name);
           });
 
-        // The challenge may arrive on GET or only on the MCP initialization POST. The server
-        // answers MCP only for tokens its issuer granted.
         for (const postChallenge of [true, false]) {
           yield* issuer.configure({
             postChallenge,
@@ -133,7 +127,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP auth discovery", (it) => {
           );
           expect(completed.status, JSON.stringify(completed.body)).toBe(200);
           const account = yield* body(Resource, completed);
-          // The generated check opens a session with the account's token, then is refused without it.
           const checked = yield* api.request(
             actors.owner,
             "POST",
@@ -148,14 +141,12 @@ layer(HostedLive, { excludeTestServices: true })("MCP auth discovery", (it) => {
         }
         yield* issuer.configure({ serveMcp: false });
 
-        // A public server initializes anonymously and needs no account.
         const open = yield* publicTemplateUpstream;
         const publicApp = yield* added(
           yield* add(`Public ${randomUUID().slice(0, 8)}`, `${open}/mcp`),
         );
         expect(publicApp.requirements.accounts).toEqual({});
 
-        // Rejecting anonymous use without discoverable OAuth means an API key or other setup.
         yield* issuer.configure({ challenge: false, postChallenge: true, discovery: "missing" });
         const keyed = `Needs a key ${randomUUID().slice(0, 8)}`;
         const setup = yield* add(keyed, `${issuer.origin}/mcp`);
@@ -163,7 +154,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP auth discovery", (it) => {
         expect((yield* body(Rejected, setup)).code).toBe("agent_setup_required");
         yield* notAdded(keyed);
 
-        // A failing server is a retryable check failure, not a reason to guess a method.
         yield* issuer.configure({ mcpStatus: 520 });
         const failing = `Unavailable ${randomUUID().slice(0, 8)}`;
         const unavailable = yield* add(failing, `${issuer.origin}/mcp`);

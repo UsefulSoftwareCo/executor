@@ -1,9 +1,3 @@
-/**
- * A platform admin impersonates a user through the shared dev widget and returns. Each start and
- * stop leaves a `security.audit` record naming the admin as the actor and the user as the target,
- * and everything done in the impersonation session names the admin as `auth.impersonated_by`,
- * including requests in an app session signed in from it. `/api/viewer` never names the admin.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schedule, Schema } from "effect";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -57,10 +51,8 @@ layer(HostedLive, { excludeTestServices: true })("Cloud impersonation", (it) => 
           evidence = yield* Evidence,
           telemetry = yield* Telemetry,
           target = yield* Target;
-        /** The trace's one `security.audit` record for `action`, once it is delivered. */
         const audit = (traceId: string, action: string) =>
-          telemetry.logs(traceId, "security.audit").pipe(
-            Effect.map(([trace]) => trace ?? ""),
+          telemetry.logs(traceId).pipe(
             Effect.tap((logs) => evidence.json(`audit-${action}-${traceId}.json`, logs)),
             Effect.map((logs) =>
               Schema.decodeUnknownSync(LogRecords)(logs).data.filter(
@@ -78,7 +70,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud impersonation", (it) => 
               return Object.fromEntries(auditKeys.map((key) => [key, records[0]?.attributes[key]]));
             }),
           );
-        /** The trace's request spans that `keep` selects, once they are delivered. */
         const serverSpans = (
           traceId: string,
           keep: (tags: Readonly<Record<string, unknown>>) => boolean = () => true,
@@ -286,8 +277,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud impersonation", (it) => 
               name: expect.any(String),
             });
 
-            // A shared app opened from the impersonation session gets an app session whose
-            // requests name the impersonated user and the admin.
             const prefix = `/api/organizations/${actors.organization.id}`;
             const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
               name: `Impersonated app ${randomUUID().slice(0, 8)}`,

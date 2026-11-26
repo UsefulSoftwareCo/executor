@@ -1,9 +1,3 @@
-/**
- * The Activity page lists the organization's tool call log. Its search and filters live in the
- * address, a pasted reference opens that one call, and a call's details narrow the list to its run.
- * A member sees only their own calls. The tool runner shows a failed run's reference, which opens the
- * same call there.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schedule, Schema } from "effect";
 import type { Locator, Page } from "playwright";
@@ -16,6 +10,7 @@ import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
 import { McpClient } from "../support/mcp-client.ts";
 import { appsManifest } from "../support/apps-release.ts";
+import { holdQuery } from "../support/query-transition.ts";
 
 const reference = /^call_[0-9a-hjkmnp-tv-z]{14}$/u;
 const source = `
@@ -36,7 +31,6 @@ const Viewer = Schema.Struct({
     image: Schema.optional(Schema.NullOr(Schema.String)),
   }),
 });
-/** A one-pixel picture the browser loads without a network request. */
 const picture =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==";
 const Failure = Schema.Struct({ reference: Schema.String });
@@ -46,7 +40,6 @@ const Caught = Schema.Struct({
   }),
 });
 
-/** The fixture app, shared with everyone so the member may call it. */
 const deployApp = Effect.gen(function* () {
   const api = yield* Api,
     actors = yield* Actors;
@@ -85,10 +78,6 @@ const apiKey = (actor: Session, name: string) =>
     return key;
   });
 
-/**
- * Eight calls: the owner's key makes two, the member's key three, and the owner's MCP program three
- * in one run, one of them a caught failure.
- */
 const seedCalls = Effect.gen(function* () {
   const api = yield* Api,
     actors = yield* Actors,
@@ -138,7 +127,6 @@ catch (error) { return { reference: error.reference }; }`,
     Viewer,
     yield* api.request(actors.member, "GET", "/api/auth/get-session"),
   )).user;
-  // The calls that succeeded are written after their responses; the page reads all eight.
   yield* api
     .request(
       actors.owner,
@@ -156,7 +144,6 @@ catch (error) { return { reference: error.reference }; }`,
 const escaped = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const summary = (page: Page) => page.getByRole("status").first();
 const calls = (page: Page) => page.getByRole("list", { name: "Tool calls", exact: true });
-/** The summary once it reads `text`, after the list it counts has loaded. */
 const summaryReads = (page: Page, text: string) =>
   page
     .getByRole("status")
@@ -164,7 +151,6 @@ const summaryReads = (page: Page, text: string) =>
     .first()
     .waitFor()
     .then(() => summary(page).textContent());
-/** A row is a button that opens its call, named by the row's own text. */
 const rows = (page: Page) => calls(page).locator("button[aria-expanded]");
 const rowCount = (page: Page) => rows(page).count();
 const openFilter = (page: Page, filter: string) =>
@@ -177,14 +163,31 @@ const openFilter = (page: Page, filter: string) =>
         .getByRole("menuitem", { name: new RegExp(`^${filter}`, "u") })
         .click(),
     );
-/** Where an element's text starts on screen, whatever box or touch target surrounds it. */
+const filterRows = (page: Page) => {
+  const filters = page.getByRole("group", { name: "Filters" });
+  return filters
+    .evaluate((group) =>
+      Promise.all(
+        (group.closest("[role=menu]") ?? group)
+          .getAnimations({ subtree: true })
+          .map((animation) => animation.finished),
+      ),
+    )
+    .then(() =>
+      filters.getByRole("menuitem").evaluateAll((rows) =>
+        rows.map((row) => ({
+          text: row.textContent,
+          top: Math.round(row.getBoundingClientRect().top),
+        })),
+      ),
+    );
+};
 const textTop = (element: Locator) =>
   element.evaluate((node) => {
     const range = document.createRange();
     range.selectNodeContents(node);
     return range.getBoundingClientRect().top;
   });
-/** Vertical distance between the text of a detail field's label and of its first value line. */
 const misalignment = (detail: Locator, label: string, value: Locator) =>
   Promise.all([textTop(detail.locator("dt", { hasText: label })), textTop(value)]).then(
     ([dt, dd]) => Math.abs(dt - dd),
@@ -215,6 +218,7 @@ layer(HostedLive, { excludeTestServices: true })("Tool call log page", (it) => {
         );
 
         yield* browser.use("Open the dashboard", (page) => page.goto(`/org/${slug}`));
+        const choices = yield* holdQuery(/\/tool-calls\/filters$/u, "continue");
         yield* browser.use("Open Activity from the sidebar", (page) =>
           page.getByRole("link", { name: "Activity", exact: true }).first().click(),
         );
@@ -224,7 +228,6 @@ layer(HostedLive, { excludeTestServices: true })("Tool call log page", (it) => {
           ),
         ).toBe("8 tool calls in the last 7 days");
         expect(yield* browser.use("Count the rows", rowCount)).toBe(8);
-        // A row's name is its own text, so a screen reader hears who made the call and when.
         expect(
           yield* browser.use("Read a row's accessible name", (page) =>
             calls(page)
@@ -232,13 +235,12 @@ layer(HostedLive, { excludeTestServices: true })("Tool call log page", (it) => {
               .count(),
           ),
         ).toBe(3);
-        // A member's calls show their own picture, as the members list does.
         expect(
           yield* browser.use("Read the picture beside a member's call", (page) => {
             const image = calls(page)
               .getByRole("button", { name: new RegExp(escaped(seeded.member.name), "u") })
               .first()
-              .locator("img");
+              .locator('img[data-slot="avatar-image"]');
             return image.waitFor().then(() => image.getAttribute("src"));
           }),
         ).toBe(picture);
@@ -249,9 +251,59 @@ layer(HostedLive, { excludeTestServices: true })("Tool call log page", (it) => {
         ).toBe(`/org/${slug}/activity`);
         yield* browser.checkpoint("Every call in the organization");
 
-        // The Filter menu narrows by status, then by member; chips and the count follow. Resting
-        // the pointer on a filter opens its choices beside the filters, which stay; resting it on
-        // another filter replaces them with that filter's.
+        yield* choices.requested;
+        yield* browser.use("Open the filters while their choices load", (page) =>
+          page.getByRole("button", { name: "Filter", exact: true }).click(),
+        );
+        const loading = yield* browser.use("Read the filters while their choices load", filterRows);
+        expect(loading.map((row) => row.text?.split(/All |Last /u)[0])).toEqual([
+          "Member",
+          "App",
+          "Status",
+          "Agent",
+          "Connection",
+          "Time range",
+        ]);
+        yield* browser.use("A filter's choices say they are loading", (page) =>
+          page
+            .getByRole("group", { name: "Filters" })
+            .getByRole("menuitem", { name: /^App/u })
+            .hover()
+            .then(() =>
+              page
+                .getByRole("group", { name: "App", exact: true })
+                .getByRole("status")
+                .filter({ hasText: "Loading choices…" })
+                .waitFor(),
+            ),
+        );
+        const arrival = yield* browser.use("Watch for the filters' choices", (page) =>
+          Promise.resolve({
+            response: page.waitForResponse((response) =>
+              new URL(response.url()).pathname.endsWith("/tool-calls/filters"),
+            ),
+          }),
+        );
+        yield* choices.release;
+        yield* browser.use("The filters' choices arrive", (page) =>
+          arrival.response.then(() =>
+            page
+              .getByRole("group", { name: "App", exact: true })
+              .getByRole("status")
+              .waitFor({ state: "detached" }),
+          ),
+        );
+        expect(
+          yield* browser.use("Read the filters once their choices arrived", filterRows),
+        ).toEqual(loading);
+        yield* browser.use("Close the menu that opened while loading", (page) =>
+          page.keyboard
+            .press("Escape")
+            .then(() =>
+              page.getByRole("group", { name: "Filters" }).waitFor({ state: "detached" }),
+            ),
+        );
+
         const beside = yield* browser.use("Rest the pointer on a filter, then another", (page) => {
           const filters = page.getByRole("group", { name: "Filters" });
           const failed = page.getByRole("menuitemradio", { name: "Failed", exact: true });
@@ -262,7 +314,6 @@ layer(HostedLive, { excludeTestServices: true })("Tool call log page", (it) => {
             .then(() => failed.waitFor())
             .then(() => filters.isVisible())
             .then((stayed) =>
-              // App is above Status, so the pointer does not cross the way to Status's choices.
               filters
                 .getByRole("menuitem", { name: /^App/u })
                 .hover()
@@ -273,7 +324,6 @@ layer(HostedLive, { excludeTestServices: true })("Tool call log page", (it) => {
         });
         expect(beside).toBe(true);
         yield* browser.use("Close the menu", (page) => page.keyboard.press("Escape"));
-        // While the failed calls load, the previous list stays, but not its count.
         let release = () => {};
         const held = new Promise<void>((resolve) => {
           release = resolve;
@@ -301,7 +351,6 @@ layer(HostedLive, { excludeTestServices: true })("Tool call log page", (it) => {
           ),
         ).toEqual(["Loading tool calls…", 1, 8]);
         yield* browser.checkpoint("A new filter's calls loading");
-        // Released, the route passes every later read straight through.
         yield* browser.use("Release the failed calls", () => Promise.resolve(release()));
         expect(
           yield* browser.use("Only failed calls are counted", (page) =>
@@ -311,7 +360,6 @@ layer(HostedLive, { excludeTestServices: true })("Tool call log page", (it) => {
         yield* browser.use("Close the menu", (page) => page.keyboard.press("Escape"));
         yield* browser.use("Filter by member", (page) =>
           openFilter(page, "Member").then(() =>
-            // The choice's name starts with the member's initials, which its avatar shows.
             page
               .getByRole("menuitemradio", {
                 name: new RegExp(`${escaped(seeded.member.name)}$`, "u"),
@@ -348,7 +396,6 @@ layer(HostedLive, { excludeTestServices: true })("Tool call log page", (it) => {
           { status: "failed", member: seeded.member.id },
         ]);
         yield* browser.checkpoint("Failed calls by one member");
-        // The address carries the filters, so a reload shows the same list.
         const reloaded = yield* browser.use("Reload the filtered list", (page) =>
           page
             .reload()
@@ -371,7 +418,6 @@ layer(HostedLive, { excludeTestServices: true })("Tool call log page", (it) => {
           ),
         ).toBe("3 tool calls in the last 7 days");
 
-        // A pasted reference shows that one call, open, whatever the address filters by.
         yield* browser.use("Paste a reference", (page) =>
           page
             .getByRole("textbox", { name: "Search or paste a reference", exact: true })
@@ -407,7 +453,6 @@ layer(HostedLive, { excludeTestServices: true })("Tool call log page", (it) => {
           ),
         ).toBe(seeded.ownerFailure);
 
-        // A call made by a program narrows the list to that program's run.
         yield* browser.use("Paste the program's reference", (page) =>
           page
             .getByRole("textbox", { name: "Search or paste a reference", exact: true })
@@ -434,11 +479,9 @@ layer(HostedLive, { excludeTestServices: true })("Tool call log page", (it) => {
             ]),
           ),
         );
-        // The member filter the reference ignored did not choose this call, so it is gone too.
         expect(run).toEqual(["3 tool calls in the last 7 days", 3, 1, "", ["run"]]);
         yield* browser.checkpoint("One program's run");
 
-        // On a phone, a referenced call's fields line up with their labels.
         yield* browser.use("Use a phone viewport", (page) =>
           page.setViewportSize({ width: 390, height: 844 }),
         );
@@ -471,8 +514,6 @@ layer(HostedLive, { excludeTestServices: true })("Tool call log page", (it) => {
           ["Duration", offsets[2]],
         ] as const)
           expect(offset, `${label} lines up with its label`).toBeLessThanOrEqual(3);
-        // A phone has no room beside the menu, so a filter's choices replace the filters, and
-        // step back to them by an item that says so.
         const back = yield* browser.use("Step back from a filter", (page) =>
           openFilter(page, "Status").then(() =>
             page
@@ -521,7 +562,6 @@ layer(HostedLive, { excludeTestServices: true })("Tool call log page", (it) => {
           yield* browser.use("The list shows every call", (page) => summaryReads(page, everyCall)),
         ).toBe(everyCall);
 
-        // The list's next read is refused, as the log refuses a read that takes too long.
         const list = /\/tool-calls\?/u;
         yield* browser.use("Refuse the list's reads", (page) =>
           page.route(list, (route) =>
@@ -537,7 +577,6 @@ layer(HostedLive, { excludeTestServices: true })("Tool call log page", (it) => {
             )
             .then(() => failure(page).waitFor()),
         );
-        // The calls already read stay, under the failure.
         expect(yield* browser.use("Count the rows", rowCount)).toBe(8);
         expect(yield* browser.use("Read the summary", (page) => summary(page).textContent())).toBe(
           everyCall,
@@ -611,8 +650,6 @@ layer(HostedLive, { excludeTestServices: true })("Tool call log page", (it) => {
         yield* browser.use("Allow the page to copy", (page) =>
           page.context().grantPermissions(["clipboard-read", "clipboard-write"]),
         );
-        // Opening the tool and running it are separate steps, so the run waits for the page to
-        // respond to input.
         const run = (tool: string) =>
           Effect.gen(function* () {
             yield* browser.use(`Open ${tool}`, (page) =>
@@ -628,7 +665,6 @@ layer(HostedLive, { excludeTestServices: true })("Tool call log page", (it) => {
         const region = (page: Page) =>
           page.getByRole("region", { name: "Call reference", exact: true });
 
-        // A successful run has no reference.
         yield* run("echo");
         expect(
           yield* browser.use("The result shows without a reference", (page) =>
@@ -639,7 +675,6 @@ layer(HostedLive, { excludeTestServices: true })("Tool call log page", (it) => {
           ),
         ).toBe(0);
 
-        // A failed run shows the call's reference beside the error, and copies it.
         yield* run("explode");
         const shown = yield* browser.use("The failure shows its reference", (page) =>
           region(page)
@@ -657,7 +692,6 @@ layer(HostedLive, { excludeTestServices: true })("Tool call log page", (it) => {
           ),
         ).toBe(shown);
 
-        // That reference opens the same call on the Activity page.
         yield* browser.use("Open Activity with the reference", (page) =>
           page.goto(`/org/${slug}/activity?q=${shown ?? ""}`),
         );

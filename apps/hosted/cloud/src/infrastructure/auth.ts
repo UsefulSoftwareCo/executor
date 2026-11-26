@@ -13,8 +13,6 @@ import {
 } from "../implementation/product-analytics.ts";
 import { cloudAuthOptions, cloudAuthSettings } from "../implementation/auth-options.ts";
 import { isOAuthProxyProduction } from "../implementation/oauth-proxy-settings.ts";
-import { Onboarding } from "../contracts/onboarding.ts";
-/** Native Alchemy auth binding for the HTTP Worker; MCP session objects use `mcp-auth.ts`. */
 import {
   CurrentUsage,
   CurrentUserId,
@@ -50,12 +48,13 @@ import { cloudAuthRateLimit } from "./stage.ts";
 import { AuthDatabase, appSessionsPerCall, boundAuthAdapter } from "./auth-database.ts";
 import { invocationSql } from "./invocation-database.ts";
 import { mcpAuthentication } from "./mcp-auth.ts";
+import { v1CapturedApiKeys } from "../implementation/v1-captured-api-keys.ts";
+import { cloudV1WorkOSKeys } from "./v1-api-key-settings.ts";
+import { resolveLegacyResource } from "../implementation/v1-legacy-mcp.ts";
 import { authAudit } from "../implementation/auth-audit.ts";
 
-/** Bind during initialization; database calls capture the current invocation only. */
-export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Service) =>
+export const cloudAuth = (send: SendAuthEmail) =>
   Effect.gen(function* () {
-    // Only `alchemy dev` binds the switch; see `authRateLimitSwitchBindings`.
     const environment = yield* Cloudflare.WorkerEnvironment;
     const settings = {
       ...(yield* cloudAuthSettings.pipe(Effect.orDie)),
@@ -67,8 +66,7 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
     const v1Forward = yield* v1McpForwardSecret;
     const v1Handoff = yield* v1SessionHandoffSecret;
     const meter = yield* BillingMeter.pipe(Effect.provide(yield* billingLive));
-    // Better Auth invokes Promise callbacks. Carry the calling request's scope,
-    // bindings and cancellation through that boundary, isolated per invocation.
+    const withSql = yield* invocationSql;
     const callbacks = new AsyncLocalStorage<{
       readonly context: Context.Context<
         RuntimeContext | HttpServerRequest.HttpServerRequest | Scope.Scope
@@ -134,24 +132,16 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
             Effect.provideService(CurrentUsage, { source: "dashboard" }),
           ),
         ),
-      // Fails closed: an unanswered v1 check refuses the create instead of allowing it.
-      (userId) =>
-        runCallback(
-          onboarding.allowsOrganization(userId).pipe(
-            Effect.mapError(
-              () =>
-                new APIError("SERVICE_UNAVAILABLE", {
-                  message: "We could not check your account. Try again.",
-                }),
-            ),
-          ),
-        ),
       {
+        resolveResource: (input) =>
+          runCallback(withSql(resolveLegacyResource(settings.resourceOrigins, input))),
         onRefreshRejected: observation.refreshRejected,
-        // A person approved a new agent, by consent or by a device's code: the agent can connect.
         onGrantCreated: (grant) =>
           runCallback(
-            recordUsage("agent_connected", { grant_kind: grant.kind }).pipe(
+            (grant.kind === "desktop"
+              ? Effect.void
+              : recordUsage("agent_connected", { grant_kind: grant.kind }, grant.organization)
+            ).pipe(
               Effect.provideService(CurrentUserId, grant.userId),
               Effect.provideService(CurrentUsage, {
                 source: "dashboard",
@@ -166,10 +156,6 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
     const makeInstance = (secret: string) =>
       betterAuth({
         ...options,
-        // After the analytics plugin: Better Auth's endpoint middleware does not leave its
-        // session on the after-hook context, and the analytics hook's read of it does. The audit
-        // reads no session itself. Telemetry never fails a request, so a record that cannot be
-        // written is dropped.
         plugins: [
           ...options.plugins,
           authAudit((event, session) =>
@@ -186,26 +172,18 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
         ],
         database: database.options,
         secret,
-        // Cookies use hostnames, not ports; cloud dev must not replace self-host sessions.
         advanced: {
           ...options.advanced,
           cookiePrefix: cloudSessionCookiePrefix(settings.url),
-          // The deployment migration validates the schema; runtime reads skip introspection.
           database: { ...options.advanced.database, validateSchema: false },
           backgroundTasks: { handler: database.background },
         },
       });
-    // One Better Auth instance per isolate, like a long-running server's. Its options,
-    // plugins and endpoints hold no request state: request context travels through
-    // `callbacks`, and every call binds its own invocation's pool through `database`.
-    // The signing secret is deployment configuration, read in the first invocation.
     let instance: ReturnType<typeof makeInstance> | undefined;
     let routes: ReturnType<typeof routeTemplates> | undefined;
     const native = secrets.authSecret.pipe(
       Effect.map((secret) => (instance ??= makeInstance(Redacted.value(secret)))),
     );
-    // Better Auth work runs as Promise code on this invocation's pool, bound to the
-    // calling span so each auth SQL timing span is a child of the operation that issued it.
     const bound = Effect.all([native, database.bind]).pipe(Effect.provide(RuntimeContext.phantom));
     const nativeCall = <A>(call: (instance: ReturnType<typeof makeInstance>) => Promise<A>) =>
       bound.pipe(
@@ -225,13 +203,9 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
       Effect.map(([context, bind]) => boundAuthAdapter(context.adapter, bind)),
       Effect.provide(RuntimeContext.phantom),
     );
-    // Bearer authentication reads its rows in one statement on the client this invocation
-    // shares with Better Auth and the executor.
-    const withSql = yield* invocationSql;
     const identity = Layer.effect(
       SessionAuthentication,
       Effect.gen(function* () {
-        // Built inside fetch: database work stays in the current invocation's scope.
         return SessionAuthentication.of({
           origin: settings.url,
           resourceOrigins: settings.resourceOrigins,
@@ -291,14 +265,21 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
       resourceOrigins: settings.resourceOrigins,
       issuer: settings.issuer,
     };
-    const mcpIdentity = mcpAuthentication(origins, bound, withSql, v1Forward);
+    const v1Keys = v1CapturedApiKeys(yield* cloudV1WorkOSKeys.pipe(Effect.orDie));
+    const mcpIdentity = mcpAuthentication(origins, bound, withSql, v1Forward, v1Keys);
     const apiIdentity = Layer.effect(
       BearerAuthentication,
       Effect.gen(function* () {
         return BearerAuthentication.of({
           ...origins,
-          authenticate: (headers, organization) =>
-            withSql(apiBearerAccess(origins, { headers, organization })).pipe(
+          authenticate: (headers, organization, options) =>
+            withSql(
+              apiBearerAccess(
+                origins,
+                { headers, organization, desktop: options?.desktop, tools: options?.tools },
+                v1Keys,
+              ),
+            ).pipe(
               Effect.tap(({ access, userId }) =>
                 Effect.annotateCurrentSpan(callerSpanAttributes(access.organization, userId)),
               ),
@@ -328,7 +309,6 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
       const context = yield* Effect.context<
         RuntimeContext | HttpServerRequest.HttpServerRequest | Scope.Scope
       >();
-      // Better Auth returns API errors as responses; it rejects only on defects.
       const response = yield* Effect.promise((signal) =>
         callbacks.run({ context, signal }, () => bind(() => instance.handler(web))),
       );
@@ -336,8 +316,6 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
         yield* recordAuthRefusal(response.status, pathname, new Uint8Array(), web.headers);
         return HttpServerResponse.fromWeb(response);
       }
-      // Better Auth answers with complete JSON. Sent as a stream, its last byte would wait for
-      // the request's cleanup, including Better Auth queries the request left running.
       const body = new Uint8Array(yield* Effect.promise(() => response.arrayBuffer()));
       yield* recordAuthRefusal(response.status, pathname, body, web.headers);
       return HttpServerResponse.setBody(
@@ -368,8 +346,6 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
       withSql,
       currentUser: (headers) =>
         browserSession(headers).pipe(Effect.map((session) => session?.user.id)),
-      // Inside the auth callbacks' context, like a request to the handler: the session hooks
-      // record the sign-in.
       startSession: (headers, userId, organizationId) =>
         Effect.gen(function* () {
           const [instance, bind] = yield* bound;
@@ -399,15 +375,12 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
       mcpIdentity,
       apiIdentity,
       appSessions,
-      // Background jobs only: grant expiry runs from the data step and the daily cron.
       agentGrants: grantExpiry((run) => nativeCall((instance) => run(instance.api))),
       handler,
       origin: settings.url,
       resourceOrigins: settings.resourceOrigins,
       hosts: settings.hosts,
       cookiePrefix: cloudSessionCookiePrefix(settings.url),
-      // Production sends a stage's connected-account callback back to the stage's origin, when it
-      // trusts that origin as it does for the stage's social sign-ins.
       returnsStageAccountCallback: (origin: string) =>
         isOAuthProxyProduction(settings.hosts, settings.oauthProxy)
           ? authContext.pipe(

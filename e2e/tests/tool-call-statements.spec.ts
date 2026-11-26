@@ -1,14 +1,3 @@
-/**
- * An MCP tool call checks its access and reads its stored state before the app runs, and each
- * SQL statement is a network round trip from Cloud's session object to the database. The check
- * reads the app, then checks membership with the app's policy and reads the caller's linked
- * accounts in one statement. The call then reads the app and the accounts it runs, after that
- * check, and rechecks the caller's use of the app with its accounts in one more statement. An
- * OAuth account's grant is read in one more. The statement count under `mcp.tool.call`, outside
- * the app's own runtime, is the regression guard. When the call ends, the tool call log records it
- * in one more statement, counted on its own: a call that succeeded does not wait for it, so the
- * write ends after the call's own span.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schedule, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
@@ -106,7 +95,6 @@ layer(HostedLive, { excludeTestServices: true })("Tool call statements", (it) =>
             );
             return { app, path };
           });
-        // Connecting an account from the app links it for the owner.
         const connection = (path: string) =>
           api.request(actors.owner, "POST", connectionsPath(path, "user", "service"), {}).pipe(
             Effect.tap((pending) => Effect.sync(() => expect(pending.status).toBe(200))),
@@ -176,7 +164,6 @@ layer(HostedLive, { excludeTestServices: true })("Tool call statements", (it) =>
         );
         const client = yield* mcp.connect(token.key, "pat", { organization });
 
-        /** Call the tool with the caller's linked accounts and return the SQL made before the app ran. */
         const statements = (target: typeof key, returned: string, operation: string) =>
           Effect.gen(function* () {
             const code = `return await tools[${JSON.stringify(target.app.slug)}].token({})`;
@@ -189,8 +176,6 @@ layer(HostedLive, { excludeTestServices: true })("Tool call statements", (it) =>
               .at(-1);
             if (request === undefined)
               return yield* Effect.die(new Error("MCP request evidence missing"));
-            // Statements the session makes for the call: everything under the tool call except
-            // the app's own runtime, which reads nothing for this tool, and the log's write.
             const traced = yield* telemetry.query(request.traceId).pipe(
               Effect.flatMap((result) => {
                 const root = result.data.find(
@@ -200,7 +185,9 @@ layer(HostedLive, { excludeTestServices: true })("Tool call statements", (it) =>
                   (entry) => entry.span.tags["http.response.status_code"] === "200",
                 );
                 if (root === undefined || !complete)
-                  return Effect.fail(new Error("The completed server trace must reach Motel"));
+                  return Effect.fail(
+                    new Error("The completed server trace must reach the collector"),
+                  );
                 const byId = new Map(result.data.map(({ span }) => [span.spanId, span]));
                 const path = (spanId: string | null) => {
                   const names: string[] = [];
@@ -230,7 +217,6 @@ layer(HostedLive, { excludeTestServices: true })("Tool call statements", (it) =>
                     text(span),
                   );
                 }
-                // The call succeeded, so its log row is written after the call has ended.
                 const ends = (span: (typeof result.data)[number]["span"]) =>
                   Date.parse(span.startTime) + span.durationMs;
                 const write = result.data.find(
@@ -239,7 +225,9 @@ layer(HostedLive, { excludeTestServices: true })("Tool call statements", (it) =>
                     path(span.parentSpanId) !== undefined,
                 );
                 return reads.length === 0 || write === undefined || logWrites.length === 0
-                  ? Effect.fail(new Error("SQL descendants and the log's write must reach Motel"))
+                  ? Effect.fail(
+                      new Error("SQL descendants and the log's write must reach the collector"),
+                    )
                   : Effect.succeed({
                       reads,
                       logWrites,

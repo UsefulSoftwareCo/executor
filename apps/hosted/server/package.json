@@ -25,15 +25,16 @@
     "./migrations": "./src/implementation/migrations.ts",
     "./organization-icon": "./src/contracts/organization-icon.ts",
     "./setup": "./src/contracts/setup.ts",
+    "./sign-in-origin": "./src/contracts/sign-in-origin.ts",
     "./browser": "./src/browser.ts",
     "./browser/contracts": "./src/contracts/browser.ts",
     "./app-management": "./src/app-management.ts",
     "./document": "./src/implementation/document.ts"
   },
   "dependencies": {
-    "@better-auth/api-key": "1.7.16",
-    "@better-auth/core": "1.7.16",
-    "@better-auth/oauth-provider": "1.7.16",
+    "@better-auth/api-key": "1.7.20",
+    "@better-auth/core": "1.7.20",
+    "@better-auth/oauth-provider": "1.7.20",
     "@executor-js/app-management": "workspace:*",
     "@executor-js/app-templates": "workspace:*",
     "@executor-js/authorization": "workspace:*",
@@ -45,8 +46,8 @@
     "@executor-js/telemetry": "workspace:*",
     "@executor-js/utils": "workspace:*",
     "apps": "workspace:*",
-    "better-auth": "1.7.16",
-    "effect": "4.0.1"
+    "better-auth": "1.7.20",
+    "effect": "4.1.4"
   },
   "devDependencies": {}
 }

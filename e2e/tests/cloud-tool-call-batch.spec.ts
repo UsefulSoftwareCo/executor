@@ -1,21 +1,7 @@
-/**
- * A Cloud MCP session object sends a tool call's checks and reads in one socket write, on one
- * connection of its multiplexed pool: the bearer recheck in its own implicit transaction, then
- * every read in one read-only repeatable-read transaction queued in the same step, so no other
- * statement or transaction lands between them. Parallel calls each send their own batch. A write
- * that commits while a batch's reads wait is not seen by them, as if it had committed after the
- * call. A batch that cannot finish, because its connection was lost or one of its statements
- * failed, is discarded, and the call reads again on its own, in order. A batch that cannot get a
- * connection at all leaves the call to its token recheck, which fails it as unavailable (503), as
- * without batches. When the call ends, the tool call log records it in one more statement outside
- * the batch, counted on its own.
- *
- * The scenario holds a table lock in the Cloud database to stop a batch partway through, so it
- * runs on its own local Cloud (`cloud-batch` in e2e/ci-selection.ts).
- */
 import { expect, layer } from "@effect/vitest";
-import { Effect, Fiber, Schedule, Schema } from "effect";
-import { randomUUID } from "node:crypto";
+import { Effect, Fiber, Redacted, Schedule, Schema } from "effect";
+import { HttpClient, HttpClientRequest } from "effect/http";
+import { randomBytes, randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { appsManifest } from "../support/apps-release.ts";
@@ -24,11 +10,12 @@ import { cloudLocks } from "../support/cloud-locks.ts";
 import { App, Resource, type SpanQuery } from "../support/contracts.ts";
 import { Evidence, Telemetry } from "../support/evidence.ts";
 import { McpClient } from "../support/mcp-client.ts";
+import { Target } from "../support/platform.ts";
 import { connectionsPath, linkedAccountIds } from "../support/app-accounts.ts";
 import { scenarios } from "../test-plan.ts";
 
-/** `token` returns the account's token; `slow` does too, after `ms` milliseconds. */
-const source = `import { defineApp, defineProvider, secrets, object, string, number, query, router } from "apps";
+const source = `import { defineApp, defineProvider, secrets, object, string, number, query, mutation, router } from "apps";
+import { always } from "apps/operations/approval";
 const service = defineProvider({ name: "Cloud batch fixture", auth: {
   key: secrets({ label: "API key", fields: object({ token: string() }) })
 } });
@@ -38,6 +25,19 @@ export default defineApp({ user: { accounts: { service } } }, async ctx => ({
     slow: query({ input: object({ ms: number() }), output: string() }, async (_ctx, { ms }) => {
       await new Promise((resolve) => setTimeout(resolve, ms));
       return ctx.user.accounts.service.fields.token;
+    }),
+    review: mutation({ input: object({}), output: string(), approval: always() },
+      async () => ctx.user.accounts.service.fields.token),
+    askThenWait: mutation({ input: object({ ms: number() }), output: string() }, async ({ elicit }, { ms }) => {
+      const response = await elicit({ mode: "form", message: "Name it",
+        requestedSchema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } });
+      await new Promise((resolve) => setTimeout(resolve, ms));
+      return response.action === "accept" ? String(response.content?.name) : response.action;
+    }),
+    ask: mutation({ input: object({}), output: string() }, async ({ elicit }) => {
+      const response = await elicit({ mode: "form", message: "Name it",
+        requestedSchema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } });
+      return response.action === "accept" ? String(response.content?.name) : response.action;
     }),
   }),
 }));`;
@@ -52,25 +52,28 @@ const Execution = Schema.Struct({
     error: Schema.optional(Schema.Unknown),
   }),
 });
+const Paused = Schema.Struct({
+  status: Schema.Literal("approval-required"),
+  requestId: Schema.String,
+});
+const Asked = Schema.Struct({
+  status: Schema.Literal("input-required"),
+  requestId: Schema.String,
+});
 const Count = Schema.Array(Schema.Struct({ n: Schema.Number }));
 const Pids = Schema.Array(Schema.Struct({ pid: Schema.Number }));
 const Owner = Schema.Array(Schema.Struct({ owner: Schema.String }));
 
-/** One MCP tool call of a trace: its batches and the statements made outside them. */
 interface CallBatches {
   readonly batches: ReadonlyArray<{ readonly statements: number; readonly writes: number }>;
-  /** Statements other than the tool call log's write. */
   readonly statements: number;
-  /** The tool call log's write once the call ended. */
   readonly logWrites: number;
   readonly discarded: boolean;
   readonly texts: ReadonlyArray<string>;
 }
 
-/** Each MCP tool call in the trace, with the `sql.pipeline` spans and statements under it. */
 const callsOf = (spans: Spans): ReadonlyArray<CallBatches> => {
   const byId = new Map(spans.map(({ span }) => [span.spanId, span]));
-  /** Whether a span runs inside the tool call log's write. */
   const logged = (spanId: string | null) => {
     const visited = new Set<string>();
     let current = spanId;
@@ -161,7 +164,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud tool call batch", (it) =
           yield* Effect.addFinalizer(() =>
             api.request(actors.owner, "DELETE", path).pipe(Effect.orDie),
           );
-          // Connecting from the app links the account for the owner.
           const pending = yield* body(
             Resource,
             yield* api.request(actors.owner, "POST", connectionsPath(path, "user", "service"), {}),
@@ -182,9 +184,9 @@ layer(HostedLive, { excludeTestServices: true })("Cloud tool call batch", (it) =
 
           const client = yield* mcp.connect(pat.key, "cloud-batch", {
             organization: actors.organization.id,
+            mode: "model",
           });
           const tool = (name: string) => `tools[${JSON.stringify(app.slug)}].${name}`;
-          /** Run `code` in one execute; return its result. */
           const execute = (operation: string, code: string) =>
             client
               .use(operation, (client, signal) =>
@@ -196,7 +198,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud tool call batch", (it) =
                 ),
                 Effect.map(({ execution }) => execution),
               );
-          /** Run `code` in one execute; return its result and the trace's tool calls. */
           const run = (operation: string, code: string, calls: number) =>
             Effect.gen(function* () {
               const result = yield* client.use(operation, (client, signal) =>
@@ -217,7 +218,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud tool call batch", (it) =
                   const found = callsOf(trace.data);
                   return complete &&
                     found.length === calls &&
-                    // A call that succeeded writes its log row after it ends.
                     found.every((call) => call.statements > 0 && call.logWrites > 0)
                     ? Effect.succeed({
                         found,
@@ -225,15 +225,15 @@ layer(HostedLive, { excludeTestServices: true })("Cloud tool call batch", (it) =
                           .map(({ span }) => span.tags["executor.mcp.object_id"])
                           .find((id) => id !== undefined),
                       })
-                    : Effect.fail(new Error("The tool calls' spans have not all reached Motel"));
+                    : Effect.fail(
+                        new Error("The tool calls' spans have not all reached the collector"),
+                      );
                 }),
                 Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 60 }),
               );
               return { execution, calls: made.found, objectId: String(made.objectId) };
             });
           const token = `return await ${tool("token")}({})`;
-          // A call reads the caller's links to the app live, so the link is settled first: the
-          // owner's links read back as exactly the connected account.
           const settling: Array<ReadonlyArray<string>> = [];
           yield* Effect.gen(function* () {
             for (;;) {
@@ -244,13 +244,10 @@ layer(HostedLive, { excludeTestServices: true })("Cloud tool call batch", (it) =
             }
           }).pipe(
             Effect.timeout("30 seconds"),
-            // `json` serializes when it is built, so it is built once the loop has ended.
             Effect.ensuring(
               Effect.suspend(() => evidence.json("cloud-batch-settled.json", settling)),
             ),
           );
-          // The session's first call reads the links, then sends its reads with them; every later
-          // call sends one batch.
           const cold = yield* run("The session's first call", token, 1);
           expect(cold.calls[0]?.batches.length, "The session's first call").toBe(2);
           const warm = yield* run("Warm the session", token, 1);
@@ -261,7 +258,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud tool call batch", (it) =
             Effect.gen(function* () {
               expect(warm.execution).toEqual({ ok: true, value: "synthetic-batch" });
               const [alone] = warm.calls;
-              // Recheck, BEGIN, app, access check with the links, accounts, app recheck, COMMIT.
               expect(alone?.batches).toEqual([{ statements: 7, writes: 1 }]);
               expect(alone?.statements, "Every statement of the call was in its batch").toBe(5);
               expect(alone?.logWrites, "The tool call log's one insert").toBe(1);
@@ -283,11 +279,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud tool call batch", (it) =
             }),
           );
 
-          // Counts the PAT's checks, so the scenario knows when the first call of an execute has run
-          // its batch: the request's own checks (the gateway's and the session object's) come
-          // first, then one per call. A check writes the key's last use only when the stored one
-          // is a minute old, so the trigger also clears it on the counted key: every check writes,
-          // and counts.
           yield* Effect.forEach(
             [
               "create table if not exists e2e_batch_rechecks (key_id text primary key, n int not null)",
@@ -311,8 +302,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud tool call batch", (it) =
               on conflict (key_id) do update set n = 0`,
             params: [pat.id],
           });
-          // The warm calls recorded the key's use. Clear it before the count starts, so this
-          // update is not counted.
           yield* locks.run({
             sql: `update apikey set "lastRequest" = null where id = $1`,
             params: [pat.id],
@@ -321,7 +310,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud tool call batch", (it) =
           yield* run("Count a request's own checks", token, 1);
           const perRequest = ((yield* rechecks)[0]?.n ?? 0) - 1;
           expect(perRequest, "The request's own checks").toBeGreaterThan(0);
-          /** The object's backends waiting for the scenario's lock on the accounts table. */
           const blocked = locks
             .run({
               sql: `select pid from pg_stat_activity where application_name = $1
@@ -329,11 +317,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud tool call batch", (it) =
               params: [owner],
             })
             .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Pids)), Effect.orDie);
-          /**
-           * Run a slow call, then a call whose batch the accounts table's lock stops after its
-           * snapshot began; `meanwhile` runs inside the lock's transaction, and `stopped` once the
-           * batch waits, before the lock is released.
-           */
           const stopped = (
             label: string,
             meanwhile: Effect.Effect<unknown>,
@@ -349,7 +332,6 @@ return [first, await ${tool("token")}({})];`,
                   2,
                 ),
               );
-              // The first call's batch has run once its own check follows the request's.
               yield* rechecks.pipe(
                 Effect.filterOrFail((rows) => (rows[0]?.n ?? 0) >= perRequest + 1),
                 Effect.retry({ schedule: Schedule.spaced("50 millis"), times: 200 }),
@@ -374,7 +356,6 @@ return [first, await ${tool("token")}({})];`,
                   params: [account],
                 })
                 .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Owner)), Effect.orDie);
-              // Moving the account to another owner refuses every call that reads it afterwards.
               const moved = yield* stopped(
                 "Move the account while a batch waits",
                 locks.hold({
@@ -396,7 +377,6 @@ return [first, await ${tool("token")}({})];`,
                 sql: "update executor_accounts set owner = $2 where id = $1",
                 params: [account, accountOwner],
               });
-              // Calls read the account again once it is back.
               const returned: Array<typeof Execution.Type.execution> = [];
               for (let attempt = 1; returned.at(-1)?.ok !== true; attempt++) {
                 expect(attempt, JSON.stringify(returned)).toBeLessThan(6);
@@ -428,7 +408,6 @@ return [first, await ${tool("token")}({})];`,
                 const call = made.calls[1];
                 expect(call?.batches.length, label).toBe(1);
                 expect(call?.discarded, `${label}: the batch's reads were discarded`).toBe(true);
-                // The recheck and four reads in the batch, then the reads again on their own.
                 expect(call?.statements, label).toBeGreaterThan(6);
               }
             }),
@@ -453,8 +432,6 @@ try {
                 Effect.filterOrFail((rows) => (rows[0]?.n ?? 0) >= perRequest + 1),
                 Effect.retry({ schedule: Schedule.spaced("50 millis"), times: 200 }),
               );
-              // While the first call waits on its app: no new connection to the database, and the
-              // object's own connections closed, so the second call's batch has none to borrow.
               const refused = yield* Effect.scoped(
                 Effect.gen(function* () {
                   yield* locks.refuseConnections;
@@ -468,8 +445,6 @@ try {
               );
               yield* evidence.json("cloud-batch-unavailable.json", refused);
               expect(refused.ok, JSON.stringify(refused)).toBe(true);
-              // The token recheck could not run, so the call is refused as unavailable (503), as
-              // on main, not failed by the batch's own connection error.
               const [first, failure] = yield* Schema.decodeUnknownEffect(
                 Schema.Tuple([
                   Schema.String,
@@ -484,6 +459,323 @@ try {
                 ok: true,
                 value: "synthetic-batch",
               });
+            }),
+          );
+
+          const delay = 3_000;
+          if (!/^[A-Za-z0-9_-]+$/.test(actors.organization.id))
+            return yield* Effect.die("Expected an organization ID");
+          yield* locks.run({
+            sql: `create or replace function e2e_batch_slow_log() returns trigger language plpgsql
+              as $$ begin perform pg_sleep(${delay / 1000}); return new; end $$`,
+          });
+          const slowLog = (event: "insert" | "update") =>
+            locks.run({
+              sql: `create or replace trigger e2e_batch_slow_log before ${event} on hosted_tool_calls
+                for each row when (new.organization_id = '${actors.organization.id}')
+                execute function e2e_batch_slow_log()`,
+            });
+          yield* Effect.addFinalizer(() =>
+            locks
+              .run({ sql: "drop trigger if exists e2e_batch_slow_log on hosted_tool_calls" })
+              .pipe(
+                Effect.andThen(locks.run({ sql: "drop function if exists e2e_batch_slow_log()" })),
+                Effect.orDie,
+              ),
+          );
+          const mcpTraces = (count: number) =>
+            evidence.requests.pipe(
+              Effect.map((requests) =>
+                requests
+                  .filter((request) => request.path === "/mcp")
+                  .slice(-count)
+                  .map((request) => request.traceId),
+              ),
+            );
+          const logStatements = (
+            traces: ReadonlyArray<string>,
+            done: (texts: ReadonlyArray<string>) => boolean,
+          ) =>
+            Effect.forEach(traces, (trace) => telemetry.query(trace)).pipe(
+              Effect.map((found) => {
+                const spans = found.flatMap((trace) => trace.data);
+                const writes = new Set(
+                  spans
+                    .filter(({ span }) => span.operationName === "product.tool_call_log.write")
+                    .map(({ span }) => span.spanId),
+                );
+                return spans
+                  .filter(
+                    ({ span }) =>
+                      span.operationName === "sql.execute" &&
+                      span.parentSpanId !== null &&
+                      writes.has(span.parentSpanId),
+                  )
+                  .map(({ span }) => {
+                    const text = String(span.tags["db.query.text"] ?? "");
+                    return /\binsert\s+into\s+hosted_tool_calls\b/i.test(text)
+                      ? "insert"
+                      : /\bupdate\s+hosted_tool_calls\b/i.test(text)
+                        ? "update"
+                        : "other";
+                  });
+              }),
+              Effect.filterOrFail(
+                done,
+                () => new Error("The slow log writes have not reached the collector"),
+              ),
+              Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 60 }),
+            );
+
+          const appSpans = (
+            traces: ReadonlyArray<string>,
+            needed: ReadonlyArray<string> = ["app.call"],
+          ) =>
+            Effect.forEach(traces, (trace) => telemetry.query(trace)).pipe(
+              Effect.map((found) =>
+                found
+                  .flatMap((trace) => trace.data)
+                  .filter(({ span }) => span.serviceName === "executor-app")
+                  .map(({ span }) => span.operationName),
+              ),
+              Effect.filterOrFail(
+                (names) => needed.every((name) => names.includes(name)),
+                () => new Error("The app's forwarded spans have not reached the collector"),
+              ),
+              Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 60 }),
+            );
+
+          yield* evidence.step(
+            "A log write that ends long after its call answered still reaches the collector",
+            Effect.gen(function* () {
+              yield* slowLog("insert");
+              const started = performance.now();
+              const slow = yield* execute("A call whose log write is slow", token);
+              const answeredMs = performance.now() - started;
+              yield* evidence.json("cloud-batch-slow-log.json", { answeredMs, slow });
+              expect(slow).toEqual({ ok: true, value: "synthetic-batch" });
+              expect(answeredMs, "The call does not wait for its log write").toBeLessThan(delay);
+              const [call] = yield* mcpTraces(1);
+              const texts = yield* logStatements([call ?? ""], (texts) => texts.length > 0);
+              expect(texts, "The tool call log's one insert").toEqual(["insert"]);
+            }),
+          );
+
+          yield* evidence.step(
+            "A call that waits for input answered by a second request does not wait for its slow log write, which still reaches the collector",
+            Effect.gen(function* () {
+              yield* slowLog("insert");
+              const asked = yield* client
+                .use("A call that asks for input", (client, signal) =>
+                  client.callTool(
+                    { name: "execute", arguments: { code: `return await ${tool("ask")}({})` } },
+                    undefined,
+                    { signal },
+                  ),
+                )
+                .pipe(
+                  Effect.flatMap((result) =>
+                    Schema.decodeUnknownEffect(Asked)(result.structuredContent),
+                  ),
+                );
+              const started = performance.now();
+              const answered = yield* client
+                .use("Answer the call's question", (client, signal) =>
+                  client.callTool(
+                    {
+                      name: "resume",
+                      arguments: {
+                        requestId: asked.requestId,
+                        response: { action: "accept", content: { name: "synthetic-name" } },
+                      },
+                    },
+                    undefined,
+                    { signal },
+                  ),
+                )
+                .pipe(
+                  Effect.flatMap((result) =>
+                    Schema.decodeUnknownEffect(Execution)(result.structuredContent),
+                  ),
+                );
+              const answeredMs = performance.now() - started;
+              yield* evidence.json("cloud-batch-slow-resume.json", { answeredMs, answered });
+              expect(answered.execution).toEqual({ ok: true, value: "synthetic-name" });
+              expect(answeredMs, "The answer does not wait for the call's log write").toBeLessThan(
+                delay,
+              );
+              const texts = yield* logStatements(yield* mcpTraces(2), (texts) => texts.length > 0);
+              expect(texts, "The call's one insert").toEqual(["insert"]);
+              expect(yield* appSpans(yield* mcpTraces(2))).toContain("app.call");
+            }),
+          );
+
+          yield* evidence.step(
+            "A call paused for approval and approved by a second request forwards the approved call's own spans",
+            Effect.gen(function* () {
+              const paused = yield* client
+                .use("Call a tool that needs approval", (client, signal) =>
+                  client.callTool(
+                    { name: "call", arguments: { calls: { path: tool("review"), input: {} } } },
+                    undefined,
+                    { signal },
+                  ),
+                )
+                .pipe(
+                  Effect.flatMap((result) =>
+                    Schema.decodeUnknownEffect(Paused)(result.structuredContent),
+                  ),
+                );
+              const approved = yield* client.use("Approve the call", (client, signal) =>
+                client.callTool(
+                  {
+                    name: "resume",
+                    arguments: { requestId: paused.requestId, response: { action: "accept" } },
+                  },
+                  undefined,
+                  { signal },
+                ),
+              );
+              expect(approved.structuredContent).toMatchObject({
+                status: "completed",
+                execution: { ok: true },
+              });
+              const [pausedTrace, approvedTrace] = yield* mcpTraces(2);
+              expect(
+                yield* appSpans([approvedTrace ?? ""], ["app.call", "app.operation.execute"]),
+              ).toContain("app.operation.execute");
+              expect(yield* appSpans([pausedTrace ?? ""])).not.toContain("app.operation.execute");
+            }),
+          );
+
+          yield* evidence.step(
+            "A call answered while a listen stream opens on its session object still exports its slow log write",
+            Effect.gen(function* () {
+              const target = yield* Target,
+                http = HttpClient.withScope(yield* HttpClient.HttpClient);
+              yield* slowLog("insert");
+              const asked = yield* client
+                .use("A call that asks for input, then runs on", (client, signal) =>
+                  client.callTool(
+                    {
+                      name: "execute",
+                      arguments: { code: `return await ${tool("askThenWait")}({ ms: 2000 })` },
+                    },
+                    undefined,
+                    { signal },
+                  ),
+                )
+                .pipe(
+                  Effect.flatMap((result) =>
+                    Schema.decodeUnknownEffect(Asked)(result.structuredContent),
+                  ),
+                );
+              yield* resetRechecks;
+              const answering = yield* Effect.forkChild(
+                client
+                  .use("Answer the call while a listen stream opens", (client, signal) =>
+                    client.callTool(
+                      {
+                        name: "resume",
+                        arguments: {
+                          requestId: asked.requestId,
+                          response: { action: "accept", content: { name: "synthetic-name" } },
+                        },
+                      },
+                      undefined,
+                      { signal },
+                    ),
+                  )
+                  .pipe(
+                    Effect.flatMap((result) =>
+                      Schema.decodeUnknownEffect(Execution)(result.structuredContent),
+                    ),
+                  ),
+              );
+              yield* rechecks.pipe(
+                Effect.filterOrFail((rows) => (rows[0]?.n ?? 0) >= perRequest),
+                Effect.retry({ schedule: Schedule.spaced("50 millis"), times: 200 }),
+              );
+              const answered = yield* Effect.scoped(
+                Effect.gen(function* () {
+                  const revision = "2026-07-28";
+                  const listen = yield* http.execute(
+                    yield* HttpClientRequest.bodyJson(
+                      HttpClientRequest.post(`${target.metadata.origin}/mcp`).pipe(
+                        HttpClientRequest.bearerToken(Redacted.value(pat.key)),
+                        HttpClientRequest.setHeaders({
+                          accept: "application/json, text/event-stream",
+                          "content-type": "application/json",
+                          "mcp-protocol-version": revision,
+                          "mcp-method": "subscriptions/listen",
+                          "x-executor-organization": actors.organization.id,
+                          traceparent: `00-${randomBytes(16).toString("hex")}-${randomBytes(8).toString("hex")}-01`,
+                        }),
+                      ),
+                      {
+                        jsonrpc: "2.0",
+                        id: 1,
+                        method: "subscriptions/listen",
+                        params: {
+                          notifications: { toolsListChanged: true },
+                          _meta: {
+                            "io.modelcontextprotocol/protocolVersion": revision,
+                            "io.modelcontextprotocol/clientCapabilities": {},
+                          },
+                        },
+                      },
+                    ),
+                  );
+                  expect(listen.status, "The listen stream is held open").toBe(200);
+                  return yield* Fiber.join(answering);
+                }),
+              ).pipe(Effect.provideService(HttpClient.TracerPropagationEnabled, false));
+              expect(answered.execution).toEqual({ ok: true, value: "synthetic-name" });
+              const texts = yield* logStatements(yield* mcpTraces(2), (texts) => texts.length > 0);
+              expect(texts, "The call's one insert").toEqual(["insert"]);
+            }),
+          );
+
+          yield* evidence.step(
+            "A streamed call ends its stream without waiting for its slow log write",
+            Effect.gen(function* () {
+              yield* slowLog("update");
+              const native = yield* mcp.connect(pat.key, "cloud-batch-native", {
+                organization: actors.organization.id,
+                mode: "native",
+              });
+              const started = performance.now();
+              const result = yield* native
+                .use("A streamed call approved by a native client", (client, signal) =>
+                  client.callTool(
+                    { name: "execute", arguments: { code: `return await ${tool("review")}({})` } },
+                    undefined,
+                    { signal },
+                  ),
+                )
+                .pipe(
+                  Effect.flatMap((result) =>
+                    Schema.decodeUnknownEffect(Execution)(result.structuredContent),
+                  ),
+                );
+              const answeredMs = performance.now() - started;
+              expect(yield* native.elicitationCount).toBe(1);
+              expect(result.execution).toEqual({ ok: true, value: "synthetic-batch" });
+              const body = yield* native.bodies.pipe(
+                Effect.map((bodies) =>
+                  bodies.filter((body) => body.method === "tools/call").at(-1),
+                ),
+                Effect.filterOrFail(
+                  (body) => body !== undefined,
+                  () => new Error("The streamed call's response has not ended"),
+                ),
+                Effect.retry({ schedule: Schedule.spaced("50 millis"), times: 600 }),
+              );
+              yield* evidence.json("cloud-batch-slow-stream.json", { answeredMs, body });
+              expect(body?.ended, "The client read the call's stream to its end").toBe("complete");
+              expect(body?.ms, "The stream ends without waiting for the log write").toBeLessThan(
+                delay,
+              );
             }),
           );
         }).pipe(Effect.provide(McpClient.layer)),

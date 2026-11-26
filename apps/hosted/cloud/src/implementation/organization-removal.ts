@@ -1,4 +1,3 @@
-/** Cloud is the multi-organization product, so only cloud exposes removal. */
 import {
   audited,
   beginOrganizationRemoval,
@@ -16,7 +15,6 @@ import {
 import { OrganizationRemovalRecovery } from "../infrastructure/organization-removal-recovery.ts";
 import { ExecutorCloudApi } from "../contracts/api.ts";
 
-/** The tombstones among a list of organizations, read together rather than one at a time. */
 export class RemovedOrganizations extends Context.Service<
   RemovedOrganizations,
   (
@@ -24,7 +22,6 @@ export class RemovedOrganizations extends Context.Service<
   ) => Effect.Effect<ReadonlySet<OrganizationId>, OrganizationRemovalUnavailable>
 >()("cloud/RemovedOrganizations") {}
 
-/** Native membership rows outlive acceptance; never put a removed team back in the switcher. */
 export const hideRemovedOrganizations = (response: HttpServerResponse.HttpServerResponse) =>
   Effect.gen(function* () {
     if (response.status !== 200) return response;
@@ -58,13 +55,7 @@ export const organizationRemovalHandlers = HttpApiBuilder.group(
         .handle("preview", () => previewOrganizationRemoval)
         .handle("remove", () =>
           Effect.gen(function* () {
-            // Refuse, then hide. The tombstone commits before anything is
-            // deleted, so from here no request resolves this organization and the
-            // durable erasure that follows races with nothing.
             const { started, instance } = yield* beginOrganizationRemoval;
-            // The tombstone is also a durable start record, so the workflow
-            // starts after the response; the recovery alarm and the minute job
-            // start any it could not.
             yield* dispatchAcceptedRemoval(start, recover, started.organization, instance);
             return started;
           }).pipe(

@@ -1,15 +1,12 @@
 ---
-// Keep the homepage compact; open the complete quotes in a focused reading view.
 import { testimonials } from "../../content/testimonials";
 import TestimonialCard from "./testimonial-card.astro";
 
-// Deal the list into rows in turn so long and short posts mix.
 const ROWS = 3;
 const rows = Array.from({ length: ROWS }, (_, row) =>
   testimonials.filter((_, index) => index % ROWS === row),
 );
 
-// "Add yours" opens X's composer with a draft the reader can edit or delete.
 const composeUrl = `https://x.com/intent/post?text=${encodeURIComponent(
   "I've been using @executorsh to ",
 )}`;
@@ -87,7 +84,6 @@ const composeUrl = `https://x.com/intent/post?text=${encodeURIComponent(
 </div>
 
 <script>
-  // Start the drift only once the section has entered the viewport.
   for (const el of document.querySelectorAll<HTMLElement>("[data-testimonials]")) {
     const io = new IntersectionObserver(
       (entries) => {

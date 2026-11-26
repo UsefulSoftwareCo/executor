@@ -13,12 +13,14 @@
     "./connection-failure": "./src/connection-failure.ts",
     "./safe-fetch/bun": "./src/safe-fetch-bun.ts",
     "./release-version": "./src/release-version.ts",
+    "./release-notes": "./src/release-notes.ts",
     "./legacy-keys": "./src/legacy-keys.ts",
-    "./schema-definitions": "./src/schema-definitions.ts"
+    "./schema-definitions": "./src/schema-definitions.ts",
+    "./server-identity": "./src/server-identity.ts"
   },
   "dependencies": {
-    "@effect/platform-node": "4.0.1",
-    "effect": "4.0.1",
+    "@effect/platform-node": "4.1.4",
+    "effect": "4.1.4",
     "ipaddr.js": "2.5.0"
   }
 }

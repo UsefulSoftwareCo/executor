@@ -1,17 +1,3 @@
-/**
- * An MCP tool call sends its checks and every read it makes for them together, in one batch: the
- * bearer recheck first, then the app, the access check with the caller's links to it, the
- * accounts, the SDK's app recheck for them and the grants of OAuth accounts, in one snapshot. An
- * MCP call names the accounts discovery resolved for it; the account reads use what the session's
- * last call naming the same accounts resolved, and the same batch reads the links live. A call
- * naming accounts the session has not called with yet reads the app and links first and sends the
- * account reads in a second batch. Every check still runs on every call against live rows; the
- * batch decides nothing a separate read would not. When the call ends, the tool call log records it
- * in one more statement outside the batches, counted on its own.
- *
- * Self-host runs the batch under the PGlite client's lock, as Cloud runs it in one socket write
- * (see `cloud-tool-call-batch.spec.ts`). Each batch is one `sql.pipeline` span.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Fiber, Schedule, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
@@ -70,15 +56,10 @@ const Execution = Schema.Struct({
   }),
 });
 
-/** What one MCP tool call did before its app ran. */
 interface CallTrace {
-  /** `sql.pipeline` spans: each batch the call sent. */
   readonly batches: number;
-  /** `sql.execute` spans outside the app's runtime and the tool call log's write. */
   readonly statements: number;
-  /** `sql.execute` spans of the tool call log's write once the call ended. */
   readonly logWrites: number;
-  /** Grant reads the resolve loop made itself, after the batch. */
   readonly liveGrantReads: number;
   readonly texts: ReadonlyArray<string>;
 }
@@ -119,7 +100,6 @@ layer(HostedLive, { excludeTestServices: true })("Tool call batch", (it) => {
             );
             return { app, path };
           });
-        /** A connection from the app; the account it saves is linked for the owner. */
         const connection = (path: string) =>
           api
             .request(actors.owner, "POST", connectionsPath(path, "user", "service"), {})
@@ -143,9 +123,6 @@ layer(HostedLive, { excludeTestServices: true })("Tool call batch", (it) => {
             accounts.push(saved.id);
             return saved.id;
           });
-        // A call reads the caller's links to the app live. Each link change is settled before the
-        // calls whose batches are measured: the owner's links read back as exactly the expected
-        // accounts, so no call is made while a change is still being written.
         const settling: Record<string, Array<ReadonlyArray<string>>> = {};
         const settle = (path: string, expected: ReadonlyArray<string>) => {
           const attempts: Array<ReadonlyArray<string>> = [];
@@ -171,7 +148,6 @@ layer(HostedLive, { excludeTestServices: true })("Tool call batch", (it) => {
         const firstAccount = yield* keyAccount(key.path, "synthetic-first");
         yield* settle(key.path, [firstAccount]);
 
-        /** An app with one linked OAuth account, signed in through the issuer. */
         const oauthApp = (name: string) =>
           Effect.gen(function* () {
             const deployed = yield* deploy(name, oauthSource(`${issuer.origin}/mcp`));
@@ -230,7 +206,6 @@ layer(HostedLive, { excludeTestServices: true })("Tool call batch", (it) => {
         });
         type Client = typeof first;
 
-        /** Run one execute that calls the target app's tool with its linked account; return what it did. */
         const call = (
           client: Client,
           target: { readonly app: typeof App.Type },
@@ -251,7 +226,6 @@ layer(HostedLive, { excludeTestServices: true })("Tool call batch", (it) => {
             const trace = yield* traceOf(request.traceId);
             return { execution, trace };
           });
-        /** The last MCP tool call of a trace, once its whole trace has reached Motel. */
         const traceOf = (traceId: string) =>
           telemetry.query(traceId).pipe(
             Effect.flatMap((result) => {
@@ -263,9 +237,10 @@ layer(HostedLive, { excludeTestServices: true })("Tool call batch", (it) => {
                 (entry) => entry.span.tags["http.response.status_code"] === "200",
               );
               if (root === undefined || !complete)
-                return Effect.fail(new Error("The completed server trace must reach Motel"));
+                return Effect.fail(
+                  new Error("The completed server trace must reach the collector"),
+                );
               const byId = new Map(result.data.map(({ span }) => [span.spanId, span]));
-              /** The span names between a span and the tool call, or undefined outside it. */
               const path = (spanId: string | null) => {
                 const names: string[] = [];
                 const visited = new Set<string>();
@@ -292,11 +267,9 @@ layer(HostedLive, { excludeTestServices: true })("Tool call batch", (it) => {
                   .replace(/\s+/g, " ")
                   .slice(0, 80),
               );
-              // A call that succeeded writes its log row after it ends, so the write can arrive
-              // later than the call's own statements.
               return statements.length === 0 || executed.length === statements.length
                 ? Effect.fail(
-                    new Error("The tool call's statements and log write must reach Motel"),
+                    new Error("The tool call's statements and log write must reach the collector"),
                   )
                 : Effect.succeed({
                     batches: inside.filter(({ span }) => span.operationName === "sql.pipeline")
@@ -337,8 +310,6 @@ layer(HostedLive, { excludeTestServices: true })("Tool call batch", (it) => {
         yield* evidence.step(
           "A session's first call for an app reads its links, then sends its reads with them; later calls send one batch",
           Effect.gen(function* () {
-            // First calls: the recheck with the app and links, then the reads for the linked
-            // accounts: as many statements as reading one after another.
             yield* expectCall("key, first", yield* call(first, key, "Key account, first call"), {
               value: "synthetic-first",
               batches: 2,
@@ -347,7 +318,6 @@ layer(HostedLive, { excludeTestServices: true })("Tool call batch", (it) => {
             yield* expectCall("key, warm", yield* call(first, key, "Key account, warm call"), {
               value: "synthetic-first",
               batches: 1,
-              // Recheck, app, access check with the links, accounts, app recheck; no grant read.
               statements: 5,
             });
             const oauthFirst = yield* call(first, oauth, "OAuth account, first call");
@@ -357,7 +327,6 @@ layer(HostedLive, { excludeTestServices: true })("Tool call batch", (it) => {
             const oauthWarm = yield* call(first, oauth, "OAuth account, warm call");
             recorded["oauth, warm"] = oauthWarm.trace;
             expect(oauthWarm.trace.batches, "OAuth account, warm call").toBe(1);
-            // The key account's five and its grant, read in the batch rather than after it.
             expect(oauthWarm.trace.statements).toBe(6);
             expect(oauthWarm.trace.liveGrantReads).toBe(0);
             yield* expectCall(
@@ -377,12 +346,7 @@ layer(HostedLive, { excludeTestServices: true })("Tool call batch", (it) => {
         yield* evidence.step(
           "Another account linked in place of the first between calls is read with the live links, in one more batch",
           Effect.gen(function* () {
-            // Connecting from the app replaced the first link: only plain requirements use the
-            // provider, so the new account is the requirement's only one.
             yield* settle(key.path, [other]);
-            // Discovery lists the other account, so the call names it. The session has run no call
-            // with it: the first batch reads the app and links beside the recheck, the second the
-            // app, the other account and the app recheck for it, as on the session's first call.
             yield* expectCall("key, switched", yield* call(first, key, "Call after a switch"), {
               value: "synthetic-other",
               batches: 2,
@@ -419,9 +383,6 @@ layer(HostedLive, { excludeTestServices: true })("Tool call batch", (it) => {
             expect(refused.execution.ok, "No linked account").toBe(false);
             yield* linkAccount(actors.owner, key.path, "service", other);
             yield* settle(key.path, [other]);
-            // The refused call stopped at discovery, which lists an app without a linked account
-            // with no tools, so it sent no batch. The call once linked names the account the
-            // session's last call ran with, so its one batch reads that account beside the links.
             yield* expectCall("key, linked again", yield* call(first, key, "Call once linked"), {
               value: "synthetic-other",
               batches: 1,
@@ -442,11 +403,8 @@ layer(HostedLive, { excludeTestServices: true })("Tool call batch", (it) => {
         yield* evidence.step(
           "A call whose batch read a grant another session is renewing waits for that renewal and uses its token",
           Effect.gen(function* () {
-            // Its grants last 31 s, so each is inside the 30 s renewal window after a second.
             yield* issuer.configure({ refreshTokens: true, expiresIn: 31, refreshedExpiresIn: 31 });
             const renewing = yield* oauthApp("Batch OAuth renewal");
-            // The sibling session is warm: its batch reads the account's grant. Its first call for
-            // the app reads the links, then sends its reads with them.
             for (const [label, batches] of [
               ["Sibling session, first call", 2],
               ["Sibling session, warm call", 1],
@@ -456,8 +414,6 @@ layer(HostedLive, { excludeTestServices: true })("Tool call batch", (it) => {
               expect(made.execution.ok, label).toBe(true);
               expect(made.trace.batches, label).toBe(batches);
             }
-            // Hold the next renewal after the service issued its tokens, and let the current grant
-            // reach its renewal window.
             yield* issuer.configure({ hold: "refresh-issued" });
             yield* Effect.sleep("1500 millis");
             const before = yield* issuer.metrics;
@@ -470,7 +426,6 @@ layer(HostedLive, { excludeTestServices: true })("Tool call batch", (it) => {
               ),
               Effect.retry({ schedule: Schedule.spaced("50 millis"), times: 400 }),
             );
-            // The renewal holds the grant's claim. The sibling's batch reads the claimed row.
             const waiting = yield* Effect.forkChild(
               call(second, renewing, "Call during the renewal"),
             );

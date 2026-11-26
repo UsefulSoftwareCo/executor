@@ -1,8 +1,6 @@
-/** Find previews deployed by older checkouts so they cannot escape the current lifetime policy. */
 import { Config, Effect, Schema } from "effect";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
-import { TestStageSlug } from "../infrastructure/stage.ts";
-import { TestStageFailed } from "../contracts/test-stage-lifetime.ts";
+import { TestStageFailed, TestStageSlug } from "../contracts/test-stage-lifetime.ts";
 
 const CreatedAt = Schema.String.check(
   Schema.makeFilter((value) => Number.isFinite(Date.parse(value))),
@@ -20,10 +18,12 @@ const Page = Schema.Struct({
   ),
 });
 
-/** Earliest live Worker creation time for each exact hosted test-stage tag. Production is excluded. */
 export const discoverTestStages = Effect.gen(function* () {
   const account = yield* Config.NonEmptyString("CLOUDFLARE_ACCOUNT_ID");
   const token = yield* Config.Redacted("CLOUDFLARE_API_TOKEN");
+  const api = yield* Config.String("TEST_STAGE_CLOUDFLARE_API").pipe(
+    Config.withDefault("https://api.cloudflare.com"),
+  );
   const http = (yield* HttpClient.HttpClient).pipe(HttpClient.filterStatusOk);
   const stages = new Map<string, number>();
   let page = 1;
@@ -31,7 +31,7 @@ export const discoverTestStages = Effect.gen(function* () {
   do {
     const response = yield* http.execute(
       HttpClientRequest.get(
-        `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(account)}/workers/scripts?page=${page}&per_page=100`,
+        `${api}/client/v4/accounts/${encodeURIComponent(account)}/workers/scripts?page=${page}&per_page=100`,
       ).pipe(HttpClientRequest.bearerToken(token)),
     );
     const body = yield* HttpClientResponse.schemaBodyJson(Page)(response);

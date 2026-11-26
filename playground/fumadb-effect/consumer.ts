@@ -1,23 +1,17 @@
-/**
- * The consumer side: bind an adapter, provide a driver layer, migrate, use.
- *
- * Run with a database, for example:
- *   DATABASE_URL=postgresql://user:password@localhost:5434/postgresql node --experimental-strip-types playground/fumadb-effect/consumer.ts
- * or without one (in-memory SQLite):
- *   node --experimental-strip-types playground/fumadb-effect/consumer.ts
- */
 import { PgClient } from "@effect/sql-pg";
 import { SqliteClient } from "@effect/sql-sqlite-node";
 import { Config, Console, Effect, Layer, Option } from "effect";
+import type { SqlClient, SqlError } from "effect/sql";
 import { sqlAdapter } from "fumadb-effect/sql";
 import { chat, ChatDB } from "./library.ts";
 
 const program = Effect.gen(function* () {
   const url = yield* Config.option(Config.Redacted("DATABASE_URL"));
   const provider = Option.isSome(url) ? "postgresql" : "sqlite";
-  const Database = Option.isSome(url)
-    ? PgClient.layer({ url: url.value })
-    : SqliteClient.layer({ filename: ":memory:" });
+  const Database: Layer.Layer<SqlClient.SqlClient, Config.ConfigError | SqlError.SqlError> =
+    Option.isSome(url)
+      ? PgClient.layer({ url: url.value })
+      : SqliteClient.layer({ filename: ":memory:" });
 
   const client = ChatDB.names.prefix("chat_").client(sqlAdapter({ provider }));
   const lib = chat(client);

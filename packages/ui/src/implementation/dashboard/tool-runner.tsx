@@ -31,7 +31,6 @@ import {
 const isJson = Schema.is(Json);
 const decodeJson = Schema.decodeUnknownExit(Schema.fromJsonString(Json));
 
-/** A starting value for each required input; optional fields stay out of the draft. */
 const skeleton = (schema: unknown, root: JsonSchema, depth = 0): Json => {
   if (!isSchema(schema) || depth > 4) return null;
   const resolved = resolveSchema(schema, root);
@@ -68,7 +67,6 @@ const skeleton = (schema: unknown, root: JsonSchema, depth = 0): Json => {
   }
 };
 
-/** One draft, shown either as fields or as the JSON text it serializes to. */
 type Draft =
   | { readonly mode: "form"; readonly value: Json }
   | { readonly mode: "json"; readonly text: string };
@@ -83,7 +81,6 @@ const initialDraft = (tool: Tool | undefined): Draft => {
     : { mode: "json", text: JSON.stringify(value, null, 2) };
 };
 
-/** The accounts a call runs with, named with their provider, for the runner's context line. */
 export const runningAs = <A extends AccountSummary>(
   requirements: readonly RequirementAccounts<A>[],
 ): readonly string[] => {
@@ -97,11 +94,6 @@ export const runningAs = <A extends AccountSummary>(
   );
 };
 
-/**
- * What happened after the person answered their own call's review. App code reported that the call
- * needs approval and may already have made changes, so this states only what Executor did with the
- * saved call: never that the tool did not run.
- */
 const answered = (result: ToolResumeResultReceived) =>
   Match.value(result).pipe(
     Match.discriminatorsExhaustive("status")({
@@ -138,17 +130,12 @@ const answered = (result: ToolResumeResultReceived) =>
     }),
   );
 
-/** A failed call's reference, which the host gives beside the error when it recorded the call. */
 const Referenced = Schema.Struct({ reference: ToolCallReference });
 const referenceOf = (error: unknown) =>
   Option.getOrUndefined(
     Option.map(Schema.decodeUnknownOption(Referenced)(error), ({ reference }) => reference),
   );
 
-/**
- * The host's reference for a call that did not succeed, apart from the tool's own error text: what
- * the person quotes to an organization admin, who finds the call in the activity log with it.
- */
 function CallReference({ reference }: { readonly reference: string }) {
   return (
     <section
@@ -164,7 +151,6 @@ function CallReference({ reference }: { readonly reference: string }) {
   );
 }
 
-/** The person reviews their own call; approving runs the saved call and shows its result here. */
 function ToolRunReview({ atoms }: { readonly atoms: ToolRunApprovalAtoms }) {
   const answer = useAtomValue(atoms.answer);
   const result =
@@ -188,11 +174,6 @@ function ToolRunReview({ atoms }: { readonly atoms: ToolRunApprovalAtoms }) {
   );
 }
 
-/**
- * Run one tool with a form or JSON draft. The product binds the call to its exact app and
- * version, and renders its own failures; the call runs with the accounts the caller linked to
- * the app. Provider failures keep the shared account recovery. A call that needs approval waits for the person's review of the saved call.
- */
 export function ToolRunner<E>({
   tool,
   call,
@@ -203,21 +184,16 @@ export function ToolRunner<E>({
 }: {
   readonly tool: string;
   readonly call: Atom.AtomResultFn<Json, BrowserToolRun, E>;
-  /** The product's review of one pending call, read from the server rather than the draft. */
   readonly approval: (requestId: ApprovalRequestId) => ToolRunApprovalAtoms;
-  /** The selected tool's schemas seed the draft with its required inputs. */
   readonly detail: Query<Tool | undefined, unknown>;
   readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
-  /** The accounts the call runs with, from `runningAs`. */
   readonly accounts?: readonly string[] | undefined;
 }) {
   const run = useAtomSet(call, { mode: "promiseExit" });
   const schema = useAtomValue(detail);
   const [draft, setDraft] = useState<Draft>();
   const [pending, setPending] = useState(false);
-  // Set by a blocked run or tab switch; the form then marks its missing and invalid fields.
   const [checked, setChecked] = useState(false);
-  // Form fields whose text does not parse, so the draft still holds their last good value.
   const [invalid, setInvalid] = useState<ReadonlySet<string>>(new Set());
   const [output, setOutput] = useState<string>();
   const [reference, setReference] = useState<string>();
@@ -234,7 +210,6 @@ export function ToolRunner<E>({
       }),
     [],
   );
-  // A failed schema read still leaves JSON, so only the first read holds the editor.
   const loading = AsyncResult.isInitial(schema);
   const inputSchema = AsyncResult.isSuccess(schema) ? schema.value?.inputSchema : undefined;
   const renderable = isRenderableObjectSchema(inputSchema);
@@ -246,7 +221,6 @@ export function ToolRunner<E>({
     error === undefined || typeof error === "string" ? Option.none() : Cause.findErrorOption(error);
   const switchTo = (mode: string) => {
     if (current.mode === "form" && mode === "json") {
-      // The draft would drop the text of a field that does not parse.
       if (invalid.size > 0) return setChecked(true);
       setError(undefined);
       setChecked(false);
@@ -312,7 +286,6 @@ export function ToolRunner<E>({
           }
         }}
       >
-        {/* No tab is selected until the schema decides between the form and JSON. */}
         <Tabs value={loading ? "" : current.mode} onValueChange={switchTo} className="gap-2.25">
           <div className="flex min-h-7 items-end justify-between gap-3">
             <h3 className="text-[13px] font-medium">Input</h3>

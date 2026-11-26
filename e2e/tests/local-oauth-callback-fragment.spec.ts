@@ -1,4 +1,3 @@
-/** Facebook appends `#_=_` to its OAuth redirect; the local callback must still complete. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
 import { Api, body, type Session } from "../support/api.ts";
@@ -69,7 +68,6 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools:router(
         yield* browser.omitNetworkTrace;
         const returned = yield* browser.use("Sign in through a service that adds #_=_", (page) =>
           page.goto(link.url).then(() => {
-            // Capture the committed callback URL before the page replaces it.
             let callback: string | undefined;
             return Promise.all([
               page.waitForEvent("framenavigated", (frame) => {
@@ -83,7 +81,6 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools:router(
             ]).then(() => callback ?? "");
           }),
         );
-        // The browser really arrived with the service's fragment.
         expect(new URL(returned).hash).toBe("#_=_");
         const outcome = yield* browser.use("The callback settles", (page) =>
           page

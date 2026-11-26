@@ -142,10 +142,8 @@ function SourceFolder({
   );
 }
 
-/** Reads a listed file whose contents the display listing did not inline. */
 export type SourceFileQuery<E> = (path: string) => Query<SourceDisplayFile, E>;
 
-/** Inspect server-prepared display files; selection, line counts and copying use that same text. */
 export function SourceBrowser<E>({
   files,
   file: readFile,
@@ -208,7 +206,6 @@ export function SourceBrowser<E>({
   );
 }
 
-/** Load a large file only when it is selected; the header and file picker stay in place. */
 function RemoteSourceFile<E>({
   path,
   query,
@@ -258,7 +255,6 @@ function SourceFilePane({
   children,
 }: {
   readonly path: string;
-  /** Absent while the selected file is loading. */
   readonly content: string | undefined;
   readonly picker: ReactNode;
   readonly children: ReactNode;
@@ -285,7 +281,6 @@ function SourceFilePane({
   );
 }
 
-/** Use the same file-pane columns and scrolling frame for loaded source and placeholders. */
 function SourceFrame({ className, ...props }: ComponentProps<"section">) {
   return (
     <section
@@ -298,7 +293,6 @@ function SourceFrame({ className, ...props }: ComponentProps<"section">) {
   );
 }
 
-/** Match the file tree, file selector, and code viewport while a source read is pending. */
 export function SourceBrowserLoading({ className }: { readonly className?: string }) {
   return (
     <SourceFrame role="status" aria-label="Loading files" className={className}>
@@ -343,7 +337,6 @@ function SourceCodeLines() {
   );
 }
 
-/** Match the code viewport while one selected file is read. */
 function SourceCodeLoading({ label }: { readonly label: string }) {
   return (
     <div role="status" aria-label={label} className="flex h-full flex-col">

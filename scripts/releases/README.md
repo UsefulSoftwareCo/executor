@@ -9,7 +9,7 @@ running, and open the dashboard. The background Executor keeps running until
 daily for a newer release and suggests `executor upgrade`; set
 `EXECUTOR_NO_UPDATE_CHECK=1` to skip it. Use `executor service start` to start it
 without a browser, `executor serve` to run it in the foreground, and
-`executor pair` to get a new browser connection link.
+`executor service pair` to get a new browser connection link.
 `executor upgrade` installs the newest release on your channel the way Executor
 was installed: an install-script copy downloads and checks the release and keeps
 the previous version for `executor upgrade --rollback`; an npm, pnpm, Bun or
@@ -20,7 +20,7 @@ no `executor service`, so run `executor serve` there instead.
 
 Executor is one executable, built with Bun, with the files it runs or reads
 beside it: the dashboard, the app framework and compiler references, workerd,
-Git, the native credential-store binding and the Motel collector. It needs no
+Git, the native credential-store binding and the telemetry collector with its viewer. It needs no
 source checkout, Node, Bun or 1Password on the user machine. The `executor` npm
 package is a launcher. The first time a version starts, it downloads that
 release's archive for the platform, for macOS (Apple Silicon and Intel), Linux
@@ -111,6 +111,29 @@ publishing builds refuse stock Bun, and a local build without it prints that it
 is a development build. The release workflow fetches the runtime from the
 `bun-runtime-<bun version>-<patch hash>` release, building it first when the
 patch changed.
+
+A pull request that changes the lockdown patch has no runtime release yet, so CI's
+`release-local` lane (both its jobs) fails and names the command that builds one from its branch:
+`gh workflow run bun-runtime.yml --ref <branch> -f publish=true`, which anyone with
+write access can run. The release is named by the Bun version and the patch hash
+only, so main's runs, publishing ones included, use it from then on. If the
+branch's build scripts (`scripts/releases/bun-runtime/`) change after that build
+and before merge, delete that release before merging, and the push to main builds
+it again from main's scripts. Keying the release name on a hash of the whole
+`scripts/releases/bun-runtime/` directory, not the patch alone, would make this
+automatic; it is not done yet.
+
+The Rust telemetry collector is built by `packages/telemetry/scripts/build-collector.ts` (see the
+crate's README). The release workflow's `collector` job builds each target once per run from the
+`collector_matrix` that `workflow.ts` writes: the targets the run's packaging jobs (`local`,
+`local-macos-arm64`, `checks`, `cli`, `recovery`) run on, after any narrowing, so Linux x64 only
+in a check and none in a build of only the image, whose `releases` gate then expects the
+`collector` job skipped. It always builds; no release run restores or saves it. The packaging jobs do not
+`need` it: each waits for its own target's collector job with `collector-job.ts` and then
+downloads the build into `packages/telemetry/dist/collector/` before "Package the CLI runtime".
+`collector-job.ts` and the Deploy workflow's `apps-job.ts` share `job-wait.ts`, which follows one
+job of the run through the jobs API, fails as soon as that job ends without success or an answer
+leaves doubt, and fails at its deadline in elapsed time otherwise.
 
 The install scripts are `apps/docs/public/install.sh` and `install.ps1`, served
 at `https://executor.sh/docs/`. The publish job writes the Homebrew formula

@@ -1,17 +1,6 @@
-/**
- * Moves the saved clients of versions before 4.0.10 into stored OAuth clients, once, through a data
- * step. A saved client was keyed by a digest of its owner, provider, method, callback, issuer and
- * scopes, and its record held only the registration, so neither its owner nor its provider can be
- * read from it. Both come from the accounts whose grants hold the same client: a saved client no
- * account signed in with is not moved, and one that accounts of several owners hold is reported
- * rather than guessed, with why: how many owners and providers hold it, whether it has a secret,
- * how it was saved, and whether exactly one holder's settings reproduce its key. Saved records and
- * grants are never changed: a grant keeps its own copy of
- * the client, and a sign-in using credentials a stored client holds uses that client, so a
- * reconnect keeps the client and the callback it was registered at, under the host's policy for
- * it, without the grant naming it.
- */
-import { Clock, type Crypto, Data, Effect, Option, Redacted, Schema } from "effect";
+import { Clock, Data, Effect, Option, Redacted, Schema } from "effect";
+import type { HostCrypto } from "./host-crypto.ts";
+import { Digest } from "effect/crypto";
 import { Hex } from "effect/encoding";
 import {
   OAuthClientAuth,
@@ -51,14 +40,12 @@ import {
   registeredClientKey,
 } from "./stored-oauth-client-credentials.ts";
 
-/** A stored client's encrypted part, as the client store writes it. */
 const StoredClientSecret = Schema.Struct({
   client_id: Schema.NonEmptyString,
   client_secret: Schema.optional(Schema.NonEmptyString),
   token_endpoint_auth_method: Schema.optional(OAuthClientAuth),
 });
 
-/** Read beside the registration from a saved record, once sources were recorded. */
 const SavedClientSource = Schema.Struct({ executor_source: Schema.optionalKey(OAuthClientSource) });
 
 interface Holder {
@@ -67,24 +54,17 @@ interface Holder {
   readonly provider: ProviderId;
   readonly secret: string | undefined;
   readonly machine: boolean;
-  /** What a saved key was made from, as far as the account and its grant still say. */
   readonly method: string;
-  /** The issuer the grant recorded, derived from the token URL for declared endpoints. */
   readonly issuer: string;
-  /** The authorization server it signed in at, as stored clients name it (`oauthClientIssuer`). */
   readonly identity: string;
-  /** The stored client the grant names, when a 4.0.10 or later sign-in recorded it. */
   readonly oauthClient: OAuthClientId | undefined;
-  /** What the server's metadata said, which chose what a registration requested. */
   readonly metadata: Pick<
     OAuthServer,
     "token_endpoint_auth_methods_supported" | "grant_types_supported"
   >;
-  /** The scopes granted, when the account's fields keep the token response's `scope`. */
   readonly granted: ReadonlyArray<string> | undefined;
 }
 
-/** A saved client whose holders span several owners or providers. */
 interface Ambiguous {
   readonly ambiguous: {
     readonly browser: ReadonlyArray<Holder>;
@@ -93,21 +73,16 @@ interface Ambiguous {
   };
 }
 
-/** Settings a key from before 4.0.12 may have been made from. */
 interface KeyCandidate {
   readonly owner: OwnerId;
   readonly provider: ProviderId;
   readonly method: string;
-  /** The issuer as the sign-in recorded it, derived from the token URL for declared endpoints. */
   readonly issuer: string;
-  /** The same server as stored clients name it. */
   readonly identity: string;
-  /** What a registration from these settings requested besides callback and scopes. */
   readonly registration: {
     readonly tokenEndpointAuthMethod: string;
     readonly grantTypes: ReadonlyArray<string>;
   };
-  /** Scope lists the sign-in may have requested, besides none. */
   readonly scopes: ReadonlyArray<ReadonlyArray<string>>;
 }
 
@@ -117,9 +92,8 @@ const decodeStored = <A>(schema: Schema.Decoder<A>, value: unknown) =>
 export const makeSavedOAuthClients = (
   db: Query,
   credentials: Credentials,
-  crypto: Crypto.Crypto,
+  crypto: HostCrypto,
   lifecycle: ResourceLifecycle | undefined,
-  /** Callbacks the host sent when saving clients, tried when reading which owner a key names. */
   callbacks: ReadonlyArray<string>,
 ): SavedOAuthClients => {
   const decrypt = <A>(
@@ -135,7 +109,6 @@ export const makeSavedOAuthClients = (
       Effect.flatMap((json) => credentials.encrypt(identity, Redacted.make(json))),
     );
 
-  /** Who holds each client ID: every account whose grant signed in with it. */
   const holders = Effect.gen(function* () {
     const accounts = new Map(
       (yield* query(() =>
@@ -180,7 +153,6 @@ export const makeSavedOAuthClients = (
     return byClient;
   });
 
-  /** Where a saved client moves, read again for every report and move. */
   const analyse = (id: string, byClient: ReadonlyMap<string, ReadonlyArray<Holder>>) =>
     Effect.gen(function* () {
       const row = yield* query(() =>
@@ -201,7 +173,6 @@ export const makeSavedOAuthClients = (
         (holder) => holder.secret === secret,
       );
       if (held.length === 0) return "no_account" as const;
-      // A machine client is the account itself; its grant keeps it.
       const browser = held.filter((holder) => !holder.machine);
       const holder = browser[0];
       if (holder === undefined) return "machine_client" as const;
@@ -214,15 +185,8 @@ export const makeSavedOAuthClients = (
           },
         } satisfies Ambiguous;
       const key = id.slice("client_".length);
-      // Before sources were recorded a record has none; it is kept as entered, never discarded.
       const source = executor_source === "registered" ? "registered" : "manual";
-      // Every record moves to a client of its own key. Records saved under several settings with
-      // the same credentials are one client: the first moved holds them and the rest are
-      // duplicates. Records with different secrets for one client ID are different credentials,
-      // so each is its own client, and a grant holding either resolves to the client holding it.
       const target = OAuthClientId.make(`oac_${key}`);
-      // The identity credentials had before 4.0.12: this step's outcomes never change, so it
-      // still moves records as 4.0.10 did, and `8_oauth_clients_by_issuer` records their server.
       const digest = yield* legacyCredentialsDigest(credentials, {
         owner: holder.owner,
         provider: holder.provider,
@@ -233,27 +197,16 @@ export const makeSavedOAuthClients = (
     });
 
   const sha256 = (value: string) =>
-    crypto.digest("SHA-256", new TextEncoder().encode(value)).pipe(
-      Effect.map(Hex.encode),
-      Effect.mapError(() => new StorageError()),
-    );
+    crypto.digest
+      .digest(Digest.sha256, new TextEncoder().encode(value))
+      .pipe(Effect.map(Hex.encode));
 
-  /** Callbacks the host sent, as sign-ins wrote them into keys. */
   const hrefs = [
     ...new Set(
       callbacks.flatMap((callback) => (URL.canParse(callback) ? [new URL(callback).href] : [])),
     ),
   ];
 
-  /**
-   * The settings among `candidates` that reproduce a key from before 4.0.12: the SHA-256 of
-   * [owner, provider, method, callback, issuer, null, sorted scopes], which keyed saved clients
-   * and, in 4.0.10, registered stored clients. The account records the method and the grant the
-   * issuer. The callback is one the host sent, and the scopes are the provider's declared ones (a
-   * provider ID names one definition), or the ones the account's fields say were granted, each
-   * also with `offline_access`, which was added when a provider declared none. A key whose scopes
-   * came from a challenge may match none.
-   */
   const keyMatches = (key: string, candidates: ReadonlyArray<KeyCandidate>) =>
     Effect.gen(function* () {
       const tried = new Set<string>();
@@ -285,7 +238,6 @@ export const makeSavedOAuthClients = (
       return matches;
     });
 
-  /** What a holder's grant says its sign-in was keyed with. */
   const holderCandidate = (
     holder: Holder,
     declared: ReadonlyMap<ProviderId, Provider>,
@@ -312,7 +264,6 @@ export const makeSavedOAuthClients = (
     };
   };
 
-  /** The (owner, provider) pairs among the holders whose settings reproduce a saved key. */
   const keyOwners = (
     id: string,
     browser: ReadonlyArray<Holder>,
@@ -327,11 +278,6 @@ export const makeSavedOAuthClients = (
       ),
     );
 
-  /**
-   * Why a saved client's owner is ambiguous, as a report files it: how many owners and providers
-   * hold it, whether it has a secret, how it was saved, whether exactly one holder's settings
-   * reproduce its key, and the providers, whose IDs derive from their definitions.
-   */
   const ambiguity = (
     id: string,
     found: Ambiguous["ambiguous"],
@@ -351,7 +297,6 @@ export const makeSavedOAuthClients = (
       ].join(",");
     });
 
-  /** The definitions of the providers ambiguous clients' holders signed in to. */
   const declarations = (providers: ReadonlySet<ProviderId>) =>
     Effect.gen(function* () {
       const declared = new Map<ProviderId, Provider>();
@@ -365,7 +310,6 @@ export const makeSavedOAuthClients = (
       return declared;
     });
 
-  /** The order a data step walks records in, which decides which of a duplicate set moves. */
   const byId = (left: { readonly id: string }, right: { readonly id: string }) =>
     left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
 
@@ -383,15 +327,8 @@ export const makeSavedOAuthClients = (
       const existing = yield* query(() =>
         db.findFirst("storedOAuthClients", { where: (b) => b("id", "=", target) }),
       );
-      // A pass that moved it may have been interrupted before its outcome was recorded.
       if (existing !== null) return "already_moved";
-      // Credentials are one client per owner and provider: a client holding these, such as one
-      // registered since or another record's, keeps them, and this record is not moved. A
-      // removed client's stay withdrawn. A report reads the same answer an apply would.
       if ((yield* credentialsOwner(db, digest)) !== undefined) return "duplicate";
-      // A pass walks records in ID order, so of records with the same unheld credentials the
-      // first moves and the rest are duplicates. The report decides that from every record, not
-      // from the ones this process walked, so a report resumed after its cursor agrees too.
       if (!apply) return (firstWith.get(digest) ?? id) === id ? "would_move" : "duplicate";
       const stored = {
         id: target,
@@ -401,9 +338,7 @@ export const makeSavedOAuthClients = (
         clientId: client.client_id,
         source,
         hasSecret: secret !== undefined,
-        // The saved key, so a sign-in finds the callback the client was registered at.
         automaticKey: key,
-        // An account signed in with it.
         confirmed: true,
         encrypted: yield* encrypt(
           target,
@@ -435,11 +370,6 @@ export const makeSavedOAuthClients = (
       );
     });
 
-  // ---------------------------------------------------------------------------------------------
-  // 8_oauth_clients_by_issuer: record the authorization server of clients stored before 4.0.12.
-  // ---------------------------------------------------------------------------------------------
-
-  /** A provider's browser sign-in methods. */
   const browserMethods = (provider: Provider | undefined) =>
     provider === undefined
       ? []
@@ -449,11 +379,6 @@ export const makeSavedOAuthClients = (
             : [],
         );
 
-  /**
-   * The servers a provider's declared endpoints name, without contacting anyone: the declared
-   * issuer, or the token URL, as a sign-in records them (`oauthClientIssuer`). Undefined when a
-   * method discovers its server, which only a sign-in that did so recorded.
-   */
   const declaredServers = (owner: OwnerId, provider: Provider | undefined) => {
     const methods = browserMethods(provider);
     if (methods.length === 0) return undefined;
@@ -481,13 +406,11 @@ export const makeSavedOAuthClients = (
     return servers;
   };
 
-  /** One identity when every value names the same one. */
   const only = (values: Iterable<string>) => {
     const distinct = new Set(values);
     return distinct.size === 1 ? [...distinct][0] : undefined;
   };
 
-  /** A stored client's current credentials, as its credentials identity digests them. */
   const storedCredentials = (row: { readonly id: OAuthClientId; readonly encrypted: Uint8Array }) =>
     decrypt(row.id, row.encrypted, StoredClientSecret).pipe(
       Effect.map((secret) => ({
@@ -501,12 +424,6 @@ export const makeSavedOAuthClients = (
     db.findMany("storedOAuthClients", { orderBy: ["createdAt", "asc"] }),
   );
 
-  /**
-   * Which client of a set holding the same credentials for one server survives: a client already
-   * recorded under the server, which sign-ins already use as it; otherwise one a person registered,
-   * whose audience an administrator chose, before an automatic one; then the oldest, then the
-   * lowest ID. Deterministic, so every pass and every report picks the same one.
-   */
   const survivorOf = (members: ReadonlyArray<StoredRow>) =>
     members.toSorted((left, right) => {
       const rank = (row: StoredRow) => (row.issuer !== null ? 0 : row.source === "manual" ? 1 : 2);
@@ -517,7 +434,6 @@ export const makeSavedOAuthClients = (
       );
     })[0];
 
-  /** What recording one client's server needs, read again on every load of the step's items. */
   const analyseStored = (
     row: StoredRow,
     byClient: ReadonlyMap<string, ReadonlyArray<Holder>>,
@@ -530,15 +446,12 @@ export const makeSavedOAuthClients = (
       const { clientId, secret } = read.value;
       const provider = row.provider === null ? undefined : declared.get(row.provider);
       const servers = declaredServers(row.owner, provider);
-      // The owner's accounts that signed in with this client, by its credentials or its ID.
       const held = (byClient.get(clientId) ?? []).filter(
         (holder) =>
           !holder.machine &&
           holder.owner === row.owner &&
           (holder.secret === secret || holder.oauthClient === row.id),
       );
-      // Declared endpoints name the server exactly. Otherwise the server the owner's sign-ins with
-      // it discovered, or else every sign-in for its provider, whose definition its ID names.
       const issuer =
         (servers === undefined ? undefined : only(servers.map((server) => server.identity))) ??
         only(held.map((holder) => holder.identity)) ??
@@ -546,9 +459,6 @@ export const makeSavedOAuthClients = (
           ? undefined
           : only((byProvider.get(row.provider) ?? []).map((holder) => holder.identity)));
       if (issuer === undefined) return "issuer_unknown" as const;
-      // A registered client is found again by what it was registered for. Its earlier key names
-      // the callback and scopes; it is rebuilt from the settings that reproduce it, or the client
-      // is no longer found automatically, and the next automatic sign-in registers another.
       const automaticKey =
         row.automaticKey === null || row.provider === null
           ? null
@@ -570,7 +480,6 @@ export const makeSavedOAuthClients = (
       return { row, issuer, automaticKey, digest } as const;
     });
 
-  /** The key a registered client is found by from 4.0.12, from the settings of its earlier key. */
   const rebuiltKey = (
     key: string,
     owner: OwnerId,
@@ -591,7 +500,6 @@ export const makeSavedOAuthClients = (
           });
     });
 
-  /** The step's items and the set each belongs to, from one read of every client and grant. */
   const loadIssuerGroups = Effect.gen(function* () {
     const byClient = yield* holders;
     const byProvider = new Map<ProviderId, Holder[]>();
@@ -613,7 +521,6 @@ export const makeSavedOAuthClients = (
           Effect.catch(() => Effect.succeed("unreadable" as const)),
         ),
       );
-    // Clients of one owner with the same credentials for the same server are one client.
     const groups = new Map<string, OAuthClientId[]>();
     for (const [id, found] of analysed)
       if (typeof found !== "string")
@@ -621,7 +528,6 @@ export const makeSavedOAuthClients = (
     return { analysed, groups, owners };
   });
 
-  /** Signals that a set's audiences cannot be combined, so its transaction rolls back. */
   class AccessConflict extends Data.TaggedError("AccessConflict")<{}> {}
 
   const migrateStored = (
@@ -637,14 +543,10 @@ export const makeSavedOAuthClients = (
         db.findFirst("storedOAuthClients", { where: (b) => b("id", "=", id) }),
       );
       if (current === null) {
-        // Merged by an earlier item of its set in this pass, whose survivor now holds the
-        // credentials this client held: a sign-in using them is that client's.
         const holder = yield* credentialsOwner(db, found.digest);
         return holder?.kind === "held" && holder.row.id !== id ? "merged" : "absent";
       }
       if (current.issuer !== null) return "already_migrated";
-      // The set as it is now: its members still waiting, and a client recorded under the server
-      // since, such as one registered from 4.0.12 with the same credentials.
       const members: StoredRow[] = [];
       for (const member of loaded.groups.get(found.digest) ?? []) {
         const row = yield* query(() =>
@@ -689,11 +591,8 @@ export const makeSavedOAuthClients = (
               owner: survivor.owner,
               client: survivor.id,
               createdAt: now,
-              // These credentials were the survivor's before a client stored from 4.0.12 that
-              // held them for this server was removed; it was never removed itself.
               reclaim: true,
             });
-            // Another client claimed them meanwhile; the next pass reads the set again.
             if (other !== undefined) return yield* new StorageError();
             yield* query(() =>
               tx.updateMany("storedOAuthClients", {
@@ -713,8 +612,6 @@ export const makeSavedOAuthClients = (
               }),
             );
           if (merged.length === 0) return outcome;
-          // Who may use the merged clients may use the survivor; a set whose audiences cannot be
-          // combined is left as it is.
           if (
             lifecycle?.oauthClientsMerging !== undefined &&
             !(yield* lifecycle.oauthClientsMerging({
@@ -728,8 +625,6 @@ export const makeSavedOAuthClients = (
             yield* query(() =>
               tx.deleteMany("storedOAuthClients", { where: (b) => b("id", "=", member.id) }),
             );
-            // Every set of credentials a merged client holds or held, under its provider, is the
-            // survivor's: a grant's copy of them, or someone entering them, is the survivor.
             yield* query(() =>
               tx.updateMany("storedOAuthClientCredentials", {
                 where: (b) => b("client", "=", member.id),
@@ -743,11 +638,6 @@ export const makeSavedOAuthClients = (
       return result;
     });
 
-  // ---------------------------------------------------------------------------------------------
-  // 9_saved_oauth_clients_by_issuer: move saved records to their owner's client for their server.
-  // ---------------------------------------------------------------------------------------------
-
-  /** Where a saved record moves by owner and server, read again for every report and move. */
   const analyseByIssuer = (
     id: string,
     byClient: ReadonlyMap<string, ReadonlyArray<Holder>>,
@@ -779,8 +669,6 @@ export const makeSavedOAuthClients = (
         key,
         browser.map((holder) => holderCandidate(holder, declared)),
       );
-      // One owner's accounts hold it, whatever providers they are for. Otherwise the one owner
-      // whose settings reproduce the record's key saved it.
       const owner =
         only(browser.map((holder) => holder.owner)) ?? only(matches.map((match) => match.owner));
       if (owner === undefined) return "ambiguous_owner" as const;
@@ -799,7 +687,6 @@ export const makeSavedOAuthClients = (
         source,
         owner: ownerId,
         issuer,
-        // Providers whose clients stored before 4.0.12 may hold the credentials.
         providers: [
           ...new Set(
             browser.filter((holder) => holder.owner === owner).map((holder) => holder.provider),
@@ -839,13 +726,8 @@ export const makeSavedOAuthClients = (
       const existing = yield* query(() =>
         db.findFirst("storedOAuthClients", { where: (b) => b("id", "=", found.target) }),
       );
-      // Moved by `6_stored_oauth_clients` or an earlier pass of this step.
       if (existing !== null) return "already_moved";
-      // Credentials are one client per owner and server: records with the same ones collapse into
-      // the client holding them, and a removed client's stay withdrawn.
       if ((yield* credentialsOwner(db, found.digest)) !== undefined) return "duplicate";
-      // So do records whose credentials a client stored before 4.0.12 holds under a provider; data
-      // step `8_oauth_clients_by_issuer` records that client under its server.
       for (const provider of found.providers)
         if (
           (yield* credentialsOwner(
@@ -869,7 +751,6 @@ export const makeSavedOAuthClients = (
         source: found.source,
         hasSecret: found.secret !== undefined,
         automaticKey: found.automaticKey,
-        // An account signed in with it.
         confirmed: true,
         encrypted: yield* encrypt(
           found.target,
@@ -918,7 +799,6 @@ export const makeSavedOAuthClients = (
           }),
         ),
       );
-      // The first record, in walking order, of each set of credentials.
       const firstWith = new Map<string, string>();
       for (const { id, found } of analysed)
         if (found !== undefined && !firstWith.has(found.digest)) firstWith.set(found.digest, id);
@@ -973,7 +853,6 @@ export const makeSavedOAuthClients = (
           })),
         ),
       );
-      // The first record, in walking order, of each owner's credentials for each server.
       const firstWith = new Map<string, string>();
       for (const { id, found } of analysed)
         if (found !== undefined && !firstWith.has(found.digest)) firstWith.set(found.digest, id);

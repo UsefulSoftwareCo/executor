@@ -1,18 +1,3 @@
-/**
- * Apps written before app and user accounts keep running on the host that has them. An app built
- * with the published `apps@0.0.1-beta.84`, a release of protocol 12, declares `{ accounts }`
- * and reads `ctx.accounts`. The host reads such a bundle's requirements as user requirements: each
- * caller's call runs with the account they linked, and an app manager cannot link an account to
- * it for everyone.
- *
- * Upgrading storage written before app accounts changes no stored state. The fixture builds an
- * app on that release with a member's schedule and a workflow run, then rebuilds the database as
- * the upgrade finds it: it undoes SDK 4.0.14 (see `beforeAppAccounts`) and labels the database
- * 4.0.13. The host's link step, which ships with it, stays recorded with the member's link. The
- * next start runs 4.0.14. The member's link, schedule copy and run are unchanged and the app has
- * no app links; the run's start key still deduplicates, and after a redeploy that adds an app
- * requirement, a manager links an account for everyone that the app's calls then use.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -35,11 +20,8 @@ import { serverControl } from "../support/server-control.ts";
 import { appsManifest } from "../support/apps-release.ts";
 import { Evidence } from "../support/evidence.ts";
 
-/** The last `apps` release of protocol 12, resolved from the run's locked registry. */
 const protocol12 = "0.0.1-beta.84";
 
-// app-user-accounts: keep, as source of an earlier `apps` release.
-/** One account requirement in the protocol-12 shape and a tool that returns its token. */
 const files = [
   {
     path: "index.ts",
@@ -57,7 +39,6 @@ export default defineApp({ accounts: { service } }, {
   { path: "package.json", content: JSON.stringify({ dependencies: { apps: protocol12 } }) },
 ];
 
-/** A deployed app's requirements, each with the scope the host recorded at deploy. */
 const Requirements = Schema.Struct({
   requirements: Schema.Struct({
     accounts: Schema.Record(Schema.String, Schema.Struct({ scope: Schema.String })),
@@ -75,8 +56,6 @@ const Completed = Schema.Struct({ status: Schema.Literal("completed"), value: Sc
 const providerSource = `const service = defineProvider({ name: "Upgrade accounts fixture", auth: {
   key: secrets({ label: "API key", fields: object({ token: string() }) }),
 } });`;
-// app-user-accounts: keep, as source of an earlier `apps` release.
-/** The app before the upgrade: a protocol-12 account, a schedule of each member's and a workflow. */
 const beforeUpgrade = [
   {
     path: "index.ts",
@@ -94,7 +73,6 @@ export default defineApp({ accounts: { service } }, {
   },
   { path: "package.json", content: JSON.stringify({ dependencies: { apps: protocol12 } }) },
 ];
-/** The same app on the current release, with an app requirement its managers link. */
 const afterUpgrade = [
   {
     path: "index.ts",
@@ -129,12 +107,9 @@ const Settings = Schema.Struct({
 const Run = Schema.Struct({ status: Schema.String, output: Schema.optionalKey(Schema.Json) });
 class Pending extends Schema.TaggedError<Pending>()("Pending", {}) {}
 
-/** One host's routes for the upgrade flow. */
 interface UpgradeHost {
   readonly journal: "private_hosted" | "private_local";
-  /** The host's table of app and user links. */
   readonly linkTable: "hosted_app_account_links" | "local_app_account_links";
-  /** The subject a member's schedule copy records. */
   readonly actor: string;
   readonly deploy: (
     files: ReadonlyArray<{ path: string; content: string }>,
@@ -142,34 +117,23 @@ interface UpgradeHost {
   readonly redeploy: (
     files: ReadonlyArray<{ path: string; content: string }>,
   ) => Effect.Effect<void, never, Api>;
-  /**
-   * Connect a key account from the app for `requirement` in `scope`, which links it there: for
-   * the caller, or for everyone.
-   */
   readonly connect: (
     scope: LinkScope,
     requirement: string,
     token: string,
   ) => Effect.Effect<string, never, Api>;
   readonly call: (tool: string, kind: "query" | "mutation") => Effect.Effect<unknown, never, Api>;
-  /** The app's links in one scope as `[requirement, account]` pairs. */
   readonly links: (
     scope: LinkScope,
   ) => Effect.Effect<ReadonlyArray<readonly [string, string]>, never, Api>;
   readonly schedules: Effect.Effect<ReadonlyArray<typeof Settings.Type>, never, Api>;
   readonly enableSchedule: Effect.Effect<void, never, Api>;
-  /** Start `capture` under a start key and return the run's ID. */
   readonly start: (key: string) => Effect.Effect<string, never, Api>;
   readonly run: (id: string) => Effect.Effect<typeof Run.Type, never, Api>;
 }
 
-/** One parameterized statement against the stopped product's database. */
 type Statement = { readonly sql: string; readonly params?: ReadonlyArray<string> };
 
-/**
- * Build state before app accounts, upgrade the stopped product's storage, and check it after.
- * `storage` is the planned scenario's legacy storage write.
- */
 const upgradeFlow = <E, R>(
   host: UpgradeHost,
   storage: (
@@ -217,38 +181,34 @@ const upgradeFlow = <E, R>(
     const linkStep = {
       sql: `SELECT name FROM ${host.journal}_migrations WHERE name = 'app_account_links'`,
     };
-    const [schedulesBefore, sourcesBefore, runsBefore, linksBefore, stepBefore] = yield* storage([
-      scheduleRows,
-      sourceRows,
-      {
-        sql: "SELECT id, actor, start_key FROM executor_workflow_runs WHERE app = $1",
-        params: [app],
-      },
-      linkRows,
-      linkStep,
-      ...beforeAppAccounts(),
-    ]);
-    // The host's link step stays recorded, holding the member's link and no app link.
+    const versionRow = { sql: "SELECT value FROM private_executor_settings WHERE key = 'version'" };
+    const [versionBefore, schedulesBefore, sourcesBefore, runsBefore, linksBefore, stepBefore] =
+      yield* storage([
+        versionRow,
+        scheduleRows,
+        sourceRows,
+        {
+          sql: "SELECT id, actor, start_key FROM executor_workflow_runs WHERE app = $1",
+          params: [app],
+        },
+        linkRows,
+        linkStep,
+        ...beforeAppAccounts(),
+      ]);
     expect(stepBefore).toEqual([{ name: "app_account_links" }]);
     expect(linksBefore).toEqual([{ requirement: "service", subject: host.actor, account }]);
     expect(schedulesBefore).toEqual([{ id: copies[0]?.id, actor: host.actor }]);
     expect(runsBefore).toEqual([{ id: started, actor: host.actor, start_key: key }]);
-    // Linking the account made it the app's webhook source, with the member as its actor.
     expect(sourcesBefore).toEqual([{ account, actor: host.actor }]);
     yield* serverControl("start");
 
-    // Nothing was converted: the link, the schedule copy and the run are as they were, and the
-    // app has no app links.
     expect(yield* host.links("user")).toEqual([["service", account]]);
     expect(yield* host.links("app")).toEqual([]);
     expect(yield* host.schedules).toEqual(copies);
     expect(yield* host.run(started)).toEqual(completed);
     expect(yield* host.call("token", "query")).toBe("synthetic-upgrade-user");
-    // The start key still names the same run.
     expect(yield* host.start(key)).toBe(started);
 
-    // Redeployed with an app requirement, the app's manager links an account for everyone that
-    // calls use beside the member's link; the schedule copy stays the member's.
     yield* host.redeploy(afterUpgrade);
     const team = yield* host.connect("app", "team", "synthetic-upgrade-team");
     expect(yield* host.links("app")).toEqual([["team", team]]);
@@ -261,10 +221,9 @@ const upgradeFlow = <E, R>(
       expect.objectContaining({ id: copies[0]?.id, actor: host.actor, enabled: true }),
     ]);
 
-    // What the upgrade wrote, read from storage.
     const [version, step, scopes, nullable, schedulesAfter, sourcesAfter, linksAfter] =
       yield* storage([
-        { sql: "SELECT value FROM private_executor_settings WHERE key = 'version'" },
+        versionRow,
         linkStep,
         { sql: "SELECT id, scope FROM executor_workflow_runs WHERE app = $1", params: [app] },
         {
@@ -281,9 +240,8 @@ const upgradeFlow = <E, R>(
       before: { schedulesBefore, sourcesBefore, runsBefore, linksBefore, stepBefore },
       after: { version, step, scopes, nullable, schedulesAfter, sourcesAfter, linksAfter },
     });
-    expect(version).toEqual([{ value: "4.0.16" }]);
+    expect(version, "the current schema version").toEqual(versionBefore);
     expect(step).toEqual([{ name: "app_account_links" }]);
-    // The member's user link as it was, and the app link without a subject.
     expect(linksAfter).toEqual([
       { requirement: "service", subject: host.actor, account },
       { requirement: "team", subject: null, account: team },
@@ -294,7 +252,6 @@ const upgradeFlow = <E, R>(
       { table_name: "executor_webhook_sources", is_nullable: "YES" },
     ]);
     expect(schedulesAfter).toEqual(schedulesBefore);
-    // The member's webhook source keeps its actor; the app link's has none.
     expect(sourcesAfter).toHaveLength(2);
     expect(sourcesAfter).toEqual(
       expect.arrayContaining([
@@ -342,7 +299,6 @@ layer(HostedLive, { excludeTestServices: true })("Protocol-12 accounts on hosted
         });
         expect(opened.status, JSON.stringify(opened.body)).toBe(200);
 
-        /** Connect a key account from the app, which links it for the connecting member. */
         const connect = (actor: Session, token: string) =>
           Effect.gen(function* () {
             const started = yield* api.request(
@@ -370,12 +326,10 @@ layer(HostedLive, { excludeTestServices: true })("Protocol-12 accounts on hosted
             input: {},
           });
 
-        // Before a member links an account, the user requirement has none.
         const missing = yield* token(actors.admin);
         expect(missing.status, JSON.stringify(missing.body)).toBe(409);
         expect(missing.body).toMatchObject({ _tag: "AccountRequired", slot: "service" });
 
-        // Each member's call runs with the account they linked.
         const owned = yield* connect(actors.owner, "synthetic-protocol12-owner");
         const admins = yield* connect(actors.admin, "synthetic-protocol12-admin");
         expect(yield* accountLinks(actors.owner, path)).toEqual([["service", owned]]);
@@ -389,8 +343,6 @@ layer(HostedLive, { excludeTestServices: true })("Protocol-12 accounts on hosted
           expect(called.body).toBe(expected);
         }
 
-        // The requirement is a user requirement, so its manager cannot link an account to it for
-        // everyone, and the app has no app links.
         const linked = yield* linkAccountResponse(actors.owner, path, "service", owned, "app");
         expect(linked.status, JSON.stringify(linked.body)).toBe(422);
         expect(yield* body(Mismatch, linked)).toMatchObject({
@@ -441,7 +393,6 @@ layer(TestLive, { excludeTestServices: true })("Protocol-12 accounts on local", 
         expect(missing.status, JSON.stringify(missing.body)).toBe(409);
         expect(missing.body).toMatchObject({ _tag: "AccountRequired", slot: "service" });
 
-        // Connecting from the app links the account, and the call runs with it.
         const account = (yield* connectLocalAccount(agent, {
           app: app.id,
           requirement: "service",
@@ -455,8 +406,6 @@ layer(TestLive, { excludeTestServices: true })("Protocol-12 accounts on local", 
         expect(called.status, JSON.stringify(called.body)).toBe(200);
         expect((yield* body(Completed, called)).value).toBe("synthetic-protocol12-local");
 
-        // The requirement is a user requirement: linking it as an app link is refused, and the
-        // app has no app links.
         const linked = yield* linkAccountResponse(
           agent,
           localAppPath(app.id),
@@ -626,7 +575,6 @@ layer(TestLive, { excludeTestServices: true })("App accounts storage upgrade on 
               Effect.suspend(() =>
                 api.request(agent, "POST", "/v1/apps/deploy", { owner: "local", app, files }),
               ).pipe(Effect.flatMap(ok), Effect.asVoid, Effect.orDie),
-            // A local connection request names only the requirement; its scope is the app's.
             connect: (_scope, requirement, token) =>
               Effect.suspend(() =>
                 connectLocalAccount(agent, {

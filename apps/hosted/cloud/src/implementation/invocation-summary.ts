@@ -1,4 +1,3 @@
-/** Native invocation totals include background cleanup; they are not response latency. */
 import { Effect, Option, Schema } from "effect";
 import { providerFailureCode } from "./provider-failure.ts";
 import { invocationSurface } from "./invocation-surface.ts";
@@ -40,11 +39,6 @@ const phaseAttribute = {
   "alchemy.do.response": "executor.do_response_ready_ms",
 };
 
-/**
- * Produce an explicit, credential-free projection for one platform callback. `hosts`, the
- * deployment's host layout when it loaded, names the role of the host an HTTP invocation's request
- * was sent to.
- */
 export const invocationSummary = (hosts: Option.Option<CloudHosts>, input: unknown) =>
   Schema.decodeUnknownEffect(CloudInvocation)(input).pipe(
     Effect.map((event) => {
@@ -75,7 +69,6 @@ export const invocationSummary = (hosts: Option.Option<CloudHosts>, input: unkno
             attributes[phaseAttribute[timing.value.name]] = timing.value.durationMs;
             if (timing.value.name === "alchemy.runtime.initialize")
               attributes["executor.initialization_observed"] = true;
-            // The object was constructed in this invocation, after it was evicted or hibernated.
             if (timing.value.name === "alchemy.do.initialize")
               attributes["executor.do_initialization_observed"] = true;
           }
@@ -125,7 +118,6 @@ export const invocationSummary = (hosts: Option.Option<CloudHosts>, input: unkno
     }),
   );
 
-/** Keep valid events if a future platform payload fails to decode; never log that raw payload. */
 export const recordInvocations = (
   hosts: Option.Option<CloudHosts>,
   events: ReadonlyArray<unknown>,

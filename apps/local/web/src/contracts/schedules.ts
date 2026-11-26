@@ -2,7 +2,6 @@ import { hydrated } from "@executor-js/ui/contracts/http";
 import { revalidated } from "@executor-js/ui/contracts/refresh";
 import { browserApproval } from "@executor-js/ui/contracts/browser-approval";
 import { BrowserAtoms } from "./telemetry.ts";
-/** Product transport owns schedule atoms; each mutation belongs to one app and schedule. */
 import type { AccountScope, AppId, ScheduleId, ScheduleSettings } from "@executor-js/sdk";
 import { Data, Effect } from "effect";
 import { Atom } from "effect/reactivity";
@@ -15,7 +14,6 @@ class AppKey extends Data.Class<{ readonly app: AppId }> {}
 class ScheduleKey extends Data.Class<{
   readonly app: AppId;
   readonly name: string;
-  /** `app` configures the app declaration's one schedule; `user` the local subject's copy. */
   readonly scope: AccountScope;
 }> {}
 const settings = Atom.family((key: AppKey) =>
@@ -87,16 +85,10 @@ const copyControls = Atom.family((key: CopyKey) => ({
     ),
   ),
 }));
-/**
- * Read the app's schedules again, as after linking or unlinking an account: the app's declarations
- * are evaluated with its linked accounts.
- */
 export const refreshScheduleDiscovery = (get: Atom.FnContext, app: AppId) => {
   get.refresh(definitions(new AppKey({ app })));
   get.refresh(settings(new AppKey({ app })));
 };
-/** Bind saved settings independently from account-dependent definition discovery. */
-/** The local subject controls the app's own schedules as well as its copies. */
 export const scheduleBindings = (key: { readonly app: AppId }) => ({
   settings: polledSettings(new AppKey({ app: key.app })),
   definitions: definitions(new AppKey({ app: key.app })),
@@ -114,10 +106,8 @@ const runsSource = DashboardClient.query(
   hydrated({ query: { pending: true } }),
 ).pipe(revalidated, acknowledgedQuery);
 const runsQuery = pollingQuery(runsSource, steadyPolling);
-/** Join safe run metadata with app names; keep either read failure visible. */
 export const pendingApprovalsAtom = DashboardClient.runtime.atom((get) =>
   Effect.gen(function* () {
-    // App names come from the inventory; read it alongside the runs rather than after them.
     const [runs, inventory] = yield* Effect.all([get.result(runsQuery), get.result(overviewAtom)], {
       concurrency: "unbounded",
     });
@@ -131,7 +121,6 @@ export const pendingApprovalsAtom = DashboardClient.runtime.atom((get) =>
   }),
 );
 
-/** An answered request leaves the shared queue before the page reports success. */
 export const scheduledReviewAtoms = Atom.family((id: string) =>
   browserApproval(
     BrowserAtoms,

@@ -1,4 +1,10 @@
-import { Grant, GrantId, type ApprovalMode, type ResourceOrigins } from "@executor-js/mcp-auth";
+import {
+  Grant,
+  GrantId,
+  type ApprovalMode,
+  type McpWhoami,
+  type ResourceOrigins,
+} from "@executor-js/mcp-auth";
 import type {
   Connection,
   ConnectionId,
@@ -13,7 +19,6 @@ import type { Effect } from "effect";
 import { OrganizationAccess, type OrganizationReference } from "./organization.ts";
 import { AuthenticationUnavailable } from "./auth.ts";
 
-/** MCP authority from OAuth or a PAT and current membership. Tokens never become browser sessions. */
 export const McpAccess = Schema.Struct({
   userId: Schema.NonEmptyString,
   clientId: Schema.NonEmptyString,
@@ -22,42 +27,26 @@ export const McpAccess = Schema.Struct({
 });
 export type McpAccess = typeof McpAccess.Type;
 
-/**
- * The grant an MCP request authenticated with. Event subscriptions belong to it, so revoking the
- * grant stops them. Unset outside MCP requests.
- */
 export const CurrentMcpGrant = Context.Reference<GrantId | undefined>("hosted/CurrentMcpGrant", {
   defaultValue: () => undefined,
 });
 
-/**
- * The MCP session the request named in `Mcp-Session-Id`: the ID the server issued at `initialize`
- * on revisions that have sessions. The protocol server refuses a request naming one it did not
- * issue (404) before any tool runs. Unset for sessionless revisions and outside MCP requests.
- */
 export const CurrentMcpSession = Context.Reference<string | undefined>("hosted/CurrentMcpSession", {
   defaultValue: () => undefined,
 });
 
-/**
- * An MCP session ID in the form this server issues: Effect's protocol server names a session with
- * a random UUID, and Cloud's session objects prefix it with their object ID and its signature
- * (`<objectId>.<mac>.<sessionId>`, see Cloud's `mcp-session-id.ts`). Anything else is not one of
- * ours, whatever header carried it.
- */
 export const IssuedMcpSessionId = Schema.String.check(
   Schema.isPattern(
     /^(?:[0-9a-f]{64}\.[A-Za-z0-9_-]{43}\.)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u,
   ),
 );
 
-/** Invalid/revoked bearer grants need a fresh OAuth connection. */
 export class McpUnauthorized extends Schema.TaggedError<McpUnauthorized>()("McpUnauthorized", {}) {}
-/** Why a valid credential may not make an MCP request. Each reason needs a different fix. */
 export const McpForbiddenReason = Schema.Literals([
   "organization_required",
   "organization_mismatch",
   "membership",
+  "toolkit",
 ]);
 export type McpForbiddenReason = typeof McpForbiddenReason.Type;
 const forbidden: { readonly [Reason in McpForbiddenReason]: ErrorPresentation } = {
@@ -93,8 +82,17 @@ const forbidden: { readonly [Reason in McpForbiddenReason]: ErrorPresentation } 
         "Check which account the credential belongs to and which organization the MCP URL, X-Executor-Organization header or connection names. Correct a wrong organization, or have an organization owner restore the account's membership. Do not bypass authorization or assume changing app code can grant access.",
     },
   },
+  toolkit: {
+    title: "Toolkit not available",
+    description:
+      "This Executor v1 toolkit URL names no toolkit of this account's in the organization, or the account's copy of it was removed.",
+    recovery: {
+      action: "Use the organization's MCP URL, or a connection made in Executor, then retry.",
+      instructions:
+        "Executor v1's toolkits became each member's own MCP connection when the organization moved. Check that this account was a member who had the toolkit, and that its connection still exists under Connections. Otherwise connect at the organization's MCP URL and verify that tools are listed. Do not bypass authorization.",
+    },
+  },
 };
-/** A valid credential that may not make this MCP request, with the reason it was refused. */
 export const McpForbidden = UserFacingError.define({
   tag: "McpForbidden",
   status: 403,
@@ -103,18 +101,15 @@ export const McpForbidden = UserFacingError.define({
   presentation: ({ reason }) => forbidden[reason],
 });
 export type McpForbidden = typeof McpForbidden.Type;
-/** The signed-in browser may not review this grant's requests. Approval pages state no cause. */
 export class McpApprovalForbidden extends Schema.TaggedError<McpApprovalForbidden>()(
   "McpApprovalForbidden",
   {},
 ) {}
 
-/** The verified owner of connection records: one user in one organization. */
 export interface ConnectionOwner {
   readonly userId: string;
   readonly resource: string;
 }
-/** Grant storage owns connection records so grants can read them on every authentication. */
 export interface McpConnectionStore {
   readonly list: (
     owner: ConnectionOwner,
@@ -127,37 +122,24 @@ export interface McpConnectionStore {
     owner: ConnectionOwner,
     input: { readonly id: ConnectionId; readonly name: string; readonly policy: ConnectionPolicy },
   ) => Effect.Effect<Connection, ConnectionNotFound | AuthenticationUnavailable>;
-  /**
-   * Revoke the connection, every grant issued through it, and their tokens. Succeeds with the
-   * stored connection's ID once every step is stored.
-   */
   readonly revoke: (
     owner: ConnectionOwner,
     id: ConnectionId,
   ) => Effect.Effect<ConnectionId, ConnectionNotFound | AuthenticationUnavailable>;
-  /** The owner's authorized MCP and API clients, one per live grant. */
   readonly agents: (
     owner: ConnectionOwner,
   ) => Effect.Effect<readonly ConnectedAgent[], AuthenticationUnavailable>;
-  /**
-   * Revoke one of the owner's grants and delete its access and refresh tokens. Succeeds with the
-   * stored grant's ID once every step is stored.
-   */
   readonly revokeAgent: (
     owner: ConnectionOwner,
     id: GrantId,
   ) => Effect.Effect<GrantId, ConnectedAgentNotFound | AuthenticationUnavailable>;
 }
 
-/** Better Auth owns grant validation; each host supplies its native request lifetime. */
 export class McpAuthentication extends Context.Service<
   McpAuthentication,
   {
-    /** The browser origin: dashboard, sign-in, cookies and Origin checks. */
     readonly origin: string;
-    /** The origins of MCP and API OAuth resources; the first is canonical. They may differ from the browser origin. */
     readonly resourceOrigins: ResourceOrigins;
-    /** The authorization server's exact issuer identifier, which discovery names. */
     readonly issuer: string;
     readonly authenticate: (
       headers: Headers,
@@ -171,6 +153,9 @@ export class McpAuthentication extends Context.Service<
       McpAccess,
       McpUnauthorized | McpApprovalForbidden | AuthenticationUnavailable
     >;
+    readonly describe: (
+      access: McpAccess,
+    ) => Effect.Effect<McpWhoami, McpUnauthorized | AuthenticationUnavailable>;
     readonly metadata: Effect.Effect<unknown, AuthenticationUnavailable>;
     readonly connections: McpConnectionStore;
   }

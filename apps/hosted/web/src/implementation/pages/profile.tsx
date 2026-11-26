@@ -37,14 +37,8 @@ const actionClass =
 const inputClass =
   "w-[min(100%,_520px)] h-9 rounded-[6px] bg-transparent shadow-none max-[640px]:h-10 max-[640px]:text-[16px]";
 
-/** Email-code sign-ups have no name; the address's local part is the likeliest one. */
 const suggestedName = (email: string) => email.split("@")[0] ?? "";
 
-/**
- * The signed-in person's identity; it belongs to them, not to any organization. A host that can
- * verify a new address renders its own email setting; otherwise the email is read-only. A host
- * that lets people delete themselves renders that last, as `footer`.
- */
 export function ProfilePage({
   email,
   footer,
@@ -107,7 +101,6 @@ export function ProfilePage({
 function DisplayName({ current, email }: { readonly current: string; readonly email: string }) {
   const rename = useAtomSet(renameUserAtom, { mode: "promiseExit" });
   const state = useAtomValue(renameUserAtom);
-  // A blank name starts as an unsaved suggestion, so the empty field never looks broken.
   const [draft, setDraft] = useState(current.trim() ? undefined : suggestedName(email));
   const [error, setError] = useState<string>();
   const [saved, setSaved] = useState(false);
@@ -175,7 +168,6 @@ function DisplayName({ current, email }: { readonly current: string; readonly em
   );
 }
 
-/** Every organization this person belongs to; each one owns its own apps, accounts and groups. */
 function Memberships() {
   const organizations = useAtomValue(organizationsAtom);
   const retry = useAtomRefresh(organizationsAtom);
