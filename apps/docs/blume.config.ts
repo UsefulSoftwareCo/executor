@@ -1,7 +1,7 @@
 import type { AstroIntegration } from "astro";
 import { sentryVitePlugin } from "@sentry/vite-plugin";
 import { defineConfig } from "blume";
-import { appOrigin, siteOrigin } from "@executor-js/marketing/site-origin";
+import { parseSiteOrigin, siteOrigin } from "@executor-js/marketing/site-origin";
 import { assetsInlineLimit } from "@executor-js/marketing/script-assets";
 import { releaseCommandMarkdown } from "./release-commands.ts";
 import { release } from "../../scripts/releases/config.ts";
@@ -21,6 +21,11 @@ const analyticsPath = process.env.PUBLIC_POSTHOG_PATH ?? "";
 if (analyticsKey && !/^\/api\/[a-f0-9]{16}$/.test(analyticsPath))
   throw new Error("PostHog proxy path is missing from this build");
 const environment = process.env.PUBLIC_EXECUTOR_ENVIRONMENT ?? "";
+const mcpOrigin = parseSiteOrigin(
+  process.env.EXECUTOR_MCP_ORIGIN,
+  "EXECUTOR_MCP_ORIGIN",
+  "https://mcp.executor.sh",
+);
 
 const analyticsSettings = `(function(){
   var queued = window.posthog && window.posthog._i && window.posthog._i[0];
@@ -120,8 +125,9 @@ export default defineConfig({
         "",
         "Executor holds the credentials for services you already use and turns them into tools.",
         "Reach for it when an agent needs to call a real service without holding the credential:",
-        "connect an account once, then call the app through one MCP endpoint at `<origin>/mcp`.",
-        `The hosted origin is \`${appOrigin}\`. Executor also runs locally and self-hosted.`,
+        "connect an account once, then call the app through one MCP endpoint.",
+        `For Executor Cloud, connect to \`${mcpOrigin}/mcp\`.`,
+        "For a local or self-hosted instance, use that instance's origin followed by `/mcp`.",
       ].join("\n"),
     },
   },

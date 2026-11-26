@@ -8,6 +8,11 @@ export class BrokenSiteLinks extends Schema.TaggedError<BrokenSiteLinks>()("Brok
   links: Schema.Array(Schema.Struct({ target: Schema.String, pages: Schema.Array(Schema.String) })),
 }) {}
 
+class MissingHostedMcpEndpoint extends Schema.TaggedError<MissingHostedMcpEndpoint>()(
+  "MissingHostedMcpEndpoint",
+  { expected: Schema.String },
+) {}
+
 type Rule = Readonly<{ pattern: RegExp; target: string; status: number }>;
 
 const routePattern = (source: string) =>
@@ -31,6 +36,13 @@ const checkSiteLinks = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const root = yield* path.fromFileUrl(new URL("../../../..", import.meta.url));
   const site = path.join(root, "apps/hosted/cloud/.generated/site");
+  const llmsTxt = yield* fs.readFileString(path.join(site, "docs/llms.txt"));
+  const expected = new URL("/mcp", process.env.EXECUTOR_MCP_ORIGIN ?? "https://mcp.executor.sh")
+    .href;
+  if (!llmsTxt.includes(`\`${expected}\``)) {
+    yield* Effect.logError(`/docs/llms.txt must name the hosted MCP endpoint ${expected}`);
+    return yield* new MissingHostedMcpEndpoint({ expected });
+  }
 
   const files = new Set<string>();
   for (const entry of yield* fs.readDirectory(site, { recursive: true })) {

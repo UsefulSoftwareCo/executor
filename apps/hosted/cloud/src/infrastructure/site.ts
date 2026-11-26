@@ -27,6 +27,7 @@ export const cloudSite = Effect.gen(function* () {
         onSome: (roles) => roles.edge,
       }),
       EXECUTOR_APP_ORIGIN: hosts.browser,
+      EXECUTOR_MCP_ORIGIN: hosts.resourceOrigins.mcp[0],
       EXECUTOR_API_ORIGIN: Option.match(hosts.roles, {
         onNone: () => hosts.deployment,
         onSome: (roles) => roles.origins.api,
