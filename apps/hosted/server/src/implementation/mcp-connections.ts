@@ -1,4 +1,3 @@
-/** Members manage their own connections and connected agents; apps and accounts use the same access checks as calls. */
 import {
   ConnectionAccessInvalid,
   ConnectionNotFound,
@@ -17,7 +16,8 @@ import { CurrentOrganization, OrganizationForbidden } from "../contracts/organiz
 import { ScheduleWakeup } from "../contracts/schedules.ts";
 import { checkAccounts, currentOwner, usableApp } from "./access.ts";
 import { addLink, linkedAccounts, lockedChange } from "./app-accounts.ts";
-import { policyDatabase, requireAccountAccessAs } from "./resource-policy.ts";
+import { policyDatabase, requireAccountOwnerAs } from "./resource-policy.ts";
+import { audited } from "./security-audit.ts";
 
 const owner = Effect.gen(function* () {
   const organization = yield* CurrentOrganization;
@@ -26,11 +26,6 @@ const owner = Effect.gen(function* () {
   return { userId, resource: organization.organization };
 });
 
-/**
- * Check one app's runs-as targets. An account target the member has not linked to any of the app's
- * user requirements is linked to each one its provider fills, as linking it from the app would: a
- * plain requirement's previous link is replaced.
- */
 const resolveApp = (
   executor: Executor,
   organizationOwner: OwnerId,
@@ -46,8 +41,6 @@ const resolveApp = (
         OrganizationForbidden: () => Effect.fail(invalid("app")),
       }),
     );
-    // Grants and connections name only the caller's own accounts; app access authorizes the
-    // app links.
     const requirements = Object.entries(app.requirements.accounts)
       .filter(([, requirement]) => requirement.scope === "user")
       .map(([slot, requirement]) => ({ slot, ...requirement }));
@@ -71,11 +64,9 @@ const resolveApp = (
         );
         const linked = yield* linkedAccounts(sql, { subject: userId, apps: [app.id] });
         if (linked.some((link) => link.id === account.id)) return false;
-        // Check both again under the app's link lock: either may have been revoked while the
-        // change waited for it (see `lockedChange`).
         return yield* lockedChange(executor, { app: app.id, access: "use" }, (locked, actor) =>
           Effect.gen(function* () {
-            yield* requireAccountAccessAs(actor, account.id, "use").pipe(
+            yield* requireAccountOwnerAs(actor, account.id).pipe(
               Effect.catchTag("OrganizationForbidden", () => Effect.fail(invalid("account"))),
             );
             return yield* Effect.forEach(
@@ -116,7 +107,6 @@ const resolvePolicy = (apps: readonly ConnectionApp[]) =>
     };
   });
 
-/** RequireUser rejects bearer credentials; RequireOrganization checks current membership. */
 export const hostedMcpConnectionHandlers = HttpApiBuilder.group(
   HostedApi,
   "mcpConnections",
@@ -147,7 +137,6 @@ export const hostedMcpConnectionHandlers = HttpApiBuilder.group(
         )
         .handle("update", ({ params, payload }) =>
           Effect.gen(function* () {
-            // Check ownership before linking any account for this connection.
             const existing = yield* auth.connections.list(yield* owner);
             if (!existing.some((connection) => connection.id === params.connection))
               return yield* new ConnectionNotFound({ connection: params.connection });
@@ -162,13 +151,23 @@ export const hostedMcpConnectionHandlers = HttpApiBuilder.group(
           }),
         )
         .handle("revoke", ({ params }) =>
-          Effect.flatMap(owner, (current) => auth.connections.revoke(current, params.connection)),
+          Effect.flatMap(owner, (current) =>
+            auth.connections.revoke(current, params.connection),
+          ).pipe(
+            audited("mcp_connection.revoke", { kind: "mcp_connection", id: (revoked) => revoked }),
+            Effect.asVoid,
+          ),
         )
         .handle("agents", () =>
           Effect.flatMap(owner, (current) => auth.connections.agents(current)),
         )
         .handle("revokeAgent", ({ params }) =>
-          Effect.flatMap(owner, (current) => auth.connections.revokeAgent(current, params.agent)),
+          Effect.flatMap(owner, (current) =>
+            auth.connections.revokeAgent(current, params.agent),
+          ).pipe(
+            audited("mcp_agent.revoke", { kind: "mcp_agent", id: (revoked) => revoked }),
+            Effect.asVoid,
+          ),
         );
     }),
 );

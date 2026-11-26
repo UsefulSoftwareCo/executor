@@ -1,0 +1,102 @@
+{
+  "query": "/api/traces/a8e053facbcdbbf15f342850b3ebbd45",
+  "status": 200,
+  "shape": {
+    "types": ["object"],
+    "fields": {
+      "data": {
+        "types": ["object"],
+        "fields": {
+          "traceId": {
+            "types": ["string"]
+          },
+          "serviceName": {
+            "types": ["string"]
+          },
+          "rootOperationName": {
+            "types": ["string"]
+          },
+          "startedAt": {
+            "types": ["string"]
+          },
+          "isRunning": {
+            "types": ["boolean"]
+          },
+          "durationMs": {
+            "types": ["number"]
+          },
+          "spanCount": {
+            "types": ["number"]
+          },
+          "errorCount": {
+            "types": ["number"]
+          },
+          "warnings": {
+            "types": ["array"],
+            "items": {
+              "types": ["string"]
+            }
+          },
+          "spans": {
+            "types": ["array"],
+            "items": {
+              "types": ["object"],
+              "fields": {
+                "spanId": {
+                  "types": ["string"]
+                },
+                "parentSpanId": {
+                  "types": ["null", "string"]
+                },
+                "serviceName": {
+                  "types": ["string"]
+                },
+                "scopeName": {
+                  "types": ["null", "string"]
+                },
+                "kind": {
+                  "types": ["null", "string"]
+                },
+                "operationName": {
+                  "types": ["string"]
+                },
+                "startTime": {
+                  "types": ["string"]
+                },
+                "isRunning": {
+                  "types": ["boolean"]
+                },
+                "durationMs": {
+                  "types": ["number"]
+                },
+                "status": {
+                  "types": ["string"]
+                },
+                "depth": {
+                  "types": ["number"]
+                },
+                "tags": {
+                  "types": ["object"],
+                  "fields": {
+                    "*": {
+                      "types": ["string"]
+                    }
+                  }
+                },
+                "warnings": {
+                  "types": ["array"],
+                  "items": {
+                    "types": ["string"]
+                  }
+                },
+                "events": {
+                  "types": ["array"]
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

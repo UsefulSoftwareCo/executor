@@ -35,9 +35,10 @@ import {
 } from "../../contracts/dashboard.ts";
 import { AppProviderIcon, ProviderIcon } from "./common.tsx";
 import { AccountAvatar, AccountCheckResult } from "./account-health.tsx";
-import { EmptyState } from "./empty-state.tsx";
+import { CopyButton } from "./code.tsx";
 import { Button } from "../components/button.tsx";
 import { Checkbox } from "../components/checkbox.tsx";
+import { Skeleton } from "../components/skeleton.tsx";
 import { Spinner } from "../components/spinner.tsx";
 import {
   DropdownMenu,
@@ -57,11 +58,6 @@ import { cn } from "../lib/utils.ts";
 
 const accountName = (account: AccountSummary) => account.label || "Unnamed account";
 
-/**
- * An account's actions in this app: the host's items, then unlinking when the host offers it.
- * Unlinking stops using the account for the requirement; the saved account and its other links
- * stay.
- */
 export function LinkedAccountMenu<A, E>({
   label,
   unlink,
@@ -71,7 +67,6 @@ export function LinkedAccountMenu<A, E>({
   children,
 }: {
   readonly label: string;
-  /** Set for an account this app signed in itself: unlinking deletes it, so it asks first. */
   readonly bound?: { readonly app: string } | undefined;
   readonly unlink?: Atom.AtomResultFn<void, A, E> | undefined;
   readonly Failure: ComponentType<FailureProps<E>>;
@@ -169,10 +164,6 @@ function UnlinkItem<A, E>({
   );
 }
 
-/**
- * Accounts are saved separately from the apps that use them, so unlinking one from an app keeps
- * it. After an unlink leaves no app using an account, offer to delete it.
- */
 export function useUnusedAccountPrompt<E, A>({
   usage,
   remove,
@@ -186,7 +177,6 @@ export function useUnusedAccountPrompt<E, A>({
   const [unused, setUnused] = useState<AccountDetail>();
   const check = async (account: AccountId) => {
     const exit = await read(account);
-    // The removal already succeeded; a failed read only skips this optional prompt.
     if (Exit.isSuccess(exit) && exit.value.canManage && exit.value.apps.length === 0)
       setUnused(exit.value);
   };
@@ -264,7 +254,6 @@ function DeleteUnusedAccount<E, A>({
   );
 }
 
-/** How long a check result stays fresh before viewing the app's accounts checks again. */
 const checkFreshFor = 5 * 60 * 1000;
 
 const provisionedOnly = (requirement: AccountRequirement) =>
@@ -272,13 +261,6 @@ const provisionedOnly = (requirement: AccountRequirement) =>
     (method) => method.type === "secrets" && method.provisioned === true,
   );
 
-/**
- * Stale while revalidate: rows show the recorded checks at once, and each account this app checks
- * is checked again in the background when its result is missing, outdated or older than
- * `checkFreshFor`. Each recorded result is rechecked once, so a redeploy or new credentials while
- * the page stays open check again, and a recheck that changes nothing does not repeat. A recheck
- * that cannot run leaves the result as it was, so its rows offer to try again.
- */
 function useRevalidateChecks(
   app: App,
   scope: AccountScope,
@@ -353,9 +335,7 @@ function useRevalidateChecks(
   return { running, failed, retry };
 }
 
-/** Check an account again; resolves with the check's outcome. */
 type Revalidate = (account: AccountId) => Promise<Exit.Exit<unknown, unknown>>;
-/** The accounts whose check of this app is running again, or could not run. */
 interface Rechecks {
   readonly running: ReadonlyMap<AccountId, number>;
   readonly failed: ReadonlySet<AccountId>;
@@ -374,30 +354,21 @@ const scoped = (app: App, scope: AccountScope): readonly RequirementEntry[] =>
     ([, requirement]) => requirement.scope === scope,
   );
 
-/** Changing the links of one scope. The host still authorizes every link and connection. */
 export interface LinkEditing<E> {
-  /** One requirement's linked accounts, then the other accounts the caller could link. */
   readonly choices: (
     slot: string,
   ) => Query<{ readonly accounts: readonly RequirementChoice<Account>[] }, E>;
   readonly link: (slot: string, account: AccountId) => Atom.AtomResultFn<void, unknown, E>;
   readonly unlink: (slot: string, account: AccountId) => Atom.AtomResultFn<void, unknown, E>;
-  /** Connect a new account for the requirement; saving it links it. */
   readonly connect: (slot: string, requirement: AccountRequirement) => void;
-  /** A connection is open or saving, so the other changes wait for it. */
   readonly connecting?: boolean | undefined;
   readonly onUnlinked?: ((account: AccountId) => void) | undefined;
 }
 
-/** The links of one scope and what the caller can do with them. */
 export interface ScopeAccounts<E> {
-  /** The scope's links with their sign-in and check details, oldest first per requirement. */
   readonly links: readonly RequirementLink<AccountSummary>[];
-  /** Absent when the caller cannot change these links. */
   readonly edit?: LinkEditing<E> | undefined;
-  /** Why the caller cannot change these links, shown with the greyed-out list. */
   readonly readOnly?: string | undefined;
-  /** Each account's menu, such as editing or reconnecting it. */
   readonly accountMenu?:
     | ((
         account: AccountSummary,
@@ -409,65 +380,147 @@ export interface ScopeAccounts<E> {
   readonly reconnectAction?:
     | ((account: AccountSummary, slot: string, requirement: AccountRequirement) => ReactNode)
     | undefined;
-  /** Check one linked account again; its result reaches `links` through the host's queries. */
   readonly revalidate?: Revalidate | undefined;
 }
 
-/**
- * The app's account requirements in two sections with the same layout: "App accounts", linked for
- * everyone who uses the app and its background work, and "Your accounts", linked for the caller.
- * Each requirement lists every account the caller could use: a radio for a plain requirement,
- * checkboxes for a many() requirement, and "Connect new account" last. Selecting an account links
- * it, which replaces a plain requirement's account; clearing a checkbox unlinks it.
- */
 export function AppAccounts<E>({
   app,
   appAccounts,
   yourAccounts,
   accounts,
+  canEdit,
   Failure,
 }: {
   readonly app: App;
   readonly appAccounts: ScopeAccounts<E>;
   readonly yourAccounts: ScopeAccounts<E>;
-  /** The caller's usable accounts, whose sign-in and check details the choices reuse. */
   readonly accounts: readonly AccountSummary[];
+  readonly canEdit: boolean;
   readonly Failure: ComponentType<FailureProps<E>>;
 }) {
-  const appRequirements = scoped(app, "app");
-  const userRequirements = scoped(app, "user");
-  if (appRequirements.length === 0 && userRequirements.length === 0)
-    return (
-      <EmptyState size="compact" title="No accounts required">
-        This app can run without a saved account.
-      </EmptyState>
-    );
   return (
     <div className="accounts-section space-y-8">
-      {appRequirements.length > 0 && (
-        <LinkScope
-          app={app}
-          scope="app"
-          title="App accounts"
-          description="Linked for everyone"
-          requirements={appRequirements}
-          data={appAccounts}
-          accounts={accounts}
-          Failure={Failure}
-        />
-      )}
-      {userRequirements.length > 0 && (
-        <LinkScope
-          app={app}
-          scope="user"
-          title="Your accounts"
-          description="Linked for you"
-          requirements={userRequirements}
-          data={yourAccounts}
-          accounts={accounts}
-          Failure={Failure}
-        />
-      )}
+      {accountScopes.map(({ scope, title, description }) => {
+        const requirements = scoped(app, scope);
+        return requirements.length === 0 ? (
+          <AccountScopeSection key={scope} title={title} description={description}>
+            <NoScopeAccounts app={app} scope={scope} canEdit={canEdit} />
+          </AccountScopeSection>
+        ) : (
+          <LinkScope
+            key={scope}
+            app={app}
+            scope={scope}
+            title={title}
+            description={description}
+            requirements={requirements}
+            data={scope === "app" ? appAccounts : yourAccounts}
+            accounts={accounts}
+            Failure={Failure}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
+export const accountScopes = [
+  { scope: "app", title: "App accounts", description: "Linked for everyone" },
+  { scope: "user", title: "Your accounts", description: "Linked for you" },
+] as const satisfies readonly {
+  readonly scope: AccountScope;
+  readonly title: string;
+  readonly description: string;
+}[];
+
+export function AccountScopeSection({
+  title,
+  description,
+  readOnly,
+  children,
+}: {
+  readonly title: string;
+  readonly description: string;
+  readonly readOnly?: boolean | undefined;
+  readonly children: ReactNode;
+}) {
+  return (
+    <section aria-label={title} data-read-only={readOnly} className="space-y-3">
+      <div>
+        <h2 className="text-sm font-medium">{title}</h2>
+        <p className="text-xs text-muted-foreground">{description}</p>
+      </div>
+      {children}
+    </section>
+  );
+}
+
+const scopeGuide = {
+  app: {
+    title: "No app accounts",
+    kind: "an app account",
+    detail: (
+      <>
+        One account linked for everyone, such as a team API key. Callers, schedules and webhooks all
+        use it, and the app reads it as <code>ctx.app.accounts</code>.
+      </>
+    ),
+  },
+  user: {
+    title: "No user accounts",
+    kind: "a user account",
+    detail: (
+      <>
+        Each person links their own account, and the app reads the caller’s as{" "}
+        <code>ctx.user.accounts</code>.
+      </>
+    ),
+  },
+} as const satisfies Record<
+  AccountScope,
+  { readonly title: string; readonly kind: string; readonly detail: ReactNode }
+>;
+
+const addAccountPrompt = (app: App, scope: AccountScope) => {
+  const target = `my Executor app ${JSON.stringify(app.name)} (app ID: ${app.id})`;
+  const read = `First read accounts.md in the Executor app's app-authoring skill and the app's current source. Declare the provider with defineProvider`;
+  return scope === "app"
+    ? `Add an app account to ${target}: one shared [service, for example Datadog] account that people who can edit the app link once for everyone. Every caller, schedule and webhook uses it. ${read}, add it under the app scope of the requirements, { app: { accounts } }, and read it in tools as ctx.app.accounts.<name>. Never put credentials in source. Deploy the updated app, then tell me to link the account under App accounts on its Accounts tab.`
+    : `Add a user account to ${target} so each person who uses it connects their own [service, for example GitHub] account. ${read}, add it under the user scope of the requirements, { user: { accounts } }, and read the caller's account in tools as ctx.user.accounts.<name>. Never put credentials in source. Deploy the updated app, then tell me to link my account under Your accounts on its Accounts tab.`;
+};
+
+export function NoScopeAccounts({
+  app,
+  scope,
+  canEdit,
+}: {
+  readonly app: App;
+  readonly scope: AccountScope;
+  readonly canEdit: boolean | undefined;
+}) {
+  const guide = scopeGuide[scope];
+  return (
+    <div className="rounded-lg border border-dashed px-4 py-3.5">
+      <h3 className="text-[13px] font-medium">{guide.title}</h3>
+      <p className="mt-1 max-w-xl text-pretty text-xs leading-5 text-muted-foreground">
+        {guide.detail}
+      </p>
+      <div className="mt-3 flex min-h-9 items-center">
+        {canEdit === undefined ? (
+          <Skeleton className="h-9 w-32" />
+        ) : canEdit ? (
+          <CopyButton
+            code={addAccountPrompt(app, scope)}
+            label={`Copy prompt to add ${guide.kind}`}
+            text="Copy prompt"
+            variant="outline"
+            size="default"
+            inline
+          />
+        ) : (
+          <p className="text-xs text-muted-foreground">People who can edit this app can add one.</p>
+        )}
+      </div>
     </div>
   );
 }
@@ -501,11 +554,7 @@ function LinkScope<E>({
   const readOnly = data.edit === undefined;
   return (
     <Checking.Provider value={checking}>
-      <section aria-label={title} data-read-only={readOnly} className="space-y-3">
-        <div>
-          <h2 className="text-sm font-medium">{title}</h2>
-          <p className="text-xs text-muted-foreground">{description}</p>
-        </div>
+      <AccountScopeSection title={title} description={description} readOnly={readOnly}>
         {readOnly && data.readOnly !== undefined && (
           <p className="text-xs text-muted-foreground">{data.readOnly}</p>
         )}
@@ -531,12 +580,11 @@ function LinkScope<E>({
             />
           ))}
         </div>
-      </section>
+      </AccountScopeSection>
     </Checking.Provider>
   );
 }
 
-/** Short guidance under a requirement; the rows say the rest. */
 const requirementNote = (requirement: AccountRequirement, linked: number) =>
   requirement.cardinality === "many"
     ? requirement.scope === "app"
@@ -560,7 +608,6 @@ function RequirementView<E>({
 }: ScopeProps<E> & {
   readonly slot: string;
   readonly requirement: AccountRequirement;
-  /** The requirement's linked accounts, oldest first. */
   readonly linked: readonly AccountSummary[];
   readonly label: string;
   readonly showSlot: boolean;
@@ -601,7 +648,6 @@ const radioClass =
   "grid size-4 shrink-0 place-items-center rounded-full border border-input shadow-xs outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:border-primary";
 const radioDot = "size-2 rounded-full bg-primary";
 
-/** Account names sort the rows, so linking one does not move it. */
 const byName = <C extends { readonly account: AccountSummary }>(choices: readonly C[]) =>
   [...choices].sort(
     (a, b) =>
@@ -609,7 +655,6 @@ const byName = <C extends { readonly account: AccountSummary }>(choices: readonl
       a.account.id.localeCompare(b.account.id),
   );
 
-/** A member's view: the linked accounts with their status, and no controls. */
 function ReadOnlyChoices<E>({
   app,
   slot,
@@ -668,10 +713,6 @@ function ReadOnlyChoices<E>({
   );
 }
 
-/**
- * The accounts the caller could use for one requirement, from the host's read of it. Until that
- * read arrives the linked accounts show, without controls that could act on stale choices.
- */
 function EditableChoices<E>({
   app,
   slot,
@@ -689,8 +730,6 @@ function EditableChoices<E>({
 }) {
   const { result, data: loaded, refresh } = useQuery(edit.choices(slot));
   const plain = requirement.cardinality === "one";
-  // A choice shows the page's own view of the account: its link's details, with sign-in state and
-  // checks, or the caller's account list, which renames and reconnects keep current.
   const summarize = (account: Account): AccountSummary =>
     linked.find((item) => item.id === account.id) ??
     accounts.find((item) => item.id === account.id) ??
@@ -698,7 +737,6 @@ function EditableChoices<E>({
   const choices = byName(
     Option.match(loaded, {
       onNone: () => linked.map((account) => ({ account, linked: true })),
-      // An account deleted since the read is no longer the caller's to link.
       onSome: (value) =>
         value.accounts.flatMap((choice) =>
           choice.linked || accounts.some((item) => item.id === choice.account.id)
@@ -708,8 +746,6 @@ function EditableChoices<E>({
     }),
   );
   const ready = Option.isSome(loaded) && edit.connecting !== true;
-  // Picking or connecting another account for a plain requirement retires an app-bound one, so it
-  // asks first.
   const [replacingWithNew, setReplacingWithNew] = useState(false);
   const bound = plain
     ? choices.find(
@@ -809,14 +845,12 @@ function ChoiceRow<E>({
   Failure,
   replaces,
 }: {
-  /** The app-bound account that selecting this one would retire. */
   readonly replaces?: string | undefined;
   readonly app: App;
   readonly slot: string;
   readonly requirement: AccountRequirement;
   readonly choice: RequirementChoice<AccountSummary>;
   readonly plain: boolean;
-  /** The choices are read and no connection is open. */
   readonly ready: boolean;
   readonly edit: LinkEditing<E>;
   readonly data: ScopeAccounts<E>;
@@ -833,7 +867,6 @@ function ChoiceRow<E>({
   const [error, setError] = useState<Cause.Cause<E>>();
   const id = useId();
   const name = accountName(account);
-  // An account the app acquired means nothing elsewhere, so unlinking it deletes it.
   const appBound = requirement.definition.auth[account.method]?.type === "interactive";
   const [confirming, setConfirming] = useState(false);
   const change = async (next: boolean) => {
@@ -901,7 +934,6 @@ function ChoiceRow<E>({
   );
 }
 
-/** The menu's removal of an app-bound account, behind the same confirmation as its checkbox. */
 function BoundUnlink<A, E>({
   unlink,
   name,
@@ -933,7 +965,6 @@ function BoundUnlink<A, E>({
   );
 }
 
-/** Unlinking an app-bound account deletes it, and the app removes it where it signed in. */
 function RemoveAppBoundAccount({
   name,
   app,
@@ -944,9 +975,7 @@ function RemoveAppBoundAccount({
   onRemove,
 }: {
   readonly name: string;
-  /** The confirming button, when it doesn't remove the account right away. */
   readonly confirmLabel?: string | undefined;
-  /** Set when choosing another account for the requirement is what removes this one. */
   readonly replacement?: string | undefined;
   readonly app: string;
   readonly pending: boolean;
@@ -981,7 +1010,6 @@ function RemoveAppBoundAccount({
   );
 }
 
-/** An account's sign-in state, or this app's check of it. */
 function AccountStatus({
   app,
   account,
@@ -1009,7 +1037,6 @@ function AccountStatus({
   );
 }
 
-/** This app's check of a linked account; apps without a check show nothing. */
 function AppCheck({
   health,
   checking,

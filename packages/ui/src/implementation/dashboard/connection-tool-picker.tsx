@@ -16,7 +16,6 @@ const filters: readonly { readonly value: Filter; readonly label: string }[] = [
   { value: "selected", label: "Selected" },
 ];
 
-/** Read-only catalog picker; selection edits only the enclosing connection draft. */
 export function ConnectionToolPicker<E>({
   query,
   Failure,

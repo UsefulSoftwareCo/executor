@@ -1,4 +1,3 @@
-/** Loopback report server with Effect-owned routing, files and socket lifetime. */
 import { createServer } from "node:http";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -25,7 +24,6 @@ const command = Command.make("e2e-report", {
       )(port);
       const root = path.resolve(directory);
       yield* fs.access(path.join(root, "index.html"));
-      // The platform handler implements byte ranges so seeking does not download the whole film.
       const files = yield* HttpStaticServer.make({
         root,
         cacheControl: "no-store",

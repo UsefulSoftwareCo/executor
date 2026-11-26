@@ -1,8 +1,3 @@
-/**
- * Providers that declare OAuth endpoints directly, shaped like Google's authorization server, and
- * discovered servers that likewise leave client authentication to the client. Accounts started
- * without a name take the owner's first free default name for the provider when they complete.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
@@ -54,9 +49,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth declared endpoints", (it
           http = yield* HttpClient.HttpClient;
         const issuer = yield* oauthSetupIssuer;
         const prefix = `/api/organizations/${actors.organization.id}`;
-        // Google signs users in on one host and exchanges tokens on another, then names the
-        // sign-in host as `iss` in the callback and in the ID tokens `openid` returns. The fixture
-        // serves both; `localhost` stands in for the sign-in host.
         const signInOrigin = issuer.origin.replace("127.0.0.1", "localhost");
         expect(new URL(signInOrigin).origin).not.toBe(new URL(issuer.origin).origin);
         const endpoints = {
@@ -89,7 +81,6 @@ export default defineApp({user: { accounts:{service} }},async({user: { accounts 
           });
         const connect = (app: typeof AppProvider.Type) =>
           Effect.gen(function* () {
-            // The app's links before this connection completes.
             const linked = yield* linkedAccountIds(actors.owner, `${prefix}/apps/${app.id}`);
             const connection = yield* body(
               Resource,
@@ -105,7 +96,6 @@ export default defineApp({user: { accounts:{service} }},async({user: { accounts 
         const start = (
           connection: string,
           client: { readonly clientId: string; readonly clientSecret?: string },
-          /** `null` starts sign-in without a name. */
           label: string | null = `Declared ${client.clientId}`,
         ) =>
           Effect.gen(function* () {
@@ -149,8 +139,6 @@ export default defineApp({user: { accounts:{service} }},async({user: { accounts 
                 .request(actors.owner, "DELETE", `${prefix}/accounts/${account.id}`)
                 .pipe(Effect.orDie),
             );
-            // Completing links the new account to the app in place of its earlier link, as the
-            // app's one requirement is plain; the earlier accounts stay saved.
             expect(yield* linkedAccountIds(actors.owner, `${prefix}/apps/${app.id}`)).toEqual([
               account.id,
             ]);
@@ -167,8 +155,6 @@ export default defineApp({user: { accounts:{service} }},async({user: { accounts 
             ).toMatchObject({ state: { status: "completed", account: { id: account.id } } });
             return account;
           });
-        // Tokens are issued inside the host's renewal window, so using the account refreshes it.
-        // Calls use the app's linked account.
         const expectRenewed = (account: string, app: typeof AppProvider.Type) =>
           Effect.gen(function* () {
             expect(yield* linkedAccountIds(actors.owner, `${prefix}/apps/${app.id}`)).toEqual([
@@ -190,7 +176,6 @@ export default defineApp({user: { accounts:{service} }},async({user: { accounts 
             expect(metrics.refreshes).toBeGreaterThan(before);
           });
 
-        // Undeclared issuer and client authentication, like the generated Google catalog apps.
         const undeclared = yield* deploy("Declared endpoints", endpoints);
         const setup = yield* api.request(
           actors.owner,
@@ -198,7 +183,6 @@ export default defineApp({user: { accounts:{service} }},async({user: { accounts 
           `${prefix}/providers/${undeclared.requirements.accounts.service.provider}/oauth/oauth/setup`,
         );
         expect(setup.status).toBe(200);
-        // Endpoints without an issuer sign in at the server their token endpoint names.
         expect(setup.body).toEqual({
           mode: "client-required",
           scopes: ["openid", "read"],
@@ -207,8 +191,6 @@ export default defineApp({user: { accounts:{service} }},async({user: { accounts 
           resource: { value: null, source: "none" },
           clients: [],
         });
-        // Executor never reads ID tokens, so sign-in and refresh succeed even though these name
-        // the sign-in host rather than the derived issuer.
         yield* issuer.configure({
           callbackIssuer: signInOrigin,
           includeIdToken: true,
@@ -218,7 +200,6 @@ export default defineApp({user: { accounts:{service} }},async({user: { accounts 
           expiresIn: 20,
         });
 
-        // Neither sign-in names its account, so each takes the owner's next default name.
         const confidential = yield* connect(undeclared);
         const confidentialStart = yield* start(confidential.connection, clients.confidential, null);
         yield* issuer.allowClient({
@@ -247,7 +228,6 @@ export default defineApp({user: { accounts:{service} }},async({user: { accounts 
         );
         expect((yield* issuer.metrics).lastExchangeAuth).toBe("none");
         expect(publicAccount.label).toBe("Default 2");
-        // A reconnect keeps the account's current name instead of taking another default.
         const renamed = yield* api.request(
           actors.owner,
           "PATCH",
@@ -277,11 +257,9 @@ export default defineApp({user: { accounts:{service} }},async({user: { accounts 
           label: "Renamed public account",
         });
 
-        // A declared issuer is the service's identifier, so the callback's `iss` must match it.
         const declared = yield* deploy("Declared issuer", { ...endpoints, issuer: signInOrigin });
         const matching = yield* connect(declared);
         const matchingStart = yield* start(matching.connection, clients.confidential);
-        // A name supplied when sign-in starts is used as given.
         const matchingAccount = yield* expectCompleted(
           matching,
           yield* complete(matching.connection, yield* consent(matchingStart.authorizationUrl)),
@@ -300,7 +278,6 @@ export default defineApp({user: { accounts:{service} }},async({user: { accounts 
               _tag: "OAuthCompletionFailed",
               reason,
             });
-            // A rejected completion links nothing.
             expect(yield* linkedAccountIds(actors.owner, `${prefix}/apps/${declared.id}`)).toEqual(
               attempt.linked,
             );
@@ -312,7 +289,6 @@ export default defineApp({user: { accounts:{service} }},async({user: { accounts 
               )).body,
             ).toMatchObject({ state: { status: "pending" } });
           });
-        // ID tokens are ignored, so one naming another issuer than the declared one never fails.
         yield* issuer.configure({ idTokenIssuer: issuer.origin });
         const foreignIdToken = yield* connect(declared);
         const foreignStart = yield* start(foreignIdToken.connection, clients.confidential);
@@ -336,7 +312,6 @@ export default defineApp({user: { accounts:{service} }},async({user: { accounts 
         );
         expect((yield* issuer.metrics).tokenExchanges).toBe(exchanges);
 
-        // The client form offers an optional secret when the provider leaves authentication open.
         yield* issuer.configure({
           callbackIssuer: signInOrigin,
           browserReturn: (yield* Target).metadata.origin,
@@ -393,7 +368,6 @@ export default defineApp({user: { accounts:{service} }},async({user: { accounts 
         });
         expect((yield* issuer.metrics).tokenExchanges).toBe(exchangesBeforeForm + 1);
         expect((yield* issuer.metrics).lastExchangeAuth).toBe("none");
-        // Connecting from the app's form linked the new account to it.
         const [saved, ...extra] = yield* linkedAccountIds(
           actors.owner,
           `${prefix}/apps/${formApp.id}`,
@@ -452,7 +426,6 @@ export default defineApp({user: { accounts:{service} }},async({user: { accounts 
           });
         expect(yield* signInWith(clients.confidential)).toBe("client_secret_basic");
         expect(yield* signInWith(clients.public)).toBe("none");
-        // A secret uses the body form when the server accepts only that one.
         yield* issuer.configure({ authMethods: ["none", "client_secret_post"] });
         expect(yield* signInWith(clients.confidential, ["client_secret_post"])).toBe(
           "client_secret_post",

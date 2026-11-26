@@ -1,4 +1,3 @@
-/** App-owned account lifecycle through real hosted HTTP and a controlled external backend. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Fiber, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -90,17 +89,15 @@ layer(HostedLive, { excludeTestServices: true })("Interactive account lifecycle"
               actor,
               shared ? "sharedIdentity" : "identity",
               shared ? "app" : "user",
-              shared ? { destination: { kind: "shared", audience: { kind: "everyone" } } } : {},
             );
             expect((yield* start(actor, pendingConnection.id, "paste")).status).toBe(200);
             return yield* connected(yield* submit(actor, pendingConnection.id));
           });
-        // Use permission permits unlinking only this caller's link; it cannot retire the shared ref.
         const sharedA = yield* make(actors.owner, true),
           sharedB = yield* make(actors.owner, true);
-        expect((yield* link(actors.member, sharedA.id)).status).toBe(200);
-        expect((yield* link(actors.member, sharedB.id)).status).toBe(200);
-        expect((yield* unlink(actors.member, sharedB.id)).status).toBe(200);
+        expect((yield* link(actors.member, sharedA.id)).status).toBe(403);
+        expect((yield* link(actors.member, sharedB.id)).status).toBe(403);
+        expect((yield* unlink(actors.member, sharedB.id)).status).toBe(404);
         expect(yield* calls()).toHaveLength(0);
         expect((yield* detail(sharedA.id)).status).toBe(200);
         expect((yield* detail(sharedB.id)).status).toBe(200);
@@ -116,9 +113,7 @@ layer(HostedLive, { excludeTestServices: true })("Interactive account lifecycle"
         );
         expect(reconnect.status).toBe(422);
         expect(reconnect.body).toMatchObject({ _tag: "InteractiveReconnectUnsupported" });
-        // Radio replacement retires a managed previous ref. Failure keeps the previous link.
         const first = yield* make(actors.owner);
-        // A wrong-provider replacement must fail before touching the old credential.
         const beforeInvalid = (yield* calls()).length;
         const invalid = yield* link(actors.owner, backendAccount.id);
         expect(invalid.status).toBe(422);
@@ -132,7 +127,6 @@ layer(HostedLive, { excludeTestServices: true })("Interactive account lifecycle"
         yield* backend.refuseRemoval(false);
         expect((yield* link(actors.owner, sharedA.id)).status).toBe(200);
         expect((yield* detail(first.id)).status).toBe(403);
-        // Connecting a replacement uses the same retirement, only when the new attempt connects.
         const replacement = yield* pending(actors.owner);
         expect((yield* start(actors.owner, replacement.id, "paste")).status).toBe(200);
         yield* backend.refuseRemoval(true);
@@ -148,7 +142,6 @@ layer(HostedLive, { excludeTestServices: true })("Interactive account lifecycle"
         expect((yield* start(actors.owner, replacement.id, "paste")).status).toBe(200);
         const second = yield* connected(yield* submit(actors.owner, replacement.id));
         expect((yield* detail(sharedA.id)).status).toBe(403);
-        // An in-flight step is waiting, and cancel allows a fresh method on the same connection.
         const attempt = yield* pending(actors.owner);
         expect((yield* start(actors.owner, attempt.id, "device")).status).toBe(200);
         const statusHold = yield* backend.holdStatus;
@@ -180,7 +173,6 @@ layer(HostedLive, { excludeTestServices: true })("Interactive account lifecycle"
         expect((yield* api.request(actors.owner, "POST", `${cp(expired.id)}/cancel`)).status).toBe(
           200,
         );
-        // A held remove and a direct delete compete for one durable claim.
         const before = (yield* calls()).length;
         const removalHold = yield* backend.holdRemoval;
         yield* Effect.addFinalizer(() => removalHold.release);
@@ -197,10 +189,8 @@ layer(HostedLive, { excludeTestServices: true })("Interactive account lifecycle"
         yield* removalHold.release;
         expect((yield* Fiber.join(retiring)).status).toBe(200);
         expect(yield* calls()).toHaveLength(before + 1);
-        // Bulk deletion attempts cleanup, but provider refusal cannot keep the app or accounts.
         const surviving = yield* make(actors.owner);
         const beforeHook = (yield* calls()).length;
-        // A storage fault in the real appRemoving hook refuses the deletion transaction.
         yield* legacyStorage([
           {
             sql: "create function e2e_refuse_app_removing() returns trigger language plpgsql as $$ begin raise exception 'Synthetic appRemoving refusal'; end $$",
@@ -229,7 +219,6 @@ layer(HostedLive, { excludeTestServices: true })("Interactive account lifecycle"
         yield* Effect.addFinalizer(() => cleanupHold.release);
         const deleting = yield* Effect.forkChild(api.request(actors.owner, "DELETE", path));
         yield* cleanupHold.started;
-        // The app and account rows are already committed away while external cleanup is held.
         expect((yield* api.request(actors.owner, "GET", path)).status).toBe(403);
         expect((yield* detail(surviving.id)).status).toBe(403);
         yield* cleanupHold.release;
@@ -277,7 +266,6 @@ layer(HostedLive, { excludeTestServices: true })("Interactive account lifecycle"
             fields: { token: interactiveBackendKey },
           })).status,
         ).toBe(200);
-        // Start real app-scoped work before any interactive reference exists, so it cannot pin one.
         const scheduled = yield* api.request(actors.owner, "PATCH", `${path}/schedules/tick`, {
           enabled: true,
           scope: "app",

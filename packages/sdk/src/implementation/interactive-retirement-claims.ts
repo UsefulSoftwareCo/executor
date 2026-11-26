@@ -1,5 +1,4 @@
-/** Durable explicit-retirement leases. No transaction escapes these helpers. */
-import { Clock, type Crypto, Effect, Option, Schema } from "effect";
+import { Clock, Effect, Option, Schema } from "effect";
 import {
   InteractiveRetirementBusy,
   InteractiveRetirementFailed,
@@ -14,9 +13,9 @@ import {
 import { lockConnection, StoredState } from "./connection-state.ts";
 import { ownedAccount, publicAccount } from "./accounts.ts";
 import { query, transaction, type Query } from "./database.ts";
+import type { HostCrypto } from "./host-crypto.ts";
 const decode = Schema.decodeUnknownOption(StoredState),
   encode = Schema.encodeSync(StoredState);
-/** The complete remove step is limited to 15 seconds, leaving 5 seconds to settle its lease. */
 export const retirementLeaseMillis = 20_000;
 export interface RetirementClaim {
   readonly connection: AccountConnectionId;
@@ -34,7 +33,7 @@ export const retirementRecords = (db: Query, owner: OwnerId) =>
   );
 export const makeRetirementClaims = (
   db: Query,
-  crypto: Crypto.Crypto,
+  crypto: HostCrypto,
   lifecycle?: ResourceLifecycle,
 ) => {
   const check = (input: { owner: OwnerId; accounts: readonly AccountId[] }) =>
@@ -58,7 +57,7 @@ export const makeRetirementClaims = (
     transaction(db, (tx) =>
       Effect.gen(function* () {
         const now = yield* Clock.currentTimeMillis;
-        const token = yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()));
+        const token = yield* crypto.random.uuidV4();
         const wanted = new Set(input.accounts),
           claims: RetirementClaim[] = [];
         for (const record of yield* retirementRecords(tx, input.owner)) {
@@ -81,7 +80,6 @@ export const makeRetirementClaims = (
             binding = row.storedState.interactive,
             account = state.account.id;
           const lease = binding.retirement;
-          // A legacy claim without an expiry is reclaimable too; it cannot block an upgrade forever.
           if (lease?.token !== undefined && (lease.expiresAt ?? 0) > now)
             return yield* new InteractiveRetirementBusy({ account });
           const saved = yield* ownedAccount(tx, { account, owner: input.owner }).pipe(

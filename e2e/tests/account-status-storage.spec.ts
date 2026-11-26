@@ -1,4 +1,3 @@
-/** Display status reuses health JSON without advancing the schema or losing checked identity. */
 import { expect, layer } from "@effect/vitest";
 import { Effect } from "effect";
 import { HostedLive, withHostedCase } from "../support/case.ts";

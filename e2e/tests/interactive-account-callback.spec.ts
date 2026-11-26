@@ -1,4 +1,3 @@
-/** An app-owned remove handler re-enters the same authenticated product server over HTTP. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Exit, Fiber, Redacted, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -17,7 +16,6 @@ import {
 import { serverControl } from "../support/server-control.ts";
 import { scenarios } from "../test-plan.ts";
 const Connected = Schema.Struct({ state: Schema.Literal("connected"), account: Resource });
-/** PGlite's filesystem lock stays live for roughly ten seconds after a hard kill. */
 const restartAfterCrash = Effect.gen(function* () {
   for (let attempt = 1; ; attempt++) {
     const started = yield* Effect.exit(serverControl("start"));
@@ -58,7 +56,6 @@ layer(HostedLive, { excludeTestServices: true })("Interactive removal callback",
             .request(actors.owner, "POST", `${path}/accounts/${scope}/${slot}/connections`, {})
             .pipe(Effect.flatMap((r) => body(Resource, r)));
         const key = yield* pending("app", "backend");
-        // The callback credential belongs to the synthetic scenario owner and stays in sealed fields.
         const cookie = Redacted.value(yield* actors.owner.cookies)
           .map((c) => `${c.name}=${c.value}`)
           .join("; ");
@@ -81,7 +78,6 @@ layer(HostedLive, { excludeTestServices: true })("Interactive removal callback",
           return (yield* body(Connected, result)).account;
         });
         const first = yield* make;
-        // The external backend records remove only after the authenticated callback returned 200.
         const unlinked = yield* api.request(
           actors.owner,
           "DELETE",
@@ -89,7 +85,6 @@ layer(HostedLive, { excludeTestServices: true })("Interactive removal callback",
         );
         expect(unlinked.status, JSON.stringify(unlinked.body)).toBe(200);
         expect((yield* backend.calls).filter((c) => c.step === "remove")).toHaveLength(1);
-        // A hard crash leaves the committed claim and local link intact. It expires on restart.
         const crashed = yield* make;
         const held = yield* backend.holdRemoval;
         yield* Effect.addFinalizer(() => held.release);
@@ -151,7 +146,6 @@ layer(HostedLive, { excludeTestServices: true })("Interactive removal callback",
         const afterBulk = (yield* backend.calls).filter((c) => c.step === "remove").length;
         yield* hold.release;
         expect((yield* Fiber.join(completing)).status).not.toBe(200);
-        // Even though the app is gone, the sign-in's captured context still attempts compensation.
         expect((yield* backend.calls).filter((c) => c.step === "remove").length).toBeGreaterThan(
           afterBulk,
         );

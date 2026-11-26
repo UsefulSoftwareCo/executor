@@ -3,7 +3,6 @@ import { useCallback } from "react";
 import { BillingPage, billingSearch } from "../pages/billing.tsx";
 import { BillingPagePending } from "../components/page-pending.tsx";
 
-/** Cloud-only page; no matching route exists in Docker. */
 export const Route = createFileRoute("/org/$organizationSlug/billing")({
   validateSearch: billingSearch,
   pendingComponent: BillingPagePending,

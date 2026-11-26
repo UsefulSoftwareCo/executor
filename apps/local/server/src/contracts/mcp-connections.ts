@@ -1,4 +1,3 @@
-/** Scoped MCP connections owned by the paired local operator. */
 import {
   AccountNotFound,
   AccountSelectionInvalid,
@@ -20,7 +19,6 @@ import { AuthStorageError } from "./auth.ts";
 
 const path = "/dashboard/api/mcp/connections";
 const connection = { connection: ConnectionId };
-/** Saving checks each app and account target, so it reports app and account failures. */
 const saveErrors = [
   AuthStorageError,
   ConnectionAccessInvalid,
@@ -29,7 +27,6 @@ const saveErrors = [
   AccountNotFound,
   AccountSelectionInvalid,
 ] as const;
-/** Dashboard pairing authorizes these routes; MCP bearer credentials cannot reach them. */
 export const DashboardMcpConnections = HttpApiGroup.make("mcpConnections")
   .add(
     HttpApiEndpoint.get("list", path, {

@@ -1,4 +1,3 @@
-/** Public HTTP drives app-owned sign-ins; the app talks to a real synthetic backend. */
 import { expect, layer } from "@effect/vitest";
 import { Clock, Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -117,7 +116,6 @@ layer(HostedLive, { excludeTestServices: true })("Interactive accounts", (it) =>
             .request(actor, "GET", `${path}/accounts/${scope}`)
             .pipe(Effect.flatMap((response) => body(Links, response)));
 
-        // Neither a missing slot handler nor a handler without an interactive requirement is valid.
         for (const source of [
           `import { defineApp, defineProvider, interactive } from "apps"; const p = defineProvider({ name: "Missing handlers", auth: { a: interactive({ label: "A" }) } }); export default defineApp({ user: { accounts: { identity: p } } }, {});`,
           `import { defineApp } from "apps"; export default defineApp({}, { connect: { identity: { start: async () => ({ session: "synthetic" }), status: async () => ({ state: "waiting" }) } } });`,
@@ -143,7 +141,6 @@ layer(HostedLive, { excludeTestServices: true })("Interactive accounts", (it) =>
           actors.member,
           yield* status(actors.member, device.id),
         );
-        // The app reported an identity, so it names the account.
         expect(deviceAccount).toMatchObject({
           method: "device",
           label: "Synthetic device account",
@@ -235,7 +232,6 @@ layer(HostedLive, { excludeTestServices: true })("Interactive accounts", (it) =>
           [deviceAccount.id, pasteAccount.id].sort(),
         );
 
-        // A failed cleanup keeps the link. The successful retry runs with a changed backend answer.
         yield* backend.refuseRemoval(true);
         expect(
           (yield* api.request(

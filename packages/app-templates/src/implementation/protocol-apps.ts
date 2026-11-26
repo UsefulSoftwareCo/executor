@@ -1,9 +1,3 @@
-/**
- * Source for protocol apps whose sign-in methods, fixed request values and tool rules are known
- * up front, such as apps imported from another product. Everything stays in editable files:
- * `provider.ts` declares the methods and where each account's credentials go, `tools.ts` the
- * exposed names and approvals, `index.ts` the router.
- */
 import { Effect, Schema } from "effect";
 import { CredentialHost } from "apps/contracts";
 import { asciiJson } from "@executor-js/sdk/core";
@@ -22,7 +16,6 @@ const json = (value: unknown) => JSON.stringify(value, null, 2);
 const key = (name: string) => `[${JSON.stringify(name)}]`;
 const failed = (reason: string) => new TemplateError({ code: "source_generation", reason });
 
-/** The host credentials may be sent to, from the URL the app calls. */
 export const credentialHost = (url: string) =>
   Effect.try(() => new URL(url).host).pipe(
     Effect.flatMap(Schema.decodeUnknownEffect(CredentialHost)),
@@ -77,7 +70,6 @@ const sentValues = (method: GeneratedAuthMethod) => {
   return `{ headers: { ${entries("header")} }, query: { ${entries("query")} } }`;
 };
 
-/** The fixed account's sign-in method: its fields, sent where the placements say. */
 const fixedMethod = (fixed: GeneratedFixedAccount): GeneratedAuthMethod => ({
   kind: "secrets",
   label: "Fixed credentials",
@@ -85,11 +77,6 @@ const fixedMethod = (fixed: GeneratedFixedAccount): GeneratedAuthMethod => ({
   placements: fixed.placements,
 });
 
-/**
- * The second provider of an app with a fixed account, the account's type, and
- * `requestCredentials`, which sends the selected account's credentials over the fixed ones, as v1
- * sent a connection's over its integration's.
- */
 const fixedDeclarations = (
   name: string,
   fixed: GeneratedFixedAccount,
@@ -126,7 +113,6 @@ export const requestCredentials = (account: Account, fixedAccount: FixedAccount)
 `;
 };
 
-/** The value at a path of a response body as a non-empty string of at most 255 characters. */
 const identityCode = (
   identity: NonNullable<Extract<GeneratedHealthCheck, { kind: "request" }>["identity"]>,
 ) => `
@@ -143,14 +129,9 @@ const identityCode = (
   if (name === "" || name.length > 255) return {}
   return { accountInfo: /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(name) ? { email: name } : { ${identity.as}: name } }`;
 
-/**
- * A check sends an account's credentials, so it never follows a redirect: the next hop could be
- * another host or plain HTTP. A redirect fails the check instead of passing it.
- */
 const redirectFailure = (indent: string) =>
   `\n${indent}if (response.status >= 300 && response.status < 400)\n${indent}  throw new Error(\`The service redirected the check (HTTP \${response.status}); an account's credentials never follow a redirect.\`)`;
 
-/** Refused credentials fail a check; the other statuses say why the service did not answer. */
 const statusFailures = (indent: string) =>
   [
     `if (response.status === 429) throw new ProviderError({ reason: "rate_limited", status: 429 })`,
@@ -170,7 +151,6 @@ const checkContext = `{
   readonly signal: AbortSignal
 })`;
 
-/** The provider's `health` and the code it runs, for a request or a GraphQL check. */
 const healthCode = (health: GeneratedHealthCheck, url: string | undefined) => {
   if (health.kind === "graphql")
     return {
@@ -287,11 +267,6 @@ const checkAccount = async (${checkContext} => {
   };
 };
 
-/**
- * `provider.ts`: the provider, the account shape app code receives, `credentials`, which returns
- * the headers and query parameters that send an account's credentials, and the app's fixed
- * values. A `health` check from the options, or the caller's own, checks accounts.
- */
 export const providerFile = (
   options: ProtocolAppOptions & { readonly url?: string },
   hosts: readonly string[],
@@ -299,7 +274,6 @@ export const providerFile = (
 ) => {
   const methods = Object.entries(options.methods);
   const fixed = options.fixedAccount;
-  // A check gets only its own account, so it cannot send the fixed account's credentials.
   const generated =
     extra.health === undefined && options.health !== undefined && fixed === undefined
       ? healthCode(options.health, options.url)
@@ -345,7 +319,6 @@ ${fixed === undefined ? "" : fixedDeclarations(options.name, fixed, hosts)}${gen
 
 const lowerSnake = `name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "tool"`;
 
-/** `tools.ts`: exposed names and per-tool approvals, or undefined when there are no rules. */
 export const toolsFile = (rules: GeneratedToolRules | undefined) => {
   if (rules === undefined) return undefined;
   const omitted = [...(rules.omitted ?? [])].sort();
@@ -355,7 +328,6 @@ export const toolsFile = (rules: GeneratedToolRules | undefined) => {
     names?.kind === "lower_snake" && Object.keys(names.overrides ?? {}).length > 0
       ? names.overrides
       : undefined;
-  // A fixed map names every tool the app exposes, so only a live list has tools the rules miss.
   const otherwise = names?.kind === "map" ? undefined : rules.otherwise;
   if (
     names === undefined &&
@@ -424,10 +396,6 @@ export const approval = (name: string) =>
 `;
 };
 
-/**
- * Wrap a router expression with the tool rules: renamed and left out by `exposedName`, then each
- * tool's approval, falling back to `defaultRule`.
- */
 const ruled = (router: string, rules: boolean, defaultRule: string) =>
   rules
     ? `withApprovals(renameTools(${router}, exposedName), (tool, name) => approval(name) ?? (${defaultRule}))`
@@ -439,42 +407,31 @@ const queryUrl = (url: string, query: Readonly<Record<string, string>> | undefin
   return target.href;
 };
 
-/** A public server's fixed headers as a router option, when it has any. */
 const publicHeaders = (headers: Readonly<Record<string, string>> | undefined) =>
   Object.keys(headers ?? {}).length === 0 ? "" : `headers: ${JSON.stringify(headers)}, `;
 
 const appImports = (names: readonly string[]) =>
   `import { ${[...new Set(names)].sort().join(", ")} } from "apps"`;
 
-/**
- * The account requirements an app with sign-in methods declares, the factory's parameters for
- * them, the accounts its tools take one of, and the expression for one account's credentials:
- * each member's own accounts (`service`), with `sharedAccounts` also those linked for everyone
- * (`workspace`), and with a fixed account the one account linked for everyone that holds the fixed
- * credentials (`fixed`), sent under the selected account's. An account linked in both scopes is
- * offered once.
- */
-const accountScopes = (options: Pick<ProtocolAppOptions, "sharedAccounts" | "fixedAccount">) => {
-  const shared = options.sharedAccounts === true;
+const accountScopes = (options: Pick<ProtocolAppOptions, "appLinkedAccounts" | "fixedAccount">) => {
+  const linked = options.appLinkedAccounts === true;
   const fixed = options.fixedAccount !== undefined;
   const app = [
-    ...(shared ? ["workspace: provider.many()"] : []),
+    ...(linked ? ["workspace: provider.many()"] : []),
     ...(fixed ? ["fixed: fixedProvider"] : []),
   ];
   return {
     requirements: `{ ${app.length === 0 ? "" : `app: { accounts: { ${app.join(", ")} } }, `}user: { accounts: { service: provider.many() } } }`,
     context: app.length === 0 ? "user" : "app, user",
-    accounts: shared
+    accounts: linked
       ? `[...app.accounts.workspace, ...(user?.accounts.service ?? []).filter((account) => !app.accounts.workspace.some((shared) => shared.id === account.id))]`
       : "user?.accounts.service ?? []",
-    /** The provider file's names the app's index imports. */
     imports: fixed ? ["fixedProvider", "requestCredentials"] : ["credentials"],
     sent: (account: string) =>
       fixed ? `requestCredentials(${account}, app.accounts.fixed)` : `credentials(${account})`,
   };
 };
 
-/** An MCP server app for known sign-in methods, fixed headers and query parameters. */
 export const mcpAppSource = (options: ProtocolAppOptions & { readonly url: string }) =>
   Effect.gen(function* () {
     const tools = toolsFile(options.tools);
@@ -568,20 +525,10 @@ export const target = (account: Account) => {
     };
   });
 
-/**
- * An OpenAPI app over an inline document with `liveOpenapiRouter`. Requests to `allowedOrigins` get
- * the fixed headers and query parameters, and the selected account's credentials, in a `fetch`
- * wrapper; the document declares no security of its own. Without `baseUrl`, each operation is
- * sent to its own server, as the document declares it.
- */
 export const openapiAppSource = (
   options: ProtocolAppOptions & {
     readonly document: Readonly<Record<string, unknown>>;
     readonly baseUrl?: string | undefined;
-    /**
-     * The origins operations are sent to, which receive the credentials and are the provider's
-     * hosts. Operations on any other origin are left out.
-     */
     readonly allowedOrigins: readonly [string, ...string[]];
   },
 ) =>
@@ -654,9 +601,6 @@ ${
         { path: "index.ts", content: index },
         {
           path: "openapi.json",
-          // The document is written without indentation, which would more than double a large
-          // API's source; the settings after it stay one per line. The whole file is ASCII, so a
-          // non-ASCII base URL or description cannot double the memory of the document's text.
           content: asciiJson(
             `{\n  "source": { "document": ${JSON.stringify(options.document)} },\n${json({
               allowedOrigin: origins.length === 1 ? origins[0] : origins,
@@ -676,7 +620,6 @@ ${
     };
   });
 
-/** A GraphQL app on `graphqlRouter`; the schema is introspected with each account. */
 export const graphqlAppSource = (options: ProtocolAppOptions & { readonly url: string }) =>
   Effect.gen(function* () {
     const tools = toolsFile(options.tools);

@@ -1,7 +1,3 @@
-/**
- * App source written the way the app-authoring skill tells an agent to write it. The product
- * deploys and runs it through the ordinary deploy API; nothing here imports product code.
- */
 import { withApps, mcpSdkVersion } from "./apps-release.ts";
 
 export type AuthoredKind = "openapi" | "mcp" | "graphql";
@@ -28,12 +24,7 @@ const packageFile = (dependencies: Record<string, string>) => ({
   }),
 });
 
-/**
- * The skill's OpenAPI template. `key` names the security scheme an API-key account fills; without
- * it the app is public and declares no account.
- */
 const openapiIndex = (options: {
-  /** The definition's URL, or the definition itself when the app embeds it. */
   readonly url: string | { readonly document: unknown };
   readonly allowedOrigin: string;
   readonly baseUrl?: string;
@@ -66,14 +57,12 @@ export default defineApp(${authenticated ? "{ user: { accounts: { service: provi
 `;
 };
 
-/** A complete OpenAPI app, as the skill documents it, for a fixture definition. */
 export const openapiAppFiles = (name: string, options: Parameters<typeof openapiIndex>[0]) => [
   { path: "index.ts", content: openapiIndex(options) },
   ...(options.key === undefined ? [] : [{ path: "provider.ts", content: provider(name) }]),
   packageFile({}),
 ];
 
-/** Bearer-token apps select accounts with `provider.many()`; public apps declare none. */
 export const authoredAppFiles = (
   kind: AuthoredKind,
   origin: string,
@@ -138,10 +127,6 @@ export default defineApp(${requirements}, async ({ ${authenticated ? "user, " : 
   ];
 };
 
-/**
- * The source quick add generates for an OAuth MCP server, deployed without re-checking the server.
- * It leaves out the generated `mcpHealth` account check: these issuers serve no MCP by default.
- */
 export const oauthMcpAppFiles = (name: string, url: string) => [
   {
     path: "index.ts",

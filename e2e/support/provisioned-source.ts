@@ -1,4 +1,3 @@
-/** A provider whose host credential can coexist with ordinary connect methods. */
 export const provisionedSource = (
   provisioned: boolean,
   mixed = false,

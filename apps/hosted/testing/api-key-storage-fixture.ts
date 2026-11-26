@@ -1,11 +1,3 @@
-/**
- * Local-only storage faults for one API key, by its ID. `install` makes PostgreSQL fail every
- * update to that key's row. `slow` makes every update to the row hold its lock for a moment and
- * counts it, so requests made together contend for the row; `remove` reports that count. Both
- * clear the key's recorded last use, which a verification otherwise writes at most once a minute,
- * so the next verification writes. Other keys and parallel scenarios on the shared database are
- * untouched. Never installed in the HTTP server.
- */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { escapeIdentifier, escapeLiteral, Pool } from "pg";
@@ -24,7 +16,6 @@ const command = Command.make("api-key-storage-fixture", {
         yield* Config.String("NODE_ENV").pipe(
           Effect.flatMap(Schema.decodeUnknownEffect(Schema.Literal("test"))),
         );
-        // Better Auth key IDs; the bound keeps the function name within PostgreSQL's 63 bytes.
         if (!/^[A-Za-z0-9]{16,48}$/.test(args.key))
           return yield* Effect.die("Expected an API key ID");
         const fs = yield* FileSystem.FileSystem;
@@ -49,7 +40,6 @@ const command = Command.make("api-key-storage-fixture", {
         const key = escapeLiteral(args.key);
         const trigger = `CREATE TRIGGER ${fault} BEFORE UPDATE ON apikey FOR EACH ROW
           WHEN (OLD.id = ${key}) EXECUTE FUNCTION ${fault}();`;
-        // One statement string runs as one implicit transaction.
         const statements = {
           install: `UPDATE apikey SET "lastRequest" = NULL WHERE id = ${key};
             CREATE FUNCTION ${fault}() RETURNS trigger LANGUAGE plpgsql AS $$
@@ -65,7 +55,6 @@ const command = Command.make("api-key-storage-fixture", {
         yield* Effect.promise(() => pool.query(statements[args.fault]));
         if (args.fault !== "remove")
           return yield* Console.log(JSON.stringify({ fault: args.fault }));
-        // The number of updates to the row while it was slow, when it was.
         const present = yield* Effect.promise(() =>
           pool.query<{ present: boolean }>(`SELECT to_regclass($1) IS NOT NULL AS present`, [
             writes,

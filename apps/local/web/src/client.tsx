@@ -1,4 +1,3 @@
-/** Browser entry; the document itself is rendered by the local server. */
 import { PageTelemetry } from "./contracts/telemetry.ts";
 import { BrowserTelemetry } from "@executor-js/telemetry/browser";
 import { Effect } from "effect";
@@ -6,7 +5,6 @@ import { RouterProvider } from "@tanstack/react-router";
 import { hydrateStart } from "@tanstack/react-start/client";
 import { hydrateRoot } from "react-dom/client";
 
-// Start page-owned listeners independently of component query lifetimes.
 void PageTelemetry.runPromise(
   Effect.flatMap(BrowserTelemetry, (telemetry) =>
     telemetry.navigation({ type: "load", path: window.location.pathname }),

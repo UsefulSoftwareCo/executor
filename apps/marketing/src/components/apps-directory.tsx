@@ -17,7 +17,6 @@ import {
 import { HighlightedCode } from "./highlighted-code.tsx";
 
 const communityDomain = ".executor.community";
-/** A package name read as its app label and publisher; the community domain becomes a badge. */
 function packageParts(name: string) {
   const scope = name.slice(1, name.indexOf("/"));
   const community = scope.endsWith(communityDomain);
@@ -49,7 +48,6 @@ function WarningIcon() {
   );
 }
 
-/** Published apps are user code. Every surface that lists or shows one says so. */
 function UntrustedNotice({ children }: { readonly children: ReactNode }) {
   return (
     <div
@@ -119,7 +117,6 @@ function ReadFailure({ cause }: { readonly cause: Cause.Cause<RegistryError> }) 
   );
 }
 
-/** Live public data is an island inside the same static site frame used by marketing and Docs. */
 export default function AppsDirectory() {
   const location = publicAppsLocation(window.location.pathname);
   return (
@@ -211,7 +208,6 @@ function DirectoryCardsLoading() {
   );
 }
 
-/** The static document and first client render use the same directory frame. */
 export function AppsDirectoryLoading() {
   return (
     <DirectoryFrame>
@@ -311,7 +307,6 @@ function BackToApps() {
   );
 }
 
-/** Published app URLs receive their own first-paint layout before JavaScript loads. */
 export function PublishedAppLoading() {
   return (
     <>

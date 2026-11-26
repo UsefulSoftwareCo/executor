@@ -1,4 +1,3 @@
-/** Validate display data against raw credentials before the SDK persists or returns it. */
 import { Effect, Schema } from "effect";
 import { AccountCheckResult, HostOutputInvalid } from "apps/contracts";
 import { privateAccountDisplay } from "@executor-js/utils/account-display-privacy";

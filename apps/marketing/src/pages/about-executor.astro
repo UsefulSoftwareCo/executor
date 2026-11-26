@@ -1,5 +1,6 @@
 ---
 import "../styles/standalone.css";
+import { siteOrigin } from "../content/site-origin.ts";
 const pageTitle = "Executor";
 const pageDescription =
   "Executor is a web application that lets people connect AI assistants to Google Workspace, related Google services, and other software, then control the actions those assistants can take.";
@@ -18,7 +19,7 @@ const pageDescription =
     <meta property="og:title" content={pageTitle} />
     <meta property="og:description" content={pageDescription} />
     <meta property="og:url" content="https://executor.sh/about-executor" />
-    <link rel="canonical" href="https://executor.sh/about-executor" />
+    <link rel="canonical" href={`${siteOrigin}/about-executor`} />
     <title>Executor</title>
   </head>
   <body class="m-0 leading-[1.6]">

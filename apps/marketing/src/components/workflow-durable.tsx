@@ -58,7 +58,6 @@ function TaskCard({
   readonly position: MotionValue<number>;
 }) {
   const slot = useSlot(position, index);
-  // A task finishes during the preceding connector, then becomes the left-hand card.
   const age = useTransform(
     turn,
     (value) => (((value - index + 1) % stages.length) + stages.length) % stages.length,
@@ -171,7 +170,6 @@ function SleepStep({
   );
 }
 
-/** Checkpointed tasks alternate with durable sleeps; completed results stay saved while execution waits. */
 export function DurableWorkflow({ clock }: { readonly clock: MotionValue<number> }) {
   const turn = useTransform(clock, (time) => time / stageDuration);
   const position = useTransform(turn, (value) => {

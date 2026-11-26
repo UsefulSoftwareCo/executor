@@ -30,7 +30,6 @@ import {
   currentQuery,
 } from "@executor-js/ui/contracts/mutations";
 
-/** Safe organization errors; raw auth errors are not rendered. */
 export class OrganizationFailed extends Schema.TaggedError<OrganizationFailed>()(
   "OrganizationFailed",
   { message: Schema.String },
@@ -58,13 +57,15 @@ const request = <A>(
                 result.error.code === "ORGANIZATION_SLUG_ALREADY_TAKEN" ||
                 result.error.code === "ORGANIZATION_ALREADY_EXISTS"
                   ? "This organization URL is already in use. Choose another."
-                  : result.error.code === "INVITATION_NOT_FOUND"
-                    ? "This invitation has already been used, was revoked, or has expired. Ask an administrator for a new invitation."
-                    : result.error.code === "ORGANIZATION_MEMBERSHIP_LIMIT_REACHED"
-                      ? "This organization has reached its plan's member limit. An owner or admin can upgrade the plan to add members."
-                      : result.error.status === 403
-                        ? "You do not have permission to do that."
-                        : "Unable to update the organization. Check the details and try again.",
+                  : result.error.code === "INVITATION_ALREADY_ACCEPTED"
+                    ? "This person has already accepted the invitation and joined. Change their role or remove them in the members list."
+                    : result.error.code === "INVITATION_NOT_FOUND"
+                      ? "This invitation has already been used, was revoked, or has expired. Ask an administrator for a new invitation."
+                      : result.error.code === "ORGANIZATION_MEMBERSHIP_LIMIT_REACHED"
+                        ? "This organization has reached its plan's member limit. An owner or admin can upgrade the plan to add members."
+                        : result.error.status === 403
+                          ? "You do not have permission to do that."
+                          : "Unable to update the organization. Check the details and try again.",
             }),
           ),
     ),
@@ -86,7 +87,6 @@ const request = <A>(
     Effect.withSpan(`ui.organization.${operation}`),
   );
 
-/** Minimal organization identity used by routes, creation and invitation returns. */
 export const OrganizationSummary = Schema.Struct({
   id: OrganizationId,
   name: Schema.String,
@@ -95,17 +95,9 @@ export const OrganizationSummary = Schema.Struct({
 });
 export type OrganizationSummary = typeof OrganizationSummary.Type;
 
-/**
- * The signed-in user. A session revalidation that confirms the same person leaves it unchanged, so
- * it does not read the organizations again.
- */
 const signedInUser = Atom.map(sessionAtom, (session) =>
   AsyncResult.isSuccess(session) && session.value !== null ? session.value.user.id : null,
 );
-/**
- * Refresh when the signed-in user changes, including switching users in this browser. Membership
- * changed elsewhere is read again once on every return to the tab, by `revalidated` below.
- */
 const organizationsQuery = BrowserAtoms.atom((get) => {
   if (get(signedInUser) === null) return Effect.succeed([]);
   return request("list", (options) => organizationOperations(options).list()).pipe(
@@ -119,7 +111,6 @@ const organizationsQuery = BrowserAtoms.atom((get) => {
   }),
 );
 
-/** A server-rendered entry document can supply membership before the browser mounts. */
 export const entryOrganizationsAtom = Atom.make<Option.Option<ReadonlyArray<OrganizationSummary>>>(
   Option.none(),
 ).pipe(
@@ -144,10 +135,8 @@ const initialOrganizationsQuery = Atom.readable(
     refresh(organizationsQuery);
   },
 ).pipe(revalidated);
-/** Confirmed writes and source waiting state are shared by every route consumer. */
 export const organizationsAtom = acknowledgedQuery(initialOrganizationsQuery);
 
-/** Create without changing any session preference; the caller navigates this tab. */
 export const createOrganizationAtom = BrowserAtoms.fn(
   (input: { name: string; slug: string }, get) =>
     request("create", (options) => organizationOperations(options).create(input)).pipe(
@@ -162,7 +151,6 @@ export const createOrganizationAtom = BrowserAtoms.fn(
       ),
     ),
 );
-/** Query keys include the organization so switching never displays another organization's rows. */
 export const accessAtom = Atom.family((organization: OrganizationReference) =>
   HostedClient.runtime
     .atom((get) => {
@@ -188,14 +176,12 @@ export const accessAtom = Atom.family((organization: OrganizationReference) =>
       currentQuery,
     ),
 );
-/** Known presentation follows canonical identity across a successful slug rename. */
 export const organizationPresentation = Atom.family((reference: OrganizationReference) =>
   Atom.make((get) => {
     const id = get(organizationTargetAtom(reference));
     return id === undefined ? undefined : get(organizationPresentationAtom(id));
   }),
 );
-/** Persisted app/account inventory for the current organization. */
 export const inventoryAtom = Atom.family((organization: OrganizationReference) =>
   HostedClient.query("organization", "inventory", hydrated({ params: { organization } })).pipe(
     revalidated,
@@ -203,7 +189,6 @@ export const inventoryAtom = Atom.family((organization: OrganizationReference) =
     protectedQuery,
   ),
 );
-/** The member and invitation fields the settings page shows; Better Auth's responses decode to them. */
 const OrganizationMember = Schema.Struct({
   id: Schema.String,
   userId: Schema.String,
@@ -225,7 +210,6 @@ const OrganizationMembers = Schema.Struct({
   members: Schema.Array(OrganizationMember),
   invitations: Schema.Array(OrganizationInvitation),
 });
-/** Follow native pagination so search includes members beyond Better Auth's first page. */
 export const membersAtom = Atom.family((organizationId: OrganizationId) =>
   BrowserAtoms.atom((get) => {
     const organization = get(organizationPresentationAtom(organizationId));
@@ -243,8 +227,6 @@ export const membersAtom = Atom.family((organizationId: OrganizationId) =>
       }
       return members;
     });
-    // Presentation only selects which query to make; the server rechecks the
-    // current membership before returning any invitation credentials.
     const invitations =
       organization?.role === "owner" || organization?.role === "admin"
         ? request("invitations", (options) =>
@@ -274,7 +256,6 @@ export const membersAtom = Atom.family((organizationId: OrganizationId) =>
     acknowledgedQuery,
   ),
 );
-/** Reuse pending invitations so failed email delivery can be retried safely. */
 export const inviteAtom = Atom.family((organizationId: OrganizationId) =>
   BrowserAtoms.fn((input: { email: string; role: "admin" | "member" }, get) =>
     request("invite", (options) =>
@@ -291,7 +272,6 @@ export const inviteAtom = Atom.family((organizationId: OrganizationId) =>
     ),
   ),
 );
-/** Revoke by invitation identity; remove its pending row only after server acknowledgement. */
 export const revokeInvitationAtom = Atom.family((organizationId: OrganizationId) =>
   BrowserAtoms.fn((invitationId: string, get) =>
     request("revokeInvitation", (options) =>
@@ -309,7 +289,6 @@ export const revokeInvitationAtom = Atom.family((organizationId: OrganizationId)
     ),
   ),
 );
-/** Remove an existing member; server-side role rules protect the last owner. */
 export const removeMemberAtom = Atom.family((organizationId: OrganizationId) =>
   BrowserAtoms.fn((memberIdOrEmail: string, get) =>
     request("removeMember", (options) =>
@@ -329,7 +308,6 @@ export const removeMemberAtom = Atom.family((organizationId: OrganizationId) =>
     ),
   ),
 );
-/** Rename through the shared list only after the server acknowledges the write. */
 export const renameOrganizationAtom = Atom.family((organizationId: OrganizationId) =>
   BrowserAtoms.fn((name: string, get) =>
     request("rename", (options) =>
@@ -349,7 +327,6 @@ export const renameOrganizationAtom = Atom.family((organizationId: OrganizationI
     ),
   ),
 );
-/** A URL changes only after the server accepts it; collisions keep the current route intact. */
 export const changeOrganizationSlugAtom = Atom.family((organizationId: OrganizationId) =>
   BrowserAtoms.fn((slug: string, get) =>
     request("changeSlug", (options) =>
@@ -371,7 +348,6 @@ export const changeOrganizationSlugAtom = Atom.family((organizationId: Organizat
     ),
   ),
 );
-/** Persist an explicit icon edit and reconcile all organization readers before completion. */
 export const changeOrganizationLogoAtom = Atom.family((organizationId: OrganizationId) =>
   HostedClient.runtime.fn((image: UploadedOrganizationIcon | null, get) =>
     Effect.gen(function* () {
@@ -401,7 +377,6 @@ export const changeOrganizationLogoAtom = Atom.family((organizationId: Organizat
     }),
   ),
 );
-/** Better Auth checks role authority; refresh this tab's access after self-demotion. */
 export const updateMemberRoleAtom = Atom.family((organizationId: OrganizationId) =>
   BrowserAtoms.fn((input: { memberId: string; role: "admin" | "member" }, get) =>
     request("updateMemberRole", (options) =>
@@ -425,10 +400,6 @@ export const updateMemberRoleAtom = Atom.family((organizationId: OrganizationId)
     ),
   ),
 );
-/**
- * Accept only an invitation for the signed-in user's email, enforced by Better Auth.
- * `alreadyMember` names the organization when this repeats an earlier acceptance.
- */
 export const acceptInvitationAtom = BrowserAtoms.fn((invitationId: string, get) =>
   request("acceptInvitation", (options) =>
     organizationOperations(options).acceptInvitation(invitationId),

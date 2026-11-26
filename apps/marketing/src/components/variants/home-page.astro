@@ -14,10 +14,6 @@ const GH = "https://github.com/UsefulSoftwareCo/executor";
 </RailLayout>
 
 <script>
-  // Copy buttons. Use the async Clipboard API in secure contexts and fall back
-  // to a hidden textarea + execCommand otherwise, so copy (and the copied-state
-  // animation) also works over plain HTTP, e.g. a LAN / tailnet dev host where
-  // navigator.clipboard is undefined.
   const copyToClipboard = async (text: string): Promise<boolean> => {
     if (window.isSecureContext && navigator.clipboard?.writeText) {
       try {
@@ -63,10 +59,6 @@ const GH = "https://github.com/UsefulSoftwareCo/executor";
 </script>
 
 <script>
-  // ── Scroll reveals ─────────────────────────────────────────────────
-  // Sections fade + rise into view as they enter the viewport. The
-  // hidden initial state is applied by JS (`.reveal-init`) so no-JS
-  // visitors and reduced-motion users always see fully-rendered content.
   const reveals = Array.from(
     document.querySelectorAll<HTMLElement>(".reveal"),
   );

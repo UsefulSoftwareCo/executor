@@ -1,7 +1,3 @@
-/**
- * Every check Executor makes when matching a callback to the sign-in it started has its own
- * completion reason, and the hosted callback page derives its recovery from that reason alone.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
@@ -19,7 +15,7 @@ import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
 import { enterClientDetails } from "../support/oauth-client-entry.ts";
 import { removeRegisteredClients } from "../support/registered-oauth-clients.ts";
-import { connectionsPath } from "../support/app-accounts.ts";
+import { connectionsPath, requirementPath } from "../support/app-accounts.ts";
 import { linkedChoice, linkedLabels } from "../support/account-choices.ts";
 
 const AppProvider = Schema.Struct({ id: Schema.String });
@@ -34,6 +30,10 @@ const Failure = Schema.Struct({
 });
 const client = { clientId: "confidential-client", clientSecret: "synthetic-manual-secret" };
 
+const Linked = Schema.Struct({
+  accounts: Schema.Array(Schema.Struct({ account: Schema.Struct({ id: Schema.String }) })),
+});
+
 layer(HostedLive, { excludeTestServices: true })("OAuth completion reasons", (it) => {
   it.effect(scenarios.oauthCompletionReasons.title, (context) =>
     withHostedCase(
@@ -46,7 +46,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth completion reasons", (it
           target = yield* Target;
         const issuer = yield* oauthSetupIssuer;
         const prefix = `/api/organizations/${actors.organization.id}`;
-        // As with Google, the service signs users in on one host and names it as `iss`.
         const signInOrigin = issuer.origin.replace("127.0.0.1", "localhost");
         const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
           name: `Completion reasons ${randomUUID().slice(0, 8)}`,
@@ -172,7 +171,6 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
           ),
           "redirect_mismatch",
         );
-        // A callback with a valid state but no code claims the sign-in, which then cannot be reused.
         yield* expectReason(
           "No code",
           yield* complete(
@@ -187,7 +185,6 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
           "sign_in_used",
         );
 
-        // Only the newest sign-in for a connection can finish.
         const replaced = yield* signIn;
         const newer = yield* start(replaced.connection);
         yield* expectReason(
@@ -203,8 +200,6 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
         );
         expect((yield* issuer.metrics).tokenExchanges).toBe(exchangesBefore);
 
-        // A callback from another issuer is a configuration problem: the page offers the fix
-        // prompt and a way back, never a retry or a client change.
         yield* issuer.configure({
           callbackIssuer: issuer.origin,
           browserReturn: target.metadata.origin,
@@ -243,9 +238,6 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
         ).toEqual([1, 0, 0, 1]);
         yield* browser.checkpoint("Issuer mismatch callback");
 
-        // A client Executor registered is not the user's to edit. A saved registration the
-        // service stops accepting is discarded and "Try again" registers a new one; a client
-        // rejected right after registration is a configuration problem that a retry cannot fix.
         const deployRegistered = Effect.gen(function* () {
           const name = `Registered client ${randomUUID().slice(0, 8)}`;
           const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
@@ -287,7 +279,6 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
             );
             yield* connectInDialog(registeredApp, label);
           });
-        /** Wait until exactly `labels` are linked to the app's requirement. */
         const linked = (registeredApp: { readonly name: string }, labels: readonly string[]) =>
           Effect.gen(function* () {
             const shown = yield* browser.use(`Wait for ${labels.join(" and ")} linked`, (page) =>
@@ -314,7 +305,19 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
         yield* addAccount(reusedApp, "First");
         yield* nameAccount("First");
         yield* linked(reusedApp, ["First"]);
-        // The next sign-in reuses the saved registration, which the service now refuses.
+        const firstLinked = yield* body(
+          Linked,
+          yield* api.request(
+            actors.owner,
+            "GET",
+            requirementPath(`${prefix}/apps/${reusedApp.id}`, "user", "service"),
+          ),
+        );
+        for (const entry of firstLinked.accounts)
+          expect(
+            (yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${entry.account.id}`))
+              .status,
+          ).toBe(200);
         yield* issuer.configure({ tokenError: { status: 401, body: { error: "invalid_client" } } });
         const registrations = (yield* issuer.metrics).registrations;
         yield* addAccount(reusedApp, "Second");
@@ -335,12 +338,9 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
         );
         yield* connectInDialog(reusedApp, "Second");
         yield* nameAccount("Second");
-        yield* linked(reusedApp, ["First", "Second"]);
-        // The rejected registration was discarded, so the retry registered a new client.
+        yield* linked(reusedApp, ["Second"]);
         expect((yield* issuer.metrics).registrations).toBe(registrations + 1);
 
-        // A client rejected moments after its registration will not work on a retry either. The
-        // retry's client would serve another app of this server, so it is removed first.
         yield* removeRegisteredClients(actors.owner, actors.organization.id, issuer.origin);
         const freshApp = yield* deployRegistered;
         yield* issuer.configure({ tokenError: { status: 401, body: { error: "invalid_client" } } });

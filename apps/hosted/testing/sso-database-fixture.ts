@@ -1,4 +1,3 @@
-/** Local-only DNS fixture and storage probe. Never installed in the HTTP server. */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Pool } from "pg";
@@ -36,8 +35,6 @@ const command = Command.make("sso-database-fixture", {
         );
         if (!/^sso-[a-z0-9-]+$/.test(args.provider))
           return yield* Effect.die("Expected an SSO provider ID");
-        // The reserved .test domain can never represent a customer. Protocol tests
-        // seed ownership here; DNS failure is tested through the actual public API.
         if (args.verify)
           yield* Effect.promise(() =>
             pool.query(

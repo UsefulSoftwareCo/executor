@@ -4,7 +4,6 @@ import type { ReactNode } from "react";
 import { LoadingRows } from "./context.tsx";
 import { PageFrame, PageHeader } from "./page.tsx";
 
-/** One placeholder shares the footprint of an installed app card. */
 export function AppCardSkeleton() {
   return (
     <div
@@ -20,7 +19,6 @@ export function AppCardSkeleton() {
   );
 }
 
-/** Card-shaped placeholders use the same grid and footprint as installed apps. */
 export function AppCardsSkeleton() {
   return (
     <div
@@ -36,7 +34,6 @@ export function AppCardsSkeleton() {
   );
 }
 
-/** Account placeholders retain the real table's header, columns and responsive row spacing. */
 export function AccountRowsSkeleton() {
   return (
     <div role="status" aria-label="Loading accounts" className="overflow-hidden rounded-lg border">
@@ -72,7 +69,6 @@ export function AccountRowsSkeleton() {
   );
 }
 
-/** A neutral content panel for details whose data shape is not yet known. */
 export function DetailSkeleton({ label = "Loading details" }: { readonly label?: string }) {
   return (
     <div role="status" aria-label={label} className="space-y-6 rounded-lg border p-5">
@@ -93,7 +89,6 @@ export function DetailSkeleton({ label = "Loading details" }: { readonly label?:
   );
 }
 
-/** A route can show its real heading while its code or data is still arriving. */
 export function PageSkeleton({
   title,
   description,
@@ -109,7 +104,6 @@ export function PageSkeleton({
   );
 }
 
-/** Match the list frame even while its route bundle has not arrived. */
 export function InventoryPageSkeleton({
   kind,
   action,
@@ -151,10 +145,6 @@ export function InventoryPageSkeleton({
   );
 }
 
-/**
- * Add app's back link, heading, action and search row. The page and its pending view share it, so
- * the catalog replaces the pending view without moving.
- */
 export function CatalogPageFrame({
   back,
   action,
@@ -184,7 +174,6 @@ export function CatalogPageFrame({
   );
 }
 
-/** The catalog's app count before the feed arrives, as wide as the loaded count. */
 export function CatalogCountSkeleton() {
   return (
     <span aria-hidden className="inline-flex items-center">
@@ -194,7 +183,6 @@ export function CatalogCountSkeleton() {
   );
 }
 
-/** Placeholder catalog rows with the loaded rows' spacing, icon, text and button sizes. */
 export function CatalogRowsSkeleton({ count = 10 }: { readonly count?: number }) {
   return (
     <div role="status" aria-label="Loading apps" className="border-t border-t-border">
@@ -221,7 +209,6 @@ export function CatalogRowsSkeleton({ count = 10 }: { readonly count?: number })
   );
 }
 
-/** The app catalog while its code or the catalog feed loads. */
 export function CatalogPageSkeleton({ back }: { readonly back: ReactNode }) {
   return (
     <CatalogPageFrame
@@ -245,7 +232,6 @@ export function CatalogPageSkeleton({ back }: { readonly back: ReactNode }) {
 export const approvalsTitle = "Approvals";
 export const approvalsDescription = "Review scheduled runs before they continue.";
 
-/** The approvals list while its code or the pending runs load. */
 export function ApprovalsPending() {
   return (
     <PageFrame>
@@ -255,12 +241,10 @@ export function ApprovalsPending() {
   );
 }
 
-/** The card a browser approval renders in, from loading through its result. */
 export function ApprovalCard({ children }: { readonly children: ReactNode }) {
   return <section className="rounded-xl border bg-card p-6 shadow-sm sm:p-8">{children}</section>;
 }
 
-/** An approval request that has not loaded yet. */
 export function ApprovalCardPending() {
   return (
     <ApprovalCard>
@@ -269,7 +253,6 @@ export function ApprovalCardPending() {
   );
 }
 
-/** The column webhook setup renders in, from loading through its form. */
 export function WebhookSetupFrame({ children }: { readonly children: ReactNode }) {
   return <section className="page mx-auto w-full max-w-xl gap-4">{children}</section>;
 }

@@ -8,14 +8,12 @@ import { Input } from "../components/input.tsx";
 import { Spinner } from "../components/spinner.tsx";
 import { CopyButton } from "./code.tsx";
 
-/** What the app asks the person to do; the host keeps the sign-in's session. */
 export interface InteractivePrompt {
   readonly url?: string | undefined;
   readonly code?: string | undefined;
   readonly paste?:
     | { readonly label: string; readonly placeholder?: string | undefined }
     | undefined;
-  /** Milliseconds since the epoch. */
   readonly expiresAt?: number | undefined;
   readonly message?: string | undefined;
 }
@@ -25,7 +23,6 @@ export type InteractiveState<A> =
   | { readonly state: "connected"; readonly account: A }
   | { readonly state: "failed"; readonly message: string };
 
-/** How often the dialog asks whether the service finished. */
 const pollEvery = 3_000;
 
 type Step<A, E> =
@@ -36,10 +33,6 @@ type Step<A, E> =
   | { readonly kind: "error"; readonly cause: Cause.Cause<E>; readonly prompt?: InteractivePrompt }
   | { readonly kind: "connected"; readonly account: A };
 
-/**
- * Sign-in steps for an account the app acquires: a page to open, a code to enter, a value to paste
- * back, then waiting while the service finishes. The host saves and names the account.
- */
 export function InteractiveSignIn<A, E>({
   label,
   start,
@@ -51,15 +44,10 @@ export function InteractiveSignIn<A, E>({
   Failure,
   disabled,
 }: {
-  /** The method's label, such as the service's name. */
   readonly label: string;
   readonly start: () => Promise<Exit.Exit<InteractivePrompt, E>>;
   readonly status: () => Promise<Exit.Exit<InteractiveState<A>, E>>;
   readonly submit: (value: string) => Promise<Exit.Exit<InteractiveState<A>, E>>;
-  /**
-   * Called when the person leaves or restarts before the sign-in finishes. The product runs every
-   * step of one connection in order, so a start after a cancel never meets the cancelled attempt.
-   */
   readonly cancel: () => void;
   readonly onSaved: (account: A) => void;
   readonly onPendingChange: (pending: boolean) => void;
@@ -69,12 +57,9 @@ export function InteractiveSignIn<A, E>({
   const [step, setStep] = useState<Step<A, E>>({ kind: "idle" });
   const [value, setValue] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  // The latest handlers, so a poll that resolves after a re-render reads current props.
   const latest = useRef({ status, cancel, onSaved, onPendingChange });
   latest.current = { status, cancel, onSaved, onPendingChange };
-  // A submit and a poll can both report the account; it is saved once.
   const saved = useRef(false);
-  // Polls pause while a pasted value is being checked, so the two never race.
   const checking = useRef(false);
 
   const settle = (exit: Exit.Exit<InteractiveState<A>, E>, prompt: InteractivePrompt) => {
@@ -88,7 +73,6 @@ export function InteractiveSignIn<A, E>({
     } else if (result.state === "failed") setStep({ kind: "failed", message: result.message });
   };
 
-  // Poll while waiting. Each poll starts after the previous one answers, so none overlap.
   const prompt = step.kind === "waiting" ? step.prompt : undefined;
   useEffect(() => {
     if (prompt === undefined) return;
@@ -112,10 +96,6 @@ export function InteractiveSignIn<A, E>({
     // oxlint-disable-next-line react-hooks/exhaustive-deps -- one poll chain per started sign-in
   }, [prompt]);
 
-  // Leaving an unfinished sign-in cancels it, so the service isn't left waiting. Saving an account
-  // closes the dialog mid-submit, so leaving also says nothing is pending any more.
-  // Any attempt the app was asked for counts, including a refused or expired one, so switching
-  // methods never leaves the connection holding it. Cancelling is safe to repeat.
   const unfinished = useRef(false);
   unfinished.current = step.kind !== "idle" && step.kind !== "connected";
   useEffect(
@@ -132,7 +112,6 @@ export function InteractiveSignIn<A, E>({
   );
 
   const begin = () => {
-    // Starting again retires the attempt that failed or expired before asking for a new one.
     if (step.kind !== "idle") latest.current.cancel();
     setValue("");
     setStep({ kind: "starting" });
@@ -185,7 +164,6 @@ export function InteractiveSignIn<A, E>({
     );
 
   const current = step.prompt ?? {};
-  // In the order they show: copy the code before opening the page that asks for it.
   const steps = [
     current.code !== undefined && "code",
     current.url !== undefined && "open",
@@ -222,7 +200,6 @@ export function InteractiveSignIn<A, E>({
               variant={current.paste === undefined ? "default" : "outline"}
               className="w-fit"
             >
-              {/* Opened from the person's own click, so a popup blocker doesn't stop it. */}
               <a href={current.url} target="_blank" rel="noopener noreferrer">
                 Open {label}
                 <HugeiconsIcon icon={ArrowUpRight01Icon} strokeWidth={2} aria-hidden />
@@ -305,7 +282,6 @@ function Numbered({
   );
 }
 
-/** When the service stops waiting, rounded to minutes. */
 function Expiry({ at }: { readonly at: number }) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {

@@ -1,6 +1,12 @@
 import { useState, type ComponentType, type ReactNode } from "react";
 import { Exit, Match, Option, Redacted, type Cause } from "effect";
-import type { Account, CredentialCheck, Provider } from "@executor-js/sdk";
+import type {
+  Account,
+  AccountCheckStatus,
+  AppId,
+  CredentialCheck,
+  Provider,
+} from "@executor-js/sdk";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   AlertCircleIcon,
@@ -20,6 +26,8 @@ import {
 } from "../../contracts/credentials.ts";
 import { CredentialFields } from "../components/credential-fields.tsx";
 import { Button } from "../components/button.tsx";
+import { Spinner } from "../components/spinner.tsx";
+import { CopyButton } from "./code.tsx";
 import {
   Select,
   SelectContent,
@@ -27,8 +35,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from "../components/select.tsx";
+import { SetupHelp } from "./markdown.tsx";
+import { CredentialHosts } from "./credential-hosts.tsx";
 
-/** One credential form for creation, reconnection and agent handoff; the host owns saving, naming and navigation. */
 export function AccountForm<A, E>({
   provider,
   account,
@@ -45,11 +54,10 @@ export function AccountForm<A, E>({
   check,
   disabled = false,
 }: {
-  /**
-   * Check complete credentials before saving, with the app that will use them. The form shows
-   * whether they work; saving stays the user's choice. Null means the app defines no check.
-   */
-  readonly check?: (input: AccountSubmission) => Promise<Exit.Exit<CredentialCheck | null, E>>;
+  readonly check?: {
+    readonly app: AppId;
+    readonly run: (input: AccountSubmission) => Promise<Exit.Exit<CredentialCheck | null, E>>;
+  };
   readonly provider: Provider;
   readonly account?: Pick<Account, "method">;
   readonly header?: ReactNode;
@@ -58,7 +66,6 @@ export function AccountForm<A, E>({
   readonly submit: (input: AccountSubmission) => Promise<Exit.Exit<A, E>>;
   readonly onSaved: (value: NoInfer<A>) => void;
   readonly oauth: (props: AccountOAuthProps) => ReactNode;
-  /** Steps for a method the app signs in itself; without them the form says it can't connect it. */
   readonly interactive?: ((props: AccountInteractiveProps) => ReactNode) | undefined;
   readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
   readonly disabled?: boolean;
@@ -76,18 +83,28 @@ export function AccountForm<A, E>({
   const auth = provider.definition.auth[method];
   const parsed = auth && accountFields(auth);
   const fields = parsed && Option.isSome(parsed) ? parsed.value : undefined;
+  const guide = auth?.type === "secrets" ? auth.guide : undefined;
   const updatePending = (value: boolean) => {
     setPending(value);
     onPendingChange?.(value);
   };
   const [verdict, setVerdict] = useState<Verdict>({ state: "idle" });
-  // Only secrets can be validated before saving; OAuth has its own sign-in.
   const validates = check !== undefined && auth?.type === "secrets";
   const changeValues = (nextValues: Readonly<Record<string, string>>) => {
     setValues(nextValues);
-    // A result belongs to the credentials it checked; any edit needs a new validation.
     setVerdict({ state: "idle" });
   };
+  const submitText =
+    !validates || auth?.type !== "secrets"
+      ? submitLabel
+      : verdict.state === "checking"
+        ? "Validating…"
+        : verdict.state === "idle"
+          ? "Validate"
+          : verdict.state === "done" && verdict.result.status === "healthy"
+            ? "Continue"
+            : "Continue anyway";
+  const busy = pending || verdict.state === "checking";
   const save = (input: AccountSubmission) => {
     updatePending(true);
     setError(undefined);
@@ -102,7 +119,7 @@ export function AccountForm<A, E>({
   };
   return (
     <form
-      className="setup-form flex max-w-145 flex-col gap-4"
+      className="setup-form flex max-w-145 min-w-0 flex-col gap-4"
       onSubmit={(event) => {
         event.preventDefault();
         if (
@@ -112,11 +129,13 @@ export function AccountForm<A, E>({
           !credentialsComplete(fields, values)
         )
           return;
-        const input = { method, fields: Redacted.make(credentialValues(fields, values)) };
+        const input = {
+          method,
+          fields: Redacted.make(credentialValues(fields, values)),
+        };
         if (!validates || check === undefined || verdict.state !== "idle") return save(input);
         setVerdict({ state: "checking" });
-        void check(input).then((exit) => {
-          // An app without a check has nothing to validate, so saving continues.
+        void check.run(input).then((exit) => {
           if (Exit.isSuccess(exit) && exit.value === null) {
             setVerdict({ state: "idle" });
             save(input);
@@ -145,7 +164,7 @@ export function AccountForm<A, E>({
             <SelectTrigger>
               <SelectValue />
             </SelectTrigger>
-            <SelectContent>
+            <SelectContent className="w-(--radix-select-trigger-width)">
               {methods.map(([name, auth]) => (
                 <SelectItem key={name} value={name}>
                   {auth.type === "oauth2" ? `Sign in with ${provider.definition.name}` : auth.label}
@@ -160,6 +179,7 @@ export function AccountForm<A, E>({
           {oauth({
             method,
             disabled,
+            clientGuide: auth.clientGuide,
             onPendingChange: updatePending,
             access: (
               <SignInAccess provider={provider.definition.name} hosts={provider.definition.hosts} />
@@ -172,15 +192,14 @@ export function AccountForm<A, E>({
         </div>
       ) : fields ? (
         <>
-          <p className="text-xs leading-relaxed text-muted-foreground">
-            {Object.keys(fields.properties).length === 0
-              ? "This connection sends no credentials. Continue only if the service supports public access."
-              : `Get these credentials from your ${provider.definition.name} account settings.`}
-          </p>
-          <CredentialAccess
-            hosts={provider.definition.hosts}
-            {...secretAccess(fields, provider.definition.hosts)}
-          />
+          {(Object.keys(fields.properties).length === 0 || !guide) && (
+            <p className="text-xs leading-relaxed text-muted-foreground">
+              {Object.keys(fields.properties).length === 0
+                ? "This connection sends no credentials. Continue only if the service supports public access."
+                : `Get these credentials from your ${provider.definition.name} account settings.`}
+            </p>
+          )}
+          {guide && <SetupHelp label="Setup guide">{guide}</SetupHelp>}
           <CredentialFields
             fields={fields}
             hosts={provider.definition.hosts}
@@ -188,10 +207,15 @@ export function AccountForm<A, E>({
             onChange={changeValues}
             pending={pending}
           />
-          {validates && auth?.type === "secrets" && (
+          <CredentialAccess
+            hosts={provider.definition.hosts}
+            {...secretAccess(fields, provider.definition.hosts)}
+          />
+          {check !== undefined && auth?.type === "secrets" && (
             <CredentialVerdict
+              app={check.app}
               verdict={verdict}
-              label={auth.label}
+              method={auth.label}
               provider={provider.definition.name}
             />
           )}
@@ -199,19 +223,16 @@ export function AccountForm<A, E>({
           <div className="form-actions flex items-center gap-5 pt-1 text-[13px] [&_a]:text-muted-foreground max-[740px]:[&_>_a]:min-h-11 max-[740px]:[&_>_a]:inline-flex max-[740px]:[&_>_a]:items-center max-[740px]:flex-wrap max-[740px]:gap-[12px_20px] max-[480px]:[&_>_button]:basis-full">
             <Button
               type="submit"
-              className="w-full"
-              loading={pending || verdict.state === "checking"}
-              disabled={!credentialsComplete(fields, values)}
+              className={busy ? "relative w-full" : "w-full"}
+              disabled={busy || !credentialsComplete(fields, values)}
+              aria-label={submitText}
             >
-              {!validates || auth?.type !== "secrets"
-                ? submitLabel
-                : verdict.state === "checking"
-                  ? "Validating…"
-                  : verdict.state === "idle"
-                    ? `Validate ${auth.label}`
-                    : verdict.state === "done" && verdict.result.status === "healthy"
-                      ? "Continue"
-                      : "Continue anyway"}
+              <span className={busy ? "invisible" : undefined}>{submitText}</span>
+              {busy && (
+                <span className="absolute inset-0 flex items-center justify-center" aria-hidden>
+                  <Spinner className="size-3.5" />
+                </span>
+              )}
             </Button>
             {actions}
           </div>
@@ -225,7 +246,6 @@ export function AccountForm<A, E>({
   );
 }
 
-/** Whether a form has secret fields the hosts hide, and secret fields the app reads. */
 const secretAccess = (fields: AccountFormFields, hosts: readonly string[] | undefined) => {
   const secrets = Object.entries(fields.properties)
     .filter(([name, field]) => field.type === "string" && !fields.plain?.includes(name))
@@ -233,12 +253,6 @@ const secretAccess = (fields: AccountFormFields, hosts: readonly string[] | unde
   return { hidden: secrets.includes(true), readable: secrets.includes(false) };
 };
 
-/**
- * What the app gets for the entered credentials, explaining each field tag the form shows. A
- * provider that declares hosts gives the app placeholders for hidden values; Executor substitutes
- * the real values only on requests to those hosts. `raw()` fields, and every secret of a provider
- * without hosts, are readable by the app.
- */
 function CredentialAccess({
   hosts,
   hidden,
@@ -250,48 +264,36 @@ function CredentialAccess({
 }) {
   if (!hidden && !readable) return null;
   return (
-    <div className="flex flex-col gap-1.5 text-xs leading-relaxed" data-credential-hosts>
+    <div
+      className="flex flex-col gap-1.5 text-xs leading-relaxed text-muted-foreground"
+      data-credential-hosts
+    >
       {hidden && hosts !== undefined && (
-        <p
-          className="flex items-start gap-1.5 text-muted-foreground"
-          data-credential-access="hidden"
-        >
+        <div className="flex items-start gap-1.5" data-credential-access="hidden">
           <HugeiconsIcon
             icon={SquareLock02Icon}
             className="mt-0.5 size-3.5 shrink-0 text-emerald-600"
           />
-          <span>
-            <span className="font-medium text-emerald-700 dark:text-emerald-400">
-              Hidden from app.
-            </span>{" "}
-            The app and your agent only get a placeholder. Executor swaps in the real value{" "}
-            {hosts.length === 0 ? (
-              "on no request."
-            ) : (
-              <>
-                on requests to{" "}
-                {hosts.map((host, index) => (
-                  <span key={host}>
-                    <HostChip host={host} />
-                    {index < hosts.length - 1 ? " " : "."}
-                  </span>
-                ))}
-              </>
-            )}
-          </span>
-        </p>
+          {hosts.length === 0 ? (
+            <span className="min-w-0">
+              Executor never sends hidden values on the app's requests. The app and your agent get a
+              placeholder.
+            </span>
+          ) : (
+            <CredentialHosts
+              hosts={hosts}
+              lead="Hidden values are only sent to"
+              after="The app and your agent get a placeholder."
+            />
+          )}
+        </div>
       )}
       {readable && (
-        <p
-          className="flex items-start gap-1.5 text-muted-foreground"
-          data-credential-access="readable"
-        >
+        <p className="flex items-start gap-1.5" data-credential-access="readable">
           <HugeiconsIcon icon={ViewIcon} className="mt-0.5 size-3.5 shrink-0 text-amber-600" />
-          <span>
-            <span className="font-medium text-amber-700 dark:text-amber-400">Readable by app.</span>{" "}
-            The app reads these values and can send them anywhere.
-            {hosts === undefined &&
-              " You can ask your agent to use stubbed secrets instead if possible."}
+          <span className="min-w-0">
+            The app can read {hidden ? "the other" : "these"} values and send them anywhere.
+            {hosts === undefined && " You can ask your agent to limit where they are sent."}
           </span>
         </p>
       )}
@@ -299,18 +301,6 @@ function CredentialAccess({
   );
 }
 
-/** A host name as the access notices show it. */
-const HostChip = ({ host }: { readonly host: string }) => (
-  <span className="rounded border border-border bg-muted/50 px-1 py-px font-mono text-[11px] text-foreground">
-    {host}
-  </span>
-);
-
-/**
- * Where a sign-in's tokens go, in one line. Signing in enters no value, so this names the
- * sign-in rather than explaining placeholders: hosts keep it from the app, and without hosts the
- * app reads it.
- */
 function SignInAccess({
   provider,
   hosts,
@@ -324,13 +314,13 @@ function SignInAccess({
       data-credential-access="readable"
     >
       <HugeiconsIcon icon={ViewIcon} className="mt-0.5 size-3.5 shrink-0 text-amber-600" />
-      <span>
+      <span className="min-w-0">
         The app can read your {provider} sign-in and send it anywhere. You can ask your agent to
         limit where it is sent.
       </span>
     </p>
   ) : (
-    <p
+    <div
       className="flex items-start gap-1.5 text-xs leading-relaxed text-muted-foreground"
       data-credential-access="hidden"
       data-credential-hosts
@@ -339,22 +329,14 @@ function SignInAccess({
         icon={SquareLock02Icon}
         className="mt-0.5 size-3.5 shrink-0 text-emerald-600"
       />
-      <span>
-        {hosts.length === 0 ? (
-          <>Executor never sends your {provider} sign-in on the app's requests.</>
-        ) : (
-          <>
-            Your {provider} sign-in is only sent to{" "}
-            {hosts.map((host, index) => (
-              <span key={host}>
-                <HostChip host={host} />
-                {index < hosts.length - 1 ? " " : "."}
-              </span>
-            ))}
-          </>
-        )}
-      </span>
-    </p>
+      {hosts.length === 0 ? (
+        <span className="min-w-0">
+          Executor never sends your {provider} sign-in on the app's requests.
+        </span>
+      ) : (
+        <CredentialHosts hosts={hosts} lead={`Your ${provider} sign-in is only sent to`} />
+      )}
+    </div>
   );
 }
 
@@ -364,17 +346,40 @@ type Verdict =
   | { readonly state: "done"; readonly result: CredentialCheck }
   | { readonly state: "unverified" };
 
-/**
- * Whether the entered credentials work, as the app's check found. The line keeps its height while
- * empty, so a short result never moves the form; the app's own explanation of a failure may wrap.
- */
+const checkFailure = (
+  status: Exclude<AccountCheckStatus, "healthy">,
+  provider: string,
+  message: string | undefined,
+) =>
+  Match.value(status).pipe(
+    Match.when("credentials_rejected", () => `${provider} rejected these credentials`),
+    Match.when("forbidden", () => "These credentials are missing a permission the app needs"),
+    Match.when("upstream_unavailable", () => `Couldn't reach ${provider} to check it`),
+    Match.when(
+      "check_failed",
+      () => `Couldn't verify these credentials${message === undefined ? "" : `: ${message}`}`,
+    ),
+    Match.exhaustive,
+  );
+
+const checkFixPrompt = (app: AppId, provider: string, method: string, failure: string) =>
+  [
+    `The account check in my Executor app (app ID: ${app}) failed for my ${provider} credentials (sign-in method: ${method}), and the check itself may be wrong.`,
+    "",
+    `The check reported: ${failure}`,
+    "",
+    `Start with the Executor app's executor skill. Read the app's source, find the health check for the ${provider} provider, and fix it so it accepts working credentials and still rejects bad ones. Deploy the updated app. Don't ask me to paste the credentials into chat.`,
+  ].join("\n");
+
 function CredentialVerdict({
+  app,
   verdict,
-  label,
+  method,
   provider,
 }: {
+  readonly app: AppId;
   readonly verdict: Verdict;
-  readonly label: string;
+  readonly method: string;
   readonly provider: string;
 }) {
   const shown =
@@ -384,57 +389,22 @@ function CredentialVerdict({
         ? ({ status: "check_failed", info: null } as const)
         : undefined;
   const name = shown?.info?.displayName ?? shown?.info?.username ?? shown?.info?.email;
-  const [tone, message] =
+  const failure =
+    shown === undefined || shown.status === "healthy"
+      ? undefined
+      : checkFailure(shown.status, provider, shown.message);
+  const tone =
     shown === undefined
-      ? (["muted", null] as const)
-      : Match.value(shown.status).pipe(
-          Match.when(
-            "healthy",
-            () =>
-              [
-                "good",
-                name === undefined ? (
-                  <>Valid {label}</>
-                ) : (
-                  <>
-                    Signed in as <span className="font-medium text-foreground">{name}</span>
-                  </>
-                ),
-              ] as const,
-          ),
-          Match.when(
-            "credentials_rejected",
-            () =>
-              [
-                "bad",
-                <>
-                  {provider} rejected this {label}
-                </>,
-              ] as const,
-          ),
-          Match.when(
-            "forbidden",
-            () => ["warn", <>This {label} is missing a permission the app needs</>] as const,
-          ),
-          Match.when(
-            "upstream_unavailable",
-            () => ["warn", <>Couldn't reach {provider} to check it</>] as const,
-          ),
-          Match.when(
-            "check_failed",
-            () =>
-              [
-                "warn",
-                <>
-                  Couldn't verify this {label}
-                  {shown.message !== undefined ? `: ${shown.message}` : null}
-                </>,
-              ] as const,
-          ),
-          Match.exhaustive,
-        );
+      ? "muted"
+      : shown.status === "healthy"
+        ? "good"
+        : shown.status === "credentials_rejected"
+          ? "bad"
+          : "warn";
+  const doubtsCheck =
+    failure !== undefined && shown !== undefined && shown.status !== "upstream_unavailable";
   return (
-    <p
+    <div
       className={`-mt-1 flex min-h-4 items-start gap-1.5 text-xs transition-opacity duration-150 ${
         shown === undefined ? "opacity-0" : "opacity-100"
       } ${tone === "bad" ? "text-destructive" : "text-muted-foreground"}`}
@@ -442,7 +412,8 @@ function CredentialVerdict({
       aria-live="polite"
       {...(shown === undefined ? {} : { "data-credential-check": shown.status })}
     >
-      {message !== null && (
+      {verdict.state === "checking" && <span className="sr-only">Validating…</span>}
+      {shown !== undefined && (
         <>
           <HugeiconsIcon
             icon={tone === "good" ? CheckmarkCircle02Icon : AlertCircleIcon}
@@ -457,9 +428,37 @@ function CredentialVerdict({
             }
             aria-hidden
           />
-          <span className="line-clamp-3 min-w-0 break-words">{message}</span>
+          <div className="flex min-w-0 flex-col items-start gap-0.5">
+            <span className="line-clamp-3 wrap-anywhere">
+              {failure ??
+                (name === undefined ? (
+                  <>Valid credentials</>
+                ) : (
+                  <>
+                    Signed in as <span className="font-medium text-foreground">{name}</span>
+                  </>
+                ))}
+            </span>
+            {doubtsCheck && (
+              <>
+                <span className="text-muted-foreground" data-credential-check-advice>
+                  The app's check may be wrong. You can still add these credentials and ask your
+                  agent to fix the check.
+                </span>
+                <div className="mt-1 text-foreground">
+                  <CopyButton
+                    code={checkFixPrompt(app, provider, method, failure)}
+                    label="Copy fix prompt"
+                    text="Copy fix prompt"
+                    variant="outline"
+                    inline
+                  />
+                </div>
+              </>
+            )}
+          </div>
         </>
       )}
-    </p>
+    </div>
   );
 }

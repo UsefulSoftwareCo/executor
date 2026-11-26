@@ -1,6 +1,5 @@
 import type { ReactNode } from "react";
 
-/** Shared dashboard width and responsive gutters, independent of a page's content or data state. */
 export function PageFrame({ children }: { readonly children: ReactNode }) {
   return (
     <section className="page mx-auto my-0 w-full min-w-0 max-w-315 shrink-0 [padding:24px_24px_48px] max-[1000px]:[padding:20px_20px_40px] max-[740px]:[padding:18px_max(16px,_env(safe-area-inset-right))_max(32px,_env(safe-area-inset-bottom))_max(16px,_env(safe-area-inset-left))]">
@@ -9,7 +8,6 @@ export function PageFrame({ children }: { readonly children: ReactNode }) {
   );
 }
 
-/** Consistent page heading; compose product-owned actions as children beside the title. */
 export function PageHeader({
   title,
   description,

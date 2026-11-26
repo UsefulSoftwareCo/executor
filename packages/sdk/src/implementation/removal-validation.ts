@@ -1,4 +1,3 @@
-/** Exercise canonical local checks without committing the mutation or keeping its locks. */
 import { Data, Effect } from "effect";
 import { transaction, type Query } from "./database.ts";
 class ChangeValidated extends Data.TaggedError("InteractiveChangeValidated") {}

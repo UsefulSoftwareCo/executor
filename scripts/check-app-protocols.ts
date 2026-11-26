@@ -1,32 +1,3 @@
-/**
- * Host protocols: what a host and a retained app bundle may say to each other.
- *
- * Every released protocol is frozen in `packages/apps/src/contracts/protocols/<N>.ts` and recorded in
- * `packages/apps/protocols/<N>.json`. The protocol the framework speaks is `protocols/current.ts`,
- * recorded under `frameworkProtocol`. This check keeps three promises:
- *
- * 1. A released protocol never changes: each frozen module still records as its snapshot says.
- * 2. The live protocol is recorded: `current.ts` records as its snapshot says, so every boundary
- *    change is a reviewed diff. `--write` re-records it, and refuses when the new record breaks
- *    promise 3 against the committed one.
- * 3. The live protocol keeps every released protocol's bundles running. For a message a bundle
- *    sends, the live schema accepts everything the released schema accepts. For a message the
- *    host sends, the released schema accepts everything the live schema sends, except additions
- *    that `packages/apps/protocols/gates.json` says the host gates on something the bundle
- *    declared. Messages an adapter in `packages/sdk/src/implementation/app-protocols.ts`
- *    converts, in either direction, are not compared.
- *
- * A snapshot records Effect's schema representation of each message's JSON form, without
- * documentation, type-only and derived annotations. It records only the messages that differ from
- * the previous protocol, including differences inside the named schemas they reach, and lists the
- * rest in `unchanged`. A subtree equal to another message is written as `{"$message": name}`, and
- * a large subtree that repeats as `{"$shared": hash}`.
- *
- * `--write` records a missing snapshot and re-records the live protocol's. `--base <dir>` also
- * checks the live protocol against the snapshot a base checkout recorded for the same number, so a
- * pull request cannot narrow what the same protocol number accepted before it. `--directory <dir>`
- * reads and records another directory, for trying a change to this script.
- */
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { isDeepStrictEqual } from "node:util";
@@ -76,11 +47,6 @@ const mapNode = (value: Json, f: (entry: Json) => Json): Json =>
       ? Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, f(entry)]))
       : value;
 
-// ---------------------------------------------------------------------------------------------
-// Representing a protocol
-// ---------------------------------------------------------------------------------------------
-
-/** Documentation and Effect's generated failure text do not change what a message accepts. */
 const documentation = new Set([
   "description",
   "title",
@@ -88,17 +54,10 @@ const documentation = new Set([
   "markdownDescription",
   "expected",
 ]);
-/** Derived from a check's own representation; it changes no accepted value. */
 const derived = new Set(["~structural", "arbitraryConstraint"]);
-/** Type-level mutability and a filter's abort flag change no accepted value. */
 const dropped = new Set(["isMutable", "aborted"]);
-/** Empty lists say nothing. */
 const lists = new Set(["checks", "indexSignatures", "elements", "rest", "typeParameters"]);
 
-/**
- * The representation as plain JSON. Functions are compiler hooks; a built-in check's hooks follow
- * from its recorded representation. Any other value that JSON cannot hold fails the check.
- */
 const plain = (value: unknown, path: string, annotations = false): Json => {
   if (value === null || typeof value === "string" || typeof value === "boolean") return value;
   if (typeof value === "number" && Number.isFinite(value)) return value;
@@ -117,7 +76,6 @@ const plain = (value: unknown, path: string, annotations = false): Json => {
   return Object.fromEntries(entries);
 };
 
-/** The plain representation of every message of a protocol, and the named schemas they reach. */
 const represent = (protocol: Protocol) => {
   const names = Object.keys(protocol.schemas);
   const asts = names.map((name) => Schema.toCodecJson(protocol.schemas[name]!).ast);
@@ -133,10 +91,6 @@ const represent = (protocol: Protocol) => {
   };
 };
 
-/**
- * A tree with every named schema it reaches written in place. A schema that reaches itself keeps a
- * `Reference` at the point of recursion, and `kept` receives that name's definition.
- */
 const inline = (
   tree: Json,
   references: Readonly<Record<string, Json>>,
@@ -155,17 +109,11 @@ const inline = (
   return mapNode(tree, (entry) => inline(entry, references, kept, expanding));
 };
 
-/** Everything a message accepts, as one tree: the fingerprint that decides whether it changed. */
 const resolved = (tree: Json, references: Readonly<Record<string, Json>>) => {
   const kept: Record<string, Json> = {};
   return { tree: inline(tree, references, kept), references: kept };
 };
 
-// ---------------------------------------------------------------------------------------------
-// Recording
-// ---------------------------------------------------------------------------------------------
-
-/** One recorded protocol file. */
 interface Snapshot {
   readonly protocol: number;
   readonly previous: number | null;
@@ -184,10 +132,8 @@ const SnapshotSchema = Schema.Struct({
 });
 const decodeSnapshot = Schema.decodeUnknownSync(Schema.fromJsonString(SnapshotSchema));
 
-/** Subtrees at least this long that repeat within one snapshot are recorded once. */
 const sharedThreshold = 1200;
 
-/** Every `$ref` name a tree reaches, through the named schemas it reaches. */
 const reached = (roots: readonly Json[], references: Readonly<Record<string, Json>>) => {
   const names = new Set<string>();
   const visit = (value: Json): void => {
@@ -205,10 +151,6 @@ const reached = (roots: readonly Json[], references: Readonly<Record<string, Jso
   return names;
 };
 
-/**
- * Record a protocol against the previous one. A message that accepts exactly what the previous
- * protocol's did, named schemas included, is listed in `unchanged`; every other message is recorded.
- */
 const record = (protocol: Protocol, previous: Protocol | undefined): Snapshot => {
   const full = represent(protocol);
   const before = previous === undefined ? undefined : represent(previous);
@@ -222,7 +164,6 @@ const record = (protocol: Protocol, previous: Protocol | undefined): Snapshot =>
       fingerprint(before, name) === fingerprint(full, name),
   );
   const recorded = names.filter((name) => !unchanged.includes(name));
-  // A subtree equal to another message is named. Outermost first.
   const byMessage = new Map(names.map((name) => [canonical(full.messages[name]!), name] as const));
   const withMessages = (value: Json, self: string, root: boolean): Json => {
     if (!root && isNode(value)) {
@@ -233,7 +174,6 @@ const record = (protocol: Protocol, previous: Protocol | undefined): Snapshot =>
   };
   const messages: Record<string, Json> = {};
   for (const name of recorded) messages[name] = withMessages(full.messages[name]!, name, true);
-  // A large subtree that repeats is recorded once, under its content hash.
   const counts = new Map<string, number>();
   const count = (value: Json): void => {
     if (isNode(value) && !("$message" in value)) {
@@ -275,17 +215,11 @@ const record = (protocol: Protocol, previous: Protocol | undefined): Snapshot =>
   );
 };
 
-// ---------------------------------------------------------------------------------------------
-// Reading a chain of snapshots back into whole messages
-// ---------------------------------------------------------------------------------------------
-
-/** A message as one tree, with the named schemas left at points of recursion. */
 interface Whole {
   readonly tree: Json;
   readonly references: Readonly<Record<string, Json>>;
 }
 
-/** Read messages of any protocol in a chain of snapshots, through `unchanged`, `$message` and `$shared`. */
 const reader = (snapshots: ReadonlyMap<number, Snapshot>) => {
   const owner = (protocol: number, name: string): Snapshot => {
     const snapshot = snapshots.get(protocol);
@@ -316,7 +250,6 @@ const reader = (snapshots: ReadonlyMap<number, Snapshot>) => {
       return mapNode(value, expand);
     };
     const own = resolved(expand(snapshot.messages[name]!), snapshot.references);
-    // Names at points of recursion are scoped by the snapshot that defines them.
     const scoped = (value: Json): Json =>
       isNode(value) &&
       value._tag === "Reference" &&
@@ -336,17 +269,12 @@ const reader = (snapshots: ReadonlyMap<number, Snapshot>) => {
   return { whole, names };
 };
 
-// ---------------------------------------------------------------------------------------------
-// Acceptance: does a reader's schema accept every value a writer's schema produces?
-// ---------------------------------------------------------------------------------------------
-
 type Excess = "ignore" | "error";
 interface Violation {
   readonly path: string;
   readonly reason: string;
 }
 
-/** A union member's label: its discriminating literal, or its position. */
 const label = (node: Json, index: number): string => {
   if (isNode(node) && node._tag === "Literal") return `=${String(node.literal)}`;
   if (isNode(node) && Array.isArray(node.propertySignatures))
@@ -377,11 +305,6 @@ const describeCheck = (check: Json) => {
   return payload === null || payload === undefined ? id : `${id} ${JSON.stringify(payload)}`;
 };
 
-/**
- * Violations of "the reader accepts every value the writer produces". `excess` says what the reader
- * does with object properties it does not declare. A pair of recursive references is assumed to hold
- * while it is being checked, so recursion terminates.
- */
 const accepts = (
   reader: Whole,
   writer: Whole,
@@ -408,7 +331,6 @@ const accepts = (
     }
     compare(resolve(r, reader), resolve(w, writer), path);
   };
-  /** Whether an alternative holds, without recording its violations. */
   const holds = (r: Json, w: Json, path: string): boolean => {
     const saved = violations.length;
     visit(r, w, path);
@@ -428,8 +350,6 @@ const accepts = (
       w.types.forEach((member, index) => {
         const resolvedMember = resolve(member, writer);
         const at = `${path}/${label(resolvedMember, index)}`;
-        // One reader member with the same discriminator is compared in full, so the violation
-        // names the property that differs. Otherwise some member must accept it.
         const twins = members.filter(
           (candidate, i) =>
             label(resolve(candidate, reader), i) === label(resolvedMember, index) &&
@@ -532,7 +452,6 @@ const accepts = (
         checks(r, w, path);
     }
   };
-  /** Every check the reader makes must be a check the writer also made. */
   const checks = (r: Node, w: Node, path: string) => {
     const keys = checksOf(w).map(checkKey);
     let opaque = keys.filter((key) => key === undefined).length;
@@ -552,12 +471,7 @@ const accepts = (
   }));
 };
 
-// ---------------------------------------------------------------------------------------------
-// Gates: additions the host sends only to bundles that declared support, and adapted messages
-// ---------------------------------------------------------------------------------------------
-
 const Gates = Schema.Struct({
-  /** Messages of released protocols that an adapter converts into the live model. */
   adapted: Schema.Array(
     Schema.Struct({
       message: Schema.String,
@@ -565,12 +479,10 @@ const Gates = Schema.Struct({
       adapter: Schema.String,
     }),
   ),
-  /** Differences in a message the host sends, sent only when the bundle declared support. */
   additions: Schema.Array(
     Schema.Struct({
       message: Schema.String,
       path: Schema.String,
-      /** The first protocol whose bundles accept it; every earlier protocol needs the gate. */
       since: Schema.Int,
       gate: Schema.String,
     }),
@@ -587,10 +499,6 @@ const gates: Gates = {
   additions: [...recordedGates.additions, ...interactiveProtocolAdditions],
 };
 
-/**
- * Whether the live protocol, read from `ours`, keeps the promises of each `against` protocol, read
- * from `theirs`. Returns the problems, and records which gates were needed in `used`.
- */
 const compatibility = (
   ours: ReadonlyMap<number, Snapshot>,
   liveVersion: number,
@@ -613,8 +521,6 @@ const compatibility = (
         continue;
       }
       const released = other.whole(version, name);
-      // An adapter converts this message for the protocol's bundles, whether the live protocol
-      // dropped it or changed its shape, so the two shapes need not be compatible.
       const adapted = gates.adapted.find(
         (entry) => entry.message === name && entry.protocols.includes(version),
       );
@@ -629,7 +535,6 @@ const compatibility = (
         continue;
       }
       const live = mine.whole(liveVersion, name);
-      // The invocation's command is checked as `request`, and its accounts as `accounts` where that message exists.
       const skip = new Set<string>();
       if (name === "invocation") {
         skip.add("/command");
@@ -662,17 +567,12 @@ const compatibility = (
   return problems;
 };
 
-// ---------------------------------------------------------------------------------------------
-// The check
-// ---------------------------------------------------------------------------------------------
-
 const readSnapshot = (file: URL): Snapshot | undefined =>
   existsSync(file) ? decodeSnapshot(readFileSync(file, "utf8")) : undefined;
 const file = (protocol: number, from = directory) => new URL(`${protocol}.json`, from);
 const save = (snapshot: Snapshot) =>
   writeFileSync(file(snapshot.protocol), `${JSON.stringify(snapshot, null, 2)}\n`);
 
-/** Messages and named schemas whose record differs. */
 const differences = (a: Snapshot, b: Snapshot): string[] => {
   const out: string[] = [];
   for (const name of new Set([
@@ -708,11 +608,9 @@ for (const protocol of [...chain, live]) {
   const existing = readSnapshot(file(protocol.version));
   if (existing !== undefined) committed.set(protocol.version, existing);
 }
-/** Every snapshot as recorded so far, with the live protocol as it is now. */
 const ours = () => new Map([...committed, [live.version, generated.get(live.version)!]]);
 const releasedVersions = chain.map((protocol) => protocol.version);
 
-// 1. Released protocols are frozen.
 for (const protocol of chain) {
   const existing = committed.get(protocol.version);
   const fresh = generated.get(protocol.version)!;
@@ -730,7 +628,6 @@ for (const protocol of chain) {
     );
 }
 
-// 2. The live protocol is recorded. A new record must keep the committed record's promises.
 {
   const existing = committed.get(live.version);
   const fresh = generated.get(live.version)!;
@@ -766,7 +663,6 @@ for (const protocol of chain) {
   }
 }
 
-// 3. The live protocol keeps every released protocol's bundles running, and every gate is needed.
 if (releasedVersions.every((version) => committed.has(version))) {
   const used = new Set<string>();
   const problems = compatibility(ours(), live.version, committed, releasedVersions, used);
@@ -788,7 +684,6 @@ if (releasedVersions.every((version) => committed.has(version))) {
     );
   if (base !== undefined) {
     const baseFile = file(live.version, fromCwd(base));
-    // A base from before this record format has nothing comparable.
     const baseSnapshot = ((): Snapshot | undefined => {
       try {
         return readSnapshot(baseFile);
@@ -816,7 +711,6 @@ if (releasedVersions.every((version) => committed.has(version))) {
   }
 }
 
-// 4. Bookkeeping: every snapshot belongs to a protocol, and hosts support every protocol.
 for (const name of readdirSync(directory)) {
   if (!name.endsWith(".json") || name === "gates.json") continue;
   const version = Number(name.replace(/\.json$/, ""));

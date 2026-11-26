@@ -1,4 +1,3 @@
-/** Exercise the real registration, encrypted attempt, callback and account-save boundaries. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
@@ -62,15 +61,11 @@ layer(HostedLive, { excludeTestServices: true })("OAuth compatibility", (it) => 
           readonly malformedRegistration: boolean;
           readonly scopes: readonly string[];
           readonly includeIdToken: boolean;
-          /** Advertised ID token algorithms; null omits them from OAuth metadata. */
           readonly idTokenAlgorithms: readonly string[] | null;
           readonly idTokenAlgorithm: "ES256" | "RS256" | "HS256";
-          /** The ID token's `iss`; null names this issuer. */
           readonly idTokenIssuer: string | null;
           readonly invalidNonce: boolean;
-          /** The 422 reason when setup must stop before sign-in. */
           readonly setupFailure: string | undefined;
-          /** The 400 reason when completion must fail after the token exchange. */
           readonly completionFailure: string | undefined;
         }> = [
           { ...valid, name: "HTTP 200", registrationStatus: 200 },
@@ -81,10 +76,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth compatibility", (it) => 
             registrationStatus: 200,
             omitSecretExpiry: true,
           },
-          // Vercel answers a client_secret_basic registration with a public client.
           { ...valid, name: "Public client issued", issuePublicClients: true },
-          // Executor uses only the access token and ignores any ID token, so none of these
-          // can fail a sign-in, and a service may omit the ID token after `openid`.
           { ...valid, name: "ES256 OIDC", scopes: ["openid", "read"], includeIdToken: true },
           { ...valid, name: "OpenID without ID token", scopes: ["openid", "read"] },
           {
@@ -101,7 +93,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth compatibility", (it) => 
             includeIdToken: true,
             invalidNonce: true,
           },
-          // Miro: an HS256 ID token without a nonce, its OAuth metadata listing no algorithms.
           {
             ...valid,
             name: "Miro-like ID token",
@@ -110,7 +101,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth compatibility", (it) => 
             idTokenAlgorithms: null,
             idTokenAlgorithm: "HS256",
           },
-          // Readwise: an HS256 ID token naming an issuer its metadata does not.
           {
             ...valid,
             name: "Readwise-like ID token",
@@ -133,7 +123,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth compatibility", (it) => 
             registrationError: "invalid_request",
             setupFailure: "registration_rejected",
           },
-          // Most often a callback URL outside the service's allowed redirect URIs.
           {
             ...valid,
             name: "Refused client metadata",
@@ -155,12 +144,9 @@ layer(HostedLive, { excludeTestServices: true })("OAuth compatibility", (it) => 
             setupFailure: "client_registration_required",
           },
         ];
-        // Clients belong to the service's server, so another app of it reuses a client the
-        // organization registered. Each case starts without one, so each case registers.
         for (const scenario of cases) {
           yield* removeRegisteredClients(actors.owner, actors.organization.id, issuer.origin);
           yield* issuer.configure(scenario);
-          // Deploy the quick-add OAuth source directly; these cases break discovery on purpose.
           const name = `${scenario.name} ${randomUUID().slice(0, 8)}`;
           const imported = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
             name,
@@ -193,12 +179,10 @@ layer(HostedLive, { excludeTestServices: true })("OAuth compatibility", (it) => 
             expect(started.status, scenario.name).toBe(422);
             const failure = yield* body(SetupFailure, started);
             expect(failure.reason, scenario.name).toBe(scenario.setupFailure);
-            // Registration failures name Executor's callback so the user can request approval.
             expect(
               failure.callbackUrl === undefined ? undefined : new URL(failure.callbackUrl).pathname,
               scenario.name,
             ).toBe("/api/oauth/callback");
-            // A refusal's own words reach only `serviceError`, never the curated explanation.
             expect(failure.serviceError?.description, scenario.name).toBe(
               scenario.registrationStatus === 200 ? undefined : "PRIVATE_PROVIDER_ERROR",
             );
@@ -210,7 +194,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth compatibility", (it) => 
           }
           expect(started.status, scenario.name).toBe(200);
           const { authorizationUrl } = yield* body(SignIn, started);
-          // Executor never asks for a nonce, even when it requests `openid`.
           expect(
             new URL(authorizationUrl).searchParams.get("scope")?.split(" ").includes("openid"),
             scenario.name,
@@ -263,7 +246,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth compatibility", (it) => 
               reason: scenario.completionFailure,
             });
           expect((yield* issuer.metrics).tokenExchanges).toBe(exchanges + 1);
-          // Completing links the new account to the app; a failed completion links nothing.
           const linked = yield* linkedAccountIds(actors.owner, `${prefix}/apps/${app.id}`);
           if (scenario.completionFailure === undefined) {
             const account = yield* body(Resource, completed);

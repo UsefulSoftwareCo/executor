@@ -1,4 +1,3 @@
-/** Working-source reads follow every kind of write, including when Cloud has stored the old source. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, FileSystem, Redacted, Schema } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
@@ -44,7 +43,6 @@ layer(HostedLive, { excludeTestServices: true })("Workspace source writes", (it)
           expect(response.status).toBe(200);
           return yield* body(Workspace, response);
         });
-        // Cloud keeps the working source only while no write has replaced it.
         const stored = (label: string, expected: typeof Workspace.Type) =>
           target.metadata.target === "cloud" ? storedWorkspace(label, read, expected) : Effect.void;
         const initial = yield* read;
@@ -96,7 +94,6 @@ layer(HostedLive, { excludeTestServices: true })("Workspace source writes", (it)
           0,
         );
 
-        // An ordinary Git push replaces the source that the next API and dashboard reads return.
         yield* stored("before-push", initial);
         const pushedFile = { path: "pushed.txt", content: `Pushed ${randomUUID()}\n` };
         yield* fs.writeFileString(`${checkout}/${pushedFile.path}`, pushedFile.content);
@@ -116,7 +113,6 @@ layer(HostedLive, { excludeTestServices: true })("Workspace source writes", (it)
         expect(displayed.revision.commit).toBe(pushed.revision.commit);
         expect(displayed.files.map((file) => file.path)).toContain(pushedFile.path);
 
-        // A commit through the API replaces the stored source before it returns.
         yield* stored("before-commit", pushed);
         const committed = yield* api.request(actors.owner, "POST", `${path}/commits`, {
           expected: pushed.revision.commit,

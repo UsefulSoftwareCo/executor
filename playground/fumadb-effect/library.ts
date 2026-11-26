@@ -1,6 +1,3 @@
-/**
- * The library side: everything a package author ships.
- */
 import { Effect } from "effect";
 import { fumadb, type InferFumaDB } from "fumadb-effect";
 import { v1, v2 } from "./schema.ts";

@@ -1,7 +1,3 @@
-/**
- * A scheduled run executes the app's active build. The runner reads builds by the ID each run
- * names, so a run after a redeploy must execute the new code, never a build an earlier run loaded.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -15,7 +11,6 @@ const Runs = Schema.Array(Schema.Struct({ id: Schema.String, status: Schema.Stri
 const Source = Schema.Struct({ build: Schema.String });
 class Pending extends Schema.TaggedError<Pending>()("Pending", {}) {}
 
-/** Each scheduled run records which build ran it. The daily interval never fires during the case. */
 const files = (label: string) => [
   {
     path: "index.ts",
@@ -93,8 +88,6 @@ layer(HostedLive, { excludeTestServices: true })("Scheduled runs after a redeplo
         expect(yield* labels).toEqual(["first build"]);
         const firstBuild = yield* build;
 
-        // The redeploy activates a new immutable build; the next run must load it, not reuse the
-        // first build's code that the runner already read.
         const redeployed = yield* api.request(actors.owner, "POST", `${path}/deploy`, {
           files: files("second build"),
         });

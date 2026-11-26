@@ -1,4 +1,3 @@
-/** Organization-keyed setup bindings use the private cookie routes on the shared hosted client. */
 import { Data, Effect } from "effect";
 import { Atom } from "effect/reactivity";
 import type { AppId, WebhookId } from "@executor-js/sdk";
@@ -21,7 +20,6 @@ const family = Atom.family((params: SetupKey) =>
     ),
   }),
 );
-/** An organization is always supplied by the page's URL boundary. */
 export const hostedWebhookSetupAtoms = (
   organization: OrganizationReference,
   app: AppId,

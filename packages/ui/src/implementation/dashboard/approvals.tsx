@@ -8,7 +8,6 @@ import type { ApprovalListItem } from "../../contracts/schedules.ts";
 import { QueryView } from "./context.tsx";
 import { Button } from "../components/button.tsx";
 
-/** Pending scheduled work uses the same review interaction in local and hosted dashboards. */
 export function ApprovalsPage<E>({
   query,
   Failure,

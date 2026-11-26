@@ -1,7 +1,3 @@
-/**
- * The desktop app quits or crashes mid-renewal and starts again much later. The dashboard must
- * not ask for a new sign-in while the saved refresh token can still recover the grant.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Exit, Fiber, Redacted, Schedule, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
@@ -33,7 +29,6 @@ const Completed = Schema.Struct({
 const Detail = Schema.Struct({
   account: Schema.Struct({ signIn: Schema.Struct({ state: Schema.String }) }),
 });
-/** Longer than the dashboard previously trusted an unsettled renewal. */
 const restartedLater = 61_000;
 
 layer(TestLive, { excludeTestServices: true })("Local OAuth renewal interruption", (it) => {
@@ -105,7 +100,6 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
           label: "Synthetic rotating account",
         });
         expect(started.status, JSON.stringify(started.body)).toBe(200);
-        // The local callback is a loopback redirect, which registers as a native client.
         expect((yield* issuer.metrics).lastRegistration?.applicationType).toBe("native");
         const { authorizationUrl } = yield* body(Redirect, started);
         const callbackUrl = yield* Effect.scoped(
@@ -128,7 +122,6 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
         const connected = (yield* body(Resource, completed)).id;
         account = connected;
         const accountPath = `/dashboard/api/accounts/${connected}`;
-        // Connecting from the app linked the account; calls use it without naming it.
         const signIn = api
           .request(agent, "GET", accountPath)
           .pipe(Effect.flatMap((response) => body(Detail, response)));
@@ -147,8 +140,6 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
           });
         yield* renewed(yield* read);
 
-        // The desktop app stops before the service processes a renewal it started while the
-        // dashboard read the app's workflows.
         yield* issuer.configure({ hold: "refresh-unprocessed" });
         const before = yield* issuer.metrics;
         const interrupted = yield* Effect.forkChild(
@@ -166,14 +157,10 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
         expect(Exit.isFailure(yield* Fiber.join(interrupted))).toBe(true);
         yield* issuer.configure({ hold: null });
         yield* issuer.release;
-        // It is opened again a minute later.
         yield* serverControl("clock/advance", 200, { milliseconds: restartedLater });
         yield* serverControl("start");
 
-        // The saved refresh token was never presented, so the account needs no new sign-in.
         expect((yield* signIn).account.signIn.state).toBe("saved");
-        // The first renewal after the restart takes over the abandoned claim and renews from the
-        // saved refresh token. Tokens this short-lived also renew on later use.
         yield* renewed(yield* read);
         expect((yield* issuer.metrics).refreshesIssued).toBeGreaterThan(before.refreshesIssued);
         expect((yield* signIn).account.signIn.state).toBe("saved");

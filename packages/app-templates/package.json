@@ -13,7 +13,7 @@
     "@executor-js/sdk": "workspace:*",
     "@modelcontextprotocol/sdk": "1.32.1",
     "apps": "workspace:*",
-    "effect": "4.0.1"
+    "effect": "4.1.4"
   },
   "devDependencies": {
     "mdast-util-from-markdown": "2.0.3",

@@ -57,19 +57,28 @@ const retained = (url: string) => url !== "" && !/^(?:[a-z][a-z\d+.-]*:|[/#?])/i
  * Rewrite each candidate URL as the HTML `srcset` parser splits them: a URL is a run of
  * non-whitespace whose trailing commas end the candidate, and descriptors end at a comma outside
  * parentheses. Commas inside a URL, as in `data:` URLs, are part of it.
+ *
+ * Every step reads forward from `index`, and trailing commas are counted back from the token's
+ * end, so the time taken is linear in the attribute's length whatever it holds.
  */
 const rewriteSrcset = (value: string, resolve: (url: string) => string) => {
+  const separators = /[\s,]*/y;
+  const tokens = /\S+/y;
   let output = "";
   let index = 0;
   while (index < value.length) {
-    const separator = /^[\s,]*/.exec(value.slice(index))?.[0] ?? "";
+    separators.lastIndex = index;
+    const separator = separators.exec(value)?.[0] ?? "";
     output += separator;
     index += separator.length;
-    const token = /^\S+/.exec(value.slice(index))?.[0];
+    tokens.lastIndex = index;
+    const token = tokens.exec(value)?.[0];
     if (token === undefined) break;
     index += token.length;
-    const commas = /,*$/.exec(token)?.[0] ?? "";
-    output += resolve(token.slice(0, token.length - commas.length)) + commas;
+    let url = token.length;
+    while (url > 0 && token[url - 1] === ",") url--;
+    const commas = token.slice(url);
+    output += resolve(token.slice(0, url)) + commas;
     if (commas !== "") continue;
     let depth = 0;
     let end = index;
