@@ -1,4 +1,3 @@
-/** Scoped connections: each has its own MCP URL, and its grants follow the current record. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Exit, Fiber, Layer, Redacted, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -36,7 +35,6 @@ const Search = Schema.Struct({
   items: Schema.Array(Schema.Struct({ path: Schema.String })),
 });
 
-/** Deploy the read/write fixture into the scenario's organization. */
 const deployReadWriteApp = Effect.gen(function* () {
   const api = yield* Api,
     actors = yield* Actors;
@@ -54,7 +52,6 @@ const deployReadWriteApp = Effect.gen(function* () {
   return { app, receipt };
 });
 
-/** Create a connection through the browser-only product route. */
 const createConnection = (session: Session, apps: readonly unknown[]) =>
   Effect.gen(function* () {
     const api = yield* Api,
@@ -69,7 +66,6 @@ const createConnection = (session: Session, apps: readonly unknown[]) =>
     return yield* body(ConnectionView, created);
   });
 
-/** Run code through one MCP client's `execute` tool and decode its completion. */
 const executor =
   (client: Effect.Success<ReturnType<McpClient["Service"]["connect"]>>) =>
   (operation: string, code: string) =>
@@ -107,24 +103,36 @@ layer(HostedLive, { excludeTestServices: true })("Scoped MCP connections", (it) 
         expect(connection.policy.apps).toEqual([
           { app: app.id, runsAs: [{ kind: "app" }], tools: { kind: "readOnly" } },
         ]);
-        // Bearer credentials cannot manage connections, including a full-access grant.
         yield* browser.login(actors.owner);
         const full = yield* evidence.step(
           "Authorize the full-access URL for comparison",
           oauth.authorize,
         );
-        const fullBearer = {
-          authorization: `Bearer ${Redacted.value(full.tokens).access_token}`,
-        };
+        const fullRun = executor(
+          yield* mcp.connect(Redacted.make(Redacted.value(full.tokens).access_token), "full"),
+        );
+        const agentListed = yield* fullRun(
+          "The agent lists the member's connections",
+          `return await tools.executor.mcpConnections.list(${JSON.stringify({ path: { organization: actors.organization.id } })});`,
+        );
+        expect(agentListed.execution.ok, JSON.stringify(agentListed)).toBe(true);
         expect(
-          (yield* api.request(
-            yield* api.session(),
-            "GET",
-            `${prefix}/mcp-connections`,
-            undefined,
-            fullBearer,
-          )).status,
-        ).toBe(401);
+          (yield* Schema.decodeUnknownEffect(Schema.Array(Schema.Struct({ id: Schema.String })))(
+            agentListed.execution.value,
+          )).map((listedConnection) => listedConnection.id),
+        ).toContain(connection.id);
+        const changeTools = ["create", "update", "revoke", "agents", "revokeAgent"].map(
+          (operation) => `tools.executor.mcpConnections.${operation}`,
+        );
+        const described = yield* fullRun(
+          "The agent has no tool that changes a connection",
+          `return await tools.search.describe({ paths: ${JSON.stringify(changeTools)} });`,
+        );
+        expect(
+          (yield* Schema.decodeUnknownEffect(
+            Schema.Struct({ missing: Schema.Array(Schema.Struct({ path: Schema.String })) }),
+          )(described.execution.value)).missing.map((item) => item.path),
+        ).toEqual(changeTools);
         const grant = yield* evidence.step(
           "Authorize the connection's own URL through browser consent",
           oauth.authorizeConnection(connection.id),
@@ -192,8 +200,6 @@ layer(HostedLive, { excludeTestServices: true })("Scoped MCP connections", (it) 
               ok: true,
               value: { message: "ok", receipt: hidden.receipt },
             });
-            // At the full-access URL, a connection's token still reaches only its connection: the
-            // grant's record, not the URL, decides what it serves.
             const moved = executor(
               yield* mcp.connect(Redacted.make(Redacted.value(grant.tokens).access_token), "moved"),
             );
@@ -310,7 +316,6 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
               yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${id}`);
           }).pipe(Effect.orDie),
         );
-        // Connecting from the app saves the account and links it for the owner.
         const connectAccount = (token: string) =>
           Effect.gen(function* () {
             const connection = yield* api.request(
@@ -332,13 +337,10 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
             accounts.push(account.id);
             return account.id;
           });
-        // Each account connected for the plain requirement replaces the one linked before; the
-        // replaced accounts stay saved.
         const work = yield* connectAccount("work");
         const personal = yield* connectAccount("personal");
         const bare = yield* connectAccount("bare");
         expect(yield* linkedAccountIds(actors.owner, path)).toEqual([bare]);
-        // A bare account: saved, but no longer linked to the app.
         yield* linkAccount(actors.owner, path, "service", work);
         expect(yield* linkedAccountIds(actors.owner, path)).toEqual([work]);
         const connection = yield* createConnection(actors.owner, [
@@ -352,10 +354,8 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
           yield* mcp.connect(yield* consent.tokens, "accounts", { connection: connection.id }),
         );
         const appPath = `tools[${JSON.stringify(app.slug)}]`;
-        // The connection sees only its account, and the call runs as it.
         const called = yield* run("The selected account runs", `return await ${appPath}.who({})`);
         expect(called.execution).toEqual({ ok: true, value: "work" });
-        // A call cannot name another account instead.
         const named = yield* run(
           "A call that names another account is refused before it runs",
           `try { return await ${appPath}.who({ $accounts: { service: ${JSON.stringify(personal)} } }); } catch (error) { return JSON.parse(error.message); }`,
@@ -364,8 +364,6 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
           ok: true,
           value: { code: "AccountChoiceUnsupported", status: 400 },
         });
-        // Another account linked in place of the connection's is outside the connection: the
-        // call is refused and nothing is substituted.
         yield* linkAccount(actors.owner, path, "service", personal);
         expect(yield* linkedAccountIds(actors.owner, path)).toEqual([personal]);
         const other = yield* run(
@@ -374,8 +372,6 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
         );
         expect(other.execution.ok, JSON.stringify(other)).toBe(false);
         expect(JSON.stringify(other)).not.toContain('"personal"');
-        // Selecting a bare account links it to the app, as connecting it from the app would, in
-        // place of the plain requirement's linked account.
         const bareConnection = yield* createConnection(actors.owner, [
           { app: app.id, runsAs: [{ kind: "account", id: bare }], tools: { kind: "all" } },
         ]);
@@ -496,7 +492,6 @@ return { first, second };`,
             Effect.flatMap((response) => body(Schema.Boolean, response)),
           ),
         );
-        // The link is replaced while the execution is held; the connection still names the first.
         yield* linkAccount(actors.owner, path, "service", replacement);
         expect(yield* linkedAccountIds(actors.owner, path)).toEqual([replacement]);
         yield* call("release", "mutation");
@@ -515,8 +510,6 @@ return { first, second };`,
           }),
         )(result.structuredContent);
         expect(execution.value.first).toBe("granted");
-        // The connection does not allow the replacement, so the call is refused for that and
-        // never runs with it.
         expect(
           yield* Schema.decodeUnknownEffect(Schema.fromJsonString(TargetRefusal))(
             execution.value.second.refused,
@@ -545,7 +538,6 @@ return { first, second };`,
           "x-executor-organization": `org_${randomUUID().replaceAll("-", "")}`,
         });
         expect(elsewhere.status).toBe(403);
-        // Another user can neither read nor change it.
         const memberList = yield* body(
           Schema.Array(ConnectionView),
           yield* api.request(actors.member, "GET", `${prefix}/mcp-connections`),
@@ -579,7 +571,6 @@ return { first, second };`,
           .request(actors.owner, "GET", `${prefix}/mcp-connections`)
           .pipe(Effect.flatMap((response) => body(Schema.Array(ConnectionView), response)));
         yield* browser.login(actors.owner);
-        // LAN HTTP exposes getRandomValues, but not randomUUID. Keep the real API and UI.
         if (target.metadata.target === "self-host")
           yield* browser.use("Reproduce missing native UUIDs on HTTP", (page) =>
             page.addInitScript(() => {
@@ -678,10 +669,6 @@ return { first, second };`,
             .getByRole("img")
             .waitFor({ state: "visible" }),
         );
-        // Radix paints the dialog and moves focus into it before the render that makes it the
-        // topmost layer: until then the setup dialog beneath still owns Escape, and Escape closes
-        // both. That render is the one where the setup dialog stops taking pointer input and the
-        // full-size screenshot starts to.
         yield* browser.use("The full-size screenshot takes focus", (page) =>
           page
             .getByRole("dialog", { name: "Claude’s Add custom connector dialog" })
@@ -869,7 +856,6 @@ export default defineApp({ app: { accounts: { team } } }, async () => ({ tools: 
         const accounts: string[] = [],
           clients: string[] = [];
         yield* revokeClientGrants(actors.owner, () => clients);
-        // The app's links go with it, so its account can be deleted after.
         yield* Effect.addFinalizer(() =>
           Effect.gen(function* () {
             yield* api.request(actors.owner, "DELETE", path);
@@ -877,8 +863,6 @@ export default defineApp({ app: { accounts: { team } } }, async () => ({ tools: 
               yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${id}`);
           }).pipe(Effect.orDie),
         );
-        // The owner manages the app: connecting for its app requirement links the account for
-        // everyone.
         const started = yield* api.request(
           actors.owner,
           "POST",
@@ -896,12 +880,8 @@ export default defineApp({ app: { accounts: { team } } }, async () => ({ tools: 
         const team = (yield* body(Resource, submitted)).id;
         accounts.push(team);
         expect(yield* accountLinks(actors.owner, path, "app")).toEqual([["team", team]]);
-        // An app link, not a user link: the owner's user links, which connections run as, do not
-        // include it.
         expect(yield* linkedAccountIds(actors.owner, path)).toEqual([]);
 
-        // A connection cannot name the app's linked account: it runs the app, which brings its
-        // account.
         const named = yield* api.request(actors.owner, "POST", `${prefix}/mcp-connections`, {
           id: randomUUID(),
           name: `Connection ${randomUUID().slice(0, 6)}`,
@@ -921,13 +901,11 @@ export default defineApp({ app: { accounts: { team } } }, async () => ({ tools: 
           yield* mcp.connect(yield* consent.tokens, "app-account", { connection: connection.id }),
         );
         const appPath = `tools[${JSON.stringify(app.slug)}]`;
-        // The call runs with the app's linked account through the app.
         const called = yield* run(
           "The app's linked account runs",
           `return await ${appPath}.team({})`,
         );
         expect(called.execution).toEqual({ ok: true, value: "synthetic-team" });
-        // Discovery describes no account for the app requirement.
         const described = yield* run(
           "Describe the app's tool",
           `return await tools.search.describe({ paths: [${JSON.stringify(`${app.slug}.team`)}] })`,
@@ -936,7 +914,6 @@ export default defineApp({ app: { accounts: { team } } }, async () => ({ tools: 
         expect(JSON.stringify(described)).not.toContain(team);
         expect(JSON.stringify(described)).not.toContain("Team account");
 
-        // Neither the connections nor the grants list the app's linked account.
         const listed = yield* api.request(actors.owner, "GET", `${prefix}/mcp-connections`);
         expect(listed.status).toBe(200);
         const views = yield* body(Schema.Array(ConnectionView), listed);

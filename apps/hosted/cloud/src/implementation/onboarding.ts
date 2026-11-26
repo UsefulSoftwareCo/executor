@@ -10,9 +10,8 @@ import {
   OrganizationLogo,
   organizationHandle,
   organizationSlugMaxLength,
-  type OrganizationId,
 } from "@executor-js/hosted-server";
-import { SetupOrder, SetupSkip, type SetupStep } from "@executor-js/hosted-server/setup";
+import { SetupSkip } from "@executor-js/hosted-server/setup";
 import {
   TeamIconOwner,
   CompanyLookup,
@@ -22,7 +21,6 @@ import {
   CreateTeam,
   type OnboardingCreated,
   TeamIconNotFound,
-  onboardingExperiment,
   onboardingSkipExperiment,
   SetupGate,
 } from "../contracts/onboarding.ts";
@@ -50,7 +48,6 @@ const emailTeamName = (email: string) => {
 const teamSlug = (name: string) =>
   organizationHandle(name, organizationSlugMaxLength - 7) || "team";
 
-/** Retry an idempotent setup only after the failed SQL transaction has released its connection. */
 export const recoverSetupConnection = <A, E, R>(operation: Effect.Effect<A, E, R>) =>
   operation.pipe(
     Effect.retry({
@@ -61,7 +58,6 @@ export const recoverSetupConnection = <A, E, R>(operation: Effect.Effect<A, E, R
     }),
   );
 
-/** Prepare suggestions before confirmation; only create writes organization identity. */
 export const makeOnboarding = Effect.fn("onboarding.service")(function* (options: {
   readonly origin: string;
 }) {
@@ -80,7 +76,6 @@ export const makeOnboarding = Effect.fn("onboarding.service")(function* (options
       const key = Array.from(new Uint8Array(digest), (byte) =>
         byte.toString(16).padStart(2, "0"),
       ).join("");
-      // Content addressing makes retries safe. No SQL transaction stays open during R2 I/O.
       yield* blobs.put(iconKey(safeOwner, key), upload.bytes);
       return iconUrl(safeOwner, key);
     });
@@ -105,7 +100,6 @@ export const makeOnboarding = Effect.fn("onboarding.service")(function* (options
       );
       return null;
     });
-  /** The one entry decision: existing membership, a pending invitation, then earlier setup. */
   const standing = (userId: string) =>
     Effect.gen(function* () {
       const user = yield* store.user(userId);
@@ -143,8 +137,6 @@ export const makeOnboarding = Effect.fn("onboarding.service")(function* (options
         ...input,
         name: input.name.trim(),
       });
-      // Settle existing membership before storing an icon, and before the transaction: no SQL
-      // transaction stays open during R2 I/O.
       const entry = yield* standing(userId);
       if (entry.status !== "new") return entry;
       const details = {
@@ -153,7 +145,6 @@ export const makeOnboarding = Effect.fn("onboarding.service")(function* (options
           ? yield* saveIcon(userId, selected.logo)
           : selected.logo,
       };
-      // Whether this request created the team, rather than finding one an earlier one created.
       const { entry: confirmed, created } = yield* store
         .transaction(
           Effect.gen(function* () {
@@ -183,41 +174,17 @@ export const makeOnboarding = Effect.fn("onboarding.service")(function* (options
         .pipe(recoverSetupConnection);
       if (created === undefined || selected.next !== "setup" || confirmed.status !== "ready")
         return confirmed;
-      yield* assignSetup(userId, created);
-      // The browser opens the first step straight away, so the setup is read, and any exposures
-      // recorded, as that step is shown. A failed read leaves the step to read it.
+      yield* assignSkip(userId, created);
       const sequence = yield* setup(userId, created).pipe(Effect.option);
       return Option.isSome(sequence) ? { ...confirmed, setup: sequence.value } : confirmed;
     }).pipe(
       Effect.mapError(() => new OnboardingUnavailable()),
       Effect.withSpan("onboarding.create"),
     );
-  /**
-   * Ask PostHog, in one evaluation, for the new team's setup order and whether its steps can be
-   * skipped, and keep each answer, so every later read shows the same setup. The two experiments
-   * are independent: an unavailable flag, or a failure keeping its answer, leaves the member
-   * unassigned in that experiment only, where they see its control and are not counted. Creating
-   * the team never waits on more than the evaluation's one-second deadline and never fails
-   * because of it.
-   */
-  const assignSetup = (userId: string, organization: string) =>
+  const assignSkip = (userId: string, organization: string) =>
     Effect.gen(function* () {
       const flags = yield* FeatureFlags;
-      const answers = yield* flags.evaluate(
-        [onboardingExperiment.flag, onboardingSkipExperiment.flag],
-        userId,
-      );
-      const order = Schema.decodeUnknownOption(SetupOrder)(answers[onboardingExperiment.flag]);
-      if (Option.isSome(order))
-        yield* store
-          .assignSetup(userId, organization, order.value)
-          .pipe(
-            Effect.catch(() =>
-              Effect.logWarning(
-                "Setup order was not assigned; the team sees the control untracked",
-              ),
-            ),
-          );
+      const answers = yield* flags.evaluate([onboardingSkipExperiment.flag], userId);
       const skip = Schema.decodeUnknownOption(SetupSkip)(answers[onboardingSkipExperiment.flag]);
       if (Option.isSome(skip))
         yield* store
@@ -230,27 +197,20 @@ export const makeOnboarding = Effect.fn("onboarding.service")(function* (options
             ),
           );
     });
-  /** Exactly one read marks an assignment seen, so each exposure is recorded once. */
-  const exposure = (
-    userId: string,
-    organization: OrganizationId,
-    flag: string,
-    claimed: string | undefined,
-  ) =>
-    claimed === undefined
-      ? Effect.void
-      : recordFlagExposure({ userId, organizationId: organization, flag, variant: claimed });
   const setup: typeof Onboarding.Service.setup = (userId, organization) =>
     Effect.gen(function* () {
-      const exposedOrder = yield* store.claimSetupExposure(userId, organization);
-      yield* exposure(userId, organization, onboardingExperiment.flag, exposedOrder);
-      const exposedSkip = yield* store.claimSkipExposure(userId, organization);
-      yield* exposure(userId, organization, onboardingSkipExperiment.flag, exposedSkip);
-      const order = exposedOrder ?? (yield* store.setupAssignment(userId, organization));
-      const skip = exposedSkip ?? (yield* store.skipAssignment(userId, organization))?.variant;
+      const exposed = yield* store.claimSkipExposure(userId, organization);
+      if (exposed !== undefined)
+        yield* recordFlagExposure({
+          userId,
+          organizationId: organization,
+          flag: onboardingSkipExperiment.flag,
+          variant: exposed,
+        });
+      const skip = exposed ?? (yield* store.skipAssignment(userId, organization))?.variant;
       return {
-        order: order ?? onboardingExperiment.control,
-        enrolled: order !== undefined,
+        order: "assistant_first" as const,
+        enrolled: false,
         skip: {
           variant: skip ?? onboardingSkipExperiment.control,
           enrolled: skip !== undefined,
@@ -270,16 +230,9 @@ export const makeOnboarding = Effect.fn("onboarding.service")(function* (options
         yield* store.completeSetup(userId, organization);
         return SetupGate.make({ status: "open" });
       }
-      const order =
-        (yield* store.setupAssignment(userId, organization)) ?? onboardingExperiment.control;
-      // The next step is the first of the member's order that is not done.
-      const first: SetupStep = order === "assistant_first" ? "assistant" : "accounts";
-      const firstDone = first === "accounts" ? done.accounts : done.agent !== undefined;
-      const step: SetupStep = firstDone ? (first === "accounts" ? "assistant" : "accounts") : first;
-      // The account step carries a connected assistant on to the first prompt.
-      return step === "accounts" && done.agent !== undefined
-        ? SetupGate.make({ status: "setup", step, agent: done.agent })
-        : SetupGate.make({ status: "setup", step });
+      return done.agent === undefined
+        ? SetupGate.make({ status: "setup", step: "assistant" })
+        : SetupGate.make({ status: "setup", step: "accounts", agent: done.agent });
     }).pipe(
       Effect.mapError(() => new OnboardingUnavailable()),
       Effect.withSpan("onboarding.gate"),

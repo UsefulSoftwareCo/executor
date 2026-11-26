@@ -1,19 +1,3 @@
-/**
- * Executor v1's WorkOS API keys, which keep working after v1 shuts down (`notes/v1-shutdown.md`,
- * decision 3). The first time v2 sees a WorkOS-format key
- * (`sk_`) it does not hold, on any MCP or API route, it asks v1's WorkOS whether the key is valid
- * and whose it is. A valid key whose organization moved, and whose owner is a member of the v2
- * organization it moved to, is stored as a native API key of that user, pinned to that
- * organization. From then on Better Auth's ordinary check finds it, and WorkOS is never asked
- * about it again. An organization-owned key acts as the v2 organization's owner, as decision 12
- * says.
- *
- * WorkOS is asked at most a few times a second per isolate, and a key it refused, or that cannot
- * be stored, is not asked about again for five minutes, so random bearers cannot turn into a flood
- * of WorkOS requests. When WorkOS cannot answer, or the limit is reached, the request is a 503 to
- * retry, never an accepted key. Each lookup names its outcome on the request span
- * (`executor.v1_api_key.outcome`), so the check can be removed once validated traffic is gone.
- */
 import { AuthenticationUnavailable, type UnknownApiKeys } from "@executor-js/hosted-server";
 import { migrationFailed } from "@executor-js/hosted-server/migrations";
 import { annotateRequestSpan } from "@executor-js/telemetry/http";
@@ -21,10 +5,6 @@ import { Clock, Effect, Option, Redacted, Schema } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 import { SqlClient } from "effect/sql";
 
-/**
- * One row per WorkOS key v2 stored, written before the key in the same statement. It outlives the
- * key: a key its owner deletes in v2 is never stored again. Additive: only this module reads it.
- */
 export const migrateV1CapturedApiKeys = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`create table if not exists private_v1_captured_api_key (
@@ -38,22 +18,16 @@ export const migrateV1CapturedApiKeys = Effect.gen(function* () {
   )`;
 }).pipe(Effect.mapError(migrationFailed("product")));
 
-/** v1's WorkOS environment: its API origin (an emulator in tests) and v1's WorkOS key. */
 export interface V1WorkOSKeys {
   readonly baseUrl: string;
   readonly key: Redacted.Redacted<string>;
 }
 
-/** Only WorkOS's keys have this prefix; v2's own are `exp_`. */
 const workosPrefix = "sk_";
-/** How long a refused or unstorable key is answered from memory. */
 const refusalMillis = 5 * 60_000;
-/** The most refusals one isolate remembers; the oldest goes first. */
 const refusalLimit = 10_000;
-/** WorkOS lookups one isolate may start: a burst, refilled at a steady rate. */
 const lookupBurst = 20;
 const lookupsPerSecond = 5;
-/** How long one WorkOS lookup may take before the request is answered as an outage. */
 const lookupTimeout = "5 seconds";
 
 const Validation = Schema.Struct({
@@ -82,12 +56,6 @@ const Stored = Schema.Array(
   }),
 );
 
-/**
- * What a lookup ended with: `captured`; `validated_uncaptured` (WorkOS vouched for it but it is
- * not stored: `known` when it was stored before and deleted in v2, `unmoved` when its organization
- * did not move, `unmapped` when its owner did not, `not_member`); `refused` by WorkOS;
- * `refused_cached`; `limited`; `unavailable`.
- */
 type Outcome =
   | { readonly outcome: "captured" }
   | {
@@ -102,7 +70,6 @@ const record = (result: Outcome) =>
     ...("reason" in result ? { "executor.v1_api_key.reason": result.reason } : {}),
   });
 
-/** The unpadded base64url SHA-256 of a key: what Better Auth stores and looks up. */
 const keyHash = (token: string) =>
   Effect.promise(() => crypto.subtle.digest("SHA-256", new TextEncoder().encode(token))).pipe(
     Effect.map((digest) => {
@@ -112,16 +79,8 @@ const keyHash = (token: string) =>
     }),
   );
 
-/** How the stored key is named on its owner's Tokens page. */
 const capturedKeyName = "Imported from Executor v1";
 
-/**
- * Store a key WorkOS vouched for, once per WorkOS key: the record is written first, so concurrent
- * first requests store one key, and a key deleted in v2 is not stored again. The organization maps
- * through `private_v1_legacy_org`, the owner through the import's user records, or for an
- * organization's own key as the v2 organization's owner. The `apikey` membership trigger checks
- * the membership again.
- */
 const store = (
   hash: string,
   key: {
@@ -189,15 +148,10 @@ const store = (
           ? "unmapped"
           : !row.member
             ? "not_member"
-            : // A concurrent request stored it first; the key is read again either way.
-              "known";
+            : "known";
     return { outcome: "validated_uncaptured", reason } satisfies Outcome;
   });
 
-/**
- * The host's handling of keys v2 does not hold (`UnknownApiKeys`) for v1's WorkOS, or none where
- * the deployment has no v1 WorkOS key. Its memory of refusals and its rate are per isolate.
- */
 export const v1CapturedApiKeys = (
   workos: Option.Option<V1WorkOSKeys>,
 ): UnknownApiKeys | undefined => {
@@ -231,7 +185,6 @@ export const v1CapturedApiKeys = (
     }).pipe(
       Effect.timeout(lookupTimeout),
       Effect.provide(FetchHttpClient.layer),
-      // Any failure to get WorkOS's answer is an outage; the response never enters an error.
       Effect.catchCause(() => Effect.succeed(Option.none())),
     );
   return {
@@ -275,8 +228,6 @@ export const v1CapturedApiKeys = (
           }),
         );
         yield* record(result);
-        // A key that is not stored now, deleted in v2 or not movable, is not asked about again
-        // for a while. One a concurrent request stored is found natively before this is read.
         if (result.outcome !== "captured") refuse(hash, now);
         return result.outcome === "captured" || result.reason === "known";
       }).pipe(Effect.withSpan("auth.v1ApiKey")),

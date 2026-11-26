@@ -1,8 +1,8 @@
 /**
- * `executor apps login` signs in with a code (RFC 8628) that a signed-in person approves on the
+ * `executor login` signs in with a code (RFC 8628) that a signed-in person approves on the
  * dashboard's device page, which the CLI opens when a browser can. The CLI ends up with a grant
- * for the organization chosen on the page, the API audience, and a refresh token. The token endpoint answers polls with RFC 8628's errors and redeems an approved
- * code once.
+ * for the organization chosen on the page and a refresh token, and app commands use it too. The
+ * token endpoint answers polls with RFC 8628's errors and redeems an approved code once.
  */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Fiber, Option, Redacted, Schema } from "effect";
@@ -21,7 +21,6 @@ import { scenarios } from "../test-plan.ts";
 const deviceGrant = "urn:ietf:params:oauth:grant-type:device_code";
 const Consents = Schema.Array(Schema.Struct({ id: Schema.String }));
 
-/** Revoke every grant the owner approved in this case; each case has its own owner. */
 const revokeOwnerGrants = Effect.gen(function* () {
   const api = yield* Api,
     actors = yield* Actors;
@@ -32,7 +31,6 @@ const revokeOwnerGrants = Effect.gen(function* () {
     });
 }).pipe(Effect.orDie);
 
-/** Approve or deny the code on the device page as the owner, capturing each state. */
 const decideInBrowser = (input: {
   readonly url: string;
   readonly userCode: string;
@@ -50,7 +48,6 @@ const decideInBrowser = (input: {
       yield* browser.use("The page asks for the code", (page) =>
         page.getByLabel("Code", { exact: true }).waitFor({ state: "visible" }),
       );
-      // People type codes loosely; the page accepts lower case without the dash.
       yield* browser.use("Type the code the CLI printed", (page) =>
         page
           .getByLabel("Code", { exact: true })
@@ -71,7 +68,7 @@ const decideInBrowser = (input: {
       yield* browser.use("The page states the requested access", (page) =>
         consentValue(page, "Access"),
       ),
-    ).toBe("Executor API");
+    ).toBe("All apps");
     if (!input.accept) {
       yield* browser.checkpoint("Review the device request");
       yield* browser.use("Deny the request", (page) =>
@@ -118,7 +115,6 @@ const deviceProtocol = Effect.gen(function* () {
       Effect.gen(function* () {
         const response = yield* http.execute(request);
         const value: unknown = yield* response.json;
-        // Record only outcomes; bodies hold codes and tokens.
         yield* evidence.json(`${label}-${response.status}.json`, {
           status: response.status,
         });
@@ -228,7 +224,6 @@ layer(HostedLive, { excludeTestServices: true })("Device login", (it) => {
         const hosts = targetHosts(yield* Target);
         const tools = yield* appsCli;
         yield* Effect.addFinalizer(() => revokeOwnerGrants);
-        // The CLI finds no browser to open, so the person types the code it printed.
         const login = yield* tools.deviceLogin(hosts.api, "fails");
         expect(login.verificationUri).toBe(`${hosts.browser}/device`);
         expect(new URL(login.verificationUriComplete).searchParams.get("user_code")).toBe(
@@ -243,7 +238,6 @@ layer(HostedLive, { excludeTestServices: true })("Device login", (it) => {
         const finished = yield* Fiber.join(login.finished);
         expect(finished.code, finished.stderr).toBe(0);
         expect(finished.stdout).toContain(`Connected to ${hosts.api} as @`);
-        // The saved session is an ordinary CLI session for the chosen organization.
         const listed = yield* tools.cli(["list", "--host", hosts.api]);
         expect(listed.code, listed.stderr).toBe(0);
       }),
@@ -257,8 +251,6 @@ layer(HostedLive, { excludeTestServices: true })("Device login", (it) => {
         const hosts = targetHosts(yield* Target);
         const tools = yield* appsCli;
         yield* Effect.addFinalizer(() => revokeOwnerGrants);
-        // A server over SSH without a Secret Service. A browser opened there would not reach the
-        // person, so the CLI opens none.
         yield* tools.withoutOsStore;
         const login = yield* tools.deviceLogin(hosts.api, "remote");
         yield* decideInBrowser({
@@ -281,7 +273,6 @@ layer(HostedLive, { excludeTestServices: true })("Device login", (it) => {
         expect(info.mode & 0o777, "only the user can read the session").toBe(0o600);
         expect(yield* tools.osStoreUsed).toBe(false);
         expect(Option.isNone(yield* tools.browserOpened), "no browser opens over SSH").toBe(true);
-        // Later commands read the session from the file, as they would from the OS store.
         const listed = yield* tools.cli(["list", "--host", hosts.api]);
         expect(listed.code, listed.stderr).toBe(0);
       }),
@@ -295,7 +286,6 @@ layer(HostedLive, { excludeTestServices: true })("Device login", (it) => {
         const hosts = targetHosts(yield* Target);
         const tools = yield* appsCli;
         yield* Effect.addFinalizer(() => revokeOwnerGrants);
-        // The CLI opens the approval page with the code filled in.
         const login = yield* tools.deviceLogin(hosts.api, "opens");
         expect(yield* tools.openedPage).toBe(login.verificationUriComplete);
         yield* decideInBrowser({
@@ -307,7 +297,7 @@ layer(HostedLive, { excludeTestServices: true })("Device login", (it) => {
         const finished = yield* Fiber.join(login.finished);
         expect(finished.code).toBe(1);
         expect(finished.stderr).toContain(
-          "Sign-in was cancelled or denied in the browser. Run executor apps login to try again.",
+          "Sign-in was cancelled or denied in the browser. Run executor login to try again.",
         );
         expect(finished.stderr).not.toContain("Not signed in");
       }),
@@ -323,8 +313,6 @@ layer(HostedLive, { excludeTestServices: true })("Device login", (it) => {
           actors = yield* Actors;
         const tools = yield* appsCli;
         yield* Effect.addFinalizer(() => revokeOwnerGrants);
-        // Outside a desktop it detects, xdg-open starts a browser that is not yet running in the
-        // foreground and waits for it to quit, so the opener is still running during approval.
         const login = yield* tools.deviceLogin(hosts.api, "stays");
         expect(yield* tools.openedPage).toBe(login.verificationUriComplete);
         const decided = yield* api.request(
@@ -335,8 +323,6 @@ layer(HostedLive, { excludeTestServices: true })("Device login", (it) => {
           { "x-executor-organization": actors.organization.id },
         );
         expect(decided.status).toBe(200);
-        // Approval is redeemed on the next poll, five seconds apart; before this was fixed the CLI
-        // waited for the opener to exit and never polled.
         const finished = yield* Fiber.join(login.finished).pipe(Effect.timeoutOption("30 seconds"));
         expect(Option.isSome(finished), "the CLI finishes while its browser stays open").toBe(true);
         if (Option.isNone(finished)) return;
@@ -365,7 +351,6 @@ layer(HostedLive, { excludeTestServices: true })("Device login", (it) => {
           lookup,
           decide,
         } = yield* deviceProtocol;
-        // A request the person denies.
         const denied = yield* start;
         expect(denied.user_code).toMatch(/^[BCDFGHJKLMNPQRSTVWXZ]{4}-[BCDFGHJKLMNPQRSTVWXZ]{4}$/u);
         expect(denied.verification_uri).toBe(`${hosts.browser}/device`);
@@ -377,7 +362,6 @@ layer(HostedLive, { excludeTestServices: true })("Device login", (it) => {
         expect(yield* errorOf(yield* poll(denied.device_code, "pending"))).toBe(
           "authorization_pending",
         );
-        // Polling again inside the interval is told to slow down; the interval grows to ten.
         expect(yield* errorOf(yield* poll(denied.device_code, "early"))).toBe("slow_down");
         const reviewed = yield* lookup(denied.user_code.replace("-", "").toLowerCase());
         expect(reviewed.status).toBe(200);
@@ -387,7 +371,6 @@ layer(HostedLive, { excludeTestServices: true })("Device login", (it) => {
             reviewed,
           ),
         ).toEqual({ clientId: client_id, resource });
-        // Decisions need the browser's own origin, as consent does.
         const crossSite = yield* actors.owner.send("POST", "/api/auth/device/decide", {
           user_code: denied.user_code,
           accept: true,
@@ -402,7 +385,6 @@ layer(HostedLive, { excludeTestServices: true })("Device login", (it) => {
           "invalid_grant",
         );
 
-        // A request the person approves is redeemed once, for the chosen organization.
         const approved = yield* start;
         expect(approved.user_code).not.toBe(denied.user_code);
         expect((yield* decide(approved.user_code, true)).status).toBe(200);
@@ -428,7 +410,6 @@ layer(HostedLive, { excludeTestServices: true })("Device login", (it) => {
         expect(
           (yield* body(Schema.Struct({ organization: Schema.String }), context)).organization,
         ).toBe(actors.organization.id);
-        // The refresh token rotates like the browser flow's.
         const refreshed = yield* form(
           metadata.token_endpoint,
           {
@@ -441,7 +422,6 @@ layer(HostedLive, { excludeTestServices: true })("Device login", (it) => {
         );
         expect(refreshed.status).toBe(200);
 
-        // A code nobody issued is not found.
         expect((yield* decide("BBBB-BBBB", true)).status).toBe(404);
       }),
     ),

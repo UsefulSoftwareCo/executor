@@ -1,18 +1,3 @@
-/**
- * A read-only rule decides a tool call by the tool's live metadata, so its check evaluates the app
- * before the call runs, for as long as the app takes. The call runs the links and credentials
- * saved after that check, not those read before it: an account unlinked or reconnected while the
- * check waits takes effect on that call. The app's listing reads a loopback resource that holds
- * the check until the scenario has changed the saved state. The grant is checked against the
- * accounts the call runs with: a link replaced meanwhile by an account with which the tool is a
- * mutation, or which only another entry of the grant permits, is refused before the tool runs.
- *
- * Every call reads the caller's links in its access check's statement, and the app and accounts it
- * runs after it. An account linked or unlinked while that statement waits takes effect on the
- * call, and an account reconnected meanwhile runs its new credentials in a new cache scope,
- * whether it holds a key or an OAuth grant. The self-host test entry point holds that statement,
- * so that scenario runs its own development server.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Fiber, Layer, Redacted, Schedule, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
@@ -35,7 +20,6 @@ import {
 } from "../support/app-accounts.ts";
 import { scenarios } from "../test-plan.ts";
 
-/** A key-account app whose one read-only tool is listed by a source that reads `resource` first. */
 const source = (
   resource: string,
 ) => `import { defineApp, defineProvider, dynamicRouter, secrets, object, string, query } from "apps";
@@ -54,7 +38,6 @@ export default defineApp({ user: { accounts: { service } } }, {
   }),
 });`;
 
-/** An app whose requirement uses every linked account, and reports how many it ran with. */
 const linkedCount = `import { defineApp, defineProvider, secrets, object, string, query, router } from "apps";
 const service = defineProvider({ name: "Held count fixture", auth: {
   key: secrets({ label: "API key", fields: object({ token: string() }) })
@@ -62,10 +45,6 @@ const service = defineProvider({ name: "Held count fixture", auth: {
 export default defineApp({ user: { accounts: { service: service.many() } } }, async (ctx) => ({
   tools: router({ ran: query({ input: object({}), output: string() }, async () => "synthetic-ran-" + ctx.user.accounts.service.length) }),
 }));`;
-/**
- * An app whose tool returns its account's credential and a value cached for that account, which
- * a reconnect starts again because the account may now sign in as someone else.
- */
 const connectionSource = (provider: "key" | "oauth", discover: string) => {
   const [helper, auth, field] =
     provider === "key"
@@ -88,7 +67,6 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
 };
 const Connection = Schema.Struct({ token: Schema.String, scope: Schema.String });
 const SignIn = Schema.Struct({ authorizationUrl: Schema.String });
-/** The self-host test host's statement hold; see `apps/hosted/testing/statement-hold-fixture.ts`. */
 const statementHold = "/api/devtools/statement-hold";
 const Held = Schema.Struct({ held: Schema.Boolean });
 const Users = Schema.Struct({
@@ -96,11 +74,6 @@ const Users = Schema.Struct({
 });
 const Organizations = Schema.Array(Schema.Struct({ id: Schema.String, slug: Schema.String }));
 
-/**
- * An app whose tool `x` is a read-only query while the caller's linked account holds
- * `synthetic-read`, and a mutation that writes to `resource` with any other. The listing reads
- * `resource` first, so a read-only rule's check can be held inside it.
- */
 const kindSource = (
   resource: string,
 ) => `import { defineApp, defineProvider, dynamicRouter, secrets, object, string, query, mutation } from "apps";
@@ -125,10 +98,6 @@ export default defineApp({ user: { accounts: { service } } }, async (ctx) => {
   };
 });`;
 
-/**
- * An app deployed from `content` and an MCP grant of the owner's, whose calls are held inside the
- * app's listing while the scenario changes saved state. The listing reads the issuer's resource.
- */
 const heldListing = (content: (resource: string) => string) =>
   Effect.gen(function* () {
     const api = yield* Api,
@@ -137,7 +106,6 @@ const heldListing = (content: (resource: string) => string) =>
       oauth = yield* McpOAuth,
       issuer = yield* oauthSetupIssuer;
     const prefix = `/api/organizations/${actors.organization.id}`;
-    // A failed assertion must not leave a request held.
     yield* Effect.addFinalizer(() =>
       issuer.configure({ hold: null }).pipe(Effect.andThen(issuer.release)),
     );
@@ -163,10 +131,6 @@ const heldListing = (content: (resource: string) => string) =>
           ),
           Effect.flatMap((saved) => body(Resource, saved)),
         );
-    /**
-     * An account connected from the app, which links it in place of the one linked before. Each
-     * is the only one linked when its call runs, so the call evaluates a listing of its own.
-     */
     const connect = (token: string) =>
       Effect.gen(function* () {
         const pending = yield* api.request(
@@ -185,7 +149,6 @@ const heldListing = (content: (resource: string) => string) =>
 
     yield* browser.login(actors.owner);
     const grant = yield* oauth.authorizeApi;
-    /** Narrow the grant to these entries of the app. */
     const narrow = (apps: ReadonlyArray<Record<string, unknown>>) =>
       api
         .request(actors.owner, "POST", "/api/auth/mcp/grants/narrow", {
@@ -203,10 +166,8 @@ const heldListing = (content: (resource: string) => string) =>
         );
     const anonymous = yield* api.session();
     const headers = { authorization: `Bearer ${Redacted.value(grant.tokens).access_token}` };
-    /** Call a tool through the grant. */
     const call = (input: Record<string, unknown>) =>
       api.request(anonymous, "POST", `${path}/tools/call`, input, headers);
-    /** Hold the call's check inside the app's listing, change saved state, then release it. */
     const heldCall = <E, R>(
       input: Record<string, unknown>,
       meanwhile: Effect.Effect<unknown, E, R>,
@@ -228,7 +189,6 @@ const heldListing = (content: (resource: string) => string) =>
         yield* issuer.release;
         return yield* Fiber.join(pending);
       });
-    /** Requests the app's mutation made to the resource; its listing only reads it. */
     const mutationsRan = issuer.metrics.pipe(
       Effect.map(
         (current) =>
@@ -246,11 +206,9 @@ layer(HostedLive, { excludeTestServices: true })("Tool call held check", (it) =>
       context,
       Effect.gen(function* () {
         const { api, actors, path, submit, connect, narrow, heldCall } = yield* heldListing(source);
-        // Restricted to the app's read-only tools, every call's check evaluates the app.
         yield* narrow([{ tools: { kind: "readOnly" } }]);
         const token = { tool: "token", kind: "query", input: {} };
 
-        // The only linked account is unlinked while the check waits: the call has no account.
         const unlinked = yield* connect("synthetic-held-unlinked");
         const refused = yield* heldCall(
           token,
@@ -291,12 +249,9 @@ layer(HostedLive, { excludeTestServices: true })("Tool call held check", (it) =>
       Effect.gen(function* () {
         const { api, actors, path, connect, narrow, call, heldCall, mutationsRan } =
           yield* heldListing(kindSource);
-        // Each `read` account is linked in turn; the app lists its tools once per account, so
-        // each call's check evaluates a listing of its own.
         const write = yield* connect("synthetic-write");
         const swapped = yield* connect("synthetic-read");
         const unchanged = yield* connect("synthetic-read");
-        // Read-only tools only, with any of them.
         yield* narrow([
           {
             tools: { kind: "readOnly" },
@@ -304,23 +259,17 @@ layer(HostedLive, { excludeTestServices: true })("Tool call held check", (it) =>
           },
         ]);
         const x = { tool: "x", input: {} };
-        // Held and released with nothing changed, `x` runs as the query it was listed as.
         const control = yield* heldCall(x, Effect.void);
         expect(control.status, JSON.stringify(control.body)).toBe(200);
         expect(control.body).toBe("synthetic-query-ran");
 
-        // The member's link is replaced while the check reads the listing for a `read` account.
-        // With `write`, `x` is a mutation the rule does not permit: the call is refused and the
-        // mutation does not run.
         yield* linkAccount(actors.owner, path, "service", swapped);
         const refused = yield* heldCall(x, linkAccount(actors.owner, path, "service", write));
         expect(refused.status, JSON.stringify(refused.body)).toBe(403);
         expect(refused.body).toMatchObject({ _tag: "OrganizationForbidden" });
-        // Nor when the caller names the mutation itself, with `write` linked.
         const named = yield* call({ ...x, kind: "mutation" });
         expect(named.status, JSON.stringify(named.body)).toBe(403);
         expect(yield* mutationsRan).toBe(0);
-        // The owner's own session, outside the grant, runs it, and the resource records it.
         const own = yield* api.request(actors.owner, "POST", `${path}/tools/call`, x);
         expect(own.status, JSON.stringify(own.body)).toBe(200);
         expect(own.body).toBe("synthetic-mutation-ran");
@@ -339,8 +288,6 @@ layer(HostedLive, { excludeTestServices: true })("Tool call held check", (it) =>
         const swapped = yield* connect("synthetic-read");
         const unchanged = yield* connect("synthetic-read");
         const read = [unchanged, swapped].map((id) => ({ kind: "account", id }));
-        // `x` with a `read` account, `y` with `write`, and read-only tools with a `read` account:
-        // no entry permits `x` with `write`.
         yield* narrow([
           { tools: { kind: "selected", names: ["x"] }, targets: read },
           {
@@ -354,8 +301,6 @@ layer(HostedLive, { excludeTestServices: true })("Tool call held check", (it) =>
         expect(control.status, JSON.stringify(control.body)).toBe(200);
         expect(control.body).toBe("synthetic-query-ran");
 
-        // Replaced by `write` while the check waits, the call is refused: the entry that permits
-        // `x` does not permit `write`, and the entry that permits `write` does not permit `x`.
         yield* linkAccount(actors.owner, path, "service", swapped);
         const refused = yield* heldCall(x, linkAccount(actors.owner, path, "service", write));
         expect(refused.status, JSON.stringify(refused.body)).toBe(403);
@@ -372,7 +317,6 @@ layer(HostedLive, { excludeTestServices: true })("Tool call held check", (it) =>
         const target = yield* Target,
           http = yield* HttpClient.HttpClient,
           issuer = yield* oauthSetupIssuer;
-        // Only the test entry point mounts the statement hold.
         const origin = yield* startDevelopmentServer(target);
         const api = yield* Api.pipe(
           Effect.provide(Layer.fresh(Api.layer)),
@@ -400,7 +344,6 @@ layer(HostedLive, { excludeTestServices: true })("Tool call held check", (it) =>
         ))[0];
         if (!organization) return yield* Effect.die("Development organization is missing");
         const prefix = `/api/organizations/${organization.id}`;
-        // A failed assertion must not leave a statement held.
         yield* Effect.addFinalizer(() => send("DELETE", statementHold).pipe(Effect.orDie));
         yield* Effect.addFinalizer(() => issuer.configure({ tokenShape: null }));
 
@@ -418,7 +361,6 @@ layer(HostedLive, { excludeTestServices: true })("Tool call held check", (it) =>
           });
         const callOf = (path: string, tool: string) =>
           send("POST", `${path}/tools/call`, { tool, kind: "query", input: {} });
-        /** Hold the call's access check for this app, change saved state, then release it. */
         const heldCall = <E, R>(
           app: string,
           call: ReturnType<typeof send>,
@@ -447,7 +389,6 @@ layer(HostedLive, { excludeTestServices: true })("Tool call held check", (it) =>
             ),
           );
 
-        /** Save the connection's credential: a key, or an OAuth sign-in issuing it as the token. */
         const complete = (provider: "key" | "oauth", connection: string, token: string) =>
           Effect.gen(function* () {
             if (provider === "key")
@@ -487,7 +428,6 @@ layer(HostedLive, { excludeTestServices: true })("Tool call held check", (it) =>
             return yield* body(Resource, completed);
           });
 
-        // A requirement with no linked accounts: its saved account was connected, then unlinked.
         const empty = yield* deploy("Held access", linkedCount);
         const saved = yield* body(
           Resource,
@@ -499,16 +439,13 @@ layer(HostedLive, { excludeTestServices: true })("Tool call held check", (it) =>
         );
         yield* changeLink("DELETE", empty.path, spare);
         const ran = callOf(empty.path, "ran");
-        // Held and released with nothing changed, the call runs.
         const unchanged = yield* heldCall(empty.app, ran, Effect.void);
         expect(unchanged.status, JSON.stringify(unchanged.body)).toBe(200);
         expect(yield* body(Schema.String, unchanged)).toBe("synthetic-ran-0");
-        // An account linked while the statement waits is one the call runs with.
         const linked = yield* heldCall(empty.app, ran, changeLink("PUT", empty.path, spare));
         expect(linked.status, JSON.stringify(linked.body)).toBe(200);
         expect(yield* body(Schema.String, linked)).toBe("synthetic-ran-1");
 
-        // Each held result is checked softly, so one run reports every call that ran stale state.
         for (const provider of ["key", "oauth"] as const) {
           const selected = yield* deploy(
             `Held ${provider} access`,
@@ -553,7 +490,6 @@ layer(HostedLive, { excludeTestServices: true })("Tool call held check", (it) =>
               scope: expect.not.stringMatching(`^${before.scope}$`),
             });
 
-          // Unlinked while the statement waits, the only account is not run.
           const unlinked = yield* heldCall(
             selected.app,
             call,

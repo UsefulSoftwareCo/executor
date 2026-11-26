@@ -1,6 +1,5 @@
 import { defineProvider, oauth2 } from "apps";
 
-/** GitHub OAuth declaration; the host manages the OAuth client and grant. */
 export const github = defineProvider({
   name: "GitHub",
   auth: {
@@ -12,7 +11,6 @@ export const github = defineProvider({
   },
 });
 
-/** Gmail OAuth declaration; message reads use the selected mailbox. */
 export const gmail = defineProvider({
   name: "Gmail",
   auth: {

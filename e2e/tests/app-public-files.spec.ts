@@ -1,4 +1,3 @@
-/** Binary ui/public files are ordinary app source, copied to the host's store on deploy and served. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, FileSystem, Path, Redacted, Schema, Stream } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
@@ -21,17 +20,14 @@ interface PublicFile {
   readonly contentType: string;
 }
 const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
-/** A Git blob's object ID, which names a public file's bytes as its ETag. */
 const blobId = (bytes: Uint8Array) =>
   createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
 
-/** A WebAssembly module exporting `add(a, b)`. */
 const addWasm = Uint8Array.from([
   0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x07, 0x01, 0x60, 0x02, 0x7f, 0x7f, 0x01,
   0x7f, 0x03, 0x02, 0x01, 0x00, 0x07, 0x07, 0x01, 0x03, 0x61, 0x64, 0x64, 0x00, 0x00, 0x0a, 0x09,
   0x01, 0x07, 0x00, 0x20, 0x00, 0x20, 0x01, 0x6a, 0x0b,
 ]);
-/** A one-pixel PNG. */
 const pixel = Uint8Array.from(
   Buffer.from(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
@@ -39,7 +35,6 @@ const pixel = Uint8Array.from(
   ),
 );
 const text = (value: string) => new TextEncoder().encode(value);
-/** Bytes that are not valid UTF-8, so they could never travel as text source. */
 const binary = (prefix: string, size: number) => {
   const bytes = randomBytes(size);
   bytes.set(text(prefix));
@@ -47,11 +42,6 @@ const binary = (prefix: string, size: number) => {
   return Uint8Array.from(bytes);
 };
 
-/**
- * Many small prebuilt chunks, as a bundler's output has. Each public file costs the deploy, the
- * copy and both removals one store request, so more chunks add time without new behavior: none
- * of these paths changes with the count below the store's 1,000-name listing page.
- */
 const chunkCount = 40;
 const lastChunk = chunkCount - 1;
 const chunks: PublicFile[] = Array.from({ length: chunkCount }, (_, index) => ({
@@ -61,7 +51,6 @@ const chunks: PublicFile[] = Array.from({ length: chunkCount }, (_, index) => ({
 }));
 
 const publicFiles = (version: string): PublicFile[] => [
-  // A prebuilt entry the page loads as it is. It needs the wasm served as application/wasm.
   {
     path: "assets/main.js",
     bytes:
@@ -88,7 +77,6 @@ document.body.dataset.version = ${JSON.stringify(version)};
     bytes: text("<!doctype html><p>About</p>"),
     contentType: "text/html",
   },
-  // Larger than the whole source budget for code on its own.
   {
     path: "media/large.bin",
     bytes: binary("BIG", 20 * 1024 * 1024),
@@ -119,7 +107,6 @@ const Workspace = Schema.Struct({
   gitUrl: Schema.String,
 });
 
-/** Write a source directory: code at the root and the given files under ui/public/. */
 const writeSource = (directory: string, files: ReadonlyArray<PublicFile>) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem,
@@ -139,7 +126,6 @@ const writeSource = (directory: string, files: ReadonlyArray<PublicFile>) =>
     });
   });
 
-/** Files under a directory that differ from the expected bytes, by path. */
 const mismatchedFiles = (directory: string, files: ReadonlyArray<PublicFile>) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem,
@@ -154,7 +140,6 @@ const mismatchedFiles = (directory: string, files: ReadonlyArray<PublicFile>) =>
     return problems;
   });
 
-/** The real CLI and Git, run as child processes with a personal access token. */
 const tools = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem,
     path = yield* Path.Path,
@@ -228,7 +213,6 @@ const tools = Effect.gen(function* () {
   return { cli, git, home };
 });
 
-/** Fetch files from the signed-in app page; compare type and SHA-256 of the exact bytes. */
 const servedMismatches = (files: ReadonlyArray<PublicFile>, base: string) =>
   Effect.flatMap(Browser, (browser) =>
     browser.use("Read public files from the app page", (page) =>
@@ -275,11 +259,9 @@ const servedMismatches = (files: ReadonlyArray<PublicFile>, base: string) =>
     ),
   );
 
-/** A spread of the chunks: every fifth from the first, and the last, which the entry imports. */
 const sampledChunks = new Set(
   chunks.filter((_, index) => index % 5 === 0 || index === lastChunk).map((chunk) => chunk.path),
 );
-/** Every binary file, and a spread of the chunks. */
 const sample = (files: ReadonlyArray<PublicFile>) =>
   files.filter((file) => !file.path.startsWith("assets/chunk-") || sampledChunks.has(file.path));
 
@@ -303,7 +285,6 @@ layer(HostedLive, { excludeTestServices: true })("App public files", (it) => {
           const directory = path.join(home, "source");
           yield* writeSource(directory, files);
 
-          // The CLI creates the app and deploys the directory; Git carries what one request cannot.
           const created = yield* cli([
             "create",
             "--name",
@@ -320,7 +301,6 @@ layer(HostedLive, { excludeTestServices: true })("App public files", (it) => {
           expect(deployed.code, deployed.stderr).toBe(0);
           const version = (yield* Schema.decodeUnknownEffect(Deployed)(deployed.stdout)).version.id;
 
-          // Reads list binary and oversized public files by their blob; text stays inline.
           const working = yield* body(
             Workspace,
             yield* api.request(actors.owner, "GET", `${prefix}/apps/${app.id}/workspace`),
@@ -342,7 +322,6 @@ layer(HostedLive, { excludeTestServices: true })("App public files", (it) => {
           const url = yield* waitForAppUrl(actors.owner, `${prefix}/apps/${app.id}/ui`);
           yield* browser.login(actors.owner);
           yield* openPrivateApp(url);
-          // The prebuilt entry ran: wasm instantiated from its served type, and a chunk loaded.
           yield* browser.use("The prebuilt entry runs", (page) =>
             page
               .locator(`body[data-sum="5"][data-chunk="${lastChunk}"]`)
@@ -359,7 +338,6 @@ layer(HostedLive, { excludeTestServices: true })("App public files", (it) => {
           const pinned = `/_executor/assets/${version}/`;
           expect(yield* servedMismatches(sample(files).slice(0, 12), pinned)).toEqual([]);
 
-          // Ranges, blob validators and caching.
           const ranges = yield* browser.use("Ranges and validators", (page) =>
             page.evaluate(
               ({ pinned }) => {
@@ -408,7 +386,6 @@ layer(HostedLive, { excludeTestServices: true })("App public files", (it) => {
           expect(ranges.rootCache).toBe("private, no-cache");
           expect(ranges.nosniff).toBe("nosniff");
 
-          // Public files need the app session, like every app route.
           const http = yield* HttpClient.HttpClient;
           const anonymous = yield* HttpClientRequest.get(new URL("/wasm/add.wasm", url).href).pipe(
             http.execute,
@@ -417,7 +394,6 @@ layer(HostedLive, { excludeTestServices: true })("App public files", (it) => {
           );
           expect(anonymous).toBe(403);
 
-          // Source is complete: the CLI and a Git clone both return every byte.
           const written = path.join(home, "written");
           const source = yield* cli(["source", "--app", app.id, "--out", written]);
           expect(source.code, source.stderr).toBe(0);
@@ -428,7 +404,6 @@ layer(HostedLive, { excludeTestServices: true })("App public files", (it) => {
           expect(yield* mismatchedFiles(cloned, files)).toEqual([]);
           expect(yield* fs.readFileString(path.join(cloned, "index.ts"))).toBe(indexSource);
 
-          // A copy is an ordinary app with its own source and its own copy of the files.
           const copied = yield* api.request(actors.owner, "POST", `${prefix}/apps/copies`, {
             from: { app: app.id },
             name: `Public files copy ${randomUUID().slice(0, 8)}`,
@@ -444,7 +419,6 @@ layer(HostedLive, { excludeTestServices: true })("App public files", (it) => {
             page.locator('body[data-sum="5"]').waitFor({ state: "attached" }),
           );
           expect(yield* servedMismatches(sample(files).slice(0, 12), "/")).toEqual([]);
-          // Removing the original leaves the copy's files in place.
           const removed = yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`);
           expect(removed.status).toBe(200);
           expect(yield* servedMismatches([large], "/")).toEqual([]);
@@ -478,7 +452,6 @@ layer(HostedLive, { excludeTestServices: true })("App public files", (it) => {
             },
             ...extra,
           ];
-          // Small binary files travel through the API as base64, beside the code.
           const sourceFiles = (files: ReadonlyArray<PublicFile>) => [
             { path: "index.ts", content: indexSource },
             {
@@ -530,7 +503,6 @@ layer(HostedLive, { excludeTestServices: true })("App public files", (it) => {
             page.locator('body[data-version="second"]').waitFor({ state: "attached" }),
           );
           expect(yield* servedMismatches(second, "/")).toEqual([]);
-          // The first version's files stay at its own pinned URLs while the second is active.
           expect(yield* servedMismatches(first, `/_executor/assets/${original}/`)).toEqual([]);
 
           const current = yield* body(
@@ -544,7 +516,6 @@ layer(HostedLive, { excludeTestServices: true })("App public files", (it) => {
             { version: original, expectedVersion: current.activeVersion },
           );
           expect(activated.status).toBe(200);
-          // Activation reloads open pages; the reloaded page runs the first version's entry.
           yield* browser.use("The first version runs again", (page) =>
             page.locator('body[data-version="first"]').waitFor({ state: "attached" }),
           );
@@ -556,7 +527,6 @@ layer(HostedLive, { excludeTestServices: true })("App public files", (it) => {
           );
           expect(gone).toBe(404);
 
-          // A published commit carries its binary files; an install serves its own copy of them.
           const working = yield* body(
             Workspace,
             yield* api.request(actors.owner, "GET", `${prefix}/apps/${app.id}/workspace`),
@@ -572,13 +542,11 @@ layer(HostedLive, { excludeTestServices: true })("App public files", (it) => {
             Workspace,
             yield* api.request(actors.owner, "GET", `${prefix}/apps/${app.id}/workspace`),
           );
-          // Binary files of a read keep their blob, so sending the read back changes nothing.
           expect(head.files.find((file) => file.path === "ui/public/media/added.bin")).toEqual({
             path: "ui/public/media/added.bin",
             object: blobId(added.bytes),
             size: added.bytes.length,
           });
-          // Self-host reads the hosted catalog and does not publish; Cloud keeps its own.
           if ((yield* Target).metadata.target !== "cloud") return;
           const published = yield* api.request(
             actors.owner,

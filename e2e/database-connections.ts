@@ -1,12 +1,5 @@
-/**
- * The `database-connections` signature: how long a deployed stage waited for database
- * connections (read by `e2e/sdk/database-connections.ts`). Cloud tests on main counts each
- * stage's level in its coverage summary (`e2e/ci-selection.ts`, `verify deployed`) beside the
- * platform signatures; it informs and never fails a run.
- */
 import { Schema } from "effect";
 
-/** `elevated` and `severe` thresholds, in milliseconds: the run's average and its worst minute. */
 export const connectionLatencyLevels = {
   elevated: { averageMs: 10, worstMinuteMs: 100 },
   severe: { averageMs: 50, worstMinuteMs: 300 },
@@ -19,12 +12,10 @@ export const DatabaseConnections = Schema.Struct({
   worstMinuteMs: Schema.optionalKey(Schema.Number),
   minutes: Schema.optionalKey(Schema.Number),
   queries: Schema.optionalKey(Schema.Number),
-  /** Why the Hyperdrive figure, or any figure, could not be read. Fixed text only. */
   note: Schema.optionalKey(Schema.String),
 });
 export type DatabaseConnections = typeof DatabaseConnections.Type;
 
-/** The file each deployed run writes beside its environment record. */
 export const databaseConnectionsFile = "database-connections.json";
 
 export const connectionLevel = (averageMs: number, worstMinuteMs: number) =>

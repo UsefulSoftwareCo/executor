@@ -1,4 +1,3 @@
-/** Source that strict TypeScript accepts also deploys: NodeNext imports and npm package subpaths. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -10,7 +9,6 @@ import { App } from "../support/contracts.ts";
 import { Evidence } from "../support/evidence.ts";
 import { withApps, mcpSdkVersion } from "../support/apps-release.ts";
 
-// NodeNext requires `.js` specifiers for TypeScript sources, from the server and the UI alike.
 const files = [
   {
     path: "package.json",
@@ -80,11 +78,9 @@ layer(HostedLive, { excludeTestServices: true })("App source imports", (it) => {
             input,
           });
 
-        // `./lib/greeting.js` and its `../provider.js` load the TypeScript files.
         expect(yield* body(Schema.String, yield* call("greet", { name: "Ada" }))).toBe(
           "Hello, Ada",
         );
-        // Package subpath imports load those modules, not the package's main entry.
         expect(
           yield* body(
             Schema.Struct({ client: Schema.Boolean, transport: Schema.String }),

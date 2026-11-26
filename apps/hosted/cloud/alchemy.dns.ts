@@ -1,24 +1,3 @@
-/**
- * The product zone's DNS. Every record that is not owned by a Cloudflare feature is declared here,
- * adopted in place and retained if it is removed from this file.
- *
- *   bun run dns:deploy
- *
- * Cloudflare features own the zone's read-only records, which are not declared here:
- *
- * - Workers Custom Domains own the `100::` AAAA records of `executor.sh` (v1, wrangler) and
- *   `v2.executor.sh` (the `v2` stage).
- * - The `v2` stage's `executor-app-catalog` R2 bucket owns `catalog.executor.sh` as its custom
- *   domain. See `src/infrastructure/app-catalog.ts`.
- *
- * The `v2` stage's role hosts (`app.`, `mcp.`, `api.`) are declared here as proxied `100::`
- * records, which the `v2` stage's Worker routes serve. Routes order no certificate, so these hosts
- * use the zone's `*.executor.sh` certificate. See `src/infrastructure/role-hosts.ts`.
- * - Email Sending owns the `cf-bounce` MX, SPF and DKIM records of `executor.sh` (welcome email)
- *   and `mail-v2.executor.sh` (`authEmailInfrastructure`).
- *
- * Each deploy also checks the zone's edge certificates. See {@link productZoneCertificateCoverage}.
- */
 import * as Alchemy from "alchemy";
 import { adopt } from "alchemy/AdoptPolicy";
 import * as Cloudflare from "alchemy/Cloudflare";
@@ -48,15 +27,11 @@ type Declared =
       readonly priority: number;
     };
 
-/** Records keep their current TTL, content and comment so adoption matches them verbatim. */
 const records: ReadonlyArray<
   Declared & { readonly id: string; readonly ttl: number | "1"; readonly comment?: string }
 > = [
-  // WorkOS hosts executor-v1's AuthKit pages and admin portal.
   { id: "WorkosAdmin", type: "CNAME", name: "admin", content: "cname.workos-dns.com", ttl: "1" },
   { id: "WorkosAuth", type: "CNAME", name: "auth", content: "cname.workos-dns.com", ttl: "1" },
-  // v1's AuthKit. Proxied, so the API Worker's route `signin.executor.sh/*` answers it instead of
-  // WorkOS (`notes/v1-shutdown.md`, "AuthKit"). Rollback: proxying off.
   {
     id: "WorkosSignin",
     type: "CNAME",
@@ -72,7 +47,6 @@ const records: ReadonlyArray<
     content: "work-os-domain-verification-mnzmwq=OwUCEw1VhSrCZNToQi444fc6Q",
     ttl: "1",
   },
-  // SendGrid sends WorkOS email from the zone.
   {
     id: "SendgridLink",
     type: "CNAME",
@@ -94,7 +68,6 @@ const records: ReadonlyArray<
     content: "wos2.domainkey.u36670648.wl149.sendgrid.net",
     ttl: "1",
   },
-  // Google Workspace mail.
   { id: "GoogleMx1", type: "MX", name: "@", content: "aspmx.l.google.com", priority: 1, ttl: 3600 },
   {
     id: "GoogleMx2",
@@ -150,7 +123,6 @@ const records: ReadonlyArray<
     content: '"google-site-verification=AqJEzoxS47Rj1XoKywfSvwRjCQhdEx-VWPpjYMNvtsE"',
     ttl: 3600,
   },
-  // Domain verifications for OAuth publishers and Executor's own organization domain.
   {
     id: "MicrosoftEntraVerification",
     type: "TXT",
@@ -166,7 +138,6 @@ const records: ReadonlyArray<
     content: "executor-domain-verification-zyjsgf=8UySnT5c6mduDXHriwkh0WCpD",
     ttl: "1",
   },
-  // DMARC for the apex and for v2's auth email subdomain.
   {
     id: "ApexDmarc",
     type: "TXT",
@@ -182,7 +153,6 @@ const records: ReadonlyArray<
     content: '"v=DMARC1; p=reject;"',
     ttl: "1",
   },
-  // The `v2` stage's role hosts. Its API Worker serves them through zone routes.
   ...hostRoles.map((role) => ({
     id: `RoleHost-${role}`,
     type: "AAAA" as const,
@@ -193,6 +163,8 @@ const records: ReadonlyArray<
     comment: "Routes the v2 stage's role host to its API Worker",
   })),
 ];
+
+const programHosts = (["mcp", "api"] as const).map((role) => `${role}.${productZone}`);
 
 export default Alchemy.Stack(
   "executor-product-dns",
@@ -205,7 +177,6 @@ export default Alchemy.Stack(
     );
     if (!zone) return yield* Effect.die(new Error(`Cloudflare zone ${productZone} is missing`));
     const hostname = (name: string) => (name === "@" ? productZone : `${name}.${productZone}`);
-    // Checked before any change, with the proxied hosts this deploy declares.
     yield* productZoneCertificateCoverage(
       zone.id,
       records.flatMap((record) => ("proxied" in record ? [hostname(record.name)] : [])),
@@ -218,5 +189,22 @@ export default Alchemy.Stack(
         ...record,
       }).pipe(adopt(), retain());
     }
+    yield* Cloudflare.Ruleset.Ruleset("ConfigurationRules", {
+      zone: { zoneId: zone.id } as unknown as Cloudflare.Zone.Zone,
+      phase: "http_config_settings",
+      name: "executor.sh configuration rules",
+      description:
+        "Zone configuration rules for executor.sh, declared in executor-next apps/hosted/cloud/alchemy.dns.ts. This ruleset owns the whole http_config_settings phase: a rule added in the dashboard is removed by the next dns:deploy.",
+      rules: [
+        {
+          ref: "bic_off_program_hosts",
+          description: `Browser Integrity Check off for program-only hosts ${programHosts.join(" and ")}. Added 2026-11-24: programs using default HTTP client user agents (Python-urllib) were refused with Error 1010 before reaching Executor.`,
+          expression: `(http.host in {${programHosts.map((host) => `"${host}"`).join(" ")}})`,
+          action: "set_config",
+          actionParameters: { bic: false },
+          enabled: true,
+        },
+      ],
+    }).pipe(adopt(), retain());
   }),
 );

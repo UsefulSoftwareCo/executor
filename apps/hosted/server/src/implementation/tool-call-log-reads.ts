@@ -1,9 +1,3 @@
-/**
- * Reads of the tool call log, for the dashboard and for agents through the Executor app. Every
- * query is scoped to the request's organization, and a member's to their own calls: a member who
- * names another member, another member's reference, run, session or agent finds nothing, exactly
- * as for an ID that does not exist. A reference from another organization is likewise not found.
- */
 import { type App, AppId, Cursor, RequestInvalid, StorageError } from "@executor-js/sdk/core";
 import { Clock, Effect, Option, Schema } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
@@ -35,18 +29,8 @@ const rangeMillis: Record<ToolCallRange, number> = {
 };
 const retentionMillis = toolCallRetentionDays * 24 * 60 * 60_000;
 
-/**
- * How long one statement of a read may run. A search that matches few of an organization's many
- * calls reads every call in the range; past this it is stopped, and the page offers to try again
- * (`ToolCallLogBusy`). PGlite has no statement timer, so on self-host this bounds nothing: there
- * the count's limit and the filter lists' limits are what bound a read.
- */
 const readTimeout = "5s";
 
-/**
- * Who is reading: every call for owners and admins, only their own for members. A viewer without a
- * user may read none; browser sessions, API keys and OAuth grants all have one.
- */
 const viewer = Effect.gen(function* () {
   const organization = yield* CurrentOrganization;
   const user = yield* CurrentUserId;
@@ -61,16 +45,6 @@ const viewer = Effect.gen(function* () {
   };
 });
 
-/**
- * Run a read in one transaction whose statements may each run at most `readTimeout`. A statement
- * the database stops is `ToolCallLogBusy`; any other database or decoding failure is a
- * `StorageError`.
- *
- * The transaction is repeatable read, so its statements see one snapshot: a page's rows and its
- * count agree. Under read committed each statement sees the calls committed when it starts, so a
- * call written between them was counted but not listed. It only reads, so it never fails to
- * serialize.
- */
 const bounded = <A, R>(read: Effect.Effect<A, SqlError.SqlError | Schema.SchemaError, R>) =>
   Effect.gen(function* () {
     const sql = yield* policyDatabase;
@@ -92,7 +66,6 @@ const bounded = <A, R>(read: Effect.Effect<A, SqlError.SqlError | Schema.SchemaE
     ),
   );
 
-/** A page position: the last row's start, to the microsecond, and its ID. */
 const CursorParts = Schema.Struct({
   startedAt: Schema.String.check(
     Schema.isPattern(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/u),
@@ -107,7 +80,6 @@ const readCursor = (cursor: Cursor) => {
     : Option.none();
 };
 
-/** `ilike` text that matches `search` literally anywhere. */
 const containing = (search: string) => `%${search.replace(/[\\%_]/gu, (char) => `\\${char}`)}%`;
 
 const NullableString = Schema.NullOr(Schema.String);
@@ -165,11 +137,9 @@ const decided = (row: CallRow): "pending" | "approved" | "denied" | "expired" =>
   }
 };
 
-/** A call as this viewer may read it; `usable` holds the apps whose names a member may be told. */
 const toCall = (row: CallRow, named: (app: AppId) => boolean): ToolCall => ({
   id: row.id,
   startedAt: new Date(row.started_ms),
-  // A call with neither a user nor a copied name was the app's own, not a deleted member's.
   member:
     row.user_id === null && row.user_name === null
       ? null
@@ -214,11 +184,6 @@ const toCall = (row: CallRow, named: (app: AppId) => boolean): ToolCall => ({
   version: row.version_id,
 });
 
-/**
- * The current records of the apps among `ids` that still exist and this viewer may use, as normal
- * app lists hold them. A member is told the names of these apps only; owners and admins are told
- * every app's name.
- */
 const usableApps = (ids: ReadonlyArray<AppId>) =>
   Effect.gen(function* () {
     const unique = [...new Set(ids)];
@@ -231,7 +196,6 @@ const usableApps = (ids: ReadonlyArray<AppId>) =>
       yield* executor.apps.list({ owner: yield* currentOwner, ids: unique }),
     );
   });
-/** Whether this viewer may be told an app's name: owners and admins always, members if usable. */
 const namedFor = (member: boolean, usable: ReadonlyArray<App>) => {
   const ids = new Set(usable.map((app) => app.id));
   return (app: AppId) => !member || ids.has(app);
@@ -245,27 +209,20 @@ const listCalls = (query: ToolCallQuery) =>
     const nowText = new Date(now).toISOString();
     const limit = query.limit ?? toolCallPage.default;
     const search = query.search?.trim() ?? "";
-    // Text that is exactly a reference finds that call alone, whatever else the query names.
     const reference = Schema.is(ToolCallId)(search) ? search : null;
     const cursor =
       query.cursor === undefined ? undefined : Option.getOrUndefined(readCursor(query.cursor));
     if (query.cursor !== undefined && cursor === undefined)
       return yield* new RequestInvalid({ part: "query" });
-    // An approval past its deadline is expired, though only the prune job marks the row.
     const status = sql`(case when c.status = 'awaiting-approval'
       and c.approval_expires_at <= ${nowText}::timestamptz then 'expired' else c.status end)`;
     const since = new Date(now - rangeMillis[query.range ?? "7d"]).toISOString();
-    // Calls past the retention are gone, whether or not the prune has deleted them yet.
     const kept = new Date(now - retentionMillis).toISOString();
     const pattern = reference === null && search !== "" ? containing(search) : null;
     const scope: Statement.Fragment = sql`c.organization_id = ${access.organization}
       and (${access.own}::text is null or c.user_id = ${access.own})
       and c.started_at >= ${kept}::timestamptz`;
-    // An account is shown, and found, only for the member it belonged to when the call was made.
-    // Rows from before shared accounts were removed have no owner, so they are named to nobody.
     const shown = sql`(a.owner_id = ${access.user})`;
-    // A member is told an app's name only while they may use the app, so their search finds calls
-    // by the names of those apps alone: a match on any other would tell them the name.
     const named =
       pattern === null || !access.member
         ? null
@@ -348,7 +305,6 @@ const listCalls = (query: ToolCallQuery) =>
         limit ${limit + 1}`;
       const decoded = yield* Schema.decodeUnknownEffect(Schema.Array(CallRow))(rows);
       const page = decoded.slice(0, limit);
-      // How many calls of each of the page's runs this viewer may see, in one grouped read.
       const runIds = [...new Set(page.flatMap((row) => (row.run_id === null ? [] : [row.run_id])))];
       const runs =
         runIds.length === 0
@@ -364,7 +320,6 @@ const listCalls = (query: ToolCallQuery) =>
                 ),
               ),
             );
-      // The count reads at most one row past the limit, so its cost is bounded however many match.
       const counted = yield* sql`select count(*)::int as count from (
           select 1 from hosted_tool_calls c where ${matching} limit ${toolCallCountLimit + 1}) t`;
       const { count } = yield* Schema.decodeUnknownEffect(Schema.Struct({ count: Schema.Number }))(
@@ -401,7 +356,6 @@ const listFilters = (range: ToolCallRange | undefined) =>
     const visible: Statement.Fragment = sql`c.organization_id = ${access.organization}
       and (${access.own}::text is null or c.user_id = ${access.own})
       and c.started_at >= ${since}::timestamptz`;
-    // Each choice is named as its latest call names it; each list holds the most recently called.
     const read = Effect.gen(function* () {
       const members = yield* sql`select c.user_id as id,
           (array_agg(c.user_name order by c.started_at desc))[1] as name,
@@ -415,7 +369,6 @@ const listFilters = (range: ToolCallRange | undefined) =>
           (array_agg(c.app_name order by c.started_at desc))[1] as name
         from hosted_tool_calls c where ${visible}
         group by c.app_id order by max(c.started_at) desc limit ${toolCallFilterChoices}`;
-      // The logo is the client's own, read now: the log copies only its name.
       const agents = yield* sql`select a.source, a.id, a.name,
           (select oc.icon from "mcpGrant" g join "oauthClient" oc on oc."clientId" = g."clientId"
             where a.source = 'agent' and g.id = a.id) as icon
@@ -463,7 +416,6 @@ const listFilters = (range: ToolCallRange | undefined) =>
     };
   });
 
-/** The tool call log's read API. */
 export const hostedToolCallHandlers = HttpApiBuilder.group(HostedApi, "toolCalls", (handlers) =>
   handlers
     .handle("list", ({ query }) => listCalls(query))

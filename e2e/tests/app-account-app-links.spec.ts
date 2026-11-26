@@ -1,10 +1,3 @@
-/**
- * An app's own requirements are filled by the accounts people who can edit it link for everyone,
- * for every caller; each caller's user requirements by their own links. Members use an app-linked
- * account through the app without access to it. They can list the app links, without the upstream
- * identity their checks reported, but cannot read a requirement's choices, change the links or
- * override them.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
@@ -31,10 +24,6 @@ import {
 } from "../support/app-links.ts";
 import { scenarios } from "../test-plan.ts";
 
-/**
- * An app with a plain and a many() app requirement of one provider, whose check reports the
- * account's token as its upstream username, and a user requirement.
- */
 const teamProvider = `defineProvider({
   name: "App link team fixture",
   auth: { key: secrets({ label: "Key", fields: object({ token: string() }) }) },
@@ -51,7 +40,6 @@ const who = query({ input: object({}) }, async (ctx: QueryContext<typeof require
   mail: ctx.user.accounts.mail.id,
 }));
 export default defineApp(requirements, async () => ({ tools: router({ who }) }));`;
-/** Another app whose user requirement takes the team provider, for a member's own team account. */
 const teamUserSource = `import { defineApp, defineProvider, secrets, object, string, router } from "apps";
 const team = ${teamProvider};
 export default defineApp({ user: { accounts: { team } } }, async () => ({ tools: router({}) }));`;
@@ -61,13 +49,11 @@ const Who = Schema.Struct({
   extra: Schema.Array(Schema.String),
   mail: Schema.String,
 });
-/** An app whose one key requirement is in `scope`. */
 const scopedKeyApp = (
   scope: "app" | "user",
 ) => `import { defineApp, defineProvider, secrets, object, string, router } from "apps";
 const service = ${keyProvider("App link connection key fixture")};
 export default defineApp({ ${scope}: { accounts: { service } } }, async () => ({ tools: router({}) }));`;
-/** An app whose one OAuth requirement, discovered at `issuer`, is in `scope`. */
 const scopedOAuthApp = (
   issuer: string,
   scope: "app" | "user",
@@ -93,8 +79,6 @@ layer(HostedLive, { excludeTestServices: true })("App account app links", (it) =
           Effect.map(links(actor), (read) =>
             read.map((item) => [item.requirement, item.account.id] as const),
           );
-        // The member links their own account for the user requirement. With no app link, the
-        // app requirement refuses every call and names who can fix it.
         const mail = yield* connect(actors.member, "user", "mail", "member-mail");
         expect(yield* linkedAccountIds(actors.member, path)).toEqual([mail]);
         const unlinked = yield* fixture.call(actors.member, "who");
@@ -111,9 +95,6 @@ layer(HostedLive, { excludeTestServices: true })("App account app links", (it) =
         });
         expect(yield* links(actors.member)).toEqual([]);
 
-        // A manager connects the team account for the app requirement, which links it for
-        // everyone. The member's calls use it through the app, though the account is the owner's
-        // personal one.
         const first = yield* connect(actors.owner, "app", "team", "team-first");
         expect(yield* pairs()).toEqual([["team", first]]);
         expect(yield* who(actors.member)).toEqual({
@@ -127,8 +108,6 @@ layer(HostedLive, { excludeTestServices: true })("App account app links", (it) =
         ).not.toBe(200);
         expect(yield* linkedAccountIds(actors.member, path)).toEqual([mail]);
 
-        // Once the account's check reports its upstream identity, a manager reads it on the app
-        // link; a member lists the same link with its checks but without that identity.
         yield* ok(yield* api.request(actors.owner, "POST", `${prefix}/accounts/${first}/health`));
         const [managed] = yield* links(actors.owner);
         expect(managed?.health?.info).toMatchObject({ username: "team-first" });
@@ -139,8 +118,6 @@ layer(HostedLive, { excludeTestServices: true })("App account app links", (it) =
         ]);
         expect(listed[0]?.health).toMatchObject({ info: null, infoCheckedAt: null });
 
-        // Connecting another account for the plain requirement replaces its link; the replaced
-        // account stays saved. Connecting one for many() adds it.
         const own = yield* connect(actors.owner, "app", "team", "team-own");
         const spare = yield* connect(actors.owner, "app", "extra", "team-spare");
         const linked = yield* pairs();
@@ -158,12 +135,6 @@ layer(HostedLive, { excludeTestServices: true })("App account app links", (it) =
           mail,
         });
 
-        // Members can list the app links but not read a requirement's choices, change the links
-        // or connect for an app requirement. They cannot link a manager's account for themselves,
-        // since only its owner may use it. They cannot supply an app account either: linking
-        // their own team account for themselves fails, since the app requirement is not one of
-        // theirs and their requirement takes another provider, and a call naming accounts still
-        // runs with the app links.
         const teamPath = yield* fixture.another(teamUserSource);
         const memberStarted = yield* fixture.start(actors.member, "user", "team", teamPath);
         expect(memberStarted.status, JSON.stringify(memberStarted.body)).toBe(200);
@@ -217,8 +188,6 @@ layer(HostedLive, { excludeTestServices: true })("App account app links", (it) =
           mail,
         });
 
-        // A manager reads each requirement's linked accounts first, in link order, then the
-        // other accounts of its provider they could link.
         const team = yield* okBody(LinkRequirement, yield* get(actors.owner, "app", "team"));
         expect(team).toMatchObject({ requirement: "team", scope: "app", cardinality: "one" });
         expect(team.accounts[0]).toMatchObject({ account: { id: first }, linked: true });
@@ -246,8 +215,6 @@ layer(HostedLive, { excludeTestServices: true })("App account app links", (it) =
           ]),
         );
 
-        // App links take only app requirements, with an account of their provider the manager
-        // can use.
         expect(
           yield* refused(yield* link(actors.owner, "mail", first), 422, "RequirementMismatch"),
         ).toMatchObject({ requirement: "mail", scope: "app", reason: "requirement" });
@@ -259,10 +226,8 @@ layer(HostedLive, { excludeTestServices: true })("App account app links", (it) =
         expect(
           yield* refused(yield* link(actors.owner, "team", ownerMail), 422, "RequirementMismatch"),
         ).toMatchObject({ requirement: "team", scope: "app", reason: "provider" });
-        // The admin manages the app but cannot use the owner's personal account.
         expect((yield* link(actors.admin, "extra", first)).status).toBe(403);
 
-        // An account linked for everyone cannot be deleted until it is unlinked.
         const deleting = yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${first}`);
         expect(deleting.status, JSON.stringify(deleting.body)).toBe(409);
         expect(yield* body(LinkedRefusal, deleting)).toEqual({
@@ -270,8 +235,6 @@ layer(HostedLive, { excludeTestServices: true })("App account app links", (it) =
           apps: [app.id],
         });
 
-        // Unlinking keeps the account; calls need an app link again, and linking it again
-        // restores them.
         expect(yield* ok(yield* unlink(actors.owner, "team", first))).toEqual({
           requirement: "team",
           account: first,
@@ -284,7 +247,6 @@ layer(HostedLive, { excludeTestServices: true })("App account app links", (it) =
         ).toBe(200);
         yield* ok(yield* link(actors.owner, "team", first));
         expect(yield* who(actors.member)).toMatchObject({ team: first, mail });
-        // The owner's own calls use the same app links and their own user link.
         yield* linkAccount(actors.owner, path, "mail", ownerMail);
         expect(yield* who(actors.owner)).toMatchObject({ team: first, mail: ownerMail });
       }),
@@ -298,9 +260,6 @@ layer(HostedLive, { excludeTestServices: true })("App account app links", (it) =
           { path: "index.ts", content: scopedKeyApp("app") },
         ]);
         const { api, actors, start, submit, link, links } = fixture;
-        // A member connects an account from another app for their own links. It is theirs alone,
-        // so neither the admin nor the owner, who both manage this app but cannot use it, can link
-        // it for everyone by its ID.
         const memberPath = yield* fixture.another(scopedKeyApp("user"));
         const memberStarted = yield* start(actors.member, "user", "service", memberPath);
         expect(memberStarted.status, JSON.stringify(memberStarted.body)).toBe(200);
@@ -325,8 +284,6 @@ layer(HostedLive, { excludeTestServices: true })("App account app links", (it) =
           );
         expect(yield* links()).toEqual([]);
 
-        // A connection completes only in the scope it started in: a redeploy that moves the
-        // requirement to the other scope refuses it, both ways.
         const drift = (from: "app" | "user", to: "app" | "user") =>
           Effect.gen(function* () {
             const driftPath = yield* fixture.another(scopedKeyApp(from));
@@ -389,9 +346,6 @@ layer(HostedLive, { excludeTestServices: true })("App account app links", (it) =
             Effect.flatMap((response) => body(Schema.Struct({ state: Schema.Unknown }), response)),
             Effect.map((read) => read.state),
           );
-        // A requirement that changes scope between sign-in and its callback refuses the
-        // completion, and reading the connection names the change, as it does for a changed
-        // provider.
         const pending = yield* start(actors.member, "user", "service");
         expect(pending.status, JSON.stringify(pending.body)).toBe(200);
         const connection = (yield* body(Resource, pending)).id;
@@ -419,8 +373,6 @@ layer(HostedLive, { excludeTestServices: true })("App account app links", (it) =
           ),
         ).toMatchObject({ requirement: "service" });
         expect(yield* linkedAccountIds(actors.member, path)).toEqual([]);
-        // Once the requirement is the member's again, a new sign-in clears the failure and links
-        // the account for them.
         yield* deploy("user");
         const retry = yield* signIn(actors.member, connection);
         expect(yield* state(actors.member, connection)).toEqual({ status: "pending" });
@@ -439,7 +391,6 @@ layer(HostedLive, { excludeTestServices: true })("App account app links", (it) =
         const api = yield* Api,
           actors = yield* Actors;
         const prefix = `/api/organizations/${actors.organization.id}`;
-        // A requirement name is used in one scope only, so the deploy is refused.
         const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
           name: `Scope clash ${randomUUID().slice(0, 8)}`,
           files: [

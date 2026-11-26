@@ -11,7 +11,6 @@ import { McpClient } from "./mcp-client.ts";
 import { deployMcpApp } from "./mcp-app.ts";
 import { appsManifest } from "./apps-release.ts";
 const Tools = Schema.Struct({ items: Schema.Array(Schema.Struct({ name: Schema.String })) });
-/** Grant fixtures use public browser consent and preserve exact tool restrictions. */
 export const authorizationFixture = (audience: "api" | "mcp") =>
   Effect.gen(function* () {
     const api = yield* Api,
@@ -53,7 +52,6 @@ export const authorizationFixture = (audience: "api" | "mcp") =>
         anonymous,
         "POST",
         `${prefix}/apps/${app.id}/tools/call`,
-        // Both fixture tools are mutations.
         { tool, kind: "mutation", input: { message: "shared policy" } },
         token,
       );

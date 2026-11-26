@@ -1,4 +1,3 @@
-/** Shared grant contracts and enforcement for product hosts. */
 export {
   GrantId,
   ApprovalMode,
@@ -6,6 +5,7 @@ export {
   McpAddress,
   GrantTarget,
   requestedMcpAddress,
+  namedApprovalMode,
   mcpResource,
   mcpOAuthResources,
   type OriginList,
@@ -30,6 +30,8 @@ export {
   McpWhoami,
   mcpWhoamiPath,
   recordedTarget,
+  grantScope,
+  desktopResource,
 } from "./contracts/grant.ts";
 export {
   grantAuthorization,

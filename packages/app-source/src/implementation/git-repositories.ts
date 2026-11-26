@@ -1,4 +1,3 @@
-/** Shared native Git operations; the host owns process and temporary-index capabilities. */
 import {
   SourceError,
   SourceFiles,
@@ -22,7 +21,6 @@ import { Effect, Schema, Semaphore, Stream, type Scope } from "effect";
 import { objectId, packStream } from "./git-pack.ts";
 import { protectGit } from "./protected-git.ts";
 
-/** Trusted native capabilities. Application code never receives this port. */
 export interface GitHost {
   readonly directory: string;
   readonly git: (
@@ -32,11 +30,6 @@ export interface GitHost {
   ) => Effect.Effect<{ readonly code: number; readonly output: Uint8Array }, SourceError>;
   readonly createDirectory: (path: string) => Effect.Effect<void, SourceError>;
   readonly temporaryIndex: Effect.Effect<string, SourceError, Scope.Scope>;
-  /**
-   * Run `git http-backend` with a CGI environment, streaming `body` to its input. Returns its
-   * output as Git writes it: CGI headers, a blank line, then the response body. Neither side is
-   * held in memory, so clones and pushes are not bounded by the host's buffers.
-   */
   readonly httpBackend: (
     environment: Record<string, string>,
     body: ReadableStream<Uint8Array> | null,
@@ -64,7 +57,6 @@ const decode = (body: Uint8Array) =>
     catch: () => new SourceError({ reason: "invalid-source" }),
   });
 
-/** Create a lazy native implementation over private bare repositories; users clone ordinary working copies. */
 export const gitRepositories = (host: GitHost): RepositoryBackend => {
   const directory = host.directory;
   const git = host.git;
@@ -90,7 +82,6 @@ export const gitRepositories = (host: GitHost): RepositoryBackend => {
       Effect.map((value) => value.trimEnd()),
     );
 
-  // Git initialization rewrites config; serialize setup within this host while ref writes stay concurrent.
   const initialization = Semaphore.makeUnsafe(1);
   const location = (id: string) => Effect.succeed(`${directory}/${id}.git`);
   const create = (id: string) =>
@@ -137,7 +128,6 @@ export const gitRepositories = (host: GitHost): RepositoryBackend => {
         const name = yield* Schema.decodeUnknownEffect(Branch)(branch);
         const repo = yield* location(id);
         const ref = `refs/heads/${name}`;
-        // The pattern also lists refs beneath it; only the exact name counts, never an expansion.
         const refs = yield* text([
           "--git-dir",
           repo,
@@ -156,11 +146,8 @@ export const gitRepositories = (host: GitHost): RepositoryBackend => {
     read: (id, ref) =>
       Effect.gen(function* () {
         const repo = yield* location(id);
-        // Restrict revisions before passing them to Git; no option or revision-expression injection.
-        // A commit is read as given. A branch is resolved once so the tree and the commit agree.
         const commit = Schema.is(SourceCommit)(ref)
           ? yield* Effect.gen(function* () {
-              // A commit that is not in the repository is missing, not a Git failure.
               const found = yield* git(["--git-dir", repo, "cat-file", "-e", `${ref}^{commit}`]);
               if (found.code !== 0) return yield* new SourceError({ reason: "not-found" });
               return ref;
@@ -183,7 +170,6 @@ export const gitRepositories = (host: GitHost): RepositoryBackend => {
                 ),
               );
             });
-        // One process lists every file with its size, so the budgets hold before any content is read.
         const tree = yield* text([
           "--git-dir",
           repo,
@@ -214,7 +200,6 @@ export const gitRepositories = (host: GitHost): RepositoryBackend => {
           )
         )
           return yield* new SourceError({ reason: "limit" });
-        // Public files are inline while they fit beside the code, in path order.
         let remaining = sourceLimits.bytes - codeBytes;
         const candidates = new Set<string>();
         for (const entry of served.toSorted((a, b) => (a.path < b.path ? -1 : 1))) {
@@ -225,7 +210,6 @@ export const gitRepositories = (host: GitHost): RepositoryBackend => {
         const blobs = entries.filter(
           (entry) => !isPublicSourcePath(entry.path) || candidates.has(entry.path),
         );
-        // And one process returns every held blob: `<object> blob <size>\n<content>\n` for each.
         const output =
           blobs.length === 0
             ? new Uint8Array()
@@ -282,7 +266,6 @@ export const gitRepositories = (host: GitHost): RepositoryBackend => {
             GIT_COMMITTER_NAME: "Executor",
             GIT_COMMITTER_EMAIL: "apps@executor.local",
           };
-          // Stored files keep a blob the basis revision already holds; they are not rewritten.
           const basis = input.basis ?? input.expected;
           const known = new Set<string>();
           if (files.some((file) => "object" in file && !isUpload(file))) {
@@ -302,17 +285,11 @@ export const gitRepositories = (host: GitHost): RepositoryBackend => {
           }
           const write = (content: Uint8Array) =>
             text(["--git-dir", repo, "hash-object", "-w", "--stdin"], content);
-          // Inline files, already in memory, reach Git together in one pack, so a save starts one
-          // Git process for them however many there are. One `hash-object` per file took a
-          // 600-file save 40 seconds on Windows, where each Git process takes tens of
-          // milliseconds to start.
           const inline = new Map<string, Uint8Array>();
-          // The temporary index does not exist yet, so Git starts it empty.
           const entries: string[] = [];
           for (const file of files) {
             const oid = isUpload(file)
               ? yield* Effect.gen(function* () {
-                  // One upload's bytes at a time; its object ID proves they are the listed file.
                   const written = yield* write(yield* file.read);
                   if (written !== file.object) return yield* new SourceError({ reason: "storage" });
                   return written;
@@ -329,8 +306,6 @@ export const gitRepositories = (host: GitHost): RepositoryBackend => {
                   });
             entries.push(`100644 ${oid}\t${file.path}\0`);
           }
-          // `unpack-objects` writes each object loose, as `hash-object -w` does, and skips one the
-          // repository already holds.
           if (inline.size > 0) {
             const chunks = yield* Stream.runCollect(
               packStream(
@@ -350,9 +325,6 @@ export const gitRepositories = (host: GitHost): RepositoryBackend => {
             }
             yield* run(["--git-dir", repo, "unpack-objects", "-q"], pack);
           }
-          // These repositories are bare and never checked out here, so the checkout guards for
-          // NTFS and HFS names do not apply. Git for Windows would otherwise skip names such as
-          // ones holding control characters, which the source contract and other hosts accept.
           yield* run(
             [
               "-c",
@@ -369,9 +341,6 @@ export const gitRepositories = (host: GitHost): RepositoryBackend => {
             environment,
           );
           const tree = yield* text(["--git-dir", repo, "write-tree"], undefined, environment);
-          // `update-index` skips a path it refuses, such as a `.git` segment, and still exits 0.
-          // Refuse the save instead of committing a tree without that file.
-          // Not `text`: it trims trailing whitespace, which a last path may end with.
           const listed = yield* run([
             "--git-dir",
             repo,
@@ -395,7 +364,6 @@ export const gitRepositories = (host: GitHost): RepositoryBackend => {
             bytes(input.message),
             environment,
           ).pipe(Effect.flatMap(Schema.decodeUnknownEffect(SourceCommit)));
-          // The ref moves only from `expected`, so its tree holds the files this save replaces.
           const previous =
             input.expected === null
               ? []
@@ -437,7 +405,6 @@ export const gitRepositories = (host: GitHost): RepositoryBackend => {
       Effect.gen(function* () {
         const revision = yield* Schema.decodeUnknownEffect(SourceCommit)(commit);
         const name = yield* Schema.decodeUnknownEffect(SourceFilePath)(path);
-        // `<commit>:<path>` names one tree entry; a revision expression cannot be injected.
         const result = yield* git([
           "--git-dir",
           yield* location(id),
@@ -473,16 +440,13 @@ export const gitRepositories = (host: GitHost): RepositoryBackend => {
             REQUEST_METHOD: request.method,
             QUERY_STRING: url.search.slice(1),
             CONTENT_TYPE: request.headers.get("content-type") ?? "",
-            // Without a length, http-backend reads the body until it ends.
             ...(length === null ? {} : { CONTENT_LENGTH: length }),
-            // Git compresses larger fetch requests; http-backend inflates them itself.
             ...(encoding === null ? {} : { HTTP_CONTENT_ENCODING: encoding }),
             REMOTE_USER: "executor",
             SERVER_PROTOCOL: "HTTP/1.1",
           },
           request.body,
         );
-        // Read only the CGI headers; the body streams on to the client.
         const reader = output.getReader();
         let head = new Uint8Array();
         let separator = -1;

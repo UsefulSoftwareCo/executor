@@ -17,7 +17,6 @@ import { Connection } from "@executor-js/mcp-auth/connections";
 import { localBearer, localRequest } from "./auth.ts";
 import type { ServerConfig } from "../contracts/config.ts";
 import { LocalMcpAuthUnavailable, LocalMcpUnauthorized, type LocalMcpOAuth } from "./mcp-oauth.ts";
-/** Local access and documentation I/O for the shared MCP implementation. */
 import { makeMcp, refusedMcpRequest, type McpBackend, type McpLimits } from "@executor-js/mcp";
 import { annotateSkillRead, executorIntro } from "@executor-js/app-templates/executor";
 import {
@@ -34,14 +33,9 @@ import type { SqlClient } from "effect/sql";
 import { Context, Effect, Schema } from "effect";
 import { HttpServerResponse } from "effect/http";
 
-/**
- * Operations as the grant checked them: they run with exactly the accounts their input names.
- * Reached only through {@link localMcpBackend}, which fills those accounts first.
- */
 const grantedBackend = (sql: SqlClient.SqlClient, executor: Executor, principal: string) =>
   ({
     findEventSubscription: (key) => executor.events.find({ ...key, principal }),
-    // A selection of every app is the local owner's.
     subscribeEvent: ({ key, target, ...input }) =>
       executor.events.subscribe({
         ...input,
@@ -54,13 +48,13 @@ const grantedBackend = (sql: SqlClient.SqlClient, executor: Executor, principal:
       }),
     unsubscribeEvent: ({ key }) => executor.events.unsubscribe({ ...key, principal }),
     listSkills: (input, options) => executor.skills.list(input, options),
+    bundleSkills: (input, options) => executor.skills.bundle(input, options),
     readSkill: (input) => executor.skills.read(input),
     authorizeElicitation: () => Effect.void,
     listApps: (input = {}) => executor.apps.list(input),
     listAccounts: (input) =>
       executor.apps.get({ app: input.app }).pipe(
         Effect.flatMap((app) => appVersion(executor, app, input.version)),
-        // Agents see the user requirements' accounts only; the app's are its app links.
         Effect.flatMap((version) => versionRequirementAccounts(sql, executor, version)),
         Effect.map((accounts) => accounts.userLinks),
       ),
@@ -72,15 +66,6 @@ const grantedBackend = (sql: SqlClient.SqlClient, executor: Executor, principal:
       executor.tools.resume({ requestId: request.requestId, response }, options),
   }) satisfies McpBackend<Error>;
 
-/**
- * The local bearer key authorizes the whole instance. No hosted owner or role model is imposed.
- * Event subscriptions belong to `principal`, the grant that made them. Operations run with the
- * app links and the user links the current grant targets, resolved again on every call: the
- * accounts an operation names are replaced. The grant then checks the accounts the operation runs
- * with, so a link replaced since discovery is checked, not the one discovered. App accounts are
- * never grant targets: the SDK checks each against its current app link.
- * A resumed call keeps the accounts its approval reviewed.
- */
 export const localMcpBackend = <G extends Error>(
   sql: SqlClient.SqlClient,
   executor: Executor,
@@ -99,7 +84,6 @@ export const localMcpBackend = <G extends Error>(
         executor,
         version,
       );
-      // A linked account the grant does not target is refused, not read as no account linked.
       const refusal = untargetedLinkRefusal(authority, version.app.id, linked);
       if (refusal !== undefined) return yield* new GrantForbidden({ refusal });
       return yield* resolveLinkedAccounts({
@@ -109,7 +93,6 @@ export const localMcpBackend = <G extends Error>(
         userLinks: targetedLinks(authority, version.app.id, linked),
       });
     });
-  /** Calls and listings run on the active version; skill reads on the version they pin. */
   const resolved = <I extends { readonly app: AppId; readonly version?: VersionId | undefined }>(
     input: I,
     pinned: boolean,
@@ -123,6 +106,10 @@ export const localMcpBackend = <G extends Error>(
     ...restricted,
     listSkills: (input, options) =>
       resolved(input, true).pipe(Effect.flatMap((input) => restricted.listSkills(input, options))),
+    bundleSkills: (input, options) =>
+      resolved(input, true).pipe(
+        Effect.flatMap((input) => restricted.bundleSkills(input, options)),
+      ),
     readSkill: (input) =>
       resolved(input, true).pipe(Effect.flatMap((input) => restricted.readSkill(input))),
     listTools: (input, options) =>
@@ -136,7 +123,6 @@ export const localMcpBackend = <G extends Error>(
   };
 };
 
-/** Resolve filesystem dependencies at the local edge; keep bearer/Origin checks on the host router. */
 export const localMcp = (
   sql: SqlClient.SqlClient,
   executor: Executor,
@@ -148,6 +134,7 @@ export const localMcp = (
     const RequestBackend = Context.Reference<McpBackend<Error>>("local/McpBackend", {
       defaultValue: () => ({
         listSkills: () => Effect.fail(new LocalMcpUnauthorized()),
+        bundleSkills: () => Effect.fail(new LocalMcpUnauthorized()),
         readSkill: () => Effect.fail(new LocalMcpUnauthorized()),
         listApps: () => Effect.fail(new LocalMcpUnauthorized()),
         listAccounts: () => Effect.fail(new LocalMcpUnauthorized()),
@@ -165,7 +152,6 @@ export const localMcp = (
     const Caller = Context.Reference<string | undefined>("local/McpCaller", {
       defaultValue: () => undefined,
     });
-    // Programs belong to the caller across MCP sessions, so a request without one must not share a partition.
     const caller = Effect.flatMap(Caller, (grant) =>
       grant === undefined
         ? Effect.die("MCP request has no authenticated grant")
@@ -192,6 +178,8 @@ export const localMcp = (
       backend: {
         listSkills: (input, options) =>
           Effect.flatMap(RequestBackend, (b) => b.listSkills(input, options)),
+        bundleSkills: (input, options) =>
+          Effect.flatMap(RequestBackend, (b) => b.bundleSkills(input, options)),
         readSkill: (input) => Effect.flatMap(RequestBackend, (b) => b.readSkill(input)),
         listApps: (input) => Effect.flatMap(RequestBackend, (b) => b.listApps(input)),
         listAccounts: (input) => Effect.flatMap(RequestBackend, (b) => b.listAccounts(input)),
@@ -218,11 +206,6 @@ export const localMcp = (
       limits,
       annotateSkillRead,
     });
-    /**
-     * The request's current grant. An OAuth grant serves the approval mode and connection its
-     * record holds, whatever the URL names. The administrative key has no record: it has full
-     * access in the URL's mode and never enters a connection.
-     */
     const authorized = (authorization: string | undefined, headers: Headers, address: McpAddress) =>
       Effect.gen(function* () {
         if (localBearer(config, authorization)) {
@@ -240,7 +223,6 @@ export const localMcp = (
         return grant;
       });
     const refusals = {
-      // Clients print a refusal's body after their own prefix, so typed refusals keep their cause.
       AuthForbidden: refusedMcpRequest,
       GrantForbidden: refusedMcpRequest,
       LocalMcpUnauthorized: () => oauth.challenge,
@@ -249,7 +231,6 @@ export const localMcp = (
     const http = Effect.gen(function* () {
       const request = yield* localRequest(config.port, config.browserOrigin);
       const address = requestedMcpAddress(new URL(request.url, oauth.origin));
-      // A malformed URL names no MCP address, so no credential is checked against it.
       if (address === undefined) return oauth.invalidAddress;
       const current = authorized(
         request.headers.authorization,
@@ -264,7 +245,6 @@ export const localMcp = (
         Effect.provideService(Mode, grant.target.kind === "mcp" ? grant.target.mode : undefined),
       );
     }).pipe(Effect.catchTags(refusals));
-    /** `GET /mcp/whoami`: what the credential reaches, authenticated exactly as `/mcp` is. */
     const whoami = Effect.gen(function* () {
       const request = yield* localRequest(config.port, config.browserOrigin);
       const address = requestedMcpAddress(new URL(request.url, oauth.origin));
@@ -284,7 +264,6 @@ export const localMcp = (
               Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(Connection))),
               Effect.mapError(() => new LocalMcpAuthUnavailable()),
             )).find((item) => item.id === target.connection);
-      // A connection revoked since authentication grants nothing.
       if (target.connection !== undefined && connection === undefined)
         return yield* new LocalMcpUnauthorized();
       return HttpServerResponse.jsonUnsafe(

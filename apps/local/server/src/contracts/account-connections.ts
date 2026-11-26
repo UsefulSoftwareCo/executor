@@ -1,6 +1,5 @@
 import { RequestRejection } from "@executor-js/sdk/core";
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
-/** Local browser handoff. These grants authorize one SDK connection, never a dashboard session. */
 import { Schema } from "effect";
 import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
 import {
@@ -37,13 +36,11 @@ import {
 import { AuthForbidden, PairingUnauthorized } from "./auth.ts";
 import { RequirementMismatch } from "./requirement-mismatch.ts";
 
-/** A limited bearer value, redacted everywhere except its browser fragment and API submission. */
 export const ConnectionGrant = Schema.Struct({
   connection: AccountConnectionId,
   token: Schema.RedactedFromValue(Schema.NonEmptyString),
 });
 export type ConnectionGrant = typeof ConnectionGrant.Type;
-/** The limited link is invalid; no general browser session is accepted as a substitute. */
 export const ConnectionLinkRejected = UserFacingError.define({
   tag: "ConnectionLinkRejected",
   status: 401,
@@ -55,33 +52,29 @@ export const ConnectionLinkRejected = UserFacingError.define({
       "Create a new account connection request for the intended app requirement and provide its supported connection link. The rejected link is not usable. Do not reconstruct, log, or reuse its credential-bearing fragment.",
   },
 });
-/** Parsed ConnectionLinkRejected failure. */
 export type ConnectionLinkRejected = typeof ConnectionLinkRejected.Type;
-/** A host-generated URL, not part of the reusable SDK request model. */
 export const AccountConnectionLink = Schema.Struct({
   connection: AccountConnectionId,
   url: Schema.RedactedFromValue(HttpUrl),
   expiresAt: Schema.Date,
 });
-/** Dashboard navigation retains the connection identity across OAuth redirects. */
 export const ConnectionSignIn = Schema.Union([
   Schema.Struct({ ...OAuthStartResult.members[0].fields, connection: AccountConnectionId }),
   Schema.Struct({ ...OAuthStartResult.members[1].fields, connection: AccountConnectionId }),
 ]);
 
-/** Secrets entered on the link's form. */
 export const ConnectionSubmission = Schema.Struct({
   ...ConnectionGrant.fields,
   method: Schema.NonEmptyString,
   label: Schema.optional(Schema.NonEmptyString),
   fields: AccountFieldsInput,
 });
-/** Provider consent started from the link's form, optionally with the client the person chose. */
 export const ConnectionOAuthStart = Schema.Struct({
   ...ConnectionGrant.fields,
   method: Schema.NonEmptyString,
   label: Schema.optional(Schema.NonEmptyString),
   client: Schema.optional(OAuthClientSelection),
+  chooseAgain: Schema.optional(Schema.Literal(true)),
 });
 
 const errors = [
@@ -97,10 +90,6 @@ const errors = [
 ] as const;
 const issueErrors = [...errors, PairingUnauthorized, AppNotFound, AccountSelectionInvalid] as const;
 
-/**
- * Create a browser connection link for one requirement of an app in the scope the route names, as
- * `appAccounts.appConnect` or `appAccounts.userConnect`: the agent-facing form of `issue`.
- */
 const scopeConnect = <const S extends AccountScope>(scope: S) =>
   HttpApiEndpoint.post(
     `${scope}Connect`,
@@ -108,7 +97,6 @@ const scopeConnect = <const S extends AccountScope>(scope: S) =>
     {
       params: { app: AppId, requirement: Schema.NonEmptyString },
       payload: Schema.Struct({
-        /** Replace this account's credentials instead of adding an account. */
         account: Schema.optional(AccountId),
       }),
       success: AccountConnectionLink,
@@ -123,13 +111,10 @@ const scopeConnect = <const S extends AccountScope>(scope: S) =>
     } Returns the url of the browser form where the user enters credentials or signs in with OAuth; give the user that url. Completing it saves the account under the app's owner and links it to this requirement. Pass account to replace an existing account's credentials instead; it keeps its ID and links. Never ask for secrets in chat or search files for credentials. Check accountConnections.get after the user finishes.`,
   );
 
-/** Browser submissions never accept an owner, provider, callback destination, or target account. */
 const accountConnectApi = HttpApi.make("account-connect").add(
   HttpApiGroup.make("accountConnect")
     .add(
       HttpApiEndpoint.post("issue", "/account-connect/api/requests", {
-        // The account takes the target app's owner; a caller's owner is ignored. The connection
-        // keeps the requirement's scope when it is issued.
         payload: CreateAccountConnection.mapFields(({ owner: _owner, ...fields }) => ({
           ...fields,
           target: AccountConnectionTarget,
@@ -196,5 +181,4 @@ const accountConnectApi = HttpApi.make("account-connect").add(
       }),
     ),
 );
-/** Every endpoint answers a request its schema rejects with `RequestInvalid`. */
 export const AccountConnectApi = accountConnectApi.middleware(RequestRejection);

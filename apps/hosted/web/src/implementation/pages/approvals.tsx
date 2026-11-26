@@ -6,12 +6,10 @@ import { HostedFailure } from "../components/dashboard-bindings.tsx";
 import { type OrganizationPageReads, useOrganizationRoute } from "../components/organization.tsx";
 import { ScheduledApprovalFrame } from "../components/page-pending.tsx";
 
-/** The pending runs, keyed by the URL. */
 export const approvalsPageReads: OrganizationPageReads = (organization) => [
   pendingApprovalsAtom(organization),
 ];
 
-/** Pending runs are reviewed by a signed-in human through the product's normal auth boundary. */
 export function ApprovalsPage() {
   const { organization, slug: organizationSlug } = useOrganizationRoute();
   return (
@@ -29,7 +27,6 @@ export function ApprovalsPage() {
     />
   );
 }
-/** Scheduled answers continue in the background; no MCP client is required. */
 export function ScheduledApprovalPage({ runId }: { readonly runId: string }) {
   const { organization, slug: organizationSlug } = useOrganizationRoute();
   return (

@@ -1,6 +1,5 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@executor-js/ui/components/avatar";
 
-/** Up to two initials of a name or an email, such as "RS" for "Rhys Sullivan". */
 const initials = (name: string) =>
   name
     .split(/[\s@._-]+/u)
@@ -9,7 +8,6 @@ const initials = (name: string) =>
     .join("")
     .slice(0, 2);
 
-/** A person's picture, or their initials while it loads or when they have none. */
 export function MemberAvatar({
   name,
   image,

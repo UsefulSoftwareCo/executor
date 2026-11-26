@@ -1,31 +1,3 @@
-/**
- * Removal of a test stage whose Alchemy records the shared state store can no longer read.
- *
- * On 2026-11-06 a deploy bootstrapped a new state store over the live one (`patches/alchemy.md`,
- * "State store probe"). That replaced the store's encryption key, and AES-CTR decrypts a record
- * written under the old key to bytes that are not JSON, so every read of it is an HTTP 500. Alchemy
- * cannot plan a destroy without those records. Only an explicit `test-stage destroy --by-name`
- * removes such a stage, by the names and tags the stage implies; eviction and scheduled cleanup
- * never do.
- *
- * Every selector is exact for one stage and cannot match production or another stage:
- * - Workers carry both `alchemy:stack:executor-next-hosted` and `alchemy:stage:test-<slug>`.
- * - Routes in any of the account's zones, Workers custom domains and Workflows are selected by
- *   their script, a physical name recomputed for this stack, one of its Workers and the stage, so
- *   they are found after their Worker is gone.
- * - Buckets are Alchemy physical names for this stack, logical ID and stage. A long stage's name
- *   is truncated with a hash of the full name, which is recomputed, so it is exact as well.
- * - Test-zone DNS is `<slug>.<test zone>` or one label under it.
- * - App-zone DNS lies under the app base the stage's own AppPages route serves, read before
- *   anything is removed, never under its slug: manual stages choose their own base. Production
- *   writes `*.<team>.<app zone>`, so the name that shape takes under the base is excluded.
- * - The Neon branch, Axiom monitors and ingest token and the observability destination carry
- *   `test-<slug>` in names the stack builds from the stage (`telemetry.ts`, `preview-database.ts`).
- *
- * Removal refuses, before changing anything, a stage whose records name a kind it cannot remove
- * (PlanetScale's Hyperdrive connection, certificate and roles, or anything it does not know) or
- * whose Artifacts namespace it cannot confirm empty.
- */
 import { createHash } from "node:crypto";
 import { Config, Console, Duration, Effect, Option, Redacted, Schedule, Schema } from "effect";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
@@ -39,7 +11,6 @@ import { testStagePrefix } from "../infrastructure/stage.ts";
 const stack = "executor-next-hosted";
 const failed = (message: string) => new TestStageFailed({ message });
 
-/** The stack's Workers, by logical ID; their names are Alchemy physical names of at most 54. */
 const workerIds = [
   "Api",
   "AppClaims",
@@ -47,6 +18,7 @@ const workerIds = [
   "AppData",
   "AppDomainController",
   "AppOutbound",
+  "AppOutboundRelay",
   "AppPages",
   "ArtifactsCredentials",
   "Authoring",
@@ -60,10 +32,7 @@ const workerIds = [
 ];
 const workerNameLength = 54;
 
-/** What removal by name does with each record the stack writes, keyed by logical ID. */
 const recordKinds: Readonly<Record<string, "removed" | "kept" | "planetscale">> = {
-  // Removed by the selectors below: Workers, Workflows, buckets, test-zone DNS, app-zone DNS, the
-  // Neon branch, Axiom monitors and token and the observability destination.
   ...Object.fromEntries(
     [
       ...workerIds,
@@ -90,8 +59,6 @@ const recordKinds: Readonly<Record<string, "removed" | "kept" | "planetscale">> 
       "PlatformTraces",
     ].map((id) => [id, "removed"]),
   ),
-  // Nothing outside the state store, something removed with the Neon branch (roles, schema,
-  // fixtures), or the telemetry datasets every stage adopts and retains.
   ...Object.fromEntries(
     [
       "ResumeAppDomains",
@@ -125,10 +92,6 @@ const recordKinds: Readonly<Record<string, "removed" | "kept" | "planetscale">> 
   ),
 };
 
-/**
- * The shared state store, or the one `TEST_STAGE_STATE_STORE_URL` names: the scenarios in
- * `test-stage-unreadable.spec.ts` point it at a recorded copy.
- */
 const sharedState = Effect.gen(function* () {
   const url = yield* Config.option(Config.String("TEST_STAGE_STATE_STORE_URL"));
   if (Option.isNone(url))
@@ -141,7 +104,6 @@ const sharedState = Effect.gen(function* () {
   });
 });
 
-/** A record that fails to decrypt answers HTTP 500 on every read; other failures are not that. */
 const isUndecryptable = (error: unknown) =>
   typeof error === "object" &&
   error !== null &&
@@ -153,11 +115,6 @@ const isUndecryptable = (error: unknown) =>
   "status" in error.http &&
   error.http.status === 500;
 
-/**
- * The stage's records and whether they can be read. Each read is retried; the stage counts as
- * unreadable only when every record still fails as an undecryptable record does. Anything else,
- * including some records readable and others not, is an error rather than a guess.
- */
 export const stageRecords = (slug: string) =>
   Effect.gen(function* () {
     const shared = yield* sharedState;
@@ -191,7 +148,6 @@ export const stageRecords = (slug: string) =>
     ),
   );
 
-/** Remove the stage's unreadable records, so nothing else tries to plan against them. */
 const forgetState = (slug: string) =>
   Effect.gen(function* () {
     const shared = yield* sharedState;
@@ -230,12 +186,6 @@ const base32 = (bytes: Uint8Array) => {
   return out;
 };
 
-/**
- * Whether `name` is the physical name Alchemy gives logical ID `id` of this stack in `stage`
- * (`PhysicalName.ts`): `<stack>-<id>-<stage>-` and 16 base32 characters of the instance ID,
- * lowercased. A longer name keeps the start of that prefix, then 8 base32 characters of the
- * SHA-256 of the full name, then the instance characters; the hash is recomputed here.
- */
 export const isPhysicalName = (name: string, id: string, stage: string, maxLength: number) => {
   const suffix = name.slice(-16);
   if (!/^[a-z2-7]{16}$/u.test(suffix)) return false;
@@ -249,7 +199,6 @@ export const isPhysicalName = (name: string, id: string, stage: string, maxLengt
 
 type Service = "cloudflare" | "artifacts" | "neon" | "axiom";
 
-/** Requests with a deadline, retries for 429 and 5xx, and errors that name no account or zone. */
 const client = Effect.gen(function* () {
   const http = yield* HttpClient.HttpClient;
   const account = yield* Config.NonEmptyString("CLOUDFLARE_ACCOUNT_ID");
@@ -257,9 +206,7 @@ const client = Effect.gen(function* () {
   const neon = yield* Config.Redacted("NEON_API_KEY");
   const axiom = yield* Config.Redacted("AXIOM_TOKEN");
   const axiomOrg = yield* Config.NonEmptyString("AXIOM_ORG_ID");
-  // The test-stage token cannot read Artifacts; `scripts/with-artifacts-token.sh` mints a short-lived one.
   const artifacts = yield* Config.option(Config.Redacted("CLOUDFLARE_ARTIFACTS_TOKEN"));
-  // The origins can point at a recorded copy of these APIs (`test-stage-unreadable.spec.ts`).
   const origin = (name: string, real: string) => Config.String(name).pipe(Config.withDefault(real));
   const origins = {
     cloudflare: `${yield* origin("TEST_STAGE_CLOUDFLARE_API", "https://api.cloudflare.com")}/client/v4`,
@@ -267,7 +214,6 @@ const client = Effect.gen(function* () {
     neon: `${yield* origin("TEST_STAGE_NEON_API", "https://console.neon.tech")}/api/v2`,
     axiom: `${yield* origin("TEST_STAGE_AXIOM_API", "https://api.axiom.co")}/v2`,
   };
-  /** Every request carries its service's credential; an Artifacts one without its token fails. */
   const request = (api: Service, path: string) => {
     const base = HttpClientRequest.make("GET")(`${origins[api]}${path}`);
     if (api === "cloudflare")
@@ -289,7 +235,6 @@ const client = Effect.gen(function* () {
       )(HttpClientRequest.bearerToken(Redacted.value(axiom))(base)),
     );
   };
-  /** Each attempt has 30 seconds; 429 waits for its `Retry-After`, 5xx backs off, five tries. */
   const send = (outgoing: HttpClientRequest.HttpClientRequest, what: string) =>
     Effect.gen(function* () {
       const backoff = yield* Config.Duration("TEST_STAGE_API_BACKOFF").pipe(
@@ -345,14 +290,12 @@ const ResultInfo = Schema.optional(
 type Info = typeof ResultInfo.Type;
 const Envelope = <S extends Schema.Top>(result: S) =>
   Schema.Struct({ success: Schema.Literal(true), result, result_info: ResultInfo });
-/** Whether a listing says more follows: another page, a cursor, or a truncated result. */
 const hasMore = (info: Info) =>
   info !== undefined &&
   ((info.total_pages !== undefined && (info.page ?? 1) < info.total_pages) ||
     (info.cursor !== undefined && info.cursor !== null && info.cursor !== "") ||
     info.is_truncated === true ||
     info.is_truncated === "true");
-/** A listing that must be complete in one answer. */
 const whole = <A extends { readonly result_info?: Info }>(page: A, what: string) =>
   hasMore(page.result_info)
     ? Effect.fail(failed(`Listing ${what} returned only part of the list.`))
@@ -391,7 +334,6 @@ interface Located {
   readonly id: string;
   readonly name: string;
 }
-/** Everything the stage owns that removal by name deletes, and what stops removal. */
 export interface StageInventory {
   readonly workers: ReadonlyArray<string>;
   readonly routes: ReadonlyArray<{
@@ -408,15 +350,12 @@ export interface StageInventory {
   readonly branches: ReadonlyArray<{ readonly id: string; readonly name: string }>;
   readonly monitors: ReadonlyArray<{ readonly id: string; readonly name: string }>;
   readonly tokens: ReadonlyArray<{ readonly id: string; readonly name: string }>;
-  /** The labels under the app zone that the stage's own AppPages routes serve. */
   readonly appBases: ReadonlyArray<string>;
-  /** The stage's Artifacts namespace; `exists` and `repositories` are absent when unreadable. */
   readonly artifacts: {
     readonly namespace: string;
     readonly exists?: boolean;
     readonly repositories?: number;
   };
-  /** Reasons removal by name must not start; it removes nothing while any is present. */
   readonly blockers: ReadonlyArray<string>;
 }
 const removable = [
@@ -432,7 +371,6 @@ const removable = [
   "monitors",
   "tokens",
 ] as const;
-/** How many resources of the stage are left to remove. */
 export const inventoryCount = (inventory: StageInventory) =>
   removable.reduce((sum, kind) => sum + inventory[kind].length, 0);
 
@@ -452,11 +390,6 @@ const ArtifactsRepositories = Schema.Struct({
     }),
   ),
 });
-/**
- * Whether the namespace exists and how many repositories it holds. The namespace list pages by
- * cursor; a namespace's repositories list pages by number and says its total, and lists a
- * namespace that does not exist as empty.
- */
 const artifactsNamespace = (
   api: Effect.Success<typeof client>,
   accountPath: string,
@@ -475,7 +408,6 @@ const artifactsNamespace = (
       listed ??= page.result.find((entry) => entry.namespace === namespace);
       const next = page.result_info?.cursor;
       if (next === undefined || next === null || next === "") break;
-      // A cursor seen before would list the same pages for ever.
       if (seen.has(next)) return yield* failed("Listing Artifacts namespaces repeated a cursor.");
       seen.add(next);
       cursor = next;
@@ -487,7 +419,6 @@ const artifactsNamespace = (
       `Artifacts namespace ${namespace}`,
     );
     const info = repositories.result_info;
-    // The answer's total settles it. Without one, a further page would hide repositories.
     if (
       info?.total_count === undefined &&
       ((info?.cursor !== undefined && info.cursor !== null && info.cursor !== "") ||
@@ -503,10 +434,6 @@ const artifactsNamespace = (
     };
   });
 
-/**
- * Read-only: what the selectors match for one stage. `knownAppBases` keeps the stage's app bases
- * once its routes are gone, for the checks during and after removal.
- */
 export const stageInventory = (slug: string, knownAppBases: ReadonlyArray<string> = []) =>
   Effect.gen(function* () {
     const api = yield* client;
@@ -562,7 +489,6 @@ export const stageInventory = (slug: string, knownAppBases: ReadonlyArray<string
     const test = yield* zoneNamed(testZone);
     const app = yield* zoneNamed(appZone);
 
-    // A Worker's route may sit in any zone the account holds.
     const routes = (yield* Effect.forEach(zones, (candidate) =>
       listWhole(
         `/zones/${candidate.id}/workers/routes`,
@@ -661,7 +587,6 @@ export const stageInventory = (slug: string, knownAppBases: ReadonlyArray<string
             .filter(
               (record) =>
                 record.name.endsWith(`.${base}.${appZone}`) &&
-                // Production's record for a team named like the base.
                 record.name !== `*.${base}.${appZone}`,
             )
             .map(({ id, name }) => ({ zone: app.id, id, name })),
@@ -700,8 +625,6 @@ export const stageInventory = (slug: string, knownAppBases: ReadonlyArray<string
         `test-${slug} has a database certificate, which removal by name does not cover.`,
       );
 
-    // An Artifacts namespace has no Alchemy record: the API Worker creates repositories at run time.
-    // The Worker names it with the same function; an absent namespace lists as empty.
     const namespace = sourceNamespace(stage);
     const artifacts = yield* artifactsNamespace(api, accountPath, namespace).pipe(
       Effect.map(Option.some),
@@ -758,7 +681,6 @@ export const stageInventory = (slug: string, knownAppBases: ReadonlyArray<string
     } satisfies StageInventory;
   });
 
-/** Why the stage's records forbid removal by name, decided before anything is read elsewhere. */
 export const recordBlockers = (slug: string, fqns: ReadonlyArray<string>) => {
   const blockers: string[] = [];
   const planetscale = fqns.filter((fqn) => recordKinds[fqn] === "planetscale");
@@ -774,7 +696,6 @@ export const recordBlockers = (slug: string, fqns: ReadonlyArray<string>) => {
   return blockers;
 };
 
-/** Empty a bucket through the REST API, then delete it; a bulk delete that removes nothing stops. */
 const removeBucket = (name: string) =>
   Effect.gen(function* () {
     const api = yield* client;
@@ -805,18 +726,11 @@ const removeBucket = (name: string) =>
       }
       const deleted = yield* api.remove("cloudflare", path, `bucket ${name}`).pipe(Effect.result);
       if (deleted._tag === "Success") return;
-      // R2 can refuse to delete a bucket it has just reported empty; the listing stays the authority.
       if (attempt === 4) return yield* Effect.fail(deleted.failure);
       yield* Effect.sleep(settle);
     }
   });
 
-/**
- * Remove everything the inventory lists, then the records. App-zone DNS goes first and is
- * confirmed gone while the AppPages route that names the app base still exists; the Workers go
- * next, and what is left is found by name. A run that stops at any point leaves nothing a rerun
- * cannot find. The records go only after a check finds nothing left.
- */
 export const destroyUnreadableStage = (slug: string, fqns: ReadonlyArray<string>) =>
   Effect.gen(function* () {
     const blockedByRecords = recordBlockers(slug, fqns);
@@ -858,7 +772,6 @@ export const destroyUnreadableStage = (slug: string, fqns: ReadonlyArray<string>
       return yield* failed(
         `test-${slug} still has ${appLeft.length} app-zone DNS record(s); nothing else was removed.`,
       );
-    // Writers go first. Their routes, domains and Workflows stay findable by script name.
     yield* each(found.workers, (name) => [
       "cloudflare",
       `${accountPath}/workers/scripts/${encodeURIComponent(name)}?force=true`,
@@ -885,7 +798,6 @@ export const destroyUnreadableStage = (slug: string, fqns: ReadonlyArray<string>
       `observability destination ${destination.name}`,
     ]);
     yield* Effect.forEach(found.buckets, removeBucket, { discard: true });
-    // Cloudflare removes a custom domain's own record with the domain, so read the records again.
     yield* each((yield* recheck()).records, (record) => [
       "cloudflare",
       `/zones/${record.zone}/dns_records/${record.id}`,
@@ -906,7 +818,6 @@ export const destroyUnreadableStage = (slug: string, fqns: ReadonlyArray<string>
       `/tokens/${token.id}`,
       `Axiom token ${token.name}`,
     ]);
-    // Deletions can take a few seconds to leave the listings.
     let left = yield* recheck();
     for (let check = 0; check < 6 && inventoryCount(left) > 0; check += 1) {
       yield* Effect.sleep(settle);

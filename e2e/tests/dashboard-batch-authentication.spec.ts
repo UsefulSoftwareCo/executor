@@ -20,7 +20,6 @@ const Answer = Schema.Struct({
 });
 const decodeAnswer = Schema.decodeUnknownEffect(Schema.fromJsonString(Answer));
 
-/** Read the public batch stream with an actor's cookie jar, without opening a dashboard page. */
 const send = (session: Session, reads: ReadonlyArray<BatchedRead>) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -51,7 +50,6 @@ const send = (session: Session, reads: ReadonlyArray<BatchedRead>) =>
     }),
   );
 
-/** Wait for all reads to be delivered before counting the batch's actual authentication spans. */
 const authentication = (traceId: string, reads: number) =>
   Effect.gen(function* () {
     const telemetry = yield* Telemetry;
@@ -166,7 +164,6 @@ export default defineApp({}, async () => ({
         expect(firstChecks, "Dashboard batch authentication budget").toEqual(expected);
         expect(lastChecks, "Dashboard batch authentication budget").toEqual(expected);
 
-        // Aliases share a membership check; another reference must never inherit that access.
         const mixed = yield* send(
           actors.owner,
           batch([

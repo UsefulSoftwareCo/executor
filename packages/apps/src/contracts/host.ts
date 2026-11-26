@@ -325,6 +325,15 @@ export const ToolResultObservation = Context.Reference<{ readonly failed: () => 
 );
 
 /**
+ * Runs work the invocation's reply does not wait for, such as ending an MCP session whose call
+ * was answered. The host's runner keeps the invocation alive until that work has settled, and
+ * cancels it with the invocation. Undefined where the host has no such runner: run it inline.
+ */
+export const AfterReply = Context.Reference<
+  ((work: Effect.Effect<void>) => Effect.Effect<void>) | undefined
+>("apps/AfterReply", { defaultValue: () => undefined });
+
+/**
  * One tool invocation's own timing, on the isolate's clock: how long it ran, and how much of that
  * it waited on upstream providers, waited on elicitation answers and ran the app's authored code.
  * Each instant counts once, so the rest is Executor's own time. The isolated handler returns it

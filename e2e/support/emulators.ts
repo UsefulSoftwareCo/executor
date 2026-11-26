@@ -69,7 +69,6 @@ const GoogleProvider = Schema.Struct({ ...Provider.fields, discovery: GoogleDisc
   ),
 );
 
-/** The fields of v1 WorkOS listings that seeding reads back. */
 const V1Users = Schema.Struct({ data: Schema.Array(Schema.Struct({ id: Schema.String })) });
 
 const V1Memberships = Schema.Struct({
@@ -78,7 +77,6 @@ const V1Memberships = Schema.Struct({
   ),
 });
 
-/** Private control-plane output consumed by both deployment configuration and black-box tests. */
 export const EmulatorFixture = Schema.Struct({
   version: Schema.Literal(4),
   origin: Schema.String,
@@ -91,15 +89,6 @@ export const EmulatorFixture = Schema.Struct({
     workos: Schema.Struct({ baseUrl: BaseUrl, token: Schema.NonEmptyString }),
   }),
 });
-/**
- * The diagnostic fields of an emulators.dev failure report (emulate#36). A field is kept only
- * when it holds a value the harness already knows or a name from a fixed list, so a report can
- * add no text of its own: the service and instance hash must be the ones the harness addressed,
- * the method the one it sent, the route a template of the path it requested (dynamic segments
- * shown as `:param`), and the error class one of emulate's allowlisted names. Anything else in a
- * response body, a raw `message` included, is dropped, and a body without a known `error` is not
- * reported at all.
- */
 const FailureReport = Schema.Struct({
   error: Schema.Literals(["emulator_unavailable", "emulator_error", "worker_error"]),
   service: Schema.optional(Schema.String),
@@ -120,9 +109,7 @@ const decodeRay = Schema.decodeUnknownOption(
   Schema.String.check(Schema.isPattern(/^[0-9a-f]{16}(?:-[A-Z]{3})?$/u)),
 );
 
-/** The emulators the harness provisions; a report naming any other service is not believed. */
 const SERVICES = new Set(["autumn", "context", "github", "google", "mcp", "planetscale", "resend"]);
-/** emulate#36's error class allowlist; it reports every other name as `other`. */
 const ERROR_CLASSES = new Set([
   "Error",
   "TypeError",
@@ -142,7 +129,6 @@ const ERROR_CLASSES = new Set([
   "other",
 ]);
 
-/** The route as a template of the requested path: literal segments equal, the rest `:param`. */
 const routeOf = (route: unknown, path: string): string | undefined => {
   if (route === "unmatched" || route === "unknown") return route;
   if (typeof route !== "string") return undefined;
@@ -202,27 +188,16 @@ const reportOf = (
 
 class EmulatorFailed extends Schema.TaggedError<EmulatorFailed>()("EmulatorFailed", {
   operation: Schema.String,
-  /** `service/prefix-… #id`: the instance's unguessable suffix elided, with emulate's instance hash. */
   emulator: Schema.optional(Schema.String),
   status: Schema.optional(Schema.Number),
   reason: Schema.optional(Schema.Literals(["timeout", "request", "invalid response"])),
-  /** Cloudflare's request id: finds the request in emulators.dev's Workers Logs. */
   ray: Schema.optional(Schema.String),
-  /** emulators.dev's own failure report, reduced to its diagnostic fields. */
   report: Schema.optional(FailureReport),
-  /** How far a call that got no usable response went: see `request-failure.ts`. */
   failure: Schema.optional(RequestFailure),
-  /** The answer came from a fault the harness armed itself (`armedFaultHeader`). */
   armed: Schema.optional(Schema.Boolean),
-  /**
-   * When the call was sent more than once: each earlier attempt's failure, in order. The other
-   * fields describe the last attempt.
-   */
   earlier: Schema.optional(Schema.Array(Schema.String)),
-  /** When the call was sent more than once: the time from the first attempt to the last failure. */
   elapsedMs: Schema.optional(Schema.Number),
 }) {
-  /** This attempt's failure on its own, as a retry record and the attempt list name it. */
   get attemptText() {
     return this.detail ?? "failed";
   }
@@ -252,7 +227,6 @@ class EmulatorFailed extends Schema.TaggedError<EmulatorFailed>()("EmulatorFaile
     return `External emulator failed: ${this.operation}${target}${this.detail === undefined ? "" : ` (${this.detail})`}${this.reportText}`;
   }
 
-  /** emulators.dev's own report of the last attempt, reduced to its diagnostic fields. */
   private get reportText() {
     if (this.report === undefined) return "";
     const words = (parts: ReadonlyArray<string | undefined>) =>
@@ -278,18 +252,11 @@ class EmulatorFailed extends Schema.TaggedError<EmulatorFailed>()("EmulatorFaile
 class MailPending extends Schema.TaggedError<MailPending>()("MailPending", {}) {}
 
 interface EmulatorTarget {
-  /** `service/prefix-… #id`: the instance's unguessable suffix elided, with emulate's instance hash. */
   readonly label: string;
   readonly service: string;
   readonly instanceId: string | undefined;
 }
 
-/**
- * Names the emulator an origin points at without its capability: an instance name ends in a
- * random suffix that is the only access control, so it is elided. emulate's instance hash, the
- * first 12 hex digits of SHA-256(`service:instance`), finds the instance in its reports. The hash
- * hides a generated name, whose suffix has 96 random bits, but not a predictable one.
- */
 const emulatorTarget = (origin: string): EmulatorTarget | undefined => {
   const url = URL.parse(origin);
   if (url === null) return undefined;
@@ -310,71 +277,28 @@ const emulatorTarget = (origin: string): EmulatorTarget | undefined => {
   };
 };
 
-/**
- * Turns off client tracing for a call to an emulator: Effect's client span records the full URL
- * as `url.full` and `server.address`, and an instance URL is the only access control for its
- * emulator. Every harness request to emulators.dev goes through `emulatorRequest` or this.
- */
 export const withoutEmulatorTracing = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   effect.pipe(Effect.provideService(HttpClient.TracerDisabledWhen, () => true));
 
-/** How long one emulator call may take. Only a spec of the harness itself sets another. */
 export const EmulatorDeadline = Context.Reference<Duration.Input>("e2e/EmulatorDeadline", {
   defaultValue: () => "30 seconds",
 });
 
-/**
- * A response header on every fault the harness arms. A failure answered by one is the scenario's
- * own deliberate outage, never retried: a retry would consume another of its faults.
- */
 export const armedFaultHeader = "x-executor-e2e-armed-fault";
 
-/**
- * Where a call that needed a retry is recorded. Inside a scenario the record goes to its run's
- * evidence (`Target`); a run's own set-up, which has no `Target`, names its directory here.
- */
 export const EmulatorRetryRecords = Context.Reference<{ readonly directory?: string }>(
   "e2e/EmulatorRetryRecords",
   { defaultValue: () => ({}) },
 );
 
-/**
- * The retry policy, from the emulator failures CI saw on 10-13 November 2026: every one was a
- * single call, and the same service answered the job's next call to it 0-6 s later. A hosted call
- * normally answers in well under 2 s (Worker p99 about 1.4 s). So: at most three attempts, each
- * within 10 s, 1 s and then 3 s apart, all within the call's deadline (`EmulatorDeadline`, 30 s),
- * which therefore still bounds the call as it did with one attempt.
- */
 export const EmulatorRetryPolicy = Context.Reference<{
   readonly attempts: number;
   readonly attemptDeadlineMs: number;
   readonly spacingMs: ReadonlyArray<number>;
 }>("e2e/EmulatorRetryPolicy", {
-  // Only a spec of the harness itself sets another, to keep its cases short.
   defaultValue: () => ({ attempts: 3, attemptDeadlineMs: 10_000, spacingMs: [1_000, 3_000] }),
 });
 
-/**
- * Whether a harness call may be sent again, judged by what a second copy would do to the state a
- * scenario observes (emulate's own handlers, `packages/@emulators/*`):
- *
- * - `repeat`: sending it twice leaves what the first would have. Control-plane reads (ledger,
- *   faults list, manifest), resets, a new instance (the unused first one has a random name and is
- *   never addressed), a credential (the harness uses the one it receives; an api-key with the
- *   harness's own token is the same key again), and the seeds that match existing records by
- *   email, login, domain or customer id (Google, GitHub, Context, Autumn; WorkOS users). Reads of
- *   what an emulator recorded: any GET, and Autumn's reads that are POSTs.
- * - `read back`: a WorkOS seed with organizations inserts a new organization each time, so a
- *   second copy would make the member belong to two. It is sent again only when the caller's read
- *   back shows the first copy did not apply.
- * - `once`: everything else. Arming a fault (a second copy fails one more call), clearing one or
- *   the ledger, the seeds of services not checked here, and every provider write the harness makes
- *   to set a scenario up (WorkOS Vault, invitations, organization and membership changes, Autumn
- *   balances).
- *
- * Product calls never pass through here: the product calls its providers itself, and how it
- * behaves when one fails is what scenarios test.
- */
 export const repeatability = (
   service: string | undefined,
   method: string,
@@ -387,6 +311,7 @@ export const repeatability = (
       return ["/_emulate/ledger", "/_emulate/faults", "/_emulate/manifest"].includes(route)
         ? "repeat"
         : "once";
+    if (method === "DELETE" && clearsOneFault(route)) return "repeat";
     if (method !== "POST") return "once";
     if (["/_emulate/instances", "/_emulate/credentials", "/_emulate/reset"].includes(route))
       return "repeat";
@@ -407,26 +332,17 @@ export const repeatability = (
   return "once";
 };
 
-/**
- * Retried only when the service failed to answer: a 5xx that is not a fault the harness armed, a
- * refused, reset or closed connection with no response, or no answer within the attempt's deadline.
- * Never a 4xx, a body that is not JSON, or a failed name lookup or TLS handshake.
- */
-const retryable = (error: EmulatorFailed) => {
+const retryable = (error: EmulatorFailed, method: string) => {
   if (error.armed === true) return false;
   if (error.status !== undefined) return error.status >= 500;
   const failure = error.failure;
   if (failure === undefined) return false;
   if (failure.stage === "timeout") return true;
-  return (
-    failure.stage === "before response" &&
-    (failure.connection === "connect" ||
-      failure.connection === "reset" ||
-      failure.connection === "closed")
-  );
+  const lost = failure.connection === "reset" || failure.connection === "closed";
+  if (failure.stage === "reading body") return method === "GET" && lost;
+  return failure.stage === "before response" && (failure.connection === "connect" || lost);
 };
 
-/** The last attempt's failure, listing every earlier one. */
 const afterAttempts = (failures: ReadonlyArray<EmulatorFailed>, elapsedMs: number) => {
   const last = failures.at(-1)!;
   return new EmulatorFailed({
@@ -442,10 +358,6 @@ const afterAttempts = (failures: ReadonlyArray<EmulatorFailed>, elapsedMs: numbe
   });
 };
 
-/**
- * Save a retried call to the run's evidence and say so in the job log. A call outside any
- * scenario or run (a spec of the harness itself) is only logged.
- */
 const recordRetry = (record: EmulatorRetry) =>
   Effect.gen(function* () {
     const configured = yield* EmulatorRetryRecords;
@@ -466,42 +378,23 @@ const recordRetry = (record: EmulatorRetry) =>
       JSON.stringify(saved, null, 2),
       { mode: 0o600 },
     );
-  }).pipe(
-    // Recording never decides a call's outcome.
-    Effect.catchCause(() => Console.error("Could not record a retried emulator call.")),
-  );
+  }).pipe(Effect.catchCause(() => Console.error("Could not record a retried emulator call.")));
 
-/**
- * The emulator origins on which this process's harness armed a fault that may still be live:
- * added when arming succeeds, removed when a reset or clearing every fault does. Calls to them
- * are sent once (see `emulatorRequest`).
- */
 const armedFaults = new Set<string>();
+const clearsOneFault = (route: string) => /^\/_emulate\/faults\/fault_\d+$/u.test(route);
+const armedSafe = (method: string, route: string) =>
+  route.startsWith("/_emulate/") &&
+  (method === "GET" || (method === "DELETE" && clearsOneFault(route)));
 
-/**
- * Calls only an external emulator. Failures never carry a provider URL, credential, response
- * body or underlying error: the instance URL is the only access control for its emulator, and a
- * body can quote tokens, sign-in codes and addresses. Client tracing is off for these requests,
- * because its span records the full URL as `url.full` and `server.address`.
- *
- * A call `repeatability` allows is sent again when the service failed to answer, under
- * `EmulatorRetryPolicy`; each such call is recorded (`e2e/emulator-retries.ts`). When the attempts
- * run out it fails as one call did, with every attempt listed. A `read back` call needs `applied`,
- * which says whether an earlier copy took effect; without it the call is sent once. Attempts and
- * the read back share the call's one deadline. While the harness has a fault armed on an emulator,
- * every call to it is sent once.
- */
 export const emulatorRequest = (
   origin: string,
   path: string,
   payload?: unknown,
   token?: string,
-  /** Defaults to GET without a payload and POST with one. */
   verb?: "PUT" | "DELETE",
   options?: { readonly applied?: Effect.Effect<boolean, EmulatorFailed> },
 ) => {
   const method = verb ?? (payload === undefined ? "GET" : "POST");
-  // The query can name addresses and IDs; the operation keeps the path only.
   const operation = `${method} ${path.split("?")[0]}`;
   const target = emulatorTarget(origin);
   const emulator = target?.label;
@@ -536,7 +429,6 @@ export const emulatorRequest = (
             ? new EmulatorFailed({
                 operation,
                 emulator,
-                // A refusal whose body could not be read still answers callers that match on it.
                 ...(error.failure.status !== undefined &&
                   (error.failure.status < 200 || error.failure.status >= 300) && {
                     status: error.failure.status,
@@ -550,7 +442,6 @@ export const emulatorRequest = (
   const repeat = repeatability(target?.service, method, path, payload);
   const applied = options?.applied;
   const route = path.split("?")[0];
-  /** Keeps `armedFaults` in step with what this call armed or cleared, once it succeeded. */
   const track = <A>(value: A) => {
     if (method === "POST" && route === "/_emulate/faults") armedFaults.add(origin);
     if (
@@ -566,9 +457,7 @@ export const emulatorRequest = (
     if (
       repeat === "once" ||
       (repeat === "read back" && applied === undefined) ||
-      // A fault the harness armed here may still be waiting, delayed, for the product's call: a
-      // retried harness call could meet it before its marked answer arrives and consume it.
-      armedFaults.has(origin)
+      (armedFaults.has(origin) && !armedSafe(method, route ?? ""))
     )
       return track(yield* attempt(deadline));
     const started = yield* Clock.currentTimeMillis;
@@ -587,7 +476,6 @@ export const emulatorRequest = (
           }),
         ),
       );
-    /** Give up with every attempt listed: the attempts ran out, or the deadline did. */
     const giveUp = Effect.gen(function* () {
       if (failures.length === 1) return yield* failures[0]!;
       yield* record("failed", failures.length);
@@ -595,7 +483,6 @@ export const emulatorRequest = (
     });
     while (true) {
       const remaining = deadline - (yield* elapsed);
-      // Never send an attempt with no time left: it would report a time-out it never had.
       if (failures.length > 0 && remaining <= 0) return yield* giveUp;
       const exit = yield* Effect.exit(attempt(Math.min(policy.attemptDeadlineMs, remaining)));
       if (Exit.isSuccess(exit)) {
@@ -607,15 +494,13 @@ export const emulatorRequest = (
       failures.push(error);
       const spacing = policy.spacingMs[failures.length - 1];
       if (
-        !retryable(error) ||
+        !retryable(error, method) ||
         spacing === undefined ||
         failures.length >= policy.attempts ||
         (yield* elapsed) + spacing >= deadline
       )
         return yield* giveUp;
       yield* Effect.sleep(spacing);
-      // A copy that may have applied is sent again only when reading back shows it did not. The
-      // read back gets only what is left of this call's deadline.
       if (repeat === "read back" && applied !== undefined) {
         const left = deadline - (yield* elapsed);
         if (left <= 0) return yield* giveUp;
@@ -626,18 +511,12 @@ export const emulatorRequest = (
           yield* record("found applied", failures.length);
           return null;
         }
-        // Unknown whether the first copy applied, so it is not sent again.
         if (Exit.isFailure(found) || Option.isNone(found.value)) return yield* giveUp;
       }
     }
   });
 };
 
-/**
- * Provision actual hosted instances and credentials through emulators.dev's control plane, for a
- * Cloud deployment at `origin`. Cloud's providers return sign-in to its edge, which stands in
- * for `executor.sh`, so that is the one callback each sign-in client registers.
- */
 export const createEmulatorFixture = (origin: string) =>
   Effect.gen(function* () {
     const instance = `executor-onboarding-${randomUUID()}`;
@@ -708,14 +587,12 @@ export const createEmulatorFixture = (origin: string) =>
           github,
           mail: yield* keyed("resend"),
           company: yield* keyed("context"),
-          // Cloud accepts only Autumn-shaped keys; a private instance is keyed like the sandbox.
           billing: yield* keyed("autumn", `am_sk_test_${randomUUID().replaceAll("-", "")}`),
           workos: yield* keyed("workos"),
         },
       }),
     );
   }).pipe(
-    // A decode failure would print the response, which holds client secrets and tokens.
     Effect.mapError((error) =>
       error instanceof EmulatorFailed
         ? error
@@ -726,7 +603,6 @@ export const createEmulatorFixture = (origin: string) =>
 const make = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const target = yield* Target;
-  // Methods use the client captured when the service is built, not one from each caller.
   const http = yield* HttpClient.HttpClient;
   const request = (...args: Parameters<typeof emulatorRequest>) =>
     emulatorRequest(...args).pipe(Effect.provideService(HttpClient.HttpClient, http));
@@ -755,7 +631,6 @@ const make = Effect.gen(function* () {
           }),
         ),
       ),
-      // A decode failure would print the listing, which holds sign-in codes.
       Effect.mapError((error) =>
         error instanceof EmulatorFailed
           ? error
@@ -771,7 +646,6 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       const name = `V1 ${randomUUID().slice(0, 8)}`;
       const workos = value.services.workos;
-      /** The first member and the new organization's membership, once the seed has applied. */
       const seeded = Effect.gen(function* () {
         const users = yield* request(
           workos.baseUrl,
@@ -799,8 +673,6 @@ const make = Effect.gen(function* () {
               }),
         ),
       );
-      // Each copy of this seed inserts another organization of the same name, so it is sent
-      // again only when the new organization is not there.
       yield* request(
         workos.baseUrl,
         "/_emulate/seed",
@@ -868,7 +740,6 @@ const make = Effect.gen(function* () {
         });
         return { login, email, companyName: provider === "google" ? "Example Company" : null };
       }),
-    /** Seed a Google profile for an address that may already have an Executor account. */
     googleUser: (user: {
       readonly email: string;
       readonly name: string;
@@ -877,18 +748,7 @@ const make = Effect.gen(function* () {
       request(value.services.google.baseUrl, "/_emulate/seed", {
         users: [{ ...user, email_verified: true }],
       }).pipe(Effect.asVoid),
-    /**
-     * A new organization in the emulated v1 WorkOS whose active members are these emails, and the
-     * first member's WorkOS user id.
-     */
     v1Workspace,
-    /**
-     * Answer the next `times` requests to one Autumn route with `status`, after `delayMs`:
-     * customer reads (`customers.get`), billing's plan catalog (`plans.list`) or an attach
-     * (`billing.attach`). Faults match every caller of the route on this Cloud's Autumn emulator,
-     * so only scenarios that run in order on their own local Cloud arm them. Returns the fault's
-     * id.
-     */
     failAutumnReads: (
       route: "customers.get" | "plans.list" | "billing.attach",
       fault: { status: number; times: number; delayMs?: number },
@@ -915,7 +775,6 @@ const make = Effect.gen(function* () {
         ),
         Effect.map((armed) => armed.fault.id),
       ),
-    /** How many reads each armed Autumn fault still answers, by id; spent faults are absent. */
     autumnFaults: request(
       value.services.billing.baseUrl,
       "/_emulate/faults",
@@ -931,10 +790,6 @@ const make = Effect.gen(function* () {
       ),
       Effect.map(({ faults }) => new Map(faults.map((fault) => [fault.id, fault.remaining]))),
     ),
-    /**
-     * A WorkOS API key of a v1 member in one of their organizations, as v1's dashboard made them:
-     * its WorkOS id and its plaintext value.
-     */
     v1ApiKey: (user: string, organization: string) =>
       request(
         value.services.workos.baseUrl,
@@ -953,11 +808,6 @@ const make = Effect.gen(function* () {
             : new EmulatorFailed({ operation: "Create a v1 API key", reason: "invalid response" }),
         ),
       ),
-    /**
-     * Refuse the next `times` WorkOS API key validations with `status`. Only Cloud's v1 key check
-     * calls that route, so scenarios that do not present v1 keys never consume the fault. Returns
-     * the fault's id.
-     */
     failV1KeyValidations: (fault: { status: number; times: number }) =>
       request(
         value.services.workos.baseUrl,
@@ -980,7 +830,6 @@ const make = Effect.gen(function* () {
         ),
         Effect.map((armed) => armed.fault.id),
       ),
-    /** How many calls each armed WorkOS fault still answers, by id; spent faults are absent. */
     workosFaults: request(
       value.services.workos.baseUrl,
       "/_emulate/faults",
@@ -996,7 +845,6 @@ const make = Effect.gen(function* () {
       ),
       Effect.map(({ faults }) => new Map(faults.map((fault) => [fault.id, fault.remaining]))),
     ),
-    /** Disarm a WorkOS fault, spent or not. */
     clearWorkosFault: (id: string) =>
       request(
         value.services.workos.baseUrl,
@@ -1005,7 +853,6 @@ const make = Effect.gen(function* () {
         value.services.workos.token,
         "DELETE",
       ).pipe(Effect.asVoid),
-    /** Disarm an Autumn fault, spent or not. */
     clearAutumnFault: (id: string) =>
       request(
         value.services.billing.baseUrl,
@@ -1016,10 +863,6 @@ const make = Effect.gen(function* () {
       ).pipe(Effect.asVoid),
     received: (email: string) =>
       messages(email).pipe(Effect.map((rows) => rows.map((row) => row.id))),
-    /**
-     * The newest new code and its email subject. Mail without a code to the same address, such as
-     * the welcome a new account's background provisioning sends, can arrive after it.
-     */
     mail: (email: string, previouslyReceived: ReadonlyArray<string>) =>
       messages(email).pipe(
         Effect.flatMap((data) => {
@@ -1039,8 +882,6 @@ const make = Effect.gen(function* () {
           schedule: Schedule.spaced("250 millis"),
           times: 80,
         }),
-        // Only "no code arrived" is reported as such; a failed or malformed mail
-        // listing keeps its own endpoint, status and body.
         Effect.catchTag("MailPending", () =>
           Effect.fail(
             new EmulatorFailed({ operation: "Read delivered email code (none within 20 s)" }),
@@ -1050,7 +891,6 @@ const make = Effect.gen(function* () {
   };
 });
 
-/** Per-test external identities and delivered mail; never creates an Executor session. */
 export class Emulators extends Context.Service<Emulators, Effect.Success<typeof make>>()(
   "e2e/Emulators",
 ) {

@@ -7,7 +7,6 @@ import { onboardingGroup, setupGroup } from "./onboarding.ts";
 import { RequestRejection } from "@executor-js/sdk/core";
 import { OpenApi } from "effect/http-api";
 
-/** Complete Executor Cloud API. Compose every Cloud product endpoint here. */
 export const ExecutorCloudApi = HostedApi.add(HostedAppUi, billingGroup)
   .add(onboardingGroup)
   .add(setupGroup)
@@ -16,6 +15,5 @@ export const ExecutorCloudApi = HostedApi.add(HostedAppUi, billingGroup)
   .middleware(RequestRejection)
   .annotate(OpenApi.Title, "Executor Cloud");
 
-/** The exact product contract used by the router, published spec and generated Executor app. */
 export const executorCloudApiDocument = (origin: string) =>
   hostedApiDocument(ExecutorCloudApi, origin, cloudSessionCookiePrefix(origin));

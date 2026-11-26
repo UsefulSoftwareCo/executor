@@ -1,29 +1,3 @@
-/**
- * Whether bun.lock is what `bun install` writes for the tracked package.json files.
- *
- * `bun install --frozen-lockfile`, which the setup action runs, accepts a lock that records an old
- * version of a workspace package: it fails only when a dependency would resolve differently. So a
- * pull request that bumps a workspace package's own version (the `apps` bump that
- * `scripts/releases/apps-bumped.ts` requires, for one) without running `bun install` merges a
- * stale lock, and the next `bun install` in every fresh checkout rewrites it.
- *
- * Each checkout is checked by running `bun install --lockfile-only` in it and comparing the lock
- * it writes with the committed one. That resolves from the lock and the installed packages,
- * without the registry, when every dependency is already locked. The committed lock is put back
- * afterwards, so the check never edits a checkout.
- *
- * - `node scripts/check-lockfile.ts` fails when this checkout's lock is stale.
- * - `node scripts/check-lockfile.ts --base <checkout>` is the pull request check. The
- *   `apps-version` job runs it against a checkout of where the pull request meets main: the merge
- *   commit's first parent for a pull request into main, and the merge base with main for an upper
- *   stack layer, so a lower layer's drift counts and main's older drift does not. The base needs no
- *   node_modules. It fails only on drift the pull request adds: when the pull request changes a
- *   package.json or bun.lock, and the lines an install would change here are not all lines it
- *   would change in the base too. A lock that went
- *   stale on main, through a pull request that passed before this check existed or before main
- *   moved, therefore fails no other pull request; the beta workflow refreshes it on main
- *   (`scripts/releases/lock-repair.sh`).
- */
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -31,7 +5,6 @@ import { join } from "node:path";
 
 const fix = "Run `bun install` and commit bun.lock.";
 
-/** The diff from the committed lock in `checkout` to the one `bun install` writes there. */
 const drift = (checkout: string) => {
   const lockfile = join(checkout, "bun.lock");
   const committed = readFileSync(lockfile, "utf8");
@@ -53,7 +26,6 @@ const drift = (checkout: string) => {
   try {
     const after = join(directory, "bun.lock");
     writeFileSync(after, written);
-    // `git diff --no-index` exits 1 when the files differ.
     const result = spawnSync("git", ["diff", "--no-index", "--no-color", lockfile, after], {
       encoding: "utf8",
     });
@@ -63,7 +35,6 @@ const drift = (checkout: string) => {
   }
 };
 
-/** Changed lines of a diff, each with its `-` or `+`. */
 const changed = (diff: ReadonlyArray<string>) =>
   diff.filter((line) => /^[-+]/.test(line) && !/^(---|\+\+\+) /.test(line));
 
@@ -73,10 +44,6 @@ const show = (lines: ReadonlyArray<string>) => {
   if (lines.length > shown) console.error(`… ${lines.length - shown} more lines`);
 };
 
-/**
- * What decides the lock `bun install` writes: the manifests, the lock, Bun's settings and the Bun
- * version the setup action pins. A pull request that changes none of them cannot add drift.
- */
 const installInputs = [
   "bun.lock",
   "package.json",
@@ -85,7 +52,6 @@ const installInputs = [
   ".github/actions/setup/action.yml",
 ];
 
-/** The tracked install inputs in `checkout`, by path, with their contents. */
 const packageFiles = (checkout: string) => {
   const paths = execFileSync("git", ["ls-files", "-z", "--", ...installInputs], {
     cwd: checkout,
@@ -131,8 +97,6 @@ if (touched.length === 0) {
   process.exit(0);
 }
 
-// Lines the base's own drift accounts for, counted, so a line this checkout changes twice needs
-// the base to change it twice.
 const inherited = new Map<string, number>();
 for (const line of changed(drift(base))) inherited.set(line, (inherited.get(line) ?? 0) + 1);
 const diff = drift(".");

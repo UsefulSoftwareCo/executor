@@ -8,9 +8,7 @@ import { HostedLive, withHostedCase } from "../support/case.ts";
 import { scenarios } from "../test-plan.ts";
 import { noPageErrors } from "../support/page-errors.ts";
 
-/** React reports a server/browser markup difference with one of these messages or codes. */
 const hydrationFailure = /hydrat|Minified React error #(418|419|423|425)/i;
-/** A document navigation, as a browser sends it. */
 const navigation = { accept: "text/html" };
 
 layer(HostedLive, { excludeTestServices: true })("Server-rendered dashboard", (it) => {
@@ -20,7 +18,6 @@ layer(HostedLive, { excludeTestServices: true })("Server-rendered dashboard", (i
       Effect.gen(function* () {
         const actors = yield* Actors;
         const browser = yield* Browser;
-        // Repeated and encoded parameters stand in for a signed OAuth query that must survive.
         const destination = `/org/${actors.organization.slug}/apps?view=accounts&scope=a%20b&scope=c`;
 
         const signedOut = yield* browser.use("Request a protected page while signed out", (page) =>
@@ -45,14 +42,12 @@ layer(HostedLive, { excludeTestServices: true })("Server-rendered dashboard", (i
           });
           page.on("request", (request) => {
             const path = new URL(request.url()).pathname;
-            // Server-rendered reads reach the browser with the page instead of being repeated.
             if (/^\/api\/organizations\/[^/]+\/(inventory|access|resources)$/.test(path))
               repeatedReads.push(path);
           });
           return Promise.resolve();
         });
 
-        // An organization root opens its apps.
         const root = yield* browser.use("Request an organization root", (page) =>
           page.context().request.get(`/org/${actors.organization.slug}`, {
             maxRedirects: 0,
@@ -74,7 +69,6 @@ layer(HostedLive, { excludeTestServices: true })("Server-rendered dashboard", (i
         expect(headers["cache-control"]).toContain("no-store");
         expect(headers["vary"]).toContain("Cookie");
         const html = yield* browser.use("Read the document the server sent", () => response.text());
-        /** The document the server renders for a navigation to `path`. */
         const document = (path: string) =>
           browser.use(`Request ${path}`, (page) =>
             page
@@ -84,7 +78,6 @@ layer(HostedLive, { excludeTestServices: true })("Server-rendered dashboard", (i
           );
         const rendered = yield* document(destination);
         expect(rendered).toMatch(/>Executor</);
-        // The installed app's card is data the server read before sending the page.
         expect(html).toContain('aria-label="Organization:');
         expect(html).toMatch(/>Executor</);
 
@@ -114,8 +107,6 @@ layer(HostedLive, { excludeTestServices: true })("Server-rendered dashboard", (i
         const appPage = yield* document(`/org/${actors.organization.slug}/apps/${executor.id}`);
         expect(appPage).toMatch(/>Executor</);
 
-        // `/` resumes the organization this browser last used at its current address, so the page
-        // never replaces its own URL while its data is still arriving.
         const signedIn = yield* browser.use("Read the signed-in identity", (page) =>
           page
             .context()
@@ -152,9 +143,6 @@ layer(HostedLive, { excludeTestServices: true })("Server-rendered dashboard", (i
         expect(consent.headers()["content-security-policy"]).toContain("frame-ancestors 'none'");
         expect(consent.headers()["x-frame-options"]).toBe("DENY");
 
-        // The page starts its reads with the access check, so a refusal arrives after them. A
-        // refused document carries the refusal and none of the page's reads, whatever they
-        // returned; the browser shows the refusal without reading the page's data itself.
         const refusedSlug = `withheld-${randomBytes(6).toString("hex")}`;
         const refusedPath = `/org/${refusedSlug}/apps`;
         const refused = yield* browser.use(
@@ -172,8 +160,6 @@ layer(HostedLive, { excludeTestServices: true })("Server-rendered dashboard", (i
         yield* browser.use("Watch the refused page's reads", (page) => {
           page.on("request", (request) => {
             const path = new URL(request.url()).pathname;
-            // Only the refused organization's reads; the browser sends reads that start together
-            // as one batch.
             const reads =
               path === batchPath
                 ? batchedReads(request.postData())

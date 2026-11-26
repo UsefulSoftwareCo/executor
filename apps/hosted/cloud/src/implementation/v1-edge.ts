@@ -1,10 +1,3 @@
-/**
- * What the edge (`executor.sh`) answers in v1's place once v1 shuts down (`notes/v1-shutdown.md`,
- * "URL table after the switch"), apart from the MCP URLs (`v1-legacy-mcp.ts`): v1's OAuth client
- * ID metadata documents, its dashboard and sign-in paths, the redirects v1's edge
- * made, a page for a connected-account sign-in v1 started, and 410 for the rest of v1's API.
- * v1's edge forwards none of these to v2 before the switch.
- */
 import { Effect, Option, Schema } from "effect";
 import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import { SqlClient } from "effect/sql";
@@ -19,20 +12,17 @@ const requestUrl = Effect.map(
   (request) => new URL(request.originalUrl),
 );
 
-/** v1's OAuth client ID metadata document at this URL, as v1 generated it. */
 export const v1ClientIdMetadata = Effect.map(requestUrl, (url) =>
   HttpServerResponse.jsonUnsafe(v1ClientIdMetadataDocument(url), {
     headers: { "cache-control": "public, max-age=300" },
   }),
 );
 
-/** v1's sign-in, its WorkOS callback, its sign-out and its session check: v2 sign-in now. */
 export const v1SignIn = (browser: string) =>
   Effect.succeed(
     HttpServerResponse.redirect(new URL("/login", browser).href, { status: 302, headers: noStore }),
   );
 
-/** Sign-up, as v1's edge redirected it. */
 export const v1SignUp = (browser: string) =>
   Effect.succeed(
     HttpServerResponse.redirect(new URL("/login?mode=signup", browser).href, {
@@ -41,10 +31,6 @@ export const v1SignUp = (browser: string) =>
     }),
   );
 
-/**
- * A 410 page saying part of Executor v1 has shut down and linking to Executor. `paragraphs` are
- * fixed HTML; nothing from the request goes in.
- */
 export const v1GonePage = (page: {
   readonly title: string;
   readonly heading: string;
@@ -74,10 +60,6 @@ const callbackGone = (browser: string) =>
     browser,
   });
 
-/**
- * `GET /api/oauth/callback`: a connected-account sign-in v2 started (its state starts with
- * `x2.`) finishes with `callback`, as before; any other was v1's, whose sessions are gone.
- */
 export const accountCallback = <E, R>(
   browser: string,
   callback: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
@@ -88,7 +70,6 @@ export const accountCallback = <E, R>(
       : Effect.succeed(callbackGone(browser)),
   );
 
-/** Any other path of v1's REST API. */
 export const v1ApiGone = (api: string) =>
   Effect.succeed(
     HttpServerResponse.jsonUnsafe(
@@ -101,11 +82,6 @@ export const v1ApiGone = (api: string) =>
     ),
   );
 
-/**
- * Every 404 or 405 under `/api/` on the edge is v1's API, gone: paths v2 owns there (its callbacks, client
- * ID documents and telemetry) answer before this, and a telemetry path of another deployment is
- * no API either.
- */
 export const apiGoneOnEdge =
   (api: string) =>
   <E, R>(handler: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>) =>
@@ -120,12 +96,6 @@ export const apiGoneOnEdge =
 
 const Slugs = Schema.Array(Schema.Struct({ slug: Schema.String }));
 
-/**
- * Everything the edge's other routes do not match. A v1 organization's dashboard
- * (`/<v1 slug>`, `/<v1 slug>/...`) redirects to its v2 organization, found only through the
- * legacy table (`private_v1_legacy_org`); a path under `/api/` is v1's API, gone; anything else is
- * the site's 404.
- */
 export const edgeFallback = <E, R>(input: {
   readonly withSql: WithSql;
   readonly browser: string;

@@ -39,11 +39,6 @@ layer(TestLive, { excludeTestServices: true })("Auth observability", (it) => {
         const collector = yield* fs
           .readFileString(`${target.directory}/data/diagnostics/collector.json`)
           .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Collector))));
-        // The workload: one client signing in at the allowance Cloud gives an address (`/sign-in*`,
-        // 3 per 10 s), so each sign-in starts at least 10 s after the one three before it. The
-        // managed Cloud runs with that limit off, so the scenario keeps to it itself. Its subject
-        // is what each outcome reports, not how many sign-ins one address can make;
-        // `cloud-auth-rate-limit` proves the limit.
         const signIns: Array<number> = [];
         const signIn = Effect.gen(function* () {
           const third = signIns.at(-3);
@@ -119,8 +114,6 @@ layer(TestLive, { excludeTestServices: true })("Auth observability", (it) => {
               if (fixture.kind === "unknown")
                 callback.searchParams.set("error", "private-provider-error");
               const headers = { traceparent: `00-${traceId}-1234567890abcdef-01` };
-              // The provider returns to the edge, which sends the browser, query intact, to the
-              // browser origin, where the sign-in's state cookie is checked.
               return page.request
                 .get(callback.href, { maxRedirects: 0, headers })
                 .then((bounce) => {
@@ -136,8 +129,6 @@ layer(TestLive, { excludeTestServices: true })("Auth observability", (it) => {
             });
             expect(status).toBe(302);
           }
-          // Spans arrive in separate export batches, and the request span ends after its children.
-          // Wait until every span asserted below has arrived, not only the callback span.
           const exchanges =
             fixture.kind === "success" ||
             fixture.kind === "invalid_code" ||
@@ -180,8 +171,6 @@ layer(TestLive, { excludeTestServices: true })("Auth observability", (it) => {
               "auth.error_code": fixture.code,
               "auth.stage": fixture.stage,
               "auth.session_created": String(fixture.kind === "success"),
-              // Only a profile that arrived says whether it had a photo; a fresh identity's
-              // photo is stored when Better Auth creates the user, not by the refresh.
               "auth.profile.photo": fixture.kind === "success" ? "present" : "unknown",
               "auth.photo.refresh": fixture.kind === "success" ? "new_user" : "none",
               "http.response.status_code": "302",

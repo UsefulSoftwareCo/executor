@@ -1,17 +1,3 @@
-/**
- * A Cloud request never holds its database connections while it waits on a telemetry endpoint.
- * The scenario holds every export this local Cloud sends, as an export endpoint that hangs, and
- * runs an app's tool from the API and from the app's own page. While each call runs, the event's
- * connections are open: they carry its reads, and the scenario sees them. Each call answers as
- * before, and its connections close once its own work is done, long before the app telemetry it
- * forwards gives up on the endpoint (three seconds). A request that waited on that telemetry
- * before releasing its pool kept its connections open the whole three seconds. Each held call's
- * close report says that its telemetry wait reached its bound, and that it was the forwarder's
- * drain.
- *
- * Holding exports affects every scenario of the Cloud, so this one runs on a local Cloud of its
- * own (`cloud-export-hang` in e2e/ci-selection.ts).
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Fiber, Redacted, Ref, Schedule, Schema } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
@@ -28,7 +14,6 @@ import { Target } from "../support/platform.ts";
 import { targetHosts } from "../support/role-hosts.ts";
 import { scenarios } from "../test-plan.ts";
 
-/** `slow` answers after `ms` milliseconds, so its call's connections stay open long enough to see. */
 const source = `import { defineApp, number, object, query, router } from "apps";
 export default defineApp({}, async () => ({
   tools: router({
@@ -39,9 +24,7 @@ export default defineApp({}, async () => ({
   }),
 }));`;
 
-/** How long the forwarded app telemetry waits for the endpoint before it gives up. */
 const drainMs = 3_000;
-/** How long each call's tool runs. */
 const toolMs = 800;
 
 const App = Schema.Struct({ id: Schema.String, slug: Schema.String, activeVersion: Schema.String });
@@ -90,7 +73,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud export hang", (it) => {
             api.request(actors.owner, "DELETE", path).pipe(Effect.orDie),
           );
 
-          // The app's page: follow its sign-in to a session on the app's origin, as a browser does.
           const location = yield* body(
             Location,
             yield* api.request(actors.owner, "GET", `${path}/ui`),
@@ -143,7 +125,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud export hang", (it) => {
           }
           expect(opened, "The app's page opened").toBe(true);
 
-          /** The Worker events' own database connections, apart from session objects' pools. */
           const eventConnections = locks
             .run({
               sql: "select count(*)::int as n from pg_stat_activity where application_name = 'executor event'",
@@ -174,10 +155,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud export hang", (it) => {
             Effect.flatMap(send),
             Effect.map((response) => response.status),
           );
-          /**
-           * Make one call; return how long it took to answer, the most event connections open while
-           * it ran, and how long its connections took to close after its answer.
-           */
           const call = (label: string, request: Effect.Effect<number, unknown>) =>
             evidence.step(
               label,
@@ -210,10 +187,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud export hang", (it) => {
               }),
             );
 
-          // An MCP program's result reaches its client through the gateway's streamed response,
-          // which ends only after the gateway's event has closed. An event's close waits for its
-          // telemetry export at most a second, so the result is not held for the export's retries
-          // against an endpoint that does not answer, and the export still finishes afterwards.
           const pat = yield* body(
             Schema.Struct({ key: Schema.RedactedFromValue(Schema.String), id: Schema.String }),
             yield* api.request(actors.owner, "POST", "/api/auth/api-key/create", {
@@ -229,7 +202,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud export hang", (it) => {
             organization: actors.organization.id,
           });
           const program = `return await tools[${JSON.stringify(app.slug)}].slow({ ms: 0 })`;
-          /** Run the program once; return how long its result took to reach the client, and its trace. */
           const execute = (label: string) =>
             Effect.gen(function* () {
               const started = performance.now();
@@ -249,7 +221,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud export hang", (it) => {
               if (trace === undefined) return yield* Effect.die("MCP request evidence missing");
               return { tookMs, trace };
             });
-          // Answered: the exports arrive once each.
           yield* watchTrace("*");
           const answered = [
             yield* execute("A program while exports are answered"),
@@ -265,7 +236,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud export hang", (it) => {
               ];
             }),
           );
-          // Once the endpoint answers again, the exports the closes stopped waiting for arrive.
           for (const { trace } of [...answered, ...hung])
             yield* telemetry.query(trace).pipe(
               Effect.filterOrFail(
@@ -283,11 +253,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud export hang", (it) => {
           expect(received.spans, "The collector counted the programs' spans").toBeGreaterThan(0);
           expect(received.duplicated, "No span was exported twice").toBe(0);
 
-          // An export's retries, the waits Retry-After asks for included, end within the time the
-          // runtime keeps an event's work after its response (`exportBudget` in the telemetry
-          // package): the spans of a program whose exports could not get out at its close still
-          // arrive within it, measured from the program's answer, when its event's export starts. The
-          // collector is read every 500 ms, so a span is seen up to that late.
           const exportBudgetMs = 27_000;
           const arrives = <R>(label: string, trouble: Effect.Effect<void, never, R>) =>
             Effect.gen(function* () {
@@ -307,7 +272,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud export hang", (it) => {
               );
               return { tookMs: run.tookMs, arrivedMs: performance.now() - run.at };
             });
-          // The endpoint hangs long enough for attempts to reach their own time-out, then answers.
           const afterHang = yield* arrives(
             "A program while the endpoint hangs for twelve seconds",
             Effect.andThen(
@@ -315,7 +279,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud export hang", (it) => {
               Effect.addFinalizer(() => Effect.sleep("12 seconds")),
             ),
           );
-          // The collector sheds load for a few seconds and asks for a wait longer than the budget.
           const afterRetryAfter = yield* arrives(
             "A program while the collector asks for a 30 s Retry-After",
             Effect.andThen(
@@ -354,18 +317,11 @@ layer(HostedLive, { excludeTestServices: true })("Cloud export hang", (it) => {
                   )),
                 });
               }
-              // The endpoint stays hung past the forwarder's bound, so every held call's drain
-              // reaches it before the endpoint answers again. A close starts after its answer, a
-              // page call's later than an API call's, so the hang outlasts the bound by as much.
               yield* Effect.sleep(drainMs * 2);
               return calls;
             }),
           );
           yield* evidence.json("cloud-export-hang.json", { warm, held });
-          // Each held call waited out its forwarder's bound, and its close report, exported once the
-          // endpoint answers again, says so. A close runs after its request's span has ended, so
-          // its report carries no trace; this Cloud serves only this scenario, so every report on
-          // its collector is one of these calls'.
           const reports = yield* telemetry.logsWholeEnvironment("executor.request.close").pipe(
             Effect.map((logs) =>
               Schema.decodeUnknownSync(LogRecords)(logs).data.filter(

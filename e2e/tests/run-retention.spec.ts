@@ -1,34 +1,19 @@
-/**
- * Each `bun run e2e:*` run writes a run folder under the workspace's `.local/e2e`, and a starting
- * run removes older ones (`e2e/sdk/run-retention.ts`). These cases start `e2e/run.ts` in a fake
- * workspace, with a test name no scenario has, so the run stops right after it starts, and read
- * which folders remain. The size case calls `pruneRuns` in this process with a 6 MiB cap.
- */
 import { expect, layer } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Effect, FileSystem, Path, Schedule, Stream } from "effect";
+import { Effect, FileSystem, Option, Path, Schedule, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { randomBytes } from "node:crypto";
-import { pruneRuns } from "../sdk/run-retention.ts";
+import { keepAllMarker, pruneRuns, shrunkMarker } from "../sdk/run-retention.ts";
 
 const hour = 60 * 60_000;
 const day = 24 * hour;
 const mebibyte = 1024 ** 2;
 
-/** A run folder name as `runSuite` writes it, started `ago` milliseconds before now. */
 const runName = (ago: number, target: string, suffix: string | undefined) =>
   `${new Date(Date.now() - ago).toISOString().replaceAll(":", "-")}-${target}${suffix === undefined ? "" : `-${suffix}`}`;
 
-/** No process has this PID: Linux caps PIDs at 2^22 and macOS at 99,999. */
 const gonePid = 2 ** 30;
 
-/**
- * What a run folder holds about its outcome. `passed` and `failed` are what `runSuite` records;
- * the rest have no recorded outcome: a run saved before it was recorded whose cases all passed
- * (`legacy`), one whose second target has no evidence (`missing-target`), one whose Vitest
- * report says `success: false` though every case passed (`vitest-failed`), one with no cases
- * (`empty`), an `evidence.json` cut short (`unreadable`), and none at all, as a crash leaves it.
- */
 type Outcome =
   | "passed"
   | "failed"
@@ -65,7 +50,6 @@ const evidence = (outcome: Outcome) => {
   }
 };
 
-/** A git workspace with an empty `.local/e2e`, and a directory outside it. */
 const workspace = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -76,7 +60,6 @@ const workspace = Effect.gen(function* () {
   const runs = path.join(repo, ".local/e2e");
   yield* fs.makeDirectory(outside, { recursive: true });
   yield* fs.makeDirectory(repo, { recursive: true });
-  // The run reads the commit it tests.
   for (const args of [
     ["init", "--quiet"],
     ["-c", "user.name=e2e", "-c", "user.email=e2e@example.com"].concat([
@@ -93,7 +76,6 @@ const workspace = Effect.gen(function* () {
 
 type Workspace = Effect.Success<typeof workspace>;
 
-/** A finished run folder in `runs` with the outcome files `runSuite` and Vitest write. */
 const writeRun = (
   runs: string,
   name: string,
@@ -120,17 +102,16 @@ const writeRun = (
     }
     for (const [file, text] of Object.entries(files))
       yield* fs.writeFileString(path.join(directory, file), text);
+    const [, day, hours, minutes, seconds] =
+      /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2}\.\d{3})Z/.exec(name) ?? [];
+    const started = Date.parse(`${day}T${hours}:${minutes}:${seconds}Z`);
+    if (Number.isFinite(started) && outcome !== "none" && outcome !== "unreadable") {
+      const ended = new Date(Math.min(started + 60_000, Date.now()));
+      yield* fs.utimes(path.join(directory, "evidence.json"), ended, ended);
+    }
     return name;
   });
 
-/**
- * `.local/e2e` holds, newest first: seven passed runs from the last 7 hours, the oldest with a
- * link to a directory outside; a run another process started 30 minutes ago; seven runs from 8-14 hours ago that did not pass or record no
- * outcome; a passed run whose name is hour 25 of a day in 2000; 4-day-old failed, killed and passed runs; a
- * 5-day-old run another process is writing, one with a marker that is not JSON and one whose
- * marker cannot be read; a 10-day-old run in the old name format; a link named like a run
- * pointing outside; and files that are not runs.
- */
 const populated = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -147,7 +128,6 @@ const populated = Effect.gen(function* () {
     (outcome, index) => run(runName((8 + index) * hour, "local", `f0000${index}`), outcome),
   );
   const invalidTime = yield* run("2000-01-01T25-00-00.000Z-local-bad000", "passed");
-  // The oldest passed run, which goes, links to a directory outside the workspace.
   yield* fs.makeDirectory(path.join(outside, "linked-from-run"), { recursive: true });
   yield* fs.writeFileString(path.join(outside, "linked-from-run/keep.txt"), "outside\n");
   yield* fs.symlink(path.join(outside, "linked-from-run"), path.join(runs, passed[6]!, "link"));
@@ -159,23 +139,19 @@ const populated = Effect.gen(function* () {
   const garbled = yield* run(runName(5 * day, "local", "aaaaab"), "passed", {
     "in-progress-1-abcdef.json": "{",
   });
-  // `process.kill(1.5, 0)` throws, as for a gone PID; a PID that is not a positive integer keeps it.
   const fractional = yield* run(runName(5 * day, "local", "aaaaae"), "passed", marker(1.5));
-  // A marker naming a gone PID, which this process may not read: kept, as it cannot be checked.
   const denied = yield* run(runName(5 * day, "local", "aaaaac"), "passed", marker(gonePid));
   yield* fs.chmod(path.join(runs, denied, `in-progress-${gonePid}-abcdef.json`), 0o000);
   const killed = yield* run(runName(4 * day, "cloud", "bbbbbb"), "none", marker(gonePid));
   const oldFailed = yield* run(runName(4 * day, "local", "f00010"), "failed");
   const oldPassed = yield* run(runName(4 * day, "self-host", "cccccc"), "passed");
   const oldFormat = yield* run(runName(10 * day, "cloud", undefined), "passed");
-  // A link named like a run, to a directory outside: neither is removed.
   yield* fs.makeDirectory(path.join(outside, "linked-as-run"), { recursive: true });
   yield* fs.writeFileString(path.join(outside, "linked-as-run/keep.txt"), "outside\n");
   const link = runName(8 * day, "self-host", "dddddd");
   yield* fs.symlink(path.join(outside, "linked-as-run"), path.join(runs, link));
   yield* fs.writeFileString(path.join(runs, "notes.txt"), "not a run\n");
   yield* fs.makeDirectory(path.join(runs, "scratch"));
-  // Run-named folders elsewhere under `.local` are not run folders.
   const elsewhere = path.join(input.repo, ".local/other", runName(9 * day, "cloud", "eeeeee"));
   yield* fs.makeDirectory(elsewhere, { recursive: true });
   return {
@@ -199,7 +175,6 @@ const populated = Effect.gen(function* () {
   };
 });
 
-/** Starts a run in the workspace. It stops after starting: no scenario has the test name. */
 const startRun = (input: Workspace, env: Record<string, string> = {}) =>
   Effect.gen(function* () {
     const path = yield* Path.Path;
@@ -216,8 +191,6 @@ const startRun = (input: Workspace, env: Record<string, string> = {}) =>
         ],
         {
           cwd: input.repo,
-          // CI is set on the runners; an empty value prunes as on a workstation. The host slot
-          // would wait for other runs on this machine.
           env: { CI: "", EXECUTOR_E2E_HOST_SLOTS: "off", ...env },
           extendEnv: true,
         },
@@ -242,7 +215,6 @@ const listing = (directory: string) =>
     return (yield* fs.readDirectory(directory)).toSorted();
   });
 
-/** Starts a run and returns the run folder it added and its output. */
 const startAndFind = (input: Workspace, env?: Record<string, string>) =>
   Effect.gen(function* () {
     const before = yield* listing(input.runs);
@@ -253,7 +225,6 @@ const startAndFind = (input: Workspace, env?: Record<string, string>) =>
     return { current: added[0]!, output, before };
   });
 
-/** Writes `bytes` of random data, which takes that much space even on a compressing file system. */
 const allocate = (file: string, bytes: number) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -270,10 +241,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("e2e run folder retenti
         const input = yield* populated;
         const n = input.names;
         const { current, output } = yield* startAndFind(input);
-        // The two oldest passed runs go, though newer than the seven without a recorded pass,
-        // which stay. Past 3 days the failed, killed (its marker names a gone PID), passed and
-        // old-format runs go; the runs whose markers name a live PID, are not JSON or cannot be
-        // read stay. The folder whose name is not a real time stays.
         expect(yield* listing(input.runs)).toEqual(
           [
             current,
@@ -291,13 +258,11 @@ layer(NodeServices.layer, { excludeTestServices: true })("e2e run folder retenti
           ].toSorted(),
         );
         expect(output).toMatch(/e2e: removed 6 old runs \(\d+ MB freed\) from /);
-        // The started run's marker is gone once it ends, and it recorded no pass.
         expect(
           (yield* listing(path.join(input.runs, current))).filter((name) =>
             name.startsWith("in-progress-"),
           ),
         ).toEqual([]);
-        // Nothing outside `.local/e2e`, nor any link's target, was touched.
         expect(yield* fs.readLink(path.join(input.runs, n.link))).toBe(
           path.join(input.outside, "linked-as-run"),
         );
@@ -320,9 +285,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("e2e run folder retenti
         const input = yield* populated;
         const n = input.names;
         const file = (name: string, file: string) => path.join(input.runs, name, "self-host", file);
-        // 3 MiB in the newest passed run, linked three more times; 2 MiB in the next; 2 MiB in
-        // the newest run that failed; 1.5 MiB in the run started 30 minutes ago, which is still
-        // being written. A 10 GiB sparse file in the newest passed run holds no blocks.
         yield* allocate(file(n.passed[0]!, "trace.zip"), 3 * mebibyte);
         for (const copy of [1, 2, 3])
           yield* fs.link(file(n.passed[0]!, "trace.zip"), file(n.passed[0]!, `trace-${copy}.zip`));
@@ -332,8 +294,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("e2e run folder retenti
         yield* fs.writeFileString(file(n.passed[0]!, "sparse.webm"), "");
         yield* fs.truncate(file(n.passed[0]!, "sparse.webm"), 10 * 1024 ** 3);
         yield* pruneRuns({ workspace: input.repo, current: "", keepBytes: 6 * mebibyte });
-        // About 7 MiB counts. Passed runs go oldest first until 6 MiB or less remain: the fifth to
-        // the second. The newest passed run stays, and so does the older 2 MiB run that failed.
         expect(yield* listing(input.runs)).toEqual(
           [
             n.passed[0]!,
@@ -367,7 +327,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("e2e run folder retenti
         const fs = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
         const input = yield* workspace;
-        // The linked directory lives outside the workspace and holds a 4-day-old passed run.
         const target = path.join(input.outside, "linked");
         yield* fs.makeDirectory(path.join(target, linked === ".local" ? "e2e" : ""), {
           recursive: true,
@@ -389,13 +348,10 @@ layer(NodeServices.layer, { excludeTestServices: true })("e2e run folder retenti
       const input = yield* workspace;
       yield* fs.makeDirectory(input.runs, { recursive: true });
       const name = yield* writeRun(input.runs, runName(5 * day, "local", "a00001"), "none");
-      // The render blocks reading `evidence.json`, a pipe, until this test writes to it.
       const pipe = path.join(input.runs, name, "evidence.json");
       expect(yield* processes.exitCode(ChildProcess.make("mkfifo", [pipe]))).toBe(0);
       const alias = path.join(input.root, "alias");
       yield* fs.symlink(input.repo, alias);
-      // Opening the pipe for reading and writing never blocks, so this always unblocks the render,
-      // whether it is waiting or gone. It runs before the spawn's own finaliser, which kills it.
       const unblock = fs.writeFileString(pipe, "{}", { flag: "r+" }).pipe(Effect.ignore);
       const render = yield* processes.spawn(
         ChildProcess.make(
@@ -417,10 +373,207 @@ layer(NodeServices.layer, { excludeTestServices: true })("e2e run folder retenti
       );
       yield* startAndFind(input);
       expect(yield* listing(input.runs)).toContain(name);
-      // Ending the render gives the marker up.
       yield* unblock;
       expect(yield* render.exitCode.pipe(Effect.timeout("20 seconds"))).not.toBe(0);
       expect(yield* markers).toEqual([]);
+    }).pipe(Effect.scoped),
+  );
+});
+
+const bulky = {
+  "local/coverage/0123456789abcdef/lcov.info": "TN:\n",
+  "local/data/diagnostics/motel.sqlite": "db",
+  "local/scenarios/0123456789abcdef0123456789abcdef/data/executor.pglite/base": "db",
+  "local/scenarios/0123456789abcdef0123456789abcdef/engines-abc/data/state": "db",
+  "cloud/data/diagnostics/motel-1/motel/data.sqlite": "db",
+};
+const lasting = {
+  "local/scenarios/0123456789abcdef0123456789abcdef/server.log": "log\n",
+  "local/scenarios/0123456789abcdef0123456789abcdef/scenario.json": "{}",
+  "local/scenarios/0123456789abcdef0123456789abcdef/engines-abc/server.log": "log\n",
+  "local/report/evidence/abc/result.json": "{}",
+  "local/report/evidence/abc/trace.zip": "zip",
+  "local/report/evidence/abc/raw.webm": "webm",
+  "local/report/evidence/abc/checkpoint-1.png": "png",
+  "cloud/cloud.log": "log\n",
+};
+
+const shrinkable = (runs: string, ago: number, outcome: "passed" | "failed", suffix: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const name = runName(ago, "local", suffix);
+    const directory = path.join(runs, name);
+    for (const [file, text] of Object.entries({ ...bulky, ...lasting })) {
+      yield* fs.makeDirectory(path.dirname(path.join(directory, file)), { recursive: true });
+      yield* fs.writeFileString(path.join(directory, file), text);
+    }
+    yield* writeRun(runs, name, outcome);
+    const ended = new Date(Date.now() - ago + 60_000);
+    yield* fs.utimes(path.join(directory, "evidence.json"), ended, ended);
+    return name;
+  });
+
+const holds = (runs: string, name: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const has = (file: string) => fs.exists(path.join(runs, name, file));
+    const bulk: Array<string> = [];
+    for (const file of Object.keys(bulky)) if (yield* has(file)) bulk.push(file);
+    const kept: Array<string> = [];
+    for (const file of Object.keys(lasting)) if (yield* has(file)) kept.push(file);
+    return {
+      bulk,
+      lasting: kept.length === Object.keys(lasting).length,
+      marker: yield* has(shrunkMarker),
+    };
+  });
+const whole = { bulk: Object.keys(bulky), lasting: true, marker: false };
+const shrunk = { bulk: [], lasting: true, marker: true };
+
+layer(NodeServices.layer, { excludeTestServices: true })("e2e run folder shrinking", (it) => {
+  it.effect(
+    "the newest passed run stays whole, older passed runs and day-old failed runs lose only their bulk and say so",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const { repo, runs } = yield* workspace;
+        yield* fs.makeDirectory(runs, { recursive: true });
+        const newestPassed = yield* shrinkable(runs, 2 * hour, "passed", "a00001");
+        const olderPassed = yield* shrinkable(runs, 3 * hour, "passed", "a00002");
+        const freshFailed = yield* shrinkable(runs, 23 * hour, "failed", "a00003");
+        const dayOldFailed = yield* shrinkable(runs, 26 * hour, "failed", "a00004");
+        const start = Date.now();
+        yield* pruneRuns({ workspace: repo, current: "" });
+        expect(yield* holds(runs, newestPassed)).toEqual(whole);
+        expect(yield* holds(runs, freshFailed)).toEqual(whole);
+        expect(yield* holds(runs, olderPassed)).toEqual(shrunk);
+        expect(yield* holds(runs, dayOldFailed)).toEqual(shrunk);
+        const record = JSON.parse(
+          yield* fs.readFileString(path.join(runs, dayOldFailed, shrunkMarker)),
+        ) as { shrunkAt: string; reason: string; removed: Array<string> };
+        expect(record.removed.sort()).toEqual([
+          "cloud/data",
+          "local/coverage",
+          "local/data",
+          "local/scenarios/0123456789abcdef0123456789abcdef/data",
+          "local/scenarios/0123456789abcdef0123456789abcdef/engines-abc/data",
+        ]);
+        expect(record.reason).toMatch(/24 hours/);
+        expect(Date.parse(record.shrunkAt)).toBeGreaterThanOrEqual(start - 1000);
+        const before = yield* fs.readFileString(path.join(runs, olderPassed, shrunkMarker));
+        yield* pruneRuns({ workspace: repo, current: "" });
+        expect(yield* fs.readFileString(path.join(runs, olderPassed, shrunkMarker))).toBe(before);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("keep-all-runs stops removal and shrinking", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const { repo, runs } = yield* workspace;
+      yield* fs.makeDirectory(runs, { recursive: true });
+      yield* shrinkable(runs, 2 * hour, "passed", "b00001");
+      const older = yield* shrinkable(runs, 3 * hour, "passed", "b00002");
+      const aged = yield* shrinkable(runs, 5 * day, "failed", "b00003");
+      yield* fs.writeFileString(path.join(runs, keepAllMarker), "");
+      yield* pruneRuns({ workspace: repo, current: "" });
+      expect(yield* holds(runs, older)).toEqual(whole);
+      expect(yield* holds(runs, aged)).toEqual(whole);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "a run in progress is not shrunk, and a bulk folder that is a link is not followed",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const { repo, runs, outside } = yield* workspace;
+        yield* fs.makeDirectory(runs, { recursive: true });
+        yield* shrinkable(runs, 1 * hour, "passed", "c00001");
+        const writing = yield* shrinkable(runs, 30 * hour, "failed", "c00002");
+        yield* fs.writeFileString(
+          path.join(runs, writing, `in-progress-${process.pid}-abcdef.json`),
+          JSON.stringify({ pid: process.pid }),
+        );
+        const linked = yield* shrinkable(runs, 3 * hour, "passed", "c00003");
+        yield* fs.makeDirectory(path.join(outside, "data"));
+        yield* fs.writeFileString(path.join(outside, "data/keep.txt"), "outside\n");
+        const scenario = path.join(
+          runs,
+          linked,
+          "local/scenarios/fedcba9876543210fedcba9876543210",
+        );
+        yield* fs.makeDirectory(scenario, { recursive: true });
+        yield* fs.symlink(path.join(outside, "data"), path.join(scenario, "data"));
+        yield* pruneRuns({ workspace: repo, current: "" });
+        expect(yield* holds(runs, writing)).toEqual(whole);
+        expect(yield* holds(runs, linked)).toEqual(shrunk);
+        expect(yield* fs.exists(path.join(outside, "data/keep.txt"))).toBe(true);
+        expect(Option.isSome(yield* Effect.option(fs.readLink(path.join(scenario, "data"))))).toBe(
+          true,
+        );
+      }).pipe(Effect.scoped),
+  );
+
+  const series = (runs: string, newestAgo: number) =>
+    Effect.forEach([6, 5, 4, 3, 2, 1, 0], (step) =>
+      shrinkable(runs, newestAgo + step * 2 * 60_000 + 60_000, "passed", `5e0${step}00`),
+    );
+  const evidence = "local/report/evidence/abc/lookups.json";
+
+  it.effect(
+    "a series of quick passed runs read together keeps every run whole while it is recent",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const { repo, runs } = yield* workspace;
+        yield* fs.makeDirectory(runs, { recursive: true });
+        const names = yield* series(runs, 15 * 60_000);
+        for (const name of names) yield* fs.writeFileString(path.join(runs, name, evidence), "{}");
+        yield* pruneRuns({ workspace: repo, current: "" });
+        for (const name of names) {
+          expect(yield* holds(runs, name), name).toEqual(whole);
+          expect(yield* fs.exists(path.join(runs, name, evidence)), name).toBe(true);
+        }
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "once the series is two hours old, the count takes passed runs past the newest five and the rest shrink",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const { repo, runs } = yield* workspace;
+        yield* fs.makeDirectory(runs, { recursive: true });
+        const names = yield* series(runs, 3 * hour);
+        yield* pruneRuns({ workspace: repo, current: "" });
+        const left = (yield* fs.readDirectory(runs)).sort();
+        expect(left).toEqual(names.slice(2).sort());
+        expect(yield* holds(runs, names[6]!)).toEqual(whole);
+        for (const name of names.slice(2, 6))
+          expect(yield* holds(runs, name), name).toEqual(shrunk);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("past the byte cap even recent runs go, oldest first, to protect the disk", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const { repo, runs } = yield* workspace;
+      yield* fs.makeDirectory(runs, { recursive: true });
+      const names = yield* Effect.forEach([4, 3, 2, 1], (step) =>
+        writeRun(runs, runName(step * 5 * 60_000, "local", `ca0${step}00`), "passed", {
+          "big.bin": "x".repeat(2 * mebibyte),
+        }),
+      );
+      yield* pruneRuns({ workspace: repo, current: "", keepBytes: 5 * mebibyte });
+      expect((yield* fs.readDirectory(runs)).sort()).toEqual(names.slice(2).sort());
+      expect(yield* fs.exists(path.join(runs, names[3]!, "big.bin"))).toBe(true);
     }).pipe(Effect.scoped),
   );
 });

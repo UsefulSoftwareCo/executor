@@ -1,9 +1,9 @@
-/** Fixture control is loopback-only. Test callers receive sessions, never database credentials. */
 import {
   Cause,
   Config,
   Duration,
   Effect,
+  Fiber,
   FileSystem,
   Option,
   Path,
@@ -16,20 +16,13 @@ import { HttpClient, HttpClientRequest } from "effect/http";
 import { randomBytes } from "node:crypto";
 import { FixtureControl } from "./contracts.ts";
 import { roleHost } from "../support/role-hosts.ts";
-import { reveal, secret } from "../support/failure-text.ts";
+import { mask, reveal, safeText, secret } from "../support/failure-text.ts";
 export { FixtureControl, FixtureActor, FixtureActors } from "./contracts.ts";
 
-/**
- * Safe errors describe the control operation without the capability or response body. A clean-up
- * step's 400 adds what failed and where (`detail`), which the fixture server builds only from its
- * own phrases, error class names and error codes; it is decoded against that shape here, so
- * nothing else in a body can reach the message.
- */
 export class FixtureFailed extends Schema.TaggedError<FixtureFailed>()("FixtureFailed", {
   operation: Schema.String,
   status: Schema.optional(Schema.Number),
   reason: Schema.optional(Schema.Literals(["timeout", "transport"])),
-  /** A transport failure's socket error code, such as `ECONNREFUSED`; never its message. */
   code: Schema.optional(Schema.String),
   detail: Schema.optional(Schema.String),
 }) {
@@ -38,7 +31,6 @@ export class FixtureFailed extends Schema.TaggedError<FixtureFailed>()("FixtureF
   }
 }
 
-/** Letters, digits, spaces and `.,'()_-`: never a URL, a connection string or a token. */
 const SafeText = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9 .,'()_-]{1,200}$/u));
 const CleanupFailure = Schema.fromJsonString(
   Schema.Struct({
@@ -52,7 +44,6 @@ const CleanupFailure = Schema.fromJsonString(
   }),
 );
 
-/** Invoke an authenticated local control operation with bounded lifetime. */
 export const fixtureRequest = (
   control: typeof FixtureControl.Type,
   path: string,
@@ -96,7 +87,6 @@ export const fixtureRequest = (
     ),
   );
 
-/** The first socket error code along a cause chain (`reason`, `cause`), such as `ECONNREFUSED`. */
 const socketCode = (error: unknown, depth = 0): string | undefined => {
   if (depth > 6 || typeof error !== "object" || error === null) return undefined;
   const value = error as { code?: unknown; reason?: unknown; cause?: unknown };
@@ -104,20 +94,20 @@ const socketCode = (error: unknown, depth = 0): string | undefined => {
   return socketCode(value.reason, depth + 1) ?? socketCode(value.cause, depth + 1);
 };
 
-/** Parse the private capability supplied by an environment owner to a test process. */
 export const fixtureControlFromEnvironment = Config.String("E2E_FIXTURES").pipe(
   Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(FixtureControl))),
 );
 
-/**
- * Start a scoped fixture process before configuring its database through the one-use setup route.
- * `browserOrigin` is where Cloud serves its dashboard: `app.` of `origin` unless the run starts it
- * elsewhere, as under its rollback switch.
- */
+const quotedLines = 30;
+
 export const startFixtureControl = (
   origin: string,
   directory: string,
   browserOrigin: string = roleHost(origin, "app"),
+  {
+    script = "apps/hosted/testing/scenario-server.ts",
+    readyWithin = "10 seconds",
+  }: { readonly script?: string; readonly readyWithin?: Duration.Input } = {},
 ) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem,
@@ -125,13 +115,15 @@ export const startFixtureControl = (
       processes = yield* ChildProcessSpawner.ChildProcessSpawner;
     const output = path.resolve(directory, `fixture-${randomBytes(8).toString("hex")}.json`);
     const token = secret(randomBytes(32).toString("hex"));
+    const log = path.resolve(directory, "fixtures.log");
+    yield* fs.writeFileString(log, "", { flag: "a", mode: 0o600 });
+    const before = Number((yield* fs.stat(log)).size);
     const child = yield* processes.spawn(
-      ChildProcess.make("node", ["apps/hosted/testing/scenario-server.ts"], {
+      ChildProcess.make("node", [script], {
         extendEnv: false,
         env: {
           PATH: process.env.PATH ?? "",
           TEST_FIXTURE_ORIGIN: origin,
-          // Cloud's dashboard API takes cookie writes only from its browser origin.
           TEST_FIXTURE_BROWSER_ORIGIN: browserOrigin,
           TEST_FIXTURE_OUTPUT: output,
           TEST_FIXTURE_TOKEN: reveal(token),
@@ -141,34 +133,46 @@ export const startFixtureControl = (
         forceKillAfter: "10 seconds",
       }),
     );
-    yield* Stream.merge(child.stdout, child.stderr).pipe(
+    const drain = yield* Stream.merge(child.stdout, child.stderr).pipe(
       Stream.decodeText(),
-      Stream.runForEach((text) =>
-        fs.writeFileString(`${directory}/fixtures.log`, text, { flag: "a", mode: 0o600 }),
-      ),
+      Stream.runForEach((text) => fs.writeFileString(log, text, { flag: "a", mode: 0o600 })),
       Effect.forkScoped,
     );
-    const ready = fs
-      .readFileString(output)
-      .pipe(
-        Effect.flatMap(
-          Schema.decodeUnknownEffect(
-            Schema.fromJsonString(Schema.Struct({ origin: FixtureControl.fields.origin })),
-          ),
-        ),
-        Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 100 }),
-      );
-    const value = yield* Effect.raceFirst(
-      ready,
-      child.exitCode.pipe(
-        Effect.flatMap(() =>
-          Effect.fail(new FixtureFailed({ operation: "Fixture process stopped before readiness" })),
+    const quoted = fs.readFile(log).pipe(
+      Effect.map((bytes) => {
+        const masked = mask(new TextDecoder().decode(bytes.subarray(before))).trimEnd();
+        return masked.trim() === ""
+          ? "it printed nothing"
+          : `the end of what it printed (${log}):\n${safeText(masked.split("\n").slice(-quotedLines).join("\n"))}`;
+      }),
+      Effect.orElseSucceed(() => `its output could not be read (${log})`),
+    );
+    const ready = fs.readFileString(output).pipe(
+      Effect.flatMap(
+        Schema.decodeUnknownEffect(
+          Schema.fromJsonString(Schema.Struct({ origin: FixtureControl.fields.origin })),
         ),
       ),
+      Effect.retry({ schedule: Schedule.spaced("100 millis") }),
+      Effect.map((value) => ({ ready: true as const, origin: value.origin })),
+      Effect.timeout(readyWithin),
     );
-    return { origin: value.origin, token };
+    const exited = child.exitCode.pipe(Effect.map((code) => ({ ready: false as const, code })));
+    const first = yield* Effect.raceFirst(ready, exited).pipe(
+      Effect.catchIf(Cause.isTimeoutError, () => Effect.succeed(undefined)),
+    );
+    if (first?.ready === true) return { origin: first.origin, token };
+    if (first === undefined)
+      return yield* new FixtureFailed({
+        operation: "start",
+        detail: `${script} was still running after ${Duration.format(Duration.fromInputUnsafe(readyWithin))} and had not written its address to ${output}; ${yield* quoted}`,
+      });
+    yield* Fiber.join(drain).pipe(Effect.timeout("2 seconds"), Effect.ignore);
+    return yield* new FixtureFailed({
+      operation: "start",
+      detail: `${script} exited with code ${Number(first.code)} before it wrote its address; ${yield* quoted}`,
+    });
   });
 
-/** Encode only the generated local capability for a private process boundary. */
 export const fixtureControlEnvironment = (control: typeof FixtureControl.Type) =>
   JSON.stringify({ origin: control.origin, token: reveal(control.token) });

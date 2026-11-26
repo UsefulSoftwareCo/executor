@@ -20,17 +20,10 @@ import {
 import { Skeleton } from "../components/skeleton.tsx";
 import type { ConsentConnection } from "../../contracts/scoped-connections.ts";
 
-/**
- * A summary line: the term on the left, its value against the right edge. Every line has the
- * same height: on phones a menu is 44px tall, so the padding narrows to keep it and the hairline
- * inside the line's height.
- */
 const row =
   "grid min-h-12 grid-cols-[7.5rem_1fr] items-center gap-x-4 py-1 max-[740px]:min-h-13 max-[740px]:py-0.5";
-/** Hairlines between the lines, and above and below them, instead of a boxed card. */
 const list = "mcp-consent-summary m-0 divide-y divide-foreground/10 border-y border-foreground/10";
 
-/** Stable consent shell shared by local and hosted connections, including their loading state. */
 export function McpConsentLayout({
   children,
   description,
@@ -57,7 +50,6 @@ export function McpConsentLayout({
   );
 }
 
-/** One line of text still loading: the line's own height, with a bar where the words will be. */
 function LineLoading({ className }: { readonly className: string }) {
   return (
     <span className="flex h-lh items-center">
@@ -68,11 +60,6 @@ function LineLoading({ className }: { readonly className: string }) {
 
 const rowWidths = ["w-20", "w-16", "w-32", "w-24"];
 
-/**
- * Loading has the consent form's height, so nothing below moves when it arrives: one line of
- * description, a summary row for each row the form will show, the note's lines (two for the usual
- * "Access is sent to…" destination), and buttons at their size on each screen.
- */
 export function McpConsentLoading({
   rows = 3,
   noteLines = 2,
@@ -114,12 +101,6 @@ export function McpConsentLoading({
   );
 }
 
-/**
- * A registered client chooses its own display name, so the name alone cannot tell
- * the person who is asking. The authorization server has already matched this
- * redirect URI against the client's registration, and it is where the
- * authorization code is delivered, so it is shown as the destination.
- */
 export const consentDestination = (redirectUri: string | null): string | undefined => {
   if (redirectUri === null || redirectUri.length === 0) return undefined;
   const target = URL.parse(redirectUri);
@@ -127,14 +108,12 @@ export const consentDestination = (redirectUri: string | null): string | undefin
   return target.origin === "null" ? `${target.protocol}//` : target.origin;
 };
 
-/** One line of the consent summary: what is granted, then its value or the control that sets it. */
 export function McpConsentRow({
   label,
   htmlFor,
   children,
 }: {
   readonly label: string;
-  /** The control this row labels, when its value can be changed. */
   readonly htmlFor?: string | undefined;
   readonly children: ReactNode;
 }) {
@@ -154,7 +133,6 @@ export function McpConsentRow({
   );
 }
 
-/** A row whose value is still being read; the line keeps its loaded height. */
 export function McpConsentRowPending({ label }: { readonly label: string }) {
   return (
     <McpConsentRow label={label}>
@@ -169,7 +147,6 @@ export function McpConsentRowPending({ label }: { readonly label: string }) {
   );
 }
 
-/** A row whose value could not be read: the failure and its retry take the value's place. */
 export function McpConsentRowFailure({
   label,
   message,
@@ -205,11 +182,9 @@ export interface ConsentOption {
   readonly value: string;
   readonly label: string;
   readonly detail?: string | undefined;
-  /** Shown before the label, in the menu and in the closed menu's value. */
   readonly icon?: IconSvgElement | undefined;
 }
 
-/** An option's icon, muted beside its text. */
 const OptionIcon = ({ icon, className }: { icon: IconSvgElement; className?: string }) => (
   <HugeiconsIcon
     icon={icon}
@@ -220,13 +195,10 @@ const OptionIcon = ({ icon, className }: { icon: IconSvgElement; className?: str
   />
 );
 
-/** An entry's padding, as `SelectItem` lays out a menu entry with a detail line, on each screen. */
 const entry =
   "flex items-start rounded-sm py-2 pr-8 pl-2 text-sm max-[740px]:min-h-11 max-[740px]:py-2.5";
-/** An entry's title and detail lines, as `McpConsentSelect` sets them. */
 const entryLines = "flex flex-col gap-0.5";
 
-/** A row's value as a menu. It reads as the value until it is opened. */
 export function McpConsentSelect({
   id,
   value,
@@ -241,9 +213,7 @@ export function McpConsentSelect({
   readonly options: readonly ConsentOption[];
   readonly onChange: (value: string) => void;
   readonly disabled?: boolean | undefined;
-  /** The menu's entries are still being read; its value can already be shown and kept. */
   readonly busy?: boolean | undefined;
-  /** Further menu entries, after the options. */
   readonly children?: ReactNode;
 }) {
   const shown = options.find((option) => option.value === value);
@@ -304,7 +274,6 @@ const approvalOptions: readonly (ConsentOption & { readonly value: ApprovalMode 
     detail: "You review the call on an Executor page.",
     icon: BrowserIcon,
   },
-  // Last, because the page cannot know whether this client supports MCP prompts.
   {
     value: "native",
     label: "In your client",
@@ -313,15 +282,9 @@ const approvalOptions: readonly (ConsentOption & { readonly value: ApprovalMode 
   },
 ];
 
-/**
- * The approval mode a sign-in page preselects for what the request's resource names. The plain MCP
- * URL names model mode, the default before automatic mode existed; on the page it now preselects
- * automatic. Credentials without a grant record keep taking model mode from that URL.
- */
 export const preselectedApprovalMode = (named: ApprovalMode): ApprovalMode =>
   named === "model" ? "automatic" : named;
 
-/** Where approvals are answered: a menu when the person may change it, otherwise its name. */
 export function McpConsentApprovals({
   mode,
   onMode,
@@ -353,10 +316,6 @@ export function McpConsentApprovals({
   );
 }
 
-/**
- * What the request's resource names, for a page that offers no choice of access. With `onMode`,
- * the approvals row is a menu showing `mode`.
- */
 export function McpConsentTargetRows({
   target,
   mode,
@@ -373,9 +332,11 @@ export function McpConsentTargetRows({
       <McpConsentRow label="Access">
         {target.kind === "api"
           ? "Executor API"
-          : target.connection === undefined
-            ? "All apps"
-            : "One of your connections"}
+          : target.kind === "desktop"
+            ? "Your Executor account"
+            : target.connection === undefined
+              ? "All apps"
+              : "One of your connections"}
       </McpConsentRow>
       {target.kind === "mcp" && (
         <McpConsentApprovals mode={mode ?? target.mode} onMode={onMode} disabled={disabled} />
@@ -384,7 +345,6 @@ export function McpConsentTargetRows({
   );
 }
 
-/** Menu values that no connection ID can equal. */
 const everyApp = "*";
 const newConnection = "+";
 const retryList = "!";
@@ -393,13 +353,11 @@ const appsLabel = (apps: readonly string[]) => {
   return apps.length > 3 ? `${shown} and ${apps.length - 3} more` : shown;
 };
 
-/** The person's connections behind the Access menu, as far as they have been read. */
 export type ConsentConnectionList =
   | { readonly kind: "loading" }
   | { readonly kind: "failed"; readonly retry: () => void }
   | { readonly kind: "loaded"; readonly connections: readonly ConsentConnection[] };
 
-/** Two entries' worth of bars, line for line the size of real entries. */
 function EntriesLoading() {
   return ["w-28", "w-20"].map((width) => (
     <div key={width} className={entry}>
@@ -415,7 +373,6 @@ function EntriesLoading() {
   ));
 }
 
-/** Where the connections will be listed, shaped like two of their entries. */
 function ConnectionsLoading() {
   return (
     <div role="status" aria-label="Loading connections" className="flex flex-col">
@@ -424,7 +381,6 @@ function ConnectionsLoading() {
   );
 }
 
-/** The list's failure and its retry, in the space the loading entries held so the menu keeps its size. */
 function ConnectionsFailed() {
   return (
     <div className="grid">
@@ -441,12 +397,6 @@ function ConnectionsFailed() {
   );
 }
 
-/**
- * Which apps the grant reaches, chosen from the person's connections. The menu shows its value
- * while the connections are read; the list loads, or fails with a retry, inside the open menu. A
- * chosen connection missing from the list, such as one revoked since, stays chosen and says so;
- * the server refuses it.
- */
 export function McpConsentAccess({
   list,
   value,
@@ -457,7 +407,6 @@ export function McpConsentAccess({
   readonly list: ConsentConnectionList;
   readonly value: GrantAccessChoice;
   readonly onChange: (value: GrantAccessChoice) => void;
-  /** Opens the connection editor; the page decides where. Offered once the list has loaded. */
   readonly onNewConnection: (connections: readonly ConsentConnection[]) => void;
   readonly disabled?: boolean | undefined;
 }) {
@@ -477,7 +426,7 @@ export function McpConsentAccess({
           {
             value: everyApp,
             label: "All apps",
-            detail: "Every app you can use, including apps you add later.",
+            detail: "Every app you can use, including later ones, and deploying apps.",
           },
           ...connections.map((item) => ({
             value: item.id,
@@ -494,8 +443,7 @@ export function McpConsentAccess({
                     detail: "This connection no longer exists. Choose another.",
                   },
                 ]
-              : // Until the list is read, the chosen connection is known only by its ID.
-                [{ value: chosen, label: "One of your connections" }]),
+              : [{ value: chosen, label: "One of your connections" }]),
         ]}
         onChange={(next) => {
           if (next === newConnection) {
@@ -512,7 +460,6 @@ export function McpConsentAccess({
         {list.kind === "loading" && <ConnectionsLoading />}
         {list.kind === "failed" && <ConnectionsFailed />}
         <SelectSeparator />
-        {/* It opens the connection editor elsewhere; the arrow says so before it is chosen. */}
         <SelectItem value={newConnection} disabled={list.kind !== "loaded"}>
           <span className="flex items-center gap-1.5">
             New connection
@@ -529,10 +476,6 @@ export function McpConsentAccess({
   );
 }
 
-/**
- * What approving grants, one row each, then one line of guidance. `children` are the rows: the
- * organization where there is one, then access and approvals.
- */
 export function McpConsentSummary({
   note,
   children,
@@ -550,7 +493,9 @@ export function McpConsentSummary({
   );
 }
 
-/** Where approving sends access, for the summary's note. */
+export const desktopSignInNote =
+  "This signs the Executor desktop app in to your Executor account. Revoking this sign-in signs the desktop app out, including the windows it opened.";
+
 export function McpConsentDestination({ origin }: { readonly origin: string }) {
   return (
     <span className="mcp-consent-destination">
@@ -566,17 +511,6 @@ export function McpConsentDestination({ origin }: { readonly origin: string }) {
 const declineDecision = "decline",
   connectDecision = "connect";
 
-/**
- * The decision: two equal buttons, declining first. They submit one form rather than handle
- * clicks, so a decision made before the page hydrates is held by the document's early-submission
- * guard and replayed with the same button once React owns the form, instead of being dropped.
- *
- * Only the button pressed decides, and one page sends at most one decision: a replayed submission
- * from a button that is now disabled is ignored (the replay submits it regardless), and so is any
- * submission while a decision is being sent or after one succeeded. A decision that fails can be
- * made again. Each callback resolves `true` once its decision was delivered; both buttons then stay
- * disabled, with the chosen one showing progress, while the page leaves for the client.
- */
 export function McpConsentActions({
   decline = "Cancel",
   onDecline,
@@ -586,14 +520,11 @@ export function McpConsentActions({
 }: {
   readonly decline?: string;
   readonly onDecline: () => Promise<boolean>;
-  /** Omitted when there is nothing the person could connect. */
   readonly onConnect?: (() => Promise<boolean>) | undefined;
   readonly waiting: boolean;
   readonly connectDisabled?: boolean;
 }) {
   const deciding = useRef(false);
-  // A delivered decision is final: the page leaves for the client, and if it cannot (a custom
-  // scheme, a blocked navigation) the buttons stay disabled rather than look ready and do nothing.
   const [delivered, setDelivered] = useState<string>();
   return (
     <form

@@ -31,7 +31,6 @@ export const formatRelativeTime = (date: Date | string): string => {
   return `${Math.floor(diff / 86_400_000)}d ago`;
 };
 
-// Deterministic color palette for service names
 const SERVICE_COLORS = [
   "#f4a51c",
   "#6ec6ff",

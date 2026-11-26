@@ -57,7 +57,6 @@ const bindings = {
   renderInstallation,
 };
 
-/** This instance's full-access URL and the operator's scoped connections. */
 export function ConnectionsPage() {
   return (
     <QueryView query={mcpInstallationAtom} Failure={Failure} pending={<LoadingRows count={4} />}>
@@ -66,7 +65,6 @@ export function ConnectionsPage() {
   );
 }
 
-/** One scoped connection, or `new` to create one. */
 export function ConnectionPage({ connectionId }: { readonly connectionId: string }) {
   const navigate = useNavigate();
   return (

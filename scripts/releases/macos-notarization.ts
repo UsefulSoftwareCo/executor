@@ -1,8 +1,3 @@
-/**
- * Wait for the notarization a packaging run submitted with `--submission=<file>`, and fail unless
- * Apple accepted it: `node scripts/releases/macos-notarization.ts <file>`. The release workflow
- * runs it after the desktop build and its checks, before uploading what it publishes.
- */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect } from "effect";

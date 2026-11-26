@@ -1,11 +1,3 @@
-/**
- * workerd unloads an evictable engine about 70 s after its last call once no caller holds it,
- * whatever work is in flight. create() holds the engine it starts; a run woken by its alarm
- * after a restart, resumed after a pause, or woken by an event has no such caller. The local
- * product reads running runs every few seconds, which also keeps their engines loaded, so
- * this runs the engine service the local product declares, exactly as declared, alone in the
- * product's workerd with a small user workflow and nothing reading the runs.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Exit, FileSystem, Option, Path, Schedule, Schema, Scope, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
@@ -51,7 +43,6 @@ export default {
 };`;
 
 const Module = Schema.Struct({ name: Schema.String, esModule: Schema.optionalKey(Schema.String) });
-/** The part of the workerd config Alchemy's local runtime serves that this scenario reads. */
 const DumpedConfig = Schema.Struct({
   services: Schema.Array(
     Schema.Struct({
@@ -72,7 +63,6 @@ const DumpedConfig = Schema.Struct({
   extensions: Schema.Array(Schema.Struct({ modules: Schema.Array(Module) })),
 });
 
-/** Cap'n Proto text for a JSON config value; field names are the config's own. */
 const capnp = (value: Schema.Json): string =>
   typeof value === "string"
     ? JSON.stringify(value)
@@ -86,21 +76,18 @@ const capnp = (value: Schema.Json): string =>
               .map(([name, field]) => `${name}=${capnp(field)}`)
               .join(",")})`;
 
-// /create answers with the run id only; the other routes answer with the run status.
 const Status = Schema.Struct({
   status: Schema.optionalKey(Schema.String),
   output: Schema.optionalKey(Schema.Json),
 });
 const Output = Schema.Struct({ started: Schema.Number, finished: Schema.Number });
 
-/** The local product's engine service and a user workflow in one restartable workerd. */
 const engineServer = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
   const directory = yield* fs.makeTempDirectoryScoped({ prefix: "local-workflow-engine-" });
   const dump = path.join(directory, "dump");
-  // Alchemy's local runtime writes each workerd config it serves when this is set.
   const executable = yield* Effect.scoped(
     Effect.gen(function* () {
       const local = yield* startLocalProduct({ WORKERD_DUMP_CONFIG: dump });
@@ -192,7 +179,6 @@ const config :Workerd.Config = (
         ),
       )
       .pipe(Scope.provide(scope));
-    // Every start appends to one log, so a step that ran before a crash is still counted.
     yield* child.all.pipe(Stream.run(fs.sink(log, { flag: "a" })), Effect.forkIn(scope));
     current = { scope, kill: child.kill({ killSignal: "SIGKILL" }).pipe(Effect.ignore) };
     yield* driver("health", (signal) => fetch(`http://127.0.0.1:${port}/health`, { signal })).pipe(
@@ -201,7 +187,6 @@ const config :Workerd.Config = (
     );
   });
   yield* start;
-  // Kills workerd as a crash would, then starts it over the same storage.
   const crash = Effect.suspend(() => current?.kill ?? Effect.void).pipe(
     Effect.andThen(stop),
     Effect.andThen(start),
@@ -231,14 +216,10 @@ layer(TestLive, { excludeTestServices: true })("Local workflow engine steps", (i
           yield* server.call("/create?id=evented&wake=event");
           yield* Effect.sleep("1 second");
           expect((yield* server.call("/pause?id=resumed")).status).toBe("paused");
-          // Only the durable alarm can end the sleep of a run whose process crashed.
           yield* server.crash;
           yield* Effect.sleep("8 seconds");
-          // A resumed run is started by the resume call, and an event by its delivery; both
-          // calls return at once.
           expect((yield* server.call("/resume?id=resumed")).status).toBe("running");
           yield* server.call("/event?id=evented");
-          // Nothing calls any engine while their long steps run.
           yield* Effect.sleep(`${stepSeconds + 25} seconds`);
           for (const run of ["woken", "resumed", "evented"]) {
             const state = yield* server.call(`/status?id=${run}`);

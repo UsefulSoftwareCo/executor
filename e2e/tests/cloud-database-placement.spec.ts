@@ -1,14 +1,3 @@
-/**
- * Cloud keeps database work beside the database. Cron Triggers run wherever Cloudflare starts
- * them, so each one only asks the API Worker's own placed fetch handler to run its job; that is
- * also the only way anything unplaced may wake the schedule coordinator. Durable Objects serve
- * many calls, so an MCP session holds its connections across calls and operations, replaces one
- * the server drops, makes a stalled connection attempt once more, and closes them once the
- * session has been idle. The statements one request or tool call issues at the same time share one
- * of the session's connections, which carries nothing else meanwhile; each call still gets its own
- * rows, beside transactions that reserve a connection. A statement a caller gives up on while it
- * waits on a lock is cancelled in the database and delays no other call.
- */
 import { expect, layer } from "@effect/vitest";
 import { Duration, Effect, Fiber, Schedule, Schema } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
@@ -27,7 +16,6 @@ import { cloudLocks } from "../support/cloud-locks.ts";
 
 type Spans = (typeof SpanQuery.Type)["data"];
 
-/** Every span of the trace below the first span that satisfies `from`, inclusive. */
 const below = (spans: Spans, from: (span: Spans[number]["span"]) => boolean) => {
   const byId = new Map(spans.map(({ span }) => [span.spanId, span]));
   const roots = new Set(spans.filter(({ span }) => from(span)).map(({ span }) => span.spanId));
@@ -43,7 +31,6 @@ const below = (spans: Spans, from: (span: Spans[number]["span"]) => boolean) => 
   });
 };
 
-/** The chain of span names from a span up to its trace's root. */
 const ancestry = (spans: Spans, spanId: string) => {
   const byId = new Map(spans.map(({ span }) => [span.spanId, span]));
   const chain: Array<Spans[number]["span"]> = [];
@@ -55,18 +42,12 @@ const ancestry = (spans: Spans, spanId: string) => {
   return chain;
 };
 
-/**
- * A trace, once the span `select` finds and its whole ancestry up to the trace's root have reached
- * the collector. A parent ends after its children, so it leaves in the same export or a later one, and a
- * refused export is sent again after later ones.
- */
 const deliveredAncestry = (traceId: string, select: (span: Spans[number]["span"]) => boolean) =>
   Telemetry.pipe(
     Effect.flatMap((telemetry) => telemetry.query(traceId)),
     Effect.flatMap((trace) => {
       const found = trace.data.find(({ span }) => select(span));
       const chain = found === undefined ? [] : ancestry(trace.data, found.span.spanId);
-      // The collector answers a span whose parent has not arrived with a placeholder root in its place.
       return chain.at(-1)?.parentSpanId === null &&
         !chain.some((span) => span.operationName.startsWith("[missing parent"))
         ? Effect.succeed({ trace: trace.data, chain })
@@ -81,14 +62,12 @@ export default defineApp({}, async () => ({ tools: router({
     async (_ctx, { text }) => ({ text })),
 }) }));`;
 
-/** A query that answers after the given number of milliseconds. */
 const timerAppSource = `import { defineApp, query, object, number, router } from "apps";
 export default defineApp({}, async () => ({ tools: router({
   wait: query({ input: object({ ms: number() }) },
     async (_ctx, { ms }) => { await new Promise((resolve) => setTimeout(resolve, ms)); return { ms }; }),
 }) }));`;
 
-/** An echo query and an echo mutation that always needs approval. */
 const reviewedAppSource = `import { defineApp, query, mutation, object, string, router } from "apps";
 import { always } from "apps/operations/approval";
 export default defineApp({}, async () => ({ tools: router({
@@ -102,7 +81,6 @@ const Pending = Schema.Struct({
   requestId: Schema.String,
 });
 
-/** The session object's connection limit (`objectConnectionLimit` in object-database.ts). */
 const objectConnectionLimit = 4;
 
 const scheduledAppSource = `import { defineApp, mutation, userInterval, object, router } from "apps";
@@ -120,14 +98,6 @@ const Completed = Schema.Struct({
   execution: Schema.Struct({ ok: Schema.Literal(true), value: Schema.Unknown }),
 });
 
-/**
- * Count or terminate one MCP session object's connections in the local database. A stall makes
- * the next connection the object opens wait that many seconds in PostgreSQL's login. A statement
- * stall makes the object's token update after `stallTokenUpdateAfter` more wait on the lock
- * `holdLock` holds for that many seconds. `largeAppRow` makes reads of that app's row wait on the
- * lock `holdLargeAppRows` holds, while reads of other apps' rows go on (see
- * database-connections-fixture.ts).
- */
 const objectDatabase = (
   owner: string,
   options: {
@@ -183,7 +153,6 @@ const objectDatabase = (
     )(output);
   });
 
-/** Poll an object's database state until `done` holds. */
 const untilObject = (
   owner: string,
   label: string,
@@ -196,10 +165,6 @@ const untilObject = (
     Effect.retry({ schedule: Schedule.spaced("200 millis"), times: 100 }),
   );
 
-/**
- * The SQL statements of the last MCP request's tool call, outside the app's runtime: their text,
- * when each ended, and whether it is one of the access check's reads made beside the recheck.
- */
 const toolCallStatements = Effect.gen(function* () {
   const evidence = yield* Evidence,
     telemetry = yield* Telemetry;
@@ -232,7 +197,6 @@ const toolCallStatements = Effect.gen(function* () {
 const objectConnections = (owner: string, options: Parameters<typeof objectDatabase>[1] = {}) =>
   Effect.map(objectDatabase(owner, options), ({ connections }) => connections);
 
-/** The session object behind the last MCP request, once its spans have reached the collector. */
 const lastSessionObject = Effect.gen(function* () {
   const evidence = yield* Evidence,
     telemetry = yield* Telemetry;
@@ -251,11 +215,6 @@ const lastSessionObject = Effect.gen(function* () {
   );
 });
 
-/**
- * One case of the probe of the session objects' database pool against the local database (see
- * database-pool-fixture.ts): the pool Cloud's session objects use, with the cases a tool call's
- * statements cannot reach on their own.
- */
 const poolCase = (name: string) =>
   Effect.gen(function* () {
     const target = yield* Target;
@@ -278,7 +237,6 @@ const poolCase = (name: string) =>
     )(output.trim().split("\n").at(-1) ?? "");
   });
 
-/** One case of the probe of the pool's repeat after a dropped connection (connection-repeat-fixture.ts). */
 const repeatCase = (name: string) =>
   Effect.gen(function* () {
     const target = yield* Target;
@@ -301,7 +259,6 @@ const repeatCase = (name: string) =>
     );
   });
 
-/** What the statements after a drop did. */
 const RepeatSeen = Schema.Struct({
   dropped: Schema.Number,
   outcome: Schema.String,
@@ -350,8 +307,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud database placement", (it
           }),
         );
 
-        // The local Worker also fires its minute cron on its own; either tick proves the path.
-        // Cron ticks belong to the whole Cloud, not to any one scenario.
         const dispatched = telemetry
           .searchWholeEnvironment("job.dispatch", { "executor.job": "provisioning" })
           .pipe(Effect.map((found) => new Set(found.data.map((entry) => entry.traceId))));
@@ -399,7 +354,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud database placement", (it
         expect(trigger, "The fetch handler must be started by the cron's dispatch").toBeGreaterThan(
           server,
         );
-        // The cron invocation itself opens no database connection.
         const triggerSpan = chain[trigger];
         if (triggerSpan === undefined) return yield* Effect.die("Missing dispatch span");
         const outside = below(trace, (span) => span.spanId === triggerSpan.spanId).filter(
@@ -446,12 +400,10 @@ layer(HostedLive, { excludeTestServices: true })("Cloud database placement", (it
           yield* Effect.addFinalizer(() =>
             api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
           );
-          // The session's first requests, from initialization on, are part of its first window.
           const opened = (yield* evidence.requests).length;
           let client = yield* mcp.connect(key.key, "object-connections", {
             organization: actors.organization.id,
           });
-          // Six sequential tool calls: each is its own MCP operation inside the session object.
           const execute = (label: string) =>
             Effect.gen(function* () {
               const seen = (yield* evidence.requests).length;
@@ -475,9 +427,6 @@ return out;`,
               expect(completed.execution.value).toEqual(["0", "1", "2", "3", "4", "5"]);
               return (yield* evidence.requests).slice(seen).map((request) => request.traceId);
             });
-          // The session object's own spans, once each one a check reads has reached the collector. A
-          // request's spans leave the object in several exports, one each second while it runs and
-          // one when it ends, and a refused export is sent again later, so they arrive in any order.
           type Counts = Record<"operations" | "databases" | "connects" | "windows", number>;
           const sessionSpans = (
             traces: ReadonlyArray<string>,
@@ -504,7 +453,6 @@ return out;`,
                       object: spans
                         .map(({ span }) => span.tags["executor.mcp.object_id"])
                         .find((id) => id !== undefined),
-                      // How the object reached the database for each connection it opened.
                       routes: [
                         ...new Set(
                           spans
@@ -536,9 +484,6 @@ return out;`,
             3,
           );
           expect(first.windows, "The session's calls share one activity window").toBe(1);
-          // One object per grant: each connected directly, every active session would hold
-          // PgBouncer clients of its own, and enough active sessions exhaust PgBouncer's client
-          // limit. Through Hyperdrive they share its bounded pool.
           expect(first.routes, "Session objects connect through Hyperdrive").toEqual([
             "hyperdrive",
           ]);
@@ -546,7 +491,6 @@ return out;`,
           if (object === undefined) return yield* Effect.die("Missing the session object's ID");
           const owner = `mcp ${object}`;
 
-          // A connection the server drops is replaced on the next use, inside the same window.
           expect(yield* objectConnections(owner, { terminate: true })).toBeGreaterThan(0);
           const dropped = yield* sessionSpans(
             yield* execute("Tool calls after a dropped connection"),
@@ -556,12 +500,6 @@ return out;`,
           expect(dropped.windows).toBe(0);
           expect(dropped.connects).toBeGreaterThan(0);
 
-          // A pause between an agent's tool calls keeps the window and its connections: the
-          // object still holds every connection it held before the pause, and the next call opens
-          // no window. The pool opens connections on demand, up to its limit, and the drop above
-          // left it fewer than its first calls opened, so a call that runs more statements at
-          // once than the connections held may still open one; that is the pool growing, not
-          // the pause closing one, so the call's own connects are not the measure.
           const held = yield* objectConnections(owner);
           expect(held).toBeGreaterThan(0);
           yield* Effect.sleep(Duration.seconds(45));
@@ -573,13 +511,8 @@ return out;`,
           yield* evidence.json("after-pause.json", { ...paused, held });
           expect(paused.windows, "A 45 s pause keeps the window").toBe(0);
 
-          // Once the session has been idle for the whole window (120 s), it holds no connection;
-          // the next call opens a window.
           yield* Effect.sleep(Duration.seconds(122));
           expect(yield* objectConnections(owner)).toBe(0);
-          // Without the window's socket and timer, the idle object may be evicted with its MCP
-          // sessions, so the client starts a new session, as clients do on "session not found".
-          // The new session's own requests may open the window, so they are counted with the calls.
           const idled = (yield* evidence.requests).length;
           client = yield* mcp.connect(key.key, "object-connections-after-idle", {
             organization: actors.organization.id,
@@ -617,7 +550,6 @@ return out;`,
             .request(actors.owner, "POST", "/api/auth/api-key/delete", { keyId: key.id })
             .pipe(Effect.orDie),
         );
-        // The session object's own spans for some requests, once `ready` finds them in the collector.
         const objectSpans = (
           traces: ReadonlyArray<string>,
           ready: (spans: ReadonlyArray<Spans[number]["span"]>) => boolean,
@@ -651,8 +583,6 @@ return out;`,
         if (object === undefined) return yield* Effect.die("Missing the session object's ID");
         const owner = `mcp ${object}`;
 
-        // Drop the object's connections and hold the next one it opens in PostgreSQL's login for
-        // longer than an attempt may take. Nothing has been sent on it, so the pool tries again.
         expect(
           yield* objectConnections(owner, { stallNextConnect: 8, terminate: true }),
         ).toBeGreaterThan(0);
@@ -687,8 +617,6 @@ return out;`,
             status: span.status,
           })),
         );
-        // The stalled attempt fails its span and says it timed out, recording only the driver's
-        // fixed sentence; the attempt made after it succeeds and records no failure.
         expect(
           connects
             .filter((span) => span.tags["db.connect.failure"] !== undefined)
@@ -752,9 +680,6 @@ return out;`,
             })).status,
           ).toBe(200);
 
-          // A Cron Trigger's wake reaches the coordinator only through the placed fetch handler,
-          // so the coordinator can never be created where the trigger happens to run.
-          // Cron ticks belong to the whole Cloud, not to any one scenario.
           const dispatched = telemetry
             .searchWholeEnvironment("job.dispatch", { "executor.job": "schedule-wake" })
             .pipe(Effect.map((found) => new Set(found.data.map((entry) => entry.traceId))));
@@ -806,8 +731,6 @@ return out;`,
             "The fetch handler must be started by the cron's dispatch",
           ).toBeGreaterThan(server);
 
-          // Runs keep going through the coordinator: every accepted Run Now gets exactly one run.
-          // Each waits for the previous run, so no request can share a run with another.
           const listRuns = api
             .request(actors.owner, "GET", `${prefix}/scheduled-runs?app=${app.id}`)
             .pipe(Effect.flatMap((response) => body(Runs, response)));
@@ -827,13 +750,8 @@ return out;`,
           yield* evidence.json("scheduled-runs.json", runs);
           expect(runs.map((run) => run.status)).toEqual(["succeeded", "succeeded", "succeeded"]);
 
-          // The collector matches operation names by the start of their words, so `schedule.retire` would also find
-          // `schedule.retired`.
           const exactly = (operation: string, found: typeof SpanQuery.Type) =>
             found.data.filter(({ span }) => span.operationName === operation);
-          // One schedule coordinator serves the whole Cloud, so its spans are the Cloud's, from
-          // every scenario sharing it, not only this one's. The exact counts below hold only on a
-          // Cloud where nothing else hands the coordinator over.
           const coordinatorSpans = (operation: string, attributes: Record<string, string> = {}) =>
             telemetry
               .searchWholeEnvironment(operation, attributes)
@@ -845,8 +763,6 @@ return out;`,
               "schedule.run",
               yield* telemetry.search("schedule.run", { app: app.id }),
             );
-            // The dispatches of this app's runs, which leave in other exports than the runs. Until
-            // a run has arrived there is no trace to read them in.
             const dispatches =
               runs.length === 0
                 ? []
@@ -879,21 +795,13 @@ return out;`,
               ]),
             ),
           );
-          // The first coordinator is retired once, before the new one dispatches anything. Every
-          // coordinator instance calls `retire()` too, before its first wake arms it, to re-arm the
-          // heartbeat.
           expect(coordinator.handovers).toHaveLength(1);
           expect(coordinator.retirements.length).toBeGreaterThanOrEqual(1);
-          // The coordinator dispatches as `cloud`, as the first one did, and records where it runs.
           const runDispatches = coordinator.dispatches;
           expect(runDispatches.length).toBeGreaterThan(0);
           for (const { span } of runDispatches)
             expect(span.tags["cloudflare.colo"]).toMatch(/^(?:[A-Z]+|unknown)$/);
 
-          // The retired coordinator keeps its alarm as a minute heartbeat, so a revert finds it armed.
-          // Nothing here starts a cron after the first one: each heartbeat re-arms itself and wakes
-          // the coordinator through the placed handler. Its spans record the clock it read and the
-          // alarm it found and left, so these checks do not depend on when an alarm is delivered.
           const heartbeat = (entry: {
             readonly span: { readonly tags: Record<string, string> };
           }) => {
@@ -928,15 +836,11 @@ return out;`,
             ),
             Effect.retry({ schedule: Schedule.spaced("1 second"), times: 150 }),
           );
-          // Each heartbeat arms the next a minute after it fires, and each later one is the alarm
-          // the one before armed, never an earlier one. Delayed telemetry can reveal more than two.
           for (const beat of fresh) expect(beat.armed - beat.at).toBe(60_000);
           for (const [index, beat] of fresh.slice(1).entries())
             expect(beat.at, "A heartbeat must arm only the next one").toBeGreaterThanOrEqual(
               fresh[index]!.armed,
             );
-          // `retire()` and forwarded wakes keep an earlier alarm and bring a later or missing one in
-          // to a minute away, so no wake can postpone the heartbeat or leave it further off.
           const kept = [
             ...(yield* coordinatorSpans("schedule.retire")),
             ...(yield* coordinatorSpans("schedule.retired", { "executor.schedule.wake": "wake" })),
@@ -998,7 +902,6 @@ return out;`,
             })).status,
           ).toBe(200);
 
-          // The coordinator claims and records the run on its own connections.
           expect((yield* api.request(actors.owner, "POST", `${schedule}/run`)).status).toBe(200);
           yield* api.request(actors.owner, "GET", `${prefix}/scheduled-runs?app=${app.id}`).pipe(
             Effect.flatMap((response) => body(Runs, response)),
@@ -1010,11 +913,6 @@ return out;`,
             Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 120 }),
           );
 
-          // An open connection keeps a Durable Object from hibernating, and the coordinator wakes
-          // at least once a minute. Connections held for the MCP sessions' 120-second window
-          // after each pass kept it in memory, billing duration, around the clock. Other
-          // scenarios' writes wake it meanwhile, so the count is read until a moment between
-          // passes, well before that window would end.
           const counts: Array<number> = [];
           yield* locks
             .run({
@@ -1073,6 +971,7 @@ return out;`,
           );
           const client = yield* mcp.connect(key.key, "parallel-calls", {
             organization: actors.organization.id,
+            mode: "model",
           });
           const tool = (name: string) => `tools[${JSON.stringify(app.slug)}].${name}`;
           const call = (label: string, name: string, args: Record<string, unknown>) =>
@@ -1090,12 +989,8 @@ return out;`,
           expect(once.execution.value).toBe("once");
           const object = yield* lastSessionObject;
 
-          // A call's token recheck and the reads sent with it share one connection: while the
-          // recheck waits on a lock, the reads queued behind it on that connection wait too.
-          // Without grouping each read would take a connection of its own and finish at once.
           const holder = yield* Effect.forkScoped(objectDatabase(object, { holdLock: 170 }));
           yield* untilObject(object, "The lock is held", ({ holding }) => holding === 1);
-          // The request's own authentication updates the token first; its tool call's recheck next.
           yield* objectDatabase(object, { stallTokenUpdateAfter: 1 });
           const held = yield* Effect.forkChild(
             call("Call while the recheck waits", "execute", {
@@ -1127,7 +1022,6 @@ return out;`,
               "A read sent with the recheck waited behind it on the recheck's connection",
             ).toBeGreaterThanOrEqual((recheck?.end ?? Infinity) - 5);
 
-          // Approvals waiting to be resumed: each resume claims its approval in a transaction.
           const pending = yield* Effect.forEach([0, 1, 2], (i) =>
             call("Ask for an approval", "execute", {
               code: `return await ${tool("review")}({ text: "review ${i}" })`,
@@ -1166,7 +1060,6 @@ return out;`,
             });
           }
 
-          // The object's connections, while its idle window keeps them open.
           const connections = yield* objectConnections(object);
           yield* evidence.json("parallel-connections.json", { connections });
           expect(connections, "The object held connections for the calls").toBeGreaterThan(0);
@@ -1237,10 +1130,8 @@ return out;`,
           const until = (label: string, done: Parameters<typeof untilObject>[2]) =>
             untilObject(object, label, done);
 
-          // A lock the session's next per-call token recheck waits on, held for the rest of the scenario.
           yield* Effect.forkScoped(objectDatabase(object, { holdLock: 170 }));
           yield* until("The lock is held", ({ holding }) => holding === 1);
-          // The request's own authentication updates the token first; its tool call's recheck next.
           yield* objectDatabase(object, { stallTokenUpdateAfter: 1 });
           const abandoned = yield* Effect.forkChild(
             Effect.exit(echo("Call while the lock is held", "abandoned")),
@@ -1249,12 +1140,9 @@ return out;`,
             "The call's token recheck waits on the lock",
             until("The recheck is waiting on the lock", ({ waiting }) => waiting === 1),
           );
-          // The client gives up on the call (as at its request timeout): MCP cancels it, which the
-          // session processes within a few hundred milliseconds.
           yield* Fiber.interrupt(abandoned);
           yield* Effect.sleep("2 seconds");
 
-          // Another call in the same session, while the lock is still held, is not delayed by it.
           const started = Date.now();
           const value = yield* echo("Call again while the lock is held", "after").pipe(
             Effect.timeout("20 seconds"),
@@ -1334,10 +1222,6 @@ return out;`,
           const object = yield* lastSessionObject;
           yield* objectDatabase(object, { largeAppRow: slow.id });
 
-          // The program reaches only the timer app, so discovery lists the slow app and the others
-          // only by name up front (reading the slow app's row before the lock). After the timer,
-          // the searches list the three apps at once, each its own listing: the slow app's reads
-          // its row while the lock is held.
           const namespaces = [slow, ...others].map((app) => app.slug);
           const code = `await tools[${JSON.stringify(timer.slug)}].wait({ ms: 3000 });
 const started = Date.now();
@@ -1395,8 +1279,6 @@ return listed;`;
               poolCase(name).pipe(Effect.tap((seen) => evidence.json(`pool-${name}.json`, seen))),
             );
 
-          // A callback's second statement is refused after a sibling on its connection gave up;
-          // the callback's insert was sent, so the callback is not run again.
           const once = yield* step("A callback that sent a statement runs once", "use-once");
           expect(once.siblingGaveUp, "The sibling gave up on its lock wait").toBe(true);
           expect(once.twoStatements, "The refused read fails the callback").toBe("refused");
@@ -1410,8 +1292,6 @@ return listed;`;
           const shared = yield* step("Only an exclusive pool holds", "held-shared");
           expect(shared).toEqual({ exclusive: true, shared: false, plain: false });
 
-          // 6 s, longer than the 5 s cancellation bound, under the 30 s bound on what nobody awaits:
-          // a statement nobody abandoned is waited for.
           const unawaited = yield* step(
             "A hold keeps its connection for a statement nobody awaits until it finishes",
             "held-unawaited",
@@ -1425,14 +1305,11 @@ return listed;`;
           ).toBeGreaterThanOrEqual(5_900);
           expect(unawaited.sameConnection, "The connection was kept").toBe(true);
 
-          // A 45 s statement nobody awaits: past the 30 s bound it is cancelled and its connection
-          // closed, so a hung `COMMIT` cannot keep one of the object's connections indefinitely.
           const hung = yield* step(
             "A statement nobody awaits gives its connection up 30 s after its hold returned",
             "held-hung",
           );
           expect(hung.heldReturned, "The hold returned without waiting").toBeLessThan(1_000);
-          // Cancelled first (`57014`), or, on a socket that went silent, failed by the close.
           expect(hung.sleeper, "The unawaited statement was cut off").toBe("failed");
           expect(hung.sleeperEnded, "It ran up to the bound").toBeGreaterThanOrEqual(29_900);
           expect(hung.sleeperEnded, "It did not run to its end").toBeLessThan(40_000);
@@ -1476,10 +1353,6 @@ return listed;`;
           expect(sibling.awaited).toBe("ok");
           expect(sibling.awaitedReturned, "The finished statement returned").toBeLessThan(1_000);
 
-          // A tool call's `BEGIN … COMMIT` batch (`PgConnection.pipelined`) runs inside a hold:
-          // there it uses one connection and one snapshot, and outside one it writes nothing. A
-          // batch that cannot connect (the first attempt and its retry both closed) returns each
-          // leaf's failure, so a tool call's recheck decides it as on main.
           const batch = yield* step(
             "A batch writes BEGIN only on a held connection, and returns its leaves' failures when it cannot connect",
             "batch",
@@ -1494,22 +1367,21 @@ return listed;`;
             },
           });
 
-          // A leaf that reads again once its first statement answers, as a bearer recheck whose key
-          // was contended does, writes nothing while its batch's `COMMIT` is unanswered: through
-          // Hyperdrive such a statement is never answered, and the call waits until its deadline.
-          // The read goes out, and answers, once the `COMMIT` has.
           const later = yield* step(
             "A batch leaf's later statement waits for its batch's COMMIT to answer before it is written",
             "commit-unanswered",
           );
-          expect(later).toEqual({
-            leaves: ["ok", "ok", "ok"],
+          expect(later).toEqual({ leaves: ["ok", "ok", "ok"], behindCommit: 0, later: "answered" });
+          const rolledBack = yield* step(
+            "A batch leaf's later statement waits for a COMMIT answered as a rollback, then is written",
+            "commit-rollback",
+          );
+          expect(rolledBack).toEqual({
+            leaves: ["ok", "failed", "failed"],
             behindCommit: 0,
-            laterAfterCommit: true,
+            later: "answered",
           });
 
-          // A connect attempt that reaches its timeout, and one whose caller gives up while it
-          // waits, close their sockets: a server that accepts and never answers sees each closed.
           const abandoned = yield* step(
             "Connect attempts that time out or are given up close their sockets",
             "connect-abandoned",
@@ -1549,9 +1421,6 @@ return listed;`;
             return value;
           };
 
-          // A proxy between the pool and the database ends each idle connection's server side
-          // while the client's socket stays open, as Hyperdrive and PlanetScale's routing can; the
-          // pool learns only when it writes its next statement.
           const read = both(yield* step("A read on a dropped connection runs once more", "read"));
           for (const shape of ["event", "object"] as const) {
             const result = read[shape];
@@ -1568,9 +1437,6 @@ return listed;`;
             expect(typeof result.repeats[0]?.["db.connection.lost_age_ms"]).toBe("number");
           }
 
-          // A write may have reached the server before the client learnt the connection was
-          // gone; whether it applied cannot be known, so it is never sent again. The session
-          // object's write goes out on the multiplexed path, in a statement group.
           const write = both(yield* step("A write is not repeated", "write"));
           for (const shape of ["event", "object"] as const) {
             expect(write[shape].outcome, `The ${shape} pool's write`).toBe(
@@ -1580,8 +1446,6 @@ return listed;`;
             expect(write[shape].rows, "No row was written, once or twice").toBe(0);
           }
 
-          // The connection is lost after BEGIN and one statement; the transaction's next read
-          // fails, and nothing of it runs again outside the transaction.
           const transaction = one(
             yield* step("A statement in a transaction is not repeated", "transaction"),
           );
@@ -1589,8 +1453,6 @@ return listed;`;
           expect(transaction.outcome).toBe("effect/sql/SqlError: PgConnection: Connection closed");
           expect(transaction.repeats).toEqual([]);
 
-          // No new connection can be made: the repeat's one attempt and the retry every attempt
-          // gets both fail, promptly, and the caller gets the first error, saying so.
           const down = one(
             yield* step("With the database unreachable the repeat fails once", "down"),
           );
@@ -1602,8 +1464,6 @@ return listed;`;
           expect(down.repeats).toHaveLength(1);
           expect(down.repeats[0]?.["db.connection.repeat_outcome"]).toBe("failed");
 
-          // More concurrent reads than the pool holds, after every connection is dropped: the
-          // repeats take the pool's own connections, so no more than its cap are ever open.
           const cap = both(yield* step("Repeats stay within the pool's cap", "cap"));
           for (const [shape, limit] of [
             ["event", 2],
@@ -1615,18 +1475,12 @@ return listed;`;
             expect(cap[shape].repeats.length).toBeGreaterThan(0);
           }
 
-          // A burst kills every idle connection of a full session-object pool, then one read: its
-          // repeat skips the dead connections one at a time, each closed before the next is taken,
-          // so no more sockets than the pool's cap are open at once.
           const burst = one(yield* step("A repeat after a burst stays within the cap", "burst"));
           expect(burst.dropped).toBe(4);
           expect(burst.outcome, "The read after the burst").toBe("ok");
           expect(burst.repeats).toHaveLength(1);
           expect(burst.peak, "Sockets open at once in a pool capped at 4").toBeLessThanOrEqual(4);
 
-          // One of four idle connections dropped, one read, several times over: when the read
-          // lands on the dropped one, its repeat closes the older idle connections, dead or not,
-          // and still never has more than the cap open.
           const dropOne = yield* step("A repeat after one drop stays within the cap", "drop-one");
           if (!("runs" in dropOne)) return yield* Effect.die("Expected the drop-one runs");
           for (const run of dropOne.runs) {
@@ -1638,15 +1492,11 @@ return listed;`;
             "Runs in which the read met the dropped connection",
           ).toBeGreaterThan(0);
 
-          // A tool call's reads run in a held, read-only snapshot batch. A leaf that reads, loses
-          // the connection and reads again fails: repeated on another connection, the second read
-          // would leave the hold and its snapshot.
           const held = one(yield* step("A read inside a held batch is not repeated", "held"));
           expect(held.dropped).toBe(1);
           expect(held.outcome).toBe("effect/sql/SqlError: PgConnection: Connection closed");
           expect(held.repeats).toEqual([]);
 
-          // What the repeat counts as a read, from the statement's text.
           const classify = yield* step("Statements are classified as reads or writes", "classify");
           if (!("mismatches" in classify)) return yield* Effect.die("Expected the classification");
           expect(classify.mismatches).toEqual([]);

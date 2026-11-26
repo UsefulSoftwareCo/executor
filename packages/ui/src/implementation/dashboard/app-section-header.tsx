@@ -1,7 +1,6 @@
 import type { ReactNode } from "react";
 import { cn } from "../lib/utils.ts";
 
-/** One compact row for app section labels, metadata, and actions. */
 export function AppSectionHeader({
   children,
   className,
@@ -21,7 +20,6 @@ export function AppSectionHeader({
   );
 }
 
-/** Section labels keep the same hierarchy beside ordinary text and split-pane inspectors. */
 export function AppSectionTitle({
   children,
   className,

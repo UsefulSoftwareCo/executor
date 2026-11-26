@@ -1,4 +1,3 @@
-/** Deploy and roll back a real hosted app while its original browser tab stays open. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -114,7 +113,6 @@ layer(HostedLive, { excludeTestServices: true })("Hosted app reload", (it) => {
           )).status(),
         ).toBe(401);
         yield* browser.login(actors.owner);
-        // The page carries its watcher, so opening it fetches no separate watcher script.
         const watcherScripts: string[] = [];
         yield* browser.use("Watch for a watcher script request", (page) => {
           page.on("request", (request) => {
@@ -128,8 +126,6 @@ layer(HostedLive, { excludeTestServices: true })("Hosted app reload", (it) => {
           page.getByRole("heading", { name: "Static version", exact: true }).waitFor(),
         );
         expect(watcherScripts).toEqual([]);
-        // The initial page's watcher stays open. Disable only the next document's
-        // version connection, so its query stream must recover a missed notification.
         let blockedVersions = 0;
         yield* browser.use("Drop the next version connection", (page) =>
           page.route("**/_executor/version", (route) => {
@@ -137,8 +133,6 @@ layer(HostedLive, { excludeTestServices: true })("Hosted app reload", (it) => {
             return route.abort();
           }),
         );
-        // Register before the next document's host watcher. Hold the public signal
-        // before navigation freezes its renderer, then forward it after inspection.
         yield* browser.use("Hold the next page's version reload notification", (page) =>
           page.addInitScript(() => {
             const hold = (event: Event) => {

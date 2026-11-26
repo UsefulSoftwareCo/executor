@@ -3,11 +3,6 @@ import { RegistryContext, useAtomRefresh, useAtomSet, useAtomValue } from "@effe
 import { Cause } from "effect";
 import type { PagedList, PagedListState } from "../../contracts/paging.ts";
 
-// ---------------------------------------------------------------------------
-// Layout
-// ---------------------------------------------------------------------------
-
-/** Page-level constrained container. Accepts className for overrides. */
 export function PageContainer({
   children,
   className = "",
@@ -18,7 +13,6 @@ export function PageContainer({
   return <div className={`mx-auto max-w-7xl w-full px-6 ${className}`}>{children}</div>;
 }
 
-/** Standard page header row — title on left, actions on right. */
 export function PageHeader({ title, children }: { title: string; children?: ReactNode }) {
   return (
     <PageContainer className="flex items-center gap-4 py-4 shrink-0">
@@ -28,7 +22,6 @@ export function PageHeader({ title, children }: { title: string; children?: Reac
   );
 }
 
-/** Collapsible section with a label — used in detail panels. */
 export function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
     <div className="px-4 py-3 border-b border-white/5">
@@ -37,10 +30,6 @@ export function Section({ title, children }: { title: string; children: ReactNod
     </div>
   );
 }
-
-// ---------------------------------------------------------------------------
-// State placeholders
-// ---------------------------------------------------------------------------
 
 export function LoadingState({ message = "Loading..." }: { message?: string }) {
   return (
@@ -78,10 +67,6 @@ export function ErrorState({
   );
 }
 
-// ---------------------------------------------------------------------------
-// Buttons & controls
-// ---------------------------------------------------------------------------
-
 export function RefreshButton({ onRefresh }: { onRefresh: () => void }) {
   return (
     <button
@@ -93,10 +78,6 @@ export function RefreshButton({ onRefresh }: { onRefresh: () => void }) {
   );
 }
 
-/**
- * Start a paged list again: drop the pages after the first, which stops any of them still
- * loading, and read the first page again.
- */
 export function useRestartList(list: PagedList<unknown, unknown>): () => void {
   const refresh = useAtomRefresh(list.first);
   const request = useAtomSet(list.requested);
@@ -106,7 +87,6 @@ export function useRestartList(list: PagedList<unknown, unknown>): () => void {
   };
 }
 
-/** Refresh a paged list from its first page. */
 export function RefreshListButton({ list }: { list: PagedList<unknown, unknown> }) {
   return <RefreshButton onRefresh={useRestartList(list)} />;
 }
@@ -177,10 +157,6 @@ export function SearchInput({
   );
 }
 
-// ---------------------------------------------------------------------------
-// Badges
-// ---------------------------------------------------------------------------
-
 const SEVERITY_STYLES: Record<string, string> = {
   ERROR: "text-red-400 bg-red-400/10",
   WARN: "text-amber-400 bg-amber-400/10",
@@ -221,7 +197,6 @@ export function LiveBadge() {
   );
 }
 
-/** Inline service name pill with deterministic color. */
 export function ServiceBadge({ name, color }: { name: string; color: string }) {
   return (
     <span
@@ -233,16 +208,10 @@ export function ServiceBadge({ name, color }: { name: string; color: string }) {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Paged lists
-// ---------------------------------------------------------------------------
-
-/** Read a paged list, with the actions its end-of-list control needs. */
 export function usePagedList<A, E>(list: PagedList<A, E>) {
   const registry = useContext(RegistryContext);
   const state = useAtomValue(list.state);
   const request = useAtomSet(list.requested);
-  // Ask for exactly one page past those shown, so a double click cannot skip ahead.
   const loadMore = () => request(state.extraPages + 1);
   const retry = () => {
     if (state.end.status === "failed") registry.refresh(state.end.page);
@@ -250,20 +219,11 @@ export function usePagedList<A, E>(list: PagedList<A, E>) {
   return { state, loadMore, retry };
 }
 
-/** A row count that does not pass a page size off as a total: `200+` while more remain. */
 export function listCount(state: PagedListState<unknown, unknown>): string {
   const count = state.rows.length.toLocaleString();
   return state.end.status === "complete" ? count : `${count}+`;
 }
 
-/**
- * The line under a paged list: how much it shows, and the control that loads the next page.
- *
- * The control stays mounted while a page loads, so keyboard focus stays on it and the next page
- * is one more Enter away. When the last page arrives the control goes, and focus moves to the
- * summary instead of falling to the page. The summary is a live region, so the new count is
- * announced when rows are added.
- */
 export function ListEnd<E>({
   noun,
   state,
@@ -280,7 +240,6 @@ export function ListEnd<E>({
   const { end } = state;
   const action = useRef<HTMLButtonElement>(null);
   const summary = useRef<HTMLParagraphElement>(null);
-  // Whether the control had focus when it was last used, so focus can follow the list's end.
   const keepFocus = useRef(false);
 
   useLayoutEffect(() => {
@@ -343,7 +302,6 @@ export function ListEnd<E>({
   );
 }
 
-/** The first line of a failure, short enough to sit beside the list. */
 function errorSummary(cause: Cause.Cause<unknown>): string {
   const squashed = Cause.squash(cause);
   if (squashed instanceof Error) return squashed.message;

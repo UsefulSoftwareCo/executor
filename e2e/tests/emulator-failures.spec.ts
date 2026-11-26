@@ -1,17 +1,23 @@
-/**
- * An emulator call that fails names the endpoint, the emulator and emulators.dev's diagnostic
- * report, and nothing else. The instance URL is the only access control for its emulator, and an
- * error body can quote provider tokens, sign-in codes and addresses, so none of them may reach the
- * error, its rendering in result.json (`Cause.pretty`), or any span: attributes, events or status.
- * A local server stands in for emulators.dev and answers with synthetic secrets.
- */
 import { expect, layer } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Cause, Clock, Duration, Effect, Exit, Fiber, FileSystem, Option, Tracer } from "effect";
+import {
+  Cause,
+  Clock,
+  Duration,
+  Effect,
+  Exit,
+  Fiber,
+  FileSystem,
+  Layer,
+  Option,
+  Stream,
+  Tracer,
+} from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
 import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import {
   armedFaultHeader,
   emulatorRequest,
@@ -29,12 +35,10 @@ const instance = `report-${suffix}`;
 const token = "emu_resend_SYNTHETICtoken0001";
 const code = "SYNTH-CODE-482913";
 const email = "pat.synthetic@example.test";
-// Secrets shaped like diagnostic values: each passes a format check for the field it is in.
 const named = "SYNTHETICtoken482913";
 const secrets = [suffix, token, code, email, named, named.toUpperCase(), "482913482913"];
 const ray = "8f1d2c3b4a5e6f70-PHX";
 
-/** emulate's instance hash: the first 12 hex digits of SHA-256(`service:instance`). */
 const instanceId = (name: string) =>
   createHash("sha256").update(`resend:${name}`).digest("hex").slice(0, 12);
 
@@ -50,10 +54,8 @@ const report = {
   remote: false,
 };
 
-/** Answers with the response named by the instance's prefix (`/resend/<case>-<suffix>/...`). */
 const responses: Record<string, { status: number; headers: Record<string, string>; body: string }> =
   {
-    // A report with the diagnostic fields plus everything an older or broken server might add.
     report: {
       status: 503,
       headers: { "content-type": "application/json", "cf-ray": ray },
@@ -67,7 +69,6 @@ const responses: Record<string, { status: number; headers: Record<string, string
         token,
       }),
     },
-    // Every field holds a secret that passes its format check; only the flags survive.
     tainted: {
       status: 500,
       headers: { "content-type": "application/json", "cf-ray": code },
@@ -81,13 +82,11 @@ const responses: Record<string, { status: number; headers: Record<string, string
         ray: code,
       }),
     },
-    // A dynamic segment's name is the server's to choose, so it is not repeated.
     param: {
       status: 503,
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ ...report, instanceId: undefined, route: `/:${named}` }),
     },
-    // Cloudflare's opaque error page.
     opaque: {
       status: 500,
       headers: { "content-type": "text/html" },
@@ -110,7 +109,6 @@ const stub = Effect.acquireRelease(
   ({ close }) => Effect.sync(close),
 );
 
-/** Records every span the program starts, as an exporter would receive them. */
 const recording = () => {
   const spans: Array<Tracer.NativeSpan> = [];
   const tracer = Tracer.make({
@@ -137,10 +135,6 @@ const recording = () => {
 
 const leaked = (text: string) => secrets.filter((secret) => text.includes(secret));
 
-/**
- * Calls the stub as the harness calls emulators.dev, inside a caller's span. A send is a provider
- * write the harness never repeats, so each case sees exactly one answer.
- */
 const failingCall = (origin: string, name: string, tracer: Tracer.Tracer) =>
   emulatorRequest(`${origin}/resend/${name}-${suffix}`, "/emails", { to: email }, token).pipe(
     Effect.withSpan("harness step"),
@@ -160,17 +154,12 @@ const json = (status: number, body: unknown, headers: Record<string, string> = {
   body: JSON.stringify(body),
 });
 const rays = ["0a1b2c3d4e5f6071-LAX", "1a1b2c3d4e5f6071-LAX", "2a1b2c3d4e5f6071-LAX"];
-/** emulators.dev's opaque answer to an uncaught exception, as CI saw it. */
 const workerError = (attempt: number): Answer => ({
   status: 500,
   headers: { "content-type": "text/html", "cf-ray": rays[attempt]! },
   body: `<html>Worker threw exception for ${instance} ${token}</html>`,
 });
 
-/**
- * Answers each path with its script, one answer per request, repeating the last, and counts the
- * requests each path received. Paths are `/<service>/<case>-<suffix>/<route>`.
- */
 const scripted = (scripts: Record<string, ReadonlyArray<Answer>>) =>
   Effect.acquireRelease(
     Effect.callback<{
@@ -185,7 +174,6 @@ const scripted = (scripts: Record<string, ReadonlyArray<Answer>>) =>
         hits.set(key, seen + 1);
         const script = scripts[key] ?? [];
         const answer = script[Math.min(seen, script.length - 1)] ?? { status: 404 };
-        // Read the request body before answering, as a real server does.
         request.resume();
         request.on("end", () =>
           response.writeHead(answer.status, answer.headers ?? {}).end(answer.body ?? ""),
@@ -201,10 +189,8 @@ const scripted = (scripts: Record<string, ReadonlyArray<Answer>>) =>
     ({ close }) => Effect.sync(close),
   );
 
-/** Short spacing so the cases run in seconds; the attempts and their order are the harness's. */
 const fastPolicy = { attempts: 3, attemptDeadlineMs: 1_000, spacingMs: [100, 200] } as const;
 
-/** A directory for the run's retry records, removed with the scope. */
 const recordsDirectory = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   return yield* fs.makeTempDirectoryScoped({ prefix: "emulator-retries-" });
@@ -222,7 +208,6 @@ const records = (directory: string) =>
     );
   });
 
-/** Calls the scripted stub as the harness does, recording retries in `directory`. */
 const harnessCall = (
   directory: string,
   base: string,
@@ -236,7 +221,6 @@ const harnessCall = (
     Effect.provide(FetchHttpClient.layer),
   );
 
-/** A server that never answers, counting the requests each path received. */
 const stalling = Effect.acquireRelease(
   Effect.callback<{
     readonly origin: string;
@@ -266,7 +250,6 @@ const stalling = Effect.acquireRelease(
   ({ close }) => Effect.sync(close),
 );
 
-/** The test clock `@effect/vitest` provides, which a case moves by hand. */
 interface ControlledClock extends Clock.Clock {
   adjust(duration: Duration.Input): Effect.Effect<void>;
   withLive<A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R>;
@@ -277,10 +260,6 @@ const controlledClock = Effect.clockWith((clock) =>
     : Effect.die(new Error("This case needs the test clock")),
 );
 
-/**
- * Runs a call on the test clock, moving it 250 ms at a time and letting real I/O run between
- * steps, and returns how it ended and the clock time it took.
- */
 const onTestClock = <A, E>(call: Effect.Effect<A, E>) =>
   Effect.gen(function* () {
     const clock = yield* controlledClock;
@@ -294,7 +273,103 @@ const onTestClock = <A, E>(call: Effect.Effect<A, E>) =>
     return { exit: yield* Effect.exit(Fiber.join(fiber)), elapsed };
   });
 
-// The retry cases run on the real clock: the spacing between attempts is real time.
+interface TimedAttempt {
+  readonly route: string;
+  readonly start: number;
+  ended?: "answered" | "failed" | "cut off";
+}
+const timedClient = (attempts: Array<TimedAttempt>) =>
+  Layer.effect(
+    HttpClient.HttpClient,
+    Effect.map(HttpClient.HttpClient, (client) =>
+      HttpClient.transform(client, (response, request) =>
+        Effect.gen(function* () {
+          const attempt: TimedAttempt = {
+            route: `${request.method} ${new URL(request.url).pathname}`,
+            start: yield* Clock.currentTimeMillis,
+          };
+          attempts.push(attempt);
+          return yield* response.pipe(
+            Effect.onExit((exit) =>
+              Effect.sync(() => {
+                attempt.ended = Exit.isSuccess(exit)
+                  ? "answered"
+                  : Cause.hasInterrupts(exit.cause)
+                    ? "cut off"
+                    : "failed";
+              }),
+            ),
+          );
+        }),
+      ),
+    ),
+  ).pipe(Layer.provide(FetchHttpClient.layer));
+
+const notingClock = (clock: Clock.Clock) => {
+  const noted = {
+    first: undefined as number | undefined,
+    sleeps: [] as Array<{ at: number; ms: number }>,
+  };
+  const millis = () => {
+    const now = clock.currentTimeMillisUnsafe();
+    noted.first ??= now;
+    return now;
+  };
+  const noting: Clock.Clock = {
+    currentTimeMillisUnsafe: millis,
+    currentTimeMillis: Effect.sync(millis),
+    currentTimeNanosUnsafe: () => clock.currentTimeNanosUnsafe(),
+    currentTimeNanos: clock.currentTimeNanos,
+    monotonicTimeNanosUnsafe: () => clock.monotonicTimeNanosUnsafe(),
+    monotonicTimeNanos: clock.monotonicTimeNanos,
+    sleep: (duration) =>
+      Effect.suspend(() => {
+        noted.sleeps.push({ at: clock.currentTimeMillisUnsafe(), ms: Duration.toMillis(duration) });
+        return clock.sleep(duration);
+      }),
+  };
+  return {
+    noted,
+    run: <A, E, R>(call: Effect.Effect<A, E, R>) =>
+      Effect.provideService(call, Clock.Clock, noting),
+  };
+};
+
+const withinDeadline = (
+  attempts: ReadonlyArray<TimedAttempt>,
+  noted: {
+    readonly first: number | undefined;
+    readonly sleeps: ReadonlyArray<{ at: number; ms: number }>;
+  },
+) => {
+  const started = noted.first ?? 0;
+  const deadline = started + 30_000;
+  const listed = JSON.stringify({
+    attempts: attempts.map(({ route, start, ended }) => ({ route, start: start - started, ended })),
+    sleeps: noted.sleeps.map(({ at, ms }) => ({ at: at - started, ms })),
+  });
+  for (const sleep of noted.sleeps)
+    expect(
+      sleep.at + sleep.ms,
+      `a sleep of ${sleep.ms} ms scheduled at ${sleep.at - started} ms ends after the deadline: ${listed}`,
+    ).toBeLessThanOrEqual(deadline);
+  for (const attempt of attempts) {
+    const timeOuts = noted.sleeps.filter(({ at }) => at === attempt.start).map(({ ms }) => ms);
+    const left = deadline - attempt.start;
+    expect(attempt.start, `an attempt started at or after the deadline: ${listed}`).toBeLessThan(
+      deadline,
+    );
+    expect(timeOuts, `an attempt's time-out was not cut to what was left: ${listed}`).toContain(
+      Math.min(10_000, left),
+    );
+    expect(
+      timeOuts.every((ms) => ms <= left),
+      `a time-out reached past the deadline: ${listed}`,
+    ).toBe(true);
+    expect(attempt.ended, `an attempt was not cut off by its time-out: ${listed}`).toBe("cut off");
+  }
+};
+
 layer(NodeServices.layer, { excludeTestServices: true })("Emulator failures", (it) => {
   it.effect("a failure report keeps only emulate's diagnostic fields", () =>
     Effect.gen(function* () {
@@ -356,7 +431,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Emulator failures", (i
   it.effect("a request that never gets a response does not carry its URL", () =>
     Effect.gen(function* () {
       const { tracer, exported } = recording();
-      // Nothing listens on port 9 (discard) here; the connection is refused.
       const error = yield* failingCall("http://localhost:9", "unreachable", tracer);
       expect(error.reason).toBe("request");
       expect(leaked(JSON.stringify(error))).toEqual([]);
@@ -369,7 +443,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Emulator failures", (i
     Effect.gen(function* () {
       const { origin } = yield* stub;
       const { tracer, exported } = recording();
-      // The control: Effect's client span records `url.full`, which is why emulator calls turn it off.
       yield* HttpClient.get(`${origin}/resend/opaque-${suffix}/emails`).pipe(
         Effect.withTracer(tracer),
         Effect.provide(FetchHttpClient.layer),
@@ -425,7 +498,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Emulator failures", (i
           "u",
         ),
       );
-      // Callers that match on the last answer still can.
       expect(error.status).toBe(500);
       for (const text of [error.message, JSON.stringify(error), Cause.pretty(Cause.fail(error))])
         expect(leaked(text)).toEqual([]);
@@ -438,7 +510,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Emulator failures", (i
   it.effect("a refused connection and a time-out are retried", () =>
     Effect.gen(function* () {
       const directory = yield* recordsDirectory;
-      // Nothing listens on port 3 (see request-failures.spec.ts), so every attempt is refused.
       const refused = yield* harnessCall(
         directory,
         `http://localhost:3/github/gone-${suffix}`,
@@ -454,7 +525,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Emulator failures", (i
           let seen = 0;
           const server = createServer((request, response) => {
             seen += 1;
-            // The first request never answers; the second does.
             if (seen > 1) response.writeHead(200).end(JSON.stringify({ list: [] }));
             else request.resume();
           });
@@ -483,22 +553,88 @@ layer(NodeServices.layer, { excludeTestServices: true })("Emulator failures", (i
     }),
   );
 
+  it.effect("a read whose body is cut off by a reset is read again, and a send is not", () =>
+    Effect.gen(function* () {
+      const cutting = Effect.acquireRelease(
+        Effect.callback<{
+          readonly origin: string;
+          readonly hits: Map<string, number>;
+          readonly close: () => void;
+        }>((resume) => {
+          const hits = new Map<string, number>();
+          const server = createServer((request, response) => {
+            const key = `${request.method} ${(request.url ?? "").split("?")[0]}`;
+            const seen = hits.get(key) ?? 0;
+            hits.set(key, seen + 1);
+            request.resume();
+            request.on("end", () => {
+              const whole = JSON.stringify({ data: [{ id: "email-1", to: [email] }] });
+              if (seen > 0) {
+                response.writeHead(200, { "content-type": "application/json" }).end(whole);
+                return;
+              }
+              response.writeHead(200, {
+                "content-type": "application/json",
+                "content-length": String(whole.length),
+              });
+              response.write(whole.slice(0, whole.length / 2), () =>
+                setTimeout(() => request.socket.resetAndDestroy(), 20),
+              );
+            });
+          });
+          server.listen(0, () => {
+            const { port } = server.address() as AddressInfo;
+            resume(
+              Effect.succeed({
+                origin: `http://localhost:${port}`,
+                hits,
+                close: () => {
+                  server.closeAllConnections();
+                  server.close();
+                },
+              }),
+            );
+          });
+        }),
+        ({ close }) => Effect.sync(close),
+      );
+      const { origin, hits } = yield* cutting;
+      const directory = yield* recordsDirectory;
+      const base = `/resend/cut-${suffix}`;
+      const listed = yield* harnessCall(directory, `${origin}${base}`, "/emails");
+      expect(listed).toEqual({ data: [{ id: "email-1", to: [email] }] });
+      expect(hits.get(`GET ${base}/emails`)).toBe(2);
+      const saved = yield* records(directory);
+      expect(saved).toEqual([
+        expect.objectContaining({ operation: "GET /emails", outcome: "answered", attempts: 2 }),
+      ]);
+      expect((saved[0] as { failures: Array<string> }).failures).toEqual([
+        expect.stringMatching(/^request: reading body of HTTP 200 \(reset\), .* ECONNRESET, /u),
+      ]);
+      expect(leaked(JSON.stringify(saved))).toEqual([]);
+
+      const sent = yield* harnessCall(directory, `${origin}${base}`, "/emails", {
+        to: email,
+      }).pipe(Effect.flip);
+      expect(hits.get(`POST ${base}/emails`)).toBe(1);
+      expect(sent.failure).toMatchObject({ stage: "reading body", status: 200 });
+      expect(sent.earlier).toBeUndefined();
+      expect(yield* records(directory)).toHaveLength(1);
+    }),
+  );
+
   it.effect("a 4xx, an unsafe route and a fault the harness armed are sent once", () =>
     Effect.gen(function* () {
       const answers = (service: string, name: string, route: string, answer: Answer) =>
         [`${service}/${name}-${suffix}`, route, answer] as const;
       const cases = [
-        // Refusals are the emulator's answer, not an outage.
         answers("github", "conflict", "POST /_emulate/credentials", json(409, { error: "x" })),
         answers("workos", "missing", "GET /user_management/users", json(404, { error: "x" })),
-        // A second fault would fail one more call.
         answers("autumn", "fault", "POST /_emulate/faults", workerError(0)),
-        // Harness writes through a provider's own API, and the seed of a service not checked.
         answers("workos", "vault", "POST /vault/v1/kv", workerError(0)),
         answers("workos", "invite", "POST /user_management/invitations", workerError(0)),
         answers("autumn", "usage", "POST /v1/balances.update", workerError(0)),
         answers("mcp", "seed", "POST /_emulate/seed", workerError(0)),
-        // A read answered by the scenario's own armed fault.
         answers(
           "autumn",
           "armed",
@@ -549,7 +685,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Emulator failures", (i
           users: [{ email }],
           organizations: [{ name: "V1 synthetic", members: [email] }],
         };
-        // The 500 came after the seed applied: reading back finds it, so it is not sent again.
         yield* harnessCall(directory, `${origin}${base}`, "/_emulate/seed", seed, {
           applied: Effect.succeed(true),
         });
@@ -557,20 +692,17 @@ layer(NodeServices.layer, { excludeTestServices: true })("Emulator failures", (i
         expect(yield* records(directory)).toEqual([
           expect.objectContaining({ outcome: "found applied", attempts: 1 }),
         ]);
-        // Without a way to read back, it is sent once.
         hits.clear();
         const once = yield* harnessCall(directory, `${origin}${base}`, "/_emulate/seed", seed).pipe(
           Effect.flip,
         );
         expect(hits.get(route)).toBe(1);
         expect(once.status).toBe(500);
-        // The first copy did not apply: it is sent again.
         hits.clear();
         yield* harnessCall(directory, `${origin}${base}`, "/_emulate/seed", seed, {
           applied: Effect.succeed(false),
         });
         expect(hits.get(route)).toBe(2);
-        // A seed of users alone matches them by email, so it is simply sent again.
         const users = `POST /workos/users-${suffix}/_emulate/seed`;
         const second = yield* scripted({ [users]: [workerError(0), json(200, { ok: true })] });
         yield* harnessCall(directory, `${second.origin}/workos/users-${suffix}`, "/_emulate/seed", {
@@ -587,7 +719,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Emulator failures", (i
       const { origin, hits } = yield* scripted({
         [`POST ${base}/_emulate/faults`]: [json(200, { fault: { id: "fault_1" } })],
         [`POST ${base}/_emulate/reset`]: [json(200, { ok: true })],
-        // An outage-shaped answer: retried unless a fault may be waiting for the product.
         [read]: [workerError(0)],
       });
       const directory = yield* recordsDirectory;
@@ -606,14 +737,68 @@ layer(NodeServices.layer, { excludeTestServices: true })("Emulator failures", (i
       expect(hits.get(read)).toBe(1 + 3);
     }),
   );
+
+  it.effect(
+    "clearing one armed fault by its id is sent again when the emulator does not answer; provider routes, resets, seeds and clearing every fault stay sent once",
+    () =>
+      Effect.gen(function* () {
+        const base = `/autumn/clear-${suffix}`;
+        const clear = `DELETE ${base}/_emulate/faults/fault_1`;
+        const read = `POST ${base}/v1/customers.get`;
+        const { origin, hits } = yield* scripted({
+          [`POST ${base}/_emulate/faults`]: [json(200, { fault: { id: "fault_1" } })],
+          [clear]: [workerError(0), json(200, { ok: true, removed: true })],
+          [read]: [workerError(0)],
+          [`DELETE ${base}/_emulate/faults`]: [workerError(0)],
+          [`DELETE ${base}/_emulate/faults/`]: [workerError(0)],
+          [`POST ${base}/_emulate/reset`]: [workerError(0)],
+          [`POST ${base}/_emulate/seed`]: [workerError(0)],
+        });
+        const directory = yield* recordsDirectory;
+        const call = (path: string, payload?: unknown, verb?: "DELETE") =>
+          emulatorRequest(`${origin}${base}`, path, payload, token, verb).pipe(
+            Effect.provideService(EmulatorRetryRecords, { directory }),
+            Effect.provideService(EmulatorRetryPolicy, fastPolicy),
+            Effect.provide(FetchHttpClient.layer),
+          );
+        yield* call("/_emulate/faults", {
+          match: { method: "POST", pathPattern: "/v1/customers.get" },
+          response: { status: 200, body: {} },
+          delayMs: 12_000,
+        });
+        expect(yield* call("/_emulate/faults/fault_1", undefined, "DELETE")).toEqual({
+          ok: true,
+          removed: true,
+        });
+        expect(hits.get(clear)).toBe(2);
+        expect(yield* records(directory)).toMatchObject([
+          { operation: "DELETE /_emulate/faults/fault_1", outcome: "answered", attempts: 2 },
+        ]);
+        const once = yield* call("/v1/customers.get", { customer_id: "c" }).pipe(Effect.flip);
+        expect(hits.get(read)).toBe(1);
+        expect(once.earlier).toBeUndefined();
+        for (const [path, verb, payload, sent = path] of [
+          ["/_emulate/faults", "DELETE", undefined],
+          ["/_emulate/faults/.", "DELETE", undefined, "/_emulate/faults/"],
+          ["/_emulate/reset", undefined, {}],
+          ["/_emulate/seed", undefined, { plans: [] }],
+        ] as const) {
+          const failed = yield* call(path, payload, verb).pipe(Effect.flip);
+          expect(hits.get(`${verb ?? "POST"} ${base}${sent}`), path).toBe(1);
+          expect(failed.earlier, path).toBeUndefined();
+        }
+      }),
+  );
 });
 
-// The shipped retry policy, on the test clock: its 30 s of attempts run in well under a second.
 layer(NodeServices.layer)("Emulator retry policy", (it) => {
   it.effect("the shipped policy ends every call inside its 30 s deadline, read back included", () =>
     Effect.gen(function* () {
       const { origin, hits } = yield* stalling;
       const directory = yield* recordsDirectory;
+      const attempts: Array<TimedAttempt> = [];
+      const client = timedClient(attempts);
+      const clock = yield* Clock.Clock;
       const shipped = (base: string, payload: unknown, applied?: Effect.Effect<boolean, never>) =>
         emulatorRequest(
           `${origin}${base}`,
@@ -622,37 +807,91 @@ layer(NodeServices.layer)("Emulator retry policy", (it) => {
           token,
           undefined,
           applied === undefined ? undefined : { applied },
-        ).pipe(
-          Effect.provideService(EmulatorRetryRecords, { directory }),
-          Effect.provide(FetchHttpClient.layer),
-        );
+        ).pipe(Effect.provideService(EmulatorRetryRecords, { directory }), Effect.provide(client));
 
-      // Three attempts of 10, 10 and the 6 s left, 1 s then 3 s apart: 30 s in all.
       const google = `/google/stalled-${suffix}`;
-      const plain = yield* onTestClock(shipped(google, { users: [{ email }] }));
+      const plainClock = notingClock(clock);
+      const plain = yield* onTestClock(plainClock.run(shipped(google, { users: [{ email }] })));
       expect(hits.get(`POST ${google}/_emulate/seed`)).toBe(3);
-      expect(plain.elapsed).toBeLessThanOrEqual(30_000);
+      expect(attempts.map(({ route }) => route)).toEqual(
+        Array.from({ length: 3 }, () => `POST ${google}/_emulate/seed`),
+      );
+      withinDeadline(attempts, plainClock.noted);
       const error = Option.getOrThrow(Exit.findErrorOption(plain.exit));
       expect(error.message).toContain("after 3 attempts");
       expect(error.reason).toBe("timeout");
 
-      // The read back has only the 19 s left after the first attempt and its spacing; it stalls
-      // too, so whether the seed applied stays unknown and it is not sent again.
+      attempts.length = 0;
       const workos = `/workos/stalled-${suffix}`;
       const readBack = emulatorRequest(`${origin}${workos}`, "/user_management/users").pipe(
         Effect.as(true),
         Effect.orElseSucceed(() => false),
-        Effect.provide(FetchHttpClient.layer),
+        Effect.provide(client),
       );
       const seed = {
         users: [{ email }],
         organizations: [{ name: "V1 stalled", members: [email] }],
       };
-      const organization = yield* onTestClock(shipped(workos, seed, readBack));
+      const organizationClock = notingClock(clock);
+      const organization = yield* onTestClock(
+        organizationClock.run(shipped(workos, seed, readBack)),
+      );
       expect(hits.get(`POST ${workos}/_emulate/seed`)).toBe(1);
       expect(hits.get(`GET ${workos}/user_management/users`)).toBeGreaterThanOrEqual(1);
-      expect(organization.elapsed).toBeLessThanOrEqual(30_000);
+      expect(attempts[0]?.route).toBe(`POST ${workos}/_emulate/seed`);
+      expect(
+        attempts.slice(1).every(({ route }) => route === `GET ${workos}/user_management/users`),
+      ).toBe(true);
+      withinDeadline(attempts, organizationClock.noted);
       expect(Exit.isFailure(organization.exit)).toBe(true);
+    }),
+  );
+
+  it.effect("every harness process that calls out waits 2.5 s per address, not Node's 250 ms", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const read = (code: string) =>
+        Effect.gen(function* () {
+          const child = yield* processes.spawn(
+            ChildProcess.make(process.execPath, ["--input-type=module", "-e", code]),
+          );
+          const [out] = yield* Effect.all(
+            [child.stdout.pipe(Stream.decodeText(), Stream.mkString), child.exitCode],
+            { concurrency: "unbounded" },
+          );
+          return Number(out.trim());
+        }).pipe(Effect.scoped);
+      const value = `import net from "node:net"; console.log(net.getDefaultAutoSelectFamilyAttemptTimeout());`;
+      expect(yield* read(value)).toBe(250);
+      expect(yield* read(`import "./e2e/support/connect-timeout.ts"; ${value}`)).toBe(2_500);
+      const first = (text: string) => text.match(/^import (?:[^;]*? from )?"([^"]+)";/m)?.[1];
+      const callers: Array<string> = [];
+      for (const name of (yield* fs.readDirectory("e2e")).toSorted()) {
+        if (!name.endsWith(".ts")) continue;
+        const text = yield* fs.readFileString(`e2e/${name}`);
+        if (
+          /NodeRuntime\.runMain/.test(text) &&
+          /FetchHttpClient|runSuite\(|runDeployedSuite|startDeployment/.test(text)
+        ) {
+          callers.push(`e2e/${name}`);
+          expect(first(text), name).toBe("./support/connect-timeout.ts");
+        }
+      }
+      expect(callers).toEqual([
+        "e2e/cleanup-deployed.ts",
+        "e2e/cli.ts",
+        "e2e/create-emulators.ts",
+        "e2e/deployed.ts",
+        "e2e/run.ts",
+      ]);
+      const config = yield* fs.readFileString("e2e/vitest.config.ts");
+      const setupFiles = [...config.matchAll(/setupFiles: \[([^\]]*)\]/g)].flatMap((match) =>
+        [...match[1]!.matchAll(/"([^"]+)"/g)].map((file) => file[1]!),
+      );
+      expect(setupFiles.length).toBeGreaterThan(0);
+      for (const file of setupFiles)
+        expect(first(yield* fs.readFileString(file)), file).toBe("./support/connect-timeout.ts");
     }),
   );
 });

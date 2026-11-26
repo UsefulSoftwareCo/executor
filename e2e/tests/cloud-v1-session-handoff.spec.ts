@@ -1,10 +1,3 @@
-/**
- * v1 session handoff: v1's dashboard redirects a signed-in member of a workspace that has moved to
- * v2's `/api/v1-handoff` with a token it signs for that member, and v2 starts its own session for
- * the user the import mapped them to (`notes/v1-shutdown.md`, Forwarding). The scenarios record
- * the scenario's organization and two of its members as a moved v1 workspace, as the import did,
- * then sign tokens as v1 does with the secret the managed Cloud shares with its synthetic v1.
- */
 import { randomUUID } from "node:crypto";
 import { expect, layer } from "@effect/vitest";
 import { Effect, FileSystem, Schema } from "effect";
@@ -33,7 +26,6 @@ const Identity = Schema.Struct({
   user: Schema.Struct({ id: Schema.String, email: Schema.String }),
 });
 
-/** The v2 user a session belongs to. */
 const userOf = (session: Session) =>
   Effect.gen(function* () {
     const api = yield* Api;
@@ -41,11 +33,6 @@ const userOf = (session: Session) =>
       .user;
   });
 
-/**
- * A two-member v1 workspace that moved to the scenario's organization, recorded as the import
- * recorded it: the organization and both members, the owner and a member, mapped to their v2
- * users. The browser is signed in as neither.
- */
 const movedWorkspace = Effect.gen(function* () {
   const actors = yield* Actors,
     fs = yield* FileSystem.FileSystem,
@@ -66,7 +53,6 @@ const movedWorkspace = Effect.gen(function* () {
     ],
   });
   const moved = actors.organization;
-  /** A token as v1 signs it for one handoff, a minute long. */
   const sign = (claims: Partial<V1HandoffClaims> = {}, signedWith = secret) => {
     const now = Math.floor(Date.now() / 1000);
     return v1HandoffToken(signedWith, {
@@ -91,7 +77,6 @@ const movedWorkspace = Effect.gen(function* () {
 const handoffPath = (token: string) => `/api/v1-handoff?token=${encodeURIComponent(token)}`;
 const signInFor = (slug: string) => `/login?redirect=${encodeURIComponent(`/org/${slug}`)}`;
 
-/** One handoff request from a browser with no session, without following its redirect. */
 const signedOut = (token: string) =>
   Effect.gen(function* () {
     const target = yield* Target;
@@ -108,7 +93,6 @@ const signedOut = (token: string) =>
     );
   });
 
-/** One handoff request from the signed-in browser, with its cookies, without following it. */
 const fromBrowser = (step: string, token: string) =>
   Effect.gen(function* () {
     const browser = yield* Browser;
@@ -124,7 +108,6 @@ const fromBrowser = (step: string, token: string) =>
     );
   });
 
-/** The email of the browser's v2 session, or null when it has none. */
 const sessionEmail = (step: string) =>
   Effect.gen(function* () {
     const browser = yield* Browser;
@@ -145,7 +128,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud v1 session handoff", (it
         const moved = yield* movedWorkspace;
         const token = moved.sign();
 
-        // The browser follows the redirects; the handoff's own response is the first of them.
         const handoff = yield* browser.use("Open the handoff v1 redirects to", (page) =>
           page.goto(handoffPath(token)).then((response) => {
             let request = response?.request() ?? null;
@@ -186,14 +168,12 @@ layer(HostedLive, { excludeTestServices: true })("Cloud v1 session handoff", (it
         expect(yield* sessionEmail("Read the session the handoff started")).toBe(moved.owner.email);
         yield* browser.checkpoint("signed in through the v1 handoff");
 
-        // Signed in as the same user, a new handoff only redirects.
         expect(yield* fromBrowser("Hand off the same user again", moved.sign())).toEqual({
           status: 302,
           location: `/org/${moved.slug}`,
           cookies: 0,
         });
 
-        // v1 names its own session's organization; v2 opens the one this browser used last.
         const secondSlug = `${moved.slug}-second`;
         const created = yield* browser.use("Create a second organization", (page) =>
           page
@@ -220,7 +200,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud v1 session handoff", (it
           yield* fromBrowser("Hand off after working in the second organization", moved.sign()),
         ).toEqual({ status: 302, location: `/org/${second.slug}`, cookies: 0 });
 
-        // A remembered organization the user no longer belongs to falls back to the token's.
         yield* browser.use("Remember an organization the user is not a member of", (page) =>
           page
             .context()
@@ -247,7 +226,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud v1 session handoff", (it
           cookies: 0,
         });
 
-        // Another user's handoff never replaces the session the browser holds.
         expect(
           yield* fromBrowser(
             "Hand off another member to the signed-in browser",
@@ -256,7 +234,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud v1 session handoff", (it
         ).toEqual({ status: 302, location: signInFor(moved.slug), cookies: 0 });
         expect(yield* sessionEmail("The browser keeps its own session")).toBe(moved.owner.email);
 
-        // The token is used: replayed from anywhere, it opens sign-in and starts no session.
         expect(yield* signedOut(token)).toEqual({
           status: 302,
           location: signInFor(moved.slug),
@@ -279,20 +256,15 @@ layer(HostedLive, { excludeTestServices: true })("Cloud v1 session handoff", (it
           referrerPolicy: "no-referrer",
           cookies: 0,
         };
-        // Not signed by v1, expired, longer-lived than v1 makes them, or for another audience.
         expect(yield* signedOut(moved.sign({}, "x".repeat(64)))).toEqual(refused);
         expect(yield* signedOut(moved.sign({ iat: now - 120, exp: now - 60 }))).toEqual(refused);
         expect(yield* signedOut(moved.sign({ exp: now + 3_600 }))).toEqual(refused);
         expect(yield* signedOut(moved.sign({ aud: "v2-mcp-forward" }))).toEqual(refused);
         expect(yield* signedOut(moved.sign({ v: 2 }))).toEqual(refused);
-        // A WorkOS user the import never mapped, even one in no other workspace.
         expect(yield* signedOut(moved.sign({ user: `user_${randomUUID()}` }))).toEqual(refused);
-        // The organization's slug claimed for a v1 organization that was not imported as it.
         expect(yield* signedOut(moved.sign({ organization: `org_${randomUUID()}` }))).toEqual(
           refused,
         );
-        // The endpoint that starts the session is server-only: over HTTP it does not exist, even
-        // for the mapped user and their organization.
         const direct = yield* Effect.gen(function* () {
           const target = yield* Target;
           const url = `${targetHosts(target).browser}/api/auth/v1-handoff/session`;
@@ -315,7 +287,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud v1 session handoff", (it
           );
         });
         expect(direct).toEqual({ status: 404, cookies: 0 });
-        // A member who has left the v2 organization since it moved.
         yield* writeRows("sso-database.json", [
           {
             sql: `delete from member where "organizationId" = $1 and "userId" = (select v2_id from private_v1_import_map where v1_kind = 'user' and v1_id = $2) returning id`,
@@ -323,7 +294,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud v1 session handoff", (it
           },
         ]).pipe(Effect.map((rows) => expect(rows[0]).toHaveLength(1)));
         expect(yield* signedOut(moved.sign({ user: moved.member.user }))).toEqual(refused);
-        // The workspace itself hands off: what was refused was each token.
         const accepted = yield* signedOut(moved.sign());
         expect(accepted).toMatchObject({
           status: 302,

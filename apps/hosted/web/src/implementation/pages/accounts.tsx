@@ -19,15 +19,10 @@ import {
 import { OAuthClientsDialog } from "./oauth-clients.tsx";
 import { resourceInventoryAtom } from "../../contracts/resource-access.ts";
 
-/** The account list, keyed by the URL. */
 export const accountsPageReads: OrganizationPageReads = (organization) => [
   resourceInventoryAtom(organization),
 ];
 
-/**
- * Each member sees the accounts they connected. Administrators also manage the organization's
- * OAuth clients from here, since those clients only exist to connect accounts.
- */
 export function AccountsPage({
   highlight,
   oauthClients,

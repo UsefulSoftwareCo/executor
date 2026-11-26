@@ -1,4 +1,3 @@
-/** Hosted product composition, shared by cloud and self-host only. */
 export { requestServices } from "./implementation/request-services.ts";
 export * from "./contracts/product-analytics.ts";
 export { withExecutorAnalytics } from "./implementation/product-analytics.ts";
@@ -64,7 +63,11 @@ export {
   lookupOrganizationSlug,
   noOrganizationRemovals,
 } from "./implementation/organization.ts";
-export { requireOrganizationAdmin, requireOrganizationOwner } from "./implementation/access.ts";
+export {
+  currentOrganizationSlug,
+  requireOrganizationAdmin,
+  requireOrganizationOwner,
+} from "./implementation/access.ts";
 export { hostedMiddlewareLive } from "./implementation/middleware.ts";
 export * from "./contracts/organization-removal.ts";
 export {
@@ -78,6 +81,7 @@ export { migrateOrganizationRemovals } from "./implementation/organization-remov
 export * from "./contracts/user-removal.ts";
 export { previewUserRemoval, removeUser } from "./implementation/user-removal.ts";
 export { deleteUserRecords } from "./implementation/user-records.ts";
+export { inviterMayInvite, invitingRoles } from "./implementation/organization-auth.ts";
 
 export { hostedOAuthCallback } from "./implementation/accounts.ts";
 export * from "./contracts/oauth-client-metadata.ts";
@@ -137,7 +141,11 @@ export {
   mcpWhoami,
 } from "./implementation/mcp-http.ts";
 
-export { apiChallenge, apiProtectedResource } from "./implementation/api-oauth.ts";
+export {
+  apiChallenge,
+  apiProtectedResource,
+  desktopProtectedResource,
+} from "./implementation/api-oauth.ts";
 
 export { browserTelemetry } from "./implementation/telemetry.ts";
 

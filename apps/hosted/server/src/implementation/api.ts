@@ -9,7 +9,6 @@ import { hostedAppAccess } from "../app-management.ts";
 import { hostedResourceAccessHandlers } from "./resource-access.ts";
 import { hostedOAuthClientHandlers } from "./oauth-clients.ts";
 import { hostedScheduleHandlers } from "./schedules.ts";
-/** Shared hosted handlers. No Cloudflare, Node, or local-product dependencies. */
 import { requestRejections } from "@executor-js/sdk/core";
 import { Effect, Layer } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
@@ -50,7 +49,9 @@ const apiContext = HttpApiBuilder.group(HostedApi, "context", (handlers) =>
     return handlers.handle("get", () =>
       Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest;
-        const grant = yield* auth.authenticate(new Headers(request.headers));
+        const grant = yield* auth.authenticate(new Headers(request.headers), undefined, {
+          tools: true,
+        });
         if (grant.key !== undefined)
           yield* Effect.annotateCurrentSpan({
             "executor.api_key.id": grant.key.id,
@@ -67,12 +68,10 @@ const apiContext = HttpApiBuilder.group(HostedApi, "context", (handlers) =>
   }),
 );
 
-/** Common group implementations. Each host supplies HostedExecutor and HostedCatalog. */
 export const hostedHandlers = Layer.mergeAll(
   appManagementHandlers(HostedAppManagementApi, HostedApi.identifier).pipe(
     Layer.provide(hostedAppAccess),
   ),
-  // Each host provides FrameworkDocumentation from its packaged authoring assets.
   frameworkHandlers(HostedFrameworkApi, HostedApi.identifier).pipe(Layer.provide(hostedAppAccess)),
   hostedAppAccountHandlers,
   hostedScheduleHandlers,

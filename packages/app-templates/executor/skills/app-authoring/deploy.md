@@ -67,9 +67,10 @@ credential, so it must be that server's current key. A `--host` that names
 another local server, such as `http://127.0.0.1:4400`, needs that server's API
 key in `EXECUTOR_API_KEY`; if the variable is unset, ask the user to set it, and
 do not search files for it. For hosted Executor, run
-`executor apps login` once; add `--host <origin>` for a self-hosted Executor.
-It prints a link and a code and waits; ask the user to open the link and
-approve the code. Later commands use that host without `--host`.
+`executor login` once; add `--host <origin>` for a self-hosted Executor.
+It prints a link and a code and waits; ask the user to open the link, leave
+**All apps** chosen and approve the code. The tool commands use the same
+sign-in. Later commands use that host without `--host`.
 `--organization` defaults to the organization you signed in to.
 
 A command that fails exits with status 1. Its standard error states the

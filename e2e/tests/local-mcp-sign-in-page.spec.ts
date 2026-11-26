@@ -1,7 +1,3 @@
-/**
- * Local sign-in shows the access the MCP URL names as a plain row, in the hosted pages' layout, and
- * where approvals are answered as a menu the URL preselects.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { createHash, randomBytes } from "node:crypto";
@@ -103,7 +99,6 @@ layer(TestLive, { excludeTestServices: true })("Local MCP sign-in page", (it) =>
       }),
     ),
   );
-  // The local page is sent complete, Connect included, so a click can land before it hydrates.
   it.effect(scenarios.localEarlyConsentDecision.title, (context) =>
     withCase(
       context,

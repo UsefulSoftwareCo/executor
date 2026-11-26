@@ -1,5 +1,4 @@
-/** Evaluated tool listings, reused across requests through the declaration store. */
-import { Cause, Clock, Effect, Exit, Fiber, Option, Semaphore } from "effect";
+import { Cause, Clock, Effect, Exit, Fiber, Option, Result, Schema, Semaphore } from "effect";
 import {
   defaultToolListingPolicy,
   durableHeadStartMillis,
@@ -20,90 +19,57 @@ import {
   type ToolRouter,
 } from "../contracts/tools.ts";
 import type { AppAccounts } from "../contracts/apps.ts";
-import type { VersionId } from "../contracts/shared.ts";
+import { OAuthReconnectRequired } from "../contracts/oauth.ts";
+import type { OwnerId, VersionId } from "../contracts/shared.ts";
 import type { Declarations } from "./declarations.ts";
 import { makeHandoff } from "./handoff.ts";
 import { decodeListing, shareListing } from "./listing-json.ts";
 import type { makeOAuth } from "./oauth.ts";
-import { resolve, type InvocationSnapshot } from "./tools.ts";
+import { reconnectReported, resolve, type InvocationSnapshot } from "./tools.ts";
 import type { ToolSearch } from "./tool-search.ts";
 
-/** Every tool of one app for one invocation state, sorted by name. */
 export interface ToolListing {
   readonly catalog: {
     readonly version: VersionId;
     readonly accounts: AppAccounts;
   };
-  /** Sorted by name. */
   readonly items: ReadonlyArray<Tool>;
-  /** Every router in the catalog, on every page. */
   readonly routers: ReadonlyArray<ToolRouter>;
-  /**
-   * The JSON length of each of `items`, in UTF-16 code units, counted when the listing was kept,
-   * so a page is bounded without writing its tools again. A listing evaluated for one read, or
-   * read from a format 2 text, has none.
-   */
   readonly itemChars?: ReadonlyArray<number>;
 }
 
-/** Failures of the evaluation itself. Credential and storage failures are never remembered. */
 export type ListingFailure = AppEvaluationFailed | AppProviderFailed | ToolListingTimedOut;
 type ResolveError = Effect.Error<ReturnType<typeof resolve>>;
 
-/** A listing and when the evaluation that produced it started. */
 interface Served {
   readonly listing: ToolListing;
   readonly at: number;
 }
 
-/** May renew a refused account, which fails like resolving it; such failures are not kept. */
 type Evaluate = (
   context: Effect.Success<ReturnType<typeof resolve>>,
 ) => Effect.Effect<ToolListing, AppEvaluationFailed | AppProviderFailed | ResolveError>;
 
-/** How an in-process caller reads a listing. */
+export interface SearchableAhead {
+  readonly running: PendingLoad | undefined;
+  readonly kept: Effect.Success<ReturnType<ToolSearch["listing"]>> | undefined;
+  readonly access: Result.Result<void, Effect.Error<ReturnType<Declarations["authorize"]>>>;
+}
+
 interface ListingRead extends ToolListOptions {
-  /**
-   * The accounts the caller already resolved for this invocation state, such as a tool call
-   * reading the tool's kind. An evaluation this read starts uses them instead of resolving the
-   * accounts again, which would renew a grant inside its renewal window a second time.
-   */
   readonly resolved?: Effect.Success<ReturnType<typeof resolve>>;
-  /** Do not retain a decoded listing after a cold search fill writes its rows. */
   readonly retain?: boolean;
-  /**
-   * The read itself runs as the host's background work, such as a renewal of aged search rows.
-   * An evaluation it runs in its own fiber, because the host refused it as separate background
-   * work once the request was closing, is then still the host's: the host ending it is
-   * remembered as a timeout, as it is for one the host accepted.
-   */
   readonly hosted?: boolean;
-  /**
-   * Whether the read checks that what this process keeps of the app is from after its cached data
-   * last changed (`followChanges`), as it does by default. A call's own read of the tool's kind
-   * passes false: it runs before the call hands its work to the app, which resolves the tool
-   * against its live catalog, so it sends the supervisor nothing ahead of that.
-   */
   readonly followChanges?: boolean;
-  /**
-   * Serve no kept listing evaluated at or before this time, such as the one a renewal of search
-   * rows evaluated then replaces: the read evaluates the app unless a newer listing is kept.
-   */
   readonly newerThan?: number;
 }
 
-/** A kept listing. */
 class Listed {
   readonly listing: ToolListing;
   constructor(listing: ToolListing) {
     this.listing = listing;
   }
 }
-/**
- * What a finished evaluation left for its readers. Its listing is kept as `Listed`, like a
- * `Failed` one; of the others, nothing is. The listing's tools share their definitions, and its
- * text is encoded only to keep it beyond this process.
- */
 class Evaluated {
   readonly listed: Listed;
   readonly bytes: number;
@@ -118,20 +84,12 @@ class Evaluated {
 }
 class Failed {
   readonly error: ListingFailure;
-  /** When it failed; a remembered failure is reported for `freshMillis` from then. */
   readonly at: number;
   constructor(error: ListingFailure, at: number) {
     this.error = error;
     this.at = at;
   }
 }
-/**
- * A background renewal of search rows, kept beside the listing under its own key from when it
- * started. Rows evaluated before it are not renewed again until `renewalRetryMillis` after it,
- * whether it finished, failed or the host stopped it. One that failed in the app or its upstream
- * keeps that failure, which searches report beside the rows they still serve, however fast it
- * failed. It is kept in this process or isolate only.
- */
 class Renewal {
   readonly failure: AppEvaluationFailed | AppProviderFailed | undefined;
   constructor(failure?: AppEvaluationFailed | AppProviderFailed) {
@@ -144,7 +102,6 @@ class Unkept {
     this.error = error;
   }
 }
-/** Interrupted before it finished, by its owning reader or by the host. */
 class Stopped {
   readonly elapsedMs: number;
   constructor(elapsedMs: number) {
@@ -153,65 +110,27 @@ class Stopped {
 }
 type Outcome = Evaluated | Failed | Unkept | Stopped;
 
-/**
- * Whether the app's own router failed for some of its accounts, such as one account whose MCP
- * server refused to list its tools, while the others' tools were listed. Such a listing is served
- * to the readers of its evaluation but never kept, like a failure, so the next read evaluates the
- * app again and finds a recovered account.
- */
 const partial = (routers: ReadonlyArray<ToolRouter>) =>
   routers.some((router) => router.path === "" && router.error !== undefined);
 
-/**
- * Keep each evaluated listing in the shared declaration store under the declaration key, so a
- * new version, account set or stored credential is another listing,
- * and serve anything this read did not evaluate itself only after the checks a live evaluation
- * runs before it releases credentials: a kept listing, a remembered failure, and the result of
- * an evaluation another request started.
- *
- * A listing younger than `freshMillis` is served as is; an older one is served while one
- * background evaluation replaces it, or as is to a reader that passes `refreshStale: false`; past
- * `maxStaleMillis` the read evaluates first. Readers of a
- * key share one evaluation. A first evaluation runs in the background when the host allows it,
- * so a reader that stops waiting, such as MCP discovery giving up on a stalled app, leaves it
- * running until `loadMillis` or until the host ends its background work, whichever is first, and
- * its listing is kept when it finishes. Either stop is remembered as a timeout. A reader that passes
- * `reportRunningAfterMillis` is told at once about an evaluation that has run longer than that,
- * or that such a reader already gave up on; other readers wait for it. A slow failure is reported
- * at once to such a reader for `freshMillis` after it failed, while one background evaluation at a
- * time retries; other readers evaluate again, so they never see a failure a live read would not. Kept listings are shared by reference and
- * never mutated, so consumers may derive projections that live exactly as long as the listing.
- */
 export const makeListings = (options: {
   readonly cache: DeclarationCache;
   readonly background: BackgroundWork | undefined;
   readonly declarations: Declarations;
   readonly resolveAccount: ReturnType<typeof makeOAuth>["resolveSelected"];
   readonly policy?: ToolListingPolicy;
-  /** Keeps evaluated listings as search rows. */
   readonly search: ToolSearch;
 }) => {
   const policy = options.policy ?? defaultToolListingPolicy;
   const { cache, background, search } = options;
-  /** Cold search fills of one executor share a small gate. */
   const searchFillLimit = 2;
   const searchFillGate = Semaphore.makeUnsafe(searchFillLimit);
-  /**
-   * How long after a renewal of search rows starts that rows evaluated before it are renewed
-   * again: a host that ends background work soon after a request may stop a slow app's renewal
-   * every time, and other apps' rows still need theirs.
-   */
   const renewalRetryMillis = Math.min(10 * 60_000, policy.renewMillis);
   const renewalKey = (id: string) => `${id}:renewal`;
-  /**
-   * Keep an evaluated listing as search rows. A failure is logged: `searchable` finds the rows
-   * missing or older than the listing and writes them again before naming them.
-   */
   const index = (state: InvocationSnapshot, id: string, listing: ToolListing, at: number) =>
     search
       .write(state, ToolSearchListing.make(id), listing, at)
       .pipe(Effect.catchCause(() => Effect.logWarning("Tool search rows were not saved")));
-  /** Keep a renewal of `id`'s rows, stamped with its start, so an app cache change since forgets it. */
   const renewal = (
     id: string,
     state: InvocationSnapshot,
@@ -225,10 +144,6 @@ export const makeListings = (options: {
       value: new Renewal(failure),
       bytes: 0,
     });
-  /**
-   * `earlier` is the evaluation that was running when the caller began reading where a listing
-   * is kept outside this read, such as search rows.
-   */
   const readAt = (
     state: InvocationSnapshot,
     evaluate: Evaluate,
@@ -256,11 +171,9 @@ export const makeListings = (options: {
         done: makeHandoff(),
       });
 
-      /** Keep a listing, or a slow failure unless a listing that may still be served exists. */
       const keep = (outcome: Outcome, load: PendingLoad) =>
         Effect.gen(function* () {
           if (outcome instanceof Evaluated) {
-            // What the evaluation's CPU, which a Workers I/O clock cannot time, grows with.
             yield* Effect.annotateCurrentSpan(outcome.sizes);
             if (read.retain !== false && !partial(outcome.listed.listing.routers))
               yield* cache.set(id, {
@@ -278,9 +191,6 @@ export const makeListings = (options: {
             outcome.at - load.started < policy.slowFailureMillis
           )
             return;
-          // Executor refused the app a host API document of another revision. That says what the
-          // host served at that moment, not how the app lists: the caller is told to retry in a
-          // few seconds, and the retry must read the document again rather than this refusal.
           if (outcome.error._tag === "AppEvaluationFailed" && refusedHostApi(outcome.error.failure))
             return;
           const current = yield* cache.get(id);
@@ -290,7 +200,6 @@ export const makeListings = (options: {
             outcome.at - current.at < policy.maxStaleMillis
           )
             return;
-          // Stamped with its start, so an app cache change during the evaluation discards it.
           yield* cache.set(id, {
             kind: "value",
             app: state.app.id,
@@ -299,12 +208,6 @@ export const makeListings = (options: {
             bytes: 0,
           });
         });
-      /**
-       * Keep a listing beyond this process, and as search rows. It runs after the evaluation's
-       * readers have their outcome, and encodes with the write, so they never wait for it, and
-       * before the evaluation leaves `pending`: a cold search fill keeps its listing nowhere else,
-       * so a reader that comes meanwhile joins the finished evaluation instead of starting another.
-       */
       const store = (outcome: Outcome, load: PendingLoad) =>
         outcome instanceof Evaluated && !partial(outcome.listed.listing.routers)
           ? options.declarations
@@ -321,10 +224,6 @@ export const makeListings = (options: {
               )
               .pipe(Effect.andThen(index(state, id, outcome.listed.listing, load.started)))
           : Effect.void;
-      /**
-       * Stops the evaluation once it has run for `loadMillis` with no reader waiting: at that
-       * point if nobody waits, otherwise when the last waiting reader leaves.
-       */
       const unwatched = (load: PendingLoad) =>
         Effect.gen(function* () {
           yield* Effect.sleep(policy.loadMillis);
@@ -332,18 +231,8 @@ export const makeListings = (options: {
           const at = yield* Clock.currentTimeMillis;
           return new Failed(timedOut(at - load.started, false), at) as Outcome;
         });
-      /**
-       * Evaluate once for every reader of this key, keeping the listing or its failure. The
-       * host interrupts an evaluation it runs as background work only when its background
-       * lifetime ends, after the evaluation had all the time the host gives such work, so that
-       * stop is remembered as a timeout, like one after `loadMillis`. A reader that owns the
-       * evaluation stops it by leaving, which says nothing about how long the listing takes.
-       */
       const run = (load: PendingLoad, owner: "host" | "reader") =>
         evaluated.pipe(
-          // Before readers have it, so they share its definitions too.
-          // In its own span: what interning and counting the listing cost, apart from decoding
-          // the app's answer.
           Effect.flatMap((listing) =>
             Effect.sync((): Outcome => new Evaluated(shareListing(listing))).pipe(
               Effect.withSpan("sdk.tools.listing.share"),
@@ -362,10 +251,7 @@ export const makeListings = (options: {
           Effect.tap((outcome) => keep(outcome, load)),
           Effect.onExit((exit) =>
             Effect.gen(function* () {
-              // It leaves `pending` once `store` below has kept it.
               if (Exit.isSuccess(exit)) return yield* load.done.settle(exit.value);
-              // Remembered before it leaves `pending`, like an outcome kept above, so a reader
-              // always finds one of them.
               const at = yield* Clock.currentTimeMillis;
               if (
                 (owner === "host" && Cause.hasInterruptsOnly(exit.cause)) ||
@@ -376,15 +262,11 @@ export const makeListings = (options: {
               yield* load.done.settle(new Stopped(at - load.started));
             }),
           ),
-          // In the evaluation's own fiber: background work that offered the write as new
-          // background work would find the host refusing it once the request is closing.
           Effect.flatMap((outcome) => store(outcome, load)),
           Effect.ensuring(Effect.sync(() => cache.end(id, load))),
           Effect.withSpan("sdk.tools.listing.evaluate"),
-          // Background work may start uninterruptible; its time bound must still stop it.
           Effect.interruptible,
         );
-      /** Start an evaluation nobody waits for, unless one is running or the host refuses. */
       const refresh = Effect.uninterruptible(
         Effect.gen(function* () {
           if (background === undefined || cache.pending(id) !== undefined) return;
@@ -403,13 +285,6 @@ export const makeListings = (options: {
           const elapsed = value instanceof Stopped ? value.elapsedMs : 0;
           return yield* Effect.fail(timedOut(elapsed, false));
         });
-      /**
-       * Wait for an evaluation this read did not run itself, then check access as for a kept
-       * listing: it may have been evaluated for another request, and access may have changed
-       * while it ran. A reader that stops waiting leaves it running; one with a wait bound that
-       * gives up after the evaluation has run for half that bound marks it overdue. A reader
-       * interrupted sooner, such as a finished program, says nothing about the evaluation.
-       */
       const join = (load: PendingLoad) =>
         Effect.gen(function* () {
           load.waiters += 1;
@@ -443,17 +318,11 @@ export const makeListings = (options: {
           return yield* outcome(done.value, load.started);
         });
 
-      // A reader that refreshes a stale listing needs background work to do so; without it the
-      // listing is evaluated again first, like a missing one.
       const refreshes = read.refreshStale !== false;
       const servable = (at: number) =>
         (read.newerThan === undefined || at > read.newerThan) &&
         (now - at < policy.freshMillis ||
           (now - at < policy.maxStaleMillis && (background !== undefined || !refreshes)));
-      /**
-       * Serve a kept listing, refreshing it in the background once it is past `freshMillis`
-       * unless the reader asked not to.
-       */
       const serve = (at: number, listed: Listed, source: "memory" | "durable") =>
         Effect.gen(function* () {
           yield* authorize;
@@ -477,18 +346,11 @@ export const makeListings = (options: {
               : undefined,
           ),
         );
-      // What this process keeps of the app from before its cached data changed is forgotten once
-      // the check this starts, if one is due, reads when that was.
       if (read.followChanges !== false) yield* options.declarations.followChanges(state.app.id);
       const early = yield* keptListing;
       if (early?.value instanceof Listed && servable(early.at))
         return yield* serve(early.at, early.value, "memory");
-      // What runs before this read looks beyond this process and in memory again, or, as
-      // `earlier`, before its caller read search rows. An evaluation that ends keeps its listing
-      // or failure there before it leaves `pending`, so reading what runs first never misses both.
       const before = cache.pending(id) ?? earlier;
-      // Another isolate's listing, unless an invalidation seen here replaced it. It is kept
-      // here too when it fits. A remembered failure here does not hide it.
       const recalling = yield* Effect.forkChild(
         options.declarations.recall(state.app.id, id).pipe(
           Effect.flatMap((recalled) =>
@@ -514,18 +376,11 @@ export const makeListings = (options: {
           ),
         ),
       );
-      // A reader that does not refresh waits for the whole durable read: an evaluation beside
-      // it would load the app's Worker and replace the kept listing the read then serves.
       const recalled = yield* Fiber.join(recalling).pipe(
         refreshes ? Effect.timeoutOption(durableHeadStartMillis) : Effect.map(Option.some),
       );
       if (Option.isSome(recalled) && recalled.value !== undefined)
         return yield* serve(recalled.value.at, recalled.value.listed, "durable");
-      /**
-       * A slow durable read, often a Durable Object waking up, would delay every miss: wait for
-       * an evaluation beside it and answer with whichever settles first. A listing the read
-       * finds still wins.
-       */
       const orRecalled = <E, R>(evaluation: Effect.Effect<Served, E, R>) =>
         Option.isSome(recalled)
           ? evaluation
@@ -537,13 +392,9 @@ export const makeListings = (options: {
                 ),
               ),
             );
-      // The durable read yielded, and an evaluation may have ended meanwhile.
       const kept = yield* keptListing;
       if (kept?.value instanceof Listed && servable(kept.at))
         return yield* serve(kept.at, kept.value, "memory");
-      // A remembered failure spares a reader with a wait bound, such as MCP discovery, from
-      // waiting on the evaluation again. A reader prepared to wait, such as the dashboard,
-      // joins or starts a live evaluation instead, so a recovered upstream shows at once.
       if (
         kept?.value instanceof Failed &&
         now - kept.value.at < policy.freshMillis &&
@@ -554,28 +405,19 @@ export const makeListings = (options: {
         yield* refresh;
         return yield* Effect.fail(kept.value.error);
       }
-      /**
-       * An evaluation a reader may share. One that finished, but started no later than an app
-       * cache change seen here, listed the replaced data and was not kept, so a reader evaluates
-       * again as if it had found nothing.
-       */
       const shared = (load: PendingLoad | undefined) =>
         load === undefined || (load.done.isSettled() && cache.outdated(state.app.id, load.started))
           ? undefined
           : load;
-      // Read again so that checking and registering below happen without yielding. Registering
-      // replaces an evaluation that is not shared.
       const running = shared(cache.pending(id));
       const ended = shared(before);
       if (running === undefined && ended !== undefined) {
-        // It ended after the read above: the outcome it left is there already.
         yield* Effect.annotateCurrentSpan("executor.declarations.cache", "joined");
         return yield* join(ended);
       }
       if (running !== undefined) {
         const elapsed = now - running.started;
         const bound = read.reportRunningAfterMillis;
-        // One that finished and is still keeping its listing has the outcome for this reader.
         if (
           bound !== undefined &&
           !running.done.isSettled() &&
@@ -588,7 +430,6 @@ export const makeListings = (options: {
         yield* Effect.annotateCurrentSpan("executor.declarations.cache", "joined");
         return yield* orRecalled(join(running));
       }
-      // Checking for a running evaluation and registering this one happen without yielding.
       const load = pendingLoad(now);
       cache.begin(id, load);
       yield* Effect.annotateCurrentSpan("executor.declarations.cache", "miss");
@@ -597,8 +438,6 @@ export const makeListings = (options: {
           ? false
           : yield* Effect.uninterruptible(background(run(load, "host")));
       if (detached) return yield* orRecalled(join(load));
-      // Without background work the evaluation belongs to this reader and stops with it, unless
-      // the reader is the host's background work.
       load.waiters = 1;
       yield* run(load, read.hosted === true ? "host" : "reader");
       return yield* outcome(yield* load.done.await, load.started);
@@ -607,15 +446,6 @@ export const makeListings = (options: {
         attributes: { "executor.app.id": state.app.id },
       }),
     );
-  /**
-   * Renew search rows evaluated at `rows` in the background, only when the store admits another
-   * renewal at once: renewals queued behind others would mostly wait out the host's background
-   * time, the search that starts one is not waiting for it, and every executor of the process or
-   * isolate shares the store, so one request cannot start a renewal for each of many apps. It evaluates the app unless a listing
-   * evaluated since the rows is kept, and writes that listing's rows. Only a failure in the app or
-   * its upstream is kept with it; a renewal the host stopped, that ran past `loadMillis`, or met a
-   * credential or storage failure says nothing about the rows.
-   */
   const renew = (
     state: InvocationSnapshot,
     id: string,
@@ -629,21 +459,14 @@ export const makeListings = (options: {
       if (!cache.renewing()) return;
       const work = Effect.gen(function* () {
         const started = yield* Clock.currentTimeMillis;
-        // An earlier renewal's failure is still reported while this one runs.
         yield* renewal(id, state, started, failure);
-        // Nobody waits for it, so it joins a running evaluation however long that has run.
         yield* readAt(state, evaluate, {
           refreshStale: false,
           retain: false,
           hosted: true,
           newerThan: rows,
         }).pipe(
-          // Nobody waits for a renewal, so it stops waiting at the load bound rather than keep a
-          // stalled evaluation running.
           Effect.timeoutOption(policy.loadMillis),
-          // An evaluation this renewal started kept its rows itself; a kept listing evaluated
-          // since the rows, such as another isolate's, is written here. Writing an evaluated one
-          // again would only wait for the first write while holding a connection.
           Effect.flatMap(
             Option.match({
               onNone: () => Effect.void,
@@ -667,19 +490,36 @@ export const makeListings = (options: {
       );
       if (!(yield* background(work))) cache.renewed();
     });
+  const searchablePrefetch = (owner: OwnerId, states: ReadonlyArray<InvocationSnapshot>) =>
+    Effect.gen(function* () {
+      if (policy.maxStaleMillis <= 0 || states.length === 0)
+        return states.map((): SearchableAhead | undefined => undefined);
+      const reads = yield* Effect.forEach(states, (state) =>
+        Effect.map(options.declarations.key("tools.list", state), (id) => ({
+          state,
+          listing: ToolSearchListing.make(id),
+          running: cache.pending(id),
+        })),
+      );
+      yield* Effect.forEach(
+        new Set(states.map((state) => state.app.id)),
+        (app) => options.declarations.followChanges(app),
+        { concurrency: "unbounded", discard: true },
+      );
+      const [kept, access] = yield* Effect.all(
+        [search.listings(reads), options.declarations.authorizeAll(owner, states)],
+        { concurrency: "unbounded" },
+      );
+      return reads.map(({ running }, index): SearchableAhead | undefined => {
+        const outcome = access[index];
+        return outcome === undefined ? undefined : { running, kept: kept[index], access: outcome };
+      });
+    }).pipe(Effect.withSpan("sdk.tools.searchable.prefetch"));
   return {
-    /** The host API revision this version's invocations are bound to; listings are keyed by it. */
+    searchablePrefetch,
     hostApi: options.declarations.hostApi,
     read: (state: InvocationSnapshot, evaluate: Evaluate, read: ListingRead = {}) =>
       readAt(state, evaluate, read).pipe(Effect.map(({ listing }) => listing)),
-    /**
-     * The listing a reader that does not refresh would be served without evaluating, in two steps:
-     * the one kept in this process is read now, and the returned lookup answers with it, or, only
-     * when run and none was kept here, with the one kept beyond this process. Neither evaluates the
-     * app nor waits for an evaluation that is running, so neither runs the app's code. A call reads
-     * the first step before it hands over its work: an app cache change it makes forgets the app's
-     * kept listings. Nothing is served to a caller, so access is not checked here.
-     */
     kept: (state: InvocationSnapshot) =>
       Effect.gen(function* () {
         if (policy.maxStaleMillis <= 0) return Effect.succeed<ToolListing | undefined>(undefined);
@@ -721,41 +561,38 @@ export const makeListings = (options: {
           attributes: { "executor.app.id": state.app.id },
         }),
       ),
-    /**
-     * Keep the listing `read` would serve as search rows, and name them. Rows evaluated within
-     * `maxStaleMillis` are served at once after the checks a kept listing is, unless an app cache
-     * change since or a newer listing kept here replaced them, and kept again if a newer listing
-     * superseded them and cleanup has not removed them. Rows older than `renewMillis` are renewed
-     * in the background while they are served; a renewal that failed in the app or its upstream is
-     * reported beside them as `stale` until a later one succeeds. Otherwise the listing is read as
-     * `read` does and named only once the write commits its rows, at its evaluation's time or a
-     * later one. A write that fails is `ToolSearchUnavailable`: the rows that are kept, if any, are
-     * not this listing's.
-     */
-    searchable: (state: InvocationSnapshot, evaluate: Evaluate, read: ListingRead = {}) =>
+    searchable: (
+      state: InvocationSnapshot,
+      evaluate: Evaluate,
+      read: ListingRead = {},
+      ahead?: SearchableAhead,
+    ) =>
       Effect.gen(function* () {
         const id = yield* options.declarations.key("tools.list", state);
         const listing = ToolSearchListing.make(id);
         const now = yield* Clock.currentTimeMillis;
-        // Read before the rows: an evaluation that ends while they are read wrote them first.
-        const running = cache.pending(id);
-        // Rows from before the app's cached data last changed are not served; see `followChanges`.
-        yield* options.declarations.followChanges(state.app.id);
-        // The checks kept rows are served after run beside their read; only kept rows wait on them.
+        const running = ahead === undefined ? cache.pending(id) : ahead.running;
+        if (ahead === undefined) yield* options.declarations.followChanges(state.app.id);
         const [kept, access] =
           policy.maxStaleMillis <= 0
             ? ([undefined, undefined] as const)
-            : yield* Effect.all(
-                [
-                  search.listing(state, listing),
-                  Effect.result(options.declarations.authorize(state)),
-                ],
-                { concurrency: "unbounded" },
-              );
-        // Rows missing, stale or removed are filled from an evaluation through the shared gate,
-        // which keeps no decoded listing: rows are what later searches read. Readers of the same
-        // listing share one evaluation, which the load bound stops like any other once nobody
-        // waits for it.
+            : ahead !== undefined
+              ? ([ahead.kept, ahead.access] as const)
+              : yield* Effect.all(
+                  [
+                    search.listing(state, listing),
+                    Effect.result(options.declarations.authorize(state)),
+                  ],
+                  { concurrency: "unbounded" },
+                );
+        yield* Effect.annotateCurrentSpan("executor.search.read_ahead", ahead !== undefined);
+        if (
+          ahead !== undefined &&
+          access !== undefined &&
+          Result.isFailure(access) &&
+          Schema.is(OAuthReconnectRequired)(access.failure)
+        )
+          return yield* Effect.fail(reconnectReported(state)(access.failure));
         const gated: Evaluate = (context) =>
           Effect.gen(function* () {
             const queued = yield* Clock.currentTimeMillis;
@@ -781,16 +618,12 @@ export const makeListings = (options: {
           now - kept.at < policy.maxStaleMillis &&
           !cache.outdated(state.app.id, kept.at) &&
           !newer &&
-          // Written only for the search that evaluated them; see `partial`.
           !partial(kept.routers)
         ) {
           yield* Effect.fromResult(access);
-          // A superseded listing is kept again unless cleanup removed it since it was read; then
-          // it is written again like a missing one.
           if (kept.superseded === null || (yield* search.revive(listing))) {
             const aged = now - kept.at >= policy.renewMillis;
             const last = yield* cache.get(renewalKey(id));
-            // The latest renewal started since these rows were evaluated.
             const renewed =
               last?.kind === "value" && last.value instanceof Renewal && last.at > kept.at
                 ? { at: last.at, failure: last.value.failure }

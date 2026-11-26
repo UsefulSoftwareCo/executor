@@ -1,9 +1,3 @@
-/**
- * What a grant's policy authorizes and why a grant refuses a request. Hosts enforce with these.
- * They live apart from `grant.ts` because dashboards import that module for addresses and
- * sign-in settings, and a Worker uploads every module its bundle reaches: refusal text and
- * enforcement here stay out of the dashboard's upload.
- */
 import {
   fullAuthority,
   selectedAuthority,
@@ -24,51 +18,25 @@ import {
   type McpAddress,
 } from "./grant.ts";
 
-/**
- * Why a current grant refused a request or operation. Each reason needs a different fix, so it
- * names the URL, app, runs-as target or tool involved; never a credential.
- */
 export const GrantRefusal = Schema.Union([
-  /** The grant serves the Executor API, not MCP. */
   Schema.Struct({ reason: Schema.Literal("api") }),
-  /**
-   * The credential has no grant record, such as a personal access token, so it has full access
-   * and cannot be limited to the connection the URL names.
-   */
   Schema.Struct({ reason: Schema.Literal("connection"), connection: ConnectionId }),
-  /**
-   * Its tools need browser approval, which its approval mode cannot ask for. Consent and
-   * narrowing refuse this, so only a grant narrowed before narrowing did holds it.
-   */
   Schema.Struct({ reason: Schema.Literal("approval"), mode: ApprovalMode }),
-  /** The grant includes none of this app's tools. */
   Schema.Struct({ reason: Schema.Literal("app"), app: AppId }),
-  /**
-   * The grant includes the app, but no entry permits running it with these accounts, or without
-   * an account when none is listed.
-   */
   Schema.Struct({
     reason: Schema.Literal("target"),
     app: AppId,
     accounts: Schema.optionalKey(Schema.NonEmptyArray(AccountId)),
   }),
-  /** The grant includes the app and how it runs, but not this tool. */
   Schema.Struct({ reason: Schema.Literal("tool"), app: AppId, tool: ToolName }),
-  /** The grant selects some of this app's events, and not the one requested. */
   Schema.Struct({ reason: Schema.Literal("events"), app: AppId }),
 ]);
 export type GrantRefusal = typeof GrantRefusal.Type;
 
-/** Adapt the OAuth grant DTO to shared product authority. Approval delivery stays in this module. */
 export const grantAuthorization = (policy: GrantPolicy): AuthorizationPolicy =>
   policy.kind === "all"
     ? fullAuthority
     : selectedAuthority(["discover", "run"], { kind: "tools", apps: policy.apps });
-/**
- * Why a grant with this policy could not serve its own approval mode, or undefined when it can.
- * Tools that need browser approval need browser mode to ask for it. Consent and narrowing refuse
- * such a policy, so no request could use the grant.
- */
 export const approvalRefusal = (
   policy: GrantPolicy,
   target: GrantTarget,
@@ -79,10 +47,6 @@ export const approvalRefusal = (
   target.mode !== "browser"
     ? { reason: "approval", mode: target.mode }
     : undefined;
-/**
- * The caller's linked accounts for each of the app's user requirements that this authority may run
- * the app with: the accounts its entries target, or every one when an entry targets none.
- */
 export const targetedLinks = <A extends LinkedAccounts[string]["accounts"][number]>(
   authority: AuthorizationPolicy,
   app: AppId,
@@ -100,12 +64,6 @@ export const targetedLinks = <A extends LinkedAccounts[string]["accounts"][numbe
     ]),
   );
 };
-/**
- * Why this authority refuses the caller's links before they are narrowed: a plain user requirement
- * the caller linked accounts for, none of which its entries target. Narrowed, the requirement
- * would have no account and read as unlinked; it is the grant that does not allow the account the
- * requirement uses, its newest link.
- */
 export const untargetedLinkRefusal = (
   authority: AuthorizationPolicy,
   app: AppId,
@@ -124,37 +82,22 @@ export const untargetedLinkRefusal = (
   }
   return undefined;
 };
-/**
- * Where one of an app's events may reach a grant with this policy, or undefined when it no
- * longer may. See `eventAccess`.
- */
 export const grantEventAccess = (policy: GrantPolicy, app: AppId, event: string) => {
   const authority = grantAuthorization(policy);
   return permitsApp(authority, app) ? eventAccess(authority, app, event) : undefined;
 };
-/**
- * Why a grant cannot serve an MCP request, or undefined when it can. Its record decides the
- * approval mode and connection; nothing in the request, including its URL, changes them.
- */
 export const grantRefusal = (grant: Grant): GrantRefusal | undefined =>
   grant.target.kind !== "mcp" ? { reason: "api" } : approvalRefusal(grant.policy, grant.target);
-/**
- * Why a credential without a grant record cannot serve this MCP URL, or undefined when it can.
- * Personal access tokens and the local administrative key have full access, so a URL that names a
- * connection is refused rather than served with more than that connection allows.
- */
 export const unrecordedRefusal = (address: McpAddress): GrantRefusal | undefined =>
   address.connection === undefined
     ? undefined
     : { reason: "connection", connection: address.connection };
-/** Browser approval pages answer only grants whose approval mode is browser. */
 export const permitsBrowserApproval = (grant: Grant) =>
   grant.target.kind === "mcp" &&
   grant.target.mode === "browser" &&
   grantRefusal(grant) === undefined;
 
 const notBypassed = "Do not bypass authorization.";
-/** Each refusal names what the grant covers. Connection IDs, app IDs and tool names are not secret. */
 const refusalPresentation = (refusal: GrantRefusal): ErrorPresentation =>
   Match.value(refusal).pipe(
     Match.discriminatorsExhaustive("reason")({
@@ -221,7 +164,6 @@ const refusalPresentation = (refusal: GrantRefusal): ErrorPresentation =>
       }),
     }),
   );
-/** A current grant does not authorize this request or operation, with the reason it was refused. */
 export const GrantForbidden = UserFacingError.define({
   tag: "GrantForbidden",
   status: 403,

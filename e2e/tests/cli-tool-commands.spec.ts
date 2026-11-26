@@ -1,10 +1,5 @@
-/**
- * The CLI's tool commands and `executor mcp` against the managed local server: each command calls
- * the MCP tool of the same name and prints its result as JSON, input comes from a flag, a file or
- * standard input, and a call that pauses for approval prints its request and resumes.
- */
 import { expect, layer } from "@effect/vitest";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { Config, Effect, FileSystem, Option, Path, Redacted, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { scenarios } from "../test-plan.ts";
@@ -17,9 +12,12 @@ import { localEntryCommand } from "../support/local-entry.ts";
 import { pairLocalOperator } from "../support/mcp-consent.ts";
 import { Target } from "../support/platform.ts";
 import { serverControl } from "../support/server-control.ts";
-import { stdioMcp } from "../support/stdio-mcp.ts";
+import { stdioMcp, stdioMcpStateless } from "../support/stdio-mcp.ts";
 
-/** An account-free app whose `review` waits for approval and whose `echo` answers at once. */
+const png =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNQWPX/PwAFgALJpImt0wAAAABJRU5ErkJggg==";
+const pdf = Buffer.from("%PDF-1.4\n%\u00e2\u00e3\u00cf\u00d3\n%%EOF\n", "latin1");
+
 const reviewApp = (receipt: string) => [
   {
     path: "index.ts",
@@ -30,6 +28,10 @@ export default defineApp({}, async () => ({
   tools: router({
     review: mutation({ description: "Review after approval", input: object({}), approval: always() }, async () => ({ reviewed: ${JSON.stringify(receipt)} })),
     echo: query({ description: "Echo a word", input: object({ word: string() }) }, async (_, { word }) => ({ echoed: word })),
+    report: query({ description: "Return a chart and a report", input: object({}) }, async () => ({
+      chart: { type: "image", mimeType: "image/png", data: ${JSON.stringify(png)} },
+      report: { type: "resource", resource: { uri: "file:///reports/Q3%20summary.pdf", mimeType: "application/pdf", blob: ${JSON.stringify(pdf.toString("base64"))} } },
+    })),
   }),
 }));
 `,
@@ -70,7 +72,6 @@ const json = <S extends Schema.Top & { readonly DecodingServices: never }>(
   text: string,
 ) => Schema.decodeUnknownSync(Schema.fromJsonString(schema))(text);
 
-/** The real CLI with its own home, sent the managed server's key for --host. */
 const localCli = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem,
     path = yield* Path.Path,
@@ -120,7 +121,6 @@ const localCli = Effect.gen(function* () {
         }),
       ),
     );
-  /** Run a command that must succeed, returning its stdout. */
   const ok = (args: ReadonlyArray<string>, input?: string) =>
     run(args, input).pipe(
       Effect.tap((result) => Effect.sync(() => expect(result.code, result.stderr).toBe(0))),
@@ -129,7 +129,6 @@ const localCli = Effect.gen(function* () {
   return { run, ok, entry, env, origin, home, fs, path };
 });
 
-/** Deploy the review app through the paired operator; removed with the scope. */
 const deployReviewApp = (receipt: string) =>
   Effect.gen(function* () {
     const target = yield* Target;
@@ -157,7 +156,6 @@ layer(TestLive, { excludeTestServices: true })("CLI tool commands", (it) => {
         const cli = yield* localCli;
         const receipt = randomUUID();
         const app = yield* deployReviewApp(receipt);
-        // search lists the app's tools with their exact paths, which describe and call take.
         const found = Schema.decodeUnknownSync(Search)(
           yield* cli.ok(["search", "--namespace", app.slug]),
         );
@@ -178,22 +176,18 @@ layer(TestLive, { excludeTestServices: true })("CLI tool commands", (it) => {
         expect(described.items.map((item) => item.path)).toEqual([echo, review]);
         expect(described.items[0]?.signature).toContain("word: string");
 
-        // whoami with the local key: full access, model mode, and no organization on local.
         expect(JSON.parse(yield* cli.ok(["whoami"]))).toEqual({
           host: cli.origin,
           mcp: `${cli.origin}/mcp`,
           organization: null,
           access: { kind: "all" },
           mode: "model",
-          apps: false,
         });
 
-        // skills lists the Executor app's own skills.
         const skills = Schema.decodeUnknownSync(Skills)(yield* cli.ok(["skills"]));
         expect(skills.skills.map((skill) => `${skill.app.slug}/${skill.name}`)).toContain(
           "executor/executor",
         );
-        // Agents read the entry skill first; it links to the authoring guide.
         const entry = json(
           SkillDocument,
           yield* cli.ok(["skills", "--app", "executor", "--name", "executor"]),
@@ -221,7 +215,6 @@ layer(TestLive, { excludeTestServices: true })("CLI tool commands", (it) => {
         );
         expect(topic.content).toContain("withOptimisticUpdate");
 
-        // A file needs its skill, and the host names an app it cannot see.
         const missingName = yield* cli.run(["skills", "--file", "ui.md"]);
         expect(missingName.code).toBe(1);
         expect(Schema.decodeUnknownSync(Failure)(missingName.stdout).error).toMatchObject({
@@ -235,7 +228,6 @@ layer(TestLive, { excludeTestServices: true })("CLI tool commands", (it) => {
           message: expect.stringContaining("No visible app has the slug missing-app-slug."),
         });
 
-        // call takes its input from a flag, a file or standard input.
         const word = randomUUID();
         const echoed = (stdout: string) => {
           const result = json(Completed, stdout);
@@ -257,7 +249,6 @@ layer(TestLive, { excludeTestServices: true })("CLI tool commands", (it) => {
             ),
           ),
         ).toEqual({ echoed: `${word}-stdin` });
-        // execute takes its program from a flag, a file or standard input.
         const programFile = cli.path.join(cli.home, "program.js");
         yield* cli.fs.writeFileString(
           programFile,
@@ -273,6 +264,43 @@ layer(TestLive, { excludeTestServices: true })("CLI tool commands", (it) => {
         expect(
           json(Completed, yield* cli.ok(["execute", "--code", "return 'inline'"])).execution.value,
         ).toBe("inline");
+
+        const report = pathOf("report");
+        const Saved = Schema.Struct({ contentIndex: Schema.Number, path: Schema.String });
+        const saved = (stdout: string) => {
+          const value = json(
+            Outcome,
+            JSON.stringify(json(Completed, stdout).execution.value),
+          ).value;
+          return Schema.decodeUnknownSync(Schema.Struct({ chart: Saved, report: Saved }))(value);
+        };
+        const temporary = saved(yield* cli.ok(["call", report]));
+        expect(cli.path.dirname(temporary.chart.path)).toBe(
+          cli.path.dirname(temporary.report.path),
+        );
+        expect(cli.path.basename(temporary.chart.path)).toBe(
+          `${temporary.chart.contentIndex}-content.png`,
+        );
+        expect(cli.path.basename(temporary.report.path)).toBe(
+          `${temporary.report.contentIndex}-Q3-summary.pdf`,
+        );
+        expect(Buffer.from(yield* cli.fs.readFile(temporary.chart.path)).toString("base64")).toBe(
+          png,
+        );
+        expect(Buffer.from(yield* cli.fs.readFile(temporary.report.path))).toEqual(pdf);
+        yield* cli.fs.remove(cli.path.dirname(temporary.report.path), { recursive: true });
+        const directory = cli.path.join(cli.home, "attachments");
+        const chosen = saved(
+          yield* cli.ok([
+            "execute",
+            "--files",
+            directory,
+            "--code",
+            `return { path: "report", ok: true, value: await ${report}({}) };`,
+          ]),
+        );
+        expect(cli.path.dirname(chosen.report.path)).toBe(directory);
+        expect(Buffer.from(yield* cli.fs.readFile(chosen.report.path))).toEqual(pdf);
       }),
     ),
   );
@@ -294,7 +322,6 @@ layer(TestLive, { excludeTestServices: true })("CLI tool commands", (it) => {
         };
         const review = pathOf("review");
         const echo = pathOf("echo");
-        // Without a path the input is a batch of calls, run in order of their results.
         const batch = json(
           Completed,
           yield* cli.ok([
@@ -311,8 +338,6 @@ layer(TestLive, { excludeTestServices: true })("CLI tool commands", (it) => {
           { ok: true, value: { echoed: "two" } },
         ]);
 
-        // A call that needs approval prints its pending request and nothing ran yet;
-        // resume with the answer runs exactly that call.
         const paused = json(Pending, yield* cli.ok(["call", review]));
         const resumed = json(
           Completed,
@@ -321,16 +346,13 @@ layer(TestLive, { excludeTestServices: true })("CLI tool commands", (it) => {
         expect(json(Outcome, JSON.stringify(resumed.execution.value)).value).toEqual({
           reviewed: receipt,
         });
-        // The same request cannot be answered twice.
         expect(
           JSON.parse(yield* cli.ok(["resume", paused.requestId, "--action", "accept"])),
         ).toMatchObject({ status: "unavailable", reason: "answered" });
 
-        // Unreadable input fails before anything is sent, in the apps commands' failure shape.
         const bad = yield* cli.run(["call", echo, "--input", "{not json"]);
         expect(bad.code).toBe(1);
         expect(Schema.decodeUnknownSync(Failure)(bad.stdout).error.code).toBe("InputInvalid");
-        // Input the tool contract refuses keeps the host's refusal.
         const tooMany = yield* cli.run([
           "describe",
           ...Array.from({ length: 21 }, (_, index) => `tools.x.t${index}`),
@@ -357,7 +379,6 @@ layer(TestLive, { excludeTestServices: true })("CLI tool commands", (it) => {
           env: cli.env,
         });
 
-        // The host's own instructions, then the CLI's note about itself.
         expect(client.instructions).toContain("## What Executor is");
         expect(client.instructions).toContain("The `executor` CLI is available in this shell");
         expect(yield* client.tools).toEqual(
@@ -368,7 +389,6 @@ layer(TestLive, { excludeTestServices: true })("CLI tool commands", (it) => {
         );
         expect(executed.execution.value).toBe("42:relayed");
 
-        // An approval pauses the call and resume answers it through the same relay.
         const found = Schema.decodeUnknownSync(Search.to)(
           yield* client.call("search", { namespace: app.slug }),
         );
@@ -384,6 +404,68 @@ layer(TestLive, { excludeTestServices: true })("CLI tool commands", (it) => {
           }),
         );
         expect(resumed.execution.value).toMatchObject({ ok: true, value: { reviewed: receipt } });
+      }),
+    ),
+  );
+
+  it.effect(scenarios.localCliMcpRelayStateless.title, (context) =>
+    withCase(
+      context,
+      Effect.gen(function* () {
+        const cli = yield* localCli;
+        const evidence = yield* Evidence;
+        const command = localEntryCommand(cli.entry, ["mcp", "--host", cli.origin]);
+        const client = yield* stdioMcpStateless({
+          command: command.command,
+          args: command.args,
+          env: cli.env,
+        });
+
+        expect(client.revision).toBe("2026-07-28");
+        expect(client.capabilities?.extensions?.["io.modelcontextprotocol/skills"]).toEqual({
+          directoryRead: true,
+        });
+        expect(client.instructions).toContain("## What Executor is");
+        expect(client.instructions).toContain("The `executor` CLI is available in this shell");
+
+        const tools = yield* client.use((mcp) => mcp.listTools());
+        expect(tools.tools.map((tool) => tool.name)).toEqual(
+          expect.arrayContaining(["skills", "search", "describe", "call", "execute", "resume"]),
+        );
+        const executed = yield* client.use((mcp) =>
+          mcp.callTool({
+            name: "execute",
+            arguments: { code: "return [6 * 7, 'stateless'].join(':')" },
+          }),
+        );
+        expect(
+          Schema.decodeUnknownSync(Completed)(executed.structuredContent).execution.value,
+        ).toBe("42:stateless");
+
+        expect(yield* client.refusal((mcp) => mcp.request({ method: "prompts/list" }))).toBe(
+          -32601,
+        );
+
+        const listing = yield* client.use((_, skills) => skills.list());
+        yield* evidence.json("stateless-skills-listing.json", listing);
+        const entry = listing.skills.find(
+          (skill) => skill.uri === "skill://executor/executor/SKILL.md",
+        );
+        if (entry === undefined)
+          return yield* Effect.die(
+            `The Executor app's entry skill was not listed: ${JSON.stringify(listing.skills.map((skill) => skill.uri))}`,
+          );
+        const got = yield* client.use((_, skills) => skills.get(entry.uri));
+        expect(got.skill).toEqual(entry);
+        const listed = entry.resources === "dynamic" ? [] : entry.resources;
+        const document = listed.find((resource) => resource.uri === entry.uri);
+        expect(document, JSON.stringify(listed)).toBeDefined();
+        const file = yield* client.use((_, skills) => skills.read(entry, entry.uri));
+        expect(file.verified).toBe(true);
+        expect(file.bytes.byteLength).toBe(document?.size);
+        expect(`sha256:${createHash("sha256").update(file.bytes).digest("hex")}`).toBe(
+          document?.digest,
+        );
       }),
     ),
   );
@@ -411,11 +493,8 @@ layer(TestLive, { excludeTestServices: true })("CLI tool commands", (it) => {
             );
         expect(yield* echo("before")).toBe("before");
 
-        // The host keeps MCP sessions in memory only, so a restart forgets the relay's.
         yield* serverControl("restart");
 
-        // The client's next request still succeeds: the relay opened a new session with the
-        // client's own initialize and sent the request again.
         expect(yield* echo("after")).toBe("after");
         expect(yield* client.tools).toEqual(
           expect.arrayContaining(["search", "call", "execute", "resume"]),

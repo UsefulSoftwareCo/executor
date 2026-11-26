@@ -1,4 +1,3 @@
-/** Sandbox-only adapters exercising the running cloud product through public HTTP and MCP. */
 import { Autumn } from "autumn-js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -184,7 +183,6 @@ const make = Effect.gen(function* () {
     ).pipe(Effect.map((customer) => customer.balances[`${namespace}-members`]?.usage)),
   };
 });
-/** Each suite receives fresh HTTP sessions and an explicitly sandbox-only provider adapter. */
 export class BillingTarget extends Context.Service<BillingTarget, Effect.Success<typeof make>>()(
   "e2e/BillingTarget",
 ) {

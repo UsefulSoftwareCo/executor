@@ -1,15 +1,3 @@
-/**
- * Run the real `executor upgrade` from the directory layout each package manager installs into,
- * against a fake npm registry and fake package managers on PATH. The fakes record how they were
- * called and install an `executor` command that prints the version they were asked for, so the
- * scenario sees what the CLI ran and what it verified without touching this machine's installs.
- * A background server runs for part of it: the upgrade stops it before installing and starts it
- * on the new version, or on the old one when the install fails.
- *
- * A release executable is also run from the install script's layout, upgrading from a fake release
- * download: it checks the archive against SHA256SUMS, switches `current`, keeps the version it
- * replaced and rolls back to it, with its background server following each switch.
- */
 import { expect, layer } from "@effect/vitest";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { createHash } from "node:crypto";
@@ -33,12 +21,6 @@ const Call = Schema.fromJsonString(
   Schema.Struct({ name: Schema.String, args: Schema.Array(Schema.String) }),
 );
 
-/**
- * A package manager stand-in. It records its arguments, and with FAKE_PM_SERVER_LOG whether the
- * data directory had a registered server while it ran. Then, by FAKE_PM_MODE, it installs an
- * `executor` that only prints its version, one that cannot start, or (`cli`) one that runs the
- * checkout's CLI (FAKE_PM_CLI) as that version; or it fails as a registry error would.
- */
 const fakePackageManager = `import { appendFileSync, chmodSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 const [name, ...args] = process.argv.slice(2);
@@ -71,11 +53,6 @@ if (process.platform === "win32") {
 }
 `;
 
-/**
- * A release executable in the install script's layout upgrades from a fake release download,
- * refuses an archive that does not match SHA256SUMS, and rolls back to the version it replaced.
- * The background server it runs stops for each switch and starts again on the version switched to.
- */
 const standaloneUpgrade = (options: {
   readonly root: string;
   readonly entry: string;
@@ -83,9 +60,7 @@ const standaloneUpgrade = (options: {
   readonly environment: (extra: Readonly<Record<string, string>>) => Record<string, string>;
   readonly downloads: Map<string, Uint8Array>;
   readonly registryUrl: string;
-  /** What a background server needs in this scenario. */
   readonly serving: Readonly<Record<string, string>>;
-  /** The checkout's CLI, which stands in for a release that runs a server. */
   readonly cli: string;
 }) =>
   Effect.gen(function* () {
@@ -134,10 +109,6 @@ const standaloneUpgrade = (options: {
           return { code: Number(code), stdout, stderr };
         }),
       );
-    /**
-     * Publish a release whose executable prints `reports`, with `listed` as its SHA256SUMS digest.
-     * With `cli`, the executable runs the checkout's CLI as version `reports` instead.
-     */
     const publish = (
       release: string,
       reports: string,
@@ -167,7 +138,6 @@ const standaloneUpgrade = (options: {
         );
         expect(built.code, built.stderr).toBe(0);
         const file = `executor-${release}-${process.platform}-${process.arch}.tgz`;
-        // Windows' own tar reads relative paths; Git's would read a drive letter as a host.
         const tar = windows
           ? path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "tar.exe")
           : "tar";
@@ -187,19 +157,16 @@ const standaloneUpgrade = (options: {
         Effect.orElseSucceed(() => undefined),
       );
     const previous = path.join(versions, options.version, executableName);
-    /** What `executor service status` prints: the server's URL, version and process, or `stopped`. */
     const status = exec(previous, ["service", "status"], { env: options.serving }).pipe(
       Effect.map((result) => result.stdout.trim()),
     );
 
-    // The background server runs from the version directory the upgrade replaces.
     const started = yield* exec(path.join(current, executableName), ["service", "start"], {
       env: options.serving,
     });
     expect(started.code, started.stderr).toBe(0);
     expect(yield* status).toContain(`(version ${options.version}, process`);
 
-    // The command on PATH starts current/executor, which resolves to its version directory.
     yield* publish("2.999.0", "2.999.0", { cli: true });
     const upgraded = yield* exec(path.join(current, executableName), ["upgrade", "2.999.0"], {
       env: options.serving,
@@ -219,8 +186,6 @@ const standaloneUpgrade = (options: {
     const switched = yield* exec(path.join(current, executableName), ["--version"]);
     expect(switched.stdout.trim()).toBe("executor v2.999.0");
 
-    // An archive that does not match SHA256SUMS is deleted and nothing changes, the running
-    // server included.
     yield* publish("2.998.0", "2.998.0", { listed: "0".repeat(64) });
     const tampered = yield* exec(previous, ["upgrade", "2.998.0", "--yes"], {
       env: options.serving,
@@ -232,7 +197,6 @@ const standaloneUpgrade = (options: {
     expect(yield* fs.exists(path.join(versions, "2.998.0"))).toBe(false);
     expect(yield* linked("current")).toBe("2.999.0");
 
-    // An archive whose executable does not report its version is removed.
     yield* publish("2.997.0", "2.0.0");
     const broken = yield* exec(previous, ["upgrade", "2.997.0", "--yes"], {
       env: options.serving,
@@ -244,8 +208,6 @@ const standaloneUpgrade = (options: {
     expect(yield* linked("current")).toBe("2.999.0");
     expect(yield* status).toContain("(version 2.999.0, process");
 
-    // Rollback returns to the version the upgrade replaced, and can be undone the same way. The
-    // server follows it back.
     const rolledBack = yield* exec(previous, ["upgrade", "--rollback", "--yes"], {
       env: options.serving,
     });
@@ -303,7 +265,6 @@ layer(TestLive, { excludeTestServices: true })("Local upgrade", (it) => {
               yield* fs.chmod(path.join(bin, name), 0o755);
             }
           }
-          /** The package manager calls since the last read. */
           const calls = Effect.gen(function* () {
             if (!(yield* fs.exists(log))) return [];
             const lines = (yield* fs.readFileString(log)).split("\n").filter(Boolean);
@@ -311,10 +272,8 @@ layer(TestLive, { excludeTestServices: true })("Local upgrade", (it) => {
             return yield* Effect.forEach(lines, (line) => Schema.decodeUnknownEffect(Call)(line));
           });
 
-          // The registry's dist-tags and the Node range each release declares.
           let published: Record<string, string> = {};
           let nodeRange = ">=24.14.0";
-          // Release downloads by tag. As on GitHub, each download redirects to the file's asset URL.
           const downloads = new Map<string, Uint8Array>();
           const services = yield* Layer.build(
             HttpRouter.serve(
@@ -376,11 +335,6 @@ layer(TestLive, { excludeTestServices: true })("Local upgrade", (it) => {
             return yield* Effect.die("Registry must listen on TCP");
           const registryUrl = `http://127.0.0.1:${registry.address.port}`;
 
-          /**
-           * A launcher at `location` that starts the CLI, as a package manager's install would: the
-           * npm launcher, whose runtime for this version is already downloaded (the release
-           * executable's directory), or a script that imports the source entry.
-           */
           const installedAt = (location: string) =>
             Effect.gen(function* () {
               const directory = path.join(root, location);
@@ -400,7 +354,6 @@ layer(TestLive, { excludeTestServices: true })("Local upgrade", (it) => {
                   name: "executor",
                   version: "2.0.0-beta.2",
                   type: "module",
-                  // Never checked: the runtime below is already in place.
                   runtimes: { [`${process.platform}-${process.arch}`]: "0".repeat(64) },
                 }),
               );
@@ -413,21 +366,17 @@ layer(TestLive, { excludeTestServices: true })("Local upgrade", (it) => {
             });
           const data = path.join(root, "data");
           const environment = (extra: Readonly<Record<string, string>>) => ({
-            // Only the fake package managers and their installed `executor` are on PATH.
             PATH: bin,
             ...(windows
               ? {
                   SystemRoot: process.env.SystemRoot ?? "",
                   ComSpec: process.env.ComSpec ?? "",
                   PATHEXT: process.env.PATHEXT ?? "",
-                  // The npm launcher keeps its runtimes in the home directory, as on macOS and Linux.
                   USERPROFILE: root,
                 }
               : {}),
             HOME: root,
-            // Release scenarios never send product analytics, even from a build with a baked key.
             DO_NOT_TRACK: "1",
-            // A packaged CLI keeps its own release version; this one applies from source.
             EXECUTOR_BUILD_VERSION: "2.0.0-beta.2",
             EXECUTOR_NPM_REGISTRY: registryUrl,
             EXECUTOR_DATA_DIR: data,
@@ -461,7 +410,6 @@ layer(TestLive, { excludeTestServices: true })("Local upgrade", (it) => {
                       child.stderr.pipe(Stream.decodeText(), Stream.mkString),
                     ],
                     { concurrency: 3 },
-                    // An upgrade may stop and start the background server.
                   ).pipe(Effect.timeout("150 seconds"));
                   return { code: Number(code), stdout, stderr };
                 }),
@@ -472,11 +420,9 @@ layer(TestLive, { excludeTestServices: true })("Local upgrade", (it) => {
           const printed = yield* run(npm, ["--version"]);
           const version = printed.stdout.trim().replace(/^executor v/u, "");
           const channel = version.includes("-beta.") ? "beta" : "latest";
-          // Beta installs move to stable once it is newer, so the stable release is the target.
           published = { beta: "2.999.0-beta.1", latest: "2.999.0" };
           const upgraded = `Upgraded Executor from v${version} to v2.999.0.`;
 
-          // npm installs the launcher globally; it downloads the native runtime when it first starts.
           const byNpm = yield* run(npm, ["upgrade"]);
           yield* evidence.json("npm.json", byNpm);
           expect(byNpm.code, byNpm.stderr).toBe(0);
@@ -486,7 +432,6 @@ layer(TestLive, { excludeTestServices: true })("Local upgrade", (it) => {
             { name: "npm", args: ["install", "-g", "executor@2.999.0"] },
           ]);
 
-          // Each global package manager is detected from where it installs packages.
           for (const [location, name, args] of [
             ["pnpm/global/5/.pnpm/executor@2.0.0/node_modules/executor", "pnpm", ["add", "-g"]],
             [".bun/install/global/node_modules/executor", "bun", ["add", "-g"]],
@@ -498,12 +443,10 @@ layer(TestLive, { excludeTestServices: true })("Local upgrade", (it) => {
             expect(yield* calls).toEqual([{ name, args: [...args, "executor@2.999.0"] }]);
           }
 
-          // --method overrides the detected package manager.
           const overridden = yield* run(npm, ["upgrade", "--method", "pnpm"]);
           expect(overridden.code, overridden.stderr).toBe(0);
           expect(yield* calls).toEqual([{ name: "pnpm", args: ["add", "-g", "executor@2.999.0"] }]);
 
-          // One-shot runners fetch the release each time; the CLI prints the command instead.
           for (const [location, runner] of [
             [".npm/_npx/0a1b2c3d/node_modules/executor", "npx"],
             ["tmp/bunx-501-executor@beta/node_modules/executor", "bunx"],
@@ -519,7 +462,6 @@ layer(TestLive, { excludeTestServices: true })("Local upgrade", (it) => {
             expect(yield* calls).toEqual([]);
           }
 
-          // A location no package manager uses gets the exact commands, and nothing is installed.
           const unknown = yield* run(yield* installedAt("opt/tools/executor"), ["upgrade"]);
           yield* evidence.json("unknown.json", unknown);
           expect(unknown.code).toBe(1);
@@ -535,7 +477,6 @@ layer(TestLive, { excludeTestServices: true })("Local upgrade", (it) => {
             expect(unknown.stderr).toContain(command);
           expect(yield* calls).toEqual([]);
 
-          // A Node older than the release requires is refused before anything changes.
           nodeRange = ">=99.0.0";
           const oldNode = yield* run(npm, ["upgrade"]);
           yield* evidence.json("node-too-old.json", oldNode);
@@ -547,7 +488,6 @@ layer(TestLive, { excludeTestServices: true })("Local upgrade", (it) => {
           expect(yield* calls).toEqual([]);
           nodeRange = ">=24.14.0";
 
-          // A package manager failure is reported with what it printed.
           const failedInstall = yield* run(npm, ["upgrade"], { FAKE_PM_MODE: "fail" });
           yield* evidence.json("install-failed.json", failedInstall);
           expect(failedInstall.code).toBe(1);
@@ -557,7 +497,6 @@ layer(TestLive, { excludeTestServices: true })("Local upgrade", (it) => {
           expect(failedInstall.stderr).toContain("503 Service Unavailable from the fake registry");
           expect(failedInstall.stdout).not.toContain("Upgraded");
 
-          // An installed command that cannot start fails the upgrade.
           const broken = yield* run(npm, ["upgrade"], { FAKE_PM_MODE: "broken" });
           yield* evidence.json("verify-failed.json", broken);
           expect(broken.code).toBe(1);
@@ -568,7 +507,6 @@ layer(TestLive, { excludeTestServices: true })("Local upgrade", (it) => {
           expect(broken.stdout).not.toContain("Upgraded");
           yield* calls;
 
-          // A downgrade needs an explicit version and confirmation; without a terminal, --yes.
           const downgrade = yield* run(npm, ["upgrade", "2.0.0-beta.1"]);
           expect(downgrade.code).toBe(1);
           expect(downgrade.stderr).toContain(
@@ -584,18 +522,13 @@ layer(TestLive, { excludeTestServices: true })("Local upgrade", (it) => {
             { name: "npm", args: ["install", "-g", "executor@2.0.0-beta.1"] },
           ]);
 
-          // A background server for this data directory, which every scenario below stops.
           const port = yield* freePort;
           const serverLog = path.join(root, "server-seen.log");
-          // The checkout's CLI compiles its Worker host when no prepared one exists, as in the
-          // release workflow, which builds none.
           const workerBundle = path.resolve(".local/test-runtime/host.json");
           const prepared = yield* fs.exists(workerBundle);
           const serving = {
-            // The installed `executor` comes first; Git and Node follow for the server.
             PATH: [bin, process.env.PATH ?? ""].join(windows ? ";" : ":"),
             EXECUTOR_ENVIRONMENT: "e2e",
-            // Keys stay in keys.json so no run touches the machine's OS credential store.
             EXECUTOR_KEY_STORAGE: "file",
             ...(prepared ? { EXECUTOR_WORKER_BUNDLE: workerBundle } : {}),
             EXECUTOR_NO_UPDATE_CHECK: "1",
@@ -603,14 +536,12 @@ layer(TestLive, { excludeTestServices: true })("Local upgrade", (it) => {
             FAKE_PM_CLI: path.resolve("apps/local/server/src/bin.ts"),
             FAKE_PM_SERVER_LOG: serverLog,
           };
-          /** Whether a server was registered each time the package manager ran, since the last read. */
           const seen = Effect.gen(function* () {
             if (!(yield* fs.exists(serverLog))) return [];
             const lines = (yield* fs.readFileString(serverLog)).split("\n").filter(Boolean);
             yield* fs.remove(serverLog);
             return lines;
           });
-          /** What `executor service status` prints: the server's URL, version and process, or `stopped`. */
           const status = run(npm, ["service", "status"], serving).pipe(
             Effect.map((result) => result.stdout.trim()),
           );
@@ -618,8 +549,6 @@ layer(TestLive, { excludeTestServices: true })("Local upgrade", (it) => {
           yield* Effect.addFinalizer(() =>
             Effect.gen(function* () {
               yield* run(npm, ["service", "stop"], serving).pipe(Effect.ignore);
-              // A server still answering as itself is ended with its collector and workerd; a
-              // pid that does not may name another program by now.
               const left = yield* fs
                 .readFileString(path.join(data, "server.json"))
                 .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Registration)), Effect.option);
@@ -627,7 +556,6 @@ layer(TestLive, { excludeTestServices: true })("Local upgrade", (it) => {
                 yield* crashServer(left.value.pid);
             }),
           );
-          // Startup deploys the bundled Executor app, which pins this checkout's apps release.
           const registryForApps = yield* Config.NonEmptyString("E2E_NPM_REGISTRY").pipe(
             Config.option,
           );
@@ -643,8 +571,6 @@ layer(TestLive, { excludeTestServices: true })("Local upgrade", (it) => {
           expect(started.code, started.stderr).toBe(0);
           expect(yield* status).toContain(`(version ${version}, process`);
 
-          // The server stops before the package manager replaces its files, then the new
-          // `executor service start` starts it on the new version.
           const restarted = yield* run(npm, ["upgrade"], { ...serving, FAKE_PM_MODE: "cli" });
           yield* evidence.json("running-server.json", restarted);
           expect(restarted.code, restarted.stderr).toBe(0);
@@ -657,7 +583,6 @@ layer(TestLive, { excludeTestServices: true })("Local upgrade", (it) => {
           expect(yield* status).toContain("(version 2.999.0, process");
           yield* calls;
 
-          // A failed install starts the stopped server again, with this CLI.
           const failedRunning = yield* run(npm, ["upgrade"], { ...serving, FAKE_PM_MODE: "fail" });
           yield* evidence.json("running-server-install-failed.json", failedRunning);
           expect(failedRunning.code).toBe(1);
@@ -671,7 +596,6 @@ layer(TestLive, { excludeTestServices: true })("Local upgrade", (it) => {
           expect(yield* status).toContain(`(version ${version}, process`);
           yield* calls;
 
-          // A new version that does not start the server still upgrades, and says how to start it.
           const notRestarted = yield* run(npm, ["upgrade"], serving);
           yield* evidence.json("running-server-not-restarted.json", notRestarted);
           expect(notRestarted.code, notRestarted.stderr).toBe(0);
@@ -683,7 +607,6 @@ layer(TestLive, { excludeTestServices: true })("Local upgrade", (it) => {
           yield* seen;
           yield* calls;
 
-          // With no server registered, nothing is stopped or started.
           const stopped = yield* run(npm, ["upgrade"], serving);
           expect(stopped.code, stopped.stderr).toBe(0);
           expect(`${stopped.stdout}${stopped.stderr}`).not.toContain("background Executor");
@@ -691,7 +614,6 @@ layer(TestLive, { excludeTestServices: true })("Local upgrade", (it) => {
           yield* seen;
           yield* calls;
 
-          // Already current: the newest release on the channel is the installed one.
           published = { beta: version, latest: version };
           const current = yield* run(npm, ["upgrade"]);
           yield* evidence.json("already-current.json", current);
@@ -704,7 +626,6 @@ layer(TestLive, { excludeTestServices: true })("Local upgrade", (it) => {
           expect(same.stdout).toContain(`Executor v${version} is already installed.`);
           expect(yield* calls).toEqual([]);
 
-          // Only the install script's layout keeps a previous version.
           const notStandalone = yield* run(npm, ["upgrade", "--rollback"]);
           expect(notStandalone.code).toBe(1);
           expect(notStandalone.stderr).toContain(
@@ -724,7 +645,6 @@ layer(TestLive, { excludeTestServices: true })("Local upgrade", (it) => {
           });
         }),
       ),
-    // Every command has its own timeout; several start and stop the background server.
     { timeout: 480_000 },
   );
 });

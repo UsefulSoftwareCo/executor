@@ -1,4 +1,3 @@
-/** Effect-native observability shared by Executor hosts and framework operations. */
 export {
   CurrentTelemetryConfig,
   TelemetryConfig,

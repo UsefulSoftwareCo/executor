@@ -7,6 +7,7 @@
     // Effect.gen bodies without a yield are valid Effect code.
     "require-yield": "off",
     "executor/exportable-schema-pattern": "error",
+    "executor/no-comments": "error",
     "no-restricted-imports": [
       "error",
       {
@@ -21,6 +22,28 @@
     ],
   },
   "overrides": [
+    {
+      // Snapshots are assertions a person reads (e2e/README.md, "Snapshots"): small enough to read,
+      // never built from interpolated values, and inline beside the code, never in a .snap file.
+      // The plugin's other default rules that fire here do not know `it.effect` from
+      // @effect/vitest is a test, so they read every scenario's expect as outside one.
+      "files": ["e2e/**"],
+      "plugins": ["vitest"],
+      "rules": {
+        "vitest/no-large-snapshots": ["error", { "maxSize": 30, "inlineMaxSize": 30 }],
+        "vitest/no-interpolation-in-snapshots": "error",
+        "vitest/no-restricted-matchers": [
+          "error",
+          {
+            "toMatchSnapshot": "Use toMatchInlineSnapshot, beside the code that produced the value.",
+            "toThrowErrorMatchingSnapshot": "Use toThrowErrorMatchingInlineSnapshot.",
+          },
+        ],
+        "vitest/no-standalone-expect": "off",
+        "vitest/valid-expect": "off",
+        "vitest/require-awaited-expect-poll": "off",
+      },
+    },
     {
       // The live host protocol reaches these patterns, and its record is compared with every
       // released protocol's, flags included; see notes/apps-publishing.md.
@@ -76,9 +99,11 @@
       "files": [
         "packages/apps/src/implementation/authoring.ts",
         "packages/apps/src/browser/**",
+        "packages/apps/src/implementation/desktop.ts",
         "packages/apps/src/implementation/live.ts",
         "packages/apps/src/implementation/optimistic.ts",
         "packages/apps/src/implementation/ui-client.ts",
+        "packages/apps/src/react.ts",
         "packages/telemetry/src/browser*.ts",
       ],
       "rules": { "executor/authored-code-through-adapter": "off" },
@@ -139,6 +164,21 @@
         "no-unused-expressions": "off",
       },
     },
+    {
+      "files": [
+        "playground/demo-apps/live-inbox/**",
+        "packages/sdk/src/index.ts",
+        "packages/sdk/src/contracts/**",
+        "packages/apps/src/**",
+        "packages/app-cache/src/contracts/cache.ts",
+        "packages/utils/src/legacy-keys.ts",
+      ],
+      "rules": { "executor/no-comments": ["error", { "allowJsdoc": true }] },
+    },
+    {
+      "files": ["packages/apps/src/contracts/protocols/**"],
+      "rules": { "executor/no-comments": "off" },
+    },
   ],
   "ignorePatterns": [
     ".alchemy/",
@@ -152,8 +192,6 @@
     "bun.lock",
     "*.tsbuildinfo",
     "**/.generated/",
-    "**/routeTree.gen.ts",
-    "**/browser-scripts.gen.ts",
-    "**/executor-intro.gen.ts",
+    "**/*.gen.ts",
   ],
 }

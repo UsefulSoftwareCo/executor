@@ -1,21 +1,16 @@
-/**
- * A stack push can start two CI runs on one head within a second, with the same payload; the
- * second waits for the first and then reports its result (`node e2e/ci-repeat.ts`). The first cases
- * run the program as a process with the job's environment, against a stub `gh` first on its PATH
- * that answers from recorded runs, artifacts and jobs. The last ones run the steps of `checks.yml`
- * that record what a run tests and report a repeated run's checks, as bash runs them in CI, and
- * read what a repeat skips.
- */
 import { expect, layer } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, FileSystem, Path, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import {
+  keyedBase,
+  payloadFields,
+  pullRequestReads,
+  recordKey,
+  workerGrowthBlock,
+} from "../ci-key.ts";
+import { gateEnvironment } from "../support/gate-environment.ts";
 
-/**
- * A `gh` that answers from files beside it: this run (`run`), the head's runs (`runs`), each run's
- * artifacts and jobs (`artifacts-<id>`, `jobs-<id>`) and the pull request (`pull`). `fail` makes
- * every call fail. `--jq` is applied with jq, as gh does.
- */
 const stubGh = `#!/bin/sh
 dir=$(dirname "$0")
 echo "$*" >> "$dir/calls"
@@ -41,20 +36,18 @@ if [ -n "$filter" ]; then exec jq -r "$filter" "$file"; else exec cat "$file"; f
 const self = 200;
 const head = "0193aee740e16d2b2f15a305e71455381d4667a5";
 const base = "6c1f2a9d0b8e4c7f3a5d9e1b2c4f6a8d0e2b4c6f";
-/** What this run's select recorded: its pull request, then a hash of its merge tree and description. */
 const tested = "ci-tested-pr1-3d0f6c2b8a4e1f9d7c5b3a1e0f2d4c6b8a9e7f1d";
+const sized = "ci-sized-pr1-7a1c3e5f9b2d4f6a8c0e2b4d6f8a0c2e4b6d8f0a";
 
 interface Recorded {
   readonly id: number;
   readonly status?: string;
   readonly conclusion?: string | null;
   readonly sha?: string;
-  /**
-   * The records its select uploaded. By default the run tested what this one tests: it carries
-   * this run's record, and the record select uploaded before the pull request was part of it.
-   */
   readonly artifacts?: ReadonlyArray<string>;
+  readonly attempt?: number;
   readonly select?: string | null;
+  readonly site?: string | null;
   readonly check?: string | null;
   readonly e2e?: string | null;
 }
@@ -67,18 +60,19 @@ const runOf = (input: Recorded) => ({
   event: "pull_request",
   head_sha: input.sha ?? head,
   workflow_id: 7,
+  run_attempt: input.attempt ?? 1,
 });
 
-const jobsOf = (input: Pick<Recorded, "select" | "check" | "e2e">) => ({
+const jobsOf = (input: Pick<Recorded, "select" | "site" | "check" | "e2e">) => ({
   jobs: [
     { name: "supersede", conclusion: "success" },
     { name: "checks / select", conclusion: input.select === undefined ? "success" : input.select },
+    { name: "checks / site", conclusion: input.site === undefined ? "success" : input.site },
     { name: "checks / check", conclusion: input.check === undefined ? "success" : input.check },
     { name: "checks / e2e", conclusion: input.e2e === undefined ? "success" : input.e2e },
   ],
 });
 
-/** A directory holding the stub `gh`, its answers and its call log. */
 const stub = Effect.fn(function* (answers: Record<string, unknown>, fail = false) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -100,7 +94,6 @@ const stub = Effect.fn(function* (answers: Record<string, unknown>, fail = false
   return { directory, bin, calls };
 });
 
-/** Runs a command with the stub first on PATH; returns its combined output and exit code. */
 const spawn = Effect.fn(function* (
   command: string,
   args: ReadonlyArray<string>,
@@ -135,6 +128,7 @@ const repeat = (input: {
   readonly runs: ReadonlyArray<Recorded>;
   readonly attempt?: number;
   readonly fail?: boolean;
+  readonly sized?: string;
 }) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -149,7 +143,9 @@ const repeat = (input: {
     };
     for (const run of all) {
       answers[`artifacts-${run.id}`] = {
-        artifacts: (run.artifacts ?? [`ci-tested-${base}`, tested]).map((name) => ({ name })),
+        artifacts: (run.artifacts ?? [`ci-tested-${base}`, tested, sized]).map((name) => ({
+          name,
+        })),
       };
       answers[`jobs-${run.id}`] = jobsOf(run);
     }
@@ -160,6 +156,7 @@ const repeat = (input: {
       CI_HEAD_SHA: head,
       CI_BASE_SHA: base,
       CI_TESTED: tested,
+      CI_SIZED: input.sized ?? sized,
       GITHUB_REPOSITORY: "owner/repository",
       GITHUB_RUN_ID: String(self),
       GITHUB_RUN_ATTEMPT: String(input.attempt ?? 1),
@@ -172,7 +169,6 @@ const repeat = (input: {
     };
   }).pipe(Effect.scoped);
 
-/** The text of one job of `checks.yml`, up to the next job. */
 const jobOf = (text: string, name: string) => {
   const start = text.indexOf(`\n  ${name}:\n`);
   expect(start, name).toBeGreaterThan(-1);
@@ -181,7 +177,6 @@ const jobOf = (text: string, name: string) => {
   return end === -1 ? rest : rest.slice(0, end + 1);
 };
 
-/** The script of the step named `name` in `job`, as bash runs it, and the names of its env. */
 const scriptOf = (job: string, name: string) => {
   const step = job.indexOf(`      - name: ${name}\n`);
   expect(step, name).toBeGreaterThan(-1);
@@ -201,22 +196,24 @@ const checks = Effect.gen(function* () {
   return yield* fs.readFileString(".github/workflows/checks.yml");
 });
 
-/** Runs the record step of `select` in a repository whose HEAD holds `tree`, for `pull`. */
 const record = (input: {
   readonly pull: number;
-  readonly description: string;
   readonly file: string;
+  readonly base?: string;
+  readonly baseRef?: string;
+  readonly selection?: string;
+  readonly workerGrowth?: string;
+  readonly baseline?: string;
 }) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const script = scriptOf(jobOf(yield* checks, "select"), "Record what this run tests");
-    const { directory, bin } = yield* stub({
-      pull: { number: input.pull, body: input.description },
-    });
+    const { directory, bin } = yield* stub({});
     const repository = path.join(directory, "checkout");
     yield* fs.makeDirectory(repository);
     yield* fs.writeFileString(path.join(repository, "file"), input.file);
+    yield* fs.symlink(path.resolve("e2e"), path.join(repository, "e2e"));
     const git = (...args: ReadonlyArray<string>) =>
       spawn(
         "git",
@@ -240,58 +237,176 @@ const record = (input: {
         PULL: String(input.pull),
         ACTION: "synchronize",
         HEAD_SHA: head,
-        BASE_SHA: base,
+        BASE_SHA: input.base ?? base,
+        BASE_REF: input.baseRef ?? "main",
+        DEFAULT_BRANCH: "main",
+        SELECTION: input.selection ?? "a".repeat(64),
+        WORKER_GROWTH: input.workerGrowth ?? "b".repeat(64),
+        BASELINE: input.baseline ?? `main@${base}`,
       },
       repository,
     );
     expect(result.exitCode, result.log).toBe(0);
-    return { name: outputsOf(yield* fs.readFileString(output)).name ?? "", log: result.log };
+    const tree = (yield* git("rev-parse", "HEAD^{tree}")).log.trim();
+    const written = outputsOf(yield* fs.readFileString(output));
+    return { name: written.name ?? "", sized: written.sized ?? "", log: result.log, tree };
   }).pipe(Effect.scoped);
 
-/** Runs `check`'s or `e2e`'s report step, as a repeat of run 199 whose jobs are now `now`. */
 const report = (input: {
   readonly job: "check" | "e2e";
   readonly now: Pick<Recorded, "select" | "check" | "e2e">;
   readonly ownSelect?: string;
+  readonly results?: Readonly<Record<string, string>>;
 }) =>
   Effect.gen(function* () {
     const step =
       input.job === "check"
         ? "Require every static check to pass"
         : "Require every selected E2E job to pass";
-    const script = scriptOf(jobOf(yield* checks, input.job), step);
+    const text = yield* checks;
+    const job = jobOf(text, input.job);
+    const script = scriptOf(job, step);
     const { bin } = yield* stub({ "jobs-199": jobsOf(input.now) });
+    const needed = job
+      .match(/^ {4}needs:\s*\[([^\]]*)\]/m)![1]!
+      .split(",")
+      .map((name) => name.trim())
+      .filter((name) => name.length > 0);
+    const needs = Object.fromEntries(
+      needed.map((name) => [
+        name,
+        {
+          result:
+            name === "select"
+              ? (input.ownSelect ?? "success")
+              : (input.results?.[name] ?? "skipped"),
+          outputs: name === "select" ? { "repeat-of": "199" } : {},
+        },
+      ]),
+    );
     return yield* spawn("bash", ["-e", "-c", script], bin, {
+      ...gateEnvironment(text, input.job, step, needs),
       GITHUB_REPOSITORY: "owner/repository",
       GITHUB_RUN_ID: String(self),
-      GH_TOKEN: "synthetic-token",
-      REPEAT_OF: "199",
-      // What the select of an older version passed on: the result when select ran.
       REPEAT_RESULT: "failure",
-      NEEDS: JSON.stringify({ select: { result: input.ownSelect ?? "success", outputs: {} } }),
     });
   }).pipe(Effect.scoped);
 
 layer(NodeServices.layer)("CI repeat", (it) => {
   it.effect("the second run of one push on one head reports the first run's result", () =>
     Effect.gen(function* () {
-      // PR #4212's head got runs 43421907477 and 43421907459 in the same second; the second
-      // waited for the first, then tested the same merge again for 38 runner-minutes.
       const passed = yield* repeat({ runs: [{ id: 199 }] });
       expect(passed.exitCode, passed.log).toBe(0);
       expect(passed.outputs).toEqual({ of: "199", check: "success", e2e: "success" });
       expect(passed.log).toContain(
-        "This run repeats https://github.com/owner/repository/actions/runs/199, which tested the same pull request, merge tree and description: check success, e2e success.",
+        "This run repeats https://github.com/owner/repository/actions/runs/199, which tested the same pull request, merge tree, base and selection: check success, e2e success.",
       );
       expect(passed.calls.find((call) => call.includes("/workflows/"))).toContain(
         `head_sha=${head}`,
       );
-      // A failure of a required check is repeated as it was: a repeat never turns red green.
       const failed = yield* repeat({
         runs: [{ id: 199, conclusion: "failure", e2e: "failure" }],
       });
-      expect(failed.outputs).toEqual({ of: "199", check: "success", e2e: "failure" });
+      expect(failed.outputs).toEqual({});
     }),
+  );
+
+  it.effect("only a pass is handed on: a failed, cancelled or unfinished run is tested again", () =>
+    Effect.gen(function* () {
+      const cases = {
+        "a failed e2e": { id: 199, conclusion: "failure", e2e: "failure" },
+        "a failed check": { id: 199, conclusion: "failure", check: "failure" },
+        "a cancelled run": { id: 199, conclusion: "cancelled" },
+        "a run that has not finished": { id: 199, status: "in_progress", conclusion: null },
+      } satisfies Record<string, Recorded>;
+      for (const [name, run] of Object.entries(cases)) {
+        const result = yield* repeat({ runs: [run] });
+        expect(result.exitCode, `${name}: ${result.log}`).toBe(0);
+        expect(result.outputs, name).toEqual({});
+        expect(result.log, name).toContain("tests in full");
+      }
+      const failed = yield* repeat({
+        runs: [{ id: 199, conclusion: "failure", e2e: "failure" }],
+      });
+      expect(failed.log).toContain(
+        "but its checks failed (check: success, e2e: failure), and only a pass is handed on: a failure is tested again; this run tests in full.",
+      );
+      expect((yield* repeat({ runs: [{ id: 199 }] })).outputs.of).toBe("199");
+    }),
+  );
+
+  const recorded = {
+    upper: {
+      baseRef: "ci/worker-baseline",
+      runs: [
+        { id: 43825677200, base: "db8e4293ff1e423b597d479f20fc1830ea70191b" },
+        { id: 43825680125, base: "b574b0acc36d4a64e3f6947ebec32b94e1dbae32" },
+      ],
+      tree: "f10586856cc6168620d95ea2cbbd6fe9f7ea2d04",
+      selection: "37f62186dfaffccc8d3c2965b2d9846bf4475edf2232461e7269cc7863706740",
+      workerGrowth: "5b4e0070baf99cd56167f27d96265a3e8e840ecb8cfd4e5a3dea48d9d318c7cb",
+    },
+    intoMain: {
+      baseRef: "main",
+      runs: [
+        { id: 43797130175, base: "9cbea0adc2607de7d6fbabcaa35171d7171b0de8" },
+        { id: 43817608300, base: "82eda7c5980da377625cab1c06eea354f744f10c" },
+      ],
+      tree: "c855daf2f83193a10fb116cb79139d405ef65138",
+      selection: "4accd01b1c0cf0fad749bc11b7e476b915136e964a55266c9c9e2d7afc44c0d1",
+      workerGrowth: "5b4e0070baf99cd56167f27d96265a3e8e840ecb8cfd4e5a3dea48d9d318c7cb",
+    },
+  };
+
+  it.effect(
+    "a stack push that moves the lower layer under an unchanged tree gives the upper's two runs one key",
+    () =>
+      Effect.gen(function* () {
+        const { baseRef, runs, tree, selection, workerGrowth } = recorded.upper;
+        const before = runs.map((run) => recordKey(tree, run.base, selection, workerGrowth));
+        expect(new Set(before).size).toBe(2);
+        const now = runs.map((run) =>
+          recordKey(tree, keyedBase(baseRef, "main", run.base), selection, workerGrowth),
+        );
+        expect(new Set(now).size).toBe(1);
+        const [first, second] = yield* Effect.forEach(runs, (run) =>
+          record({ pull: 4575, file: "the same tree", base: run.base, baseRef }),
+        );
+        expect(first!.name).toBe(second!.name);
+        expect(first!.sized).toBe(second!.sized);
+        expect(first!.log).toContain(`base ${runs[0]!.base}`);
+      }),
+  );
+
+  it.effect(
+    "a pull request into main whose base moved, or a run that selects or compares otherwise, keeps its own key",
+    () =>
+      Effect.gen(function* () {
+        const { baseRef, runs, tree, selection, workerGrowth } = recorded.intoMain;
+        const keys = runs.map((run) =>
+          recordKey(tree, keyedBase(baseRef, "main", run.base), selection, workerGrowth),
+        );
+        expect(new Set(keys).size).toBe(2);
+        const [first, second] = yield* Effect.forEach(runs, (run) =>
+          record({ pull: 4574, file: "the same tree", base: run.base, baseRef }),
+        );
+        expect(first!.name).not.toBe(second!.name);
+        expect(first!.sized).not.toBe(second!.sized);
+        const upper = recorded.upper;
+        const [selected, other] = yield* Effect.forEach([upper.selection, "c".repeat(64)], (each) =>
+          record({ pull: 4575, file: "the same tree", baseRef: upper.baseRef, selection: each }),
+        );
+        expect(selected!.name).not.toBe(other!.name);
+        const [compared, elsewhere] = yield* Effect.forEach(
+          ["effect-apps@" + "5".repeat(40), "main@" + "6".repeat(40)],
+          (baseline) =>
+            record({ pull: 4575, file: "the same tree", baseRef: upper.baseRef, baseline }),
+        );
+        expect(compared!.name).toBe(elsewhere!.name);
+        expect(compared!.sized).not.toBe(elsewhere!.sized);
+        expect(keyedBase("main", "main", runs[0]!.base)).toBe(runs[0]!.base);
+        expect(keyedBase(upper.baseRef, "main", runs[0]!.base)).toBe("stacked");
+      }),
   );
 
   it.effect("the newest finished run of the same record is the one repeated", () =>
@@ -310,8 +425,6 @@ layer(NodeServices.layer)("CI repeat", (it) => {
   it.effect("a run that did not test the same thing, or did not decide, tests in full", () =>
     Effect.gen(function* () {
       const cases = {
-        // Another pull request opened from the same branch onto the same base: its description
-        // asked for other suites, or carried a deployed-stage line this one lacks.
         "another pull request": [
           {
             id: 199,
@@ -321,23 +434,20 @@ layer(NodeServices.layer)("CI repeat", (it) => {
             ],
           },
         ],
-        // Another merge tree or description: the record's hash differs.
         "another record": [
           { id: 199, artifacts: ["ci-tested-pr1-0000000000000000000000000000000000000000"] },
         ],
         "no record": [{ id: 199, artifacts: [] }],
+        "a longer record name": [{ id: 199, artifacts: [`${tested}0`, sized] }],
+        "a shorter record name": [{ id: 199, artifacts: [tested.slice(0, -1), sized] }],
+        "a cancelled run whose required checks passed": [{ id: 199, conclusion: "cancelled" }],
         "still running": [{ id: 199, status: "in_progress", conclusion: null }],
         cancelled: [{ id: 199, conclusion: "cancelled", check: "cancelled", e2e: "cancelled" }],
         "another head": [{ id: 199, sha: "2ef6ecc4a0c9b09dbb766143499dfefb515f1347" }],
-        // A lower stack layer skipped its checks: the repeat must decide for itself.
         "checks that skipped": [{ id: 199, check: "skipped", e2e: "skipped" }],
-        // Select failed (a missing e2e block, a missing deployed-stage line, the host protocols):
-        // this run reads the description as it is now.
         "a select that failed": [
           { id: 199, conclusion: "failure", select: "failure", check: "failure", e2e: "failure" },
         ],
-        // A job outside the required checks failed (apps-version): a repeat's skipped job would
-        // be the newer check on the commit and hide it, so this run tests and shows it again.
         "a run that failed while its required checks passed": [{ id: 199, conclusion: "failure" }],
         nothing: [],
       } satisfies Record<string, ReadonlyArray<Recorded>>;
@@ -363,45 +473,199 @@ layer(NodeServices.layer)("CI repeat", (it) => {
     }),
   );
 
-  it.effect("the record names the pull request and hashes the merge tree and description", () =>
-    Effect.gen(function* () {
-      const first = yield* record({ pull: 1, description: "```e2e\nnone\n```", file: "one" });
-      expect(first.name).toMatch(/^ci-tested-pr1-[0-9a-f]{40}$/);
-      expect(first.log).toContain("pull request 1");
-      // The same pull request, tree and description give the same record.
-      expect((yield* record({ pull: 1, description: "```e2e\nnone\n```", file: "one" })).name).toBe(
-        first.name,
-      );
-      // Any one of them changed gives another.
-      const others = [
-        yield* record({ pull: 99, description: "```e2e\nnone\n```", file: "one" }),
-        yield* record({ pull: 1, description: "```e2e\ngroups.spec.ts\n```", file: "one" }),
-        yield* record({ pull: 1, description: "```e2e\nnone\n```", file: "two" }),
-      ];
-      for (const other of others) expect(other.name).not.toBe(first.name);
-      expect(others[0]!.name).toMatch(/^ci-tested-pr99-/);
-    }),
+  it.effect(
+    "the record names the pull request and keys its merge tree, base and what select chose and read",
+    () =>
+      Effect.gen(function* () {
+        const first = yield* record({ pull: 1, file: "one" });
+        expect(first.name).toBe(
+          `ci-tested-pr1-${recordKey(first.tree, base, "a".repeat(64), "b".repeat(64))}`,
+        );
+        expect(first.sized).toBe(
+          `ci-sized-pr1-${recordKey(first.tree, base, "sized", "b".repeat(64), `main@${base}`)}`,
+        );
+        expect(first.log).toContain("pull request 1");
+        expect((yield* record({ pull: 1, file: "one" })).name).toBe(first.name);
+        const others = {
+          pull: yield* record({ pull: 99, file: "one" }),
+          tree: yield* record({ pull: 1, file: "two" }),
+          base: yield* record({ pull: 1, file: "one", base: "1".repeat(40) }),
+          selection: yield* record({ pull: 1, file: "one", selection: "c".repeat(64) }),
+          workerGrowth: yield* record({ pull: 1, file: "one", workerGrowth: "d".repeat(64) }),
+        };
+        for (const [name, other] of Object.entries(others))
+          expect(other.name, name).not.toBe(first.name);
+        expect(others.pull.name).toMatch(/^ci-tested-pr99-/);
+        expect(others.selection.sized).toBe(first.sized);
+        expect(others.workerGrowth.sized).not.toBe(first.sized);
+        const branch = yield* record({
+          pull: 1,
+          file: "one",
+          baseline: `effect-apps@${"5".repeat(40)}`,
+        });
+        expect(branch.name).toBe(first.name);
+        expect(branch.sized).not.toBe(first.sized);
+      }),
+  );
+
+  it.effect(
+    "a run is repeated only from a first attempt whose size gate read what this run's select read",
+    () =>
+      Effect.gen(function* () {
+        const cases = {
+          "a run that was run again": { runs: [{ id: 199, attempt: 2 }] },
+          "another size-gate read": {
+            runs: [
+              {
+                id: 199,
+                artifacts: [tested, "ci-sized-pr1-0000000000000000000000000000000000000000"],
+              },
+            ],
+          },
+          "no size-gate record": { runs: [{ id: 199, artifacts: [tested] }] },
+          "this run recorded no size-gate read": { runs: [{ id: 199 }], sized: "" },
+        } satisfies Record<string, { runs: ReadonlyArray<Recorded>; sized?: string }>;
+        for (const [name, input] of Object.entries(cases)) {
+          const result = yield* repeat(input);
+          expect(result.exitCode, `${name}: ${result.log}`).toBe(0);
+          expect(result.outputs, name).toEqual({});
+          expect(result.log, name).toContain("tests in full");
+        }
+        const repeated = yield* repeat({
+          runs: [{ id: 199, site: "skipped", artifacts: [tested] }],
+        });
+        expect(repeated.outputs.of).toBe("199");
+      }),
+  );
+
+  it.effect(
+    "everything a run reads from the pull request is in the key or listed with why it need not be",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const text = yield* checks;
+        const selection = yield* fs.readFileString("e2e/ci-selection.ts");
+        const listed = (file: string, read: string) =>
+          pullRequestReads.some(
+            ({ where }) =>
+              where.startsWith(`${file}: `) && read.startsWith(where.slice(file.length + 2)),
+          );
+        const routes = [...selection.matchAll(/`repos\/\$\{[^}]+\}\/([^`?]+)/g)].map(
+          (match) => match[1]!,
+        );
+        expect(routes.length).toBeGreaterThan(5);
+        expect(routes.filter((route) => !listed("e2e/ci-selection.ts", route))).toEqual([]);
+        expect(selection).toMatch(/"pr",\s*"list"/);
+        for (const [command] of selection.matchAll(/"pr",\s*"[a-z]+"/g))
+          expect(listed("e2e/ci-selection.ts", command.replace(/,\s*/, ", ")), command).toBe(true);
+        const workflows = yield* fs.readDirectory(".github/workflows");
+        for (const name of workflows) {
+          const workflow = yield* fs.readFileString(`.github/workflows/${name}`);
+          for (const match of workflow.matchAll(
+            /^ {6}- name: (.+)\n(?:(?! {6}- ).*\n)*?.*(?:pulls\/\$|gh pr (?:view|list))/gm,
+          ))
+            expect(listed(`.github/workflows/${name}`, match[1]!), `${name}: ${match[1]}`).toBe(
+              true,
+            );
+          for (const [, field] of workflow.matchAll(
+            /github\.event\.pull_request\.([a-z_]+(?:\.[a-z_]+)*)/g,
+          ))
+            expect(Object.keys(payloadFields), `${name}: ${field}`).toContain(field);
+        }
+        const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const grep = yield* processes.spawn(
+          ChildProcess.make("git", [
+            "grep",
+            "-l",
+            "-E",
+            "GITHUB_EVENT_PATH|github[.]event_path",
+            "--",
+            ".github",
+            "e2e",
+            "scripts",
+            "apps/hosted/cloud/scripts",
+          ]),
+        );
+        const payloadReaders = (yield* grep.stdout.pipe(Stream.decodeText(), Stream.mkString))
+          .split("\n")
+          .filter(
+            (file) =>
+              file !== "" && file !== "e2e/ci-key.ts" && file !== "e2e/tests/ci-repeat.spec.ts",
+          );
+        expect(payloadReaders).toEqual([]);
+        expect(text).toContain("      - name: Read the pull request's description\n");
+        expect(yield* fs.readFileString("apps/hosted/cloud/scripts/worker-sizes.ts")).toContain(
+          `/${workerGrowthBlock.source}/${workerGrowthBlock.flags}`,
+        );
+      }),
   );
 
   it.effect("a repeat's check and e2e read the repeated run's result as it is now", () =>
     Effect.gen(function* () {
       for (const job of ["check", "e2e"] as const) {
-        // The repeated run was re-run and passed after this run's select: re-running this run's
-        // failed jobs now passes.
         const now = yield* report({ job, now: {} });
         expect(now.exitCode, `${job}: ${now.log}`).toBe(0);
         expect(now.log, job).toContain("This run repeats run 199");
-        // It fails while the repeated run's result fails, and says how to test again.
         const failed = yield* report({ job, now: { [job]: "failure" } });
         expect(failed.exitCode, job).toBe(1);
         expect(failed.log, job).toContain(
           `re-run run 199 and then this run's failed jobs, or test this run in full with: gh run rerun ${self}`,
         );
-        // A select of the repeated run that fails now fails it too, and so does this run's own.
         expect((yield* report({ job, now: { select: "failure" } })).exitCode, job).toBe(1);
         expect((yield* report({ job, now: {}, ownSelect: "failure" })).exitCode, job).toBe(1);
       }
     }),
+  );
+
+  it.effect(
+    "a repeat's check and e2e fail when any of this run's own jobs they stand for failed or was cancelled",
+    () =>
+      Effect.gen(function* () {
+        const text = yield* checks;
+        const dependenciesOf = (job: "check" | "e2e") =>
+          jobOf(text, job)
+            .match(/^ {4}needs:\s*\[([^\]]*)\]/m)![1]!
+            .split(",")
+            .map((name) => name.trim())
+            .filter((name) => name.length > 0 && name !== "select");
+        expect(dependenciesOf("check")).toEqual([
+          "static",
+          "site",
+          "apps-package",
+          "tooling",
+          "tooling-release",
+          "tooling-cloud",
+          "collector-native",
+        ]);
+        expect(dependenciesOf("e2e")).toEqual([
+          "collector",
+          "e2e-build",
+          "e2e-local",
+          "e2e-self-host",
+          "e2e-self-host-scale",
+          "e2e-cloud",
+          "release-docker",
+          "release-local-cli",
+          "release-local-desktop",
+          "e2e-desktop-servers",
+        ]);
+        for (const job of ["check", "e2e"] as const) {
+          const dependencies = dependenciesOf(job);
+          for (const dependency of dependencies)
+            for (const result of ["failure", "cancelled"]) {
+              const run = yield* report({ job, now: {}, results: { [dependency]: result } });
+              expect(run.exitCode, `${job}: ${dependency} ${result}: ${run.log}`).toBe(1);
+              expect(run.log, `${job}: ${dependency} ${result}`).toContain(
+                `${dependency}: ${result}`,
+              );
+            }
+          expect((yield* report({ job, now: {} })).exitCode, job).toBe(0);
+          for (const dependency of dependencies) {
+            const run = yield* report({ job, now: {}, results: { [dependency]: "success" } });
+            expect(run.exitCode, `${job}: ${dependency} success: ${run.log}`).toBe(0);
+          }
+        }
+      }),
   );
 
   it.effect("a repeat skips the work, and the required checks still run", () =>
@@ -411,18 +675,33 @@ layer(NodeServices.layer)("CI repeat", (it) => {
       expect(select).toContain("      repeat-of: ${{ steps.repeat.outputs.of }}\n");
       expect(select).toContain("          name: ${{ steps.tested.outputs.name }}\n");
       expect(select).toContain("          CI_TESTED: ${{ steps.tested.outputs.name }}\n");
+      expect(select).toContain("          CI_SIZED: ${{ steps.tested.outputs.sized }}\n");
       expect(select).toContain("        run: node e2e/ci-repeat.ts\n");
-      // A re-run of the select job replaces its record rather than failing on the name.
       expect(select).toContain("          overwrite: true\n");
-      // The selection does not run, so every E2E job's selection output is empty.
-      expect(select).toContain(
-        "      - name: Choose the E2E scenarios\n        if: steps.repeat.outputs.of == ''\n",
-      );
+      const order = [
+        "Choose the E2E scenarios",
+        "Record what this run tests",
+        "Find a finished run",
+      ].map((step) => select.indexOf(`      - name: ${step}`));
+      expect(order.every((index) => index > -1)).toBe(true);
+      expect(order).toEqual([...order].sort((a, b) => a - b));
+      const outputs = [...select.matchAll(/^ {6}([a-z-]+): \$\{\{ (.*) \}\}$/gm)];
+      expect(outputs.length).toBeGreaterThan(10);
+      for (const [, name, value] of outputs)
+        if (value!.includes("steps.select.outputs"))
+          expect(value, name).toBe(
+            name === "draft"
+              ? "steps.select.outputs.draft"
+              : `steps.repeat.outputs.of == ''${name === "skip" ? " && steps.above.outcome == 'success'" : ""} && steps.select.outputs.${name} || ''`,
+          );
+      expect(outputs.map(([, name]) => name)).toContain("draft");
+      expect(jobOf(text, "site")).toContain("      - name: Record what the size gate reads\n");
       for (const job of [
         "static",
         "site",
         "apps-package",
         "tooling",
+        "tooling-release",
         "tooling-cloud",
         "collector-native",
         "self-host-native",
@@ -431,10 +710,10 @@ layer(NodeServices.layer)("CI repeat", (it) => {
         expect(jobOf(text, job), job).toMatch(
           /\n {4}if: .*needs\.select\.outputs\.skip != 'true' && needs\.select\.outputs\.repeat-of == ''( && [^\n]*)?\n/,
         );
-      for (const job of ["check", "e2e"])
-        expect(jobOf(text, job), job).toContain(
-          "    if: ${{ always() && needs.select.outputs.skip != 'true' }}\n",
-        );
+      expect(jobOf(text, "check"), "check").toContain(
+        "    if: ${{ always() && needs.select.outputs.skip != 'true' }}\n",
+      );
+      expect(jobOf(text, "e2e"), "e2e").toContain("    if: ${{ always() }}\n");
     }),
   );
 
@@ -449,39 +728,48 @@ layer(NodeServices.layer)("CI repeat", (it) => {
           "site",
           "apps-package",
           "tooling",
+          "tooling-release",
           "tooling-cloud",
           "collector-native",
         ];
-        expect(job).toContain(`    needs: [${needs.join(", ")}]\n`);
+        expect(
+          job
+            .match(/^ {4}needs:\s*\[([^\]]*)\]/m)![1]!
+            .split(",")
+            .map((name) => name.trim())
+            .filter((name) => name.length > 0),
+        ).toEqual(needs);
         const script = scriptOf(job, "Require every static check to pass");
         const { bin } = yield* stub({});
         const run = (results: Record<string, string>, collector: string | null = "true") =>
-          spawn("bash", ["-e", "-c", script], bin, {
-            REPEAT_OF: "",
-            NEEDS: JSON.stringify(
-              Object.fromEntries(
-                needs.map((name) => [
-                  name,
-                  {
-                    result: results[name] ?? "success",
-                    outputs: name === "select" && collector !== null ? { collector } : {},
-                  },
-                ]),
+          Effect.gen(function* () {
+            return yield* spawn(
+              "bash",
+              ["-e", "-c", script],
+              bin,
+              gateEnvironment(
+                yield* checks,
+                "check",
+                "Require every static check to pass",
+                Object.fromEntries(
+                  needs.map((name) => [
+                    name,
+                    {
+                      result: results[name] ?? "success",
+                      outputs: name === "select" && collector !== null ? { collector } : {},
+                    },
+                  ]),
+                ),
               ),
-            ),
+            );
           });
         expect((yield* run({})).exitCode).toBe(0);
-        // A job that failed, was cancelled, or was skipped by mistake fails the check. Select says
-        // a collector input changed here, so collector-native's skip is a mistake too.
-        for (const name of ["tooling", "tooling-cloud", "collector-native"])
+        for (const name of ["tooling", "tooling-release", "tooling-cloud", "collector-native"])
           for (const result of ["failure", "cancelled", "skipped"]) {
             const failed = yield* run({ [name]: result });
             expect(failed.exitCode, `${name} ${result}`).toBe(1);
             expect(failed.log, `${name} ${result}`).toContain(`::error::${name}: ${result}`);
           }
-        // collector-native skipped because select said no collector input changed passes; failed
-        // or cancelled still fails, and so does any other job's skip. A select that wrote no
-        // answer at all has not said the job is not needed.
         expect((yield* run({ "collector-native": "skipped" }, "false")).exitCode).toBe(0);
         for (const result of ["failure", "cancelled"])
           expect((yield* run({ "collector-native": result }, "false")).exitCode, result).toBe(1);

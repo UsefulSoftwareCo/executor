@@ -10,7 +10,6 @@ import {
 import { appsPeerVersion, packageFile, sourceFiles } from "./files.ts";
 import { mcpAppSource } from "./protocol-apps.ts";
 
-/** The server's host, so an OAuth account's tokens are only ever sent to the server itself. */
 const credentialHost = (url: string) =>
   Effect.try(() => new URL(url).host).pipe(
     Effect.flatMap(Schema.decodeUnknownEffect(CredentialHost)),
@@ -23,15 +22,6 @@ const credentialHost = (url: string) =>
     ),
   );
 
-/**
- * How a confirmed server connects: with OAuth accounts, or publicly. A public server that also
- * advertises OAuth keeps the discovered provider in its source, so accounts can be added later.
- *
- * OAuth accounts are each member's own by default (`accounts: "user"`): every member links any
- * number of accounts, and each tool takes the account to use. With `accounts: "app"` the app has
- * one shared service account that its managers link for everyone, used for every caller, and tools take the
- * server's own input.
- */
 export type McpSourceAccess =
   | {
       readonly kind: "oauth";
@@ -39,29 +29,16 @@ export type McpSourceAccess =
       readonly accounts?: AccountScope;
     }
   | { readonly kind: "public"; readonly offersOAuth?: { readonly discover: string } }
-  /** Known sign-in methods by name, such as API keys in a header or query parameter. */
   | { readonly kind: "methods"; readonly methods: Readonly<Record<string, GeneratedAuthMethod>> };
 
-/** Fixed, non-credential request values and tool rules for a server whose methods are known. */
 export interface McpSourceOptions {
   readonly headers?: Readonly<Record<string, string>> | undefined;
   readonly queryParams?: Readonly<Record<string, string>> | undefined;
   readonly tools?: GeneratedToolRules | undefined;
-  /** See `ProtocolAppOptions.appLinkedAccounts`; only for known sign-in methods. */
   readonly appLinkedAccounts?: boolean | undefined;
-  /** See `ProtocolAppOptions.fixedAccount`; only for known sign-in methods. */
   readonly fixedAccount?: GeneratedFixedAccount | undefined;
 }
 
-/**
- * A remote MCP app whose connection was confirmed: public, or OAuth discovered from the server.
- * With known sign-in methods (`methods`), fixed headers, query parameters or tool rules, the app
- * is written by `mcpAppSource`, which declares each method and where its credentials go.
- * All runtime behavior is retained in editable files and public app-framework helpers, including
- * the approval rule: tools the server marks `destructiveHint: true` ask before running. An OAuth
- * provider declares the server's host, so app code holds token handles rather than real values,
- * and checks an account by connecting to the server with it.
- */
 export const generateMcpSource = (
   name: string,
   url: string,
@@ -121,10 +98,7 @@ export default defineApp({ app: { accounts: { service: provider } } }, async ({ 
   }),${approvalRule}),
 }))
 `
-          : // Each account's router is wrapped before accountRouter combines them, so every account
-            // keeps its own tools' hints. The app runs without a caller only for app-scope work,
-            // which it has none of; there it has no accounts and no tools.
-            `import { defineApp, accountRouter, toolAnnotations, withApprovals } from "apps"
+          : `import { defineApp, accountRouter, toolAnnotations, withApprovals } from "apps"
 import { mcpRouter } from "apps/mcp"
 import { always } from "apps/operations/approval"
 import { headers, provider, url } from "./provider.ts"

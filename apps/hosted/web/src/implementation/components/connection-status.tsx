@@ -3,7 +3,6 @@ import { Spinner } from "@executor-js/ui/components/spinner";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { AlertCircleIcon, InformationCircleIcon } from "@hugeicons/core-free-icons";
 
-/** Center connection progress or failure content; callers own recovery actions and navigation. */
 export function ConnectionStatusPage({
   status,
   message,

@@ -1,7 +1,3 @@
-/**
- * A self-host served over plain HTTP at a LAN address, with no TLS proxy. Browsers give such a page
- * no secure context, so `crypto.randomUUID` and `navigator.clipboard` are missing there.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Layer } from "effect";
 import { chromium } from "playwright";
@@ -14,10 +10,6 @@ import { freePort } from "../support/ports.ts";
 import { officialApps } from "../support/public-catalogs.ts";
 import { scenarios } from "../test-plan.ts";
 
-/**
- * The LAN name the dashboard is served at. Chromium resolves it to the scenario's loopback server,
- * so nothing listens on the network, but the origin is not loopback and so not a secure context.
- */
 const lanHost = "executor.lan";
 const LanBrowserLive = Layer.effect(
   BrowserDriver,
@@ -87,21 +79,12 @@ layer(LanBrowserLive, { excludeTestServices: true })("LAN HTTP dashboard", (it) 
         yield* browser.use("Create the administrator", (page) =>
           page.getByRole("button", { name: "Create administrator account", exact: true }).click(),
         );
-        const organization = yield* browser.use("Setup opens the account step", (page) =>
+        const organization = yield* browser.use("Setup opens the assistant step", (page) =>
           page
-            .waitForURL(new RegExp(`^${lan}/org/[^/]+/setup/accounts$`, "u"))
+            .waitForURL(new RegExp(`^${lan}/org/[^/]+/setup/assistant$`, "u"))
             .then(() => new URL(page.url()).pathname.split("/")[2] ?? ""),
         );
         const org = `${lan}/org/${organization}`;
-        // Every dashboard request names its page with a UUID, so a missing one failed them all.
-        yield* browser.use("The account step lists the catalog", (page) =>
-          page.getByRole("searchbox", { name: "Search apps" }).waitFor(),
-        );
-        yield* browser.checkpoint("Account step loads over plain HTTP");
-
-        yield* browser.use("Open the assistant step", (page) =>
-          page.goto(`${org}/setup/assistant`),
-        );
         yield* browser.use("Copy the MCP URL", (page) =>
           page.getByRole("button", { name: "Copy MCP URL" }).click(),
         );
@@ -111,7 +94,17 @@ layer(LanBrowserLive, { excludeTestServices: true })("LAN HTTP dashboard", (it) 
             .getByText("Copied", { exact: true })
             .waitFor(),
         );
-        // Only a secure context can read the clipboard back; the server's loopback origin is one.
+        yield* browser.use("Skip the assistant step", (page) =>
+          page.getByRole("link", { name: "Skip for now", exact: true }).click(),
+        );
+        yield* browser.use("Skipping opens the account step", (page) =>
+          page.waitForURL(`${org}/setup/accounts`),
+        );
+        yield* browser.use("The account step lists the catalog", (page) =>
+          page.getByRole("searchbox", { name: "Search apps" }).waitFor(),
+        );
+        yield* browser.checkpoint("Account step loads over plain HTTP");
+
         yield* browser.use("Allow clipboard reads on loopback", (page) =>
           page.context().grantPermissions(["clipboard-read"], { origin: loopback }),
         );
@@ -143,7 +136,6 @@ layer(LanBrowserLive, { excludeTestServices: true })("LAN HTTP dashboard", (it) 
         ).toBe(0);
         yield* browser.checkpoint("App added over plain HTTP");
 
-        // The page's own session deploys it, as an agent's request through the dashboard would.
         const app = yield* browser.use("Deploy an app with a workflow", (page) =>
           page.evaluate(
             ({ files }) =>
@@ -173,7 +165,6 @@ layer(LanBrowserLive, { excludeTestServices: true })("LAN HTTP dashboard", (it) 
         yield* browser.use("Choose the workflow", (page) =>
           page.getByText("greet", { exact: true }).first().click(),
         );
-        // The start form keys each start with a UUID, so a retried start is not run twice.
         yield* browser.use("Start the workflow", (page) =>
           page.getByRole("button", { name: "Start workflow", exact: true }).click(),
         );
@@ -195,7 +186,6 @@ layer(LanBrowserLive, { excludeTestServices: true })("LAN HTTP dashboard", (it) 
         yield* browser.use("Create the connection", (page) =>
           page.getByRole("button", { name: "Create connection", exact: true }).click(),
         );
-        // The form chose the connection's ID in the browser.
         const connection = yield* browser.use("The connection is saved", (page) =>
           page
             .waitForURL(new RegExp(`^${org}/connect/(?!new$)[^/]+$`, "u"))
@@ -203,7 +193,6 @@ layer(LanBrowserLive, { excludeTestServices: true })("LAN HTTP dashboard", (it) 
         );
         expect(connection).toMatch(uuidV4);
 
-        // The connection's menu copies its MCP URL, and says so when the browser refuses.
         yield* browser.use("Open the connection's actions", (page) =>
           page.getByRole("button", { name: "More actions", exact: true }).click(),
         );

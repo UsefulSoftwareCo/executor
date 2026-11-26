@@ -1,20 +1,8 @@
-/**
- * The PR preview workflow's `prepare` step decides whether a pull request's preview is deployed,
- * removed because the PR closed or is a lower stack layer, or removed because the PR changes
- * nothing a preview shows. These cases run `node apps/hosted/cloud/scripts/pr-preview.ts prepare`
- * as a process with the step's environment and read the outputs file it writes, as GitHub Actions
- * does. A stub `gh` first on its PATH answers the step's reads and logs each call.
- */
 import { expect, layer } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, FileSystem, Path, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
-/**
- * A `gh` that answers from files beside it: the pull request (`pull`), the open pull requests based
- * on its branch (`above`) and GitHub's comparison of the default branch with its head (`compare`),
- * to which it applies the caller's `--jq` filter with the real `jq`, as `gh` does.
- */
 const stubGh = `#!/bin/sh
 dir=$(dirname "$0")
 echo "$*" >> "$dir/calls"
@@ -34,14 +22,12 @@ const repository = "owner/repository";
 const number = 41;
 const head = "0193aee740e16d2b2f15a305e71455381d4667a5";
 
-/** A file in GitHub's comparison, with the old path when the file was renamed. */
 type Change = string | { readonly filename: string; readonly previous: string };
 
 const prepare = (input: {
   readonly state?: "open" | "closed";
   readonly stackedAbove?: boolean;
   readonly changes?: ReadonlyArray<Change>;
-  /** GitHub's whole answer to the comparison, in place of one listing `changes`. */
   readonly comparison?: unknown;
 }) =>
   Effect.gen(function* () {
@@ -122,7 +108,6 @@ const prepare = (input: {
     return { code: Number(code), stdout, stderr, outputs: written, calls };
   }).pipe(Effect.scoped);
 
-/** The action `prepare` chose for an open, unstacked pull request with these changes. */
 const action = (...changes: ReadonlyArray<Change>) =>
   prepare({ changes }).pipe(
     Effect.map((result) => {
@@ -131,7 +116,6 @@ const action = (...changes: ReadonlyArray<Change>) =>
     }),
   );
 
-/** A `gh` that answers a PR's comments from `comments-<page>` beside it, and logs each call. */
 const stubCommentsGh = `#!/bin/sh
 dir=$(dirname "$0")
 echo "$*" >> "$dir/calls"
@@ -139,7 +123,6 @@ page=$(echo "$*" | sed -n 's/.*page=\\([0-9]*\\).*/\\1/p')
 exec cat "$dir/comments-$page"
 `;
 
-/** A comment on the PR, by its author's login. */
 type Comment = { readonly author: string; readonly body: string };
 const workflowComment = (status?: string): Comment => ({
   author: "github-actions[bot]",
@@ -150,10 +133,6 @@ const workflowComment = (status?: string): Comment => ({
   ].join("\n"),
 });
 
-/**
- * `node apps/hosted/cloud/scripts/pr-preview.ts previewed`, as the workflow runs it for a PR it will
- * not deploy in a run this event started, with GitHub listing these pages of the PR's comments.
- */
 const previewed = (pages: ReadonlyArray<ReadonlyArray<Comment>>, event = "pull_request") =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -225,7 +204,6 @@ layer(NodeServices.layer)("PR preview selection", (it) => {
         changes: ["e2e/tests/groups.spec.ts", "apps/hosted/server/src/implementation/groups.ts"],
       });
       expect(result.outputs["action"]).toBe("deploy");
-      // The pull request's base is the layer below; the comparison starts at main all the same.
       expect(result.calls).toContainEqual(expect.stringContaining(`compare/main...${head} `));
     }),
   );
@@ -274,24 +252,19 @@ layer(NodeServices.layer)("PR preview selection", (it) => {
   it.effect("deploys for each change a preview builds, serves or is deployed with", () =>
     Effect.gen(function* () {
       for (const file of [
-        // The public site serves the built docs.
         "apps/docs/content/mcp.md",
         "apps/marketing/src/content/testimonials.ts",
         "packages/sdk/src/implementation/webhooks.ts",
         "apps/hosted/cloud/alchemy.run.ts",
-        // A dependency or patch change alters what deploys.
         "bun.lock",
         "package.json",
         "patches/effect@4.0.1.patch",
-        // Every stage serves the apps framework this script packs.
         "scripts/pack-test-apps.ts",
-        // Only deploying a preview proves the preview workflows and the toolchain they install.
         ".github/workflows/pr-preview.yml",
         ".github/workflows/pr-previews.yml",
         ".github/actions/setup/action.yml",
         ".changeset/catalog-feed-status.md",
         "playground/demo-apps/live-inbox/app.ts",
-        // A directory nobody has classified yet gets a preview.
         "services/new-product/main.ts",
         "ci-repro-layer-1.txt",
       ])
@@ -350,7 +323,6 @@ layer(NodeServices.layer)("PR preview selection", (it) => {
 
   it.effect("removes a PR's preview only when its comment says one may remain", () =>
     Effect.gen(function* () {
-      // The workflow announces every stage it creates in this comment before creating it.
       for (const status of ["deploying", "ready", "failed", "cleanup-failed"])
         expect((yield* previewed([[workflowComment(status)]])).remains, status).toBe(
           "remains=true",
@@ -359,9 +331,7 @@ layer(NodeServices.layer)("PR preview selection", (it) => {
         expect((yield* previewed([[workflowComment(status)]])).remains, status).toBe(
           "remains=false",
         );
-      // A comment from before the status line may have a stage behind it.
       expect((yield* previewed([[workflowComment()]])).remains).toBe("remains=true");
-      // No comment: the workflow never created a stage for this PR.
       expect((yield* previewed([[]])).remains).toBe("remains=false");
     }),
   );
@@ -405,7 +375,6 @@ layer(NodeServices.layer)("PR preview selection", (it) => {
     "leaves the sweep and a manual dispatch to the registry, whatever the comment says",
     () =>
       Effect.gen(function* () {
-        // A deleted comment, or one edited to say the stage was removed, must not strand a stage.
         for (const event of ["schedule", "workflow_dispatch"])
           for (const comments of [[], [workflowComment("closed")], [workflowComment("stacked")]]) {
             const result = yield* previewed([comments], event);

@@ -61,8 +61,26 @@ if [[ -z "$failed" ]]; then
   exit 0
 fi
 
-# Text from logs and job names, safe inside a code span: no backtick ends it, no @ mentions.
-clean() { tr -d '`@'; }
+# Log text without terminal controls: CSI, OSC and the other string sequences (DCS, SOS, PM, APC)
+# opened by ESC or their one-byte C1 form and ended by BEL, ESC \ or ST in either form (or the
+# line), every other ESC sequence, the one-byte CSI and stray C0 and C1 controls, CR included; tab
+# and newline stay. Read as UTF-8, so the bytes of a character such as × stay, and a byte that is
+# not UTF-8 becomes U+FFFD rather than stopping the script.
+strip_controls() {
+  perl -MEncode -pe '
+    BEGIN { binmode STDOUT, ":encoding(UTF-8)" }
+    $_ = decode("UTF-8", $_);
+    s/(?:\e\]|\x{9d})[^\a\e\x{9c}\n]*(?:\a|\e\\|\x{9c})?//g;
+    s/(?:\e[PX^_]|[\x{90}\x{98}\x{9e}\x{9f}])[^\e\x{9c}\n]*(?:\e\\|\x{9c})?//g;
+    s/\e\[[0-?]*[ -\/]*[@-~]//g;
+    s/\e[ -\/]*[0-~]?//g;
+    s/\x{9b}[0-?]*[ -\/]*[@-~]//g;
+    s/[\x00-\x08\x0b-\x1f\x7f-\x{9f}]//g;
+  '
+}
+# Text from logs and job names, safe inside a code span: no control, no backtick ends it, no @
+# mentions.
+clean() { strip_controls | tr -d '`@'; }
 
 # The failed jobs by their matrix names, and the scenarios their logs list in Vitest's summary or,
 # for a job stopped before it, its live reporter.
@@ -71,13 +89,18 @@ jobs="$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/
 details=""
 while IFS=$'\t' read -r id name url; do
   [[ -n "$id" ]] || continue
-  log="$(gh api "repos/$GITHUB_REPOSITORY/actions/jobs/$id/logs" 2> /dev/null |
-    sed -E 's/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z ?//; s/\x1b\[[0-9;?]*[A-Za-z]//g' || true)"
+  details+="- [$(clean <<< "$name")]($url)"$'\n'
+  # gh prints no response that holds terminal escape sequences unless told to, and a job's log
+  # holds its colored output; without the flag every log read as empty.
+  if ! log="$(gh api --allow-escape-sequences "repos/$GITHUB_REPOSITORY/actions/jobs/$id/logs" 2> "$RUNNER_TEMP/log-error")"; then
+    details+="  - Its log could not be read ($(clean < "$RUNNER_TEMP/log-error" | tr '\n' ' ' | cut -c 1-200)); see the job."$'\n'
+    continue
+  fi
+  log="$(sed -E 's/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z ?//' <<< "$log" | strip_controls)"
   scenarios="$(grep -E '^\s*FAIL\s+.*\.(spec|test)\.[cm]?[jt]sx? > ' <<< "$log" | sed -E 's/^\s*FAIL\s+//' | clean | sort -u | head -20 || true)"
   if [[ -z "$scenarios" ]]; then
     scenarios="$(grep -E '^\s*[×✗]\s+.*\.(spec|test)\.[cm]?[jt]sx? > ' <<< "$log" | sed -E 's/^\s*[×✗]\s+//; s/\s+[0-9]+ms$//' | clean | sort -u | head -20 || true)"
   fi
-  details+="- [$(clean <<< "$name")]($url)"$'\n'
   if [[ -n "$scenarios" ]]; then
     details+="$(sed 's/^/  - `/; s/$/`/' <<< "$scenarios")"$'\n'
   else

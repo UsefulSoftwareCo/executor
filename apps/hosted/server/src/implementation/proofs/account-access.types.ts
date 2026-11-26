@@ -1,4 +1,3 @@
-/** Compile-only checks: an account use case runs only on a target declared for its action. */
 import { AccountId, type OwnerId } from "@executor-js/sdk/core";
 import { Effect, Schema } from "effect";
 import { HttpApiEndpoint } from "effect/http-api";
@@ -16,7 +15,6 @@ declare const owner: OwnerId;
 declare const account: AccountId;
 declare const inspect: AccountProof<"inspect">;
 
-/** Accepts an effect only when no account target remains among its requirements. */
 const targeted = <X, E, R>(
   effect: Effect.Effect<X, E, R>,
   ..._: [Extract<R, AccountTarget<AccountAction>>] extends [never]
@@ -27,7 +25,6 @@ const targeted = <X, E, R>(
 export const allowed = [
   targeted(getAccount.pipe(Effect.provideService(AccountTargets.inspect, { account }))),
   targeted(checkAccount.pipe(Effect.provideService(AccountTargets.use, { account }))),
-  // App connections check a reconnect's account here.
   targeted(
     AccountGrants.reconnect.pipe(Effect.provideService(AccountTargets.reconnect, { account })),
   ),
@@ -54,13 +51,11 @@ export const rejected = [
   targeted(getAccount.pipe(Effect.provideService(AccountTargets.delete, { account }))),
 ];
 
-// Proofs come only from a grant: they cannot be built or exchanged between actions.
 // @ts-expect-error A hand-built value carries no evidence.
 export const built: AccountProof<"delete"> = { owner, account };
 // @ts-expect-error An inspect proof is not a delete proof.
 export const exchanged: AccountProof<"delete"> = inspect;
 
-// requireAccount attaches account middleware only where the route decodes an `account` AccountId.
 export const endpoints = [
   HttpApiEndpoint.delete("a", "/x/:account", { params: { account: AccountId } }).pipe(
     requireAccount.delete,

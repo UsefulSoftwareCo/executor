@@ -1,22 +1,8 @@
-/**
- * The local server and the self-hosted server create their PGlite databases on their first start
- * (`persistentPgliteLayer` in fumadb-effect). When that start is ended partway, as
- * `executor service start` ends a background server that has not answered three probes in a row,
- * the next start must still open the database. PGlite takes a directory with PG_VERSION for a
- * database and writes PG_VERSION before pg_hba.conf, so a first start here is killed the moment
- * PGlite opens pg_hba.conf to write it. An existing database is never touched, and a directory
- * without PG_VERSION is removed only when it is empty.
- *
- * Each start is its own process running the product's own layer, Node for the local server's
- * `localDatabase` and Bun for the self-hosted server's `selfHostDatabase`, so a kill is a real one
- * and the next start reads only what the last one left on disk.
- */
 import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, Fiber, FileSystem, Path, Schedule, Scope, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
-/** Kill this process the first time anything opens a pg_hba.conf for writing. */
 const killAtConfiguration = `
 import fs from "node:fs";
 const open = fs.openSync;
@@ -33,7 +19,6 @@ fs.openSync = (file, flags, mode) => {
 };
 `;
 
-/** Open the local server's database at argv[2] with `localDatabase` and run QUERY. */
 const localStart = `
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect } from "effect";
@@ -49,7 +34,6 @@ const rows = await Effect.runPromise(
 console.log(JSON.stringify(rows));
 `;
 
-/** Open the self-hosted server's database in EXECUTOR_DATA_DIR with `selfHostDatabase`. */
 const selfHostStart = `
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect } from "effect";
@@ -78,7 +62,6 @@ const setup = Effect.gen(function* () {
   const local = path.resolve("apps/local/server");
   const selfHost = path.resolve("apps/hosted/self-host");
 
-  /** One start; `kill` kills it at pg_hba.conf. Its scripts sit in the product's package. */
   const start = (options: {
     readonly product: "local" | "self-host";
     readonly dataDir: string;
@@ -100,14 +83,11 @@ const setup = Effect.gen(function* () {
             ? { LAYER: path.join(local, "src/implementation/local-database.ts") }
             : {
                 LAYER: path.join(selfHost, "src/database.ts"),
-                // The self-hosted database is `hosted.pglite` in its data directory.
                 EXECUTOR_DATA_DIR: path.dirname(options.dataDir),
                 BETTER_AUTH_URL: "http://127.0.0.1:9",
                 BETTER_AUTH_SECRET: "0123456789abcdef0123456789abcdef0123456789abcdef",
               }),
         };
-        // Node runs the local server's layer, which Node runs in the CLI; Bun the self-hosted one.
-        // Node's --import takes a URL, which a Windows path is not.
         const preloads =
           options.kill !== true
             ? []
@@ -129,13 +109,11 @@ const setup = Effect.gen(function* () {
           ],
           { concurrency: "unbounded" },
         );
-        // The query's rows are the last line; logs, such as a warning, come before them.
         const lines = stdout.trim().split("\n");
         return { stdout: lines.at(-1) ?? "", logs: lines.slice(0, -1).join("\n"), stderr };
       }),
     );
 
-  /** A complete database, created at a path of its own by a start that ended normally. */
   const complete = (name: string) =>
     Effect.gen(function* () {
       const dataDir = path.join(scratch, name);
@@ -164,11 +142,9 @@ test(
     Effect.gen(function* () {
       const { fs, path, scratch, killedAt, start } = yield* setup;
       const dataDir = path.join(scratch, "browser-auth.pglite");
-      // The local server creates the directory before it opens the database.
       yield* fs.makeDirectory(dataDir, { mode: 0o700 });
 
       const first = yield* start({ product: "local", dataDir, kill: true });
-      // The first start was killed at pg_hba.conf, not ended by anything else.
       expect(first.stdout, first.stderr).toBe("");
       expect(yield* fs.exists(killedAt), first.stderr).toBe(true);
 
@@ -208,8 +184,6 @@ test(
   run(
     Effect.gen(function* () {
       const { fs, path, scratch, start, complete } = yield* setup;
-      // A start killed after PGlite closed the copy, before or during the rename into place:
-      // the directory it would replace is still there empty, or already gone.
       for (const final of ["empty", "missing"] as const) {
         const dataDir = path.join(scratch, `${final}.pglite`);
         yield* fs.rename(yield* complete(`${final}-copy`), `${dataDir}.new`);
@@ -240,7 +214,6 @@ test(
 
       const read = yield* start({ product: "local", dataDir, query: "select x from kept" });
       expect(read.stdout, read.stderr).toBe(JSON.stringify([{ x: 7 }]));
-      // The stray copy was not used, nor removed: only a missing database is created.
       expect(yield* fs.exists(path.join(`${dataDir}.new`, "PG_VERSION"))).toBe(true);
     }),
   ),
@@ -256,8 +229,6 @@ test(
       const first = yield* start({ product: "self-host", dataDir, kill: true });
       expect(first.stdout, first.stderr).toBe("");
       expect(yield* fs.exists(killedAt), first.stderr).toBe(true);
-      // The killed server's volume lock (proper-lockfile) refuses every start until it is stale,
-      // 10 s after its last heartbeat, as it would refuse a restart of the real server.
       yield* Effect.sleep("11 seconds");
 
       const next = yield* start({ product: "self-host", dataDir });
@@ -267,10 +238,6 @@ test(
   ),
 );
 
-/**
- * Open the local server's database at argv[2] with `localDatabase`, logging to DIAGNOSTICS'
- * `executor-local.jsonl` as the local server does, and print the rows or the failure.
- */
 const loggedStart = `
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, Logger } from "effect";
@@ -300,19 +267,12 @@ const result = await Effect.runPromise(
 console.log(JSON.stringify(result));
 `;
 
-/** Holds its working directory, which Windows then refuses to remove or rename, until killed. */
 const holder = `process.stdout.write("holding\\n"); setInterval(() => {}, 1000);`;
 
 const refused = "A database step was refused while another process held its files; retrying";
 const wentThrough = "A database step went through once its files were released";
 const gaveUp = "A database step gave up while another process still held its files";
 
-/**
- * Start the local server's database in an empty `browser-auth.pglite` that another process holds
- * as its working directory. With `release`, the holder ends once the first refusal is in the
- * diagnostics log, so the retry has been seen and then goes through; without, it holds until the
- * start has ended. Nothing waits a fixed time.
- */
 const heldStart = (release: boolean) =>
   Effect.gen(function* () {
     const { fs, path, scratch } = yield* setup;
@@ -326,7 +286,6 @@ const heldStart = (release: boolean) =>
     const holding = yield* processes.spawn(
       ChildProcess.make("node", ["--eval", holder], { cwd: dataDir }),
     );
-    // The holder has the directory once it says so.
     yield* holding.stdout.pipe(
       Stream.decodeText(),
       Stream.splitLines,
@@ -360,7 +319,6 @@ const heldStart = (release: boolean) =>
       .exists(logFile)
       .pipe(Effect.flatMap((exists) => (exists ? fs.readFileString(logFile) : Effect.succeed(""))));
     if (release) {
-      // Poll the log until the first refusal is written, or the start ends without one.
       yield* log.pipe(
         Effect.repeat({
           until: (text) => text.includes(refused),
@@ -372,7 +330,6 @@ const heldStart = (release: boolean) =>
     }
     const [stdout, stderr] = yield* Fiber.join(output);
     yield* holding.kill().pipe(Effect.ignore);
-    // The retry's lines in the job's log, so a passing run shows them too.
     for (const line of (yield* log).split("\n"))
       if (line.includes("A database step")) yield* Effect.logInfo(`diagnostics: ${line}`);
     const lines = (yield* log)
@@ -391,7 +348,6 @@ const heldStart = (release: boolean) =>
       result: stdout.trim().split("\n").at(-1) ?? "",
       stderr,
       text: yield* log,
-      /** The scratch directory's own name, which no log line may contain. */
       scratchName: path.basename(scratch),
       line: (text: string) => lines.find((entry) => message(entry).includes(text))?.annotations,
     };
@@ -399,7 +355,6 @@ const heldStart = (release: boolean) =>
 
 const heldCodes = ["EPERM", "EBUSY", "EACCES"];
 
-// Only Windows refuses to remove or rename a directory another process holds.
 if (process.platform === "win32") {
   test(
     "a local database whose directory another process holds for a moment is created once it is released, and the retry is logged",
@@ -420,7 +375,6 @@ if (process.platform === "win32") {
           code: first?.code,
         });
         expect(through?.heldMs, started.text).toBeTypeOf("number");
-        // No path reaches the log.
         expect(started.text).not.toContain(started.scratchName);
       }),
     ),

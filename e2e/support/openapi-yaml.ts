@@ -1,4 +1,3 @@
-/** YAML OpenAPI documents served by a loopback upstream, each imported as a public live app. */
 import { expect } from "@effect/vitest";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Effect, Layer } from "effect";
@@ -10,7 +9,6 @@ import { Api, body } from "./api.ts";
 import { App } from "./contracts.ts";
 import { appsManifest } from "./apps-release.ts";
 
-/** Operations share a parameter and a schema through YAML anchors. */
 const aliased = (origin: string) => `openapi: 3.0.3
 info: { title: Aliased, version: "1" }
 servers: [{ url: "${origin}" }]
@@ -44,7 +42,6 @@ paths:
           content: { application/json: { schema: *item } }
 `;
 
-/** Nine levels of nine aliases: a few hundred bytes that expand to hundreds of millions of values. */
 const aliasBomb = (origin: string) => {
   const levels = [`  a0: &a0 [${Array.from({ length: 9 }, () => "lol").join(", ")}]`];
   for (let level = 1; level < 9; level++)
@@ -91,7 +88,6 @@ export const openapiYamlFixture = Effect.gen(function* () {
   const api = yield* Api;
   const actors = yield* Actors;
   const prefix = `/api/organizations/${actors.organization.id}/apps`;
-  /** Deploy a public app over one of the served documents. */
   const deploy = (document: "aliased" | "bomb") =>
     Effect.gen(function* () {
       const deployed = yield* api.request(actors.owner, "POST", `${prefix}/deploy`, {

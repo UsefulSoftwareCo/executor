@@ -1,4 +1,3 @@
-/** Git access to Cloudflare Artifacts through host-owned repository credentials. Loaded on first use. */
 import { protectGit } from "./protected-git.ts";
 import { Clock, Context, Effect, Exit, Redacted, Schedule, Schema, Scope, Stream } from "effect";
 import {
@@ -42,16 +41,10 @@ import {
   type RefUpdate,
 } from "./git-pack.ts";
 
-/** Blobs one coordinator call reads, so each call's storage operations stay well inside a Worker's. */
 const blobsPerCall = 500;
 
-/**
- * Git responses this adapter reads into memory are ref advertisements and push reports, never
- * packs of files; one larger than this is refused as `limit`.
- */
 const responseBytes = 32 * 1024 * 1024;
 
-/** History lists as many recent commits as native hosts' `git log -50`. */
 const historyCommits = 50;
 
 interface RepositoryAccess {
@@ -60,7 +53,6 @@ interface RepositoryAccess {
   readonly refresh: Effect.Effect<Redacted.Redacted<string>, SourceError>;
 }
 
-// isomorphic-git also passes arrays for clone/push bodies, despite declaring only async iterators.
 type GitRequest = Omit<Git.GitHttpRequest, "body"> & {
   readonly body?: Iterable<Uint8Array> | AsyncIterable<Uint8Array>;
 };
@@ -109,7 +101,6 @@ const failure = (cause?: unknown) => {
   }
   return error;
 };
-/** Artifacts refused the repository token; the failure records it, and Git never sees it. */
 const rejectedToken = (status: number) => {
   const error = new SourceError({ reason: "git" });
   failures.set(error, { type: "RejectedToken", status });
@@ -130,20 +121,14 @@ const observeFailure = (error: SourceError) =>
     });
   });
 
-/** Longest push attribute; reports are a few short lines, so this bounds only a misbehaving server. */
 const pushAttributeChars = 1024;
 const bounded = (text: string) => text.slice(0, pushAttributeChars);
-/** `ref old new` per update, as sent; object IDs name content and ref names are host-chosen. */
 const pushUpdates = (updates: ReadonlyArray<RefUpdate>) =>
   bounded(
     updates
       .map((update) => `${update.ref} ${update.old ?? "none"} ${update.new ?? "none"}`)
       .join("; "),
   );
-/**
- * An answer that is not a report, as escaped text: Git framing and server messages, never file
- * contents, which a receive-pack answer does not carry.
- */
 const printable = (bytes: Uint8Array) =>
   bounded(
     Array.from(bytes.subarray(0, pushAttributeChars), (byte) =>
@@ -152,25 +137,16 @@ const printable = (bytes: Uint8Array) =>
         : `\\x${byte.toString(16).padStart(2, "0")}`,
     ).join(""),
   );
-/** The report-status lines: `unpack`, then `ok <ref>` or `ng <ref> <reason>` per ref. */
 const pushLines = (lines: ReadonlyArray<string>) => bounded(lines.join("; "));
 
-/** Artifacts' refusal of a receive-pack while another one runs on the same repository. */
 const receivePackBusy = (error: SourceError | ReceivePackRefused) =>
   error._tag === "ReceivePackRefused" && error.message === "artifacts_git_receive_pack_busy";
-/**
- * Waits for the push holding the repository: observed pushes take 0.1-0.9 s. Six more attempts
- * wait about 6 s in all; a push still refused then fails, as a busy repository and not a
- * conflict. Jitter keeps refused pushes that started together from meeting again.
- */
 const busyRetry = Schedule.exponential("100 millis").pipe(Schedule.jittered);
 const busyAttempts = 6;
 
-/** Adapt one isomorphic-git call; sequencing and recovery remain in Effect. */
 const gitCall = <A>(evaluate: () => Promise<A>) =>
   Effect.tryPromise({ try: evaluate, catch: failure });
 
-/** Managed repository credentials remain behind the host-owned token coordinator. */
 export const cloudflareRepositories = (
   tokens: ArtifactsTokens,
   settings: { readonly accountId: string; readonly namespace: string },
@@ -198,12 +174,6 @@ export const cloudflareRepositories = (
         refresh: tokens.acquire(id, null).pipe(Effect.map((value) => value.token)),
       };
     });
-  // Artifacts rejects invalid/expired/revoked credentials with this exact 403 body.
-  // Other denials and provider failures retain their original semantics and push reconciliation.
-  // A rejected token is replaced once per access. A streamed body cannot be sent twice, so its
-  // request fails as retryable after the refresh; the next request uses the new token. A rejection
-  // is never passed on: Git reports a 401 as the caller's own sign-in failing, and this token is
-  // the host's, not the caller's.
   const authenticatedRequest = (
     value: RepositoryAccess,
     http: HttpClient.HttpClient,
@@ -221,7 +191,6 @@ export const cloudflareRepositories = (
             .pipe(
               Scope.provide(scope),
               Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
-              // Keep the safe route-only spans below; default HTTP spans include repository URLs.
               Effect.provideService(HttpClient.TracerDisabledWhen, () => true),
               Effect.mapError(failure),
             );
@@ -250,7 +219,6 @@ export const cloudflareRepositories = (
             continue;
           }
           if (denial !== undefined) {
-            // Inspection consumed the body; preserve every byte of an unrelated denial.
             yield* Scope.close(scope, Exit.void);
             return { response, body: Stream.succeed(denial) };
           }
@@ -286,8 +254,6 @@ export const cloudflareRepositories = (
             );
             if (url.origin !== remote.origin || !url.pathname.startsWith(`${remote.pathname}/`))
               return yield* failure(new Error("Unexpected Git destination"));
-            // isomorphic-git sends packs built from a source already within `sourceLimits`.
-            // The body is kept so a request rejected for an expired token can be sent again.
             const chunks: Uint8Array[] = [];
             let size = 0;
             if (request.body !== undefined) {
@@ -368,7 +334,6 @@ export const cloudflareRepositories = (
             return {
               url: response.url,
               statusCode: response.status,
-              // Effect exposes the status code; HTTP reason phrases are optional on the wire.
               statusMessage: "",
               headers: response.headers,
               body: {
@@ -400,8 +365,6 @@ export const cloudflareRepositories = (
       return yield* work(client(value, http, controller.signal, context));
     }).pipe(Effect.withSpan(name), Effect.scoped, Effect.provide(FetchHttpClient.layer));
   return protectGit({
-    // Commit metadata from the Artifacts binding. Git would have to fetch every file of every
-    // listed commit, so history size, not the current source, would bound the listing.
     history: (id) =>
       tokens
         .history(id, historyCommits)
@@ -423,8 +386,6 @@ export const cloudflareRepositories = (
         const ref = refs.find((ref) => ref.ref === `refs/heads/${name}`);
         return ref === undefined ? null : yield* Schema.decodeUnknownEffect(SourceCommit)(ref.oid);
       }).pipe(Effect.mapError(failure)),
-    // Reads walk the commit's trees through the binding and read only the blobs they return or
-    // size; no pack of the commit is fetched, so public files never all sit in the isolate.
     read: (id, ref) =>
       Effect.gen(function* () {
         if (!Schema.is(SourceCommit)(ref) && !Schema.is(Branch)(ref))
@@ -469,7 +430,6 @@ export const cloudflareRepositories = (
           )
         )
           return yield* new SourceError({ reason: "limit" });
-        // Public files are inline while they fit beside the code, in path order.
         let remaining = sourceLimits.bytes - codeBytes;
         const candidates: string[] = [];
         served.forEach((entry, index) => {
@@ -540,8 +500,6 @@ export const cloudflareRepositories = (
         Effect.withSpan("source.git.file"),
         Effect.tapError(observeFailure),
       ),
-    // Saves push only the objects they write. Unchanged files are named by their blob and stay
-    // on the server, so a save never fetches the commit it replaces.
     commit: (input) =>
       Effect.gen(function* () {
         const files = yield* sourceFiles(input.files);
@@ -560,8 +518,6 @@ export const cloudflareRepositories = (
             if (resolved === null) return yield* new SourceError({ reason: "conflict" });
             return yield* tokens.tree(input.id, resolved.tree);
           });
-        // The push moves the branch only from `expected`, so its tree holds the files this save
-        // replaces, and the blobs a stored file may keep.
         const previous = input.expected === null ? [] : yield* listing(input.expected);
         const basis = input.basis ?? input.expected;
         const known = new Set(
@@ -608,7 +564,6 @@ export const cloudflareRepositories = (
         const ref = `refs/heads/${input.branch}`;
         const http = yield* HttpClient.HttpClient;
         const send = authenticatedRequest(value, http);
-        // A cheap advertisement first, so a rejected token is replaced before a pack streams.
         yield* send(
           HttpClientRequest.get(`${value.remote.href}/info/refs?service=git-receive-pack`),
         ).pipe(
@@ -660,7 +615,6 @@ export const cloudflareRepositories = (
                     ]),
               ),
             );
-            // The server's own words for each ref; a refusal is otherwise invisible after reconcile.
             yield* Effect.annotateCurrentSpan("source.git.push.report", pushLines(report.lines));
             const [target] = updates;
             const status = target === undefined ? undefined : report.refs.get(target.ref);
@@ -672,11 +626,6 @@ export const cloudflareRepositories = (
           }).pipe(
             Effect.scoped,
             Effect.withSpan("source.git.push"),
-            // Artifacts serves one receive-pack per repository at a time and refuses the others
-            // before reading them. Nothing of a refused request was applied, and every update is
-            // compare-and-swap from the value it names, so sending it again once the other push
-            // finishes cannot overwrite that push: it lands, or reports `stale ref` and the commit
-            // reconciles against what the other push wrote.
             Effect.retry({ while: receivePackBusy, schedule: busyRetry, times: busyAttempts }),
             Effect.catchTag("ReceivePackRefused", (error) => Effect.fail(failure(error))),
           );
@@ -701,8 +650,6 @@ export const cloudflareRepositories = (
           seconds,
         }).pipe(Effect.result);
         if (report._tag === "Failure" || report.success.refs.get(ref) !== "ok") {
-          // A refused push or a lost report has several shapes. Reconcile the actual ref: our
-          // commit landed, another writer won, or the expected ref holds and the failure stands.
           const current = yield* tokens.resolve(input.id, input.branch);
           if (current?.commit === commit)
             return {
@@ -750,7 +697,6 @@ export const cloudflareRepositories = (
           const header = request.headers.get(name);
           if (header !== null) headers[name] = header;
         }
-        // The body streams through, so a push is bounded by Artifacts, not by Worker memory.
         const body = request.body;
         if (!HttpMethod.isHttpMethod(request.method)) return yield* failure();
         const outgoing = HttpClientRequest.make(request.method)(
@@ -760,7 +706,6 @@ export const cloudflareRepositories = (
           },
         );
         const http = yield* HttpClient.HttpClient;
-        // The native response owns the scope after handoff; headers alone must not close its body.
         return yield* Effect.uninterruptibleMask((restore) =>
           Effect.gen(function* () {
             const scope = yield* Scope.make();

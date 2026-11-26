@@ -1,4 +1,3 @@
-/** Loopback control for a foreground environment; each retained scenario owns a child scope. */
 import { createServer } from "node:http";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
@@ -33,7 +32,6 @@ const Request = Schema.Struct({
   body: Schema.optional(Schema.Unknown),
 });
 
-/** Keep this process alive while exploring. Closing its scope releases all product resources. */
 export const serveEnvironment = (input: {
   readonly target: "local" | "self-host" | "cloud" | "deployed";
   readonly database: "neon" | "planetscale";
@@ -47,7 +45,6 @@ export const serveEnvironment = (input: {
         operation: "Handle already exists; stop its environment or choose another path",
       });
     let written = false;
-    // This finalizer runs last, so disappearance of the handle confirms all teardown finished.
     yield* Effect.addFinalizer(() =>
       written ? fs.remove(input.handle).pipe(Effect.orDie) : Effect.void,
     );

@@ -1,51 +1,19 @@
-/**
- * Product line coverage of the E2E suite, per scenario.
- *
- * `E2E_COVERAGE=1` makes the runner profile each self-host and local product process (see
- * `support/managed-server.ts`): Bun writes lcov, Node writes V8 coverage. The product's workerd
- * logs which functions its isolates ran (see `support/workerd-coverage.ts`); the host bundle's and
- * the app framework's source maps map them to their sources. Each scenario
- * starts its own product, so each report belongs to one scenario. Chromium records every scenario's
- * page scripts, on Cloud too (see `support/browser.ts`), which the dashboards' source maps map to
- * their sources. Cloud's Worker serves all scenarios at once and is not profiled.
- *
- * - `collect <out> <directory...>` reduces the raw reports under each run directory to one compact
- *   file: the lines each scenario covered, and each target's executable lines.
- * - `report <file...>` prints coverage by target and package, and each scenario's unique lines: a
- *   scenario no other covers a line of adds no line coverage.
- * - `cover <out> <file...>` writes a small set of scenarios that covers every line, and the rest.
- * - `check <baseline> <file...>` fails when a target covers fewer lines than the baseline records,
- *   beyond the run-to-run noise in that target's `tolerance`. A rise past it fails nothing: a pull
- *   request usually runs only its selected scenarios, so a rise first shows after merge. The check
- *   prints a warning annotation and a job summary line with the command that records the run.
- * - `baseline <baseline> <file...>` writes the baseline from collected runs. Pass one run's files:
- *   it counts the union of every file, so several runs record more than any one run covers.
- *
- * A target's covered lines differ between runs of the same tree: timing decides some paths, such as
- * retries and cache races. The baseline therefore records totals, not lines, and each target allows
- * twice its measured spread. In 20 full runs of main on near-unchanged code, local varied by 0.15%
- * and self-host by 0.21%. Cloud, which counts only Chromium's page coverage, varied by 0.58%: a
- * page's coverage is read once, when its context closes, and Chromium keeps no coverage for a
- * document the page has navigated away from. A scenario that navigates loses its earlier documents'
- * lines, and in about half of runs some of them still appear, so a few scenarios decide the spread.
- */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Config, Console, Effect, FileSystem, Option, Path, Schema } from "effect";
+import { createHash } from "node:crypto";
 import { scenarios } from "./test-plan.ts";
 
 class CoverageFailed extends Schema.TaggedError<CoverageFailed>()("CoverageFailed", {
   message: Schema.String,
 }) {}
 
-/** Line numbers as sorted ranges, such as `1-4,9,12-30`. */
 const LineRanges = Schema.String;
 const Collected = Schema.Struct({
   version: Schema.Literal(1),
   targets: Schema.Record(
     Schema.String,
     Schema.Struct({
-      /** Lines any profiled process could have run, by repository path. */
       executable: Schema.Record(Schema.String, LineRanges),
       scenarios: Schema.Array(
         Schema.Struct({
@@ -63,7 +31,6 @@ const Baseline = Schema.Struct({
     Schema.String,
     Schema.Struct({
       covered: Schema.Number,
-      /** Fraction of the target's covered lines a run may lose to timing before the check fails. */
       tolerance: Schema.Number,
     }),
   ),
@@ -88,11 +55,9 @@ const decodeLines = (ranges: string) =>
         return Array.from({ length: end! - start! + 1 }, (_, offset) => start! + offset);
       });
 
-/** Product source files; the harness's own preloads and launchers are not product. */
 const isProduct = (file: string) =>
   !file.startsWith("e2e/") &&
   !file.includes("node_modules/") &&
-  // Built bundles, such as the dashboard a server renders, duplicate their sources line for line.
   !file.includes("/dist/") &&
   !file.startsWith("apps/hosted/self-host/scripts/") &&
   /\.[cm]?[jt]sx?$/.test(file);
@@ -104,7 +69,6 @@ const lines = (into: FileLines, file: string) => {
   return entry;
 };
 
-/** Bun's lcov: `SF:` opens a file, `DA:<line>,<hits>` reports one executable line. */
 const readLcov = (text: string, into: FileLines) => {
   let file: string | undefined;
   for (const line of text.split("\n")) {
@@ -118,7 +82,6 @@ const readLcov = (text: string, into: FileLines) => {
   }
 };
 
-/** V8's function coverage: each function's nested ranges with their run counts. */
 const V8Functions = Schema.Array(
   Schema.Struct({
     ranges: Schema.Array(
@@ -130,10 +93,8 @@ const V8Coverage = Schema.Struct({
   result: Schema.Array(Schema.Struct({ url: Schema.String, functions: V8Functions })),
 });
 
-/** Each offset's run count, or -1 outside every function. */
 const paint = (functions: typeof V8Functions.Type, length: number) => {
   const counts = new Int32Array(length).fill(-1);
-  // V8 nests ranges, so painting outer ranges before inner ones leaves each offset's innermost count.
   const ranges = functions
     .flatMap((fn) => fn.ranges)
     .sort((a, b) => a.startOffset - b.startOffset || b.endOffset - a.endOffset);
@@ -142,11 +103,6 @@ const paint = (functions: typeof V8Functions.Type, length: number) => {
   return counts;
 };
 
-/**
- * Node's V8 coverage gives each function's ranges and their counts, nested and in source offsets.
- * Node strips TypeScript types to whitespace, so offsets index the source file itself. A line runs
- * when its first character runs; blank and comment-only lines are not executable.
- */
 const readV8 = (
   coverage: typeof V8Coverage.Type,
   root: string,
@@ -180,7 +136,6 @@ const readV8 = (
   }
 };
 
-/** Chromium's coverage of a page's scripts, as `support/browser.ts` saves it. */
 const BrowserCoverage = Schema.Array(
   Schema.Struct({
     url: Schema.String,
@@ -199,7 +154,6 @@ type Bundle = {
 };
 
 const base64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-/** A source map's segments: generated line and column, source index, source line. */
 const segments = function* (mappings: string) {
   let source = 0,
     sourceLine = 0;
@@ -229,10 +183,6 @@ const segments = function* (mappings: string) {
   }
 };
 
-/**
- * The browser runs the dashboards' built bundles. Each bundle's source map names the source line
- * every generated position came from; a source line runs when a position mapped to it runs.
- */
 const readBrowser = (
   coverage: typeof BrowserCoverage.Type,
   root: string,
@@ -263,17 +213,10 @@ const readBrowser = (
   }
 };
 
-/**
- * workerd's coverage, as `support/workerd-coverage.ts` saves it from its isolates' function logs:
- * each script's functions, counted 1 when they ran and 0 when not, so it counts functions rather
- * than blocks. `bundle` is the host bundle the product loaded.
- */
 const WorkerdCoverage = Schema.Struct({ bundle: Schema.String, scripts: BrowserCoverage });
-/** Modules by name with their source maps, as `writeWorkerdHostBundle` and `apps:build` write them. */
 const BundleModules = Schema.Array(Schema.Struct({ name: Schema.String, content: Schema.Unknown }));
 const FrameworkModules = Schema.Struct({ server: Schema.Record(Schema.String, Schema.String) });
 const SourceMaps = Schema.Record(Schema.String, SourceMap);
-/** How long the script a coverage report describes is: its outermost function spans all of it. */
 const scriptLength = (functions: typeof V8Functions.Type) =>
   Math.max(
     0,
@@ -282,11 +225,234 @@ const scriptLength = (functions: typeof V8Functions.Type) =>
     ),
   );
 
+const excerptWindow = 64;
+const excerptBytes = 4 * excerptWindow;
+const messageLength = 240;
+const pathBytes = 256;
+
+const escapedBytes = (bytes: Uint8Array) =>
+  Array.from(bytes, (byte) =>
+    byte === 0x5c
+      ? "\\\\"
+      : byte >= 0x20 && byte < 0x7f
+        ? String.fromCharCode(byte)
+        : `\\x${byte.toString(16).padStart(2, "0")}`,
+  );
+const escapeBytes = (bytes: Uint8Array) => escapedBytes(bytes).join("");
+
+const escapeText = (text: string, limit: number) => {
+  const escaped = escapeBytes(Buffer.from(text, "utf8"));
+  return escaped.length <= limit ? escaped : `${escaped.slice(0, limit)}... (cut)`;
+};
+
+const escapePath = (file: string) => {
+  const bytes = escapedBytes(Buffer.from(file, "utf8"));
+  if (bytes.length <= pathBytes) return bytes.join("");
+  const head = pathBytes / 4;
+  return `${bytes.slice(0, head).join("")}...(cut)...${bytes.slice(bytes.length - (pathBytes - head)).join("")}`;
+};
+
+const decodeUtf8 = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
+
+const withoutQuotedInput = (message: string) =>
+  message.replace(
+    /^(Unexpected token '.*?'), (?:\.\.\.)?".*"(?:\.\.\.)? is not valid JSON$/su,
+    "$1, not valid JSON",
+  );
+
+const firstInvalidByte = (bytes: Uint8Array): number | undefined => {
+  const size = bytes.length;
+  let at = bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf ? 3 : 0;
+  const isDigit = (byte: number | undefined) => byte !== undefined && byte >= 0x30 && byte <= 0x39;
+  const skipSpace = () => {
+    while (at < size) {
+      const byte = bytes[at];
+      if (byte !== 0x20 && byte !== 0x09 && byte !== 0x0a && byte !== 0x0d) return;
+      at++;
+    }
+  };
+  const string = () => {
+    at++;
+    while (at < size) {
+      const byte = bytes[at]!;
+      if (byte === 0x22) {
+        at++;
+        return true;
+      }
+      if (byte < 0x20) return false;
+      if (byte === 0x5c) {
+        const escape = bytes[at + 1];
+        if (escape === undefined) {
+          at = size;
+          return false;
+        }
+        if (escape === 0x75) {
+          at += 2;
+          for (let digit = 0; digit < 4; digit++, at++) {
+            const hex = bytes[at];
+            if (hex === undefined) return false;
+            const isHex =
+              isDigit(hex) || (hex >= 0x41 && hex <= 0x46) || (hex >= 0x61 && hex <= 0x66);
+            if (!isHex) return false;
+          }
+          continue;
+        }
+        if (![0x22, 0x5c, 0x2f, 0x62, 0x66, 0x6e, 0x72, 0x74].includes(escape)) {
+          at++;
+          return false;
+        }
+        at += 2;
+        continue;
+      }
+      at++;
+    }
+    return false;
+  };
+  const digits = () => {
+    if (!isDigit(bytes[at])) return false;
+    while (isDigit(bytes[at])) at++;
+    return true;
+  };
+  const scalar = () => {
+    const first = bytes[at];
+    if (first === 0x2d || isDigit(first)) {
+      if (first === 0x2d) at++;
+      if (bytes[at] === 0x30) at++;
+      else if (!digits()) return false;
+      if (bytes[at] === 0x2e) {
+        at++;
+        if (!digits()) return false;
+      }
+      if (bytes[at] === 0x65 || bytes[at] === 0x45) {
+        at++;
+        if (bytes[at] === 0x2b || bytes[at] === 0x2d) at++;
+        if (!digits()) return false;
+      }
+      return true;
+    }
+    for (const word of ["true", "false", "null"])
+      if (first === word.charCodeAt(0)) {
+        for (let index = 0; index < word.length; index++, at++)
+          if (bytes[at] !== word.charCodeAt(index)) return false;
+        return true;
+      }
+    return false;
+  };
+  const closers: Array<number> = [];
+  let expecting: "value" | "first value" | "key" | "first key" | "after" = "value";
+  while (true) {
+    skipSpace();
+    const next = bytes[at];
+    const closer = closers.at(-1);
+    if (expecting === "after") {
+      if (closer === undefined) return at < size ? at : undefined;
+      if (next === 0x2c) expecting = closer === 0x5d ? "value" : "key";
+      else if (next === closer) closers.pop();
+      else return at;
+      at++;
+    } else if (
+      (expecting === "first value" && next === 0x5d) ||
+      (expecting === "first key" && next === 0x7d)
+    ) {
+      closers.pop();
+      at++;
+      expecting = "after";
+    } else if (expecting === "key" || expecting === "first key") {
+      if (next !== 0x22 || !string()) return Math.min(at, size);
+      skipSpace();
+      if (bytes[at] !== 0x3a) return at;
+      at++;
+      expecting = "value";
+    } else if (next === 0x5b || next === 0x7b) {
+      closers.push(next === 0x5b ? 0x5d : 0x7d);
+      at++;
+      expecting = next === 0x5b ? "first value" : "first key";
+    } else if (next === 0x22 ? string() : scalar()) expecting = "after";
+    else return Math.min(at, size);
+  }
+};
+
+const jsonFailureRecord = (failure: {
+  readonly file: string;
+  readonly bytes: Uint8Array;
+  readonly modified: string | undefined;
+  readonly parser: string | undefined;
+  readonly schema: string | undefined;
+}) => {
+  const { bytes } = failure;
+  const size = bytes.length;
+  const found = failure.parser === undefined ? undefined : firstInvalidByte(bytes);
+  const offset = found === undefined ? undefined : Math.min(found, size);
+  const windows: Array<[number, number]> = [];
+  if (size <= excerptBytes) windows.push([0, size]);
+  else {
+    windows.push([0, excerptWindow]);
+    if (offset !== undefined)
+      windows.push([Math.max(0, offset - excerptWindow), Math.min(size, offset + excerptWindow)]);
+    windows.push([size - excerptWindow, size]);
+  }
+  const merged: Array<[number, number]> = [];
+  for (const [start, end] of windows.sort(([a], [b]) => a - b)) {
+    const last = merged.at(-1);
+    if (last !== undefined && start <= last[1]) last[1] = Math.max(last[1], end);
+    else merged.push([start, end]);
+  }
+  const error =
+    failure.parser !== undefined
+      ? `JSON.parse: ${escapeText(failure.parser, messageLength)}; at byte ${offset ?? "unknown"}`
+      : `schema: ${escapeText(failure.schema ?? "", messageLength)}`;
+  return [
+    `${escapePath(failure.file)} could not be read as JSON (${error}).`,
+    `  ${size} bytes, sha256 ${createHash("sha256").update(bytes).digest("hex")}, modified ${failure.modified ?? "unknown"}.`,
+    `  Excerpt (the whole file up to ${excerptBytes} bytes, else at most ${excerptBytes} of them; other than printable ASCII escaped as \\xNN, a backslash as \\\\):`,
+    ...merged.map(
+      ([start, end]) => `  bytes ${start}-${end}: ${escapeBytes(bytes.subarray(start, end))}`,
+    ),
+  ].join("\n");
+};
+
 const collect = (out: string, directories: ReadonlyArray<string>) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const root = path.resolve(".");
+    const decodeJson =
+      <S extends Schema.Top>(schema: S, file: string) =>
+      (bytes: Uint8Array) =>
+        Effect.try({
+          try: (): unknown => JSON.parse(decodeUtf8(bytes)),
+          catch: (error) => (error instanceof Error ? error.message : String(error)),
+        }).pipe(
+          Effect.matchEffect({
+            onFailure: (message) =>
+              unreadableJson(file, bytes, { parser: withoutQuotedInput(message) }),
+            onSuccess: (value) =>
+              Schema.decodeUnknownEffect(schema)(value).pipe(
+                Effect.catch((error) => unreadableJson(file, bytes, { schema: error.message })),
+              ),
+          }),
+        );
+    const unreadableJson = (
+      file: string,
+      bytes: Uint8Array,
+      error: { readonly parser?: string; readonly schema?: string },
+    ) =>
+      Effect.gen(function* () {
+        const info = yield* fs.stat(file).pipe(Effect.option);
+        return yield* new CoverageFailed({
+          message: jsonFailureRecord({
+            file: path.relative(root, file),
+            bytes,
+            modified: Option.getOrUndefined(
+              Option.flatMap(info, ({ mtime }) => mtime),
+            )?.toISOString(),
+            parser: error.parser,
+            schema: error.schema,
+          }),
+        });
+      });
+    const readJson = <S extends Schema.Top>(schema: S, file: string) =>
+      fs.readFile(file).pipe(Effect.flatMap(decodeJson(schema, file)));
     const sources = new Map<string, string | undefined>();
     const source = (file: string) => sources.get(file);
     const fileOf = new Map(Object.values(scenarios).map(({ title, file }) => [title, file]));
@@ -294,7 +460,6 @@ const collect = (out: string, directories: ReadonlyArray<string>) =>
       string,
       { executable: Map<string, Set<number>>; scenarios: Map<string, FileLines> }
     >();
-    // The dashboards' built bundles, by file name, which their content hash makes unique.
     const bundleFiles = new Map<string, string>();
     const findBundles = (directory: string, built: boolean): Effect.Effect<void, unknown> =>
       Effect.gen(function* () {
@@ -313,9 +478,6 @@ const collect = (out: string, directories: ReadonlyArray<string>) =>
     yield* findBundles(path.join(root, "apps"), false);
     const bundles = new Map<string, Bundle | undefined>();
     const bundleOf = (url: string) => bundles.get(path.basename(new URL(url).pathname));
-    // Inside workerd, the host bundle's modules are `file:///bundle/<name>`, and app Workers link
-    // the app framework's modules as `node_modules/apps/<name>`, as the staged package's
-    // `runtime.json` holds them.
     const workerdBundles = new Map<string, Bundle | undefined>();
     const loadModules = (
       key: string,
@@ -326,9 +488,7 @@ const collect = (out: string, directories: ReadonlyArray<string>) =>
         if (workerdBundles.has(`${key}\0`)) return;
         workerdBundles.set(`${key}\0`, undefined);
         const texts = yield* modules;
-        const maps = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(SourceMaps))(
-          yield* fs.readFileString(mapsFile),
-        );
+        const maps = yield* readJson(SourceMaps, mapsFile);
         for (const [name, map] of Object.entries(maps)) {
           const text = texts.get(name);
           if (text !== undefined)
@@ -356,30 +516,28 @@ const collect = (out: string, directories: ReadonlyArray<string>) =>
       });
     for (const directory of directories) yield* walk(path.resolve(directory));
     for (const directory of scenarioDirectories) {
-      const { target, title } = yield* Schema.decodeUnknownEffect(
-        Schema.fromJsonString(Schema.Struct({ target: Schema.String, title: Schema.String })),
-      )(yield* fs.readFileString(path.join(directory, "scenario.json")));
+      const { target, title } = yield* readJson(
+        Schema.Struct({ target: Schema.String, title: Schema.String }),
+        path.join(directory, "scenario.json"),
+      );
       const found: FileLines = new Map();
       for (const generation of yield* fs.readDirectory(directory)) {
         const reports = path.join(directory, generation);
         if ((yield* fs.stat(reports)).type !== "Directory") continue;
         for (const report of yield* fs.readDirectory(reports)) {
-          const text = yield* fs.readFileString(path.join(reports, report));
-          if (report === "lcov.info") readLcov(text, found);
+          const file = path.join(reports, report);
+          const bytes = yield* fs.readFile(file);
+          if (report === "lcov.info") readLcov(decodeUtf8(bytes), found);
           else if (report.startsWith("browser-")) {
-            const coverage = yield* Schema.decodeUnknownEffect(
-              Schema.fromJsonString(BrowserCoverage),
-            )(text);
+            const coverage = yield* decodeJson(BrowserCoverage, file)(bytes);
             for (const { url } of coverage) {
               const name = path.basename(new URL(url).pathname);
-              const file = bundleFiles.get(name);
-              if (file === undefined || bundles.has(name)) continue;
+              const bundle = bundleFiles.get(name);
+              if (bundle === undefined || bundles.has(name)) continue;
               bundles.set(name, {
-                text: yield* fs.readFileString(file),
-                map: yield* Schema.decodeUnknownEffect(Schema.fromJsonString(SourceMap))(
-                  yield* fs.readFileString(`${file}.map`),
-                ),
-                directory: path.dirname(file),
+                text: yield* fs.readFileString(bundle),
+                map: yield* readJson(SourceMap, `${bundle}.map`),
+                directory: path.dirname(bundle),
               });
             }
             readBrowser(
@@ -390,13 +548,10 @@ const collect = (out: string, directories: ReadonlyArray<string>) =>
               found,
             );
           } else if (report.startsWith("workerd-")) {
-            const coverage = yield* Schema.decodeUnknownEffect(
-              Schema.fromJsonString(WorkerdCoverage),
-            )(text);
+            const coverage = yield* decodeJson(WorkerdCoverage, file)(bytes);
             yield* loadModules(
               coverage.bundle,
-              fs.readFileString(coverage.bundle).pipe(
-                Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(BundleModules))),
+              readJson(BundleModules, coverage.bundle).pipe(
                 Effect.map(
                   (modules) =>
                     new Map(
@@ -410,15 +565,13 @@ const collect = (out: string, directories: ReadonlyArray<string>) =>
             );
             yield* loadModules(
               framework,
-              fs.readFileString(framework).pipe(
-                Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(FrameworkModules))),
+              readJson(FrameworkModules, framework).pipe(
                 Effect.map(({ server }) => new Map(Object.entries(server))),
               ),
               `${framework}.map`,
             );
             const bundleOf = workerdBundleOf(coverage.bundle);
             readBrowser(
-              // A module rebuilt since the run no longer matches its coverage's offsets.
               coverage.scripts.filter(
                 ({ url, functions }) => bundleOf(url)?.text.length === scriptLength(functions),
               ),
@@ -428,17 +581,15 @@ const collect = (out: string, directories: ReadonlyArray<string>) =>
               found,
             );
           } else if (report.endsWith(".json")) {
-            const coverage = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(V8Coverage))(
-              text,
-            );
+            const coverage = yield* decodeJson(V8Coverage, file)(bytes);
             for (const { url } of coverage.result) {
               if (!url.startsWith(`file://${root}/`)) continue;
-              const file = decodeURIComponent(url.slice(`file://${root}/`.length));
-              if (isProduct(file) && !sources.has(file))
+              const product = decodeURIComponent(url.slice(`file://${root}/`.length));
+              if (isProduct(product) && !sources.has(product))
                 sources.set(
-                  file,
+                  product,
                   yield* fs
-                    .readFileString(path.join(root, file))
+                    .readFileString(path.join(root, product))
                     .pipe(Effect.orElseSucceed(() => undefined)),
                 );
             }
@@ -495,7 +646,6 @@ const collect = (out: string, directories: ReadonlyArray<string>) =>
     );
   });
 
-/** Union several collected runs, such as CI shards, by target. */
 const readCollected = (files: ReadonlyArray<string>) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -576,7 +726,6 @@ const report = (files: ReadonlyArray<string>) =>
         a.localeCompare(b),
       ))
         yield* Console.log(`  ${name}: ${covered}/${executable} (${percent(covered, executable)})`);
-      // How many scenarios cover each line; a scenario's unique lines are those only it covers.
       const owners = new Map<string, number>();
       for (const { covered } of data.scenarios.values())
         for (const [file, lines] of covered)
@@ -599,12 +748,6 @@ const report = (files: ReadonlyArray<string>) =>
     }
   });
 
-/**
- * A small set of scenarios that together cover every line all of them cover, chosen greedily: each
- * pick covers the most lines the picks before it left uncovered. Lines are counted on every
- * profiled target, and a scenario is one title wherever it runs. The scenarios outside the set add
- * no line coverage together, not only one at a time. Writes them to `out` as JSON.
- */
 const cover = (out: string, files: ReadonlyArray<string>) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;

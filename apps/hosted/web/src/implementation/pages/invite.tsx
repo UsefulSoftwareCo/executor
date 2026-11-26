@@ -7,11 +7,9 @@ import { organizationError, OrganizationDestination } from "../components/organi
 import { Button } from "@executor-js/ui/components/button";
 import { LoginFrame } from "./login-frame.tsx";
 
-/** Invitation IDs are untrusted; Better Auth verifies recipient email and expiry. */
 export const inviteSearch = (search: Record<string, unknown>) => ({
   invitation: typeof search.invitation === "string" ? search.invitation : "",
 });
-/** Accept after authentication, including users who have no organization yet. */
 export function InvitePage({ invitation }: { readonly invitation: string }) {
   const accept = useAtomSet(acceptInvitationAtom, { mode: "promiseExit" });
   const state = useAtomValue(acceptInvitationAtom);
@@ -58,7 +56,6 @@ export function InvitePage({ invitation }: { readonly invitation: string }) {
   );
 }
 
-/** The invitation was accepted earlier; say so instead of joining again. */
 function AlreadyMember({
   name,
   onContinue,

@@ -1,8 +1,3 @@
-/**
- * App code's own `fetch` goes out through Executor's outbound network. Workers send no User-Agent,
- * and GitHub's API refuses a request without one, so the outbound names Executor when app code
- * names no client and keeps the one it does.
- */
 import { expect, layer } from "@effect/vitest";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Effect, Layer, Schema } from "effect";
@@ -31,10 +26,6 @@ const Health = Schema.Struct({
   ),
 });
 
-/**
- * The check reads the current user as GitHub's catalog app does, naming no client. The tool sends
- * the User-Agent it is given, or none, and returns the one the service saw.
- */
 const source = (origin: string) => `import {
   decodeJson, defineApp, defineProvider, object, query, router, secrets, string,
 } from "apps";
@@ -71,7 +62,6 @@ layer(HostedLive, { excludeTestServices: true })("App fetch User-Agent", (it) =>
         const api = yield* Api,
           actors = yield* Actors,
           evidence = yield* Evidence;
-        // Answers as GitHub's API does: 403 with an HTML page for a request without a User-Agent.
         const identified = (
           respond: (
             request: HttpServerRequest.HttpServerRequest,
@@ -142,7 +132,6 @@ layer(HostedLive, { excludeTestServices: true })("App fetch User-Agent", (it) =>
         expect(saved.status, JSON.stringify(saved.body)).toBe(200);
         account = (yield* body(Resource, saved)).id;
 
-        // The check that names no client passes and reports the service's username.
         const checked = yield* api.request(
           actors.owner,
           "POST",
@@ -155,7 +144,6 @@ layer(HostedLive, { excludeTestServices: true })("App fetch User-Agent", (it) =>
         expect(check?.status, JSON.stringify(check)).toBe("healthy");
         expect(health.info?.username).toBe("synthetic-user");
 
-        // A tool's request names Executor by default and keeps the client app code names.
         for (const userAgent of [undefined, "Custom client/1.0"]) {
           const called = yield* api.request(actors.owner, "POST", `${path}/tools/call`, {
             tool: "client",

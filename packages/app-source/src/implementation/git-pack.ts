@@ -1,15 +1,9 @@
-/**
- * Git objects, packs and receive-pack requests, written directly. A push sends only the objects it
- * names: unchanged files stay on the server and are never fetched, and every blob streams through
- * compression one at a time, so neither side holds a whole pack or a whole tree of files.
- */
 import { Effect, Schema, Stream } from "effect";
 import { SourceError } from "@executor-js/sdk/core";
 
 const encoder = new TextEncoder();
 const zeroId = "0".repeat(40);
 
-/** Incremental SHA-1. Web Crypto hashes only whole buffers, and packs are hashed as they stream. */
 export class Sha1 {
   private readonly state = new Uint32Array([
     0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476, 0xc3d2e1f0,
@@ -98,7 +92,6 @@ export class Sha1 {
 export type ObjectType = "commit" | "tree" | "blob";
 const typeCode: Record<ObjectType, number> = { commit: 1, tree: 2, blob: 3 };
 
-/** A Git object's ID: the SHA-1 of `<type> <size>\0` and its bytes. */
 export const objectId = (type: ObjectType, bytes: Uint8Array) =>
   new Sha1()
     .update(encoder.encode(`${type} ${bytes.length}\0`))
@@ -117,17 +110,14 @@ const concat = (parts: ReadonlyArray<Uint8Array>) => {
   return out;
 };
 
-/** One entry of a tree: a file (`100644`) or a subtree (`40000`). */
 export interface TreeEntry {
   readonly name: string;
   readonly mode: "100644" | "100755" | "40000";
   readonly object: string;
 }
 
-/** Git sorts tree entries by name, comparing a subtree's name as if it ended in `/`. */
 const sortKey = (entry: TreeEntry) => (entry.mode === "40000" ? `${entry.name}/` : entry.name);
 
-/** The bytes of a tree object. */
 export const treeObject = (entries: ReadonlyArray<TreeEntry>) =>
   concat(
     entries
@@ -141,10 +131,6 @@ export const treeObject = (entries: ReadonlyArray<TreeEntry>) =>
       .flatMap((entry) => [encoder.encode(`${entry.mode} ${entry.name}\0`), fromHex(entry.object)]),
   );
 
-/**
- * The tree objects for a complete list of files, deepest first, and the root tree's ID. Paths are
- * canonical source paths, which `SourceFiles` has already checked.
- */
 export const buildTrees = (
   files: ReadonlyArray<{ readonly path: string; readonly object: string }>,
 ) => {
@@ -186,7 +172,6 @@ export const buildTrees = (
   return { tree, trees };
 };
 
-/** The bytes of a commit object by Executor, at `seconds` since the epoch. */
 export const commitObject = (input: {
   readonly tree: string;
   readonly parents: ReadonlyArray<string>;
@@ -208,10 +193,8 @@ export const commitObject = (input: {
   );
 };
 
-/** One object a pack carries. A blob's bytes are read only when the pack reaches it. */
 export interface PackObject {
   readonly type: ObjectType;
-  /** The object ID the bytes must hash to; the pack fails rather than send other bytes. */
   readonly object: string;
   readonly size: number;
   readonly read: Effect.Effect<Uint8Array, SourceError>;
@@ -237,11 +220,6 @@ const deflate = (bytes: Uint8Array) =>
     onError: () => new SourceError({ reason: "git" }),
   });
 
-/**
- * A version 2 pack of these objects, each zlib-compressed, ending in the SHA-1 of the pack. Each
- * object is read, checked against its ID and compressed as the stream reaches it. Every run of the
- * stream hashes its own bytes, so a refused request can send the same pack again.
- */
 export const packStream = (objects: ReadonlyArray<PackObject>) =>
   Stream.suspend(() => packRun(objects));
 
@@ -275,7 +253,6 @@ const packRun = (objects: ReadonlyArray<PackObject>) => {
   );
 };
 
-/** One ref update: `old` and `new` are object IDs; a zero ID creates or deletes the ref. */
 export interface RefUpdate {
   readonly ref: string;
   readonly old: string | null;
@@ -287,10 +264,6 @@ const packet = (text: string) => {
   return concat([encoder.encode((payload.length + 4).toString(16).padStart(4, "0")), payload]);
 };
 
-/**
- * A receive-pack request body: the ref updates, then the pack when any update writes. Only
- * `report-status` is asked for, so the answer is plain pkt-lines without side-band framing.
- */
 export const receivePackBody = (
   updates: ReadonlyArray<RefUpdate>,
   objects: ReadonlyArray<PackObject>,
@@ -309,24 +282,17 @@ export const receivePackBody = (
     : Stream.succeed(commands);
 };
 
-/** What the server reported: whether it unpacked, and each ref's `ok` or refusal reason. */
 export interface PushReport {
   readonly unpacked: boolean;
   readonly refs: ReadonlyMap<string, "ok" | { readonly refused: string }>;
-  /** The report's lines as the server sent them: ref names, statuses and refusal reasons. */
   readonly lines: ReadonlyArray<string>;
 }
 
-/**
- * The server refused the whole request with a Git `ERR` line instead of a report: it unpacked
- * nothing and updated no ref, so the request had no effect.
- */
 export class ReceivePackRefused extends Schema.TaggedError<ReceivePackRefused>()(
   "ReceivePackRefused",
   { message: Schema.String },
 ) {}
 
-/** Parse a `report-status` answer, with or without side-band framing. */
 export const parseReport = (
   bytes: Uint8Array,
 ): Effect.Effect<PushReport, SourceError | ReceivePackRefused> =>
@@ -354,11 +320,9 @@ export const parseReport = (
       if (banded) return read(concat(nested), false);
       return true;
     };
-    // Side-band frames start with a band byte of 1-3; report lines start with text.
     const first = bytes.length > 4 ? bytes[4] : undefined;
     if (!read(bytes, first === 1 || first === 2 || first === 3))
       return yield* new SourceError({ reason: "git" });
-    // A server that refuses the request outright answers one `ERR <message>` line.
     const [opening] = lines;
     if (opening?.startsWith("ERR "))
       return yield* new ReceivePackRefused({ message: opening.slice(4) });
@@ -381,10 +345,6 @@ export const parseReport = (
  */
 export const packBlobBytes = 48 * 1024 * 1024;
 
-/**
- * Group blobs into batches of at most `packBlobBytes`, keeping their order. Every batch but the
- * last is pushed to a temporary ref first, so the final push stays under the same bound.
- */
 export const batchBlobs = <A extends { readonly size: number }>(blobs: ReadonlyArray<A>) => {
   const batches: A[][] = [];
   let current: A[] = [];
@@ -402,24 +362,17 @@ export const batchBlobs = <A extends { readonly size: number }>(blobs: ReadonlyA
   return batches;
 };
 
-/** Send one receive-pack request, its ref updates and the body that carries them, and read its report. */
 export type ReceivePack = (
   updates: ReadonlyArray<RefUpdate>,
   body: Stream.Stream<Uint8Array, SourceError>,
 ) => Effect.Effect<PushReport, SourceError>;
 
-/** Send `updates` with `objects`; the receiver sees the updates it is asked to make. */
 const receiveUpdates = (
   receive: ReceivePack,
   updates: ReadonlyArray<RefUpdate>,
   objects: ReadonlyArray<PackObject>,
 ) => receive(updates, receivePackBody(updates, objects));
 
-/**
- * Push `final` (a commit and the objects it needs) to `ref`, moving it only from `expected`.
- * Blobs beyond one pack's bound go first to `staging` as a chain of commits whose trees name each
- * blob by its ID; the final push deletes `staging`. Returns the report of the final push.
- */
 export const pushObjects = (input: {
   readonly receive: ReceivePack;
   readonly ref: string;
@@ -474,5 +427,4 @@ export const pushObjects = (input: {
     );
   });
 
-/** A Git object ID. */
 export const ObjectId = Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/u));

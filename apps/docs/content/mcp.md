@@ -99,16 +99,23 @@ may still have made changes. `call` lists it the same way. An outcome of
 `success` only means no tool error was reported; check the result before
 treating its action as done.
 
-Images and audio reach the agent as media. Wherever the value `execute`, `call`
-or `resume` returns holds `{ type: "image", mimeType, data }` or
-`{ type: "audio", mimeType, data }`, with `data` in standard or URL-safe base64,
-the response carries that block as its own MCP content after the JSON text, once
-even if the value repeats it. The JSON keeps `{ type, mimeType, contentIndex }`
-in its place, the block's index in the response's `content`. MCP image and audio
-results, such as screenshots, already have that shape. A program can show bytes
-a tool returns another way, such as an email attachment's base64, by returning
-them in it. Inside a program the block is whole, so its data can be passed on to
-another tool.
+Images, audio and files reach the agent as MCP content, not base64 text.
+Wherever the value `execute`, `call` or `resume` returns holds
+`{ type: "image", mimeType, data }`, `{ type: "audio", mimeType, data }` or an
+embedded resource with binary contents,
+`{ type: "resource", resource: { uri, mimeType, blob } }`, with its bytes in
+standard or URL-safe base64, the response carries that block as its own MCP
+content after the JSON text, once even if the value repeats it. The JSON keeps
+the block without its bytes, plus `contentIndex`, the block's index in the
+response's `content`. MCP image and audio results, such as screenshots, already
+have that shape. Each client decides how to present a resource; Claude Code, for
+example, saves it as a file the model can open, so a PDF attachment can be read.
+A text resource stays in the JSON. A program can show bytes a tool returns
+another way, such as `{ base64 }`, by returning them in one of these shapes.
+Inside a program the block is whole, so its data can be passed on to another
+tool. The `executor call`, `execute` and `resume` commands write each block to a
+file, in a new temporary directory or the one `--files` names, and print its
+`path` beside its `contentIndex`.
 
 The interpreter has no `fetch`, no `process`, no filesystem, no timers and no
 imports. Its only way out is a tool call, which enters the trusted runtime where your
@@ -169,6 +176,10 @@ revoking the connection revokes every grant issued through it. Personal access
 tokens and the local server key are not limited by a connection; they keep full
 access at the plain URL and are refused at a connection's URL.
 
+An agent can list your scoped connections with the Executor app, but creating,
+editing and revoking them happens on the dashboard, so an agent never widens its
+own access.
+
 On hosted and self-host, **Connected agents** on the same page lists each
 client you approved, with the apps it can reach, and revokes its grant.
 
@@ -182,7 +193,7 @@ which the grant then keeps. The sign-in page preselects `automatic` for the plai
 | Mode        | URL                               | Where you answer                                                                                                                                                                 |
 | ----------- | --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `automatic` | `/mcp?elicitation_mode=automatic` | Nowhere. Executor approves tool calls at once; your agent's own permission prompt for `call` or `execute` is the check. A question a running tool asks still reaches the agent, as in `model` mode. |
-| `model`     | `/mcp`                            | The agent shows you the request and calls `resume` with your answer.                                                                                                             |
+| `model`     | `/mcp?elicitation_mode=model`     | The agent shows you the request and calls `resume` with your answer.                                                                                                             |
 | `native`    | `/mcp?elicitation_mode=native`    | Your MCP client's own prompt. The `call` or `execute` request stays open and continues. There is no `resume`. `call` approvals are the client's confirmation of the call itself. |
 | `browser`   | `/mcp?elicitation_mode=browser`   | A signed-in page in your browser. The result carries an `approvalUrl`; the agent calls `resume({ requestId })` to collect your answer.                                            |
 
@@ -191,7 +202,8 @@ one to use when you do not want the agent to be the one holding the question.
 
 The mode is part of the grant, not the URL. Changing the query string after
 signing in does not change the mode. A personal access token has no grant, so it
-takes its mode from the URL on each request: `model` at the plain `/mcp` URL.
+takes its mode from the URL on each request: `automatic` at the plain `/mcp` URL,
+and the named mode with `elicitation_mode`.
 
 ## From a shell
 
@@ -199,8 +211,9 @@ The [`executor` command](/run/cli#use-your-tools-from-a-shell) calls the same
 tools from a shell: `executor search`, `describe`, `call`, `execute`, `resume`
 and `skills` each call the tool of the same name and print its result as JSON.
 `executor login` signs it in through the browser, where you choose which apps
-the sign-in reaches and its approval mode, as on the consent screen. Without a
-sign-in, it uses the local server.
+the sign-in reaches and its approval mode, as on the consent screen.
+`executor apps` uses that sign-in too, and needs **All apps** to create, change
+or deploy apps. Without a sign-in, it uses the local server.
 
 `executor mcp` is a stdio MCP server that passes every message to the endpoint
 of the host you signed in to, approvals and questions included, and renews the

@@ -1,6 +1,10 @@
 import { defineConfig } from "vitest/config";
+import { snapshotUpdate } from "./snapshot-updates.ts";
 
-/** Runs patched Playwright and Chromium against a local server while routes come and go. */
 export default defineConfig({
-  test: { include: ["e2e/tests/playwright-routes.spec.ts"], testTimeout: 180_000 },
+  test: {
+    update: snapshotUpdate(),
+    include: ["e2e/tests/playwright-routes.spec.ts"],
+    testTimeout: 180_000,
+  },
 });

@@ -1,4 +1,3 @@
-/** Persisted groups are exercised only through hosted HTTP and browser boundaries. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";

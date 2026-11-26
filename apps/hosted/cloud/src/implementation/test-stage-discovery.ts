@@ -1,4 +1,3 @@
-/** Find previews deployed by older checkouts so they cannot escape the current lifetime policy. */
 import { Config, Effect, Schema } from "effect";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 import { TestStageFailed, TestStageSlug } from "../contracts/test-stage-lifetime.ts";
@@ -19,11 +18,9 @@ const Page = Schema.Struct({
   ),
 });
 
-/** Earliest live Worker creation time for each exact hosted test-stage tag. Production is excluded. */
 export const discoverTestStages = Effect.gen(function* () {
   const account = yield* Config.NonEmptyString("CLOUDFLARE_ACCOUNT_ID");
   const token = yield* Config.Redacted("CLOUDFLARE_API_TOKEN");
-  // A recorded copy of the API can stand in for it (`test-stage-unreadable.spec.ts`).
   const api = yield* Config.String("TEST_STAGE_CLOUDFLARE_API").pipe(
     Config.withDefault("https://api.cloudflare.com"),
   );

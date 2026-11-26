@@ -1,10 +1,3 @@
-/**
- * The desktop recovery harness's `nextServer` tells servers apart by the id each registers, not by
- * process ID: Windows soon gives a new background server the process ID of one that has exited, and
- * a harness that compared process IDs refused the server the desktop had joined. No release run
- * reuses a process ID on demand, so this case writes `server.json` itself and answers
- * `/api/service` from a stub, keeping the process ID and changing the id.
- */
 import { randomUUID } from "node:crypto";
 import { expect, layer } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -15,7 +8,6 @@ import { nextServer } from "../support/desktop.ts";
 
 const pid = 4242;
 
-/** A stand-in for the background server: answers `/api/service` as `current` says. */
 const stubServer = Effect.gen(function* () {
   const current = { id: "" };
   const url = yield* serving(
@@ -57,7 +49,6 @@ layer(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer, capture), {
           const path = yield* Path.Path;
           const directory = yield* fs.makeTempDirectoryScoped();
           const stub = yield* stubServer;
-          /** Register the server with `id` in `server.json`, and make the stub answer as it. */
           const register = (id: string) =>
             Effect.gen(function* () {
               stub.current.id = id;
@@ -72,7 +63,6 @@ layer(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer, capture), {
           const earlier = yield* nextServer(directory, []);
           expect(earlier).toMatchObject({ id: earlierId, pid });
 
-          // The next server has the same process ID and its own id: it is new.
           const laterId = randomUUID();
           yield* register(laterId);
           const later = yield* nextServer(directory, [earlier]);
@@ -81,7 +71,6 @@ layer(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer, capture), {
             `Server ${laterId} has process ID ${pid}, which earlier server ${earlierId} had`,
           );
 
-          // The earlier server, answering as itself again, is still not a new one.
           yield* register(earlierId);
           const refused = yield* nextServer(directory, [earlier]).pipe(
             Effect.timeout("2 seconds"),

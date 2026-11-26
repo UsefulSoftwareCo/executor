@@ -108,6 +108,13 @@ export interface ToolListOptions extends CatalogReadOptions {
    * and one page reads it once. A caller that sends pages on, such as an HTTP route, omits it.
    */
   readonly unboundedPages?: true;
+  /**
+   * The apps one search reads together, this read's app among them. A host may read their state
+   * in shared statements, but never with an app outside the batch: a search waits only on the apps
+   * it reaches, so one app's slow or locked rows hold up no search that does not reach it. Without
+   * it the read takes its own state alone.
+   */
+  readonly searchBatch?: ReadonlyArray<AppId>;
 }
 export {
   ElicitationFailed,
@@ -158,9 +165,39 @@ export const InvocationPrefetch = Context.Reference<
     }
   | undefined
 >("executor/InvocationPrefetch", { defaultValue: () => undefined });
+/**
+ * Host-only: the reads `tools.searchable` would make for many targets of one owner, made ahead in
+ * a fixed number of statements ({@link PrefetchHost}'s `searchable`). `value` is opaque to the
+ * host. `tools.searchable` uses an entry only for the app, version and accounts it was made for,
+ * under the same actor, and only once; any other read, and a read made ahead that failed in
+ * storage, reads live. Never supplied by authored code.
+ */
+export const SearchablePrefetch = Context.Reference<SearchablePrefetched | undefined>(
+  "executor/SearchablePrefetch",
+  { defaultValue: () => undefined },
+);
+/** What {@link PrefetchHost}'s `searchable` read, for {@link SearchablePrefetch}. */
+export interface SearchablePrefetched {
+  readonly owner: OwnerId;
+  readonly value: unknown;
+}
 /** Host-only reads made ahead for a tool call, outside the public HTTP/Promise facade. */
 export const PrefetchHost = Symbol("executor.PrefetchHost");
 export interface PrefetchHost {
+  /**
+   * The reads `tools.searchable` makes for each target, after the host's own checks resolved its
+   * version and accounts: the apps and accounts, each target's kept search rows, the actor's app
+   * rechecks and the account grants, each kind in one statement for every target together. It
+   * never fails: a target whose reads did not answer is read live by `tools.searchable`.
+   */
+  readonly searchable: (input: {
+    readonly owner: OwnerId;
+    readonly targets: ReadonlyArray<{
+      readonly app: AppId;
+      readonly version: VersionId;
+      readonly accounts: AppAccounts;
+    }>;
+  }) => Effect.Effect<SearchablePrefetched>;
   /**
    * The reads `apps.get` and then `tools.call` make for one app, as effects of one statement each
    * that never fail, for the host to send in one batch beside its own checks. Without `known`,
@@ -276,8 +313,12 @@ export const mayHaveWrittenPresentation = (presented: ErrorPresentation): ErrorP
 export const mayHaveWritten = <A extends { readonly mayHaveWritten?: true | undefined }, I>(
   schema: Schema.Codec<A, I>,
   failure: A,
-): A =>
-  Schema.decodeUnknownSync(schema)({ ...Schema.encodeSync(schema)(failure), mayHaveWritten: true });
+): A => {
+  const { notSent: _, ...encoded } = Schema.encodeSync(schema)(failure) as I & {
+    readonly notSent?: unknown;
+  };
+  return Schema.decodeUnknownSync(schema)({ ...encoded, mayHaveWritten: true });
+};
 
 /** Why a running tool could not complete its user interaction. */
 const elicitationFailures = {
@@ -737,8 +778,6 @@ export const mcpFailurePresentation = ({
     "Use the reported phase and error to identify the failure. Check the server URL, transport or access settings only when relevant. Do not expose credentials.";
   switch (reason) {
     case "timeout":
-      // A server that did not answer one call may answer the next, so a read may be repeated
-      // once; a second timeout is investigated before repeating it again.
       if (phase === "call")
         return {
           title: "MCP server did not answer the tool call",
@@ -773,7 +812,6 @@ export const mcpFailurePresentation = ({
     case "invalid_response":
       return {
         title: "MCP server response not supported",
-        // Includes Executor refusing to follow the server to another origin.
         description: `The app’s MCP server returned a response Executor could not use while ${stage}, such as an unreadable message or an address on another origin.${answered}`,
         recovery: {
           action: "Check the response compatibility and the app’s MCP server configuration.",
@@ -782,7 +820,6 @@ export const mcpFailurePresentation = ({
         retryable: false,
       };
     case "invalid_input":
-      // The app reports this reason, so the copy does not claim the call was not sent.
       return phase === "call"
         ? {
             title: "Tool input could not be used",
@@ -802,7 +839,6 @@ export const mcpFailurePresentation = ({
             retryable: false,
           };
     case "request":
-      // Request Timeout and Too Early ask the client to retry the same request later.
       if (status === 408 || status === 425)
         return {
           title: "MCP server asked to retry",
@@ -814,10 +850,6 @@ export const mcpFailurePresentation = ({
           },
           retryable: true,
         };
-      // A server may answer a request carrying the session it issued with 404 when it no longer
-      // has that session, such as one run on several instances that do not share sessions. A new
-      // listing opens another. `session` comes from the app, so the copy only says the session
-      // may have expired. Without a session, a 404 is an ordinary refusal.
       if (status === 404 && phase === "discover" && session === true)
         return {
           title: "MCP session may have expired",
@@ -839,10 +871,6 @@ export const mcpFailurePresentation = ({
           },
           retryable: false,
         };
-      // A JSON-RPC error inside a successful response, such as arguments a tool rejects, states
-      // the server's error. Without one, a transport failure got no answer from the server: it
-      // may not be reachable, or Executor's own request failed. A tool call that failed without an
-      // answer, such as on a dropped connection, may have run.
       return upstream === undefined
         ? phase === "transport"
           ? {
@@ -905,6 +933,11 @@ export const EvaluationRuntime = Schema.Union([
     kind: Schema.Literal("worker"),
     /** The failure the runtime's error matched, absent when the runtime reported none. */
     failure: Schema.optional(RuntimeFailure),
+    /**
+     * The host's connection to the runtime never formed, so nothing was sent to it (`failure` is
+     * then `disconnected`, as older readers expect; they drop this field).
+     */
+    notSent: Schema.optional(Schema.Literal(true)),
   }),
   Schema.Struct({ kind: Schema.Literal("build") }),
   Schema.Struct({
@@ -925,6 +958,7 @@ const hostRuntimeFailures: ReadonlySet<RuntimeFailure> = new Set([
   "build",
   "unsupported",
   "managed",
+  "unloading",
 ]);
 const loadingInstructions =
   "This happened while Executor loaded the app's definition, before any tool ran. Do not change the app's accounts to work around it.";
@@ -938,6 +972,16 @@ const retryOnce = (then: string, instructions: string) => ({
 });
 const reportReference =
   "If it fails again, report the failure with the reference shown beside this error, if any, and check what the app's recent changes run while it lists its tools.";
+
+/** What a runtime that could not be reached says: nothing was sent to the app. */
+const unreachablePresentation = {
+  description: "Executor could not connect to the app runtime, so nothing was sent to the app.",
+  recovery: retryOnce(
+    "check that Executor's app runtime is running.",
+    "Executor could not open its connection to the app runtime, so nothing was sent to the app. Executor's log records when the app runtime stops or is replaced.",
+  ),
+  retryable: true,
+};
 
 /** What the app's Worker failure says and what to do about it. */
 const workerPresentation = (failure: RuntimeFailure | undefined) => {
@@ -958,8 +1002,8 @@ const workerPresentation = (failure: RuntimeFailure | undefined) => {
       return {
         description,
         recovery: retryOnce(
-          "reduce the work the app does to list its tools.",
-          "A resource limit matches this failure. Find what the app's factory and tool loaders do while listing, such as fetching or parsing a large API definition or building many tools, and reduce it: expose fewer tools, or keep a large definition in the app's cache.",
+          "stop retrying it unchanged and investigate. If the app was built on an older apps version than this host’s, rebuild it on this host’s version and deploy it again; if it already runs this host’s version, or still fails, reduce the work the app does to list its tools.",
+          "A resource limit matches this failure. A first load can do work the next one reuses, such as compiling a large API definition into the app's cache, so one retry may succeed. If it fails the same way, stop retrying the unchanged request, even though a later attempt might succeed, and investigate what listing the app's tools costs. Compare the apps version in the app's package.json with framework.release, the version this host runs. If the app's version is older, for example a catalog app installed before a framework fix, pin this host's version and deploy the app again: an older apps version can spend far more work listing a large API. If the versions are the same, or the rebuilt app still fails, find what the app's factory and tool loaders do while listing, such as fetching or parsing a large API definition or building many tools, and reduce it: expose fewer tools, or keep a large definition in the app's cache.",
         ),
         retryable: true,
       };
@@ -1002,6 +1046,15 @@ const workerPresentation = (failure: RuntimeFailure | undefined) => {
     case "unsupported":
     case "managed":
       return { description, recovery: rebuild, retryable: false };
+    case "unloading":
+      return {
+        description: `${runtimeFailures.unloading}, so nothing was sent to the app.`,
+        recovery: retryOnce(
+          "report the failure with its reference.",
+          `Executor waited for the app's previous Worker to unload before loading it again, and it did not finish, so nothing was sent to the app. ${reportReference}`,
+        ),
+        retryable: true,
+      };
     default:
       return {
         description,
@@ -1030,9 +1083,10 @@ const runtimePresentation = (runtime: EvaluationRuntime): CausePresentation => {
   switch (runtime.kind) {
     case "worker":
     case "build": {
-      const { description, ...rest } = workerPresentation(
-        runtime.kind === "build" ? "build" : runtime.failure,
-      );
+      const { description, ...rest } =
+        runtime.kind === "worker" && runtime.notSent === true
+          ? unreachablePresentation
+          : workerPresentation(runtime.kind === "build" ? "build" : runtime.failure);
       return { title: "Tools could not be loaded", description: loaded(description), ...rest };
     }
     case "protocol":
@@ -1079,6 +1133,7 @@ const evaluationRuntime = (error: unknown): EvaluationRuntime | undefined => {
     return {
       kind: "worker",
       ...(error.reason === undefined ? {} : { failure: error.reason }),
+      ...(error.notSent === true ? { notSent: true as const } : {}),
     };
   if (Schema.is(RuntimeBuildUnavailable)(error)) return { kind: "build" };
   if (Schema.is(RuntimeProtocolUnsupported)(error))
@@ -1356,9 +1411,10 @@ export const AppProviderFailed = UserFacingError.define({
       Schema.Struct({ id: AccountId, label: Schema.String, provider: Schema.String }),
     ),
     /**
-     * The service refused the account's credentials during a mutation, and Executor has since
-     * renewed them. The mutation was not repeated, because it may have made changes before the
-     * refusal; a later call uses the renewed credentials.
+     * The service refused the account's credentials during a call Executor does not repeat, and
+     * Executor has since renewed them. That is a call that may write, which may have made changes
+     * before the refusal, or a query only its tool declares reads, whose claim the app has not
+     * confirmed. A later call uses the renewed credentials.
      */
     credentialsRenewed: Schema.optional(Schema.Literal(true)),
     /**
@@ -1394,16 +1450,14 @@ export const AppProviderFailed = UserFacingError.define({
         case "unauthorized":
           if (credentialsRenewed === true)
             return {
-              title: "Access renewed; request not repeated",
-              description: `${service} rejected the credentials${target}${context}.${reported} Executor has renewed the account’s access, but did not repeat this call automatically.`,
+              title: "Access restored; call not repeated",
+              description: `${service} rejected the credentials${target}${context}.${reported} Access was restored. This call was not repeated; earlier steps may have changed data. Check the result and retry only if the user chooses.`,
               recovery: {
-                action: "The renewed access is used from now on.",
-                instructions: `Executor renewed the account’s access but did not repeat this call. Renewal does not establish whether an earlier part of the call changed data. ${instructions}`,
+                action: "Check the result and retry only if the user chooses.",
+                instructions: `Access was restored, but this call was not repeated, and earlier steps of it may have changed data. Check what it did before anything else, and retry only if the user chooses. ${instructions}`,
               },
               retryable: false,
             };
-          // The renewal's own error says what failed. Only a call that may write reports it, so
-          // its recovery is the one for such a call, never repeating it.
           if (renewalFailure !== undefined)
             return {
               title: renewalFailure.title,
@@ -1704,22 +1758,41 @@ export const ToolCallFailed = UserFacingError.define({
      * Worker, which can produce it, so the match is a likely cause, never a confirmed one.
      */
     rpcLimitMatched: Schema.optional(Schema.Literal(true)),
+    /**
+     * Repeating this call is safe: the exchange that failed never left the host (its connection to
+     * the app runtime never formed), and either it was the call's only hand-off to the app's code,
+     * or the app confirms the call only reads. A confirmed read repeated after a credential renewal
+     * keeps it although its first run reached the app: that run only read. Never set together with
+     * `mayHaveWritten`.
+     */
+    notSent: Schema.optional(Schema.Literal(true)),
     mayHaveWritten: MayHaveWritten,
   },
-  recorded: ({ failure, mcp, response, rpcLimitMatched }) =>
-    rpcLimitMatched === true
-      ? "The tool's failure matched the Workers RPC size limit's message"
-      : mcp !== undefined
-        ? `The tool failed: ${recordedMcp(mcp)}`
-        : failure !== undefined
-          ? `The tool failed: ${recordedApp(failure)}`
-          : response !== undefined
-            ? "The tool failed after starting"
-            : "The tool failed without further detail",
-  presentation: callPresentation(({ reason, response, failure, mcp, rpcLimitMatched }) => {
+  recorded: ({ failure, mcp, response, rpcLimitMatched, notSent }) =>
+    notSent === true
+      ? "The tool call was not sent: the app runtime could not be reached"
+      : rpcLimitMatched === true
+        ? "The tool's failure matched the Workers RPC size limit's message"
+        : mcp !== undefined
+          ? `The tool failed: ${recordedMcp(mcp)}`
+          : failure !== undefined
+            ? `The tool failed: ${recordedApp(failure)}`
+            : response !== undefined
+              ? "The tool failed after starting"
+              : "The tool failed without further detail",
+  presentation: callPresentation(({ reason, response, failure, mcp, rpcLimitMatched, notSent }) => {
+    if (notSent === true)
+      return {
+        title: "Tool call was not sent",
+        description: reason,
+        recovery: {
+          action: "Try the call again.",
+          instructions:
+            "Executor could not open its connection to the app runtime, so it sent nothing of this call and the tool did not run. Repeating the call is safe. If it fails the same way again, the app runtime may have stopped; Executor's log records when it stops or is replaced.",
+        },
+        retryable: true,
+      };
     if (mcp !== undefined) return mcpFailurePresentation(mcp);
-    // App code can produce the runtime's text, so the match names a likely cause and keeps a read's
-    // bounded retry. Executor sets no size limit of its own on a result.
     if (rpcLimitMatched === true)
       return {
         title: "Tool result may have been too large to transfer",
@@ -1731,7 +1804,6 @@ export const ToolCallFailed = UserFacingError.define({
         },
         retryable: true,
       };
-    // The API's own recovery, when it stated one, is shown as the API wrote it.
     if (response !== undefined)
       return {
         title: "The app’s API returned an error",

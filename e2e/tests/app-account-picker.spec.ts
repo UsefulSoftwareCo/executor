@@ -21,10 +21,6 @@ import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
 import { enterClientDetails } from "../support/oauth-client-entry.ts";
 
-/**
- * The scenario's app, with key accounts of two providers' requirements and none connected yet, and
- * the reads and steps every account scenario uses.
- */
 const accountApp = Effect.gen(function* () {
   const actors = yield* Actors,
     api = yield* Api,
@@ -51,7 +47,6 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
   yield* Effect.addFinalizer(() =>
     Effect.gen(function* () {
       yield* api.request(actors.owner, "DELETE", appPath);
-      // With the app gone nothing links them; each account is removed on its own.
       yield* Effect.forEach(
         accounts,
         (account) => api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`),
@@ -59,7 +54,6 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
       );
     }).pipe(Effect.orDie),
   );
-  /** Connect a key account for one requirement from the app, which links it there. */
   const connect = (requirement: string, label: string) =>
     Effect.gen(function* () {
       const connection = yield* body(
@@ -77,7 +71,6 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
       accounts.push(id);
       return id;
     });
-  /** The owner's links, sorted, as `requirement:account` text. */
   const links = Effect.map(accountLinks(actors.owner, appPath), (pairs) =>
     pairs.map(([requirement, account]) => `${requirement}:${account}`).sort(),
   );
@@ -89,7 +82,6 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
     );
   const primary = yield* region("primary"),
     mailboxes = yield* region("mailboxes");
-  /** Each account a requirement lists, with whether its radio or checkbox is checked. */
   const listed = (
     slot: "primary" | "mailboxes" | "calendar",
     step: string,
@@ -109,7 +101,6 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
             control.getAttribute("aria-checked") === "true",
           ]),
         ) === JSON.stringify(args.expected);
-      // A timeout falls through so the assertion reports the controls actually shown.
       return page
         .waitForFunction(read, { selector, expected: [...expected] }, { timeout: 10_000 })
         .catch((error: unknown) => {
@@ -138,7 +129,6 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
     browser.use(step, (page) =>
       page.getByText(message, { exact: true }).first().waitFor({ state: "visible" }),
     );
-  /** Hold the owner's next link or unlink of one account to one requirement. */
   const holdLink = (method: "PUT" | "DELETE", requirement: string, account: string) =>
     holdQuery(
       [actors.organization.slug, actors.organization.id].map(
@@ -149,7 +139,6 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
     );
   const appPage = `/org/${actors.organization.slug}/apps/${app.id}`;
   const url = `${appPage}?view=accounts`;
-  /** Sign the owner in and open the Accounts tab, recording uncaught page errors. */
   const openAccounts = Effect.gen(function* () {
     yield* browser.login(actors.owner);
     const pageErrors: string[] = [];
@@ -182,16 +171,9 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
   };
 });
 
-/**
- * {@link accountApp} with `First account`, `Second account` and `Third account` saved for the
- * many() requirement: first and second linked there, third unlinked again, and first linked to the
- * plain requirement.
- */
 const accountChoices = Effect.gen(function* () {
   const choices = yield* accountApp;
   const { actors, api, prefix, appPath, connect, links, pairs } = choices;
-  // Connecting for the many() requirement links each account; the plain requirement takes
-  // one of them, and unlinking keeps the saved account.
   const first = yield* connect("mailboxes", "First account");
   const second = yield* connect("mailboxes", "Second account");
   const third = yield* connect("mailboxes", "Third account");
@@ -210,21 +192,13 @@ layer(HostedLive, { excludeTestServices: true })("App accounts", (it) => {
       context,
       Effect.gen(function* () {
         const { actors, browser, appPage, url, connect, shows } = yield* accountApp;
-        // One account, so the page sign-in returns to has something to list.
         yield* connect("primary", "First account");
         yield* browser.login(actors.owner);
-        // The old redirect looped and froze the tab: no step through the old links may raise an
-        // uncaught page error, signed in, signed out or on the way back from sign-in.
         const pageErrors: string[] = [];
         yield* browser.use("Record uncaught page errors", (page) => {
           page.on("pageerror", (error) => pageErrors.push(error.message));
           return Promise.resolve();
         });
-        // Older setup links open the app's Accounts tab. The server answers them with that address
-        // before any page renders; a redirect rendered by the page restarted itself whenever the
-        // organization layout re-rendered, so it never finished and froze the tab. Links from
-        // before profiles were removed may still name one; it no longer selects anything, so every
-        // old link settles on the same address.
         const address = (at: URL) => at.pathname + at.search;
         const settles = (step: string) =>
           Effect.gen(function* () {
@@ -258,7 +232,6 @@ layer(HostedLive, { excludeTestServices: true })("App accounts", (it) => {
           "An old setup link naming a profile opens the Accounts tab",
           setupLink,
         );
-        // Signed out, the link asks for sign-in first, which returns to it.
         const signIn = yield* browser.use("Open an old setup link signed out", (page) =>
           page
             .context()
@@ -279,8 +252,6 @@ layer(HostedLive, { excludeTestServices: true })("App accounts", (it) => {
               .then(() => page.getByRole("button", { name: "Sign in", exact: true }).click()),
           );
         else {
-          // Cloud fixture users cannot receive sign-in codes; the session arrives as a cookie and
-          // the sign-in page is reloaded to continue its return navigation.
           const cookies = yield* actors.owner.cookies;
           yield* browser.use("Continue from sign-in with the owner's session", (page) =>
             page
@@ -323,8 +294,6 @@ layer(HostedLive, { excludeTestServices: true })("App accounts", (it) => {
           openAccounts,
         } = yield* accountChoices;
         const pageErrors = yield* openAccounts;
-        // Each requirement lists every account of its provider the owner can use, by name: a
-        // radio for the plain requirement, a checkbox for the many() one, linked ones checked.
         yield* shows("primary", "The plain requirement lists its choices as radios", [
           ["First account", true],
           ["Second account", false],
@@ -358,7 +327,6 @@ layer(HostedLive, { excludeTestServices: true })("App accounts", (it) => {
         yield* noPageErrors(pageErrors);
         yield* browser.checkpoint("Accounts listed in place");
 
-        // A failed link keeps the current links and can be retried in place.
         const linkFailure = yield* holdLink("PUT", "mailboxes", third);
         yield* browser.use("Check the third mailbox", () =>
           mailboxes.getByRole("checkbox", { name: "Third account", exact: true }).click(),
@@ -417,8 +385,6 @@ layer(HostedLive, { excludeTestServices: true })("App accounts", (it) => {
         ).toBe(url);
         yield* browser.use("Reload the Accounts tab", (page) => page.goto(url));
         yield* shows("mailboxes", "The link survives a reload", allMailboxes);
-        // Every linked account's row has its menu, and each menu offers the account's details and
-        // unlinking it.
         const linkedLabels = ["First account", "Second account", "Third account"];
         const menus: Array<readonly [number, number]> = [];
         for (const label of linkedLabels)
@@ -448,7 +414,6 @@ layer(HostedLive, { excludeTestServices: true })("App accounts", (it) => {
           [1, 1],
         ]);
 
-        // A failed unlink keeps the account linked.
         const unlinkFailure = yield* holdLink("DELETE", "mailboxes", second);
         yield* browser.use("Clear the second mailbox", () =>
           mailboxes.getByRole("checkbox", { name: "Second account", exact: true }).click(),
@@ -466,7 +431,6 @@ layer(HostedLive, { excludeTestServices: true })("App accounts", (it) => {
           ),
         );
 
-        // A failed refresh keeps the accounts on the page.
         const refresh = yield* holdQuery(
           [actors.organization.slug, actors.organization.id].map(
             (id) => `/api/organizations/${id}/apps/${app.id}`,
@@ -552,8 +516,6 @@ layer(HostedLive, { excludeTestServices: true })("App accounts", (it) => {
           shows,
           openAccounts,
         } = yield* accountChoices;
-        // The links the listing scenario ends with: the third mailbox linked, the second unlinked
-        // and kept.
         yield* linkAccount(actors.owner, appPath, "mailboxes", third);
         yield* unlinkAccount(actors.owner, appPath, "mailboxes", second);
         expect(yield* links).toEqual(
@@ -563,7 +525,6 @@ layer(HostedLive, { excludeTestServices: true })("App accounts", (it) => {
         const unused = yield* browser.use("Find the unused account prompt", (page) =>
           Promise.resolve(page.getByRole("dialog", { name: "Delete unused account?" })),
         );
-        // Connecting a new account from the app saves it and links it in one step.
         yield* Effect.gen(function* () {
           yield* browser.use("Connect a new mailbox from the list", () =>
             mailboxes.getByRole("button", { name: "Connect new account", exact: true }).click(),
@@ -664,8 +625,6 @@ layer(HostedLive, { excludeTestServices: true })("App accounts", (it) => {
           url,
         } = yield* accountChoices;
         yield* browser.login(actors.owner);
-        // The plain calendar requirement keeps one linked account: connecting Home after Work
-        // replaced Work, which stays saved. Selecting Work's radio links it back in Home's place.
         const workCalendar = yield* connect("calendar", "Work calendar");
         const homeCalendar = yield* connect("calendar", "Home calendar");
         expect(yield* links).toEqual(
@@ -763,8 +722,6 @@ layer(HostedLive, { excludeTestServices: true })("App accounts", (it) => {
         ).toEqual([0, 0, 0, 0]);
         yield* browser.checkpoint("Accounts without permission to use the app");
 
-        // Deleting a linked account drops its links and keeps the other links; deleting the last
-        // account of a requirement leaves it none.
         expect(
           (yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${second}`)).status,
         ).toBe(200);
@@ -855,7 +812,6 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
               .count(),
           ),
         ).toBe(0);
-        // Without a registered client, administrators enter one and choose who can use it.
         yield* browser.use("Administrators choose who can use the client", (page) =>
           page
             .getByRole("dialog")
@@ -880,7 +836,6 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
             dialog.getByRole("combobox").count(),
             dialog.getByRole("button", { name: "Copy redirect URL" }).count(),
           ]).then((counts) => {
-            // The one selector asks who can use the client.
             expect(counts).toEqual([0, 1, 1]);
           });
         });

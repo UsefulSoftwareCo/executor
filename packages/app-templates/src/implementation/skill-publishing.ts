@@ -1,4 +1,3 @@
-/** Publish an explicitly supplied set of public skill documents using the standard directory index. */
 import { prepareAppSkills } from "@executor-js/sdk/skill-source";
 import { SourceFiles, type SourceTextFile as SourceFile } from "@executor-js/sdk/core";
 import { Effect, Layer } from "effect";
@@ -6,11 +5,6 @@ import { Digest } from "effect/crypto";
 import { Hex } from "effect/encoding";
 import { HttpRouter, HttpServerError, HttpServerRequest, HttpServerResponse } from "effect/http";
 
-/**
- * Public assets are selected by the host, never looked up from installed or customer apps.
- * The files load and the index is built on the first request, not while the server starts;
- * the published documents are immutable, so later requests reuse the same responses.
- */
 export const publishedSkillRoutes = (files: Effect.Effect<readonly SourceFile[]>) =>
   Layer.unwrap(
     Effect.gen(function* () {
@@ -60,7 +54,6 @@ export const publishedSkillRoutes = (files: Effect.Effect<readonly SourceFile[]>
           if (published === undefined) published = yield* publish;
           const response = published.get((yield* HttpRouter.params)["*"] ?? "");
           if (response !== undefined) return response;
-          // The same response as a path the router does not know.
           return yield* new HttpServerError.HttpServerError({
             reason: new HttpServerError.RouteNotFound({
               request: yield* HttpServerRequest.HttpServerRequest,

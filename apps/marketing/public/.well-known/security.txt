@@ -1,0 +1,8 @@
+Contact: mailto:security@executor.sh
+Contact: https://github.com/UsefulSoftwareCo/executor/security/advisories/new
+Expires: 2027-11-17T00:00:00Z
+Preferred-Languages: en
+Canonical: https://executor.sh/.well-known/security.txt
+Canonical: https://app.executor.sh/.well-known/security.txt
+Canonical: https://mcp.executor.sh/.well-known/security.txt
+Policy: https://github.com/UsefulSoftwareCo/executor/blob/v2/SECURITY.md

@@ -1,14 +1,3 @@
-/**
- * Cancel a pull request's CI runs for heads it no longer has: `node e2e/ci-supersede.ts`.
- *
- * `ci.yml` groups a pull request's runs by head commit and cancels none of them, because a stack
- * push can start two `pull_request` runs on one head within a second. A cancelled run's required
- * checks fail, GitHub decides a check reported twice on a commit by the newer check suite, and the
- * cancelled run's can be the newer one, which blocked the merge. Runs on one head now queue, and
- * the second reports the first's result (`e2e/ci-repeat.ts`). The cancelling a new push did is done here instead: a run on the
- * pull request's current head cancels its runs on any other head. A run whose head the pull
- * request has since left cancels nothing, so a late run cannot cancel the current head's.
- */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Config, Console, Effect, Schema, Stream } from "effect";
@@ -31,7 +20,6 @@ const Run = Schema.Struct({
 });
 const Runs = Schema.fromJsonString(Schema.Struct({ workflow_runs: Schema.Array(Run) }));
 
-/** Runs `gh` with the job's token and returns what it prints. */
 const gh = (args: ReadonlyArray<string>) =>
   Effect.gen(function* () {
     const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -102,7 +90,6 @@ NodeRuntime.runMain(
     for (const run of older) {
       yield* gh(["api", "-X", "POST", `repos/${repository}/actions/runs/${run.id}/cancel`]).pipe(
         Effect.andThen(Console.log(`Cancelled ${run.html_url}, which tests ${run.head_sha}.`)),
-        // A run that finished since the read can no longer be cancelled.
         Effect.catchTag("SupersedeFailed", (error) =>
           error.message.includes("HTTP 409")
             ? Console.log(`${run.html_url} finished before it could be cancelled.`)

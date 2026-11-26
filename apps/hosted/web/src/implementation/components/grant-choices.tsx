@@ -28,13 +28,11 @@ import {
 } from "../../contracts/mcp-connections.ts";
 import type { OrganizationSummary } from "../../contracts/organization.ts";
 
-/** A connection being created in another tab: the list it started from, in its organization. */
 interface PendingConnection {
   readonly organization: OrganizationId;
   readonly known: ReadonlySet<string>;
 }
 
-/** What approving sends: the organization header, when the page knows it, and the settings. */
 export interface GrantDecision {
   readonly organization: string | undefined;
   readonly settings: GrantSettings | undefined;
@@ -42,13 +40,6 @@ export interface GrantDecision {
 
 const listFailure = "Could not load.";
 
-/**
- * The organization, access and approval rows of a hosted sign-in, and the decision they make. The
- * request's resource preselects the access and approvals; the person may change both, and the
- * page sends exactly what it shows. API sign-in shows its access as a plain value. One of Executor
- * v1's MCP URLs (`legacy`) names its organization, unless it names only a toolkit, and a toolkit
- * URL its access: the server binds both, so the page shows them and sends neither.
- */
 export function useGrantChoices({
   target,
   legacy,
@@ -69,13 +60,11 @@ export function useGrantChoices({
     target.kind === "mcp" ? preselectedApprovalMode(target.mode) : undefined,
   );
   const [pending, setPending] = useState<PendingConnection>();
-  // A named connection fixes the organization; with several, the page looks for it first.
   const lookup = named !== undefined && organizations.length > 1 && chosen === undefined;
   const organization = lookup ? undefined : (chosen ?? organizations[0]?.id);
   const chooseOrganization = (next: OrganizationId) => {
     setChosen(next);
     setPending(undefined);
-    // A connection belongs to one organization, so it is never in the next one's list.
     if (next !== organization) setAccess({ kind: "all" });
   };
   const choose = (next: GrantAccessChoice) => {
@@ -118,7 +107,7 @@ export function useGrantChoices({
     </McpConsentRow>
   );
   const rows =
-    target.kind === "api" ? (
+    target.kind !== "mcp" ? (
       <>
         {organizationRow}
         <McpConsentTargetRows target={target} />
@@ -131,7 +120,6 @@ export function useGrantChoices({
         ) : fixedOrganization ? (
           <McpConsentRow label="Access">All apps</McpConsentRow>
         ) : organization === undefined ? (
-          // Until its organization is found, the named connection is the access.
           <McpConsentRow label="Access">One of your connections</McpConsentRow>
         ) : (
           <ConnectionChoice
@@ -153,7 +141,7 @@ export function useGrantChoices({
     decision: {
       organization: fixedOrganization ? undefined : organization,
       settings:
-        target.kind === "api" || mode === undefined
+        target.kind !== "mcp" || mode === undefined
           ? undefined
           : legacy?.toolkit !== undefined
             ? { mode }
@@ -161,12 +149,10 @@ export function useGrantChoices({
               ? { access: { kind: "all" }, mode }
               : { access, mode },
     },
-    // Without an organization the server takes the named connection's own, or the URL's.
     ready: fixedOrganization || organization !== undefined || named !== undefined,
   };
 }
 
-/** Finds which organization holds the connection the request names. */
 function ConnectionOwner({
   request,
   onFound,
@@ -193,11 +179,6 @@ function ConnectionOwner({
   );
 }
 
-/**
- * The organization's connections as the Access menu. The menu shows the choice at once and reads
- * the list inside it. A connection created in another tab since "New connection" was chosen
- * becomes the choice when the list shows it.
- */
 function ConnectionChoice({
   organization,
   value,
@@ -224,7 +205,6 @@ function ConnectionChoice({
   useEffect(() => {
     if (created !== undefined) onChange({ kind: "connection", id: created.id });
   }, [created, onChange]);
-  // A retry in flight reads as loading again.
   const list: ConsentConnectionList =
     connections !== undefined
       ? { kind: "loaded", connections }

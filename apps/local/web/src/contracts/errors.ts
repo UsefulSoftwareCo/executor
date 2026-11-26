@@ -17,7 +17,6 @@ type Groups =
   | (typeof LocalWebhookSetupApi.groups)[keyof typeof LocalWebhookSetupApi.groups]
   | (typeof DashboardApi.groups)[keyof typeof DashboardApi.groups]
   | (typeof AccountConnectApi.groups)[keyof typeof AccountConnectApi.groups];
-/** Derived from the public HTTP contracts; adding a failure requires a presentation below. */
 export type DashboardError =
   | HttpApiEndpoint.Errors<HttpApiGroup.Endpoints<Groups>>
   | HttpClientError.HttpClientError
@@ -26,14 +25,12 @@ export type DashboardError =
   | Cause.NoSuchElementError
   | Sse.Retry
   | Sse.SseError;
-/** Safe display fields only. A reconnect action keeps its branded account identity. */
 export interface FailureMessage {
   readonly title: string;
   readonly description: string;
   readonly account?: AccountId;
 }
 const message = (title: string, description: string): FailureMessage => ({ title, description });
-/** A page from a previous build fails against the upgraded server; reloading is the fix. */
 const outdated = () => message("Executor was updated", "Reload this page to use the new version.");
 const unavailable = () =>
   pageOutdated()
@@ -99,7 +96,6 @@ const errorMessage = Match.type<DashboardError>().pipe(
       message(error.title, `${error.description} ${error.recovery.action}`),
     OAuthCompletionFailed: (error) =>
       message(error.title, `${error.description} ${error.recovery.action}`),
-    // Local has one subject, who manages every app, so an app's own account is theirs to reconnect.
     OAuthReconnectRequired: (error) => ({
       title:
         error.appRequirement === undefined
@@ -278,7 +274,6 @@ const errorMessage = Match.type<DashboardError>().pipe(
         "The selected account could not load",
         "Check the local server's credential configuration.",
       ),
-    // The wire form carries an agent's next step; people get the dashboards' wording of it.
     CatalogUnavailable: () => {
       const { title, description, recovery } = new CatalogFeedUnavailable();
       return message(title, `${description} ${recovery.action}`);
@@ -343,10 +338,6 @@ const errorMessage = Match.type<DashboardError>().pipe(
   }),
 );
 const newConnectionLink = () => "Ask your agent for a new connection link.";
-/**
- * A connection link page cannot start account setup itself, so a request it can no longer finish
- * needs a new link from the agent instead of the error's dashboard recovery.
- */
 export const connectionLinkRecovery = Match.type<DashboardError>().pipe(
   Match.tags({
     AccountConnectionNotFound: newConnectionLink,
@@ -356,11 +347,6 @@ export const connectionLinkRecovery = Match.type<DashboardError>().pipe(
   }),
   Match.orElse(() => undefined),
 );
-/**
- * Unexpected defects receive safe copy without printing arbitrary cause values. A failed call that
- * may have written shows the presentation every surface shows for it, with the write warning as its
- * action, instead of the fixed copy above, which may advise another call.
- */
 export const failureMessage = (cause: Cause.Cause<DashboardError>): FailureMessage =>
   Option.match(Cause.findErrorOption(cause), {
     onSome: (error) => {

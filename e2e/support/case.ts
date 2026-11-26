@@ -1,4 +1,3 @@
-/** The only case composition helper: scope injected evidence/API/browser services around a test. */
 import { Context, Effect, Layer, Scope } from "effect";
 import type { TestContext } from "vitest";
 import { Actors } from "./actors.ts";
@@ -11,13 +10,14 @@ import { RecordingFocus } from "./recording-focus.ts";
 import { Terminal } from "./terminal.ts";
 import { processCoverageLayer } from "./process-coverage.ts";
 import { holdSecret } from "./failure-text.ts";
+import { ScenarioDeadline } from "./scenario-deadline.ts";
 
-/** Build per-case layers using the shared runtime from Effect Vitest's layer helper. */
 export const withCase = <A, E, R>(context: TestContext, program: Effect.Effect<A, E, R>) =>
   Effect.gen(function* () {
+    const timeout = context.task.timeout;
+    const deadline = timeout > 0 ? Date.now() + timeout : undefined;
     const lifetime = scenarioLifetime(context);
     const target = lifetime.target;
-    // The case's API key is masked in every failure text, like each secret the harness reveals.
     holdSecret(target.apiKey);
     const scope = yield* Scope.fork(lifetime.scope);
     const runtime = Layer.mergeAll(SessionClients.layer, processCoverageLayer).pipe(
@@ -37,28 +37,26 @@ export const withCase = <A, E, R>(context: TestContext, program: Effect.Effect<A
         ),
         scope,
       );
-      // The test's own finalizers close first. A failure among them fails the case after its
-      // body passed, so evidence records it before it writes the outcome.
       const tests = yield* Scope.fork(scope);
       yield* Scope.addFinalizerExit(scope, (exit) =>
         Scope.close(tests, exit).pipe(
           Effect.onError((cause) => Context.get(services, Evidence).failed(cause)),
         ),
       );
-      return yield* program.pipe(Effect.provideContext(services), Scope.provide(tests));
+      return yield* program.pipe(
+        Effect.provideContext(services),
+        Effect.provideService(ScenarioDeadline, deadline),
+        Scope.provide(tests),
+      );
     }).pipe(Effect.onExit((exit) => Effect.sync(() => lifetime.completed(exit))));
   });
 
-/** Effect Vitest shares platform and browser process layers; cases get fresh contexts and evidence. */
 export const TestLive = BrowserDriver.captureLayer.pipe(Layer.provideMerge(RuntimeLive));
 
-/** Share platform and browser processes; actor fixtures are acquired per case. */
 export const HostedLive = TestLive;
 
-/** The same shared platform driven through Safari's engine. */
 export const WebKitLive = BrowserDriver.webkitCaptureLayer.pipe(Layer.provideMerge(RuntimeLive));
 
-/** Hosted cases use the fixtures acquired by setup; the native cleanup hook owns their release. */
 export const withHostedCase = <A, E, R>(context: TestContext, program: Effect.Effect<A, E, R>) =>
   withCase(
     context,

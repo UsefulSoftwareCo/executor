@@ -144,7 +144,6 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
             .getByRole("button", { name: "Connect Reporting", exact: true })
             .click(),
         );
-        // Immediate completion closes the connection dialog and asks for a name over the app.
         const prompt = yield* browser.use("Immediate completion asks to name the account", (page) =>
           page
             .getByRole("dialog", { name: "Connect Reporting", exact: true })
@@ -181,7 +180,6 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
           actors = yield* Actors;
         const issuer = yield* clientCredentialsIssuer;
         const prefix = `/api/organizations/${actors.organization.id}`;
-        // The inventory baseline must include the asynchronously provisioned personal account.
         yield* managementApp(actors.owner);
         for (const authMethod of [
           "client_secret_basic",
@@ -239,8 +237,6 @@ export default defineApp({user: { accounts:{service} }},async({user: { accounts 
           ).toBe(422);
           const saved = yield* api.request(actors.owner, "POST", path, payload);
           expect(saved.status).toBe(200);
-          // The exchange authenticates as the account's own client: entered, never the operator's,
-          // and its span names the token endpoint's host alone.
           const traceId = (yield* (yield* Evidence).requests).at(-1)?.traceId;
           if (traceId === undefined) return yield* Effect.die("Missing request trace");
           const exchanged = (yield* (yield* Telemetry).settled(traceId, (spans) =>
@@ -259,7 +255,6 @@ export default defineApp({user: { accounts:{service} }},async({user: { accounts 
             Schema.Struct({ canManage: Schema.Boolean }),
             yield* api.request(actors.owner, "GET", `${prefix}/accounts/${completed.account.id}`),
           );
-          // A machine account is its connector's own, like any other.
           expect(detail.canManage).toBe(true);
           expect(
             (yield* api.request(actors.member, "GET", `${prefix}/accounts/${completed.account.id}`))
@@ -285,14 +280,9 @@ export default defineApp({user: { accounts:{service} }},async({user: { accounts 
           );
           expect(repeated.account.id).toBe(completed.account.id);
           expect((yield* issuer.metrics).generation).toBe(issued);
-          // Connecting from the app linked the account to it, once.
           expect(yield* linkedAccountIds(actors.owner, `${prefix}/apps/${app.id}`)).toEqual([
             completed.account.id,
           ]);
-          // Linking sets the account up as the app's webhook source in the background, which
-          // resolves the account. Once the renewal phase issues tokens inside the host's refresh
-          // window, every resolve renews, so it must be done before then or its renewals are
-          // counted here.
           yield* settleWebhookSources(actors.owner, `${prefix}/apps/${app.id}`, (sources) =>
             sources.some(
               (source) => source.account === completed.account.id && source.status !== "pending",
@@ -332,8 +322,6 @@ export default defineApp({user: { accounts:{service} }},async({user: { accounts 
           expect(value.authenticated).toBe(true);
           expect(value.generation).toBeGreaterThan(beforeRenewal);
           expect((yield* issuer.metrics).observed?.scope).toBe("reports:read");
-          // A refused client keeps the grant. The renewed token is still valid, so the call's
-          // renewal ahead of expiry fails and the call uses that token.
           yield* issuer.configure({ rejected: true });
           const requests = (yield* issuer.metrics).requests;
           const kept = yield* api.request(
@@ -371,9 +359,6 @@ export default defineApp({user: { accounts:{service} }},async({user: { accounts 
             Inventory,
             yield* api.request(actors.owner, "GET", `${prefix}/inventory`),
           );
-          // The app a connection was started for changes the requirement's provider while the
-          // token exchange is in flight: the exchange fails and neither an account nor a link is
-          // saved.
           const racedApp = yield* deploy;
           const pause = yield* issuer.pauseNextToken;
           const raced = yield* body(
@@ -423,7 +408,6 @@ export default defineApp({user: { accounts:{service} }},async({user: { accounts 
           expect(after.accounts.map((account) => account.id).sort()).toEqual(
             before.accounts.map((account) => account.id).sort(),
           );
-          // Unnamed machine accounts take the owner's next free default name for the provider.
           const unnamed = [];
           for (const expected of ["Default", "Default 2"]) {
             const next = yield* body(
@@ -487,7 +471,6 @@ export default defineApp({user: { accounts:{service} }},async({user: { accounts 
         const api = yield* Api,
           actors = yield* Actors;
         const issuer = yield* clientCredentialsIssuer;
-        // A service that reads only JSON token requests and comma-separated scopes.
         yield* issuer.configure({ method: "client_secret_basic", format: "json", expiresIn: 20 });
         const prefix = `/api/organizations/${actors.organization.id}`;
         const connect = (options: string) =>
@@ -529,7 +512,6 @@ export default defineApp({user: { accounts:{service} }},async({user: { accounts 
             return { app, started };
           });
 
-        // The default form request is refused by this service.
         const requests = (yield* issuer.metrics).requests;
         const form = yield* connect("");
         expect(form.started.status, JSON.stringify(form.started.body)).toBe(422);
@@ -562,8 +544,6 @@ export default defineApp({user: { accounts:{service} }},async({user: { accounts 
         };
         expect((yield* issuer.metrics).observed).toEqual(sent);
 
-        // The token expires inside the host's refresh window, so the call renews with the same
-        // options the account connected with.
         const before = (yield* issuer.metrics).generation;
         const read = yield* api.request(
           actors.owner,

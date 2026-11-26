@@ -1,4 +1,5 @@
-/** CLI adapter for the shared suite lifecycle. */
+import "./support/connect-timeout.ts";
+import "./support/stage-connections.ts";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, Layer, Option, Schema } from "effect";
@@ -8,21 +9,13 @@ import { hostSlot } from "./host-slot.ts";
 import { runSuite } from "./sdk/suite.ts";
 import { exactly, split } from "./scenario-parts.ts";
 import { scenariosForSuite } from "./test-plan.ts";
+import { cloudNotesSources } from "./support/cloud-release-notes.ts";
+import { namesNoScenario, unnamedRefusal } from "./snapshot-updates.ts";
 
-/**
- * Self-host and local workers each run their own product server, PGlite database and browser, which
- * together keep about two cores busy. Sixteen workers on 12-16 vCPUs starved servers for seconds at
- * a time.
- */
 const defaultWorkers = Math.max(1, Math.min(16, Math.floor(navigator.hardwareConcurrency / 2)));
 
-/** `--part i/n`: part i (from 1) of the n into which `split` divides the scenarios selected. */
 const Part = Schema.String.check(Schema.isPattern(/^[1-9]\d*\/[1-9]\d*$/u));
 
-/**
- * The `--test-name` pattern of one part of a local or self-host run: the scheduled scenarios whose
- * title `name` matches, split as CI splits a full run, so separate runners share the suite.
- */
 const partPattern = (target: "local" | "self-host", name: string, part: string) =>
   Effect.gen(function* () {
     const [index, count] = (yield* Schema.decodeUnknownEffect(Part)(part)).split("/").map(Number);
@@ -33,7 +26,7 @@ const partPattern = (target: "local" | "self-host", name: string, part: string) 
           scenario.targets[target].status === "scheduled" && selected.test(scenario.title),
       )
       .map((scenario) => scenario.title);
-    const parts = split(titles, count!);
+    const parts = split(titles, count!, target);
     if (index! > count! || parts.length !== count)
       return yield* Effect.die(
         new Error(`--part ${part}: the selected scenarios split into ${parts.length} parts.`),
@@ -48,22 +41,27 @@ const command = Command.make(
       Flag.withDefault("self-host"),
     ),
     name: Flag.String("test-name").pipe(Flag.withDefault("")),
-    // Without it, managed Cloud caps `defaultWorkers`; see `runSuite`.
     workers: Flag.Int("workers").pipe(Flag.optional),
-    // Start managed Cloud with the per-address auth limit on and run only the scenarios proving it.
     authRateLimit: Flag.Boolean("auth-rate-limit").pipe(Flag.withDefault(false)),
-    // Start managed Cloud with its rollback switch on, sign-in on the deployment origin, and run
-    // only the scenarios proving it.
     rollback: Flag.Boolean("rollback").pipe(Flag.withDefault(false)),
-    // Start a second managed Cloud as the OAuth proxy's production, run against a test stage that
-    // signs in through it, and run only the scenarios that prove the proxy.
     oauthProxyPreview: Flag.Boolean("oauth-proxy-preview").pipe(Flag.withDefault(false)),
-    // Run one part of a local or self-host run; see `partPattern`.
+    removalRevocationBudget: Flag.Boolean("removal-revocation-budget").pipe(
+      Flag.withDefault(false),
+    ),
+    releaseNotes: Flag.Literals("release-notes", cloudNotesSources).pipe(Flag.optional),
     part: Flag.String("part").pipe(Flag.optional),
+    updateSnapshots: Flag.Boolean("update-snapshots").pipe(Flag.withDefault(false)),
   },
-  // Outside CI, one run per machine: see host-slot.ts.
   ({ part, ...flags }) =>
     Effect.gen(function* () {
+      if (flags.updateSnapshots && namesNoScenario(flags.name))
+        return yield* Effect.die(new Error(unnamedRefusal));
+      if (flags.updateSnapshots && Option.isSome(part))
+        return yield* Effect.die(
+          new Error(
+            "--update-snapshots records the scenarios --test-name names, not a part of a run: leave out --part.",
+          ),
+        );
       const name = Option.isNone(part)
         ? flags.name
         : flags.target === "local" || flags.target === "self-host"
@@ -74,6 +72,7 @@ const command = Command.make(
         ...flags,
         name,
         workers: Option.getOrUndefined(flags.workers),
+        releaseNotes: Option.getOrUndefined(flags.releaseNotes),
         defaultWorkers: available,
       });
     }).pipe(Effect.scoped),

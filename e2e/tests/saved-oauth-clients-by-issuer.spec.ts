@@ -1,12 +1,3 @@
-/**
- * Versions before 4.0.10 saved OAuth clients under a digest of their owner, provider, method,
- * callback, issuer and scopes, so one client entered for two apps was saved twice.
- * `9_saved_oauth_clients_by_issuer` moves each saved record to its owner's client for the
- * authorization server its owner's accounts signed in at: the two records of one organization's
- * client become one stored client. A record whose credentials accounts of several owners hold goes
- * to the owner whose settings rebuild its key, and one no owner's settings rebuild stays where it
- * is. The product starts with data steps held in report mode, then applies them.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
@@ -26,7 +17,6 @@ import { scenarios } from "../test-plan.ts";
 const step = "9_saved_oauth_clients_by_issuer";
 const scopes = ["read"];
 
-/** An MCP app whose provider declares its scopes, as most saved clients' providers did. */
 const appFiles = (name: string, url: string) => [
   {
     path: "index.ts",
@@ -115,13 +105,11 @@ layer(TestLive, { excludeTestServices: true })("Saved OAuth clients by issuer", 
         const prefix = `/api/organizations/${actors.organization.id}`;
         const log = `${target.directory}/server.log`;
         yield* issuer.configure({ registration: false, tokenError: null });
-        // One client someone entered for two services: the same ID and secret.
         const entered = {
           clientId: `entered-${randomUUID().slice(0, 8)}`,
           clientSecret: "synthetic-entered-secret",
         };
 
-        /** Deploy an app of its own provider and sign in to it with the entered details. */
         const connect = (name: string) =>
           Effect.gen(function* () {
             const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
@@ -169,7 +157,6 @@ layer(TestLive, { excludeTestServices: true })("Saved OAuth clients by issuer", 
 
         const first = yield* connect(`Saved by issuer A ${randomUUID().slice(0, 8)}`);
         const second = yield* connect(`Saved by issuer B ${randomUUID().slice(0, 8)}`);
-        // Entered details are kept only by each account's grant on hosted.
         expect(
           (yield* body(
             Directory,
@@ -189,7 +176,6 @@ layer(TestLive, { excludeTestServices: true })("Saved OAuth clients by issuer", 
         const secondAccount = accounts.find((row) => row.provider === second.provider);
         if (firstAccount === undefined || secondAccount === undefined)
           return yield* Effect.die("Each service should have an account");
-        /** The key an older version gave the client a service's sign-in saved. */
         const keyOf = (account: typeof Account.Type, redirectUri: string) =>
           `client_${createHash("sha256")
             .update(
@@ -206,14 +192,12 @@ layer(TestLive, { excludeTestServices: true })("Saved OAuth clients by issuer", 
             .digest("hex")}`;
         const keyedFirst = keyOf(firstAccount, first.redirect.redirectUri);
         const keyedSecond = keyOf(secondAccount, second.redirect.redirectUri);
-        // A key no holder's settings rebuild, like a public client a service returns to everyone.
         const unkeyed = `client_${randomBytes(32).toString("hex")}`;
         const registration = {
           client_id: entered.clientId,
           client_secret: entered.clientSecret,
           token_endpoint_auth_method: "client_secret_basic",
         };
-        // Another owner's account holds the same details, so no record has one owner.
         const otherOwner = `organization:synthetic-other-${randomUUID().slice(0, 8)}`;
         const otherAccount = `acc_synthetic_other_${randomUUID().slice(0, 8)}`;
         const seen = (yield* dataStepSummaries(log, step)).length;
@@ -279,10 +263,8 @@ layer(TestLive, { excludeTestServices: true })("Saved OAuth clients by issuer", 
           status: "complete",
           outcomes: { moved: 1, duplicate: 1, ambiguous_owner: 1 },
         });
-        // Both records are the organization's: its settings rebuild their keys.
         expect(summary.owners[firstAccount.owner]).toEqual({ moved: 1, duplicate: 1 });
 
-        // The two records are one stored client for the server, usable by everyone.
         const moved = (yield* body(
           Directory,
           yield* api.request(actors.admin, "GET", `${prefix}/oauth-clients`),

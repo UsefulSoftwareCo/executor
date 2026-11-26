@@ -1,11 +1,3 @@
-/**
- * The scheduled cleanup reports PlanetScale branches of deployed E2E runs that no stage lease knows
- * about. These cases run its detector as a process (`apps/hosted/cloud/scripts/test-stage-orphans.ts`,
- * the same `findOrphanBranches` cleanup calls) against a local server standing in for PlanetScale's
- * API: two pages of the test database's branches, shaped as the real list is, holding
- * production-size and retained branches beside E2E ones. Any request that is not a GET of that one
- * database's branch list is answered 500, and every request is recorded.
- */
 import { expect, layer } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, Stream } from "effect";
@@ -18,21 +10,16 @@ const database = "executor-test";
 const now = Date.parse("2026-11-13T12:00:00.000Z");
 const hoursAgo = (hours: number) => new Date(now - hours * 3_600_000).toISOString();
 
-/** Every kind of branch the test database holds, and one per E2E case. */
 const branches = [
-  // Production-size branches of the test database: never candidates, whatever their age.
   { name: "main", created_at: hoursAgo(1300) },
   { name: "idx-lock-38132096340-1", created_at: hoursAgo(800) },
-  // Retained and pull-request previews have their own names and lifetimes.
   { name: "test-apps-v2-w5", created_at: hoursAgo(700) },
   { name: "test-pr-4120", created_at: hoursAgo(30) },
-  // Deployed E2E runs.
   { name: "test-e2e-orphan1", created_at: hoursAgo(5) },
   { name: "test-e2e-leased1", created_at: hoursAgo(5) },
   { name: "test-e2e-young1", created_at: hoursAgo(0.5) },
   { name: "test-e2e-orphan2", created_at: hoursAgo(26) },
   { name: "test-e2e-noage1", created_at: "not a date" },
-  // Shaped like an E2E branch but not one: never candidates.
   { name: "test-e2e-orphan1-copy", created_at: hoursAgo(9) },
   { name: "xtest-e2e-orphan3", created_at: hoursAgo(9) },
 ];
@@ -82,7 +69,6 @@ const environment = {
   PLANETSCALE_API_TOKEN: "synthetic-token",
 };
 
-/** Run the detector with these leases and this environment; its output and exit code. */
 const detect = (leases: ReadonlyArray<string>, env: Record<string, string>, at = now) =>
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -129,9 +115,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Orphaned test branches
         });
 
         expect(run.code).toBe(0);
-        // A lease keeps its branch out at any age; a young branch with no lease yet, one whose age
-        // cannot be read, production-size and retained branches and names only shaped like E2E ones
-        // are never reported.
         expect(JSON.parse(run.stdout)).toEqual({
           orphans: ["test-e2e-orphan1", "test-e2e-orphan2"],
         });
@@ -150,7 +133,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Orphaned test branches
     Effect.gen(function* () {
       const seen: Seen[] = [];
       const { origin } = yield* planetscale(seen);
-      // orphan1 and leased1 are 5 hours old at `now`; 2 hours earlier they are 3 hours old.
       const run = yield* detect(
         ["e2e-leased1"],
         { ...environment, TEST_STAGE_PLANETSCALE_API: origin },

@@ -1,11 +1,8 @@
-/** Portable, serialized app database declarations and operations. No product identity or database secrets cross this boundary. */
 import { Schema, type Effect } from "effect";
 
-/** Names have Lakebed's identifier shape and are always bound SQL values, never raw SQL. */
 export const DataName = Schema.String.check(
   Schema.makeFilter((value) => /^[A-Za-z][A-Za-z0-9_]*$/.test(value) && value.length <= 128),
 );
-/** Stored fields and index terms use finite scalar values; absent optional fields are represented by null in transport. */
 export const Scalar = Schema.Union([Schema.String, Schema.Finite, Schema.Boolean]);
 export type Scalar = typeof Scalar.Type;
 export const Field = Schema.Struct({
@@ -24,7 +21,6 @@ export type Table = typeof Table.Type;
 export const DatabaseSchema = Schema.Record(DataName, Table);
 export type DatabaseSchema = typeof DatabaseSchema.Type;
 
-/** The engine owns stable row identity and timestamps. */
 export const Row = Schema.Record(Schema.String, Scalar);
 export type Row = typeof Row.Type;
 export const RowMetadata = Schema.Struct({
@@ -87,7 +83,6 @@ export const OperationResult = Schema.Union([
 ]);
 export type OperationResult = typeof OperationResult.Type;
 
-/** Safe expected failures, without supplied documents, SQL text, cursor payloads or credentials. */
 export class AppDatabaseError extends Schema.TaggedError<AppDatabaseError>()("AppDatabaseError", {
   reason: Schema.Literals([
     "schema",
@@ -105,7 +100,6 @@ export class AppDatabaseError extends Schema.TaggedError<AppDatabaseError>()("Ap
   ]),
 }) {}
 
-/** Bounded work per authored operation. collect/count do not silently truncate. */
 export const DatabaseLimits = Schema.Struct({
   rowsRead: Schema.Int.check(Schema.isGreaterThan(0)),
   rowsReturned: Schema.Int.check(Schema.isGreaterThan(0)),
@@ -117,7 +111,6 @@ export const DatabaseLimits = Schema.Struct({
   indexBytes: Schema.Int.check(Schema.isGreaterThan(0)),
 });
 export type DatabaseLimits = typeof DatabaseLimits.Type;
-/** Current per-invocation budgets, shared by every database adapter. */
 export const defaultDatabaseLimits: DatabaseLimits = {
   rowsRead: 5000,
   rowsReturned: 1000,
@@ -129,10 +122,6 @@ export const defaultDatabaseLimits: DatabaseLimits = {
   indexBytes: 2048,
 };
 
-/**
- * The budget a query or mutation exhausted. `pageSize` bounds one take(n) or paginate call;
- * `valueBytes` bounds one stored row; the rest accumulate across the whole invocation.
- */
 export const DatabaseLimit = Schema.Literals([
   "scanCalls",
   "directGets",
@@ -165,7 +154,6 @@ const limitMessages: Record<DatabaseLimit, (maximum: number, requested: number) 
     `A row encodes to ${count(requested)} bytes; each row may use at most ${count(maximum)}. Store large content outside the row or split it across rows.`,
 };
 
-/** A query or mutation exceeded one of its database budgets. Nothing it wrote is committed. */
 export class DatabaseLimitExceeded extends Schema.TaggedError<DatabaseLimitExceeded>()(
   "DatabaseLimitExceeded",
   {
@@ -179,9 +167,7 @@ export class DatabaseLimitExceeded extends Schema.TaggedError<DatabaseLimitExcee
   }
 }
 
-/** Host-owned row metadata that authored tables cannot declare. */
 export const reservedFieldNames = ["id", "createdAt", "updatedAt"] as const;
-/** A table declared a field the host adds to every row. */
 export class DatabaseFieldReserved extends Schema.TaggedError<DatabaseFieldReserved>()(
   "DatabaseFieldReserved",
   {
@@ -194,26 +180,21 @@ export class DatabaseFieldReserved extends Schema.TaggedError<DatabaseFieldReser
   }
 }
 
-/** Failures a database session reports to authored code and its host. */
 export type DatabaseError = AppDatabaseError | DatabaseLimitExceeded;
 
-/** Host resource bounds outside an individual database transaction. Durations are milliseconds. */
 export const DatabaseRuntimeLimits = Schema.Struct({
   maxCursorChars: Schema.Int.check(Schema.isGreaterThan(0)),
   connectionCacheCapacity: Schema.Int.check(Schema.isGreaterThan(0)),
   connectionCacheTtlMs: Schema.Int.check(Schema.isGreaterThan(0)),
 });
 export type DatabaseRuntimeLimits = typeof DatabaseRuntimeLimits.Type;
-/** Cache eviction closes idle connections; it does not limit installed apps or expire their data. */
 export const defaultDatabaseRuntimeLimits = DatabaseRuntimeLimits.make({
   maxCursorChars: 8192,
   connectionCacheCapacity: 64,
   connectionCacheTtlMs: 5 * 60 * 1000,
 });
 
-/** The host binds one database and read/write authority for the entire invocation. */
 export interface DatabaseSession {
-  /** Host-only idempotency receipt, committed atomically with the mutation and validated result. */
   readonly once: <E, R>(
     key: string,
     fingerprint: string,
@@ -224,7 +205,6 @@ export interface DatabaseSession {
   readonly changedTables: ReadonlySet<string>;
   readonly execute: (operation: DatabaseOperation) => Effect.Effect<OperationResult, DatabaseError>;
 }
-/** Native operation scope owns snapshot consistency, write rollback and commit notifications. */
 export interface AppDatabase {
   readonly schema: DatabaseSchema;
   readonly schemaHash: string;
@@ -236,7 +216,6 @@ export interface AppDatabase {
   ) => Effect.Effect<A, E | DatabaseError, R>;
 }
 
-/** Product-independent app partitions. A host supplies persistent storage; callers never choose filenames. */
 export interface AppDatabases {
   readonly read: <A, E>(
     app: string,

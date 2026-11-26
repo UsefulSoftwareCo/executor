@@ -1,4 +1,3 @@
-/** Sharing drafts and revision conflicts are checked through real hosted forms. */
 import { connectionsPath, linkedAccountIds } from "../support/app-accounts.ts";
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
@@ -138,8 +137,6 @@ layer(HostedLive, { excludeTestServices: true })("Resource sharing", (it) => {
             ),
           ).toBe(true);
         }
-        // Two accounts of the owner's: one connected on the app page, one through a connection
-        // handoff link. Both are the owner's own.
         for (const kind of ["personal", "handoff"] as const) {
           const label = `${kind} ${suffix}`;
           if (kind === "personal") {
@@ -173,8 +170,6 @@ layer(HostedLive, { excludeTestServices: true })("Resource sharing", (it) => {
           yield* browser.use("Wait for account setup to finish", (page) =>
             page.getByRole("dialog").waitFor({ state: "hidden" }),
           );
-          // Connecting from the app links the new account to the requirement: its many()
-          // checkbox is checked.
           yield* browser.use("Open the app's linked accounts", (page) =>
             page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=accounts`),
           );
@@ -195,7 +190,6 @@ layer(HostedLive, { excludeTestServices: true })("Resource sharing", (it) => {
           yield* browser.use("Both of the owner's accounts are listed", (page) =>
             page.getByRole("button", { name: `Manage ${kind} ${suffix}`, exact: true }).waitFor(),
           );
-        // Every account is personal, so the list marks none as personal or shared.
         expect(
           yield* browser.use("No account is marked personal or shared", (page) =>
             page
@@ -247,7 +241,6 @@ layer(HostedLive, { excludeTestServices: true })("Resource sharing", (it) => {
         yield* browser.use("The other account remains", (page) =>
           page.getByRole("button", { name: `Manage handoff ${suffix}`, exact: true }).waitFor(),
         );
-        // Another member sees neither of the owner's accounts.
         yield* browser.login(actors.member);
         yield* browser.use("Open the member's account list", (page) =>
           page.goto(`/org/${actors.organization.slug}/accounts`),

@@ -1,17 +1,8 @@
-/**
- * CI's `supersede` job runs `node e2e/ci-supersede.ts` to cancel a pull request's runs on heads it
- * has left. These cases run it as a process with the job's environment. A stub `gh` first on its
- * PATH answers its reads of the pull request and the runs, and logs each call.
- */
 import { expect, layer } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, FileSystem, Path, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
-/**
- * A `gh` that answers from files beside it: the pull request (`pull`), this run (`run`) and the
- * pull request's runs (`runs`). A cancel succeeds unless `cancel-<id>` holds an error to print.
- */
 const stubGh = `#!/bin/sh
 dir=$(dirname "$0")
 echo "$*" >> "$dir/calls"
@@ -122,7 +113,6 @@ layer(NodeServices.layer)("CI supersede", (it) => {
 
   it.effect("another run on the same head is left to report its own result", () =>
     Effect.gen(function* () {
-      // A stack push can start two runs on one head; cancelling either leaves failing checks.
       const result = yield* supersede({
         runs: [
           run({ id: self, sha: head }),
@@ -148,7 +138,6 @@ layer(NodeServices.layer)("CI supersede", (it) => {
 
   it.effect("a run whose head the pull request has left cancels nothing", () =>
     Effect.gen(function* () {
-      // The newer head's run may have started first; this late run must not cancel it.
       const result = yield* supersede({ current: older, runs: [run({ id: 90, sha: older })] });
       expect(result.exitCode, result.log).toBe(0);
       expect(result.cancelled).toEqual([]);

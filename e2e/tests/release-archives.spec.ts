@@ -1,11 +1,3 @@
-/**
- * The release workflow's `archives` job runs `scripts/releases/archive-digests.ts` before
- * `publish`, so that every archive a job tested is the archive the release publishes: the `checks`
- * job's and each part of the installed CLI suite's. These cases run the metadata job's
- * `scripts/releases/workflow.ts` for its matrices, record digests with the script as the jobs do,
- * lay them out as actions/download-artifact does, one directory per artifact, and run the
- * comparison as a process.
- */
 import { expect, layer } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { createHash } from "node:crypto";
@@ -25,12 +17,10 @@ const Target = Schema.Struct({
 type Target = typeof Target.Type;
 const Matrix = Schema.fromJsonString(Schema.Struct({ include: Schema.Array(Target) }));
 
-/** Run `node` with `args` and `env`, and return its exit code and combined output. */
 const node = (args: ReadonlyArray<string>, env: Record<string, string> = {}) =>
   Effect.gen(function* () {
     const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
     const child = yield* processes.spawn(ChildProcess.make("node", args, { env, extendEnv: true }));
-    // The runtime logs a failure to stdout, so the cases read both streams together.
     const [log, exitCode] = yield* Effect.all(
       [child.all.pipe(Stream.decodeText(), Stream.mkString), child.exitCode],
       { concurrency: "unbounded" },
@@ -38,7 +28,6 @@ const node = (args: ReadonlyArray<string>, env: Record<string, string> = {}) =>
     return { exitCode, log };
   }).pipe(Effect.scoped);
 
-/** The metadata job's release, checks and CLI matrices for a build run started by `event`. */
 const metadata = (event: "pull_request" | "workflow_dispatch") =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -77,17 +66,13 @@ const name = (target: Target) => `${target.platform}-${target.arch}`;
 const local = (target: Target) => `archive-digest-local-${name(target)}`;
 const checked = (target: Target) => `archive-digest-checks-${name(target)}`;
 const part = (job: Target) => `archive-digest-cli-${job.part!.split("/")[0]}-${name(job)}`;
-/** Linux and Windows recovery parts build the unpacked app; their digests must be local's. */
 const unpacked = (target: Target) => target.platform !== "darwin";
-/** A desktop app's digest, distinct from its archive's. */
 const appDigest = (archive: string) => createHash("sha256").update(`app ${archive}`).digest("hex");
 const localApp = (target: Target) => `app-digest-local-${name(target)}`;
 const recoveryApp = (job: Target) => `app-digest-recovery-${job.part!.split("/")[0]}-${name(job)}`;
 
-/** Artifact directories by name, each holding files by name. */
 type Layout = Record<string, Record<string, string>>;
 
-/** A run whose local, checks and cli jobs recorded `digest(target)` for each of their targets. */
 const layout = (
   matrices: {
     readonly targets: ReadonlyArray<Target>;
@@ -115,7 +100,6 @@ type Matrices = {
   readonly recovery: string;
 };
 
-/** Compare `artifacts` laid out in a fresh directory against the given matrices. */
 const compare = (artifacts: Layout, matrices: Matrices) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -134,7 +118,6 @@ const compare = (artifacts: Layout, matrices: Matrices) =>
     });
   }).pipe(Effect.scoped);
 
-/** Record each target's archive with the script, as the release jobs do, and read the digest. */
 const recorded = (targets: ReadonlyArray<Target>) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -414,19 +397,16 @@ layer(NodeServices.layer)("release archive digests", (it) => {
         const recorded = path.join(directory, "digests", "local.txt");
         const payload = sha("unsigned files");
 
-        // record-payload copies the digest packaging wrote beside the archive before signing.
         yield* fs.writeFileString(path.join(directory, "payload.sha256"), payload);
         const run = yield* node([script, "record-payload", archive, recorded]);
         expect(run.exitCode, run.log).toBe(0);
         expect(yield* fs.readFileString(recorded)).toBe(payload);
 
-        // A payload file that is not one SHA-256 is not recorded.
         yield* fs.writeFileString(path.join(directory, "payload.sha256"), `${payload}\n`);
         const malformed = yield* node([script, "record-payload", archive, recorded]);
         expect(malformed.exitCode).toBe(1);
         expect(malformed.log).toContain("payload.sha256 is not exactly one SHA-256 digest.");
 
-        // The checks job's payload must be local's: one signed from other files fails.
         const matrices = yield* metadata("workflow_dispatch");
         const mac = matrices.targets.find((target) => target.platform === "darwin")!;
         const mismatch = yield* compare(
@@ -473,7 +453,6 @@ layer(NodeServices.layer)("release archive digests", (it) => {
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
-        /** Write an unpacked app and return its digest as record-app gives it. */
         const app = (files: Record<string, string>) =>
           Effect.gen(function* () {
             const directory = yield* fs.makeTempDirectoryScoped({ prefix: "executor-app-" });
@@ -500,9 +479,7 @@ layer(NodeServices.layer)("release archive digests", (it) => {
           "resources/apparmor-profile": "profile",
           "resources/package-type": "deb",
         });
-        // A --dir build: another random build id, and no installer-only files.
         expect(yield* app(base)).toBe(packaged);
-        // Any other difference counts, the manifest's version included.
         expect(yield* app({ ...base, "resources/app.asar": "other code" })).not.toBe(packaged);
         expect(
           yield* app({

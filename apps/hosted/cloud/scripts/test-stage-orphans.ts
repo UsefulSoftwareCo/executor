@@ -1,13 +1,3 @@
-/**
- * Report orphaned deployed-E2E PlanetScale branches for a given set of stage leases, as scheduled
- * cleanup does with the registry's leases (`test-stage cleanup`). It only reads. Prints
- * `{"orphans": [...]}`, or `{"skipped": true}` when no test database is configured; a failure
- * prints its message and exits 1.
- *
- *   node scripts/test-stage-orphans.ts [--leases e2e-a,e2e-b] [--now <epoch ms>]
- *
- * `test-stage-orphans.spec.ts` runs it against a local stand-in for PlanetScale's API.
- */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import { Clock, Console, Effect, Option } from "effect";
 import { FetchHttpClient } from "effect/http";

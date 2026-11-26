@@ -2,10 +2,6 @@ import { Link } from "@tanstack/react-router";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { CreditCardIcon } from "@hugeicons/core-free-icons";
 
-/**
- * Cloud's organization pages beside the common ones; self-host has no billing. Like the common
- * links, it stays disabled in the pending frame until the organization slug is known.
- */
 export function CloudNavigation({
   organizationSlug,
   pendingPage,

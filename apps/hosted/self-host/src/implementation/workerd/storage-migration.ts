@@ -1,14 +1,11 @@
-/** Import the previous native PostgreSQL directory without mutating its backup. */
 import type { DurableObjectStorage } from "@cloudflare/workers-types";
 import { Effect, Schema } from "effect";
 import { PgliteFilesystem } from "./pglite-filesystem.ts";
 
-/** Only the trusted product actor receives access to the old product directory. */
 export interface LegacyDatabase {
   readonly fetch: (request: Request) => Promise<Response>;
 }
 
-/** A failed import never opens a replacement empty product database. */
 export class StorageMigrationFailed extends Schema.TaggedError<StorageMigrationFailed>()(
   "StorageMigrationFailed",
   { reason: Schema.Literals(["source", "version", "incomplete", "storage"]) },
@@ -36,11 +33,6 @@ const failure = (reason: StorageMigrationFailed["reason"]) =>
 const diskUrl = (path: string) =>
   `http://legacy.internal/${path.split("/").map(encodeURIComponent).join("/")}`;
 
-/**
- * Retry only an unfinished bootstrap. A completed import is immutable, and normal
- * opens never read the legacy directory again. The host holds the exclusive
- * product volume lock while this operation runs. The telemetry collector is not involved.
- */
 export const prepareProductFilesystem = (storage: DurableObjectStorage, legacy: LegacyDatabase) =>
   Effect.gen(function* () {
     const fs = new PgliteFilesystem(storage);
@@ -55,8 +47,6 @@ export const prepareProductFilesystem = (storage: DurableObjectStorage, legacy: 
             Effect.mapError(() => failure("storage")),
           );
     if (journal?.phase === "ready") return fs;
-    // No application writes are admitted before ready. An interrupted copy/initdb
-    // can therefore restart, but partial bytes can never be treated as a database.
     fs.resetBootstrap();
     const request = (path: string) =>
       Effect.tryPromise({
@@ -162,8 +152,6 @@ export const prepareProductFilesystem = (storage: DurableObjectStorage, legacy: 
         }
       });
     yield* copy("", root);
-    // PostgreSQL's cluster control and catalog directories must exist; initdb
-    // must never quietly replace an incomplete old cluster.
     for (const required of ["global/pg_control", "base", "pg_wal"]) {
       yield* Effect.try({ try: () => fs.lstat(required), catch: () => failure("incomplete") });
     }
@@ -178,7 +166,6 @@ export const prepareProductFilesystem = (storage: DurableObjectStorage, legacy: 
     return fs;
   });
 
-/** Persist the completion marker only after PostgreSQL has opened and flushed successfully. */
 export const completeProductBootstrap = (storage: DurableObjectStorage) =>
   Effect.gen(function* () {
     const saved = yield* Effect.tryPromise({

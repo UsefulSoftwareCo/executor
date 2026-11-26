@@ -1,4 +1,3 @@
-/** Undeployed apps and source edits belong to the same app identities as running versions. */
 import { Clock, Effect, Option } from "effect";
 import type { HostCrypto } from "./host-crypto.ts";
 import type { BlobStorage } from "../contracts/blobs.ts";
@@ -17,7 +16,6 @@ import type { Executor, ResourceLifecycle } from "../contracts/executor.ts";
 import { query, transaction, type Query } from "./database.ts";
 import { storedApp, createApp as storeApp } from "./apps.ts";
 
-/** Product hosts authorize the owner; SDK mutations enforce names and optimistic Git writes. */
 export const makeAppAuthoring = (
   db: Query,
   sources: AppSourceStorage,
@@ -35,8 +33,6 @@ export const makeAppAuthoring = (
     Effect.gen(function* () {
       yield* sourcePathsFit(input.files);
       const code = AppCodeId.make(`code_${yield* crypto.random.uuidV4()}`);
-      // A new app has no repository yet. Stored files of a copy are first copied into its own
-      // store, which its initial files then name; anything else stored names nothing it owns.
       if (input.files.some((file) => "object" in file)) {
         if (stored === undefined) return yield* new SourceError({ reason: "invalid-source" });
         yield* adoptStoredFiles(blobs, code, input.files, stored);
@@ -82,7 +78,6 @@ export const makeAppAuthoring = (
       Effect.gen(function* () {
         const app = yield* storedApp(db, input);
         yield* initializeAppRepository(db, sources, blobs, app);
-        // The commit pins the listed revision; the app's own code lineage pins its repository.
         return yield* sources.read({ code: app.code, commit: input.commit });
       }),
     workspace: (input: Parameters<Executor["apps"]["workspace"]>[0]) =>

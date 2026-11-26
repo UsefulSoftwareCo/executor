@@ -1,9 +1,3 @@
-/**
- * The CLI's background service: one Executor per data directory on a fixed port, started or
- * joined by local commands, managed with `executor service`, and stopped only when asked. Every
- * scenario runs the real CLI against its own HOME, data directory and port; see
- * `support/background-service.ts`.
- */
 import { expect, layer } from "@effect/vitest";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { createServer } from "node:http";
@@ -24,13 +18,11 @@ import {
 } from "../support/background-service.ts";
 
 const keysSaved = "keys saved to ";
-/** An apps command's failure as it prints it on stdout for programs. */
 const AppsFailure = Schema.fromJsonString(
   Schema.Struct({ error: Schema.Struct({ code: Schema.String, message: Schema.String }) }),
 );
 const escaped = (text: string) => text.replaceAll(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 
-/** Requests to another local origin, such as the background server's, with their own cookies. */
 const apiAt = (origin: string) =>
   Effect.gen(function* () {
     const target = yield* Target;
@@ -55,8 +47,6 @@ layer(TestLive, { excludeTestServices: true })("Local background service", (it) 
           const fs = yield* FileSystem.FileSystem;
           const cli = yield* backgroundServiceCli();
 
-          // Both commands race to start a server; the fixed port and the data directory's lock
-          // leave one, and both print its URL.
           const [first, second] = yield* Effect.all(
             [cli.run(["service", "start"]), cli.run(["service", "start"])],
             { concurrency: 2 },
@@ -77,11 +67,9 @@ layer(TestLive, { excludeTestServices: true })("Local background service", (it) 
               status: "ready",
             },
           });
-          // The registration carries the server's password, so only its owner may read it.
           if (process.platform !== "win32")
             expect((yield* fs.stat(cli.registrationFile)).mode & 0o777).toBe(0o600);
 
-          // No contender that lost the race took over afterwards: a later start finds the same one.
           const third = yield* cli.run(["service", "start"]);
           expect(third.code, third.stderr).toBe(0);
           expect(third.stdout.trim()).toBe(cli.url);
@@ -103,14 +91,11 @@ layer(TestLive, { excludeTestServices: true })("Local background service", (it) 
           const cli = yield* backgroundServiceCli();
           const started = yield* cli.run(["service", "start"]);
           expect(started.code, started.stderr).toBe(0);
-          // The background server's own stderr has no reader, so the start names the key file.
           expect(started.stderr).toContain(
             `EXECUTOR_KEY_STORAGE=file; ${keysSaved}${path.join(cli.data, "keys.json")}`,
           );
           const before = yield* cli.registered;
 
-          // `executor` uses the running server: it prints where it runs and the link, opens the
-          // link and exits, leaving the same server running.
           const joined = yield* cli.run([]);
           expect(joined.code, joined.stderr).toBe(0);
           expect(joined.stderr).not.toContain(starting);
@@ -121,7 +106,6 @@ layer(TestLive, { excludeTestServices: true })("Local background service", (it) 
             `MCP: ${cli.url}/mcp`,
             "Connect (one use, expires in 5 minutes):",
           ]);
-          // A fifth line would say the browser could not be opened.
           expect(lines).toHaveLength(4);
           const link = lines[3] ?? "";
           expect(link).toMatch(new RegExp(`^${escaped(cli.url)}/#pair=[a-f0-9]{64}$`, "u"));
@@ -129,7 +113,6 @@ layer(TestLive, { excludeTestServices: true })("Local background service", (it) 
           const after = yield* cli.registered;
           expect([after.id, after.pid]).toEqual([before.id, before.pid]);
 
-          // The opened link pairs a browser with that server, once.
           const api = yield* apiAt(cli.url);
           const browser = yield* api.session();
           const token = new URL(link).hash.slice("#pair=".length);
@@ -153,8 +136,6 @@ layer(TestLive, { excludeTestServices: true })("Local background service", (it) 
         context,
         Effect.gen(function* () {
           const cli = yield* backgroundServiceCli();
-          // The other releases are the checkout's CLI, which reports EXECUTOR_BUILD_VERSION. The
-          // CLI under test reports its own release version when it is a release executable.
           const [older, other] = ["2.0.0-e2e.1", "2.0.0-e2e.3"];
           const current = { EXECUTOR_BUILD_VERSION: "2.0.0-e2e.2" };
           const printed = yield* cli.run(["--version"], current);
@@ -170,7 +151,6 @@ layer(TestLive, { excludeTestServices: true })("Local background service", (it) 
           const first = yield* cli.registered;
           expect(first.version).toBe(older);
 
-          // The interactive command replaces a server of another version with its own.
           const replaced = yield* cli.run([], current);
           expect(replaced.code, replaced.stderr).toBe(0);
           expect(replaced.stderr).toContain(
@@ -186,7 +166,6 @@ layer(TestLive, { excludeTestServices: true })("Local background service", (it) 
             body: { id: second.id, version: newer, pid: second.pid, status: "ready" },
           });
 
-          // Other commands use whichever version runs.
           const kept = yield* cli.run(
             ["service", "start"],
             { EXECUTOR_BUILD_VERSION: other },
@@ -218,13 +197,10 @@ layer(TestLive, { excludeTestServices: true })("Local background service", (it) 
           expect(origin).not.toBe(cli.url);
           const port = Number(new URL(origin).port);
 
-          // The private server answers, while nothing registers or listens on the service port.
           expect((yield* cli.info(origin)).body.status).toBe("ready");
           expect(yield* fs.exists(cli.registrationFile)).toBe(false);
           expect(yield* cli.refused(cli.port)).toBe(true);
 
-          // A background server cannot start meanwhile, and since the private server is not
-          // registered, the message does not offer `executor service stop`, which cannot stop it.
           const blocked = yield* cli.run(["service", "start"]);
           expect(blocked.code).toBe(1);
           expect(blocked.stderr).toContain(
@@ -232,11 +208,6 @@ layer(TestLive, { excludeTestServices: true })("Local background service", (it) 
           );
           expect(yield* fs.exists(cli.registrationFile)).toBe(false);
 
-          // Interrupting the command, as Ctrl-C does, stops its server. The private server leads a
-          // process group of its own, so on POSIX only the command gets SIGINT, and it exits as an
-          // interrupted program does. Windows has no SIGINT for another process, and ending the
-          // command's process tree would end the private server directly, so only the command is
-          // ended there: the private server then stops because its standard input closed.
           if (process.platform === "win32")
             yield* Effect.try(() => process.kill(standalone.child.pid, "SIGTERM"));
           else yield* standalone.child.kill({ killSignal: "SIGINT" });
@@ -247,8 +218,6 @@ layer(TestLive, { excludeTestServices: true })("Local background service", (it) 
           );
           expect(yield* fs.exists(cli.registrationFile)).toBe(false);
 
-          // When the private server stops on its own, the command says so and fails instead of
-          // waiting with a dead link.
           const crashed = yield* cli.start(["--standalone"], (line) =>
             line.startsWith("Executor: "),
           );
@@ -260,8 +229,6 @@ layer(TestLive, { excludeTestServices: true })("Local background service", (it) 
             "This command's private Executor server stopped (",
           );
 
-          // While the background server holds the data directory, the private server says so,
-          // and the command does not claim the background server failed.
           const started = yield* cli.run(["service", "start"]);
           expect(started.code, started.stderr).toBe(0);
           const held = yield* cli.run(["--standalone"]);
@@ -283,7 +250,6 @@ layer(TestLive, { excludeTestServices: true })("Local background service", (it) 
         context,
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
-          // Another program answers HTTP on the configured port, and not as Executor.
           const services = yield* Layer.build(
             HttpRouter.serve(
               HttpRouter.add(
@@ -305,7 +271,6 @@ layer(TestLive, { excludeTestServices: true })("Local background service", (it) 
           if (!("port" in foreign.address)) return yield* Effect.die("Fixture must listen on TCP");
           const cli = yield* backgroundServiceCli({ port: foreign.address.port });
 
-          // EXECUTOR_PORT chose the port, so changing the saved port would not help.
           const refused = yield* cli.run(["service", "start"]);
           expect(refused.code).toBe(1);
           expect(refused.stderr).toContain("The background Executor could not start.");
@@ -314,7 +279,6 @@ layer(TestLive, { excludeTestServices: true })("Local background service", (it) 
           );
           expect(yield* fs.exists(cli.registrationFile)).toBe(false);
 
-          // The saved port chose it, so the message names the setting.
           const saved = { EXECUTOR_PORT: undefined };
           const set = yield* cli.run(["service", "set", "port", String(cli.port)], saved);
           expect(set.code, set.stderr).toBe(0);
@@ -324,7 +288,6 @@ layer(TestLive, { excludeTestServices: true })("Local background service", (it) 
             `Port ${cli.port} is already in use by another program. Choose another port with \`executor service set port <port>\`, then run \`executor\` again.`,
           );
 
-          // An apps command reports the same failure in its own contract, with JSON on stdout.
           const apps = yield* cli.run(["apps", "list"]);
           expect(apps.code).toBe(1);
           expect(apps.stderr).toContain("Code: LocalServerUnavailable");
@@ -344,8 +307,6 @@ layer(TestLive, { excludeTestServices: true })("Local background service", (it) 
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const cli = yield* backgroundServiceCli();
-          // A client's own credential, without an encryption key, is only what it would send; the
-          // server it starts still uses the data directory's keys.
           const started = yield* cli.run(["service", "start"], {
             EXECUTOR_API_KEY: "a".repeat(64),
           });
@@ -359,7 +320,6 @@ layer(TestLive, { excludeTestServices: true })("Local background service", (it) 
             `${cli.url} (version ${first.version}, process ${first.pid})`,
           );
 
-          // Restart stops the server and starts another in its place.
           const restarted = yield* cli.run(["service", "restart"]);
           expect(restarted.code, restarted.stderr).toBe(0);
           expect(restarted.stdout.trim()).toBe(cli.url);
@@ -373,7 +333,6 @@ layer(TestLive, { excludeTestServices: true })("Local background service", (it) 
             status: "ready",
           });
 
-          // Stop ends the process, frees its port and removes its registration.
           const stopped = yield* cli.run(["service", "stop"]);
           expect(stopped.code, stopped.stderr).toBe(0);
           expect(yield* fs.exists(cli.registrationFile)).toBe(false);
@@ -400,10 +359,8 @@ layer(TestLive, { excludeTestServices: true })("Local background service", (it) 
           expect(started.code, started.stderr).toBe(0);
           const registration = yield* cli.registered;
 
-          // A server no client can find any more stops on its own, and nothing serves its port.
           const removedAt = yield* Clock.currentTimeMillis;
           yield* fs.remove(cli.registrationFile);
-          // How many liveness polls the window held, so a slow poll shows in the evidence.
           let polls = 0;
           const exited = yield* eventually(
             cli.alive(registration.pid).pipe(Effect.tap(() => Effect.sync(() => (polls += 1)))),
@@ -412,7 +369,6 @@ layer(TestLive, { excludeTestServices: true })("Local background service", (it) 
           ).pipe(Effect.option);
           const stoppedAt = yield* Clock.currentTimeMillis;
           const answering = yield* cli.info(cli.url).pipe(Effect.option);
-          // In the log too, so a passing run on a slow runner shows what one poll costs.
           yield* Effect.logInfo(
             `Liveness polls: ${polls} in ${stoppedAt - removedAt} ms after server.json was removed`,
           );
@@ -446,7 +402,6 @@ layer(TestLive, { excludeTestServices: true })("Local background service", (it) 
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const cli = yield* backgroundServiceCli();
-          // The saved port applies only without EXECUTOR_PORT, which wins over it.
           const saved = { EXECUTOR_PORT: undefined };
           const next = yield* freePort.pipe(
             Effect.repeat({ until: (port) => port !== cli.port, times: 5 }),
@@ -460,7 +415,6 @@ layer(TestLive, { excludeTestServices: true })("Local background service", (it) 
           expect(started.stdout.trim()).toBe(cli.url);
           const first = yield* cli.registered;
 
-          // Changing the port stops the running server, so the next start uses the new one.
           const changed = yield* cli.run(["service", "set", "port", String(next)], saved);
           expect(changed.code, changed.stderr).toBe(0);
           expect(yield* fs.exists(cli.registrationFile)).toBe(false);
@@ -497,15 +451,12 @@ layer(TestLive, { excludeTestServices: true })("Local background service", (it) 
           const foreground = yield* cli.start(["serve"], (line) => line === `Executor: ${cli.url}`);
           const other = yield* freePort;
 
-          // A second server for the same data directory on another port stops before storage, and
-          // names the registered server that holds it.
           const second = yield* cli.run(["serve"], { EXECUTOR_PORT: String(other) });
           expect(second.code).toBe(1);
           expect(second.stderr).toContain(
             `The background Executor already serves the data directory ${cli.data} at ${cli.url}. Stop it with \`executor service stop\`, or set EXECUTOR_DATA_DIR to another folder.`,
           );
 
-          // On the registered server's own port, it is that server that holds the directory.
           const same = yield* cli.run(["serve"]);
           expect(same.code).toBe(1);
           expect(same.stderr).toContain(
@@ -513,7 +464,6 @@ layer(TestLive, { excludeTestServices: true })("Local background service", (it) 
           );
           expect(same.stderr).not.toContain("in use by another program");
 
-          // The first one keeps serving the directory, registered as the one the CLI shares.
           const registration = yield* cli.registered;
           expect(registration.pid).toBe(foreground.child.pid);
           expect((yield* cli.info(cli.url)).body).toEqual({
@@ -538,8 +488,6 @@ layer(TestLive, { excludeTestServices: true })("Local background service", (it) 
           expect(started.code, started.stderr).toBe(0);
           const server = yield* cli.registered;
 
-          // The server is asked to stop and takes seconds to exit, answering meanwhile that it is
-          // stopping; a stand-in answers in its place for those seconds.
           yield* crashServer(server.pid);
           yield* eventually(cli.refused(cli.port), (refused) => refused, "15 seconds");
           const scope = yield* Effect.scope;
@@ -552,8 +500,6 @@ layer(TestLive, { excludeTestServices: true })("Local background service", (it) 
                 `stopping ${cli.url} (version ${server.version}, process ${server.pid})`,
               );
 
-              // A start waits for it to exit, asking it again and again, and neither joins it nor
-              // asks it to stop.
               const seen = yield* stopping.answered;
               const start = yield* Effect.forkIn(cli.run(["service", "start"]), scope);
               yield* eventually(
@@ -569,7 +515,6 @@ layer(TestLive, { excludeTestServices: true })("Local background service", (it) 
             }),
           );
 
-          // Once it has gone, the start starts a server in its place.
           const result = yield* Fiber.join(restarted);
           expect(result.code, result.stderr).toBe(0);
           expect(result.stdout.trim()).toBe(cli.url);

@@ -1,4 +1,3 @@
-/** Decode the real browser transport at the external PostHog boundary. */
 import type { Page } from "playwright";
 import { driver, type DriverFailed } from "./platform.ts";
 import { Effect, Schema } from "effect";
@@ -28,10 +27,8 @@ const unpack = (value: Schema.Json): Effect.Effect<Schema.Json, DriverFailed> =>
     }
     return value;
   });
-/** The SDK's remote configuration with session recording on for every session. */
 const remoteConfig =
   'window._POSTHOG_REMOTE_CONFIG = {"synthetic-ingestion-key": {config: {hasFeatureFlags: false, sessionRecording: {endpoint: "/s/", sampleRate: 1, minimumDurationMilliseconds: 0}}}};';
-/** The same configuration with gzip supported, as PostHog's own servers configure the SDK. */
 const compressedRemoteConfig =
   'window._POSTHOG_REMOTE_CONFIG = {"synthetic-ingestion-key": {config: {hasFeatureFlags: false, supportedCompression: ["gzip-js"], sessionRecording: {endpoint: "/s/", sampleRate: 1, minimumDurationMilliseconds: 0}}}};';
 const flagsResponse = {
@@ -39,11 +36,6 @@ const flagsResponse = {
   sessionRecording: { endpoint: "/s/", sampleRate: 1, minimumDurationMilliseconds: 0 },
 };
 
-/**
- * Turn session recording on for the page, as PostHog's project settings do: answer the SDK's
- * configuration and flags reads with recording on and gzip supported, as PostHog's own servers
- * answer. Everything else the SDK sends still reaches the environment's receiver.
- */
 export const enableSessionRecording = (page: Page) =>
   page.route("**/api/0123456789abcdef/**", (route) => {
     const path = new URL(route.request().url()).pathname;
@@ -54,7 +46,6 @@ export const enableSessionRecording = (page: Page) =>
     return route.fallback();
   });
 
-/** Intercept only the synthetic ingestion path; the bundled SDK recorder runs in the product page. */
 export const captureBrowserAnalytics = (page: Page) => {
   const events: Schema.Json[] = [];
   const failures: string[] = [];
@@ -77,7 +68,6 @@ export const captureBrowserAnalytics = (page: Page) => {
             return;
           }
           if (path.includes("/static/")) {
-            // The dashboard bundles its recorder; ad blockers reject SDK script names like posthog-recorder.js.
             yield* driver("reject SDK script", () =>
               route.fulfill({ status: 404, body: "Blocked SDK script" }),
             );
@@ -113,7 +103,6 @@ export const captureBrowserAnalytics = (page: Page) => {
     .then(() => ({ events, failures, requests }));
 };
 
-/** Rebuild the captured browser transport in rrweb, without the live page's CSS or session. */
 export const renderBrowserReplay = (page: Page, snapshots: readonly Schema.Json[]) => {
   const snapshotData = Schema.decodeUnknownSync(
     Schema.Struct({

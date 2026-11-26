@@ -1,9 +1,3 @@
-/**
- * Cloud keeps evaluated tool listings in each app's data supervisor, so a read that misses the
- * isolate's memory is served from it, and an app cache invalidation forgets it for every isolate.
- * A background refresh of a stale listing replaces the supervisor's copy. A listing keeps each
- * JSON Schema definition its tools repeat once, in the isolate and in the supervisor.
- */
 import { expect, layer } from "@effect/vitest";
 import { Console, Effect, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -15,12 +9,6 @@ import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
 import { Evidence, Telemetry } from "../support/evidence.ts";
 
-/**
- * A listing over the isolate store's 2 MB entry bound: 1,500 tools with 800-character
- * descriptions. The isolate never keeps it, so every read after the first tests the supervisor.
- * The revision tool is named after a value kept in the app cache, so an invalidation renames it.
- * Evaluating it first waits `delayMs`.
- */
 const listingSource = (
   delayMs: number,
 ) => `import { defineApp, query, object, router, string } from "apps";
@@ -51,13 +39,8 @@ export default defineApp({}, async (ctx) => {
   };
 });`;
 
-/** The isolate store's entry bound (`declarationLimits.entryBytes`) in UTF-16 characters. */
 const isolateEntryChars = (2 * 1024 * 1024) / 2;
 
-/**
- * Tools whose schemas each carry the same four definitions, as the OpenAPI importer bundles
- * them, and one tool whose `Model0` is other JSON.
- */
 const sharedSource = (
   tools: number,
   padding: number,
@@ -87,10 +70,6 @@ export default defineApp({}, {
   tools: router({ listed: dynamicRouter({ list: async () => tools, resolve: async () => undefined }) }),
 });`;
 
-/**
- * 12,000 tools whose input schemas each define one entry: other JSON of the same length under the
- * same name, which nothing can share, or, as the control, the same JSON under its own name.
- */
 const distinctSource = (
   named: "Defined" | "own",
 ) => `import { defineApp, dynamicRouter, router } from "apps";
@@ -113,11 +92,6 @@ export default defineApp({}, {
   tools: router({ listed: dynamicRouter({ list: async () => tools, resolve: async () => undefined }) }),
 });`;
 
-/**
- * 1,000 tools whose input schemas each define one entry under a distinct name of about 17,000
- * characters, past the 16,383 beyond which V8 hashes a string by its length alone. The names share
- * a prefix and have one length, or, as the control, each its own length, with the same total.
- */
 const longNamesSource = (
   lengths: "same" | "own",
 ) => `import { defineApp, dynamicRouter, router } from "apps";
@@ -140,7 +114,6 @@ export default defineApp({}, {
 
 const Listing = Schema.Struct({ items: Schema.Array(Schema.Struct({ name: Schema.String })) });
 
-/** Deploy a listing app and read its tool listing with the spans of each request. */
 const listingApp = (files: string = listingSource(0)) =>
   Effect.gen(function* () {
     const api = yield* Api,
@@ -159,7 +132,6 @@ const listingApp = (files: string = listingSource(0)) =>
     );
     const path = `${prefix}/${app.id}`;
 
-    /** The listing's tool names and the spans of the request's own trace. */
     const read = (label: string, settled: (names: ReadonlyArray<string>) => boolean) =>
       Effect.gen(function* () {
         const response = yield* api.request(actors.owner, "GET", `${path}/tools`);
@@ -183,7 +155,6 @@ const listingApp = (files: string = listingSource(0)) =>
         return {
           names,
           evaluated: evaluate?.tags,
-          /** How long interning the listing's definitions took, apart from decoding the answer. */
           sharedMs: share?.durationMs,
           page: response.body,
           spans: spans.map((span) => span.operationName),
@@ -191,7 +162,6 @@ const listingApp = (files: string = listingSource(0)) =>
           cache: listing?.tags["executor.declarations.cache"],
           source: listing?.tags["executor.declarations.source"],
           age: Number(listing?.tags["executor.declarations.age_ms"]),
-          /** JSON text this request decoded from the supervisor. */
           decoded: listing?.tags["executor.listing.json_chars"],
         };
       });
@@ -199,16 +169,8 @@ const listingApp = (files: string = listingSource(0)) =>
   });
 
 const listed = (names: ReadonlyArray<string>) => names.includes("sdk.tools.listing");
-/**
- * A read that evaluated. The evaluation ends after the response, so its spans can reach the collector
- * before the request's own: the read waits for the listing span, which holds the cache outcome.
- */
 const evaluates = (names: ReadonlyArray<string>) =>
   listed(names) && names.includes("sdk.tools.listing.evaluate");
-/**
- * A read that evaluated, and kept its result in the supervisor after responding. The supervisor
- * write ends before the evaluation, which then writes search rows, so both are waited for.
- */
 const written = (names: ReadonlyArray<string>) =>
   evaluates(names) && names.includes("storage.evaluated.write");
 
@@ -219,27 +181,21 @@ layer(HostedLive, { excludeTestServices: true })("Durable evaluated results", (i
       Effect.gen(function* () {
         const { api, actors, path, read } = yield* listingApp();
 
-        // The first read evaluates and keeps the listing in the supervisor after responding.
         const first = yield* read("first-listing", written);
         expect(first.cache).toBe("miss");
-        // Both record the listing's size, which their CPU grows with; it is over the isolate
-        // store's entry bound of 2 MB in UTF-16, 1,048,576 characters.
         expect(Number(first.evaluated?.["executor.listing.json_chars"])).toBeGreaterThan(
           isolateEntryChars,
         );
         expect(first.decoded).toBeUndefined();
-        // Pages are sorted by name, so the first holds bump and the revision tool.
         expect(first.names).toContain("bump");
         expect(first.revision).toBeDefined();
 
-        // The isolate cannot keep a listing this large, so the next read is the supervisor's copy.
         const second = yield* read("durable-listing", listed);
         expect(second.source).toBe("durable");
         expect(second.cache).toBe("hit");
         expect(second.names).toEqual(first.names);
         expect(Number(second.decoded)).toBeGreaterThan(isolateEntryChars);
 
-        // An app cache invalidation forgets it in the supervisor, for every isolate at once.
         const bumped = yield* api.request(actors.owner, "POST", `${path}/tools/call`, {
           tool: "bump",
           kind: "query",
@@ -261,26 +217,17 @@ layer(HostedLive, { excludeTestServices: true })("Durable evaluated results", (i
       withHostedCase(
         context,
         Effect.gen(function* () {
-          // A read that misses the isolate waits 100 ms for the supervisor's copy, then evaluates
-          // beside it and serves whichever arrives first; the supervisor read gives up after 2 s.
-          // The supervisor wakes after the wait below, sometimes slower than a fast app evaluates.
-          // An app slower than both is served the copy whenever the supervisor answers.
           const { read } = yield* listingApp(listingSource(3_000));
           const first = yield* read("first-listing", written);
           expect(first.cache).toBe("miss");
 
-          // Past the listing's 30 s fresh period, the supervisor's copy is served while a
-          // background evaluation replaces it. The refresh finishes after the response, so it
-          // must still keep its result in the supervisor.
           yield* Effect.sleep("31 seconds");
-          // The refresh's spans can arrive before the request's own, which say where it was served.
           const stale = yield* read("stale-listing", written);
           expect(stale.source).toBe("durable");
           expect(stale.cache).toBe("stale");
           expect(stale.age).toBeGreaterThanOrEqual(30_000);
           expect(stale.spans).toContain("storage.evaluated.write");
 
-          // The refreshed copy is fresh: the next read is served from it without evaluating.
           const refreshed = yield* read("refreshed-listing", listed);
           expect(refreshed.source).toBe("durable");
           expect(refreshed.cache).toBe("hit");
@@ -298,8 +245,6 @@ layer(HostedLive, { excludeTestServices: true })("Durable evaluated results", (i
       withHostedCase(
         context,
         Effect.gen(function* () {
-          // With a copy of each definition per schema, 300 tools count 6.3 MB, over the isolate's
-          // 2 MB entry bound. With each definition once they count 0.35 MB, which it keeps.
           const small = yield* listingApp(sharedSource(300, 100, 1200));
           const evaluated = yield* small.read("shared-first-listing", written);
           expect(evaluated.cache).toBe("miss");
@@ -308,8 +253,6 @@ layer(HostedLive, { excludeTestServices: true })("Durable evaluated results", (i
           expect(kept.cache).toBe("hit");
           expect(kept.page).toEqual(evaluated.page);
 
-          // 1,500 tools with 800-character descriptions still count 3.7 MB with each definition
-          // once, so the next read decodes the supervisor's copy, with the same schemas.
           const large = yield* listingApp(sharedSource(1500, 800, 100));
           const first = yield* large.read("shared-large-listing", written);
           expect(first.cache).toBe("miss");
@@ -325,7 +268,6 @@ layer(HostedLive, { excludeTestServices: true })("Durable evaluated results", (i
                 ),
               }),
             )(page).items.find((item) => item.name === name)?.inputSchema;
-          // The tool whose Model0 is other JSON keeps its own.
           expect(tool(recalled.page, "listed.tool_7")).toMatchObject({
             $defs: { Model0: { type: "string" } },
           });
@@ -343,7 +285,6 @@ layer(HostedLive, { excludeTestServices: true })("Durable evaluated results", (i
       withHostedCase(
         context,
         Effect.gen(function* () {
-          // Both listings hold 12,000 definitions of the same total length and share none.
           const control = yield* listingApp(distinctSource("own"));
           const colliding = yield* listingApp(distinctSource("Defined"));
           const own = yield* control.read("own-names-listing", evaluates);
@@ -356,10 +297,6 @@ layer(HostedLive, { excludeTestServices: true })("Durable evaluated results", (i
           expect(same.evaluated?.["executor.listing.json_chars"]).toBe(
             own.evaluated?.["executor.listing.json_chars"],
           );
-          // Interning compares a definition only with those already interned under its name, its
-          // length and its hash: the control's names compare with none, and each shared name with
-          // its bucket once. Comparing each with every earlier one of its name and length made
-          // 72,006,000 comparisons, and took 959 ms against 64 on self-host.
           expect(Number(own.evaluated?.["executor.listing.definition_comparisons"])).toBe(0);
           expect(Number(same.evaluated?.["executor.listing.definition_comparisons"])).toBe(12_000);
         }),
@@ -373,7 +310,6 @@ layer(HostedLive, { excludeTestServices: true })("Durable evaluated results", (i
       withHostedCase(
         context,
         Effect.gen(function* () {
-          // Both listings hold 1,000 definitions with names of the same total length.
           const control = yield* listingApp(longNamesSource("own"));
           const colliding = yield* listingApp(longNamesSource("same"));
           const own = yield* control.read("own-length-names-listing", evaluates);
@@ -386,17 +322,8 @@ layer(HostedLive, { excludeTestServices: true })("Durable evaluated results", (i
           expect(same.evaluated?.["executor.listing.json_chars"]).toBe(
             own.evaluated?.["executor.listing.json_chars"],
           );
-          // Each name has its own bucket either way, so interning compares nothing.
           for (const read of [own, same])
             expect(Number(read.evaluated?.["executor.listing.definition_comparisons"])).toBe(0);
-          // A `Map` keyed by these names compares them inside V8, where no count reaches, so this
-          // compares the time interning took, in its own span. Keying buckets by a "length:name"
-          // string took 687 ms against the control's 21 on local Cloud. The span leaves out
-          // decoding the app's answer, which V8 makes six to eight times slower for these names
-          // whichever listing goes first. Interning took 26-96 ms for either listing in nine
-          // local Cloud runs. Before the span, three CI runs measured 192-353 ms for the
-          // evaluation's own time against 41-72 for the control, a difference local runs do not
-          // show; five times the control plus 100 ms holds even if all of it is interning.
           yield* Console.log(
             JSON.stringify({
               step: "long definition names",

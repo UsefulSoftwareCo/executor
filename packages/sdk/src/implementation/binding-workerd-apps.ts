@@ -1,4 +1,3 @@
-/** Worker service-binding transport for the shared app protocol. */
 import type { Fetcher } from "@cloudflare/workers-types";
 import { newWebSocketRpcSession, type RpcStub } from "capnweb";
 import { Cause, Effect, Queue, Schema, Stream } from "effect";
@@ -16,7 +15,6 @@ import { connectedWorkerdApps, TransportClosed } from "./workerd-client.ts";
 
 const failed = () => new RuntimeProtocolFailed();
 
-/** Connect through a private binding. Authored app Workers never receive this capability. */
 export const bindingWorkerdApps = (options: {
   readonly binding: Fetcher;
   readonly authorization: string;
@@ -51,16 +49,12 @@ export const bindingWorkerdApps = (options: {
         const socket = yield* connect("/rpc");
         const peer = yield* Effect.acquireRelease(
           Effect.sync(() => {
-            // Registered before Cap'n Web's own listeners, so the session knows its socket closed
-            // by the time it breaks; see `TransportClosed`.
             let closed = false;
             const close = () => {
               closed = true;
             };
             socket.addEventListener("close", close);
             socket.addEventListener("error", close);
-            // SAFETY: workerd sockets implement Cap'n Web's EventTarget, send and close
-            // transport. Native DOM WebSocket constructor fields are not used here.
             const peer = newWebSocketRpcSession<WorkerdAppApi>(
               socket as unknown as WebSocket,
               undefined,

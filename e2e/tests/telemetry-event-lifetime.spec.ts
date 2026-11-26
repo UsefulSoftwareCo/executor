@@ -1,32 +1,3 @@
-/**
- * Cloud's isolate telemetry arms one flush timer when something is buffered, and keeps the event
- * whose code armed it alive until that flush has exported (`packages/telemetry/src/isolate.ts`,
- * the `keepAlive` hook). A Worker pins a timer and a fetch to the event that started them; a
- * Durable Object keeps both running on its own. These checks pin down both halves.
- *
- * On managed local Cloud a scenario cannot choose which event arms the isolate's timer: the API
- * Worker's isolate also runs its Durable Objects and background work. So the probe is a minimal
- * Worker and Durable Object around the real `isolateTelemetry`, bundled with Bun and served by the
- * workerd this repository pins for local Cloud, exporting to a collector this file runs and can
- * hold open. Each case builds its own exporters, and its request ends without closing their scope,
- * as with spans buffered after an event's close took the rest:
- *
- * - "timer": the request answers 100 ms after buffering a span, before the flush timer is due.
- * - "post": the request answers 2.5 s after buffering a span, while the timer's export, which the
- *   collector holds open, is in flight: the export starts at 1 s, so it has 1.5 s to leave.
- * - "stale": one Worker request leaves its timer unkept, so it never settles; a second request on
- *   the same exporters, after the 5 s that make a timer stale, still gets both spans exported.
- * - "pair": one request buffers a second span 300 ms after the first, while the first's timer is
- *   armed: that timer exports both, and no second timer starts.
- *
- * A timer taken for lost that fires after all clears only its own arming. With Worker timers in
- * workerd that cannot happen, since a lost timer's event has ended and its timer never fires, so no
- * case here reaches it.
- *
- * When workerd is upgraded these cases say whether the platform's behaviour moved: a Worker that
- * started to keep timers or fetches past its event would fail the cases without the hook, and a
- * Durable Object that stopped doing so would fail the cases without the hook there.
- */
 import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, Fiber, FileSystem, Path, Schedule, Schema } from "effect";
@@ -35,7 +6,6 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { createServer, type IncomingMessage } from "node:http";
 import { createServer as createNetServer } from "node:net";
 
-/** The probe Worker; `isolate` is the path of `packages/telemetry/src/isolate.ts`. */
 const probe = (isolate: string) => `
 import { DurableObject, waitUntil } from "cloudflare:workers";
 import { Effect, Layer, Scope } from "effect";
@@ -145,13 +115,8 @@ const TraceExport = Schema.fromJsonString(
   }),
 );
 
-/** What became of each export carrying a probe span: answered, held open, or cut off. */
 type Outcome = "delivered" | "held" | "abandoned";
 
-/**
- * The collector the probe exports to. An export carrying a span of a held case stays unanswered
- * until the case is released; one whose sender gives up first is recorded as abandoned.
- */
 const collector = Effect.acquireRelease(
   Effect.callback<{
     readonly origin: string;
@@ -205,7 +170,6 @@ const collector = Effect.acquireRelease(
         held.set(heldId, [
           ...(held.get(heldId) ?? []),
           () => {
-            // A sender that gave up gets no answer, and its batch stays lost.
             if (abandoned) return;
             answered = true;
             record(heldId, index, "delivered");
@@ -251,7 +215,6 @@ it.live(
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
-      // Under the repository, so the bundle resolves its workspace packages; `.local` is ignored.
       const directory = path.resolve(".local/telemetry-event-lifetime");
       yield* fs.makeDirectory(directory, { recursive: true });
       yield* fs.writeFileString(
@@ -278,7 +241,6 @@ it.live(
       const sink = yield* collector;
       const port = yield* freePort;
       yield* fs.writeFileString(path.join(directory, "config.capnp"), config(port, sink.origin));
-      // The workerd local Cloud runs, from this repository's pinned `workerd` package.
       yield* processes.spawn(
         ChildProcess.make(
           "node_modules/.bin/workerd",
@@ -297,7 +259,6 @@ it.live(
         Effect.retry({ times: 100, schedule: Schedule.spaced("100 millis") }),
       );
 
-      /** Send one case and wait for its answer. A case's exporters are its group's, by default its own. */
       const request = (input: {
         in: "worker" | "object";
         mode: "timer" | "post" | "pair";
@@ -320,37 +281,22 @@ it.live(
         });
       const outcomes = (id: string) => [...(sink.outcomes.get(id) ?? [])];
 
-      /** A timer due after the request answered: whether its export ever reaches the collector. */
       const timer = (where: "worker" | "object", keep: boolean) =>
         Effect.gen(function* () {
           const id = yield* request({ in: where, mode: "timer", keep });
-          // The timer is due about 0.9 s after the answer; this waits well past it and its post.
           yield* Effect.sleep("2500 millis");
           return outcomes(id);
         });
-      /**
-       * An export in flight when the request answered: what it was while the collector still held
-       * it, a second after the answer, and once released.
-       */
       const post = (where: "worker" | "object", keep: boolean) =>
         Effect.gen(function* () {
           const id = yield* request({ in: where, mode: "post", keep });
-          // A Worker's event ends, and workerd cuts off its open fetches, as soon as it answers
-          // (measured: within milliseconds); a cut-off post shows as one that stopped waiting.
           yield* Effect.sleep("1 second");
           const meanwhile = outcomes(id);
           sink.release(id);
-          // A released export is answered at once; this waits for the answer to be recorded, and
-          // for any other export of the case, which a lost batch never gets.
           yield* Effect.sleep("1 second");
           return { meanwhile, after: outcomes(id) };
         });
 
-      /**
-       * A timer whose event ended before it fired, as a cancelled event leaves it: a later item on
-       * the same exporters, once the timer is 5 s old, arms another, which exports both. Runs beside
-       * the other cases.
-       */
       const stale = yield* Effect.gen(function* () {
         const first = yield* request({
           in: "worker",
@@ -388,9 +334,6 @@ it.live(
         }),
       };
 
-      // Each case is checked on its own, so a failure names every case that changed.
-      // A Worker event: without the hook its pending timer never runs, so the span never leaves,
-      // and its in-flight export is cut off, so the batch it carried is lost. With it, both finish.
       expect.soft(results.workerTimerUnkept, "A Worker's unkept timer never exports").toEqual([]);
       expect.soft(results.workerTimerKept, "A Worker's kept timer exports").toEqual(["delivered"]);
       expect
@@ -403,16 +346,12 @@ it.live(
         meanwhile: ["held"],
         after: ["delivered"],
       });
-      // An item buffered while a healthy timer is armed starts no second timer; that timer exports
-      // both items in one batch.
       expect
         .soft(results.pair, "An item buffered while a timer is armed starts no second timer")
         .toEqual({ calls: "1", first: ["delivered"], second: ["delivered"] });
-      // A timer left unsettled is replaced once stale, and the item it held leaves with the next.
       expect
         .soft(results.stale, "A stale timer is replaced, and both spans leave")
         .toEqual({ first: ["delivered"], second: ["delivered"] });
-      // A Durable Object event keeps both running either way.
       for (const [name, outcome] of [
         ["objectTimerUnkept", results.objectTimerUnkept],
         ["objectTimerKept", results.objectTimerKept],
@@ -424,6 +363,5 @@ it.live(
       ] as const)
         expect.soft(outcome, name).toEqual({ meanwhile: ["held"], after: ["delivered"] });
     }).pipe(Effect.scoped, Effect.provide([NodeServices.layer, FetchHttpClient.layer])),
-  // The cases take about 30 s in all; the stale one runs beside the others.
   90_000,
 );

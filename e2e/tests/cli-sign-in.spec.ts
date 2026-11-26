@@ -1,10 +1,6 @@
-/**
- * `executor login` signs the CLI in to a host's MCP resource with a device code, and the tool
- * commands then use that sign-in on the host signed in to last. `executor logout` removes both of
- * the host's sign-ins and forgets it.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Option, Schema } from "effect";
+import { HttpClient, HttpClientRequest } from "effect/http";
 import { Actors } from "../support/actors.ts";
 import { Api } from "../support/api.ts";
 import { appsCli, type Finished } from "../support/apps-cli.ts";
@@ -24,7 +20,6 @@ const Failure = Schema.fromJsonString(
   Schema.Struct({ error: Schema.Struct({ code: Schema.String, message: Schema.String }) }),
 );
 const Apps = Schema.fromJsonString(Schema.Array(Schema.Struct({ id: Schema.String })));
-/** The tools sign-in the CLI saved, as far as this scenario reads it. */
 const ToolsSession = Schema.fromJsonString(
   Schema.Struct({
     accessToken: Schema.String,
@@ -33,7 +28,6 @@ const ToolsSession = Schema.fromJsonString(
   }),
 );
 
-/** A program whose answer appears nowhere in its source, so a result proves the host ran it. */
 const program = "return [6 * 7, 'cli-' + 'signed-in'].join(':')";
 const answer = "42:cli-signed-in";
 
@@ -58,7 +52,6 @@ layer(HostedLive, { excludeTestServices: true })("CLI sign-in", (it) => {
         const cli = yield* appsCli;
         const organization = yield* scenarioOrganization;
 
-        // Before signing in, a named host has no tools credential.
         const before = yield* cli.executor(["execute", "--host", host, "--code", program]);
         expect(failedWith(before, "NotSignedIn").message).toContain(
           `executor login --host ${host}`,
@@ -66,27 +59,20 @@ layer(HostedLive, { excludeTestServices: true })("CLI sign-in", (it) => {
 
         const login = yield* cli.login(host, ["login"]);
         expect(login.finished.code, login.finished.stderr).toBe(0);
-        // The host signed in to describes what the sign-in reaches.
         expect(login.finished.stdout).toContain(
           `Connected to ${host} as @${organization.slug}: every app, approvals in model mode.`,
         );
-        // The page the CLI opened is the device page with its code.
         expect(new URL(yield* cli.openedPage).searchParams.get("user_code")).toBe(login.userCode);
 
-        // No --host: the host signed in to last.
         ran(yield* cli.executor(["execute", "--code", program]));
-        // A program from standard input, through the same sign-in.
         ran(yield* cli.executor(["execute", "--file", "-"], { input: program }));
 
-        // The sign-in is saved in the OS credential store, for the MCP endpoint the host named:
-        // on Cloud the canonical one on `mcp.`, beside the `api.` host signed in to.
         const saved = (yield* cli.storedCredential("Executor Tools", host)).pipe(
           Option.map(Schema.decodeUnknownSync(ToolsSession)),
         );
         expect(Option.map(saved, ({ resource }) => resource)).toEqual(
           Option.some(`${hosts.mcp}/mcp`),
         );
-        // whoami prints the host, the endpoint and what the host says the sign-in reaches.
         const who = yield* cli.executor(["whoami"]);
         expect(who.code, who.stderr).toBe(0);
         expect(JSON.parse(who.stdout)).toEqual({
@@ -95,11 +81,8 @@ layer(HostedLive, { excludeTestServices: true })("CLI sign-in", (it) => {
           organization,
           access: { kind: "all" },
           mode: "model",
-          apps: false,
         });
 
-        // An hour and a half later the access token has expired; the CLI refreshes it and saves
-        // the new one, so a command at the real time still works with the refreshed session.
         ran(
           yield* cli.executor(["execute", "--code", program], {
             extra: { EXECUTOR_ENVIRONMENT: "e2e", EXECUTOR_TEST_CLOCK_OFFSET_MS: "5400000" },
@@ -110,7 +93,6 @@ layer(HostedLive, { excludeTestServices: true })("CLI sign-in", (it) => {
         );
         expect(Option.isSome(refreshed) && Option.isSome(saved)).toBe(true);
         if (Option.isSome(refreshed) && Option.isSome(saved)) {
-          // Compared as booleans, so a failure never prints a token.
           expect(refreshed.value.accessToken === saved.value.accessToken, "access token").toBe(
             false,
           );
@@ -120,12 +102,58 @@ layer(HostedLive, { excludeTestServices: true })("CLI sign-in", (it) => {
         }
         ran(yield* cli.executor(["execute", "--code", program]));
 
-        // The tools sign-in does not sign app commands in.
-        failedWith(yield* cli.cli(["list"]), "NotSignedIn");
-
-        // Narrowed after sign-in to selected tools, the grant reaches what it selects.
         const api = yield* Api,
-          actors = yield* Actors;
+          actors = yield* Actors,
+          http = yield* HttpClient.HttpClient;
+        const prefix = `/api/organizations/${actors.organization.id}`;
+        const source = yield* cli.fs.makeTempDirectoryScoped({ prefix: "executor-one-sign-in-" });
+        yield* cli.fs.writeFileString(
+          cli.path.join(source, "index.ts"),
+          'export default "one sign-in";',
+        );
+        const created = yield* cli.cli(["create", "--name", "One sign-in", "--files", source]);
+        expect(created.code, created.stderr).toBe(0);
+        const app = Schema.decodeUnknownSync(
+          Schema.fromJsonString(Schema.Struct({ id: Schema.String })),
+        )(created.stdout);
+        yield* Effect.addFinalizer(() =>
+          api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
+        );
+        const listed = yield* cli.cli(["list"]);
+        expect(listed.code, listed.stderr).toBe(0);
+        expect(Schema.decodeUnknownSync(Apps)(listed.stdout).map((item) => item.id)).toContain(
+          app.id,
+        );
+
+        const current = (yield* cli.storedCredential("Executor Tools", host)).pipe(
+          Option.map(Schema.decodeUnknownSync(ToolsSession)),
+        );
+        const statusOf = (path: string) =>
+          Option.match(current, {
+            onNone: () => Effect.succeed(0),
+            onSome: ({ accessToken }) =>
+              http
+                .execute(
+                  HttpClientRequest.get(`${host}${path}`).pipe(
+                    HttpClientRequest.bearerToken(accessToken),
+                  ),
+                )
+                .pipe(
+                  Effect.map((response) => response.status),
+                  Effect.orDie,
+                ),
+          });
+        const unrelated = yield* cli.executor(["apps", "credential", "get"], {
+          input: `protocol=https\nhost=git.example.test\npath=git/${actors.organization.id}/app.git\n\n`,
+        });
+        expect(unrelated.code, unrelated.stderr).toBe(0);
+        expect(unrelated.stdout, "no credential and nothing else for another Git host").toBe("");
+        expect(unrelated.stderr).toBe("");
+
+        expect(yield* statusOf("/api/context")).toBe(200);
+        expect(yield* statusOf(`${prefix}/apps`)).toBe(200);
+        expect(yield* statusOf(`${prefix}/inventory`)).toBe(401);
+
         const narrowed = yield* api.request(actors.owner, "POST", "/api/auth/mcp/grants/narrow", {
           id: yield* clientGrantId(actors.owner, login.clientId),
           policy: { kind: "tools", apps: [], approval: "client" },
@@ -137,6 +165,11 @@ layer(HostedLive, { excludeTestServices: true })("CLI sign-in", (it) => {
           access: { kind: "tools", apps: 0 },
           mode: "model",
         });
+        const refused = failedWith(
+          yield* cli.cli(["create", "--name", "Narrowed", "--files", source]),
+          "OrganizationForbidden",
+        );
+        expect(refused.message).toContain("run executor login again and choose All apps");
       }),
     ),
   );
@@ -147,17 +180,12 @@ layer(HostedLive, { excludeTestServices: true })("CLI sign-in", (it) => {
       Effect.gen(function* () {
         const host = targetHosts(yield* Target).api;
         const cli = yield* appsCli;
-        // `executor apps login` remembers its host too, for app commands without --host.
-        const apps = yield* cli.login(host);
-        expect(apps.finished.code, apps.finished.stderr).toBe(0);
+        const signedIn = yield* cli.login(host);
+        expect(signedIn.finished.code, signedIn.finished.stderr).toBe(0);
         const listed = yield* cli.cli(["list"]);
         expect(listed.code, listed.stderr).toBe(0);
         Schema.decodeUnknownSync(Apps)(listed.stdout);
 
-        const tools = yield* cli.login(host, ["login"]);
-        expect(tools.finished.code, tools.finished.stderr).toBe(0);
-
-        // EXECUTOR_HOST wins over the remembered host, and --host wins over EXECUTOR_HOST.
         const elsewhere = { EXECUTOR_HOST: "http://127.0.0.1:9" };
         failedWith(
           yield* cli.executor(["execute", "--code", program], { extra: elsewhere }),
@@ -172,15 +200,20 @@ layer(HostedLive, { excludeTestServices: true })("CLI sign-in", (it) => {
         const out = yield* cli.executor(["logout"]);
         expect(out.code, out.stderr).toBe(0);
         expect(out.stdout).toContain(`Signed out of ${host}.`);
-        // Both sign-ins are gone, and so is the remembered host.
         failedWith(
           yield* cli.executor(["execute", "--host", host, "--code", program]),
           "NotSignedIn",
         );
-        failedWith(yield* cli.cli(["list", "--host", host]), "NotSignedIn");
+        expect(
+          failedWith(yield* cli.cli(["list", "--host", host]), "NotSignedIn").message,
+        ).toContain("Run executor login,");
+        const signedOut = yield* cli.executor(["apps", "credential", "get"], {
+          input: `protocol=${new URL(host).protocol.slice(0, -1)}\nhost=${new URL(host).host}\npath=git/organization/app.git\n\n`,
+        });
+        expect(signedOut.stdout, "Git reads this as its credential protocol").toBe("");
+        expect(signedOut.stderr).toContain("Not signed in to this host for app commands.");
         const forgotten = failedWith(yield* cli.executor(["logout"]), "NotSignedIn");
         expect(forgotten.message).toContain("No Executor host is named or signed in to");
-        // Signing out again names the host and changes nothing.
         const again = yield* cli.executor(["logout", "--host", host]);
         expect(again.code, again.stderr).toBe(0);
         expect(again.stdout).toContain(`Not signed in to ${host}.`);

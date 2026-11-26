@@ -1,5 +1,4 @@
 import { CurrentActor } from "../contracts/executor.ts";
-/** Retained run identities pin code/accounts; the backend owns timers and checkpoint execution. */
 import { Cause, Clock, Effect, Exit, Redacted, Result, Schema } from "effect";
 import { Digest } from "effect/crypto";
 import type { HostCrypto } from "./host-crypto.ts";
@@ -45,9 +44,7 @@ import { appProviderFailure } from "./provider-error.ts";
 const StoredRun = Schema.Struct({
   id: WorkflowRunId,
   app: AppId,
-  /** The subject the run started for; its steps are checked against this subject's access. */
   actor: Schema.NullOr(Schema.NonEmptyString),
-  /** Whether the run started with a caller; its steps bind `ctx.user` only when it did. */
   scope: AccountScope,
   owner: OwnerId,
   key: Schema.String,
@@ -58,14 +55,11 @@ const StoredRun = Schema.Struct({
   failure: Schema.NullOr(WorkflowFailure.fields.reason),
   encrypted: Schema.RedactedFromValue(Schema.Uint8Array),
   createdAt: Schema.Date,
-})
-  // Storage keeps the column's former name.
-  .pipe(Schema.encodeKeys({ version: "deployment" }));
+}).pipe(Schema.encodeKeys({ version: "deployment" }));
 const Payload = Schema.Struct({
   input: WorkflowValue,
   request: WorkflowValue,
   output: Schema.optionalKey(WorkflowValue),
-  /** The failing step and app error; encrypted with the run's other authored values. */
   failure: Schema.optionalKey(WorkflowRunFailure),
 });
 const terminal = (row: typeof StoredRun.Type) =>
@@ -73,19 +67,16 @@ const terminal = (row: typeof StoredRun.Type) =>
 const unavailable = () => new WorkflowFailure({ reason: "unavailable", retryable: false });
 const failure = (reason: WorkflowFailure["reason"], retryable = false) =>
   new WorkflowFailure({ reason, retryable });
-/** Only the caller's own key finds a start's run again; a start without one makes a new run. */
 const repeatStart = (key: string | undefined) =>
   key === undefined
     ? "This start had no key, so starting again creates another run."
     : "Starting again with the same key and input returns this run.";
-/** A start whose run is saved, but whose state Executor could not read back. */
 const unconfirmedStart = (run: string, key: string | undefined) =>
   new WorkflowFailure({
     reason: "engine",
     retryable: false,
     message: `Run ${run} exists for this start, but Executor could not read it back, so its state is unknown. Get the run by its ID before starting another. ${repeatStart(key)}`,
   });
-/** A start whose save may have committed, which Executor could not read back to confirm. */
 const unknownStart = (key: string | undefined) =>
   new WorkflowFailure({
     reason: "engine",
@@ -117,11 +108,6 @@ const safe = <A>(
     }),
   );
 
-/**
- * Hand a committed queued run to the native engine. The run row is already durable, so a transient
- * engine failure leaves it queued for the next status read or the reconciliation job to dispatch,
- * and the caller still receives the run it created. Reports whether the engine accepted it.
- */
 const dispatch = (backend: WorkflowRuntime, run: WorkflowRunId) =>
   backend.start(run).pipe(
     Effect.as(true),
@@ -137,7 +123,6 @@ const dispatch = (backend: WorkflowRuntime, run: WorkflowRunId) =>
     ),
   );
 
-/** Compose lifecycle operations and private execution callbacks without acquiring resources. */
 export const makeWorkflowRuns = (
   storage: ExecutorDatabase,
   runtime: Runtime,
@@ -223,7 +208,6 @@ export const makeWorkflowRuns = (
       "engine",
       true,
     );
-  /** The run's captured version, scope and accounts, checked against the actor it started for. */
   const captured = (row: typeof StoredRun.Type) =>
     snapshot(db, {
       app: row.app,
@@ -328,7 +312,6 @@ export const makeWorkflowRuns = (
                     ...(message.length === 0 ? {} : { message }),
                   }),
                 ),
-              // The same step exceeds the same budget again, so retrying it cannot succeed.
               DatabaseLimitExceeded: (error) =>
                 Effect.fail(
                   new WorkflowFailure({
@@ -381,9 +364,18 @@ export const makeWorkflowRuns = (
         "execution",
       ).pipe(Effect.result);
       if (Result.isFailure(result)) {
-        if (result.failure.reason === "engine" && result.failure.retryable)
-          return yield* result.failure;
         const detail = workflowFailureDetail(result.failure);
+        if (result.failure.reason === "engine" && result.failure.retryable) {
+          if (detail !== undefined && backend !== undefined) {
+            const state = yield* backend.status(run).pipe(Effect.result);
+            if (
+              Result.isSuccess(state) &&
+              (state.success.status === "running" || state.success.status === "waiting")
+            )
+              yield* finish(run, { ok: false, error: "engine", detail }).pipe(Effect.ignore);
+          }
+          return yield* result.failure;
+        }
         yield* finish(run, {
           ok: false,
           error: result.failure.reason,
@@ -400,8 +392,6 @@ export const makeWorkflowRuns = (
       if (backend === undefined) return yield* unavailable();
       let state = yield* backend.status(row.id);
       if (row.status === "queued" && state.status === "missing") {
-        // The durable enqueue can commit before caller cancellation interrupts
-        // native dispatch. A status read reconciles that gap without waiting for cron.
         const current = yield* read(row.id);
         if (terminal(current)) return yield* view(current);
         if (current.status === "queued" && !(yield* dispatch(backend, row.id)))
@@ -454,8 +444,6 @@ export const makeWorkflowRuns = (
       const id = WorkflowRunId.make(`wfr_${yield* crypto.random.uuidV4()}`);
       const key = input.key ?? id;
       const actor = inherited === undefined ? yield* CurrentActor : inherited.actor;
-      // A key is the caller's within one scope: a run started without a caller never answers a
-      // start with one, nor the reverse, even for the same actor.
       const scope = inherited === undefined ? invocationScope(input.accounts) : inherited.scope;
       const find = () =>
         query(() =>
@@ -485,8 +473,6 @@ export const makeWorkflowRuns = (
               command: { operation: "workflow-validate", name: input.workflow, input: input.input },
             })
             .pipe(
-              // The app rejects input with its own WorkflowFailure. A build that could not load or
-              // answer is the host's failure, not the caller's input.
               Effect.catchTags({
                 RuntimeBuildUnavailable: () => Effect.fail(failure("engine", true)),
                 RuntimeProtocolFailed: () => Effect.fail(failure("engine", true)),
@@ -499,8 +485,6 @@ export const makeWorkflowRuns = (
           Redacted.make({ input: parsed, request: input.input }),
         );
         const createdAt = new Date(yield* Clock.currentTimeMillis);
-        // Set once every statement has run. A failure after it comes from the commit, which may
-        // have applied even though its answer was an error or never arrived.
         let committing = false;
         const settled = yield* transaction(db, () =>
           Effect.gen(function* () {
@@ -549,17 +533,12 @@ export const makeWorkflowRuns = (
             committing = true;
           }),
         ).pipe(Effect.exit);
-        // The SQL client reports a failed commit as a defect, so the whole cause is settled here.
-        // Cancellation, and a defect before the commit, end the start as they would anywhere.
         if (
           Exit.isFailure(settled) &&
           (Cause.hasInterrupts(settled.cause) || (!committing && !Cause.hasFails(settled.cause)))
         )
           return yield* Effect.failCause(settled.cause);
-        // Run `id` is saved, and a saved queued run is dispatched later even if this call stops.
         if (Exit.isSuccess(settled)) yield* Effect.annotateCurrentSpan("executor.run.id", id);
-        // Only a read decides what the start saved: a failed transaction may still have committed,
-        // or lost a race to a start with the same key.
         const found = yield* find().pipe(
           Effect.result,
           Effect.withSpan("workflow.start.read-back"),
@@ -569,13 +548,10 @@ export const makeWorkflowRuns = (
             return yield* unconfirmedStart(id, input.key);
           row = found.success;
         } else if (committing) {
-          // A commit that failed or timed out may still have applied. Not finding the run proves
-          // nothing either: the commit may land after this read.
           if (Result.isFailure(found) || found.success === null)
             return yield* unknownStart(input.key);
           row = found.success;
         } else {
-          // A failure before the commit rolled the transaction back.
           const error = Cause.findError(settled.cause);
           if (Result.isFailure(error)) return yield* Effect.failCause(settled.cause);
           if (Result.isFailure(found))
@@ -598,8 +574,6 @@ export const makeWorkflowRuns = (
         if (!terminal(retained)) yield* dispatch(backend, retained.id);
         return yield* view(yield* read(retained.id));
       }).pipe(
-        // The run is saved, and a saved queued run is dispatched later even if this call stops, so
-        // a failure from here on must not read as a start that did not happen.
         Effect.catchIf(
           (error) => !(Schema.is(WorkflowFailure)(error) && error.reason === "conflict"),
           () => Effect.fail(unconfirmedStart(String(saved.id), input.key)),
@@ -640,7 +614,6 @@ export const makeWorkflowRuns = (
       );
       return yield* view(yield* read(row.id));
     });
-  /** `actor` limits the page to one actor's runs; null to runs started without one. */
   const list = (input: typeof ListWorkflowRuns.Type, actor?: string | null) =>
     Effect.gen(function* () {
       yield* storedApp(db, { app: input.app });
@@ -673,7 +646,6 @@ export const makeWorkflowRuns = (
         ...(rows.length > limit && last !== undefined ? { next: last.id } : {}),
       });
     }).pipe(Effect.withSpan("sdk.workflows.list"));
-  /** The snapshot's actor is the boundary: controls never widen to another actor's runs. */
   function controls(inherited: InvocationSnapshot): WorkflowHostControls {
     const app = inherited.app.id;
     const actor = inherited.actor ?? null;
@@ -688,7 +660,6 @@ export const makeWorkflowRuns = (
           if (Cause.hasInterrupts(cause)) return Effect.interrupt;
           const error = Cause.squash(cause);
           if (Schema.is(WorkflowFailure)(error)) return Effect.fail(error);
-          // Executor's own errors carry curated text the app's code can act on.
           return Effect.fail(
             UserFacingError.is(error)
               ? new WorkflowFailure({
@@ -739,9 +710,6 @@ export const makeWorkflowRuns = (
       Effect.gen(function* () {
         const state = yield* snapshot(db, input);
         const identity = { app: state.app.id, version: state.version.id };
-        // Listing workflows evaluates the app's definition, as listing its tools or skills does,
-        // so it keeps the same account of what failed: the app's own error, a service's refusal
-        // or the runtime failure Executor observed, attributed to this app alone.
         const value = yield* declarations.read("workflows", state, (context) =>
           runtime
             .workflow({
@@ -776,8 +744,6 @@ export const makeWorkflowRuns = (
           const row = yield* read(input.run, input.app);
           if (input.owner !== undefined && row.owner !== input.owner)
             return yield* failure("not_found");
-          // Each account keeps the scope its requirement had when the run started, whatever later
-          // versions declare.
           const version = yield* storedVersion(db, app, row.version).pipe(
             Effect.catchTags({
               VersionNotFound: () => failure("not_found"),

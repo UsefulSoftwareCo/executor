@@ -1,9 +1,7 @@
-/** Caller-owned Effect SQL driver and one reactive storage handle shared by SDK clients. */
 import { makeExecutorStorage, AppRequirements, StoredApp, StoredVersion } from "@executor-js/sdk";
 import { pgliteLayer } from "fumadb-effect/pglite";
 import { Effect, Schema } from "effect";
 
-/** Initialize SQLite, commit an app, and close the driver with the enclosing scope. */
 export const storageWalkthrough = () =>
   Effect.runPromise(
     Effect.scoped(

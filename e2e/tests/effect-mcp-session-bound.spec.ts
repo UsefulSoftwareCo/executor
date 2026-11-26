@@ -1,14 +1,3 @@
-/**
- * The MCP transport patched in `patches/effect@4.1.4.patch` keeps at most `maxSessions` HTTP
- * sessions and never forgets one that owns work: a request in flight, or work `heldSession`
- * reports. When every session owns work, `initialize` is refused with 503 until one finishes.
- *
- * Self-host sets 256, and its programs pin at most 64 sessions, so filling every place through the
- * product takes about 190 other requests in flight at once. The probe runs the patched transport
- * in its own Node process instead, as the self-host product installs it, with a bound of 2, a tool
- * whose calls wait until the probe releases them, and a `heldSession` the probe controls. It sends
- * real HTTP requests over loopback and reports what they got.
- */
 import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, Schema } from "effect";
@@ -352,7 +341,6 @@ const Report = Schema.Struct({
     later: Schema.Number,
   }),
 });
-/** 503 with JSON-RPC error -32013 and a retry hint. */
 const refused = { status: 503, retryAfter: "1", code: -32013 };
 
 const report = Effect.gen(function* () {
@@ -371,21 +359,15 @@ it.live(
     Effect.gen(function* () {
       const { together, inFlight } = yield* report;
 
-      // Each admission takes its session's place, so two of eight open however they interleave.
-      // On the previous patch, which checked the bound at admission and registered later, all
-      // eight opened.
       expect(together.opened, "sessions opened by eight initialize requests").toBe(2);
       expect(together.refused).toEqual(Array.from({ length: 6 }, () => refused));
       expect(together.confirmed).toEqual([202, 202]);
       expect(together.pings).toEqual([200, 200]);
-      // Once the work ends, initialize opens again and forgets the least recently used session.
       expect(together.next).toBe(200);
       expect(together.afterNext).toEqual([404, 200, 200]);
 
-      // A request in flight owns its session; a refused initialize takes no place.
       expect(inFlight.refused).toEqual([refused, refused]);
       expect(inFlight.answered).toEqual({ status: 200, released: true });
-      // The session whose call answered owns nothing now and is the one forgotten.
       expect(inFlight.reopened).toBe(200);
       expect(inFlight.first).toBe(404);
       expect(inFlight.second).toBe(200);
@@ -394,7 +376,6 @@ it.live(
   60_000,
 );
 
-/** Each request's client disconnected at the exact point after the acquisition, and the server interrupted the request. */
 const disconnected = [
   { client: "AbortError", interrupted: true },
   { client: "AbortError", interrupted: true },
@@ -405,11 +386,9 @@ it.live(
   () =>
     Effect.gen(function* () {
       const { abortedInitialize, abortedUnbounded } = yield* report;
-      // Leaked, the two places filled the bound of 2 and every later initialize got 503.
       expect(abortedInitialize.aborted).toEqual(disconnected);
       expect(abortedInitialize.state).toEqual({ sessions: 0, reserved: 0, inFlight: 0 });
       expect(abortedInitialize.later).toEqual([200, 200]);
-      // Without a bound no place is kept at all, and three sessions stay open where 2 would forget one.
       expect(abortedUnbounded.aborted).toEqual(disconnected);
       expect(abortedUnbounded.state).toEqual({ sessions: 0, reserved: 0, inFlight: 0 });
       expect(abortedUnbounded.pings).toEqual([200, 200, 200]);
@@ -422,7 +401,6 @@ it.live(
   () =>
     Effect.gen(function* () {
       const { abortedHold } = yield* report;
-      // Leaked, both sessions owned work for good and every later initialize got 503.
       expect(abortedHold.aborted).toEqual(disconnected);
       expect(abortedHold.state).toEqual({ sessions: 2, reserved: 0, inFlight: 0 });
       expect(abortedHold.later).toBe(200);
@@ -435,8 +413,6 @@ it.live(
   () =>
     Effect.gen(function* () {
       const { abortedStream } = yield* report;
-      // The handler had returned a stream and the server had not begun to send it. Leaked, both
-      // sessions owned work for good and every later initialize got 503.
       expect(abortedStream.aborted).toEqual(disconnected);
       expect(abortedStream.state).toEqual({ sessions: 2, reserved: 0, inFlight: 0 });
       expect(abortedStream.later).toBe(200);

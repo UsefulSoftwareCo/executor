@@ -1,15 +1,3 @@
-/**
- * Executor v1's shutdown (`notes/v1-shutdown.md`): once `executor.sh` is routed to v2, Cloud's edge
- * serves every MCP URL v1 issued and its discovery, signs their clients in to v2, accepts the
- * WorkOS API keys v1 captured while it still forwarded, and serves v1's documents, redirects and
- * a 410 for v1's API. The edge (`edge.` beside the deployment) stands in for `executor.sh`; v1's
- * edge forwards none of these paths before the switch, so requesting them here is what the
- * switch does.
- *
- * v1 organizations reach the edge only through Cloud's lookup table (`private_v1_legacy_org`),
- * which the import and the backfill wrote. Scenarios write its rows directly, for synthetic
- * organization ids and slugs, as they did.
- */
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -44,7 +32,6 @@ const Discovery = Schema.Struct({
 });
 const Search = Schema.Struct({ items: Schema.Array(Schema.Struct({ path: Schema.String })) });
 
-/** The user a session belongs to. */
 const userOf = (session: Session) =>
   Effect.gen(function* () {
     const api = yield* Api;
@@ -52,15 +39,11 @@ const userOf = (session: Session) =>
       .id;
   });
 
-/** What Better Auth stores for a key: the unpadded base64url SHA-256 of its value. */
 const keyHash = (key: string) => createHash("sha256").update(key).digest("base64url");
 
-/** A synthetic WorkOS organization id. */
 const v1OrganizationId = () => `org_${randomBytes(13).toString("hex").toUpperCase()}`;
-/** A synthetic v1 slug, lowercase like v1's. */
 const v1Slug = (label: string) => `${label}-${randomUUID().slice(0, 8)}`;
 
-/** A v1 organization that moved to `v2`, as the import or the backfill records it. */
 const movedV1Organization = (v2: string, slug = v1Slug("v1")) =>
   Effect.gen(function* () {
     const id = v1OrganizationId();
@@ -73,7 +56,6 @@ const movedV1Organization = (v2: string, slug = v1Slug("v1")) =>
     return { id, slug };
   });
 
-/** Another team's v2 organization, nobody in the scenario a member of it. */
 const otherV2Organization = (slug: string) =>
   Effect.gen(function* () {
     const id = `org-${randomUUID()}`;
@@ -86,7 +68,6 @@ const otherV2Organization = (slug: string) =>
     return { id, slug };
   });
 
-/** A member's copy of a v1 toolkit, as the import records it. */
 const toolkitCopy = (input: {
   readonly v1Organization: string;
   readonly toolkit: string;
@@ -119,7 +100,6 @@ const initialize = JSON.stringify({
   },
 });
 
-/** An MCP `initialize` to `url`, with `bearer` when given. */
 const initializeAt = (url: string, bearer?: string) =>
   rawRequest(url, {
     method: "POST",
@@ -131,7 +111,6 @@ const initializeAt = (url: string, bearer?: string) =>
     body: initialize,
   });
 
-/** An access token as AuthKit issued them: a JWT from another issuer. */
 const authKitToken = () =>
   [
     Buffer.from(JSON.stringify({ alg: "RS256", kid: "synthetic" })).toString("base64url"),
@@ -146,11 +125,9 @@ const authKitToken = () =>
     randomBytes(32).toString("base64url"),
   ].join(".");
 
-/** The challenge a legacy URL's 401 carries: its own discovery document. */
 const challengeFor = (edge: string, path: string, mode = "model") =>
   `Bearer resource_metadata="${edge}/.well-known/oauth-protected-resource${path}?elicitation_mode=${mode}", scope="mcp offline_access"`;
 
-/** What the edge's discovery document says for `path`. */
 const discovered = (edge: string, path: string) =>
   Effect.gen(function* () {
     const response = yield* rawRequest(`${edge}/.well-known/oauth-protected-resource${path}`);
@@ -169,7 +146,6 @@ const expectDiscovery = (edge: string, path: string) =>
     });
   });
 
-/** What a bearer reaches, as `/mcp/whoami` on the edge says. */
 const whoami = (edge: string, bearer: Redacted.Redacted<string>) =>
   Effect.gen(function* () {
     const response = yield* rawRequest(`${edge}/mcp/whoami`, {
@@ -179,7 +155,6 @@ const whoami = (edge: string, bearer: Redacted.Redacted<string>) =>
     return yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Whoami))(response.text);
   });
 
-/** A personal access token, unpinned or pinned to an organization. */
 const personalToken = (session: Session, organization?: string) =>
   Effect.gen(function* () {
     const api = yield* Api;
@@ -191,7 +166,6 @@ const personalToken = (session: Session, organization?: string) =>
     return Redacted.make((yield* body(CreatedKey, created)).key);
   });
 
-/** How many apps' tools an MCP client can search: none when its access selects no app. */
 const searchable = (client: Effect.Success<ReturnType<McpClient["Service"]["connect"]>>) =>
   client
     .use("Search every tool", (client, signal) =>
@@ -225,16 +199,12 @@ layer(HostedLive, { excludeTestServices: true })("Cloud after v1's shutdown", (i
           target = yield* Target;
         const { edge, mcp: mcpOrigin } = targetHosts(target);
         const organization = actors.organization;
-        // A v1 slug that another team's v2 organization now holds as its own slug.
         const held = yield* otherV2Organization(v1Slug("held"));
         const moved = yield* movedV1Organization(organization.id, held.slug);
-        // Two v1 organizations merged into the same v2 organization.
         const merged = yield* movedV1Organization(organization.id);
-        // A v1 organization that moved to the other team's organization.
         const elsewhere = yield* movedV1Organization(held.id);
         const unknown = v1Slug("unknown");
 
-        // Discovery names each URL as its own resource and v2's issuer on `executor.sh`.
         for (const path of [
           `/${moved.slug}/mcp`,
           `/${moved.id}/mcp`,
@@ -249,8 +219,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud after v1's shutdown", (i
         expect(issuer.status).toBe(200);
         expect(JSON.parse(issuer.text)).toMatchObject({ issuer: `${edge}/api/auth` });
 
-        // An AuthKit token, and no token at all, get the URL's own challenge: the client signs in
-        // to v2 there.
         for (const bearer of [authKitToken(), undefined]) {
           const refused = yield* initializeAt(`${edge}/${moved.slug}/mcp`, bearer);
           expect(refused.status).toBe(401);
@@ -261,13 +229,10 @@ layer(HostedLive, { excludeTestServices: true })("Cloud after v1's shutdown", (i
           authKitToken(),
         );
         expect(native.challenge).toBe(challengeFor(edge, `/${moved.slug}/mcp`, "native"));
-        // An unknown slug names nothing to sign in to.
         const nothing = yield* initializeAt(`${edge}/${unknown}/mcp`, authKitToken());
         expect(nothing.status).toBe(404);
         expect(nothing.challenge).toBeNull();
 
-        // The owner signs in for the v1 slug URL. Its v2 slug differs, and another team holds the
-        // v1 slug as its v2 slug; the grant is the mapped organization's.
         const signedIn = yield* consentTo(actors.owner, `${edge}/${moved.slug}/mcp`);
         expect(signedIn.status).toBe(200);
         const token = yield* signedIn.tokens;
@@ -286,13 +251,9 @@ layer(HostedLive, { excludeTestServices: true })("Cloud after v1's shutdown", (i
           });
           expect(yield* listTools(client), path).toContain("execute");
         }
-        // The grant works on v2's own MCP URL too.
         const own = yield* mcp.connect(token, "legacy-grant-on-mcp", { origin: mcpOrigin });
         expect(yield* listTools(own)).toContain("execute");
 
-        // A v1 organization that moved to an organization the owner does not belong to: v2
-        // refuses the sign-in, and the owner's own grant is for another organization. The client
-        // reads its discovery first, as clients do.
         yield* expectDiscovery(edge, `/${elsewhere.slug}/mcp`);
         const outsider = yield* consentTo(actors.owner, `${edge}/${elsewhere.slug}/mcp`);
         expect(outsider.status).toBe(403);
@@ -302,8 +263,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud after v1's shutdown", (i
         );
         expect(mismatch.status).toBe(403);
         expect(mismatch.text).toContain("names a different organization");
-        // A full-account key names no organization on bare `/mcp`, and is not a member of the
-        // other team's.
         const unpinned = yield* personalToken(actors.owner);
         const noOrganization = yield* initializeAt(`${edge}/mcp`, Redacted.value(unpinned));
         expect(noOrganization.status).toBe(403);
@@ -314,13 +273,11 @@ layer(HostedLive, { excludeTestServices: true })("Cloud after v1's shutdown", (i
         );
         expect(notMember.status).toBe(403);
         expect(notMember.text).toContain("is not a member of the organization");
-        // The same key on the slug URL works there, for the organization the slug names.
         const keyed = yield* mcp.connect(unpinned, "legacy-key", {
           origin: edge,
           path: `/${moved.slug}/mcp`,
         });
         expect(yield* listTools(keyed)).toContain("execute");
-        // An unknown slug's sign-in is refused before consent: it is no resource.
         const unknownSignIn = yield* consentTo(actors.owner, `${edge}/${unknown}/mcp`);
         expect(unknownSignIn.refused).toBe("invalid_target");
       }).pipe(Effect.provide(McpClient.layer)),
@@ -339,7 +296,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud after v1's shutdown", (i
         const organization = actors.organization;
         const moved = yield* movedV1Organization(organization.id);
         const owner = yield* userOf(actors.owner);
-        // The owner's copy of a v1 toolkit: a connection that selects no app.
         const created = yield* api.request(
           actors.owner,
           "POST",
@@ -367,7 +323,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud after v1's shutdown", (i
         expect(challenged.status).toBe(401);
         expect(challenged.challenge).toBe(challengeFor(edge, url));
 
-        // Signing in for the toolkit URL binds the grant to the owner's own copy.
         const signedIn = yield* consentTo(actors.owner, `${edge}${url}`);
         expect(signedIn.status).toBe(200);
         const token = yield* signedIn.tokens;
@@ -376,7 +331,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud after v1's shutdown", (i
         expect(yield* listTools(client)).toContain("execute");
         expect(yield* searchable(client)).toBe(0);
 
-        // Without the organization in the URL, the person chooses it and the copy is theirs there.
         const bare = yield* consentTo(actors.owner, `${edge}/mcp/toolkits/${toolkit}`, {
           "x-executor-organization": organization.id,
         });
@@ -386,15 +340,12 @@ layer(HostedLive, { excludeTestServices: true })("Cloud after v1's shutdown", (i
           id: copy,
         });
 
-        // A member without a copy cannot sign in for the toolkit, nor use it with a key.
         expect((yield* consentTo(actors.member, `${edge}${url}`)).status).toBe(403);
         const memberKey = yield* personalToken(actors.member, organization.id);
         const noCopy = yield* initializeAt(`${edge}${url}`, Redacted.value(memberKey));
         expect(noCopy.status).toBe(403);
         expect(noCopy.text).toContain("names no toolkit of this account's");
 
-        // The owner's key on the toolkit URL is narrowed to their copy; on the organization's URL
-        // it keeps its full access.
         const ownerKey = yield* personalToken(actors.owner, organization.id);
         const narrowed = yield* mcp.connect(ownerKey, "legacy-toolkit-key", {
           origin: edge,
@@ -407,7 +358,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud after v1's shutdown", (i
         });
         expect(yield* searchable(full)).toBeGreaterThan(0);
 
-        // A grant for the organization's URL is not the toolkit's: the client signs in for it.
         yield* expectDiscovery(edge, `/${moved.slug}/mcp`);
         const organizationGrant = yield* consentTo(actors.owner, `${edge}/${moved.slug}/mcp`);
         const other = yield* initializeAt(
@@ -434,8 +384,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud after v1's shutdown", (i
             ConstructorParameters<typeof StreamableHTTPClientTransport>[1]
           >["authProvider"]
         >;
-        // The client holds what AuthKit gave it, stamped by the SDK with AuthKit's issuer: its
-        // registration there and its tokens.
         const authKit = "https://signin.example.test";
         let registered: Awaited<ReturnType<Provider["clientInformation"]>> = {
           client_id: "client_SYNTHETIC_AUTHKIT",
@@ -470,7 +418,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud after v1's shutdown", (i
           },
           saveCodeVerifier: (saved) => void (verifier = saved),
           codeVerifier: () => verifier,
-          // As real clients do, so the SDK can drop credentials a server refuses.
           invalidateCredentials: (scope) => {
             if (scope === "all" || scope === "client") registered = undefined;
             if (scope === "all" || scope === "tokens") tokens = undefined;
@@ -482,8 +429,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud after v1's shutdown", (i
           const compatible: Omit<StreamableHTTPClientTransport, "sessionId"> = created;
           return { created, compatible };
         };
-        // Refused, the client rediscovers the URL's authorization server and asks to sign in
-        // there, once, rather than refreshing with AuthKit.
         const signIn = transport();
         const refused = yield* driver("connect with AuthKit's token", () =>
           new Client({ name: "v1 client", version: "1" }).connect(signIn.compatible),
@@ -497,7 +442,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud after v1's shutdown", (i
         expect(authorization.searchParams.get("resource")).toBe(`${edge}/${moved.slug}/mcp`);
         expect(registered?.client_id).not.toBe("client_SYNTHETIC_AUTHKIT");
 
-        // The owner approves; the URL names the organization, so the page sends none.
         const opened = yield* api.request(
           actors.owner,
           "GET",
@@ -543,9 +487,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud after v1's shutdown", (i
           oauth = yield* McpOAuth,
           target = yield* Target;
         const { edge } = targetHosts(target);
-        // Codex and Claude Code send the person to the consent page in their browser. Its
-        // document carries the edge as the legacy MCP origin, and the page must keep it once it
-        // hydrates, or it cannot load a request for one of v1's URLs.
         yield* browser.login(actors.owner);
         const grant = yield* oauth.authorizeAt("mcp", edge);
         expect(grant.resource).toBe(`${edge}/mcp`);
@@ -577,8 +518,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud after v1's shutdown", (i
             ),
           );
 
-        // v1's Google OAuth verification names its terms, privacy policy and Google OAuth page on
-        // executor.sh. The site's own pages of the same name answer them, not copies of v1's.
         for (const [path, text] of [
           ["/terms", "Terms of Service"],
           ["/privacy", "Privacy Policy"],
@@ -588,13 +527,11 @@ layer(HostedLive, { excludeTestServices: true })("Cloud after v1's shutdown", (i
           expect(page.status, path).toBe(200);
           expect(page.text, path).toContain(text);
         }
-        // v1's favicon, which the site serves byte for byte.
         expect(yield* bytes("/favicon-192.png")).toEqual({
           status: 200,
           sha256: "e5fd761a0cd80d51d451cc06e9e6d0236dcc39317248a13ac5db5fcf4d52d0ca",
         });
 
-        // v1's OAuth client ID metadata documents, as v1 generated them for its host.
         const web = (name: string) =>
           `{"client_id":"${edge}/api/oauth/client-id-metadata/${name}.json","client_name":"Executor","client_uri":"${edge}","redirect_uris":["${edge}/api/oauth/callback"],"grant_types":["authorization_code","refresh_token"],"response_types":["code"],"token_endpoint_auth_method":"none","application_type":"web"}`;
         for (const name of ["default", "tb", moved.slug]) {
@@ -607,7 +544,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud after v1's shutdown", (i
           `{"client_id":"${edge}/api/oauth/client-id-metadata/local.json","client_name":"Executor Local","client_uri":"${edge}","redirect_uris":["http://127.0.0.1/api/oauth/callback","http://localhost/api/oauth/callback","http://[::1]/api/oauth/callback"],"grant_types":["authorization_code","refresh_token"],"response_types":["code"],"token_endpoint_auth_method":"none","application_type":"native"}`,
         );
 
-        // A v1 dashboard opens the organization it moved to in v2, by its v2 slug.
         for (const path of [`/${moved.slug}`, `/${moved.slug}/integrations`]) {
           const dashboard = yield* rawRequest(`${edge}${path}`);
           expect(dashboard.status, path).toBe(302);
@@ -615,7 +551,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud after v1's shutdown", (i
         }
         expect((yield* rawRequest(`${edge}/${v1Slug("unknown")}`)).status).toBe(404);
 
-        // v1's sign-in paths open v2's sign-in, and sign-up v2's sign-up.
         for (const path of [
           "/login",
           "/api/auth/login",
@@ -629,7 +564,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud after v1's shutdown", (i
         }
         const signUp = yield* rawRequest(`${edge}/sign-up`);
         expect(signUp.location).toBe(`${browser}/login?mode=signup`);
-        // v2 dashboard links and slashed site pages redirect as v1's edge did.
         const dashboardLink = yield* rawRequest(`${edge}/org/${actors.organization.slug}/apps?x=1`);
         expect(dashboardLink.status).toBe(308);
         expect(dashboardLink.location).toBe(`${browser}/org/${actors.organization.slug}/apps?x=1`);
@@ -637,7 +571,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud after v1's shutdown", (i
         expect(slashed.status).toBe(308);
         expect(slashed.location).toBe("/pricing?ref=v1");
 
-        // A connected-account sign-in v1 started cannot finish; one v2 started is v2's.
         const v1Callback = yield* rawRequest(
           `${edge}/api/oauth/callback?code=synthetic&state=${randomBytes(16).toString("base64url")}`,
         );
@@ -649,7 +582,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud after v1's shutdown", (i
         );
         expect(v2Callback.status).not.toBe(410);
 
-        // The rest of v1's REST API is gone, for every method.
         for (const [method, path] of [
           ["GET", "/api/organizations"],
           ["POST", "/api/integrations"],
@@ -664,7 +596,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud after v1's shutdown", (i
           });
         }
 
-        // The site is unchanged.
         expect((yield* rawRequest(`${edge}/`)).status).toBe(200);
         expect((yield* rawRequest(`${edge}/pricing`)).status).toBe(200);
       }),
@@ -690,8 +621,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud after v1's shutdown", (i
           expect(JSON.parse(response.text), label).toEqual({ error, error_description: shutDown });
         };
 
-        // AuthKit's metadata is gone, so a client that reads it before refreshing finds no
-        // server there, and the MCP URL's 401 names v2's.
         for (const path of [
           "/.well-known/oauth-authorization-server",
           "/.well-known/openid-configuration",
@@ -705,8 +634,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud after v1's shutdown", (i
           );
         }
 
-        // A refresh at AuthKit's token endpoint is a dead grant, which clients answer by
-        // signing in again.
         const refresh = yield* rawRequest(`${authKit}/oauth2/token`, {
           method: "POST",
           headers: { "content-type": "application/x-www-form-urlencoded" },
@@ -740,8 +667,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud after v1's shutdown", (i
           "register",
         );
 
-        // AuthKit's sign-in page, which a client opens in the person's browser, says how to
-        // reconnect, and shows nothing the request carried.
         const marker = `marker${randomUUID().replaceAll("-", "")}`;
         const authorize = yield* rawRequest(
           `${authKit}/oauth2/authorize?${new URLSearchParams({
@@ -766,9 +691,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud after v1's shutdown", (i
           expect(page.text, path).toContain("Executor v1's sign-in has shut down");
         }
 
-        // Nothing else is served there, MCP included. Claude Code, finding no metadata, refreshes
-        // at the default `/token`; a 410 there keeps "Clear authentication" in its menu, which
-        // signs in to v2, and shows this answer's description as the server's issue.
         for (const [method, path] of [
           ["POST", "/token"],
           ["POST", "/mcp"],
@@ -788,7 +710,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud after v1's shutdown", (i
           );
         }
 
-        // The table is the AuthKit host's alone: the deployment still serves v2's issuer metadata.
         const issuer = yield* rawRequest(`${deployment}/.well-known/oauth-authorization-server`);
         expect(issuer.status).toBe(200);
         expect(JSON.parse(issuer.text)).toHaveProperty("token_endpoint");
@@ -811,8 +732,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud after v1's shutdown, mov
             mcp = yield* McpClient,
             target = yield* Target;
           const { edge, mcp: mcpOrigin, api: apiOrigin } = targetHosts(target);
-          // A v1 workspace in v1's WorkOS that moved to the scenario's organization, its member
-          // mapped to the owner, recorded with its v1 URLs as the import recorded them.
           const email = `shutdown-${randomUUID().slice(0, 8)}@example.test`;
           const workspace = yield* emulators.v1Workspace([email]);
           const slug = v1Slug("moved");
@@ -848,8 +767,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud after v1's shutdown, mov
               return yield* listTools(client);
             });
 
-          // The member's WorkOS key, made in v1 and never seen by v2: WorkOS vouches for it on its
-          // first use, and v2 stores it as the member's own key, pinned to the moved organization.
           const key = yield* emulators.v1ApiKey(workspace.user, workspace.organization);
           expect(yield* counts(keyHash(key.value), key.id)).toEqual([0, 0]);
           expect(yield* listAt(key.value, "first-use", edge, `/${slug}/mcp`)).toContain("execute");
@@ -869,8 +786,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud after v1's shutdown, mov
             enabled: true,
           });
 
-          // From now on WorkOS refuses every validation, and the key works natively on v1's URLs,
-          // v2's own MCP and v2's API.
           const outage = yield* emulators.failV1KeyValidations({ status: 503, times: 1000 });
           yield* Effect.addFinalizer(() => emulators.clearWorkosFault(outage).pipe(Effect.ignore));
           const native: ReadonlyArray<readonly [string, string, string]> = [
@@ -892,7 +807,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud after v1's shutdown, mov
             "a stored key never asks WorkOS again",
           ).toBe(1000);
 
-          // While WorkOS cannot answer, a WorkOS key v2 does not hold is an outage to retry.
           const unseen = yield* emulators.v1ApiKey(workspace.user, workspace.organization);
           const unanswered = yield* initializeAt(`${edge}/${slug}/mcp`, unseen.value);
           expect(unanswered.status).toBe(503);
@@ -902,8 +816,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud after v1's shutdown, mov
             "execute",
           );
 
-          // A key WorkOS does not know is refused, and is not asked about again soon: a second use
-          // leaves a fault armed for it unspent.
           const unknown = `sk_test_${randomBytes(24).toString("base64url")}`;
           const refused = yield* initializeAt(`${edge}/${slug}/mcp`, unknown);
           expect(refused.status).toBe(401);
@@ -913,7 +825,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud after v1's shutdown, mov
           expect((yield* emulators.workosFaults).get(watch)).toBe(1);
           yield* emulators.clearWorkosFault(watch);
 
-          // A key of an organization that did not move is valid in WorkOS but not stored.
           const elsewhere = yield* emulators.v1Workspace([
             `unmoved-${randomUUID().slice(0, 8)}@example.test`,
           ]);
@@ -921,7 +832,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud after v1's shutdown, mov
           expect((yield* initializeAt(`${edge}/mcp`, unmoved.value)).status).toBe(401);
           expect(yield* counts(keyHash(unmoved.value), unmoved.id)).toEqual([0, 0]);
 
-          // A key its owner deleted in v2 is never stored again, though WorkOS still vouches for it.
           yield* writeRows("sso-database.json", [
             { sql: "delete from apikey where key = $1", params: [keyHash(key.value)] },
           ]);
@@ -929,7 +839,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud after v1's shutdown, mov
           expect(yield* counts(keyHash(key.value), key.id)).toEqual([0, 1]);
         }).pipe(Effect.provide(Layer.merge(Emulators.layer, McpClient.layer))),
       ),
-    // Many requests on v1's URLs and v2's.
     { timeout: 180_000 },
   );
 });

@@ -1,11 +1,3 @@
-/**
- * The Deploy workflow's decide job skips the deploy for a push whose changes since the deploy that
- * started last, when it succeeded, all lie in paths no deploy reads. These cases run
- * `node apps/hosted/cloud/scripts/deploy-decision.ts` as a process with the job's environment,
- * in a temporary repository laid out as this one is, against a stub of GitHub's Actions API that
- * records which runs deployed. They read the outputs file and the job summary it writes, as GitHub
- * Actions does.
- */
 import { expect, layer } from "@effect/vitest";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -16,10 +8,8 @@ import { createServer } from "node:http";
 
 const repository = "owner/repository";
 const script = "apps/hosted/cloud/scripts/deploy-decision.ts";
-/** The deploy step's name, which the deploy history looks for. */
 const deployStep = "Deploy analytics and the v2 stage";
 
-/** The root manifest, as this repository's is laid out: workspaces, scripts, dependencies. */
 const rootManifest = (
   change: {
     readonly scripts?: Record<string, string>;
@@ -50,7 +40,6 @@ const rootManifest = (
     2,
   );
 
-/** A small repository laid out as this one is: packages, and the paths no deploy reads. */
 const files: Record<string, string> = {
   "package.json": rootManifest(),
   "bun.lock": "lock 1\n",
@@ -88,16 +77,10 @@ const files: Record<string, string> = {
   "scripts/releases/apps-published.ts": "export {};\n",
 };
 
-/**
- * How one attempt of a Deploy run went for its commit: its deploy step succeeded, failed, was
- * cancelled or is still running; its deploy job was skipped; its deploy job started and lists no
- * step yet; or the attempt was cancelled while it waited, before it had any job.
- */
 type Deployed = "success" | "failure" | "cancelled" | "running" | "skipped" | "unlisted" | "never";
 
 interface Attempt {
   readonly deployed: Deployed;
-  /** Hours after the run's creation that this attempt started. */
   readonly afterHours: number;
 }
 
@@ -106,16 +89,13 @@ interface Run {
   readonly sha: string;
   readonly createdAt: string;
   readonly event: "push" | "workflow_dispatch";
-  /** Its attempts, first to last. */
   readonly attempts: ReadonlyArray<Attempt>;
-  /** The deploy job's name, when a run named it otherwise. */
   readonly jobName?: string;
 }
 
 const hour = 3_600_000;
 const at = (time: string, offset: number) => new Date(Date.parse(time) + offset).toISOString();
 
-/** One attempt's jobs as GitHub lists them: the decide job, then the deploy job. */
 const jobsOf = (run: Run, attempt: Attempt) => {
   if (attempt.deployed === "never") return [];
   const created = at(run.createdAt, attempt.afterHours * hour);
@@ -138,7 +118,6 @@ const jobsOf = (run: Run, attempt: Attempt) => {
   });
   switch (attempt.deployed) {
     case "skipped":
-      // A job whose condition was false: no steps, never started.
       return [
         decide,
         { name, conclusion: "skipped", created_at: created, started_at: null, steps: [] },
@@ -173,11 +152,9 @@ const jobsOf = (run: Run, attempt: Attempt) => {
   }
 };
 
-/** GitHub's Actions API for these runs: the workflow, its runs by creation time, each run's jobs. */
 const stubGitHub = (
   runs: ReadonlyArray<Run>,
   down: boolean,
-  /** The root manifest at each commit, for GitHub's contents API. */
   manifests: Readonly<Record<string, string>>,
 ) =>
   Effect.gen(function* () {
@@ -246,7 +223,6 @@ const stubGitHub = (
     return `http://127.0.0.1:${server.address.port}`;
   });
 
-/** One earlier Deploy run: how its first attempt went, and its later attempts. */
 interface Earlier {
   readonly deployed: Deployed;
   readonly event?: "push" | "workflow_dispatch";
@@ -254,26 +230,16 @@ interface Earlier {
   readonly jobName?: string;
 }
 
-/**
- * Run the decision in a fresh repository. The first commit was deployed (`base` changes how);
- * `history` commits one change per earlier Deploy run, an hour apart; `change` is the pushed
- * commit's own change.
- */
 const decide = (input: {
   readonly base?: Omit<Earlier, "deployed">;
   readonly history: ReadonlyArray<Earlier & { readonly change: Record<string, string> }>;
   readonly change: Record<string, string | null>;
   readonly event?: "push" | "workflow_dispatch";
   readonly down?: boolean;
-  /** Point the last deploy at a commit the repository does not hold. */
   readonly unknownBase?: boolean;
-  /** Deploy the pushed commit itself before this run, as a rerun of it finds. */
   readonly rerun?: boolean;
-  /** The run attempt, above 1 when someone re-runs the run. */
   readonly attempt?: number;
-  /** Point the job summary at a path that cannot be written. */
   readonly unwritableSummary?: boolean;
-  /** GitHub answers 404 for the root manifest at every commit but the pushed one. */
   readonly noBaseManifest?: boolean;
 }) =>
   Effect.gen(function* () {
@@ -380,27 +346,30 @@ const decide = (input: {
   }).pipe(Effect.scoped);
 
 layer(NodeServices.layer)("Deploy decision", (it) => {
-  it.effect("a push that changes only tests, notes, documents or other workflows skips", () =>
-    Effect.gen(function* () {
-      const run = yield* decide({
-        history: [],
-        change: {
-          "e2e/tests/example.spec.ts": "export const changed = 1;\n",
-          "notes/ci.md": "Changed note.\n",
-          "README.md": "Changed readme.\n",
-          ".github/workflows/checks.yml": "name: Changed checks\n",
-          "e2e/support/helper.ts": "export const helper = 1;\n",
-        },
-      });
-      expect(run.exitCode).toBe(0);
-      expect(run.deploy).toBe("false");
-      expect(run.base).toBe(run.first);
-      expect(run.summary).toContain(
-        "**Skipped:** every change since the last deploy lies in paths no deploy reads",
-      );
-      expect(run.summary).toContain(`Base: \`${run.first}\``);
-      expect(run.summary).toContain("None of the 5 changed files is a deploy input");
-    }),
+  it.effect(
+    "a push that changes only tests, notes, documents, CI scripts or other workflows skips",
+    () =>
+      Effect.gen(function* () {
+        const run = yield* decide({
+          history: [],
+          change: {
+            "e2e/tests/example.spec.ts": "export const changed = 1;\n",
+            "notes/ci.md": "Changed note.\n",
+            "README.md": "Changed readme.\n",
+            ".github/workflows/checks.yml": "name: Changed checks\n",
+            "e2e/support/helper.ts": "export const helper = 1;\n",
+            "scripts/ci/tool.ts": "export const changed = 1;\n",
+          },
+        });
+        expect(run.exitCode).toBe(0);
+        expect(run.deploy).toBe("false");
+        expect(run.base).toBe(run.first);
+        expect(run.summary).toContain(
+          "**Skipped:** every change since the last deploy lies in paths no deploy reads",
+        );
+        expect(run.summary).toContain(`Base: \`${run.first}\``);
+        expect(run.summary).toContain("None of the 6 changed files is a deploy input");
+      }),
   );
 
   it.effect("a change to anything else deploys, and names the files", () =>
@@ -425,15 +394,11 @@ layer(NodeServices.layer)("Deploy decision", (it) => {
         },
         "another package": { "packages/other/src/other.ts": "export const other = 2;\n" },
         "another application": { "apps/local/src/local.ts": "export const local = 2;\n" },
-        "a CI script": { "scripts/ci/tool.ts": "export const changed = 1;\n" },
         "a release note": { ".changeset/change.md": "Synthetic release note.\n" },
         "a package manifest under a listed path": {
           "e2e/tools/package.json": JSON.stringify({ name: "tools" }),
         },
       };
-      // The decision classifies each changed file on its own, so one push with every input, and
-      // a note beside them, names each input among the matched files and only those. A deleted
-      // file changes the same path as the first input, so it is a push of its own.
       const pushes = [
         Object.assign({}, ...Object.values(inputs)) as Record<string, string | null>,
         { "apps/hosted/cloud/src/main.ts": null },
@@ -459,10 +424,150 @@ layer(NodeServices.layer)("Deploy decision", (it) => {
     }),
   );
 
+  it.effect(
+    "the pushes to main of 24 Nov 2026 skip when they change only CI and deploy when they change the product",
+    () =>
+      Effect.gen(function* () {
+        const changed = (paths: ReadonlyArray<string>) =>
+          Object.fromEntries(paths.map((file) => [file, `changed ${file}\n`]));
+        const emulatorsScript = {
+          "e2e:emulators-server": "vitest run --config e2e/emulators-server.config.ts",
+        };
+        const partsScript = {
+          "e2e:scenario-parts": "vitest run --config e2e/scenario-parts.config.ts",
+        };
+        const pushes: ReadonlyArray<{
+          readonly push: string;
+          readonly change: Record<string, string>;
+          readonly inputs: ReadonlyArray<string>;
+        }> = [
+          {
+            push: "6fa9d03b9, the tooling split",
+            change: changed([
+              ".github/workflows/checks.yml",
+              "AGENTS.md",
+              "RELEASING.md",
+              "e2e/README.md",
+              "e2e/ci-selection.ts",
+              "e2e/tests/ci-repeat.spec.ts",
+              "patches/cloudflare-runtime-keep-alive.md",
+              "scripts/pr-check.ts",
+            ]),
+            inputs: [],
+          },
+          {
+            push: "7112e7e68, the emulator control retry",
+            change: changed(["e2e/support/emulators.ts", "e2e/tests/emulator-failures.spec.ts"]),
+            inputs: [],
+          },
+          {
+            push: "d8d37a0aa, the skip check paging",
+            change: changed([
+              "e2e/support/emulators.ts",
+              "e2e/tests/emulator-failures.spec.ts",
+              "e2e/tests/worker-sizes.spec.ts",
+              "scripts/ci/worker-baseline.ts",
+            ]),
+            inputs: [],
+          },
+          {
+            push: "5aac4cd4d, the draft guidance",
+            change: changed([
+              ".github/pull_request_template.md",
+              "AGENTS.md",
+              "e2e/ci-selection.ts",
+              "e2e/tests/ci-selection.spec.ts",
+            ]),
+            inputs: [],
+          },
+          {
+            push: "d926ee9ef, the in-job emulator",
+            change: {
+              ...changed([
+                ".github/workflows/checks.yml",
+                "e2e/ci-selection.ts",
+                "e2e/emulate.json",
+                "e2e/emulators-server.config.ts",
+                "e2e/sdk/suite.ts",
+                "e2e/support/cloud-environment.ts",
+                "e2e/support/managed-server.ts",
+                "e2e/tests/ci-repeat.spec.ts",
+                "e2e/tests/ci-selection.spec.ts",
+                "e2e/tests/emulators-server.spec.ts",
+                "e2e/tests/failure-text.spec.ts",
+                "scripts/ci/e2e-build-job.ts",
+                "scripts/ci/emulators-server.ts",
+                "scripts/ci/emulators.sh",
+                "scripts/e2e-prepare.ts",
+              ]),
+              "package.json": rootManifest({ scripts: emulatorsScript }),
+            },
+            inputs: [],
+          },
+          {
+            push: "851363913, the weighted split",
+            change: {
+              ...changed([
+                ".github/workflows/checks.yml",
+                "e2e/ci-selection.ts",
+                "e2e/run.ts",
+                "e2e/scenario-parts.config.ts",
+                "e2e/scenario-parts.ts",
+                "e2e/scenario-times.json",
+                "e2e/tests/ci-selection.spec.ts",
+                "e2e/tests/scenario-parts.spec.ts",
+                "scripts/ci/scenario-times.ts",
+              ]),
+              "package.json": rootManifest({ scripts: partsScript }),
+            },
+            inputs: [],
+          },
+          {
+            push: "a2c8e1bd7, the CLI's stdio relay",
+            change: changed([
+              "bun.lock",
+              "e2e/check-boundary.ts",
+              "e2e/support/stdio-mcp.ts",
+              "e2e/test-plan.ts",
+              "e2e/tests/cli-tool-commands.spec.ts",
+              "packages/app-management/package.json",
+              "packages/app-management/src/implementation/tools-client.ts",
+            ]),
+            inputs: [
+              "bun.lock",
+              "packages/app-management/package.json",
+              "packages/app-management/src/implementation/tools-client.ts",
+            ],
+          },
+        ];
+        const runs = yield* Effect.forEach(
+          pushes,
+          ({ change }) => decide({ history: [], change }),
+          {
+            concurrency: "unbounded",
+          },
+        );
+        for (const [index, run] of runs.entries()) {
+          const { push, inputs } = pushes[index]!;
+          expect(run.exitCode, push).toBe(0);
+          expect(run.deploy, push).toBe(inputs.length === 0 ? "false" : "true");
+          for (const input of inputs) expect(run.summary, push).toContain(`- \`${input}\``);
+        }
+        const mixed = yield* decide({
+          history: [],
+          change: {
+            ...pushes[4]!.change,
+            "apps/hosted/cloud/src/main.ts": "export const main = 3;\n",
+          },
+        });
+        expect(mixed.deploy, "a product file beside the largest CI-only push deploys").toBe("true");
+        expect(mixed.summary).toContain("- `apps/hosted/cloud/src/main.ts`");
+        expect(mixed.summary).not.toContain("- `scripts/ci/emulators.sh`");
+      }),
+  );
+
   it.effect("the base is the last commit deployed, not the one before the push", () =>
     Effect.gen(function* () {
-      // A deploy root changed in a run whose deploy job was skipped: it never went live, so a push
-      // of tests alone still deploys the change. (A deploy that started and failed is the next case.)
       for (const deployed of ["skipped"] as const) {
         const run = yield* decide({
           history: [
@@ -474,7 +579,6 @@ layer(NodeServices.layer)("Deploy decision", (it) => {
         expect(run.base, deployed).toBe(run.first);
         expect(run.summary, deployed).toContain("`apps/hosted/cloud/src/main.ts`");
       }
-      // Once a later run deploys the change, only what came after it counts.
       const run = yield* decide({
         history: [
           {
@@ -526,9 +630,6 @@ layer(NodeServices.layer)("Deploy decision", (it) => {
 
   it.effect("a deploy that started and did not succeed is never compared past", () =>
     Effect.gen(function* () {
-      // A deploy root changes in a run whose deploy step fails partway, is cancelled or is still
-      // running, and the push after it reverts the change: its tree is the last successful
-      // deploy's, but production may hold any part of the deploy in between.
       for (const deployed of ["failure", "cancelled", "running"] as const) {
         const run = yield* decide({
           history: [
@@ -544,7 +645,6 @@ layer(NodeServices.layer)("Deploy decision", (it) => {
         expect(run.summary, deployed).toContain("**Deploying:**");
         expect(run.summary, deployed).toContain("did not succeed");
       }
-      // A deploy job that was skipped started nothing, so the deploy before it is still the base.
       const run = yield* decide({
         history: [
           {
@@ -561,9 +661,6 @@ layer(NodeServices.layer)("Deploy decision", (it) => {
 
   it.effect("a path the rule does not list deploys", () =>
     Effect.gen(function* () {
-      // Read by deploy steps from outside any deploy package: the framework reference reads a
-      // playground example, and the docs import the release configuration by relative path.
-      // A path nobody has thought about deploys too.
       for (const file of [
         "playground/demo-apps/live-inbox/index.ts",
         "scripts/releases/config.ts",
@@ -586,7 +683,6 @@ layer(NodeServices.layer)("Deploy decision", (it) => {
 
   it.effect("a re-run of a run deploys", () =>
     Effect.gen(function* () {
-      // Someone who changes a secret and re-runs the newest run must get a deploy.
       const run = yield* decide({
         history: [],
         change: { "e2e/tests/example.spec.ts": "export const changed = 1;\n" },
@@ -615,8 +711,6 @@ layer(NodeServices.layer)("Deploy decision", (it) => {
 
   it.effect("a change outside the list deploys whatever the workspace patterns say", () =>
     Effect.gen(function* () {
-      // The workspace graph this rule once read dropped a pattern it did not expand, and with it
-      // every package the pattern named.
       const run = yield* decide({
         history: [
           {
@@ -689,25 +783,19 @@ layer(NodeServices.layer)("Deploy decision", (it) => {
       expect(decideJob).toContain(
         "        run: node apps/hosted/cloud/scripts/deploy-decision.ts\n",
       );
-      // A decide job that fails or times out leaves the output empty, and the deploy runs. Only
-      // the exact output false skips it.
       const deployJob = jobOf(deploy, "deploy");
       expect(deployJob).toContain("    needs: decide\n");
       expect(deployJob).toContain(
         "    if: github.ref == 'refs/heads/main' && !cancelled() && needs.decide.outputs.deploy != 'false'\n",
       );
-      // The docs name the newest release npm serves, so a publication deploys them again.
       const release = yield* fs.readFileString(".github/workflows/release-artifacts.yml");
       const redeploy = jobOf(release, "deploy-published");
-      // It runs whether publish succeeded or failed after the npm publication, and dispatches
-      // only once npm's tag for the channel names this release.
       expect(redeploy).toContain("    needs: [metadata, publish]\n");
       expect(redeploy).toContain(
         "    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.metadata.outputs.publish == 'true' && (needs.publish.result == 'success' || needs.publish.result == 'failure') }}\n",
       );
       expect(redeploy).toContain("https://registry.npmjs.org/-/package/executor/dist-tags");
       expect(redeploy).toContain("'.[$channel] == $version'");
-      // The run's conclusion stays the publication's, which Beta reads.
       expect(redeploy).toContain("    continue-on-error: true\n");
       expect(redeploy).toContain("    permissions:\n      actions: write\n    ");
       expect(redeploy).toContain('gh workflow run deploy.yml -R "$GITHUB_REPOSITORY" --ref main');
@@ -717,15 +805,12 @@ layer(NodeServices.layer)("Deploy decision", (it) => {
   it.effect("a deploy someone asked for and lost while it waited deploys with the next push", () =>
     Effect.gen(function* () {
       const tests = { "e2e/tests/example.spec.ts": "export const changed = 1;\n" };
-      // A dispatch (after a release, or after a secret changed) waits behind a running deploy,
-      // and the next push's run cancels it before it has any job.
       const dispatch = yield* decide({
         history: [{ change: {}, deployed: "never", event: "workflow_dispatch" }],
         change: tests,
       });
       expect(dispatch.deploy).toBe("true");
       expect(dispatch.summary).toContain("never started its deploy job");
-      // A re-run of the last deploy's run, cancelled the same way.
       const rerun = yield* decide({
         base: { reruns: [{ deployed: "never", afterHours: 3 }] },
         history: [],
@@ -733,7 +818,6 @@ layer(NodeServices.layer)("Deploy decision", (it) => {
       });
       expect(rerun.deploy).toBe("true");
       expect(rerun.summary).toContain("never started its deploy job");
-      // A deploy that started after the lost request deployed what it asked for.
       const covered = yield* decide({
         history: [
           { change: {}, deployed: "never", event: "workflow_dispatch" },
@@ -745,7 +829,6 @@ layer(NodeServices.layer)("Deploy decision", (it) => {
         change: tests,
       });
       expect(covered.deploy).toBe("false");
-      // A dispatch that deployed is a base like any other.
       const deployed = yield* decide({
         history: [{ change: {}, deployed: "success", event: "workflow_dispatch" }],
         change: tests,
@@ -761,7 +844,6 @@ layer(NodeServices.layer)("Deploy decision", (it) => {
         "apps/hosted/cloud/src/main.ts": `export const main = ${value};\n`,
       });
       const tests = { "e2e/tests/example.spec.ts": "export const changed = 1;\n" };
-      // The last deploy's run, re-run hours later after a newer deploy, fails partway.
       const failedRerun = yield* decide({
         base: { reruns: [{ deployed: "failure", afterHours: 5 }] },
         history: [{ change: main(2), deployed: "success" }],
@@ -769,8 +851,6 @@ layer(NodeServices.layer)("Deploy decision", (it) => {
       });
       expect(failedRerun.deploy).toBe("true");
       expect(failedRerun.summary).toContain("did not succeed");
-      // The same re-run succeeds: production holds the older commit again, and the newer
-      // change is compared once more.
       const oldRerun = yield* decide({
         base: { reruns: [{ deployed: "success", afterHours: 5 }] },
         history: [{ change: main(2), deployed: "success" }],
@@ -779,7 +859,6 @@ layer(NodeServices.layer)("Deploy decision", (it) => {
       expect(oldRerun.deploy).toBe("true");
       expect(oldRerun.base).toBe(oldRerun.first);
       expect(oldRerun.summary).toContain("- `apps/hosted/cloud/src/main.ts`");
-      // A run whose first attempt failed and whose re-run succeeded is the base.
       const retried = yield* decide({
         history: [
           {
@@ -792,7 +871,6 @@ layer(NodeServices.layer)("Deploy decision", (it) => {
       });
       expect(retried.deploy).toBe("false");
       expect(retried.base).not.toBe(retried.first);
-      // A successful deploy, then a push that reverts it with tests: the revert deploys.
       const reverted = yield* decide({
         history: [{ change: main(2), deployed: "success" }],
         change: { ...main(1), ...tests },
@@ -808,14 +886,12 @@ layer(NodeServices.layer)("Deploy decision", (it) => {
         "e2e/tests/example.spec.ts": "export const changed = 1;\n",
       };
       const change = { "apps/hosted/cloud/src/main.ts": "export const main = 2;\n" };
-      // The deploy job was renamed, and the run with it failed partway.
       const renamed = yield* decide({
         history: [{ change, deployed: "failure", jobName: "Deploy production" }],
         change: revert,
       });
       expect(renamed.deploy).toBe("true");
       expect(renamed.summary).toContain("no job named deploy");
-      // The deploy job started and lists no step yet.
       const unlisted = yield* decide({
         history: [{ change, deployed: "unlisted" }],
         change: revert,
@@ -828,7 +904,6 @@ layer(NodeServices.layer)("Deploy decision", (it) => {
   it.effect("a change to e2e: scripts alone is not a deploy input", () =>
     Effect.gen(function* () {
       const tests = { "e2e/tests/example.spec.ts": "export const changed = 1;\n" };
-      // A new spec registers its command; changing or removing one is the same.
       for (const scripts of [
         { "e2e:two": "vitest run --config e2e/two.config.ts" },
         { "e2e:one": "vitest run --config e2e/one-renamed.config.ts" },
@@ -848,7 +923,6 @@ layer(NodeServices.layer)("Deploy decision", (it) => {
   it.effect("a root manifest that changes anything but e2e: scripts counts", () =>
     Effect.gen(function* () {
       const tests = { "e2e/tests/example.spec.ts": "export const changed = 1;\n" };
-      // The unsafe direction: anything else in the manifest changes with it.
       const unsafe = {
         "a dependency": rootManifest({
           scripts: { "e2e:two": "vitest run" },
@@ -875,8 +949,6 @@ layer(NodeServices.layer)("Deploy decision", (it) => {
   it.effect("a root manifest Bun may read otherwise, at either end, counts", () =>
     Effect.gen(function* () {
       const tests = { "e2e/tests/example.spec.ts": "export const changed = 1;\n" };
-      // JSON.parse keeps a duplicated key's last copy, Bun its first: a first `scripts` object that
-      // Bun runs must not hide behind an unchanged second one with a new e2e: script.
       const duplicated = (first: Record<string, string>) =>
         rootManifest({ scripts: { "e2e:two": "vitest run" } }).replace(
           '  "scripts": {',
@@ -894,8 +966,6 @@ layer(NodeServices.layer)("Deploy decision", (it) => {
         expect(run.summary, name).toContain("**Could not decide, so deploying:**");
         expect(run.summary, name).toContain("the root package.json does not read faithfully");
       }
-      // The base read the same way: a duplicate there, and a canonical head with only an e2e:
-      // change, still counts the manifest.
       const baseDuplicate = yield* decide({
         history: [
           { change: { "package.json": duplicated({ build: "node a.ts" }) }, deployed: "success" },
@@ -907,7 +977,6 @@ layer(NodeServices.layer)("Deploy decision", (it) => {
       });
       expect(baseDuplicate.deploy).toBe("true");
       expect(baseDuplicate.summary).toContain("- `package.json`");
-      // A base manifest GitHub does not return cannot be compared: the decision deploys.
       const noBase = yield* decide({
         history: [],
         change: {
@@ -923,7 +992,6 @@ layer(NodeServices.layer)("Deploy decision", (it) => {
 
   it.effect("a root script that runs an e2e: script fails the decision, which deploys", () =>
     Effect.gen(function* () {
-      // Were a deploy step to run `build`, a change to `e2e:one` would change what it runs.
       const run = yield* decide({
         history: [
           {
@@ -942,7 +1010,6 @@ layer(NodeServices.layer)("Deploy decision", (it) => {
 
   it.effect("a workspace package under a listed path counts only where bun install reads it", () =>
     Effect.gen(function* () {
-      // The test accounts and Cloud devtools, and the E2E viewer: no production step reads them.
       for (const file of ["apps/hosted/testing/cli.ts", "e2e/viewer/main.tsx"]) {
         const run = yield* decide({
           history: [],
@@ -950,7 +1017,6 @@ layer(NodeServices.layer)("Deploy decision", (it) => {
         });
         expect(run.deploy, file).toBe("false");
       }
-      // A package that runs a script when installed counts in full.
       const installs = yield* decide({
         history: [
           {

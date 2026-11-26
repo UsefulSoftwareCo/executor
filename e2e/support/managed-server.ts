@@ -1,4 +1,3 @@
-/** A complete product process, with private lifecycle control for persistence/restart scenarios. */
 import { createServer } from "node:http";
 import { randomBytes } from "node:crypto";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
@@ -46,29 +45,23 @@ class ServerFailed extends Schema.TaggedError<ServerFailed>()("ServerFailed", {
   message: Schema.String,
 }) {}
 
-/** How many of its last lines a server that exits before readiness quotes in the failure. */
 const startupLinesQuoted = 20;
 
-/** The furthest a scenario may move the product's clock; `wall-clock.mjs` enforces it too. */
 const maxClockOffset = 40 * 86_400_000;
-/** Operator settings a scenario may turn on between product generations. */
 export const OperatorSettings = Schema.Struct({
   EXECUTOR_URL_ALLOW_LOOPBACK_HTTP: Schema.optionalKey(Schema.String),
   EXECUTOR_URL_ALLOW_HTTP_ORIGINS: Schema.optionalKey(Schema.String),
   NODE_EXTRA_CA_CERTS: Schema.optionalKey(Schema.NonEmptyString),
-  /** Self-host's OpenID Connect sign-in, which an operator configures after first start. */
   SSO_DISCOVERY_URL: Schema.optionalKey(Schema.NonEmptyString),
   SSO_CLIENT_ID: Schema.optionalKey(Schema.NonEmptyString),
   SSO_CLIENT_SECRET: Schema.optionalKey(Schema.NonEmptyString),
   SSO_ALLOWED_DOMAINS: Schema.optionalKey(Schema.NonEmptyString),
   EXECUTOR_OAUTH_CLIENT_METADATA_URL: Schema.optionalKey(Schema.NonEmptyString),
-  /** The build an upgrade installs. */
   EXECUTOR_BUILD_VERSION: Schema.optionalKey(Schema.NonEmptyString),
-  /**
-   * The operator's OAuth clients (notes/oauth.md, "First-party clients"): test client definitions
-   * an E2E host adds to the reviewed ones, and the credentials of the clients scenarios turn on.
-   * An empty value unsets one, as it does for the product.
-   */
+  EXECUTOR_NPM_REGISTRY: Schema.optionalKey(Schema.NonEmptyString),
+  EXECUTOR_TEST_COMPILER_UNAVAILABLE: Schema.optionalKey(Schema.Literals(["all", "retained", ""])),
+  EXECUTOR_CATALOG_COPY_REBUILD_SCOPE: Schema.optionalKey(Schema.String),
+  EXECUTOR_TEST_CATALOG_COPY_REBUILD_PACE: Schema.optionalKey(Schema.NonEmptyString),
   EXECUTOR_TEST_OAUTH_CLIENT_DEFINITIONS: Schema.optionalKey(Schema.String),
   EXECUTOR_OAUTH_SYNTHETIC_MAIL_CLIENT_ID: Schema.optionalKey(Schema.String),
   EXECUTOR_OAUTH_SYNTHETIC_MAIL_CLIENT_SECRET: Schema.optionalKey(Schema.String),
@@ -77,19 +70,15 @@ export const OperatorSettings = Schema.Struct({
   EXECUTOR_OAUTH_SLACK_CLIENT_ID: Schema.optionalKey(Schema.String),
   EXECUTOR_OAUTH_SLACK_CLIENT_SECRET: Schema.optionalKey(Schema.String),
 });
-/** The runner owns every process generation and keeps the same synthetic secrets across restarts. */
-/** In a managed server's directory: the process group its current product process leads. */
 export const serverProcessFile = "server-process.json";
 export const ServerProcess = Schema.Struct({ processGroup: Schema.Number });
 
-/** Whether any process of `group` still runs. The spawner starts each product as a group leader. */
 export const processGroupRunning = (group: number) =>
   Effect.sync(() => {
     try {
       process.kill(-group, 0);
       return true;
     } catch (error) {
-      // EPERM: a process of that group exists but belongs to another user.
       return error instanceof Error && "code" in error && error.code === "EPERM";
     }
   });
@@ -97,7 +86,6 @@ export const processGroupRunning = (group: number) =>
 export const startManagedServer = (
   target: typeof Target.Service,
   mode: "product" | "development" = "product",
-  /** Operator settings for this process, applied over the runner's own. */
   environment: Readonly<Record<string, string>> = {},
 ) =>
   Effect.gen(function* () {
@@ -105,9 +93,6 @@ export const startManagedServer = (
       processes = yield* ChildProcessSpawner.ChildProcessSpawner,
       path = yield* Path.Path,
       http = yield* HttpClient.HttpClient;
-    // A product asked to choose its own port (port 0) gets a reserved one instead and keeps it
-    // across restarts: a port the OS chose goes back to its ephemeral range whenever the product
-    // stops, and another socket on the machine can be handed it before the product starts again.
     const requested = new URL(target.metadata.origin);
     const port = requested.port === "0" ? String(yield* reservedPort) : requested.port;
     let origin =
@@ -120,16 +105,11 @@ export const startManagedServer = (
     const packagedEntry = yield* Config.NonEmptyString("EXECUTOR_E2E_LOCAL_ENTRY").pipe(
       Config.option,
     );
-    // The suite's loopback registry serves this checkout's apps release; see npm-registry.ts.
     const npmRegistry = yield* Config.NonEmptyString("E2E_NPM_REGISTRY").pipe(Config.option);
-    // The run's loopback official app feed and app registry; see public-catalogs.ts.
     const catalogs = yield* Config.NonEmptyString("E2E_PUBLIC_CATALOGS").pipe(Config.option);
     const entry =
       target.metadata.target === "local" && Option.isSome(packagedEntry)
-        ? // Run the installed CLI from its package, as the desktop runs its backend from its
-          // install root. Product processes can outlive the server's reported exit on Windows
-          // while they terminate, and a working directory there cannot be removed.
-          { command: [packagedEntry.value, "serve"], cwd: path.dirname(packagedEntry.value) }
+        ? { command: [packagedEntry.value, "serve"], cwd: path.dirname(packagedEntry.value) }
         : {
             command: [
               target.metadata.target === "local"
@@ -141,10 +121,8 @@ export const startManagedServer = (
             ],
           };
 
-    // Each product process sends its analytics to its own loopback collector, kept across restarts.
     const analyticsPort = yield* startAnalyticsCollector(target.directory);
     const gate = yield* Semaphore.make(1);
-    // `E2E_COVERAGE=1` profiles each product process; see `e2e/coverage.ts`.
     const coverageDirectory =
       (yield* Config.Boolean("E2E_COVERAGE").pipe(Config.withDefault(false))) &&
       target.scenarioId !== undefined
@@ -158,21 +136,13 @@ export const startManagedServer = (
       );
     }
     let generation = 0;
-    /** The clock offset the running process last confirmed; see `wall-clock.mjs`. */
     let confirmedOffset = 0;
     let current: Scope.Closeable | undefined;
-    /** The running product process, for an abrupt kill that runs none of its shutdown. */
     let running: ChildProcessSpawner.ChildProcessHandle | undefined;
-    /**
-     * Completes when the running generation writes its exit line ("Local server exited"), the last
-     * thing it does before its process ends. Its coverage profile is written after that line.
-     */
     let exitLine: Deferred.Deferred<void> | undefined;
-    /** Writes the running generation's workerd coverage; see `workerd-coverage.ts`. */
     let saveWorkerdCoverage: Effect.Effect<void> = Effect.void;
     const env = {
       PATH: runtimePath,
-      // Every Windows process has it: the local server runs Windows's own programs from there.
       ...(process.env.SystemRoot === undefined ? {} : { SystemRoot: process.env.SystemRoot }),
       NODE_ENV: "test",
       HOST: "127.0.0.1",
@@ -183,12 +153,10 @@ export const startManagedServer = (
       EXECUTOR_DATA_DIR: `${target.directory}/data`,
       BETTER_AUTH_URL: target.metadata.origin,
       BETTER_AUTH_SECRET: randomBytes(32).toString("hex"),
-      // Exercise named loopback callbacks and explicit private HTTP transport in the real host.
       ...(target.metadata.target === "self-host"
         ? {
             EXECUTOR_OAUTH_CALLBACK_URL: `http://account-picker.localhost:${port}/api/oauth/callback?tenant=fixture`,
             EXECUTOR_URL_ALLOW_HTTP_ORIGINS: '["http://oauth.internal:8080"]',
-            // Fixture providers listen on loopback, which the product default refuses to app code.
             EXECUTOR_APPS_ALLOW_PRIVATE_FETCH: "true",
           }
         : {}),
@@ -205,20 +173,11 @@ export const startManagedServer = (
       EXECUTOR_TEST_CLOCK_OFFSET_MS: "0",
       EXECUTOR_TEST_CLOCK_CONTROL: "stdin",
       EXECUTOR_ANALYTICS_TEST_PORT: String(analyticsPort),
+      ...(process.env.NODE_EXTRA_CA_CERTS === undefined
+        ? {}
+        : { NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS }),
       ...environment,
     };
-    // Ask the product alone to stop, as the self-host image's supervisor does, so its own shutdown
-    // flushes its telemetry before it stops the collector it started. A signal to its whole
-    // process group stopped the collector first, and the product then spent its 3-second export
-    // budget retrying. On Windows the scope's tree kill awaits only the product, so a collector still
-    // terminating held the data directory open when the scenario removed it. Releasing the process
-    // scope afterwards ends anything it left behind.
-    /**
-     * Stop the running product and say how long it took, in milliseconds: from the request until
-     * the product wrote its exit line or ended, whichever came first. The time excludes what only
-     * the suite does after that: the product's coverage profile, written as its process exits, and
-     * its workerd's coverage, saved here once it has stopped.
-     */
     const shutdown = Effect.suspend(() => {
       const child = running;
       if (child === undefined) return Effect.succeed(undefined);
@@ -239,16 +198,11 @@ export const startManagedServer = (
           ],
           { concurrency: "unbounded" },
         );
-        // workerd's function logs are complete once it has stopped with the product.
         yield* saveWorkerdCoverage;
         return Option.getOrUndefined(stopped);
       });
     });
     const stopProduct = (child: ChildProcessSpawner.ChildProcessHandle) => {
-      // The request goes through a pipe only the product holds (see stop-request.mjs), not to its
-      // PID: once the product is reaped, its PID can name another process before its handle
-      // reports the exit. A write to a product that already exited never completes, so the
-      // product's exit ends the wait whether or not its request was delivered.
       const request = Stream.run(Stream.make(new Uint8Array([1])), child.getInputFd(3)).pipe(
         Effect.ignore,
         Effect.andThen(Effect.never),
@@ -282,17 +236,13 @@ export const startManagedServer = (
       const scope = yield* Scope.make();
       current = scope;
       yield* Effect.gen(function* () {
-        // Self-host runs under Bun, which loads the runner's hooks as preloads. The local CLI owns
-        // the same hooks (see e2e-process.ts): a release executable runs no preload.
         const preloads = ["./wall-clock.mjs", "./stop-request.mjs"].map(
           (file) => new URL(file, import.meta.url),
         );
-        // Each process generation writes its own report: Bun's lcov file has a fixed name.
         const coverage =
           coverageDirectory === undefined
             ? undefined
             : path.join(coverageDirectory, String(generation++));
-        // The product's workerd logs its function events here; see workerd-coverage.ts.
         if (coverage !== undefined) yield* fs.makeDirectory(coverage, { recursive: true });
         const [program = "", ...programArgs] = entry.command;
         const launch =
@@ -313,11 +263,7 @@ export const startManagedServer = (
                         )).flatMap((file) => ["--preload", file]),
                         "./apps/hosted/self-host/scripts/coverage-main.ts",
                       ]
-                    : [
-                        // Bun accepts Node's --import preload, so self-host can advance wall time too.
-                        ...preloads.flatMap((url) => ["--import", url.href]),
-                        ...entry.command,
-                      ],
+                    : [...preloads.flatMap((url) => ["--import", url.href]), ...entry.command],
               };
         const child = yield* processes.spawn(
           ChildProcess.make(launch.command, launch.args, {
@@ -333,7 +279,6 @@ export const startManagedServer = (
                 ? { NODE_V8_COVERAGE: coverage }
                 : {}),
             },
-            // Stays open for clock moves while the process runs.
             stdin: { stream: "pipe", endOnDone: false },
             stdout: "pipe",
             stderr: "pipe",
@@ -343,8 +288,6 @@ export const startManagedServer = (
           }),
         );
         running = child;
-        // The product's process group, so a scenario can tell the product stopped by the process,
-        // not by its port: a port it bound with 0 can be handed to another server once it is free.
         yield* fs
           .writeFileString(
             `${target.directory}/${serverProcessFile}`,
@@ -374,15 +317,12 @@ export const startManagedServer = (
         const ready = yield* Deferred.make<void>();
         const exited = yield* Deferred.make<void>();
         exitLine = exited;
-        // This generation's last lines, quoted when it exits before readiness: the job log keeps
-        // them when a rerun has replaced the failed attempt's evidence artifact.
         const lastLines: Array<string> = [];
         const output = yield* Stream.merge(child.stdout, child.stderr).pipe(
           Stream.decodeText(),
           Stream.splitLines,
           Stream.runForEach((line) =>
             Effect.gen(function* () {
-              // Before the line's write to disk, so a stop is timed by the product alone.
               if (line.includes('"message":"Local server exited"'))
                 yield* Deferred.succeed(exited, undefined);
               const redacted = line.replace(/#pair=[a-f0-9]{64}/g, "#pair=<redacted>");
@@ -425,8 +365,6 @@ export const startManagedServer = (
           check,
           child.exitCode.pipe(
             Effect.flatMap((code) =>
-              // Exit can arrive before the pipe's buffered lines reach disk. Keep
-              // the startup diagnostic before failure closes the reader's scope.
               Fiber.join(output).pipe(
                 Effect.timeoutOption("3 seconds"),
                 Effect.andThen(
@@ -464,7 +402,6 @@ export const startManagedServer = (
           return HttpServerResponse.empty({ status: 401 });
         const stopped = yield* gate.withPermits(1)(
           Effect.gen(function* () {
-            // A kill models a crash or out-of-memory stop: the whole process group ends at once.
             if (action === "kill" && running !== undefined) {
               yield* running.kill({ killSignal: "SIGKILL" });
               yield* saveWorkerdCoverage;
@@ -474,7 +411,6 @@ export const startManagedServer = (
             return stopped;
           }),
         );
-        // How long the product took to stop, when it was running and the action stopped it.
         return HttpServerResponse.jsonUnsafe(
           action === "stop" && stopped !== undefined
             ? { ok: true, stoppedMs: stopped }
@@ -505,7 +441,6 @@ export const startManagedServer = (
               const offset = Number(env.EXECUTOR_TEST_CLOCK_OFFSET_MS) + body.milliseconds;
               if (offset > maxClockOffset) return HttpServerResponse.empty({ status: 400 });
               env.EXECUTOR_TEST_CLOCK_OFFSET_MS = String(offset);
-              // A later process generation starts at the offset; a running one moves now.
               if (running !== undefined) {
                 yield* Stream.run(
                   Stream.make(new TextEncoder().encode(`clock ${offset}\n`)),
@@ -521,8 +456,6 @@ export const startManagedServer = (
           );
         }),
       ),
-      // A later start reads an operator setting the install did not have, as when an operator
-      // turns it on. Only settings a scenario turns on mid-life are accepted.
       HttpRouter.add(
         "POST",
         "/environment",
@@ -542,7 +475,6 @@ export const startManagedServer = (
           );
         }),
       ),
-      // A later start runs pending data steps in another mode.
       HttpRouter.add(
         "POST",
         "/data-steps",
@@ -573,7 +505,6 @@ export const startManagedServer = (
           const request = yield* HttpServerRequest.HttpServerRequest;
           if (request.headers.authorization !== `Bearer ${reveal(target.apiKey)}`)
             return HttpServerResponse.empty({ status: 401 });
-          // Only scenarios that declare this in the reviewed test plan may write rows directly.
           const declared = Object.values(scenarios).some(
             (scenario) =>
               scenario.title === target.scenarioLabel && scenario.legacyStorage === true,
@@ -593,7 +524,6 @@ export const startManagedServer = (
             body.database,
           );
           if (database === undefined) return HttpServerResponse.empty({ status: 403 });
-          // Hold the lifecycle gate so no product generation can open the database meanwhile.
           const rows = yield* gate.withPermits(1)(
             stop.pipe(
               Effect.andThen(
@@ -643,8 +573,6 @@ const startIsolatedSelfHost = (
 ) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    // Both entries keep one reserved port for the server's life, through every restart (see
-    // `reservedPort`).
     const port = yield* reservedPort;
     const directory = yield* fs.makeTempDirectory({ directory: target.directory, prefix: entry });
     const origin = `http://127.0.0.1:${port}`;
@@ -656,7 +584,6 @@ const startIsolatedSelfHost = (
     return { ...server, directory };
   });
 
-/** Start the complete self-host development entry point beside the production test target. */
 export const startDevelopmentServer = (
   target: typeof Target.Service,
   environment: Readonly<Record<string, string>> = {},
@@ -665,16 +592,11 @@ export const startDevelopmentServer = (
     Effect.map(({ origin }) => origin),
   );
 
-/** Start an unconfigured product instance; the scenario scope owns its process and fresh data. */
 export const startFreshSelfHost = (
   target: typeof Target.Service,
   environment: Readonly<Record<string, string>> = {},
 ) => startIsolatedSelfHost(target, "product", environment).pipe(Effect.map(({ origin }) => origin));
 
-/**
- * Start an unconfigured product instance as `startFreshSelfHost` does, and return its origin and
- * the file its output is written to.
- */
 export const startLoggedSelfHost = (
   target: typeof Target.Service,
   environment: Readonly<Record<string, string>> = {},
@@ -683,11 +605,6 @@ export const startLoggedSelfHost = (
     Effect.map(({ origin, directory }) => ({ origin, log: `${directory}/server.log` })),
   );
 
-/**
- * Start an unconfigured product instance as `startFreshSelfHost` does, and return the target that
- * reaches it: its origin, its directory with `server.log`, and the control plane `serverControl`
- * uses to move its clock.
- */
 export const startControlledSelfHost = (
   target: typeof Target.Service,
   environment: Readonly<Record<string, string>> = {},

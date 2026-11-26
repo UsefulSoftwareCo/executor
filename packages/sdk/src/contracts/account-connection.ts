@@ -165,6 +165,11 @@ export const StartConnectionOAuth = Schema.Struct({
   label: Schema.optional(Schema.NonEmptyString),
   redirectUri: Schema.optional(HttpUrl),
   client: Schema.optional(OAuthClientChoice),
+  /**
+   * On a reconnect where setup offers it: sign in with a client registered for this connection
+   * alone, so the service asks again which account or organization to use.
+   */
+  chooseAgain: Schema.optional(Schema.Literal(true)),
 });
 /** Both request identity and OAuth state must match before exchanging a code. */
 export const CompleteConnectionOAuth = Schema.Struct({

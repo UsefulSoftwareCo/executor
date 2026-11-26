@@ -4,49 +4,29 @@ import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "e
 import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
 import { createServer } from "node:http";
 
-/** Private response content must never be copied into an agent diagnostic. */
 export const openapiSecretMarker = "synthetic-private-openapi-detail";
-/** Response-specific copy deliberately differs from the static schema description. */
 export const openapiMemoryMessage =
   "The compiler ran out of memory during this build. Review build memory use before retrying.";
-/** Response-specific recovery; the published Executor error schemas require it. */
 export const openapiMemoryRecovery = {
   action: "Retry after the build memory limit increases.",
   instructions: "Tell the user the build hit the memory limit before changing the app.",
 };
-/** A declared recovery on an API whose error schema allows extra fields. */
 export const openapiConflictRecovery = {
   action: "Reload the record, then save again.",
   instructions: "Read the current revision and reapply the change before retrying.",
 };
-/** A declared 403 body; a bare status alone would not explain the refusal. */
 export const openapiDeniedMessage = "This workspace does not allow exports by members.";
-/** A declared 401 body, the service's own explanation of a refused credential. */
 export const openapiSessionMessage = "The session for this workspace has ended.";
-/** A Bearer challenge's stated error, which takes precedence over a declared body. */
 export const openapiChallengeMessage = "The access token expired.";
-/** A reason-specific response from an error schema with no static description. */
 export const openapiOAuthMessage = "We could not register an OAuth client for this connection.";
-/** A declared conflict a bulk write meets after saving part of its records. */
 export const openapiConflictMessage = "The record store changed while these records were saved.";
-/** Advice a service declares for its own error, which would repeat a bulk write's saved part. */
 export const openapiRetryRecovery = {
   action: "Try again.",
   instructions: "Send the same request again.",
 };
 
-/**
- * A real HTTP API using the product's published memory-error schema and controlled failures.
- * `POST /records` saves its record and then fails with HTTP 502, as a service that commits a
- * change before its gateway or response fails. `POST /records/bulk` appends its records in order
- * and stops at the first one it refuses, with a declared error: `StoreConflict` (HTTP 409, with
- * the service's own advice to try again) for the name `conflict`, `InvalidRecord` (HTTP 422,
- * without advice) for an empty one. The records before it stay saved, so repeating the request
- * saves them again. `GET /records` reads the records.
- */
 export const openapiErrorUpstream = (memorySchema: unknown, oauthSchema: unknown) =>
   Effect.gen(function* () {
-    // Import the running product's public schemas without importing its implementation.
     const publishedError = (identifier: string, schema: unknown) =>
       SchemaRepresentation.fromJsonSchemaDocument(
         JsonSchema.fromSchemaOpenApi3_1(
@@ -113,7 +93,6 @@ export const openapiErrorUpstream = (memorySchema: unknown, oauthSchema: unknown
     const document = OpenApi.fromApi(api);
     const operation = document.paths["/failure"]?.get;
     if (operation === undefined) return yield* Effect.die("Fixture must declare GET /failure");
-    // Deliberately unsupported declarations exercise the importer's generic-error fallback.
     Object.assign(operation.responses, {
       "424": {
         description: "Constrained union",
@@ -149,7 +128,6 @@ export const openapiErrorUpstream = (memorySchema: unknown, oauthSchema: unknown
         },
       },
     });
-    // Each pet declares its discriminator as a plain string, so only the mapping selects one.
     const pet = (sound: string) => ({
       type: "object",
       properties: { petType: { type: "string" }, [sound]: { type: "boolean" } },
@@ -180,7 +158,6 @@ export const openapiErrorUpstream = (memorySchema: unknown, oauthSchema: unknown
       },
     });
     Object.assign(document.paths, {
-      // The API serves no items, so every call fails with a status the document does not declare.
       "/items/{item}": {
         get: {
           operationId: "getItem",
@@ -234,7 +211,6 @@ export const openapiErrorUpstream = (memorySchema: unknown, oauthSchema: unknown
                     { $ref: "#/components/schemas/Cat" },
                     { $ref: "#/components/schemas/Dog" },
                   ],
-                  // A mapping may name a schema by reference or by component name.
                   discriminator: {
                     propertyName: "petType",
                     mapping: { cat: "#/components/schemas/Cat", dog: "Dog" },
@@ -275,7 +251,6 @@ export const openapiErrorUpstream = (memorySchema: unknown, oauthSchema: unknown
           const record = yield* Schema.decodeUnknownEffect(
             Schema.fromJsonString(Schema.Struct({ name: Schema.String })),
           )(yield* request.text);
-          // The change is committed before the failure, so a repeat would save it twice.
           records.push(record.name);
           return yield* HttpServerResponse.json({ message: openapiSecretMarker }, { status: 502 });
         }),
@@ -289,7 +264,6 @@ export const openapiErrorUpstream = (memorySchema: unknown, oauthSchema: unknown
             Schema.fromJsonString(Schema.Struct({ names: Schema.Array(Schema.String) })),
           )(yield* request.text);
           for (const name of names) {
-            // The records before a refused one stay saved: the request partly committed.
             if (name === "")
               return yield* HttpServerResponse.json(
                 { _tag: "InvalidRecord", message: "Record names must not be empty." },
@@ -356,7 +330,6 @@ export const openapiErrorUpstream = (memorySchema: unknown, oauthSchema: unknown
               { _tag: "ExportDenied", message: openapiDeniedMessage },
               {
                 status: 403,
-                // Rate-limit evidence still wins over a declared body.
                 headers: mode === "declared-limited" ? { "x-ratelimit-remaining": "0" } : {},
               },
             );
@@ -365,7 +338,6 @@ export const openapiErrorUpstream = (memorySchema: unknown, oauthSchema: unknown
               { _tag: "SessionExpired", message: openapiSessionMessage },
               { status: 401 },
             );
-          // A Bearer challenge already states the error; its declared body never finishes.
           if (mode === "challenged-stalled")
             return HttpServerResponse.stream(
               Stream.concat(Stream.make(new TextEncoder().encode("{")), Stream.never),
@@ -392,7 +364,6 @@ export const openapiErrorUpstream = (memorySchema: unknown, oauthSchema: unknown
               },
               { status: 422 },
             );
-          // Conflict allows extra fields, so recovery is optional and validated separately.
           if (mode === "extras")
             return yield* HttpServerResponse.json(
               {

@@ -1,4 +1,3 @@
-/** Registration checks every persisted resource without signing in or triggering app setup. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { scenarios } from "../test-plan.ts";

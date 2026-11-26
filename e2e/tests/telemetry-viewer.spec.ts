@@ -1,9 +1,3 @@
-/**
- * The local server's telemetry collector serves the trace viewer at the URL `collector.json`
- * names: the trace list, a trace, a reload on a trace's own address, an unknown trace and the
- * logs page's filters, all from the collector's own answers, and never the AI routes Motel's
- * viewer called.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, FileSystem, Schema } from "effect";
 import { HttpBody, HttpClient } from "effect/http";
@@ -101,9 +95,7 @@ layer(TestLive, { excludeTestServices: true })("Telemetry viewer", (it) => {
           }),
         ).toBe(200);
 
-        // Every request the viewer makes, to show none goes to the AI routes it no longer has.
         const requested: Array<string> = [];
-        // Every script and stylesheet the viewer's pages load, and how each was answered.
         const assets: Array<{
           readonly path: string;
           readonly type: string;
@@ -160,7 +152,6 @@ layer(TestLive, { excludeTestServices: true })("Telemetry viewer", (it) => {
             .getByText(child, { exact: true })
             .waitFor(),
         );
-        // The stylesheet laid the page out: a span's bar has the height only it gives.
         expect(
           yield* browser.use("Measure a span's bar", (page) =>
             page
@@ -172,7 +163,6 @@ layer(TestLive, { excludeTestServices: true })("Telemetry viewer", (it) => {
           "the waterfall's bars are drawn",
         ).toBeGreaterThan(0);
         yield* browser.checkpoint("Trace");
-        // The collector serves the viewer's page at the trace's own address, so a reload stays.
         yield* browser.use("Reload the trace", (page) =>
           page
             .reload()
@@ -186,7 +176,6 @@ layer(TestLive, { excludeTestServices: true })("Telemetry viewer", (it) => {
         );
         yield* browser.checkpoint("Unknown trace");
 
-        // The logs page: the body search finds both of this trace's logs, the severity filter one.
         yield* browser.use("Open the logs", (page) =>
           page
             .goto(new URL("/logs", url).href)
@@ -210,7 +199,6 @@ layer(TestLive, { excludeTestServices: true })("Telemetry viewer", (it) => {
         yield* browser.checkpoint("Logs filtered to errors");
 
         expect(requested.length, "the viewer made requests").toBeGreaterThan(0);
-        // Its pages loaded a script and a stylesheet, every one of them whole.
         expect(assets.map(({ type }) => type).sort()).toEqual(
           expect.arrayContaining(["script", "stylesheet"]),
         );
@@ -222,7 +210,6 @@ layer(TestLive, { excludeTestServices: true })("Telemetry viewer", (it) => {
           requested.filter((path) => path.startsWith("/api/ai")),
           "the viewer asks no AI route",
         ).toEqual([]);
-        // Its data came from the collector's own query routes.
         expect(requested).toContain(`/api/traces/${traceId}`);
         expect(requested).toContain("/api/logs");
       }),

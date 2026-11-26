@@ -1,12 +1,3 @@
-/**
- * SDK 4.0.10 and 4.0.11 stored OAuth clients by owner and provider, so an organization whose
- * apps each declared the same service had one client per app with the same details. Upgrading to
- * 4.0.12 keeps them working and data step `8_oauth_clients_by_issuer` records each one's
- * authorization server: clients of one organization with the same details for one server become the oldest one,
- * which keeps every credentials record the others had and whose audience is the union of theirs.
- * A client whose provider discovers its server, with no sign-in recording which, is left as it is:
- * listed without a server and offered to no sign-in.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -57,14 +48,12 @@ const Options = Schema.Struct({
   clients: Schema.Array(Schema.Struct({ id: Schema.String })),
 });
 
-/** Synthetic details one organization pasted into two apps, and another client's. */
 const pasted = { clientId: "synthetic-pasted-client", clientSecret: "synthetic-pasted-secret" };
 const discovered = {
   clientId: "synthetic-discovered-client",
   clientSecret: "synthetic-discovered-secret",
 };
 
-/** An app whose provider declares the service's endpoints and the issuer it publishes. */
 const declaredAppFiles = (name: string, origin: string) => [
   {
     path: "index.ts",
@@ -119,7 +108,6 @@ layer(TestLive, { excludeTestServices: true })("OAuth client issuer migration", 
             });
             expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
             const app = yield* body(DeployedApp, deployed);
-            // Members may use the app, so their connect forms show which clients they may use.
             const access = yield* body(
               Schema.Struct({ revision: Schema.String }),
               yield* api.request(actors.owner, "GET", `${prefix}/apps/${app.id}/access`),
@@ -133,7 +121,6 @@ layer(TestLive, { excludeTestServices: true })("OAuth client issuer migration", 
             expect(shared.status, JSON.stringify(shared.body)).toBe(200);
             return app.requirements.accounts.service.provider;
           });
-        // Two apps that each declare the same service, and one that discovers it.
         const first = yield* deploy(
           `Pasted A ${suffix}`,
           declaredAppFiles(`Pasted A ${suffix}`, issuer.origin),
@@ -173,12 +160,9 @@ layer(TestLive, { excludeTestServices: true })("OAuth client issuer migration", 
         const memberMember = members.find((entry) => entry.userId === memberUser);
         if (ownerMember === undefined || memberMember === undefined)
           return yield* Effect.die("Synthetic members missing");
-        // Each pasted client could be used by one group: the owner's, and the member's.
         const groupA = yield* createGroup(`Pasted A users ${suffix}`, ownerMember.id);
         const groupB = yield* createGroup(`Pasted B users ${suffix}`, memberMember.id);
 
-        // What a 4.0.11 server stored: one client per provider, each credentials record keyed
-        // by owner and provider, and each client's audience.
         const ids = {
           a: `oac_legacy_a_${suffix}`,
           b: `oac_legacy_b_${suffix}`,
@@ -198,11 +182,8 @@ layer(TestLive, { excludeTestServices: true })("OAuth client issuer migration", 
         });
         const seen = (yield* dataStepSummaries(log, step)).length;
         const [current] = yield* legacyStorage([
-          // The schema version this build records, before the fixture labels the database 4.0.11.
           { sql: `SELECT value FROM private_executor_settings WHERE key = 'version'` },
           { sql: `DROP INDEX executor_stored_oauth_clients_owner_issuer` },
-          // App accounts (4.0.14) and the profile removal of 4.0.13, which come after the version
-          // this fixture writes.
           ...beforeAppAccounts(),
           ...beforeProfileRemoval(),
           {
@@ -262,7 +243,6 @@ layer(TestLive, { excludeTestServices: true })("OAuth client issuer migration", 
             params: [actors.organization.id, ids.a, groupA.id, ids.b, groupB.id],
           },
         ]);
-        // Upgrade, and apply the data steps this time.
         yield* serverControl("data-steps", 200, { mode: "apply" });
         yield* serverControl("start");
 
@@ -273,7 +253,6 @@ layer(TestLive, { excludeTestServices: true })("OAuth client issuer migration", 
           outcomes: { migrated: 1, merged: 1, issuer_unknown: 1 },
         });
 
-        // The oldest pasted client survives under the server, for whoever could use either.
         const directory = yield* body(
           Directory,
           yield* api.request(actors.admin, "GET", `${prefix}/oauth-clients`),
@@ -290,15 +269,12 @@ layer(TestLive, { excludeTestServices: true })("OAuth client issuer migration", 
           [groupA.id, groupB.id].sort(),
         );
         expect(listed.has(ids.b)).toBe(false);
-        // The client whose server no sign-in recorded is kept, without one.
         expect(listed.get(ids.c)?.client).toEqual({
           id: ids.c,
           clientId: discovered.clientId,
           issuer: null,
         });
 
-        // Every app that signs in at the server offers the survivor, and only it, to both groups:
-        // the member could use only the merged client before.
         for (const session of [actors.owner, actors.member])
           for (const provider of [first, second, third])
             expect(
@@ -312,8 +288,6 @@ layer(TestLive, { excludeTestServices: true })("OAuth client issuer migration", 
               ),
             ).toEqual({ issuer: issuer.origin, clients: [{ id: ids.a }] });
 
-        // The client manager shows the survivor under its server and says the other is offered to
-        // no sign-in.
         const browser = yield* Browser;
         yield* browser.omitNetworkTrace;
         yield* browser.login(actors.admin);
@@ -333,8 +307,6 @@ layer(TestLive, { excludeTestServices: true })("OAuth client issuer migration", 
         );
         yield* browser.checkpoint("OAuth clients after recording their servers");
 
-        // Every credentials record the merged client held is the survivor's, and the survivor's
-        // details are recorded under its server too.
         const [version = [], credentials = [], survivor = []] = yield* legacyStorage([
           { sql: `SELECT value FROM private_executor_settings WHERE key = 'version'` },
           {
@@ -370,7 +342,6 @@ layer(TestLive, { excludeTestServices: true })("OAuth client issuer migration", 
           { client: ids.a },
           { client: ids.c },
         ]);
-        // A merged client that had signed in confirms the survivor.
         expect(survivor).toEqual([{ confirmed: true, provider: first }]);
       }),
     ),

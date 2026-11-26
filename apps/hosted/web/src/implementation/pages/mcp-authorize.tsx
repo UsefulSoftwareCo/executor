@@ -18,27 +18,21 @@ import {
   McpConsentLoading,
   McpConsentSummary,
   consentDestination,
+  desktopSignInNote,
 } from "@executor-js/ui/dashboard/mcp-consent";
 import { McpConnectionFailed, mcpClientAtom, mcpConsentAtom } from "../../contracts/mcp.ts";
 import { organizationsAtom, type OrganizationSummary } from "../../contracts/organization.ts";
 import { useResourceOrigins } from "../resource-origin.ts";
 import { useGrantChoices } from "../components/grant-choices.tsx";
 
-/**
- * The person approves the request, choosing its organization, which apps it reaches and where
- * approvals are answered. The request's resource preselects the last two. It may name a resource
- * at any of the deployment's resource origins.
- */
 export function McpAuthorizePage() {
   const page = usePageUrl();
   const resourceOrigins = useResourceOrigins();
-  // Keep the signed query intact; repeated OAuth fields must not be reserialized by the router.
   const query = page.search.slice(1),
     params = new URLSearchParams(query);
   const clientId = params.get("client_id") ?? "";
   const resources = params.getAll("resource");
   const target = grantTarget(resourceOrigins, resources);
-  // One of Executor v1's MCP URLs names its organization and toolkit itself.
   const legacy =
     resources.length === 1 && resources[0] !== undefined
       ? legacyMcpTarget(resourceOrigins, resources[0])?.path
@@ -126,7 +120,19 @@ function McpConsent({
       ) : (
         <McpConsentSummary
           note={
-            destination === undefined ? undefined : <McpConsentDestination origin={destination} />
+            target.kind === "desktop" ? (
+              <>
+                {desktopSignInNote}
+                {destination !== undefined && (
+                  <>
+                    {" "}
+                    <McpConsentDestination origin={destination} />
+                  </>
+                )}
+              </>
+            ) : destination === undefined ? undefined : (
+              <McpConsentDestination origin={destination} />
+            )
           }
         >
           {choices.rows}

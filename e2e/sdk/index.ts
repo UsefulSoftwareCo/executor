@@ -1,4 +1,3 @@
-/** Shared, scoped testing operations. Callers provide Node services and FetchHttpClient. */
 export { startEnvironment } from "./environment.ts";
 export { startDeployment } from "./deployment.ts";
 export { startScenario } from "./scenario.ts";

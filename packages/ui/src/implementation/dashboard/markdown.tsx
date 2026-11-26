@@ -4,7 +4,6 @@ import type { Components, ExtraProps } from "react-markdown";
 import { fenceLanguage } from "../../contracts/code-language.ts";
 import { Code } from "./code.tsx";
 
-/** Highlight a Markdown code block with the shared code renderer. */
 export function MarkdownCodeBlock({ node }: ExtraProps) {
   const code = node?.children.find((child) => child.type === "element" && child.tagName === "code");
   if (code?.type !== "element") return null;
@@ -26,7 +25,6 @@ export function MarkdownCodeBlock({ node }: ExtraProps) {
 }
 
 const components: Components = {
-  // Only https links open; any other address renders as its text.
   a: ({ href, children }) => {
     const safeHref = href !== undefined && /^https:\/\//i.test(href) ? href : undefined;
     return safeHref === undefined ? (
@@ -37,7 +35,6 @@ const components: Components = {
       </a>
     );
   },
-  // Authored text never loads images from other origins; the alt text stands in for each.
   img: ({ alt }) => <span>{alt}</span>,
   pre: (props) => (
     <div className="tool-markdown-code overflow-x-auto my-[8px] mx-0 [&_pre]:bg-muted [&_pre]:border [&_pre]:border-border [&_pre]:rounded-[6px] [&_pre]:py-[10px] [&_pre]:px-[12px] [&_pre]:text-[11px] [&_pre]:leading-[1.6]">
@@ -46,7 +43,6 @@ const components: Components = {
   ),
 };
 
-/** Render app-authored Markdown without raw HTML, images or links other than https. */
 export function ToolMarkdown({ children }: { readonly children: string }) {
   return (
     <Markdown remarkPlugins={[remarkGfm]} skipHtml components={components}>
@@ -55,10 +51,6 @@ export function ToolMarkdown({ children }: { readonly children: string }) {
   );
 }
 
-/**
- * Setup help in a connect form: an app's method guide, OAuth client guide or field description.
- * `label` names the region for assistive technology; `id` lets a control refer to it.
- */
 export function SetupHelp({
   label,
   id,

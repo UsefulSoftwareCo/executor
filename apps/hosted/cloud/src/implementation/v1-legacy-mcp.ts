@@ -29,6 +29,7 @@ import {
   legacyMcpResourceMetadataUrl,
   legacyMcpTarget,
   requestedMcpAddress,
+  namedApprovalMode,
   type LegacyMcpPath,
   type ResourceOrigins,
 } from "@executor-js/mcp-auth";
@@ -39,11 +40,6 @@ import { Clock, Effect, Option, Schema } from "effect";
 import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import { SqlClient } from "effect/sql";
 
-/**
- * The request header the edge puts on a rewritten toolkit request: JSON `[v1 organization | null,
- * toolkit slug]`. Any copy a client sent is dropped first. It can only narrow access: it must
- * resolve to the caller's own live connection in the request's organization.
- */
 export const legacyToolkitHeader = "x-executor-v1-toolkit";
 
 const LegacyToolkit = Schema.fromJsonString(
@@ -54,11 +50,9 @@ const Organizations = Schema.Array(
   Schema.Struct({ v1_org_id: Schema.String, v2_org_id: OrganizationId }),
 );
 
-/** The v1 organization a selector names and the v2 organization it moved to, if it moved. */
 export const legacyOrganization = (selector: string) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
-    // v1 slugs are lowercase letters, digits and hyphens; ids start with `org_`.
     const rows = selector.startsWith("org_")
       ? yield* sql`select v1_org_id, v2_org_id from private_v1_legacy_org where v1_org_id = ${selector}`
       : yield* sql`select v1_org_id, v2_org_id from private_v1_legacy_org where v1_slug = ${selector}`;
@@ -70,11 +64,6 @@ export const legacyOrganization = (selector: string) =>
 
 const Copies = Schema.Array(Schema.Struct({ connection_id: ConnectionId }));
 
-/**
- * The caller's copy of a v1 toolkit in a v2 organization: in the URL's v1 organization, or for a
- * URL without one in whichever v1 organization moved there has it for the caller. None when no
- * copy, or more than one, matches.
- */
 export const legacyToolkitCopy = (input: {
   readonly v1Organization: string | null;
   readonly v2Organization: string;
@@ -97,7 +86,6 @@ export const legacyToolkitCopy = (input: {
       : Option.some(only.connection_id);
   });
 
-/** Whether any member has a copy of the toolkit, in the v1 organization when one is named. */
 const toolkitExists = (v1Organization: string | null, toolkit: string) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -110,10 +98,6 @@ const toolkitExists = (v1Organization: string | null, toolkit: string) =>
     return rows.length > 0;
   });
 
-/**
- * Whether the legacy path names something v2 serves: its selector moved, and its toolkit has a
- * copy. Returns the v1 and v2 organizations of a selector.
- */
 const resolvePath = (path: LegacyMcpPath) =>
   Effect.gen(function* () {
     const organization =
@@ -125,11 +109,6 @@ const resolvePath = (path: LegacyMcpPath) =>
     return Option.some({ organization });
   });
 
-/**
- * Insert the URL's `oauthResource` rows, one per approval mode, when they are missing, so the
- * authorization server accepts it as a `resource`. Clients read discovery before they authorize.
- * Rows are only ever inserted, with Better Auth's seed defaults; an existing row is never changed.
- */
 const seedResources = (identifiers: ReadonlyArray<string>) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -166,12 +145,10 @@ const mcpNotFound = HttpServerResponse.jsonUnsafe(
   { status: 404, headers: { "cache-control": "no-store" } },
 );
 
-/** Runs a statement on the calling invocation's database (`invocationSql`). */
 export type WithSql = <A, E>(
   effect: Effect.Effect<A, E, SqlClient.SqlClient>,
 ) => Effect.Effect<A, E>;
 
-/** A lookup that failed in storage is an outage to retry (a 503), never a refusal. */
 const lookup = <A, E>(withSql: WithSql, effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
   withSql(effect).pipe(Effect.mapError(() => new AuthenticationUnavailable()));
 
@@ -202,11 +179,6 @@ export const legacyProtectedResource = (withSql: WithSql) =>
     });
   });
 
-/**
- * Serve a legacy MCP URL with `mcp`, v2's MCP handler: as `/org/<v2 organization id>/mcp` for a
- * selector, `/mcp` without one, with the URL's approval mode and, for a toolkit, its header. A 401
- * names the legacy URL's own discovery document, so the client signs in for the URL it holds.
- */
 export const legacyMcp = <E, R>(
   withSql: WithSql,
   mcp: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
@@ -225,13 +197,12 @@ export const legacyMcp = <E, R>(
     const resolved = yield* lookup(withSql, resolvePath(path));
     if (Option.isNone(resolved)) return mcpNotFound;
     const organization = resolved.value.organization;
-    const query = address.mode === "model" ? "" : `?elicitation_mode=${address.mode}`;
+    const named = namedApprovalMode(url);
+    const query = named === undefined ? "" : `?elicitation_mode=${named}`;
     const target = Option.match(organization, {
       onNone: () => `/mcp${query}`,
       onSome: (found) => `/org/${encodeURIComponent(found.v2)}/mcp${query}`,
     });
-    // A new web request at the new URL: the gateway forwards the web request to the session
-    // object, which authenticates again and must see the same URL and headers.
     const web = yield* HttpServerRequest.toWeb(request).pipe(
       Effect.mapError(() => new AuthenticationUnavailable()),
     );
@@ -272,13 +243,6 @@ const ConnectionRow = Schema.Struct({
   revoked: Schema.Boolean,
 });
 
-/**
- * The access a request rewritten from a v1 toolkit URL has: the caller's own copy of the toolkit.
- * An OAuth grant must be the copy's own, which a grant made for the URL is; another is refused as
- * unauthorized, so the client signs in for this URL. A personal access token, a captured v1 key
- * among them, is narrowed to the copy's policy, with a grant ID of its own so its sessions stay
- * apart from the token's full ones. Without the header the access is unchanged.
- */
 export const legacyToolkitAccess = (headers: Headers, access: McpAccess) =>
   Effect.gen(function* () {
     const header = headers.get(legacyToolkitHeader);
@@ -335,13 +299,6 @@ export const legacyToolkitAccess = (headers: Headers, access: McpAccess) =>
     }),
   );
 
-/**
- * Bind a grant made for a legacy MCP URL (`resolveResource` of the grant plugins): its
- * organization is the one its selector moved to, or for a URL without one the organization the
- * consent page chose; a toolkit URL also binds the caller's own copy. Refused with a message the
- * consent page shows: an unknown URL, and a toolkit the caller has no copy of. Membership is
- * checked when the grant's organization is selected.
- */
 export const resolveLegacyResource = (
   origins: ResourceOrigins,
   input: {

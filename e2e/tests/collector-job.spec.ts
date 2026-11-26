@@ -1,96 +1,178 @@
-/**
- * Every release job that packages the CLI runtime starts beside the collector jobs and runs
- * `scripts/releases/collector-job.ts` before it fetches its target's collector build: it waits for
- * that target's `collector (<target>)` job and fails unless it succeeded. These cases run it as a
- * process against a local stand-in for GitHub's jobs API that answers with the given states in
- * order, repeating the last, and read its exit code, output and the requests it made.
- */
 import { expect, layer } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { createServer } from "node:http";
+import { createHash } from "node:crypto";
+import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { Effect, Stream } from "effect";
+import { Effect, FileSystem, Path, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { strToU8, zipSync } from "fflate";
 
 type State = { readonly status: string; readonly conclusion: string | null };
 
-/**
- * One answer of the jobs API: an HTTP status with no body, a 200 with an empty body, the collector
- * jobs' states (absent: not listed), or the raw job list, which the stand-in serves 100 to a page
- * as GitHub does.
- */
 type Answer =
   | { readonly status: number }
   | { readonly empty: true }
   | { readonly collectors: Record<string, State> }
   | {
       readonly jobs: ReadonlyArray<
-        { readonly name: string; readonly run_attempt?: number } & State
+        {
+          readonly name: string;
+          readonly run_attempt?: number;
+          readonly started_at?: string;
+        } & State
       >;
     };
 
 const run = "4243";
 const repository = "example/executor-next";
+const started = "2026-11-24T10:00:00Z";
+const ended = "2026-11-24T10:05:00Z";
 
-/** A jobs API that answers `answers` in order and records each request's path and token. */
-const jobsApi = (answers: ReadonlyArray<Answer>) => {
-  const requests: Array<{ readonly path: string; readonly authorization: string | undefined }> = [];
-  let listed = 0;
-  const server = createServer((request, response) => {
-    requests.push({ path: request.url ?? "", authorization: request.headers.authorization });
-    const page = Number(
-      new URL(request.url ?? "/", "http://stand-in").searchParams.get("page") ?? 1,
-    );
-    // A later page belongs to the same listing as the first.
-    if (page === 1) listed += 1;
-    const answer = answers[Math.min(listed - 1, answers.length - 1)]!;
-    if ("status" in answer) {
-      response.writeHead(answer.status);
-      response.end();
-      return;
-    }
-    if ("empty" in answer) {
-      response.writeHead(200, { "content-type": "application/json" });
-      response.end();
-      return;
-    }
-    const jobs =
-      "jobs" in answer
-        ? answer.jobs
-        : [
-            { name: "local (linux, x64)", status: "in_progress", conclusion: null },
-            ...Object.entries(answer.collectors).map(([target, state]) => ({
-              name: `collector (${target})`,
-              ...state,
-            })),
-          ];
-    response.writeHead(200, { "content-type": "application/json" });
-    // GitHub gives every job an id; the waiter reads it to tell a list that changed between pages.
-    const withIds = jobs.map((job, index) => ({ id: index + 1, run_attempt: 1, ...job }));
-    response.end(
-      JSON.stringify({
-        total_count: withIds.length,
-        jobs: withIds.slice((page - 1) * 100, page * 100),
-      }),
-    );
-  });
-  return Effect.acquireRelease(
-    Effect.callback<void>((resume) => {
-      server.listen(0, "127.0.0.1", () => resume(Effect.void));
+const archive = (files: Record<string, string>) =>
+  zipSync(Object.fromEntries(Object.entries(files).map(([name, text]) => [name, strToU8(text)])));
+const built = archive({ "executor-collector": "the collector\n", "lib/readme.txt": "beside it\n" });
+const rejected = archive({
+  "executor-collector": "a build whose SHA-256 is not the listed one\n",
+  "rejected.txt": "only in the rejected download\n",
+});
+const sha256 = (bytes: Uint8Array) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+
+type Upload = {
+  readonly id?: number;
+  readonly created_at?: string;
+  readonly size_in_bytes?: number;
+  readonly expired?: boolean;
+  readonly digest?: string | null;
+};
+
+type Listing = {
+  readonly after?: number;
+  readonly never?: true;
+  readonly uploads?: ReadonlyArray<Upload>;
+  readonly zip?: Uint8Array;
+  readonly missingFirst?: number;
+  readonly damagedFirst?: number;
+  readonly redirect?: true;
+};
+
+const listen = (server: Server) =>
+  Effect.acquireRelease(
+    Effect.callback<string>((resume) => {
+      server.listen(0, "127.0.0.1", () =>
+        resume(Effect.succeed(`http://127.0.0.1:${(server.address() as AddressInfo).port}`)),
+      );
     }),
     () =>
       Effect.callback<void>((resume) => {
         server.close(() => resume(Effect.void));
       }),
-  ).pipe(
-    Effect.as({
-      url: () => `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
-      requests: () => requests,
-    }),
   );
-};
 
-/** The waiter for `target`, as attempt `attempt` of the run, with short limits if `limits`. */
+const jobsApi = (answers: ReadonlyArray<Answer>, listing: Listing = {}) =>
+  Effect.gen(function* () {
+    const requests: Array<{ readonly path: string; readonly authorization: string | undefined }> =
+      [];
+    const artifactRequests: Array<string> = [];
+    const downloads: Array<{ readonly path: string; readonly authorization: string | undefined }> =
+      [];
+    const zip = listing.zip ?? built;
+    let listed = 0;
+    const blob = createServer((request, response) => {
+      downloads.push({ path: request.url ?? "", authorization: request.headers.authorization });
+      response.writeHead(200, { "content-type": "application/zip" });
+      response.end(zip);
+    });
+    const blobUrl = yield* listen(blob);
+    const server = createServer((request, response) => {
+      const address = new URL(request.url ?? "/", "http://stand-in");
+      if (address.pathname.endsWith("/artifacts")) {
+        artifactRequests.push(request.url ?? "");
+        const name = address.searchParams.get("name") ?? "";
+        const shown =
+          listing.never !== true && artifactRequests.length > (listing.after ?? 0)
+            ? (listing.uploads ?? [{}]).map((upload) => ({
+                id: 77,
+                name,
+                size_in_bytes: zip.length,
+                expired: false,
+                digest: sha256(zip),
+                created_at: "2026-11-24T10:04:59Z",
+                ...upload,
+              }))
+            : [];
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ total_count: shown.length, artifacts: shown }));
+        return;
+      }
+      if (/\/actions\/artifacts\/\d+\/zip$/u.test(address.pathname)) {
+        downloads.push({ path: request.url ?? "", authorization: request.headers.authorization });
+        const count = downloads.filter((download) => download.path.endsWith("/zip")).length;
+        if (count <= (listing.missingFirst ?? 0)) {
+          response.writeHead(404, { "content-type": "application/json" });
+          response.end(JSON.stringify({ message: "Not Found" }));
+          return;
+        }
+        if (listing.redirect === true) {
+          response.writeHead(302, { location: `${blobUrl}/blob/${count}?sig=signed` });
+          response.end();
+          return;
+        }
+        response.writeHead(200, { "content-type": "application/zip" });
+        response.end(
+          count <= (listing.missingFirst ?? 0) + (listing.damagedFirst ?? 0) ? rejected : zip,
+        );
+        return;
+      }
+      requests.push({ path: request.url ?? "", authorization: request.headers.authorization });
+      const page = Number(address.searchParams.get("page") ?? 1);
+      if (page === 1) listed += 1;
+      const answer = answers[Math.min(listed - 1, answers.length - 1)]!;
+      if ("status" in answer) {
+        response.writeHead(answer.status);
+        response.end();
+        return;
+      }
+      if ("empty" in answer) {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end();
+        return;
+      }
+      const jobs =
+        "jobs" in answer
+          ? answer.jobs
+          : [
+              { name: "local (linux, x64)", status: "in_progress", conclusion: null },
+              ...Object.entries(answer.collectors).map(([target, state]) => ({
+                name: `collector (${target})`,
+                ...state,
+              })),
+            ];
+      response.writeHead(200, { "content-type": "application/json" });
+      const withIds = jobs.map((job, index) => ({
+        id: index + 1,
+        run_attempt: 1,
+        started_at: started,
+        completed_at: job.status === "completed" ? ended : null,
+        ...job,
+      }));
+      response.end(
+        JSON.stringify({
+          total_count: withIds.length,
+          jobs: withIds.slice((page - 1) * 100, page * 100),
+        }),
+      );
+    });
+    const url = yield* listen(server);
+    return {
+      url: () => url,
+      requests: () => requests,
+      artifactRequests: () => artifactRequests,
+      downloads: () => downloads,
+    };
+  });
+
+const unpacked = "packages/telemetry/dist/collector";
+
 const wait = (
   api: string,
   target: string,
@@ -99,9 +181,13 @@ const wait = (
   caller?: string,
 ) =>
   Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
     const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const directory = yield* fs.makeTempDirectoryScoped({ prefix: "collector-job-" });
     const child = yield* processes.spawn(
-      ChildProcess.make("node", ["scripts/releases/collector-job.ts"], {
+      ChildProcess.make("node", [path.resolve("scripts/releases/collector-job.ts")], {
+        cwd: directory,
         env: {
           GITHUB_API_URL: api,
           GITHUB_REPOSITORY: repository,
@@ -122,19 +208,30 @@ const wait = (
         extendEnv: true,
       }),
     );
-    const started = Date.now();
+    const begun = Date.now();
     const [log, exitCode] = yield* Effect.all(
       [child.all.pipe(Stream.decodeText(), Stream.mkString), child.exitCode],
       { concurrency: "unbounded" },
     );
-    return { exitCode, log, seconds: (Date.now() - started) / 1000 };
+    const seconds = (Date.now() - begun) / 1000;
+    const into = `${directory}/${unpacked}`;
+    const files: Record<string, string> = {};
+    if (yield* fs.exists(into))
+      for (const file of yield* fs.readDirectory(into, { recursive: true }))
+        if ((yield* fs.stat(`${into}/${file}`)).type === "File")
+          files[file] = yield* fs.readFileString(`${into}/${file}`);
+    return { exitCode, log, seconds, files };
   }).pipe(Effect.scoped);
 
 const inProgress: State = { status: "in_progress", conclusion: null };
 const succeeded: State = { status: "completed", conclusion: "success" };
+const fetched = "The collector (linux-x64) job succeeded, and its build is fetched whole.";
+const whole = { "executor-collector": "the collector\n", "lib/readme.txt": "beside it\n" };
+const quick = { limit: 20, attempt: 5, poll: 0.2 };
+const short = { limit: 2, attempt: 5, poll: 0.3 };
 
 layer(NodeServices.layer)("packaging waits for its target's collector job", (it) => {
-  it.effect("a collector job that succeeds after a while lets packaging fetch its build", () =>
+  it.effect("a collector job that succeeds after a while gives packaging its build, unpacked", () =>
     Effect.gen(function* () {
       const api = yield* jobsApi([
         { collectors: { "linux-x64": inProgress } },
@@ -145,14 +242,222 @@ layer(NodeServices.layer)("packaging waits for its target's collector job", (it)
       expect(result.log).toContain(
         "Waiting for the collector (linux-x64) job: the collector (linux-x64) job is in_progress",
       );
-      expect(result.log).toContain("The collector (linux-x64) job succeeded; fetching its build.");
+      expect(result.log).toContain(fetched);
+      expect(result.log).toContain(
+        `Fetched artifact 77 (collector-linux-x64, ${built.length} bytes, SHA-256 as listed) into ${unpacked}: 2 files.`,
+      );
+      expect(result.files).toEqual(whole);
       expect(api.requests()).toHaveLength(2);
       expect(api.requests()[0]).toEqual({
         path: `/repos/${repository}/actions/runs/${run}/attempts/1/jobs?per_page=100`,
         authorization: "Bearer synthetic-token",
       });
+      expect(api.artifactRequests()).toEqual([
+        `/repos/${repository}/actions/runs/${run}/artifacts?name=collector-linux-x64&per_page=100`,
+      ]);
+      expect(api.downloads()).toEqual([
+        {
+          path: `/repos/${repository}/actions/artifacts/77/zip`,
+          authorization: "Bearer synthetic-token",
+        },
+      ]);
     }).pipe(Effect.scoped),
   );
+
+  it.effect("a collector job that succeeded is not fetched until its build is listed", () =>
+    Effect.gen(function* () {
+      const api = yield* jobsApi([{ collectors: { "linux-x64": succeeded } }], { after: 2 });
+      const result = yield* wait(api.url(), "linux-x64", 1, quick);
+      expect(result.exitCode, result.log).toBe(0);
+      expect(result.log).toContain(
+        "Waiting for the collector (linux-x64) job: the collector (linux-x64) job succeeded, and run 4243 lists 0 usable artifacts named collector-linux-x64 uploaded since it started yet",
+      );
+      expect(result.log).toContain(fetched);
+      expect(api.artifactRequests()).toHaveLength(3);
+      expect(api.downloads()).toHaveLength(1);
+      expect(result.files).toEqual(whole);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("a listed build the download cannot find yet is fetched once it can, not before", () =>
+    Effect.gen(function* () {
+      const api = yield* jobsApi([{ collectors: { "linux-x64": succeeded } }], {
+        missingFirst: 2,
+      });
+      const result = yield* wait(api.url(), "linux-x64", 1, quick);
+      expect(result.exitCode, result.log).toBe(0);
+      expect(result.log).toContain(
+        "Waiting for the collector (linux-x64) job: the artifact 77 download API answered 404: Not Found",
+      );
+      expect(api.downloads()).toHaveLength(3);
+      expect(result.files).toEqual(whole);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "a download whose bytes do not match the listed SHA-256 is not unpacked, and the next one is",
+    () =>
+      Effect.gen(function* () {
+        const api = yield* jobsApi([{ collectors: { "linux-x64": succeeded } }], {
+          damagedFirst: 2,
+        });
+        const result = yield* wait(api.url(), "linux-x64", 1, quick);
+        expect(result.exitCode, result.log).toBe(0);
+        expect(result.log).toContain(
+          `artifact 77 downloaded as ${rejected.length} bytes whose SHA-256 is not the one listed for its ${built.length} bytes`,
+        );
+        expect(api.downloads()).toHaveLength(3);
+        expect(result.files).toEqual(whole);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "downloads that never match the listed SHA-256 stop packaging after 3, unpacking nothing",
+    () =>
+      Effect.gen(function* () {
+        const api = yield* jobsApi([{ collectors: { "linux-x64": succeeded } }], {
+          damagedFirst: 1_000,
+        });
+        const result = yield* wait(api.url(), "linux-x64", 1, quick);
+        expect(result.exitCode, result.log).toBe(1);
+        expect(result.log).toContain(
+          `Artifact 77 (collector-linux-x64) downloaded 3 times in a row as bytes whose SHA-256 is not the one listed for its ${built.length} bytes (the last ${rejected.length} bytes), so nothing was unpacked into ${unpacked}. Rerun the collector (linux-x64) job, then this one.`,
+        );
+        expect(result.log).not.toContain("did not finish within");
+        expect(api.downloads()).toHaveLength(3);
+        expect(result.files).toEqual({});
+        expect(result.seconds).toBeLessThan(10);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("a build whose upload since the job started expired stops packaging at once", () =>
+    Effect.gen(function* () {
+      const api = yield* jobsApi([{ collectors: { "linux-x64": succeeded } }], {
+        uploads: [{ id: 76, created_at: "2026-11-24T09:58:00Z" }, { expired: true }],
+      });
+      const result = yield* wait(api.url(), "linux-x64", 1, quick);
+      expect(result.exitCode, result.log).toBe(1);
+      expect(result.log).toContain(
+        "The collector (linux-x64) job succeeded, but run 4243's artifact named collector-linux-x64 uploaded since it started (77) expired, so this job cannot fetch its build. Rerun the collector (linux-x64) job, then this one.",
+      );
+      expect(result.log).not.toContain("did not finish within");
+      expect(api.downloads()).toEqual([]);
+      expect(result.files).toEqual({});
+      expect(result.seconds).toBeLessThan(10);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("a download redirected to storage does not carry the token there", () =>
+    Effect.gen(function* () {
+      const api = yield* jobsApi([{ collectors: { "linux-x64": succeeded } }], {
+        redirect: true,
+      });
+      const result = yield* wait(api.url(), "linux-x64", 1, quick);
+      expect(result.exitCode, result.log).toBe(0);
+      expect(api.downloads()).toEqual([
+        {
+          path: `/repos/${repository}/actions/artifacts/77/zip`,
+          authorization: "Bearer synthetic-token",
+        },
+        { path: "/blob/1?sig=signed", authorization: undefined },
+      ]);
+      expect(result.files).toEqual(whole);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "a build stamped after the job's recorded end, as the artifact service's clock may, is fetched",
+    () =>
+      Effect.gen(function* () {
+        const api = yield* jobsApi([{ collectors: { "linux-x64": succeeded } }], {
+          uploads: [{ created_at: "2026-11-24T10:05:03Z" }],
+        });
+        const result = yield* wait(api.url(), "linux-x64", 1, quick);
+        expect(result.exitCode, result.log).toBe(0);
+        expect(result.files).toEqual(whole);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "of two builds with the name, only the one uploaded since the job started is fetched",
+    () =>
+      Effect.gen(function* () {
+        const api = yield* jobsApi([{ collectors: { "linux-x64": succeeded } }], {
+          uploads: [{ id: 76, created_at: "2026-11-24T09:58:00Z" }, { id: 77 }],
+        });
+        const result = yield* wait(api.url(), "linux-x64", 1, quick);
+        expect(result.exitCode, result.log).toBe(0);
+        expect(api.downloads().map((download) => download.path)).toEqual([
+          `/repos/${repository}/actions/artifacts/77/zip`,
+        ]);
+      }).pipe(Effect.scoped),
+  );
+
+  for (const [what, listing, count] of [
+    ["never listed", { never: true }, 0],
+    [
+      "listed only expired, from before the job started",
+      { uploads: [{ expired: true, created_at: "2026-11-24T09:59:59Z" }] },
+      0,
+    ],
+    ["listed only empty", { uploads: [{ size_in_bytes: 0 }] }, 0],
+    ["listed without a digest", { uploads: [{ digest: null }] }, 0],
+    [
+      "listed only from before the job started",
+      { uploads: [{ created_at: "2026-11-24T09:59:59Z" }] },
+      0,
+    ],
+    ["listed twice since the job started", { uploads: [{ id: 77 }, { id: 78 }] }, 2],
+  ] as const)
+    it.effect(`a build ${what} stops packaging at the deadline, never fetching`, () =>
+      Effect.gen(function* () {
+        const api = yield* jobsApi([{ collectors: { "linux-x64": succeeded } }], listing);
+        const result = yield* wait(api.url(), "linux-x64", 1, short);
+        expect(result.exitCode, result.log).toBe(1);
+        expect(result.log).toContain(
+          `The collector (linux-x64) job did not finish within 2 s (the collector (linux-x64) job succeeded, and run 4243 lists ${count} usable artifacts named collector-linux-x64 uploaded since it started yet).`,
+        );
+        expect(result.log).not.toContain("fetched whole");
+        expect(api.downloads()).toEqual([]);
+        expect(result.files).toEqual({});
+      }).pipe(Effect.scoped),
+    );
+
+  it.effect(
+    "a download that stays missing stops packaging at the deadline, unpacking nothing",
+    () =>
+      Effect.gen(function* () {
+        const api = yield* jobsApi([{ collectors: { "linux-x64": succeeded } }], {
+          missingFirst: 1_000,
+        });
+        const result = yield* wait(api.url(), "linux-x64", 1, short);
+        expect(result.exitCode, result.log).toBe(1);
+        expect(result.log).toContain(
+          "The collector (linux-x64) job did not finish within 2 s (the artifact 77 download API answered 404: Not Found).",
+        );
+        expect(result.files).toEqual({});
+      }).pipe(Effect.scoped),
+  );
+
+  for (const [what, files] of [
+    ["climbs out of its directory", { "../outside": "x" }],
+    ["is an absolute path", { "/etc/outside": "x" }],
+    ["holds a backslash", { "lib\\outside": "x" }],
+  ] as const)
+    it.effect(`a whole build with an entry that ${what} fails at once, writing nothing`, () =>
+      Effect.gen(function* () {
+        const zip = archive({ "executor-collector": "the collector\n", ...files });
+        const api = yield* jobsApi([{ collectors: { "linux-x64": succeeded } }], { zip });
+        const result = yield* wait(api.url(), "linux-x64", 1, quick);
+        expect(result.exitCode, result.log).toBe(1);
+        expect(result.log).toContain(
+          `Artifact 77 (collector-linux-x64) matches its listed SHA-256 but is not a zip of plain relative paths, so it cannot be unpacked into ${unpacked}.`,
+        );
+        expect(api.downloads()).toHaveLength(1);
+        expect(result.files).toEqual({});
+        expect(result.seconds).toBeLessThan(10);
+      }).pipe(Effect.scoped),
+    );
 
   for (const conclusion of ["failure", "cancelled", "skipped", "timed_out"])
     it.effect(`a collector job that ended ${conclusion} stops packaging at once`, () =>
@@ -311,8 +616,38 @@ layer(NodeServices.layer)("packaging waits for its target's collector job", (it)
     }).pipe(Effect.scoped),
   );
 
-  // Answers that say nothing about the collector job: each is waited out and stops packaging at
-  // the deadline, never taken as success.
+  it.effect(
+    "a re-run of only the failed jobs takes the build its retained collector job uploaded in the first attempt",
+    () =>
+      Effect.gen(function* () {
+        const api = yield* jobsApi(
+          [
+            {
+              jobs: [
+                {
+                  name: "collector (linux-x64)",
+                  run_attempt: 2,
+                  started_at: started,
+                  ...succeeded,
+                },
+              ],
+            },
+          ],
+          { uploads: [{ created_at: "2026-11-24T10:04:59Z" }] },
+        );
+        const result = yield* wait(api.url(), "linux-x64", 2, quick);
+        expect(result.exitCode, result.log).toBe(0);
+        expect(result.log).toContain(fetched);
+        expect(api.requests().every((request) => request.path.includes("/attempts/2/jobs"))).toBe(
+          true,
+        );
+        expect(api.downloads().map((download) => download.path)).toEqual([
+          `/repos/${repository}/actions/artifacts/77/zip`,
+        ]);
+        expect(result.files).toEqual(whole);
+      }).pipe(Effect.scoped),
+  );
+
   for (const [ending, answer, reason] of [
     ["a 404", { status: 404 }, "the jobs API answered 404"],
     ["a 401", { status: 401 }, "the jobs API answered 401"],
@@ -326,7 +661,7 @@ layer(NodeServices.layer)("packaging waits for its target's collector job", (it)
         expect(result.log).toContain(
           `The collector (linux-x64) job did not finish within 2 s (${reason}).`,
         );
-        expect(result.log).not.toContain("succeeded; fetching its build");
+        expect(result.log).not.toContain("fetched whole");
         expect(api.requests().length).toBeGreaterThanOrEqual(2);
         expect(result.seconds).toBeLessThan(30);
       }).pipe(Effect.scoped),

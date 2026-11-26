@@ -1,28 +1,10 @@
-/**
- * What the host keeps of the spans and logs an app isolate returns.
- *
- * Those records come from whatever framework the app's build bundles, and the app's own code runs
- * in the same isolate: it can throw any text, name its errors and codes, and rewrite every record
- * before the isolate returns it. So the host does not filter the records it receives. It builds
- * new ones from a closed vocabulary: the framework's span names, attributes whose values are
- * closed sets, counts and status codes, and each exception's kind. Ids, parents and timings are
- * kept. Everything else, including events other than exceptions, links, status and exception
- * messages, stacks and log bodies, is dropped or replaced with a fixed sentence.
- *
- * The vocabulary is the framework's (`packages/apps`, `app-cache`, `app-data`): host request
- * operations, failure sources and reasons, MCP and cache attributes. A name or value outside it is
- * recorded as `unrecognized` or not at all. `bun run check` (`scripts/check-app-telemetry.ts`)
- * fails when the framework names a span or sets an attribute key this vocabulary does not know.
- */
 import type { Schema } from "effect";
 
 type Json = Schema.Json;
 type JsonObject = { readonly [key: string]: Json };
 type Attribute = { readonly key: string; readonly value: JsonObject };
 
-/** What an exception message, stack or log body from an app isolate records instead. */
 export const appText = "Text from the app is not recorded";
-/** Recorded for a span name, error kind or failure code outside the vocabulary. */
 const unrecognized = "unrecognized";
 
 const operations = [
@@ -56,7 +38,6 @@ const httpMethods = [
   "CONNECT",
 ];
 
-/** The framework's span names, and the libraries' spans it runs. */
 export const appSpanNames: ReadonlySet<string> = new Set([
   "app.dispatch",
   ...operations.map((operation) => `app.${operation}`),
@@ -102,11 +83,6 @@ export const appSpanNames: ReadonlySet<string> = new Set([
   ...httpMethods.map((method) => `http.client ${method}`),
 ]);
 
-/**
- * Error kinds: the host protocol's errors, the framework's failures and helpers' errors, the
- * runtime's and Effect's own, and the kinds of value JavaScript can throw. An app's own error
- * classes are `unrecognized`.
- */
 const errorKinds: ReadonlySet<string> = new Set([
   "HostRequestInvalid",
   "HostAccountsInvalid",
@@ -165,15 +141,12 @@ const errorKinds: ReadonlySet<string> = new Set([
   "function",
 ]);
 
-/** The reasons the framework's own failures carry as their code. An app's own codes are not. */
 const failureCodes: ReadonlySet<string> = new Set([
-  // CacheError
   "unavailable",
   "storage",
   "invalid",
   "capacity",
   "timeout",
-  // AppDatabaseError
   "schema",
   "schema_changed",
   "table",
@@ -185,18 +158,15 @@ const failureCodes: ReadonlySet<string> = new Set([
   "limit",
   "closed",
   "replay",
-  // OpenapiError
   "invalid_definition",
   "invalid_input",
   "request",
-  // McpError, McpCredentialsUnverified and ProviderError
   "unauthorized",
   "invalid_response",
   "forbidden",
   "rate_limited",
   "rejected",
   "anonymous_access",
-  // NetworkRefused and FetchOptionUnsupported
   "private_address",
   "credential_host",
   "credential_app",
@@ -221,7 +191,6 @@ const oneOf =
     const found = text(value);
     return found !== undefined && values.includes(found) ? { stringValue: found } : undefined;
   };
-/** A value from `known`, or `unrecognized` for any other text. */
 const classified =
   (known: ReadonlySet<string>): Kept =>
   (value) => {
@@ -230,10 +199,6 @@ const classified =
       ? undefined
       : { stringValue: known.has(found) ? found : unrecognized };
   };
-/**
- * An error kind. Effect 4.1's HTTP client fails the span of a request answered 400 to 599 and
- * records that status as the type, which is as closed a set as the kinds.
- */
 const errorType: Kept = (value) => {
   const found = text(value);
   if (found === undefined) return undefined;
@@ -251,7 +216,6 @@ const status: Kept = (value) => {
   const found = integer(value);
   return found !== undefined && found >= 100 && found <= 599 ? { intValue: found } : undefined;
 };
-/** Milliseconds the framework measured; Effect writes whole values as integers. */
 const duration: Kept = (value) => {
   const found = typeof value["doubleValue"] === "number" ? value["doubleValue"] : integer(value);
   return found !== undefined && Number.isFinite(found) && found >= 0
@@ -259,7 +223,6 @@ const duration: Kept = (value) => {
     : undefined;
 };
 
-/** Every span attribute the host keeps, with the values it accepts. */
 const spanAttributes: Readonly<Record<string, Kept>> = {
   "executor.operation": oneOf(...operations, "mutation", "discover"),
   "executor.outcome": oneOf("failed"),
@@ -296,8 +259,6 @@ const spanAttributes: Readonly<Record<string, Kept>> = {
   "http.request.method": oneOf(...httpMethods),
   "http.response.status_code": status,
   "url.scheme": oneOf("http", "https"),
-  // Effect 4.1 marks an interrupted span with `effect.fiber.interrupted`; apps built on an
-  // earlier Effect still send the label and `status.interrupted`.
   "effect.fiber.interrupted": flag,
   "span.label": oneOf("⚠︎ Interrupted"),
   "status.interrupted": flag,
@@ -327,20 +288,14 @@ const spanAttributes: Readonly<Record<string, Kept>> = {
   "executor.overhead_ms": duration,
 };
 export const appSpanAttributeKeys: ReadonlySet<string> = new Set(Object.keys(spanAttributes));
-/**
- * Attributes the framework sets whose values the app chooses, such as its tool names, so the host
- * drops them. `scripts/check-app-telemetry.ts` fails on a framework attribute in neither set.
- */
 export const droppedAppAttributeKeys: ReadonlySet<string> = new Set([
   "executor.tool.name",
   "mcp.tool.name",
   "server.address",
-  // A request's path and route in an app's isolate are the app's.
   "url.path",
   "http.route",
 ]);
 
-/** The framework's own log messages. Any other log body is the app's text. */
 const logMessages: ReadonlySet<string> = new Set([
   "The app's request failed unexpectedly",
   "App cache refresh failed",
@@ -352,7 +307,6 @@ const isObject = (value: Json | undefined): value is JsonObject =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 const spanId = (value: Json | undefined) =>
   typeof value === "string" && /^[a-f0-9]{16}$/.test(value) ? value : undefined;
-/** OTLP nanosecond timestamps, as Effect writes them. */
 const nanos = (value: Json | undefined) =>
   typeof value === "string" && /^\d{1,20}$/.test(value) ? value : undefined;
 const between = (value: Json | undefined, minimum: number, maximum: number) =>
@@ -370,7 +324,6 @@ const attributes = (from: Json | undefined): Array<Attribute> =>
     return kept === undefined ? [] : [{ key, value: kept }];
   });
 
-/** An exception's kind, with a fixed message and an Executor-generated stack. */
 const exception = (event: JsonObject) => {
   const named = (Array.isArray(event["attributes"]) ? event["attributes"] : []).find(
     (attribute) => isObject(attribute) && attribute["key"] === "exception.type",
@@ -389,7 +342,6 @@ const exception = (event: JsonObject) => {
   };
 };
 
-/** The span the host records for one an app isolate returned, or nothing without its timings. */
 export const appSpan = (
   span: JsonObject & { readonly traceId: string; readonly spanId: string },
 ): JsonObject | undefined => {
@@ -419,7 +371,6 @@ export const appSpan = (
   };
 };
 
-/** The log record the host records for one an app isolate returned. */
 export const appLog = (
   log: JsonObject & { readonly traceId?: string | undefined; readonly spanId?: string | undefined },
 ): JsonObject => {

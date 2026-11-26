@@ -1,8 +1,3 @@
-/**
- * Private source formatter and Markdown reader. Prettier's parsers are about 1.5 MB of JavaScript
- * and the Markdown parser about 110 KB; in this small Worker they cost startup only when someone
- * views source or deploys setup help, not on every API cold start.
- */
 import { formatSources } from "@executor-js/app-management/source-format";
 import { SourceTextFile as SourceFile } from "@executor-js/sdk/core";
 import { markdownRefusals } from "@executor-js/sdk/markdown";
@@ -24,7 +19,6 @@ export default Formatter.make(
       ...(yield* cloudObservability),
       workersDev: false,
       build: workerBuild("formatter"),
-      // No placement: a service binding runs this Worker beside its caller, the placed API Worker.
       compatibility: { date: "2026-09-08", flags: ["nodejs_compat", "no_brotli_content_encoding"] },
       env: yield* telemetryBindings,
     };

@@ -1,4 +1,3 @@
-/** MCP catalog caching through real app deploys, storage and upstream HTTP boundaries. */
 import { expect, layer } from "@effect/vitest";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Config, Effect, Layer, Option, Schedule, Schema } from "effect";
@@ -96,7 +95,6 @@ const fixture = () =>
               serverInfo: { name: "Cache fixture", version: "1" },
             });
           }
-          // The outbound network must swap a credential handle for the account's real token.
           if (request.headers.authorization?.includes("exsec_"))
             return HttpServerResponse.empty({ status: 401 });
           const variant = request.headers["x-fixture-variant"];
@@ -228,8 +226,6 @@ const deploy = (
     const { id, slug } = yield* body(App, response);
     const path = `${prefix}/apps/${id}`;
     yield* Effect.addFinalizer(() => api.request(actors.owner, "DELETE", path).pipe(Effect.orDie));
-    // The server's tools are mounted under "upstream" beside the app's own refresh query.
-    // Every fixture tool is read-only.
     const call = (name: string, input: Schema.Json = {}) =>
       api.request(actors.owner, "POST", `${path}/tools/call`, {
         tool: name === "refresh" ? name : `upstream.${name}`,
@@ -239,7 +235,6 @@ const deploy = (
     return { api, actors, id, slug, path, prefix, call };
   });
 
-/** Connect a `service` account whose requests the fixture answers under `variant`. */
 const connectAccount = (app: Effect.Success<ReturnType<typeof deploy>>, variant: string) =>
   Effect.gen(function* () {
     const connection = yield* body(
@@ -283,7 +278,6 @@ const Executed = Schema.Struct({
   }),
 });
 
-/** Run MCP `execute` programs as the app's owner, through an API key of their own. */
 const executeAs = (app: Effect.Success<ReturnType<typeof deploy>>, name: string) =>
   Effect.gen(function* () {
     const key = yield* body(
@@ -321,7 +315,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP cache", (it) => {
         const origin = Option.isSome(remote) ? `${remote.value}/${randomUUID()}` : yield* fixture();
         yield* control(origin, { count: 3000, delayMs: 3000, resetCounters: true });
         const app = yield* deploy(`${origin}/mcp`, true, true);
-        // Connecting from the app links each account to it.
         const connect = (variant: string) => connectAccount(app, variant);
         const alpha = yield* connect("alpha");
         const input = { accountId: alpha, input: {} };
@@ -351,7 +344,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP cache", (it) => {
         expect(page.items.length).toBe(2000);
         expect(page.next).toBeDefined();
         expect((yield* control(origin)).counters.list).toBe(1);
-        // Browsing reads the whole catalog without schemas, then one tool's schemas.
         const indexStart = performance.now();
         const indexed = yield* app.api.request(app.actors.owner, "GET", `${app.path}/tools/index`);
         const indexMs = performance.now() - indexStart;
@@ -360,7 +352,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP cache", (it) => {
           Schema.Struct({ items: Schema.Array(Schema.Record(Schema.String, Schema.Json)) }),
           indexed,
         );
-        // Every upstream tool plus the app's declared refresh query.
         expect(index.items.length).toBe(3001);
         expect(index.items.some((tool) => "inputSchema" in tool || "outputSchema" in tool)).toBe(
           false,
@@ -409,7 +400,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP cache", (it) => {
         expect((yield* app.call("alpha_revision_1", input)).status).toBe(404);
         yield* measured("alpha_revision_2");
         const bravo = yield* connect("bravo");
-        // Connecting bravo linked it beside alpha; unlinking alpha leaves bravo alone in many().
         yield* unlinkAccount(app.actors.owner, app.path, "service", alpha);
         yield* measured("bravo_fixture_0000", { accountId: bravo, input: {} });
         expect((yield* control(origin)).counters.list).toBe(3);
@@ -425,8 +415,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP cache", (it) => {
             expect(response.status).toBe(200);
             yield* body(Schema.Json, response);
             const elapsed = performance.now() - start;
-            // Indexing after a deploy may also discover in the background.
-            // Every uncached call must issue its own tools/list regardless.
             expect((yield* control(origin)).counters.list).toBeGreaterThan(before);
             return elapsed;
           }),
@@ -464,8 +452,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP cache", (it) => {
         expect((yield* control(origin)).counters.call).toBe(calls);
         expect((yield* app.call("revision_1")).status).toBe(404);
 
-        // Credentials come only with their account: headers without one are refused before
-        // the server is contacted, so a credential without an account never keys or fills a shared catalog.
         const accountless = yield* deploy(`${origin}/mcp`, true, false, true);
         const before = (yield* control(origin)).counters;
         const refused = yield* accountless.call("fixture_0000");
@@ -487,16 +473,12 @@ layer(HostedLive, { excludeTestServices: true })("MCP cache", (it) => {
         const app = yield* deploy(`${origin}/mcp`, true, true);
         const alpha = yield* connectAccount(app, "alpha");
         const bravo = yield* connectAccount(app, "bravo");
-        // Connecting linked both accounts. One app Worker serves both; each has its own catalog
-        // and revision.
         const evidence = yield* Evidence,
           telemetry = yield* Telemetry;
-        /** Call `name` for `accountId`; return the cache commands its app sent, in order. */
         const commands = (name: string, accountId: string) =>
           Effect.gen(function* () {
             const response = yield* app.call(name, { accountId, input: {} });
             expect(response.status, name).toBe(200);
-            // Each account's calls reach only its own catalog.
             const answered = yield* body(
               Schema.Struct({ structuredContent: Schema.Struct({ variant: Schema.String }) }),
               response,
@@ -519,12 +501,8 @@ layer(HostedLive, { excludeTestServices: true })("MCP cache", (it) => {
               Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 80 }),
             );
           });
-        // The first call of each account loads its catalog.
         yield* commands("alpha_fixture_0000", alpha);
         yield* commands("bravo_fixture_0000", bravo);
-        // The account router looks the name up in each linked account's catalog. A warm call
-        // reads each catalog's manifest and the tool's part in one command, with no separate
-        // `read`, whichever account the call before it used.
         for (const round of [1, 2])
           for (const [name, account] of [
             ["alpha_fixture_0001", alpha],
@@ -534,7 +512,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP cache", (it) => {
               "acquire",
               "acquire",
             ]);
-        // A tool only the other account's catalog has is refused before the server is called.
         const calls = (yield* control(origin)).counters.call;
         expect(
           (yield* app.call("bravo_fixture_0001", { accountId: alpha, input: {} })).status,
@@ -574,7 +551,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP cache", (it) => {
             }),
           }),
         });
-        /** The revision tool each listed target of the app exposes. */
         const revisions = (step: string) =>
           Effect.gen(function* () {
             const result = yield* client.use(step, (client, signal) =>
@@ -596,21 +572,15 @@ layer(HostedLive, { excludeTestServices: true })("MCP cache", (it) => {
             ].sort();
           });
         expect(yield* revisions("First listing")).toEqual(["revision_1"]);
-        // That evaluation filled the cold app cache, a change that keeps it from being reused;
-        // the next one reads the warm cache and is kept.
         expect(yield* revisions("Listing from the warm app cache")).toEqual(["revision_1"]);
         const lists = (yield* control(origin)).counters.list;
-        // The listing is kept: a second search neither evaluates the app nor asks the server.
         expect(yield* revisions("Kept listing")).toEqual(["revision_1"]);
         expect((yield* control(origin)).counters.list).toBe(lists);
 
-        // An explicit refresh replaces the app's cached catalog; the next search lists it again.
         yield* control(origin, { version: 2 });
         expect((yield* app.call("refresh", { id: "" })).status).toBe(200);
         expect(yield* revisions("After a catalog refresh")).toEqual(["revision_2"]);
 
-        // A server that announces a changed tool list during a call invalidates the cached
-        // catalog, and the next search lists the changed tools.
         yield* control(origin, { version: 3, notify: true });
         expect((yield* app.call("fixture_0000")).status).toBe(200);
         expect(yield* revisions("After tools/list_changed")).toEqual(["revision_3"]);
@@ -624,12 +594,9 @@ layer(HostedLive, { excludeTestServices: true })("MCP cache", (it) => {
       Effect.gen(function* () {
         const origin = yield* fixture();
         yield* control(origin, { count: 3, delayMs: 0 });
-        // The app keeps its server's tool list fresh for a second, as it would for five minutes
-        // by default, so its routine refresh runs within the scenario.
         const app = yield* deploy(`${origin}/mcp`, true, false, false, "1 second");
         const execute = yield* executeAs(app, "Listing upstream change");
         const tools = `tools[${JSON.stringify(app.slug)}].upstream`;
-        /** The revision tools search lists for the app. */
         const searched = (step: string) =>
           execute(
             step,
@@ -647,23 +614,17 @@ return found.items.map((item) => item.path.split(".").at(-1)).sort();`,
         expect(yield* searched("First search")).toEqual(["revision_1"]);
         const first = yield* called("Call a listed tool", "revision_1");
         expect(first.value, JSON.stringify(first)).toBe("revision_1");
-        // The listing is kept now: another execute neither evaluates the app nor asks the server.
         const lists = (yield* control(origin)).counters.list;
         expect(yield* searched("Kept listing")).toEqual(["revision_1"]);
         expect((yield* control(origin)).counters.list).toBe(lists);
 
-        // The server replaces its tools without announcing it, as a deploy of it does.
         yield* control(origin, { version: 2 });
-        // A call of a tool both lists have runs on the app's stale tool list and refreshes it in
-        // the background once it is past its freshness: the server is asked again.
         yield* Effect.gen(function* () {
           expect((yield* app.call("fixture_0000")).status).toBe(200);
           if ((yield* control(origin)).counters.list === lists)
             return yield* Effect.fail(new Error("The app has not refreshed its tool list yet"));
         }).pipe(Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 20 }));
 
-        // The refreshed tool list differs, so every kept listing of the app is outdated: the new
-        // tool is called and searched without a redeploy, after at most one change check.
         const renamed = yield* called("Call the server's new tool", "revision_2").pipe(
           Effect.flatMap((result) =>
             result.ok
@@ -709,10 +670,6 @@ return found.items.map((item) => item.path.split(".").at(-1)).sort();`,
             execution: Schema.Struct({ ok: Schema.Literal(true), value: Schema.Json }),
           }),
         });
-        /**
-         * Runs one program. Returns its value, the tools its catalog held and the signatures its
-         * CodeMode runtime rendered, as the request's `mcp.catalog` and `mcp.execute` spans record.
-         */
         const run = (step: string, code: string) =>
           Effect.gen(function* () {
             const result = yield* client.use(step, (client, signal) =>
@@ -742,7 +699,6 @@ return found.items.map((item) => item.path.split(".").at(-1)).sort();`,
             return { value, ...recorded };
           });
 
-        // Executor's own search ranks its listing projections; the program's runtime renders none.
         const searched = yield* run(
           "Executor search",
           `return await tools.search({ query: "fixture_0007", limit: 5 });`,
@@ -755,13 +711,10 @@ return found.items.map((item) => item.path.split(".").at(-1)).sort();`,
         );
         expect(path).toBeDefined();
 
-        // A program that calls one tool reaches the app's 200, and renders none of their signatures.
         const called = yield* run("One tool call", `return await ${String(path)}({});`);
         expect(called.tools).toBeGreaterThanOrEqual(200);
         expect(called.rendered).toBe(0);
 
-        // CodeMode's own search() is served by Executor's search: it loads no app's tools and
-        // renders signatures only for the results on its page.
         const indexed = yield* run(
           "CodeMode search",
           `return await search({ query: "fixture_0007" });`,

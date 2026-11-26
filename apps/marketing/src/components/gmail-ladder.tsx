@@ -6,7 +6,6 @@ import gmailLogo from "../assets/logos/gmail.svg?url";
 
 const STEP_MS = 6000;
 
-// Example data only. Names and addresses are placeholders.
 function ToolsPreview() {
   const tools = [
     ["search_threads", "query, limit"],

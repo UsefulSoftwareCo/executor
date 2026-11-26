@@ -1,34 +1,3 @@
-/**
- * Save what Cloudflare knows about an organization removal that the end-of-run check waited for
- * in vain, before the stage that holds it is destroyed.
- *
- * The end-of-run check (`removal-settlement.ts`) appends one line to `removal-stalls.jsonl` in
- * the stage's directory for each removal still not done when it stops waiting, from the fixture
- * server's last answer: the scenario it belonged to, the organization, the phase the removal was
- * in and since when, its Workflow instance id and the status the stage's database gave. Neither
- * holds Cloudflare credentials, so the deployed runner, which owns the stage, reads that file just
- * before it destroys the stage and writes `removal-stalls.json` beside it:
- *
- * - the `OrganizationRemoval` Workflow instance of each stalled removal, as Cloudflare reports it
- *   (status, every step with its attempts and errors). Destroying the stage deletes the Workflow
- *   and its instances, so nothing else keeps this;
- * - the stage API Worker's own Workers Logs events that name the organization, from shortly
- *   before the stall until now.
- *
- * For test stages only: it runs in the deployed runner, against the stage that runner owns. What
- * it saves goes into the run's evidence artifact, so it is masked first (`mask` in
- * `failure-text.ts`): the secrets the runner holds, such as the emulator instance URLs and keys,
- * URL queries and fragments, values under credential-like field names (`"apiKey": …`), and long
- * opaque values. Step causes and log events can carry any of these. Each record is masked twice:
- * every raw string first, which catches a secret inside a string that is itself JSON (escaped
- * once there, twice in the record's JSON text), then as JSON text, so the field-name rules see the
- * field names. It is cut only after both, so a cut cannot split a secret before `mask` sees it
- * whole; the whole file is masked the same way once more.
- *
- * It changes nothing: no retry, no longer wait. A removal that stalled still fails its scenario
- * as before. A failed read is recorded with its HTTP status and the capture carries on; it never
- * fails or delays the teardown beyond its own deadline.
- */
 import { Clock, Config, Console, Effect, FileSystem, Option, Path, Redacted, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
 import { mask } from "../support/failure-text.ts";
@@ -36,7 +5,6 @@ import { mask } from "../support/failure-text.ts";
 export const removalStallsFile = "removal-stalls.jsonl";
 export const removalEvidenceFile = "removal-stalls.json";
 
-/** One removal the fixture server stopped waiting for. */
 export const RemovalStall = Schema.Struct({
   scenario: Schema.optional(Schema.String),
   label: Schema.optional(Schema.String),
@@ -66,13 +34,10 @@ const Workflow = Schema.Struct({
   script_name: Schema.optional(Schema.NullOr(Schema.String)),
 });
 
-/** Workers Logs events kept per organization, and how far before the stall they start. */
 const logLimit = 100;
 const logLead = 2 * 60_000;
-/** One record is cut beyond this, so a large step output cannot grow the artifact unbounded. */
 const recordLimit = 256 * 1024;
 
-/** Every raw string in a value masked; keys are code-defined and kept. */
 const maskedStrings = (value: unknown): unknown =>
   typeof value === "string"
     ? mask(value)
@@ -82,10 +47,6 @@ const maskedStrings = (value: unknown): unknown =>
         ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, maskedStrings(item)]))
         : value;
 
-/**
- * Raw strings masked, then the JSON text masked; when the masked text no longer parses, only its
- * masked text is kept.
- */
 const maskedJson = (value: unknown, indent?: number) => {
   const text = mask(JSON.stringify(maskedStrings(value), null, indent) ?? "null");
   try {
@@ -95,7 +56,6 @@ const maskedJson = (value: unknown, indent?: number) => {
   }
 };
 
-/** One Cloudflare record, masked as a whole and then cut to `recordLimit` characters. */
 const bounded = (value: unknown) => {
   const { text, value: masked } = maskedJson(value);
   return text.length <= recordLimit
@@ -103,14 +63,9 @@ const bounded = (value: unknown) => {
     : { truncated: true, characters: text.length, start: text.slice(0, recordLimit) };
 };
 
-/**
- * Read the stalls the fixture server recorded for this stage and save Cloudflare's records of
- * them. Does nothing when there are none.
- */
 export const captureRemovalStalls = (
   slug: string,
   directory: string,
-  /** Cloudflare's API. Only the spec passes another, its local stand-in. */
   api = "https://api.cloudflare.com/client/v4",
 ) =>
   Effect.gen(function* () {
@@ -130,7 +85,6 @@ export const captureRemovalStalls = (
     const token = yield* Config.Redacted("CLOUDFLARE_API_TOKEN");
     const http = yield* HttpClient.HttpClient;
     const base = `${api}/accounts/${account}`;
-    /** One Cloudflare call; a refusal becomes `{ error: "HTTP <status>" }`, never a failure. */
     const call = (request: HttpClientRequest.HttpClientRequest) =>
       http.execute(HttpClientRequest.bearerToken(request, Redacted.value(token))).pipe(
         Effect.flatMap((response) =>
@@ -146,7 +100,6 @@ export const captureRemovalStalls = (
         Effect.timeout("20 seconds"),
         Effect.catchCause(() => Effect.succeed({ ok: false, error: "no answer" } as const)),
       );
-    /** Every page of an account listing. */
     const listAll = <A>(listing: string, item: Schema.Codec<A, unknown>) =>
       Effect.gen(function* () {
         const items: A[] = [];

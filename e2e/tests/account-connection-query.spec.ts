@@ -131,7 +131,6 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
         const timeOrigin = yield* browser.use("Remember this document before saving", (page) =>
           page.evaluate(() => performance.timeOrigin),
         );
-        // The caller's links: the list, or the requirement's linked and linkable accounts.
         const paths = [actors.organization.slug, actors.organization.id].flatMap((reference) => [
           `/api/organizations/${reference}/apps/${app.id}/accounts/user`,
           `/api/organizations/${reference}/apps/${app.id}/accounts/user/service`,
@@ -139,8 +138,6 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
         const read = yield* holdQuery(paths, "continue", { allRequests: true });
         const saved = yield* browser.use("Save credentials through the account form", (page) =>
           Promise.all([
-            // Cloud's error-report tunnel also posts to a path ending in `/submit`, and reports the
-            // lost response above; only the connection's own submit is this save.
             page.waitForResponse(
               (response) =>
                 response.request().method() === "POST" &&
@@ -173,7 +170,6 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
             accountNameField(page).inputValue(),
           ),
         ).toBe("Default");
-        // Saving the connection linked the account to the app, once.
         expect(yield* linkedAccountIds(actors.owner, `${prefix}/apps/${app.id}`)).toEqual([
           account,
         ]);
@@ -195,8 +191,6 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
           "Saving starts a fresh read of the app's linked accounts",
           read.requested,
         );
-        // The modal prompt hides the page from assistive technology while it is open.
-        // The Accounts tab keeps its previous content while the linked accounts read is held.
         expect(
           yield* browser.use("The pending linked accounts read keeps the tab on screen", (page) =>
             page
@@ -256,8 +250,6 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
           ),
         ).toBe(0);
         yield* browser.checkpoint("Account connected in place");
-        // A plain requirement with its account still offers to connect another, which would
-        // replace it.
         yield* browser.use("Connect another account from the list", (page) =>
           page.getByRole("button", { name: "Connect new account", exact: true }).click(),
         );

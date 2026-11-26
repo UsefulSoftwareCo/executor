@@ -29,7 +29,6 @@ const apiProxy = (apiOrigin: string) =>
     const request = yield* HttpServerRequest.HttpServerRequest;
     const incoming = NodeHttpServerRequest.toIncomingMessage(request);
     const outgoing = NodeHttpServerRequest.toServerResponse(request);
-    // Effect 4.1 may hand over an HTTP/2 request; this development server only speaks HTTP/1.
     if (!(incoming instanceof IncomingMessage) || !(outgoing instanceof ServerResponse))
       return HttpServerResponse.empty({ status: 505 });
     return yield* Effect.callback<HttpServerResponse.HttpServerResponse>((resume) => {
@@ -90,7 +89,6 @@ const main = Effect.scoped(
     const path = yield* Path.Path;
     const port = yield* Config.Number("PORT");
     const apiOrigin = yield* Config.String("HOSTED_API_URL");
-    // The development origin serves the dashboard and the MCP and API resources alike.
     const origin = yield* Config.String("BETTER_AUTH_URL");
     const root = path.resolve(
       path.dirname(yield* path.fromFileUrl(new URL(import.meta.url))),

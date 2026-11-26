@@ -1,4 +1,3 @@
-/** Hosted access settings use the same persisted policy enforced by execution. */
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { AsyncResult } from "effect/reactivity";
 import { Option } from "effect";
@@ -11,11 +10,9 @@ import { groupsAtom } from "../../contracts/groups.ts";
 import { HostedFailure } from "../components/dashboard-bindings.tsx";
 import { useOrganizationRoute } from "../components/organization.tsx";
 import { SharingEditor } from "../components/sharing.tsx";
-/** These controls change app access; accounts and their links are separate. */
 export function AppAccessSettings({ app }: { readonly app: AppId }) {
   const { organization } = useOrganizationRoute();
   const save = useAtomSet(shareAppAtom({ organization, app }), { mode: "promiseExit" });
-  // The editor always needs the groups, so they load alongside the access rather than after it.
   usePreload(appAccessAtom({ organization, app }), groupsAtom(organization));
   const session = AsyncResult.value(useAtomValue(sessionAtom));
   const user = Option.isSome(session) ? session.value?.user.id : undefined;

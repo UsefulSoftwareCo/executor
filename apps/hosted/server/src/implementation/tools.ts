@@ -12,6 +12,8 @@ import {
   ToolApprovalIssuer,
   ToolApprovalNotFound,
   ToolNotFound,
+  type App,
+  type AppAccounts,
   type AppId,
   type ApprovalRequestId,
   type Executor,
@@ -43,11 +45,11 @@ import {
   checkedToolCall,
   checkInvocationAccounts,
   currentOwner,
+  pinnedActiveVersion,
   selectedActiveVersion,
   usableApp,
 } from "./access.ts";
 
-/** Discover the current account-dependent catalog with the caller's resolved accounts. */
 export const listTools = (
   input: Parameters<Executor["tools"]["list"]>[0],
   options?: ToolListOptions,
@@ -66,18 +68,20 @@ export const listTools = (
       ),
     };
   });
-/** Keep the target's current catalog as search rows after the same checks as discovery. */
-export const searchableTools = (
+export const searchableTools = <E = never>(
   input: Parameters<Executor["tools"]["searchable"]>[0],
   options?: ToolListOptions,
+  selected?: Effect.Effect<{ readonly app: App; readonly accounts: AppAccounts }, E>,
 ) =>
   Effect.gen(function* () {
     const policy = yield* authorizeApp(input.app);
     const owner = yield* currentOwner;
     const executor = yield* Effect.flatten(HostedExecutor);
-    const { version, accounts } = yield* selectedActiveVersion(executor, owner, input);
+    const { version, accounts } =
+      selected === undefined
+        ? yield* selectedActiveVersion(executor, owner, input)
+        : yield* Effect.flatMap(selected, (found) => pinnedActiveVersion(found, input.version));
     const searchable = yield* executor.tools.searchable({ ...input, version, accounts }, options);
-    // Failed routers list no tools, so the policy decides them without the catalog.
     return {
       ...searchable,
       routers: searchable.routers.filter((router) =>
@@ -85,10 +89,6 @@ export const searchableTools = (
       ),
     };
   });
-/**
- * Rank the tools of listings `searchableTools` kept for this request's caller, with each target
- * narrowed to the tools discovery would list. A target the policy no longer permits has none.
- */
 export const searchTools = (input: Parameters<Executor["tools"]["search"]>[0]) =>
   Effect.gen(function* () {
     const policy = yield* CurrentPolicy;
@@ -114,7 +114,6 @@ export const searchTools = (input: Parameters<Executor["tools"]["search"]>[0]) =
       }),
     };
   });
-/** Names and descriptions for browsing; schemas are read per tool. */
 export const indexTools = (input: Parameters<Executor["tools"]["index"]>[0]) =>
   Effect.gen(function* () {
     const policy = yield* authorizeApp(input.app);
@@ -130,15 +129,12 @@ export const indexTools = (input: Parameters<Executor["tools"]["index"]>[0]) =>
       ),
     };
   });
-/** One tool's schemas, hidden exactly like the tools discovery omits. */
 export const getTool = (input: Parameters<Executor["tools"]["get"]>[0]) =>
   Effect.gen(function* () {
     const policy = yield* authorizeApp(input.app);
     const owner = yield* currentOwner;
     const executor = yield* Effect.flatten(HostedExecutor);
     const { version, accounts } = yield* selectedActiveVersion(executor, owner, input);
-    // When names decide, check before evaluating, so a hidden tool's source failure is not
-    // reported either. A read-only rule needs the catalog's flag, so it is checked after.
     if (
       !requiresToolMetadata(policy.tools, input.app) &&
       !discoversTool(policy, { app: input.app, tool: { name: input.tool } })
@@ -153,7 +149,6 @@ export const getTool = (input: Parameters<Executor["tools"]["get"]>[0]) =>
       });
     return tool;
   });
-/** Execute with the caller's resolved accounts after the same checks as discovery. */
 const startTool = (
   input: Parameters<Executor["tools"]["call"]>[0],
   options?: ToolInvocationOptions,
@@ -171,11 +166,6 @@ const startTool = (
       return yield* executor.tools.call({ ...input, version, accounts, kind }, options);
     }),
   );
-/**
- * API credentials cannot present an approval, so a call that needs one fails without running. The
- * call is logged under the caller the organization middleware authenticated, and its failure
- * carries the call's reference.
- */
 export const callTool = (input: Parameters<Executor["tools"]["call"]>[0]) =>
   Effect.gen(function* () {
     const { exit, reference } = yield* loggedToolCall(
@@ -193,21 +183,12 @@ export const callTool = (input: Parameters<Executor["tools"]["call"]>[0]) =>
       Effect.mapError((error) => CallFailures.withReference(error, reference)),
     );
   });
-/**
- * The signed-in person's own run from the dashboard. Its approval is saved with this issuer, so only
- * that person's dashboard can read or answer it. MCP, schedules and API calls save no issuer.
- */
 const dashboardRun = Effect.gen(function* () {
   yield* browserOnly;
   const user = yield* CurrentUserId;
   if (user === undefined) return yield* new Forbidden();
   return ToolApprovalIssuer.make(`dashboard:${user}`);
 });
-/**
- * The signed-in person is the runner, so a call that needs approval waits for their review. A run
- * that did not succeed carries the call's reference: on its error, or beside a value that says the
- * tool failed.
- */
 const runTool = (input: Parameters<Executor["tools"]["call"]>[0]) =>
   Effect.gen(function* () {
     const { exit, reference } = yield* loggedToolCall(
@@ -229,37 +210,29 @@ const runTool = (input: Parameters<Executor["tools"]["call"]>[0]) =>
       Effect.mapError((error) => RunFailures.withReference(error, reference)),
     );
   });
-/**
- * Read the saved call, check this person's dashboard run issued it, and check they may still run
- * it with the same checks as a new call. The arguments shown and resumed are the saved invocation's.
- */
 const reviewedTool = (app: AppId, requestId: ApprovalRequestId) =>
   Effect.gen(function* () {
     const issuer = yield* dashboardRun;
     const owner = yield* currentOwner;
     const executor = yield* Effect.flatten(HostedExecutor);
     const pending = yield* executor.tools.approval({ requestId, owner });
-    // MCP, scheduled and API approvals, and other people's runs, are answered only in their own flow.
     if (pending.issuer !== issuer)
       return yield* new ToolRunApprovalRefused({
         reason: pending.issuer === undefined ? "unrecorded" : "another-person",
       });
     const { invocation } = pending;
     if (invocation.app !== app) return yield* new ToolApprovalNotFound({ requestId });
-    // The saved call keeps its accounts; the caller must still be able to use the app and each.
     const found = yield* usableApp(executor, owner, app);
     yield* authorizeSavedTool(invocation);
     yield* checkInvocationAccounts(executor, owner, invocation);
     return { ...pending, issuer, appName: found.name };
   });
 
-/** Current app and account grants authorize both discovery and execution. */
 export const hostedToolHandlers = HttpApiBuilder.group(HostedApi, "tools", (handlers) =>
   handlers
     .handle("list", ({ params, query }) => listTools({ app: params.app, ...query }))
     .handle("index", ({ params, query }) => indexTools({ app: params.app, ...query }))
     .handle("get", ({ params, query }) => getTool({ app: params.app, tool: params.tool, ...query }))
-    // Every failure of these two is one their declared errors encode, as `referencedErrors` says.
     .handle("call", ({ params, payload }) =>
       CallFailures.referenced(callTool({ app: params.app, ...payload })),
     )
@@ -275,8 +248,6 @@ export const hostedToolHandlers = HttpApiBuilder.group(HostedApi, "tools", (hand
             status: "approval-required",
             requestId: params.requestId,
             invocation,
-            // Built from the saved call, so it describes what approval resumes; the review card
-            // shows the exact arguments from the invocation.
             elicitation: approvalElicitation(invocation.tool, invocation.input),
             expiresAt,
           },
@@ -293,7 +264,6 @@ export const hostedToolHandlers = HttpApiBuilder.group(HostedApi, "tools", (hand
           Effect.mapError(() => new RequestInvalid()),
         );
         const executor = yield* Effect.flatten(HostedExecutor);
-        // The SDK checks the issuer again before it consumes the request.
         const logged = yield* loggedToolResume(
           params.requestId,
           executor.tools.resume(
@@ -302,7 +272,6 @@ export const hostedToolHandlers = HttpApiBuilder.group(HostedApi, "tools", (hand
           ),
         );
         const result = yield* logged.exit;
-        // A call that did not succeed carries its reference; one that succeeded needs none.
         const succeeded = result.status === "completed" && result.toolError !== true;
         if (result.status === "already-consumed") return { status: "unavailable" as const };
         return result.status === "failed" && result.reason === "expired"
@@ -318,7 +287,6 @@ export const hostedToolHandlers = HttpApiBuilder.group(HostedApi, "tools", (hand
                 : { reference: logged.reference }),
             };
       }).pipe(
-        // An expired or already answered request is gone; the person's own run keeps its reference.
         Effect.catchTag("ToolApprovalNotFound", () =>
           Effect.map(dashboardRunReference(params.requestId), (reference) => ({
             status: "unavailable" as const,

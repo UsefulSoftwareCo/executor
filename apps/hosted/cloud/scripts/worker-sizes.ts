@@ -1,38 +1,3 @@
-/**
- * Build every budgeted Worker the way `alchemy deploy` does, report what each uploads, and hold
- * a pull request to what it adds.
- *
- * The deploy enforces each Worker's upload budget inside its Rolldown build
- * (`src/infrastructure/worker-build.ts`). This runs that same build (`worker-builds.ts`) in the
- * check job, without credentials or a deploy, so a pull request learns its sizes in minutes
- * instead of when its preview or the production deploy fails. It builds production, and with
- * `--preview` the pull request's preview stage too.
- *
- *   bun run hosted:cloud:worker-sizes [--preview <pull request number>] [--base <directory>]
- *     [--description <file>] [--uploads <directory>]
- *
- * With `--base`, each Worker is compared with main's uploads, and the packages and files that
- * grew are named. A budget is a backstop with room under it, so the comparison is what keeps a
- * Worker from growing unnoticed: with `--description`, the pull request's description, a Worker
- * that adds more than `growthLimit` to its upload, or to the modules its entry imports statically
- * (what Cloudflare evaluates at startup), fails unless the description allows it in a block like
- *
- *   ```worker-growth
- *   api +120,000: the SAML sign-in library, which every enterprise sign-in loads
- *   ```
- *
- * Each line names a Worker, the most bytes it may add, and why that is worth the cold-start time.
- * Without `--description`, as on a push to main, growth is only reported. A Worker main does not
- * have yet is held to its budget alone.
- *
- * With `--uploads`, nothing is built: the report and the checks read uploads a build already
- * wrote, such as the `worker-uploads` artifact of a CI run.
- *
- * It also fails when a deployed build contains a local test hook (`localTestModules` in
- * `worker-build.ts`): only `alchemy dev` may bundle one, so no binding or request can turn it on
- * in a deployed Worker. Each uploaded file is searched for the hook's text, and each Worker's
- * sources for the hook's file.
- */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Config, Console, Effect, FileSystem, Option, Path, Schema } from "effect";
@@ -48,31 +13,38 @@ class WorkerSizesFailed extends Schema.TaggedError<WorkerSizesFailed>()("WorkerS
   message: Schema.String,
 }) {}
 
-/**
- * Below this share of its budget left, a Worker is flagged, so the budget is looked at again
- * before a change runs into it.
- */
 const lowHeadroom = 0.05;
 
-/**
- * Bytes a pull request may add to one Worker's upload before its description has to allow it:
- * about 2 ms on each of that Worker's cold starts.
- */
 const growthLimit = 50_000;
 
-/** Milliseconds a cold start spends compiling this many uploaded bytes; see `worker-build.ts`. */
 const compileMs = (size: number) => Math.round((size / 1_000_000) * 40);
 
-/** The most bytes a pull request's description lets one Worker add, and why. */
 interface Allowance {
   readonly bytes: number;
   readonly reason: string;
 }
 
-/**
- * The allowances in a description's `worker-growth` blocks, one line for each Worker, and the
- * lines that do not read as one.
- */
+const placeholder = "<why it is worth the cold-start time>";
+
+const mergedAllowances = (
+  merged: ReadonlyArray<{ readonly number: number; readonly body: string }>,
+) => {
+  const allowances = new Map<string, Allowance>();
+  const unread: Array<string> = [];
+  for (const pull of merged) {
+    const own = allowancesIn(pull.body);
+    unread.push(...own.unread.map((line) => `#${pull.number}: ${line}`));
+    for (const [worker, allowance] of own.allowances) {
+      const sum = allowances.get(worker);
+      allowances.set(worker, {
+        bytes: (sum?.bytes ?? 0) + allowance.bytes,
+        reason: `${sum === undefined ? "" : `${sum.reason}; `}#${pull.number}: ${allowance.reason}`,
+      });
+    }
+  }
+  return { allowances, unread };
+};
+
 const allowancesIn = (description: string) => {
   const allowances = new Map<string, Allowance>();
   const unread: Array<string> = [];
@@ -82,7 +54,13 @@ const allowancesIn = (description: string) => {
     for (const line of block.split("\n").map((line) => line.trim())) {
       if (line === "") continue;
       const [, worker, size, reason] = /^([a-z-]+) \+?([0-9][0-9,]*): *(\S.*)$/u.exec(line) ?? [];
-      if (worker === undefined || size === undefined || reason === undefined) unread.push(line);
+      if (
+        worker === undefined ||
+        size === undefined ||
+        reason === undefined ||
+        reason === placeholder
+      )
+        unread.push(line);
       else allowances.set(worker, { bytes: Number(size.replaceAll(",", "")), reason });
     }
   return { allowances, unread };
@@ -92,7 +70,6 @@ const WorkerUploadSchema = Schema.Struct({
   worker: Schema.String,
   bytes: Schema.Number,
   budget: Schema.Number,
-  // Main's uploads from before static imports were recorded have none.
   staticBytes: Schema.optionalKey(Schema.Number),
   sources: Schema.Record(Schema.String, Schema.Number),
 });
@@ -113,10 +90,6 @@ const readUploads = (directory: string) =>
     return uploads;
   });
 
-/**
- * Name a file the same way in every build: Bun installs packages under
- * `node_modules/.bun/<name>@<version>/`, and the site build adds a content hash to each asset.
- */
 const sourceFile = (source: string) =>
   source
     .replace(/node_modules\/\.bun\/[^/]+\/node_modules\//, "node_modules/")
@@ -126,7 +99,6 @@ const bytes = (value: number) => value.toLocaleString("en-US");
 const signed = (value: number) => `${value > 0 ? "+" : ""}${bytes(value)}`;
 const percent = (value: number) => `${(value * 100).toFixed(1)}%`;
 
-/** The entries whose bytes changed most between two attributions, largest change first. */
 const changes = (
   current: Readonly<Record<string, number>>,
   base: Readonly<Record<string, number>>,
@@ -156,7 +128,6 @@ const table = (
         "",
       ];
 
-/** Each Worker's larger build decides its headroom; a preview can fail where production passes. */
 interface Measured {
   readonly worker: string;
   readonly budget: number;
@@ -164,19 +135,13 @@ interface Measured {
   readonly stages: ReadonlyArray<string>;
 }
 
-/**
- * A Worker that added more than `growthLimit` to main's upload or to the modules its entry
- * imports statically, the larger of the two, and what the description allows it.
- */
 interface Growth {
   readonly worker: string;
   readonly added: number;
-  /** Which grew more: what the Worker uploads, or what its entry imports at startup. */
   readonly what: "upload" | "static imports";
   readonly allowance: Allowance | undefined;
 }
 
-/** One stage's uploads, and what failed while building or inspecting them. */
 interface Build {
   readonly stage: string;
   readonly uploads: ReadonlyMap<string, WorkerUpload>;
@@ -187,16 +152,19 @@ const report = (
   productionBuild: Build,
   previewBuild: Build | undefined,
   base: ReadonlyMap<string, WorkerUpload> | undefined,
-  description: string | undefined,
+  allowed:
+    | {
+        readonly allowances: ReadonlyMap<string, Allowance>;
+        readonly unread: ReadonlyArray<string>;
+      }
+    | undefined,
+  baseline: string,
 ) => {
   const uploads = productionBuild.uploads;
   const failures = [...(previewBuild?.failures ?? []), ...productionBuild.failures];
-  const allowed = description === undefined ? undefined : allowancesIn(description);
   const grown: Array<Growth> = [...uploads.values()].flatMap((upload) => {
     const before = base?.get(upload.worker);
     const uploaded = before === undefined ? 0 : upload.bytes - before.bytes;
-    // A module moved from a dynamic import into the entry's static graph uploads the same bytes
-    // but runs at every startup, which Cloudflare limits.
     const imported =
       before?.staticBytes === undefined || upload.staticBytes === undefined
         ? 0
@@ -218,7 +186,10 @@ const report = (
       ? []
       : grown.filter(({ added, allowance }) => allowance === undefined || allowance.bytes < added);
   const unread = [
-    ...(allowed?.unread ?? []).map((line) => `\`${line}\` is not a Worker, a size and a reason`),
+    ...(allowed?.unread ?? []).map(
+      (line) =>
+        `\`${line}\` is not a Worker, a size and a reason (write the real reason in place of ${placeholder})`,
+    ),
     ...[...(allowed?.allowances.keys() ?? [])]
       .filter((worker) => !uploads.has(worker))
       .map((worker) => `\`${worker}\` is not a Worker this check builds`),
@@ -247,12 +218,12 @@ const report = (
     "Built as `alchemy deploy` builds them, against the budgets in " +
       "`apps/hosted/cloud/src/infrastructure/worker-build.ts`. Headroom is for the larger build." +
       (base === undefined
-        ? " Main's sizes for this base were not available, so no change is shown and growth is not checked."
+        ? ` The sizes of ${baseline} were not available, so no change is shown and growth is not checked.`
         : ""),
     "",
     previewBuild === undefined
-      ? `| Worker | \`${productionBuild.stage}\` | Change from main | Budget | Headroom |`
-      : `| Worker | \`${productionBuild.stage}\` | \`${previewBuild.stage}\` | Change from main | Budget | Headroom |`,
+      ? `| Worker | \`${productionBuild.stage}\` | Change from ${baseline} | Budget | Headroom |`
+      : `| Worker | \`${productionBuild.stage}\` | \`${previewBuild.stage}\` | Change from ${baseline} | Budget | Headroom |`,
     previewBuild === undefined ? "|---|---:|---:|---:|---:|" : "|---|---:|---:|---:|---:|---:|",
   ];
   for (const worker of measured) {
@@ -264,11 +235,10 @@ const report = (
     const growth = unallowed.some((grew) => grew.worker === worker.worker)
       ? " **needs an allowance**"
       : "";
-    // A budget is changed in a pull request of its own, so a change is shown where it is read.
     const budgetOnMain =
       before === undefined || before.budget === worker.budget
         ? ""
-        : ` (main: ${bytes(before.budget)})`;
+        : ` (${baseline}: ${bytes(before.budget)})`;
     lines.push(
       `| ${worker.worker} | ${upload === undefined ? "n/a" : bytes(upload.bytes)} | ` +
         (previewBuild === undefined
@@ -296,7 +266,7 @@ const report = (
       "isolate starts. A module only a dynamic `import()` loads is uploaded but waits for the " +
       "request that needs it.",
     "",
-    "| Worker | Static imports | Change from main |",
+    `| Worker | Static imports | Change from ${baseline} |`,
     "|---|---:|---:|",
     ...[...uploads.values()].map((upload) => {
       const before = base?.get(upload.worker)?.staticBytes;
@@ -381,7 +351,6 @@ const flag = (name: string) => {
   return index === -1 ? undefined : process.argv[index + 1];
 };
 
-/** A stage's uploads with their failures, adding any local test hook among the sources. */
 const inspected = (
   stage: string,
   uploads: ReadonlyMap<string, WorkerUpload>,
@@ -405,13 +374,11 @@ const inspected = (
   ],
 });
 
-/** Build the preview, when asked for, and then production. */
 const build = (previewNumber: string | undefined) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const directory = yield* path.fromFileUrl(workerUploadDirectory);
-    // Loaded only to build: it imports the whole stack, which needs the generated framework.
     const { buildWorkers, preview, production } = yield* Effect.promise(
       () => import("./worker-builds.ts"),
     );
@@ -423,7 +390,6 @@ const build = (previewNumber: string | undefined) =>
       });
     const previewBuild =
       previewNumber === undefined ? undefined : yield* measure(preview(Number(previewNumber)));
-    // Production builds last, so the uploads left in the directory are production's.
     return { preview: previewBuild, production: yield* measure(production) };
   });
 
@@ -446,14 +412,30 @@ const program = Effect.gen(function* () {
       message: `No Worker uploads in ${given ?? "the build's output"}`,
     });
   const baseDirectory = flag("--base");
+  const baseline = flag("--baseline") ?? "main";
   const base = baseDirectory === undefined ? undefined : yield* readUploads(baseDirectory);
   const descriptionFile = flag("--description");
+  const mergedFile = flag("--merged");
+  const merged =
+    mergedFile === undefined
+      ? undefined
+      : yield* Schema.decodeUnknownEffect(
+          Schema.fromJsonString(
+            Schema.Array(Schema.Struct({ number: Schema.Number, body: Schema.String })),
+          ),
+        )(yield* fs.readFileString(mergedFile));
   const { markdown, over, low, unallowed, unread, failures } = report(
     built.production,
     built.preview,
     base === undefined || base.size === 0 ? undefined : base,
-    descriptionFile === undefined ? undefined : yield* fs.readFileString(descriptionFile),
+    merged !== undefined
+      ? mergedAllowances(merged)
+      : descriptionFile === undefined
+        ? undefined
+        : allowancesIn(yield* fs.readFileString(descriptionFile)),
+    baseline,
   );
+  const pulls = (merged ?? []).map((pull) => `#${pull.number}`).join(", ");
   yield* Console.log(markdown);
   const summary = yield* Config.String("GITHUB_STEP_SUMMARY").pipe(Config.option);
   if (Option.isSome(summary))
@@ -468,19 +450,46 @@ const program = Effect.gen(function* () {
     );
   for (const { worker, added, what, allowance } of unallowed)
     yield* Console.log(
-      `::error title=${worker} Worker grew without an allowance::${signed(added)} bytes${what === "upload" ? "" : ` of ${what}`} over main, about ${compileMs(added)} ms on each cold start; ` +
-        (allowance === undefined
-          ? `a pull request may add ${bytes(growthLimit)}.`
-          : `the description allows ${bytes(allowance.bytes)}.`) +
-        " Trim it or allow it in the pull request description. See the job summary for what grew and the lines to add.",
+      merged !== undefined
+        ? `::error title=${worker} Worker grew on main without an allowance::This push adds ${signed(added)} bytes${what === "upload" ? "" : ` of ${what}`} to ${worker} over ${baseline}, about ${compileMs(added)} ms on each cold start; ` +
+            (merged.length === 0
+              ? "it merges no pull request, so no description allows it."
+              : allowance === undefined
+                ? `the pull requests it merges (${pulls}) allow none.`
+                : `the pull requests it merges (${pulls}) allow ${bytes(allowance.bytes)}.`) +
+            ` Put the line \`${worker} ${signed(added)}: ${placeholder}\` in a worker-growth block of the merged pull request's description, with your reason, and run this failed job again, which reads the descriptions afresh; or shrink ${worker} in a new pull request. See the job summary for what grew.`
+        : `::error title=${worker} Worker grew without an allowance::${signed(added)} bytes${what === "upload" ? "" : ` of ${what}`} over ${baseline}, about ${compileMs(added)} ms on each cold start; ` +
+            (allowance === undefined
+              ? `a pull request may add ${bytes(growthLimit)}.`
+              : `the description allows ${bytes(allowance.bytes)}.`) +
+            ` Trim it, or allow it: put the line \`${worker} ${signed(added)}: ${placeholder}\` in a worker-growth block of the pull request description, with your reason in place of ${placeholder}, then run this job again. See the job summary for what grew.`,
+    );
+  if (merged !== undefined)
+    for (const problem of unread)
+      yield* Console.log(
+        `::notice title=Worker sizes::A merged pull request's allowance: ${problem}.`,
+      );
+  if (unallowed.length > 0)
+    yield* Console.log(
+      [
+        "To allow this growth, add this block to the pull request description, with a reason after each colon, then run this job again:",
+        "",
+        "```worker-growth",
+        ...unallowed.map(({ worker, added }) => `${worker} ${signed(added)}: ${placeholder}`),
+        "```",
+      ].join("\n"),
     );
   const problems = [
     ...(failures.length > 0 ? [`Worker builds failed: ${failures.join("; ")}`] : []),
     ...(over.length > 0 ? [`Over budget: ${over.map((worker) => worker.worker).join(", ")}`] : []),
     ...(unallowed.length > 0
-      ? [`Grew without an allowance: ${unallowed.map((grew) => grew.worker).join(", ")}`]
+      ? [
+          `Grew without an allowance: ${unallowed.map((grew) => grew.worker).join(", ")}. Lines to add to a worker-growth block of the description, each with its reason: ${unallowed.map(({ worker, added }) => `${worker} ${signed(added)}: <reason>`).join("; ")}`,
+        ]
       : []),
-    ...(unread.length > 0 ? [`Allowances this check cannot read: ${unread.join("; ")}`] : []),
+    ...(unread.length > 0 && merged === undefined
+      ? [`Allowances this check cannot read: ${unread.join("; ")}`]
+      : []),
   ];
   if (problems.length > 0) return yield* new WorkerSizesFailed({ message: problems.join(". ") });
 });

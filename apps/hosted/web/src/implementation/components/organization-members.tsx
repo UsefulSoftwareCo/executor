@@ -45,7 +45,6 @@ import {
 } from "../../contracts/organization.ts";
 import { organizationError, useOrganization } from "./organization.tsx";
 
-/** The table geometry is shared by the members table and its loading skeleton. */
 const membershipPanelClass =
   "membership-panel border border-border rounded-[10px] bg-background shadow-none overflow-hidden";
 
@@ -72,20 +71,16 @@ function MembersFailure({ cause, retry }: FailureProps<OrganizationFailed | Sche
   );
 }
 
-/** A host's member limit for invitations and its call to action for raising it. */
 export interface MemberLimit {
-  /** The most accepted members the plan allows; null when it has no limit. */
   readonly limit: number | null;
   readonly upgrade: ReactNode;
 }
 
-/** Shared hosted membership view; the product's access and invitation delivery remain authoritative. */
 export function OrganizationMembers({
   emailInvitations,
   memberLimit,
 }: {
   readonly emailInvitations: boolean;
-  /** Hosts without a limit omit it; the server refuses invitations at the same limit. */
   readonly memberLimit?: MemberLimit | undefined;
 }) {
   const organization = useOrganization();
@@ -116,7 +111,6 @@ export function OrganizationMembers({
   const loaded = Option.getOrUndefined(AsyncResult.value(members));
   const pending = loaded?.invitations.filter((invitation) => invitation.status === "pending");
   const limit = memberLimit?.limit ?? null;
-  // Accepted members are seats; pending invitations are not.
   const limitReached =
     loaded !== undefined &&
     memberLimit !== undefined &&
@@ -163,7 +157,6 @@ export function OrganizationMembers({
       setInvitationOpen(true);
     }
   };
-  // The success view stays mounted while the dialog animates closed; opening resets it.
   const closeInvitation = () => {
     setInvitationOpen(false);
     setError(null);
@@ -428,7 +421,6 @@ export function OrganizationMembers({
                                 size="sm"
                                 disabled={inviting.waiting || revoking.waiting}
                                 onClick={async () => {
-                                  // The server refuses a resend at the limit too; offer the upgrade instead.
                                   if (limitReached) {
                                     setError(null);
                                     setSent(null);
@@ -612,7 +604,6 @@ export function OrganizationMembers({
   );
 }
 
-/** Keep member labels and disabled controls visible while organization permissions load. */
 export function OrganizationMembersPending() {
   return (
     <section className="organization-members mt-6" aria-label="Organization members">
@@ -634,7 +625,6 @@ export function OrganizationMembersPending() {
   );
 }
 
-/** Placeholder widths vary per row so the loading table does not look like a grid. */
 const membershipSkeletonRows = [
   { name: "w-28", email: "w-40" },
   { name: "w-22", email: "w-32" },
@@ -643,7 +633,6 @@ const membershipSkeletonRows = [
   { name: "w-30", email: "w-42" },
 ];
 
-/** Placeholder rows keep the members table's columns and row height while it loads. */
 function MembersSkeleton() {
   return (
     <div className={membershipPanelClass} role="status" aria-label="Loading members">
@@ -689,7 +678,6 @@ function MembersSkeleton() {
   );
 }
 
-/** Shown instead of the invitation form while accepted members fill the plan. */
 function MemberLimitReached({
   organization,
   members,
@@ -727,7 +715,6 @@ interface SentInvitation {
   readonly resent: boolean;
 }
 
-/** Success view that replaces the invitation form, so a sent invitation cannot be resubmitted by accident. */
 function InvitationSent({
   sent,
   emailInvitations,

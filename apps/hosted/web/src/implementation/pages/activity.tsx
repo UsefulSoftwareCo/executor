@@ -84,7 +84,6 @@ import {
   activityTitle,
 } from "../components/page-pending.tsx";
 
-/** The list the address names and the Filter menu's choices for its range, read together. */
 export const activityPageReads: OrganizationPageReads = (organization, _params, search = {}) => {
   const parsed = parseToolCallSearch(search);
   return [
@@ -95,16 +94,11 @@ export const activityPageReads: OrganizationPageReads = (organization, _params, 
   ];
 };
 
-/** A change to the address. Typing replaces the history entry; every other change adds one. */
 export type ActivitySearchChange = (
   next: Partial<ToolCallSearch>,
   options?: { readonly replace?: boolean },
 ) => void;
 
-/**
- * The organization's tool call log: who called which tool and how each call ended. Owners and
- * admins see every call; members see their own. The search, filters and range are the address's.
- */
 export function ActivityPage({
   search,
   onSearchChange,
@@ -149,10 +143,8 @@ const sourceKinds: Record<ToolCallSource, string> = {
   webhook: "Webhook",
   workflow: "Workflow",
 };
-/** What made a call, by name when it has one. */
 const sourceName = (source: ToolCall["source"]) => source.name ?? sourceKinds[source.kind];
 
-/** What made a call: an agent's own mark, or the kind of source. `className` sizes it. */
 function SourceMark({
   source,
   className,
@@ -219,18 +211,10 @@ const statusOrder: readonly ToolCallStatus[] = [
 type Person = NonNullable<ToolCall["member"]>;
 const personName = (person: Person) => person.name ?? person.email ?? "Unknown member";
 
-/** The app's name, which a member is not told for an app they can no longer use. */
 const appName = (call: ToolCall) => call.app.name ?? "An app you can no longer use";
-/** The tool's name, which the log does not keep when the app has no such tool. */
 const toolName = (call: ToolCall) => call.tool ?? "A tool the app does not have";
-/** Someone else's account is named to nobody but its owner. */
 const accountName = (account: ToolCall["accounts"][number]) => account.name ?? "Personal account";
 
-/**
- * Why a call did not succeed, in Executor's words, built from what the log records: Executor's
- * name for the failure, the service's status and the app's name. Never the failure's own text,
- * which the log does not keep.
- */
 export const failureReason = (call: ToolCall): string | undefined => {
   if (call.errorType === null) return undefined;
   const app = call.app.name ?? "The app";
@@ -307,10 +291,6 @@ const exactMoment: Intl.DateTimeFormatOptions = { dateStyle: "medium", timeStyle
 
 const typingDelayMs = 250;
 
-/**
- * The search box's text. Typing stays local so the field never waits on the address, which follows
- * it after a pause; a change to the address that this field did not write, such as Back, replaces it.
- */
 function useSearchText(q: string | undefined, write: (q: string | undefined) => void) {
   const [text, setText] = useState(q ?? "");
   const written = useRef(q);
@@ -330,7 +310,6 @@ function useSearchText(q: string | undefined, write: (q: string | undefined) => 
     }, typingDelayMs);
     return () => clearTimeout(timer);
   }, [text]);
-  /** Set text and address together, as a choice made from a record does. */
   const replace = (next: string | undefined) => {
     written.current = next;
     setText(next ?? "");
@@ -348,11 +327,6 @@ function ToolCalls({
   const field = useSearchText(search.q, (q) => onChange({ q }, { replace: true }));
   const reference = searchedReference(search);
   const toolbar = useRef<HTMLDivElement>(null);
-  /**
-   * Narrow to one record's agent, session or run; a reference in the search would override it. The
-   * filters a reference ignored did not choose that record, so they go with it. The record may be
-   * far down the list, so the toolbar and its new chip come back into view.
-   */
   const narrow = (next: Partial<ToolCallSearch>) => {
     if (reference !== undefined) field.replace(undefined);
     onChange({ ...(reference === undefined ? {} : { ...noFilters, q: undefined }), ...next });
@@ -374,22 +348,17 @@ function ToolCalls({
   );
 }
 
-/** A choice in a filter: its value in the address, its label and its mark. */
 type Choice = { readonly value: string; readonly label: string; readonly mark: ReactNode };
-/** One thing the list can be narrowed by. */
 type Facet = {
   readonly name: FilterName | "range";
   readonly label: string;
   readonly icon: Icon;
-  /** Choosing nothing; the range has no such choice. */
   readonly none?: string;
   readonly value: string | undefined;
   readonly choices: readonly Choice[];
-  /** The label of a value no choice names, such as a member with no calls in this range. */
   readonly fallback: string;
 };
 
-/** An app's icon at the size of a menu row. */
 function AppMark({ app, name }: { readonly app: App | undefined; readonly name: string }) {
   return (
     <span className="contents [&_.provider-icon]:size-5 [&_.provider-icon]:rounded-[5px]">
@@ -407,11 +376,6 @@ const StatusMark = ({ status }: { readonly status: ToolCallStatus }) => (
   />
 );
 
-/**
- * The filters the menu offers. Members see only their own calls, so they are offered no member
- * filter; member, agent and connection filters appear when the range has any, or with `every`
- * before the range's choices are known.
- */
 const facetsFor = (
   search: ToolCallSearch,
   filters: ToolCallFilters | undefined,
@@ -518,7 +482,6 @@ const chosen = (facet: Facet) =>
     ? (facet.none ?? "")
     : (facet.choices.find((choice) => choice.value === facet.value)?.label ?? facet.fallback);
 
-/** The menu's choices for the range in the address, and whether the viewer may see every call. */
 function useFacetSource(search: ToolCallSearch) {
   const { organization, role } = useOrganizationRoute();
   const range = search.range ?? defaultToolCallRange;
@@ -532,11 +495,6 @@ function useFacetSource(search: ToolCallSearch) {
   };
 }
 
-/**
- * One menu for every filter and the time range. Where the page is wide enough, a filter's choices
- * open beside it when the pointer rests on it. On a narrow screen nothing fits beside the menu, so
- * the choices replace the list of filters in place.
- */
 function FilterMenu({
   search,
   onChange,
@@ -557,7 +515,6 @@ function FilterMenu({
   );
 }
 
-/** Wide enough for a filter's choices to open beside the menu; narrower pages use touch sizes. */
 const roomBeside = "(min-width: 741px)";
 
 function FilterMenuContent({
@@ -570,9 +527,6 @@ function FilterMenuContent({
   readonly count: number;
 }) {
   const source = useFacetSource(search);
-  // Opened before its choices arrived, the menu lists every filter that may have some until it
-  // closes, each saying its choices are loading: rows that appeared or went as they arrived would
-  // move the one under the pointer. The next opening lists only the filters with choices.
   const [every] = useState(source.loading);
   const beside = useMediaQuery(roomBeside);
   const [picking, setPicking] = useState<Facet["name"]>();
@@ -593,11 +547,8 @@ function FilterMenuContent({
       fallback: rangeLabel(range),
     },
   ];
-  /** In place, the filter whose choices replaced the list of filters. */
   const facet = beside ? undefined : facets.find((candidate) => candidate.name === picking);
-  /** The filter the reader stepped back from, whose row takes the focus again. */
   const [left, setLeft] = useState<Facet["name"]>();
-  /** The pressed row leaves the menu, so the menu takes the focus to keep arrow keys working. */
   const step = (event: Event, next: Facet["name"] | undefined) => {
     event.preventDefault();
     content.current?.focus();
@@ -692,14 +643,12 @@ function FilterMenuContent({
   );
 }
 
-/** One filter's choices; the one in use is checked. */
 function Choices({
   facet,
   loading,
   onChoose,
 }: {
   readonly facet: Facet;
-  /** The range's members, apps, agents and connections are still on the way. */
   readonly loading: boolean;
   readonly onChoose: (value: string) => void;
 }) {
@@ -747,7 +696,6 @@ const ChoiceMark = ({ children }: { readonly children: ReactNode }) => (
   </span>
 );
 
-/** A filter in use; pressing it removes the filter. */
 function Chip({
   children,
   onRemove,
@@ -769,7 +717,6 @@ function Chip({
   );
 }
 
-/** What is listed, and the filters in use as chips that remove themselves. */
 function Summary({
   page,
   search,
@@ -781,7 +728,6 @@ function Summary({
   readonly search: ToolCallSearch;
   readonly onChange: ActivitySearchChange;
   readonly waiting: boolean;
-  /** The page shown is the previous list's, kept while this one loads. */
   readonly stale: boolean;
 }) {
   const source = useFacetSource(search);
@@ -790,7 +736,6 @@ function Summary({
   const total = `${page.totalCapped ? "More than " : ""}${counted(page.total, "tool call")}${
     source.admin ? "" : " by you"
   }`;
-  // The kept page's count belongs to the previous search and filters, so it is not stated.
   const text = stale
     ? "Loading tool calls…"
     : reference
@@ -831,17 +776,11 @@ function Summary({
 const callColumns =
   "min-[900px]:grid-cols-[minmax(0,1.5fr)_minmax(0,1.1fr)_minmax(0,1.1fr)_124px_112px]";
 
-/** Rows the reader opened or closed; a referenced call starts open. */
 type Opened = {
   readonly isOpen: (call: ToolCall) => boolean;
   readonly toggle: (call: ToolCall) => void;
 };
 
-/**
- * The list the address names. While another list loads, the previous one stays on screen, marked
- * busy, so typing and filtering never flash an empty page. A list read again that fails stays on
- * screen too, under the failure and its Retry, so calls already read never pass for current ones.
- */
 function CallList({
   search,
   onChange,
@@ -865,7 +804,6 @@ function CallList({
     isOpen: (call) => (toggled?.id === call.id ? toggled.open : call.id === reference),
     toggle: (call) => setToggled({ id: call.id, open: !opened.isOpen(call) }),
   };
-  // Pages after the first are opened on demand and closed when the list changes.
   const [more, setMore] = useState<{
     readonly key: ToolCallPageKey;
     readonly cursors: readonly Cursor[];
@@ -955,7 +893,6 @@ function Rows({
   ));
 }
 
-/** The next page, once asked for, or the button that asks for it. */
 function Continuation({
   listKey,
   next,
@@ -1024,7 +961,6 @@ function NextPage({
   const result = useAtomValue(atom);
   const retry = useAtomRefresh(atom);
   const page = Option.getOrUndefined(AsyncResult.value(result));
-  // A page read again that fails keeps its calls on screen, above the failure.
   const failure = AsyncResult.isFailure(result) && (
     <li className="py-3">
       <HostedFailure
@@ -1056,7 +992,6 @@ function NextPage({
   );
 }
 
-/** Why the list is empty, and what the reader can do about it. */
 function NoCalls({
   search,
   onChange,
@@ -1104,7 +1039,6 @@ function NoCalls({
   );
 }
 
-/** An unfiltered range with no calls: the organization may still have older ones. */
 function EmptyRange({
   organization,
   admin,
@@ -1136,7 +1070,6 @@ function EmptyRange({
   );
 }
 
-/** No call this viewer may see in the 30 days calls are kept. */
 function FirstVisit({ admin, slug }: { readonly admin: boolean; readonly slug: string }) {
   return (
     <EmptyState
@@ -1166,7 +1099,6 @@ function Pill({ tone, children }: { readonly tone: string; readonly children: Re
   );
 }
 
-/** Who a call ran as, or what made it when no member did, with what made it beneath. */
 function Actor({ call }: { readonly call: ToolCall }) {
   return (
     <span className="flex min-w-0 items-center gap-2.5">
@@ -1271,7 +1203,6 @@ function CallRow({
   );
 }
 
-/** One label and value in a call's detail. */
 function Field({ label, children }: { readonly label: string; readonly children: ReactNode }) {
   return (
     <div className="grid grid-cols-[112px_minmax(0,1fr)] gap-3 py-1.5 text-[13px]">
@@ -1281,11 +1212,6 @@ function Field({ label, children }: { readonly label: string; readonly children:
   );
 }
 
-/**
- * Narrows the list to calls sharing something with this one. Below a value it starts a line of its
- * own; `alone` is a field whose only content is this link, level with the label. Its text sits at
- * the top of its touch target, so the target adds no space above it.
- */
 function Narrow({
   children,
   onClick,
@@ -1351,11 +1277,6 @@ const sourceLabels: Record<ToolCallSource, string> = {
   workflow: "Workflow",
 };
 
-/**
- * Whether the caller was certainly given the call's reference, beside the error or refusal it was
- * told. A call that stopped before it answered told it nothing, and one that failed in a way
- * Executor did not expect may have answered without one.
- */
 const returned = (call: ToolCall) =>
   (call.status === "failed" || call.status === "denied") &&
   call.errorType !== "Interrupted" &&
@@ -1450,7 +1371,6 @@ function CallDetail({
         <Field label="Reference">
           <span className="flex items-center gap-1">
             <span className="font-mono">{call.id}</span>
-            {/* Its touch target overlaps the row's padding, so the row is as tall as its text. */}
             <span className="max-[740px]:-my-3">
               <CopyButton code={call.id} label="Copy reference" inline text="" />
             </span>

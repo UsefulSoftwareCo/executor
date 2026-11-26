@@ -31,14 +31,11 @@ const accessLabel = (access: ConnectedAgentAccess) => {
       return `Scoped connection: ${access.name}`;
     case "api":
       return "Executor API";
+    case "desktop":
+      return "Executor desktop sign-in";
   }
 };
 
-/**
- * Agents the current user authorized over OAuth. Each row is one grant; revoking it ends the
- * agent's access at once and it must sign in again to reconnect. Only agents that can still reach
- * Executor are listed, most recently used first.
- */
 export function ConnectedAgents<E, EL extends E, ER extends E>({
   query,
   revoke,
@@ -46,7 +43,6 @@ export function ConnectedAgents<E, EL extends E, ER extends E>({
 }: {
   readonly query: Query<readonly ConnectedAgent[], EL>;
   readonly revoke: Atom.AtomResultFn<GrantId, void, ER>;
-  /** Renders list and revocation failures. */
   readonly Failure: ComponentType<FailureProps<E>>;
 }) {
   const [revoking, setRevoking] = useState<ConnectedAgent>();
@@ -86,8 +82,9 @@ export function ConnectedAgents<E, EL extends E, ER extends E>({
           <DialogHeader>
             <DialogTitle>Revoke {revoking === undefined ? "" : agentName(revoking)}?</DialogTitle>
             <DialogDescription>
-              This agent loses access immediately. To use Executor again, it must sign in and be
-              approved again.
+              {revoking?.access.kind === "desktop"
+                ? "The Executor desktop app is signed out of your account, including the windows it opened. To use this server there again, sign in from the desktop app."
+                : "This agent loses access immediately. To use Executor again, it must sign in and be approved again."}
             </DialogDescription>
           </DialogHeader>
           {AsyncResult.isFailure(state) && <Failure cause={state.cause} />}
@@ -150,7 +147,6 @@ function AgentRow({
   );
 }
 
-/** Matches one row of the loaded list so loading does not reflow the page. */
 function ConnectedAgentsSkeleton() {
   return (
     <div role="status" aria-label="Loading connected agents" className="divide-y border-y">

@@ -6,7 +6,15 @@ import {
   type WebhookSourceDispatcher,
 } from "./webhooks.ts";
 /** The shared Executor interface and remote client options; projected from ExecutorApi. */
-import { Context, type Effect, type Redacted, type Stream, Schema } from "effect";
+import {
+  Context,
+  type Duration,
+  type Effect,
+  type Redacted,
+  type Result,
+  type Stream,
+  Schema,
+} from "effect";
 import type { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 import type { WebhookSetupApi } from "./webhook-setup.ts";
 import type { ExecutorApi } from "./http.ts";
@@ -29,7 +37,12 @@ import type {
   ToolSearchUnavailable,
 } from "./tools.ts";
 import type { AccountScope, App, AppRequirements } from "./apps.ts";
-import type { BuildMemoryExceeded, BuildUnanswered, VersionBuildFailed } from "./version.ts";
+import type {
+  AppVersionChanged,
+  BuildMemoryExceeded,
+  BuildUnanswered,
+  VersionBuildFailed,
+} from "./version.ts";
 import type { Account } from "./account.ts";
 import type {
   AccountConnectionRefused,
@@ -40,8 +53,10 @@ import type {
   AccountId,
   AppId,
   ApprovalRequestId,
+  JsonObject,
   OwnerId,
   StorageError,
+  VersionId,
 } from "./shared.ts";
 import type { BlobStorage } from "./blobs.ts";
 import type { MarkdownReader, MarkdownUnavailable } from "./markdown.ts";
@@ -134,6 +149,23 @@ export interface ResourceLifecycle {
     appUses: readonly AppAccountUse[],
   ) => Effect.Effect<ReadonlySet<AccountId>, StorageError>;
   /**
+   * {@link appResolving} for several apps of one owner at once, for the `CurrentActor`, such as
+   * every app a search reads: a host reads them in one statement. Each app's entry, in order, is
+   * what `appResolving` returns for it, or its refusal. Failing the whole call, such as for
+   * storage, says nothing about any app: the SDK then checks each on its own.
+   */
+  readonly appsResolving: (
+    owner: OwnerId,
+    apps: ReadonlyArray<{
+      readonly id: AppId;
+      readonly accounts: readonly Pick<Account, "id" | "owner">[];
+      readonly appUses: readonly AppAccountUse[];
+    }>,
+  ) => Effect.Effect<
+    ReadonlyArray<Result.Result<ReadonlySet<AccountId>, StorageError>>,
+    StorageError
+  >;
+  /**
    * Recheck authority to remove what an app registered upstream, such as a webhook registration,
    * with the accounts it registered with, before acquiring their credentials and again after any
    * renewal. App access is not needed. The user accounts (`accounts`) are checked as
@@ -197,6 +229,25 @@ export interface ResourceLifecycle {
   readonly accountCreated: (account: Account) => Effect.Effect<void, StorageError>;
   /** Called after active-work checks, before deleting credentials in the same transaction. */
   readonly accountRemoving: (account: Account) => Effect.Effect<void, StorageError>;
+  /**
+   * A service refused the credentials of an account that signs in with secrets the product may
+   * have issued itself, such as a key for the product's own API, during a run of `app`. `app` is
+   * the app the SDK was running, never a value its code supplied; refusals reported outside an
+   * app's run, such as account checks, are never offered. The product may replace the credentials
+   * (through `managedAccounts.replaceCredentials`) and answers whether the account now holds
+   * credentials other than `rejected` that it may use for this call. The SDK then reads the account
+   * again and uses those, as it does a renewed OAuth grant: a read is repeated once, a call that may
+   * write reports the renewal. A product that does not renew for this app answers false, which
+   * leaves the call exactly as without the hook. `generation` is the credential generation
+   * `rejected` belongs to. Called outside resource transactions, for the `CurrentActor`; a failure
+   * is no renewal. Whatever it answers, the SDK checks authority again before using credentials.
+   */
+  readonly secretsRejected?: (input: {
+    readonly app: { readonly id: AppId; readonly owner: OwnerId };
+    readonly account: Pick<Account, "id" | "owner" | "provider">;
+    readonly generation: number;
+    readonly rejected: Redacted.Redacted<JsonObject>;
+  }) => Effect.Effect<boolean, StorageError>;
   /**
    * Called once for a newly stored OAuth client, registered by a person or automatically, before
    * its transaction commits. A product that decides who may use clients records that here.
@@ -291,6 +342,11 @@ export interface ExecutorInputs {
    * Without it, stale declarations revalidate first and revocation runs inline.
    */
   readonly background?: import("./declarations.ts").BackgroundWork;
+  /**
+   * How long `owners.remove` spends asking providers to revoke the OAuth grants it deleted, all
+   * of them together; 5 minutes by default. Only a test host shortens it.
+   */
+  readonly ownerRevocationBudget?: Duration.Input;
 }
 
 /** A hex-encoded 256-bit key encrypts saved credentials with AES-GCM; a custom store replaces that. */
@@ -375,7 +431,7 @@ type FlatExecutor = {
           ? WithListOptions<Method<E>, ToolListOptions>
           : Method<E>
       : HttpApiGroup.Identifier<G> extends "skills"
-        ? HttpApiEndpoint.Identifier<E> extends "list"
+        ? HttpApiEndpoint.Identifier<E> extends "list" | "bundle"
           ? WithListOptions<Method<E>, CatalogReadOptions>
           : Method<E>
         : Method<E>;
@@ -429,10 +485,29 @@ export type Executor = Omit<FlatExecutor, "apps" | "appWorkflows" | "appWorkflow
       },
     ) => ReturnType<FlatExecutor["apps"]["copy"]>;
     /**
+     * Host-only: `deploy` files to an existing app only while `expectedVersion` is its active
+     * version and nothing activated since this deploy reserved its order. Both are checked under
+     * the app's lock when the deploy reserves its order and again when it activates; otherwise it
+     * fails with `AppVersionChanged` and records no version. For a host that replaces a version
+     * it has checked, so a concurrent deploy or activation is never overwritten or mistaken for
+     * its own. A build the host's compiler or runner did not answer is `BuildUnanswered`, as for
+     * `build`.
+     */
+    readonly deployReplacing: (input: {
+      readonly owner: OwnerId;
+      readonly app: AppId;
+      readonly files: SourceFiles;
+      readonly expectedVersion: VersionId;
+    }) => Effect.Effect<
+      Effect.Success<ReturnType<FlatExecutor["apps"]["deploy"]>>,
+      Effect.Error<ReturnType<FlatExecutor["apps"]["deploy"]>> | AppVersionChanged | BuildUnanswered
+    >;
+    /**
      * Host-only: compile source files as `deploy` would and return the requirements they declare,
      * writing nothing: no app, version or source is saved, and the build is neither retained nor
      * cached. For checks that must not create anything. Fails
-     * like `deploy`'s build, except that a compiler that did not answer is `BuildUnanswered`.
+     * like `deploy`'s build, except that a build the host's compiler or runner did not answer is
+     * `BuildUnanswered`.
      */
     readonly build: (input: {
       readonly owner: OwnerId;
@@ -489,6 +564,6 @@ export type PromiseExecutor = Promisify<
     | "apps"
   > & {
     readonly tools: Omit<Executor["tools"], "approval" | "searchable" | "search">;
-    readonly apps: Omit<Executor["apps"], "copyAs" | "build">;
+    readonly apps: Omit<Executor["apps"], "copyAs" | "build" | "deployReplacing">;
   }
 >;

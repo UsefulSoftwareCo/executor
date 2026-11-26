@@ -1,12 +1,3 @@
-/**
- * Zero-configuration local cloud: `bun run hosted:cloud:dev` needs Docker and internet access only.
- *
- * Runs inside `scripts/dev-host.ts`, which gives this checkout its own HTTPS name on the shared
- * Portless proxy (PORTLESS_URL) and a loopback port for the dashboard (PORT). The launcher then
- * builds the same credential-free environment as the CI Cloud E2E run: emulated Google, GitHub,
- * mail, company lookup and billing, generated secrets and a local Postgres container. Nothing is
- * read from 1Password, the shell or an Alchemy profile.
- */
 import { randomBytes } from "node:crypto";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -30,20 +21,17 @@ class LocalDevelopmentFailed extends Schema.TaggedError<LocalDevelopmentFailed>(
   }
 }
 
-/** Ports are never persisted: rifts copy `.local/`. */
 const freePort = Effect.tryPromise({
   try: freeLoopbackPort,
   catch: () => new LocalDevelopmentFailed({ reason: "No free loopback port" }),
 });
 
-/** A cached fixture from an older shape lacks services the Worker requires; it is recreated. */
 const EmulatorFixture = Schema.Struct({
   version: Schema.Literal(4),
   origin: Schema.String,
   services: Schema.Unknown,
 });
 
-/** Only these inherited variables reach the stack; credentials in the shell are ignored. */
 const inherited = [
   "PATH",
   "HOME",
@@ -94,7 +82,6 @@ const main = Effect.scoped(
     yield* fs.makeDirectory(localDevelopmentFiles.alchemyHome, { recursive: true, mode: 0o700 });
     yield* fs.chmod(localDevelopmentDirectory, 0o700);
 
-    // Generated once and kept: sessions, encrypted records and the database volume depend on them.
     if (!(yield* fs.exists(localDevelopmentFiles.secrets))) {
       const secret = () => randomBytes(32).toString("hex");
       yield* fs.writeFileString(
@@ -116,7 +103,6 @@ const main = Effect.scoped(
       .readFileString(localDevelopmentFiles.secrets)
       .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(LocalSecrets))));
 
-    // One private emulator instance per checkout origin, created through the E2E provisioning CLI.
     const cached = yield* fs
       .readFileString(localDevelopmentFiles.emulators)
       .pipe(
@@ -157,11 +143,9 @@ const main = Effect.scoped(
     }
     Object.assign(env, {
       PATH: [path.join(cloud, "node_modules/.bin"), env.PATH ?? ""].join(":"),
-      // CI keeps Alchemy away from personal Cloudflare profiles; its home holds no credentials.
       CI: "true",
       ALCHEMY_HOME: localDevelopmentFiles.alchemyHome,
       NODE_ENV: "development",
-      // Local Worker, R2 and Hyperdrive need an account-shaped ID, never a real account.
       CLOUDFLARE_ACCOUNT_ID: "00000000000000000000000000000000",
       BETTER_AUTH_URL: origin,
       BETTER_AUTH_SECRET: secrets.betterAuthSecret,
@@ -170,7 +154,6 @@ const main = Effect.scoped(
       CLOUD_DEV_API_PORT: String(apiPort),
       CLOUD_DEV_DATABASE_PORT: String(databasePort),
       CLOUD_DEV_DATABASE_PASSWORD: secrets.databasePassword,
-      // App hosts route on the raw Host header, which the HTTP/2 proxy rewrites; serve them directly.
       CLOUD_DEV_APP_UI_PORT: String(appUiPort),
       EXECUTOR_APP_UI_BASE_URL: `http://localhost:${appUiPort}`,
       EXECUTOR_EMULATORS: JSON.stringify(emulators.services),

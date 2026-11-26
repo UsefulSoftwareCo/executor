@@ -8,19 +8,16 @@ import {
   organizationIconContentType,
 } from "@executor-js/hosted-server/organization-icon";
 
-/** One validated local file selection, before it is saved. */
 export interface SelectedOrganizationIcon {
   readonly kind: "file";
   readonly logo: UploadedOrganizationIcon;
   readonly preview: string;
 }
 
-/** A local file could not be read or is not a supported, bounded image. */
 export class OrganizationIconSelectionFailed extends Schema.TaggedError<OrganizationIconSelectionFailed>()(
   "OrganizationIconSelectionFailed",
   { message: Schema.String },
 ) {}
-/** Read the selected file without uploading; the confirmation request owns persistence. */
 export const selectOrganizationIconAtom = Atom.family((_userId: string) =>
   BrowserAtoms.fn((file: File) =>
     Effect.gen(function* () {

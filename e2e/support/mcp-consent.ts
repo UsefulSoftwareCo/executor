@@ -1,7 +1,3 @@
-/**
- * Authorize the request opened by a real client, using the product's browser flow. `client` is the
- * name the consent page shows for it.
- */
 import { Context, Effect, Layer, Redacted, Schema } from "effect";
 import { Api, body } from "./api.ts";
 import { Actors, password } from "./actors.ts";
@@ -78,7 +74,6 @@ const make = Effect.gen(function* () {
           }).pipe(Effect.orDie),
         );
         yield* browser.omitNetworkTrace;
-        // Cloud starts with a signed-in synthetic browser. Self-host exercises its password sign-in.
         if (target.metadata.target === "cloud") yield* browser.login(actors.owner);
         yield* browser.use(`Open the browser requested by ${request.client}`, (page) =>
           page.goto(reveal(request.url)),
@@ -111,9 +106,6 @@ const make = Effect.gen(function* () {
           chooseConsentOrganization(page, organization.name),
         );
         yield* browser.checkpoint(`Approve ${request.client}'s connection`);
-        // A client can close its callback listener after accepting the code, before
-        // the browser finishes loading. Observe the exact request, then let the
-        // caller verify the client's authenticated connection.
         yield* browser.use(`Authorize ${request.client} and return to its callback`, (page) =>
           Promise.all([
             page.waitForRequest((request) => {
@@ -136,7 +128,6 @@ const make = Effect.gen(function* () {
 const Grants = Schema.Array(
   Schema.Struct({ clientId: Schema.String, grant: Schema.Struct({ id: Schema.String }) }),
 );
-/** Pair a fresh browser session as the local operator, as the dashboard's pairing link does. */
 export const pairLocalOperator = Effect.gen(function* () {
   const api = yield* Api,
     target = yield* Target;
@@ -159,7 +150,6 @@ export const pairLocalOperator = Effect.gen(function* () {
     return yield* new ConsentFailed({ operation: "Cannot pair the local operator" });
   return session;
 });
-/** Local consent needs no organization: the dashboard pairing identifies its single operator. */
 const makeLocal = Effect.gen(function* () {
   const api = yield* Api,
     browser = yield* Browser,
@@ -244,7 +234,6 @@ const makeLocal = Effect.gen(function* () {
       }),
   };
 });
-/** Target-specific browser sign-in is injected beneath the shared real-client scenario. */
 export class McpConsent extends Context.Service<McpConsent, Effect.Success<typeof make>>()(
   "e2e/McpConsent",
 ) {

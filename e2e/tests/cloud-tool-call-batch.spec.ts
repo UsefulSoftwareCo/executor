@@ -1,23 +1,3 @@
-/**
- * A Cloud MCP session object sends a tool call's checks and reads in one socket write, on one
- * connection of its multiplexed pool: the bearer recheck in its own implicit transaction, then
- * every read in one read-only repeatable-read transaction queued in the same step, so no other
- * statement or transaction lands between them. Parallel calls each send their own batch. A write
- * that commits while a batch's reads wait is not seen by them, as if it had committed after the
- * call. A batch that cannot finish, because its connection was lost or one of its statements
- * failed, is discarded, and the call reads again on its own, in order. A batch that cannot get a
- * connection at all leaves the call to its token recheck, which fails it as unavailable (503), as
- * without batches. When the call ends, the tool call log records it in one more statement outside
- * the batch, counted on its own. That write runs after the call has answered. When it ends long
- * after the answer, the session object's call still waits for it before exporting its telemetry,
- * so its span reaches the telemetry store with no later request to the object: also for a call
- * that waited for input and was answered by a second request, also when a listen stream, which
- * is streamed and so does not wait, opened on the object after the answer. A call whose response is
- * streamed, as a native client's approval is, ends its stream without waiting for the write.
- *
- * The scenario holds a table lock in the Cloud database to stop a batch partway through, so it
- * runs on its own local Cloud (`cloud-batch` in e2e/ci-selection.ts).
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Fiber, Redacted, Schedule, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
@@ -34,11 +14,6 @@ import { Target } from "../support/platform.ts";
 import { connectionsPath, linkedAccountIds } from "../support/app-accounts.ts";
 import { scenarios } from "../test-plan.ts";
 
-/**
- * `token` returns the account's token; `slow` does too, after `ms` milliseconds, and `review` once
- * its call is approved. `ask` returns the name it asks for while it runs; `askThenWait` does too,
- * `ms` milliseconds after it is answered.
- */
 const source = `import { defineApp, defineProvider, secrets, object, string, number, query, mutation, router } from "apps";
 import { always } from "apps/operations/approval";
 const service = defineProvider({ name: "Cloud batch fixture", auth: {
@@ -89,21 +64,16 @@ const Count = Schema.Array(Schema.Struct({ n: Schema.Number }));
 const Pids = Schema.Array(Schema.Struct({ pid: Schema.Number }));
 const Owner = Schema.Array(Schema.Struct({ owner: Schema.String }));
 
-/** One MCP tool call of a trace: its batches and the statements made outside them. */
 interface CallBatches {
   readonly batches: ReadonlyArray<{ readonly statements: number; readonly writes: number }>;
-  /** Statements other than the tool call log's write. */
   readonly statements: number;
-  /** The tool call log's write once the call ended. */
   readonly logWrites: number;
   readonly discarded: boolean;
   readonly texts: ReadonlyArray<string>;
 }
 
-/** Each MCP tool call in the trace, with the `sql.pipeline` spans and statements under it. */
 const callsOf = (spans: Spans): ReadonlyArray<CallBatches> => {
   const byId = new Map(spans.map(({ span }) => [span.spanId, span]));
-  /** Whether a span runs inside the tool call log's write. */
   const logged = (spanId: string | null) => {
     const visited = new Set<string>();
     let current = spanId;
@@ -194,7 +164,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud tool call batch", (it) =
           yield* Effect.addFinalizer(() =>
             api.request(actors.owner, "DELETE", path).pipe(Effect.orDie),
           );
-          // Connecting from the app links the account for the owner.
           const pending = yield* body(
             Resource,
             yield* api.request(actors.owner, "POST", connectionsPath(path, "user", "service"), {}),
@@ -215,9 +184,9 @@ layer(HostedLive, { excludeTestServices: true })("Cloud tool call batch", (it) =
 
           const client = yield* mcp.connect(pat.key, "cloud-batch", {
             organization: actors.organization.id,
+            mode: "model",
           });
           const tool = (name: string) => `tools[${JSON.stringify(app.slug)}].${name}`;
-          /** Run `code` in one execute; return its result. */
           const execute = (operation: string, code: string) =>
             client
               .use(operation, (client, signal) =>
@@ -229,7 +198,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud tool call batch", (it) =
                 ),
                 Effect.map(({ execution }) => execution),
               );
-          /** Run `code` in one execute; return its result and the trace's tool calls. */
           const run = (operation: string, code: string, calls: number) =>
             Effect.gen(function* () {
               const result = yield* client.use(operation, (client, signal) =>
@@ -250,7 +218,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud tool call batch", (it) =
                   const found = callsOf(trace.data);
                   return complete &&
                     found.length === calls &&
-                    // A call that succeeded writes its log row after it ends.
                     found.every((call) => call.statements > 0 && call.logWrites > 0)
                     ? Effect.succeed({
                         found,
@@ -267,8 +234,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud tool call batch", (it) =
               return { execution, calls: made.found, objectId: String(made.objectId) };
             });
           const token = `return await ${tool("token")}({})`;
-          // A call reads the caller's links to the app live, so the link is settled first: the
-          // owner's links read back as exactly the connected account.
           const settling: Array<ReadonlyArray<string>> = [];
           yield* Effect.gen(function* () {
             for (;;) {
@@ -279,13 +244,10 @@ layer(HostedLive, { excludeTestServices: true })("Cloud tool call batch", (it) =
             }
           }).pipe(
             Effect.timeout("30 seconds"),
-            // `json` serializes when it is built, so it is built once the loop has ended.
             Effect.ensuring(
               Effect.suspend(() => evidence.json("cloud-batch-settled.json", settling)),
             ),
           );
-          // The session's first call reads the links, then sends its reads with them; every later
-          // call sends one batch.
           const cold = yield* run("The session's first call", token, 1);
           expect(cold.calls[0]?.batches.length, "The session's first call").toBe(2);
           const warm = yield* run("Warm the session", token, 1);
@@ -296,7 +258,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud tool call batch", (it) =
             Effect.gen(function* () {
               expect(warm.execution).toEqual({ ok: true, value: "synthetic-batch" });
               const [alone] = warm.calls;
-              // Recheck, BEGIN, app, access check with the links, accounts, app recheck, COMMIT.
               expect(alone?.batches).toEqual([{ statements: 7, writes: 1 }]);
               expect(alone?.statements, "Every statement of the call was in its batch").toBe(5);
               expect(alone?.logWrites, "The tool call log's one insert").toBe(1);
@@ -318,11 +279,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud tool call batch", (it) =
             }),
           );
 
-          // Counts the PAT's checks, so the scenario knows when the first call of an execute has run
-          // its batch: the request's own checks (the gateway's and the session object's) come
-          // first, then one per call. A check writes the key's last use only when the stored one
-          // is a minute old, so the trigger also clears it on the counted key: every check writes,
-          // and counts.
           yield* Effect.forEach(
             [
               "create table if not exists e2e_batch_rechecks (key_id text primary key, n int not null)",
@@ -346,8 +302,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud tool call batch", (it) =
               on conflict (key_id) do update set n = 0`,
             params: [pat.id],
           });
-          // The warm calls recorded the key's use. Clear it before the count starts, so this
-          // update is not counted.
           yield* locks.run({
             sql: `update apikey set "lastRequest" = null where id = $1`,
             params: [pat.id],
@@ -356,7 +310,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud tool call batch", (it) =
           yield* run("Count a request's own checks", token, 1);
           const perRequest = ((yield* rechecks)[0]?.n ?? 0) - 1;
           expect(perRequest, "The request's own checks").toBeGreaterThan(0);
-          /** The object's backends waiting for the scenario's lock on the accounts table. */
           const blocked = locks
             .run({
               sql: `select pid from pg_stat_activity where application_name = $1
@@ -364,11 +317,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud tool call batch", (it) =
               params: [owner],
             })
             .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Pids)), Effect.orDie);
-          /**
-           * Run a slow call, then a call whose batch the accounts table's lock stops after its
-           * snapshot began; `meanwhile` runs inside the lock's transaction, and `stopped` once the
-           * batch waits, before the lock is released.
-           */
           const stopped = (
             label: string,
             meanwhile: Effect.Effect<unknown>,
@@ -384,7 +332,6 @@ return [first, await ${tool("token")}({})];`,
                   2,
                 ),
               );
-              // The first call's batch has run once its own check follows the request's.
               yield* rechecks.pipe(
                 Effect.filterOrFail((rows) => (rows[0]?.n ?? 0) >= perRequest + 1),
                 Effect.retry({ schedule: Schedule.spaced("50 millis"), times: 200 }),
@@ -409,7 +356,6 @@ return [first, await ${tool("token")}({})];`,
                   params: [account],
                 })
                 .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Owner)), Effect.orDie);
-              // Moving the account to another owner refuses every call that reads it afterwards.
               const moved = yield* stopped(
                 "Move the account while a batch waits",
                 locks.hold({
@@ -431,7 +377,6 @@ return [first, await ${tool("token")}({})];`,
                 sql: "update executor_accounts set owner = $2 where id = $1",
                 params: [account, accountOwner],
               });
-              // Calls read the account again once it is back.
               const returned: Array<typeof Execution.Type.execution> = [];
               for (let attempt = 1; returned.at(-1)?.ok !== true; attempt++) {
                 expect(attempt, JSON.stringify(returned)).toBeLessThan(6);
@@ -463,7 +408,6 @@ return [first, await ${tool("token")}({})];`,
                 const call = made.calls[1];
                 expect(call?.batches.length, label).toBe(1);
                 expect(call?.discarded, `${label}: the batch's reads were discarded`).toBe(true);
-                // The recheck and four reads in the batch, then the reads again on their own.
                 expect(call?.statements, label).toBeGreaterThan(6);
               }
             }),
@@ -488,8 +432,6 @@ try {
                 Effect.filterOrFail((rows) => (rows[0]?.n ?? 0) >= perRequest + 1),
                 Effect.retry({ schedule: Schedule.spaced("50 millis"), times: 200 }),
               );
-              // While the first call waits on its app: no new connection to the database, and the
-              // object's own connections closed, so the second call's batch has none to borrow.
               const refused = yield* Effect.scoped(
                 Effect.gen(function* () {
                   yield* locks.refuseConnections;
@@ -503,8 +445,6 @@ try {
               );
               yield* evidence.json("cloud-batch-unavailable.json", refused);
               expect(refused.ok, JSON.stringify(refused)).toBe(true);
-              // The token recheck could not run, so the call is refused as unavailable (503), as
-              // on main, not failed by the batch's own connection error.
               const [first, failure] = yield* Schema.decodeUnknownEffect(
                 Schema.Tuple([
                   Schema.String,
@@ -522,7 +462,6 @@ try {
             }),
           );
 
-          // Every log write these steps make takes `delay`, longer than any call here answers in.
           const delay = 3_000;
           if (!/^[A-Za-z0-9_-]+$/.test(actors.organization.id))
             return yield* Effect.die("Expected an organization ID");
@@ -544,7 +483,6 @@ try {
                 Effect.orDie,
               ),
           );
-          /** The latest MCP requests' traces, newest last. */
           const mcpTraces = (count: number) =>
             evidence.requests.pipe(
               Effect.map((requests) =>
@@ -554,11 +492,6 @@ try {
                   .map((request) => request.traceId),
               ),
             );
-          /**
-           * Wait for the log statements `traces` record: each statement's text, for every
-           * `product.tool_call_log.write` span in them, until `done` holds. Nothing else may reach
-           * the session object meanwhile: only the calls' own export can deliver them.
-           */
           const logStatements = (
             traces: ReadonlyArray<string>,
             done: (texts: ReadonlyArray<string>) => boolean,
@@ -579,7 +512,6 @@ try {
                       writes.has(span.parentSpanId),
                   )
                   .map(({ span }) => {
-                    // The insert selects the app first, in a CTE.
                     const text = String(span.tags["db.query.text"] ?? "");
                     return /\binsert\s+into\s+hosted_tool_calls\b/i.test(text)
                       ? "insert"
@@ -595,10 +527,6 @@ try {
               Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 60 }),
             );
 
-          /**
-           * Wait for the app's own spans, which the app runtime forwards from the app's isolate
-           * once its call ends, to reach the collector in `traces`; return their operations.
-           */
           const appSpans = (
             traces: ReadonlyArray<string>,
             needed: ReadonlyArray<string> = ["app.call"],
@@ -636,7 +564,6 @@ try {
           yield* evidence.step(
             "A call that waits for input answered by a second request does not wait for its slow log write, which still reaches the collector",
             Effect.gen(function* () {
-              // The call ends, and writes its row, while the second request is served.
               yield* slowLog("insert");
               const asked = yield* client
                 .use("A call that asks for input", (client, signal) =>
@@ -679,8 +606,6 @@ try {
               );
               const texts = yield* logStatements(yield* mcpTraces(2), (texts) => texts.length > 0);
               expect(texts, "The call's one insert").toEqual(["insert"]);
-              // The app's call ended after the answer, in the scope of the call that paused: its
-              // runtime still forwards the app's own spans.
               expect(yield* appSpans(yield* mcpTraces(2))).toContain("app.call");
             }),
           );
@@ -715,10 +640,6 @@ try {
                 status: "completed",
                 execution: { ok: true },
               });
-              // The pause's request already ran the app once, to ask whether the call needs
-              // approval (`app.tool.approval`), and exported that `app.call`. The approved call
-              // runs the tool under the approving request: its own spans, with the tool's execution,
-              // are in that request's trace.
               const [pausedTrace, approvedTrace] = yield* mcpTraces(2);
               expect(
                 yield* appSpans([approvedTrace ?? ""], ["app.call", "app.operation.execute"]),
@@ -771,9 +692,6 @@ try {
                     ),
                   ),
               );
-              // The answer has reached the session object once its key was checked; the call then
-              // runs on for 2 s. A listen stream opened now is the object's newest request when
-              // the call ends and offers its log write.
               yield* rechecks.pipe(
                 Effect.filterOrFail((rows) => (rows[0]?.n ?? 0) >= perRequest),
                 Effect.retry({ schedule: Schedule.spaced("50 millis"), times: 200 }),
@@ -809,7 +727,6 @@ try {
                     ),
                   );
                   expect(listen.status, "The listen stream is held open").toBe(200);
-                  // The client leaves once the call has answered, while its log write still runs.
                   return yield* Fiber.join(answering);
                 }),
               ).pipe(Effect.provideService(HttpClient.TracerPropagationEnabled, false));
@@ -822,10 +739,7 @@ try {
           yield* evidence.step(
             "A streamed call ends its stream without waiting for its slow log write",
             Effect.gen(function* () {
-              // The approved call's paused row is written before it continues; the update that
-              // records its end is the write it does not wait for.
               yield* slowLog("update");
-              // A native client approves in the call's own response, which is therefore streamed.
               const native = yield* mcp.connect(pat.key, "cloud-batch-native", {
                 organization: actors.organization.id,
                 mode: "native",
@@ -847,8 +761,6 @@ try {
               const answeredMs = performance.now() - started;
               expect(yield* native.elicitationCount).toBe(1);
               expect(result.execution).toEqual({ ok: true, value: "synthetic-batch" });
-              // The client answers the approval in a request of its own; this is the call's. Its
-              // result is read before its stream ends, so the end is awaited.
               const body = yield* native.bodies.pipe(
                 Effect.map((bodies) =>
                   bodies.filter((body) => body.method === "tools/call").at(-1),

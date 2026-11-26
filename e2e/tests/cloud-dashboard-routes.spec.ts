@@ -6,7 +6,6 @@ import { Target } from "../support/platform.ts";
 import { targetHosts } from "../support/role-hosts.ts";
 import { scenarios } from "../test-plan.ts";
 
-/** The server-rendered dashboard marks its document; nothing else the Worker serves carries it. */
 const dashboardDocument = "data-dashboard";
 
 layer(TestLive, { excludeTestServices: true })("Cloud dashboard routing", (it) => {
@@ -15,8 +14,6 @@ layer(TestLive, { excludeTestServices: true })("Cloud dashboard routing", (it) =
       context,
       Effect.gen(function* () {
         const browser = yield* Browser;
-        // Pages are on the browser origin; MCP is on `mcp.` and the documentation is a site page
-        // on the edge, which every other host redirects site pages to.
         const hosts = targetHosts(yield* Target);
         const read = (path: string, accept = "text/html") =>
           browser.use(`Request ${path}`, (page) =>
@@ -36,8 +33,6 @@ layer(TestLive, { excludeTestServices: true })("Cloud dashboard routing", (it) =
         expect(signIn.body).toContain(dashboardDocument);
         expect(signIn.body).not.toContain("/@vite/client");
         expect(signIn.body).not.toContain('src="/src/');
-        // The dashboard renderer owns every deep link. Signed out, each one goes to sign-in and
-        // keeps its exact address to return to.
         for (const path of [
           "/org/routing-fixture/apps",
           "/org/routing-fixture/apps/app_fixture/source/src/nested/example.ts",
@@ -50,7 +45,6 @@ layer(TestLive, { excludeTestServices: true })("Cloud dashboard routing", (it) =
           expect(response.status, path).toBe(307);
           expect(response.location, path).toBe(`/login?redirect=${encodeURIComponent(path)}`);
         }
-        // An organization root and a trailing slash open the canonical Apps address.
         for (const path of ["/org/routing-fixture", "/org/routing-fixture/apps/"]) {
           const response = yield* read(path);
           expect(response.status, path).toBe(307);
@@ -81,12 +75,9 @@ layer(TestLive, { excludeTestServices: true })("Cloud dashboard routing", (it) =
         expect(docs.body).not.toContain(dashboardDocument);
         const docsPage = yield* read(`${hosts.edge}/docs/author-an-app`);
         expect(docsPage.status).toBe(200);
-        // The page's earlier address keeps working for links already published.
         const movedDocsPage = yield* read(`${hosts.edge}/docs/build/author-an-app`);
         expect(movedDocsPage.status).toBe(308);
         expect(movedDocsPage.location).toBe("/docs/author-an-app");
-        // A browser that opens a missing page gets the site's 404 document, with a 404
-        // status; the documentation keeps its own. Other clients keep an empty 404.
         const missingPage = yield* read("/no-such-page");
         expect(missingPage.status).toBe(404);
         expect(missingPage.body).toContain("Page not found");

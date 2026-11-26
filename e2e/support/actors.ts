@@ -1,4 +1,3 @@
-/** Hosted actor layers own independent organizations and sessions for each scenario. */
 import { Clock, Effect, Context, Layer, Schedule, Schema } from "effect";
 import { secret } from "./failure-text.ts";
 import { RequestFailed, SessionClients, body, type Session } from "./api.ts";
@@ -6,9 +5,7 @@ import { Target } from "./platform.ts";
 import { Organization, Resource } from "./contracts.ts";
 import { FixtureActors, FixtureActor, FixtureFailed, fixtureRequest } from "../sdk/fixtures.ts";
 
-/** Synthetic password is confined to the isolated self-host setup. */
 export const password = "Synthetic-e2e-password-2026";
-/** Host-independent authority used by the same scenario on both products. */
 export class Actors extends Context.Service<
   Actors,
   {
@@ -28,7 +25,6 @@ export class Actors extends Context.Service<
     }),
   );
 }
-/** Lifecycle tests own this fresh session, so sign-out cannot revoke shared actor fixtures. */
 export const freshOwnerSession = Effect.gen(function* () {
   const target = yield* Target;
   const clients = yield* SessionClients;
@@ -60,7 +56,6 @@ export const freshOwnerSession = Effect.gen(function* () {
   yield* ready(response.status);
   return session;
 });
-/** Provision one isolated self-host instance through its real signup and invitation endpoints. */
 export const provisionSelfHostActors = Effect.gen(function* () {
   const api = yield* SessionClients;
   const owner = yield* api.session();
@@ -115,7 +110,6 @@ export const provisionSelfHostActors = Effect.gen(function* () {
     });
   return { owner, admin: yield* join("admin"), member: yield* join("member"), organization };
 });
-/** Create an isolated Cloud organization and identities through the local fixture control process. */
 export const createCloudScenarioActors = Effect.gen(function* () {
   const target = yield* Target,
     clients = yield* SessionClients;
@@ -145,13 +139,10 @@ export const createCloudScenarioActors = Effect.gen(function* () {
     admin: yield* client("admin"),
     member: yield* client("member"),
   };
-  // Trigger the normal product provisioning path for the synthetic identities.
   yield* Effect.forEach(
     [actors.owner, actors.admin, actors.member],
     (actor) =>
       clients.request(actor, "POST", "/api/onboarding/prepare").pipe(
-        // A temporary deployment Worker has not run the application handler.
-        // Only fixture preparation waits for that explicit propagation state.
         Effect.retry({
           while: (error) => Schema.is(RequestFailed)(error) && error.reason === "deployment",
           schedule: Schedule.spaced("500 millis"),
