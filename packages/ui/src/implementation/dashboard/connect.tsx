@@ -93,7 +93,6 @@ export function EndpointField({
   className,
 }: {
   readonly endpoint: string;
-  /** What the copy button says to assistive tech, for a value other than the MCP URL. */
   readonly label?: string;
   readonly className?: string;
 }) {
@@ -214,24 +213,17 @@ const openAiPluginGuide = (name: "ChatGPT" | "Codex"): AssistantGuide => ({
     ),
 });
 
-/**
- * What a host adds to the assistant guides. Nothing here replaces a guide: quick setup leads with
- * one click and keeps the steps one click away, extra assistants sit beside the built-in ones, and
- * screenshots swap in captures that show the host's own name.
- */
 export interface AssistantGuideExtensions {
   readonly quickSetup?: Partial<Record<AssistantId, ReactNode>>;
   readonly assistants?: readonly ExtraAssistant[];
   readonly screenshots?: Partial<Record<AssistantId, string>>;
 }
 
-/** An assistant the host sets up itself, placed right after a built-in one. */
 export interface ExtraAssistant {
   readonly id: string;
   readonly name: string;
   readonly logo: ComponentType<SVGProps<SVGSVGElement>>;
   readonly after: AssistantId;
-  /** Shown under its name, like a built-in guide's method. */
   readonly method: string;
   readonly link?: { readonly href: string; readonly label: string };
   readonly content: ReactNode;
@@ -662,7 +654,6 @@ export function AssistantSetupGuide({
   );
 }
 
-/** The frame every assistant's guide shares: its logo, title and method above the content. */
 function AssistantGuideCard({
   name,
   logo: Logo,
@@ -698,7 +689,6 @@ function AssistantGuideCard({
   );
 }
 
-/** A host's one-click setup first; the guide's own steps stay one click away. */
 function QuickSetup({
   quick,
   children,
@@ -727,7 +717,6 @@ function QuickSetup({
   );
 }
 
-/** A host's own assistant, in the same frame as the built-in guides. */
 function ExtraAssistantGuide({ assistant }: { readonly assistant: ExtraAssistant }) {
   return (
     <AssistantGuideCard
@@ -840,7 +829,6 @@ export function McpInstallInstructions({
   readonly docs?: string;
   readonly next?: string;
   readonly token?: ReactNode;
-  /** More ways in that the host offers, after the built-in tabs. */
   readonly tabs?: readonly {
     readonly value: string;
     readonly label: string;

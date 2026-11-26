@@ -45,7 +45,6 @@ export function ConnectedAgents<E, EL extends E, ER extends E>({
   readonly query: Query<readonly ConnectedAgent[], EL>;
   readonly revoke: Atom.AtomResultFn<GrantId, void, ER>;
   readonly Failure: ComponentType<FailureProps<E>>;
-  /** More rows the host lists with its agents, as `<li>` elements in the same style. */
   readonly children?: ReactNode;
 }) {
   const [revoking, setRevoking] = useState<ConnectedAgent>();
@@ -56,7 +55,6 @@ export function ConnectedAgents<E, EL extends E, ER extends E>({
       <div className="mb-2 flex h-6 items-center">
         <h2 className="text-xs font-medium text-muted-foreground">Connected agents</h2>
       </div>
-      {/* The host's rows show whatever state the agents query is in. */}
       {hasRows(children) && <ul className="divide-y border-t">{children}</ul>}
       <QueryView<readonly ConnectedAgent[], E>
         query={query}
