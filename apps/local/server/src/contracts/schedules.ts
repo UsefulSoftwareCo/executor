@@ -1,4 +1,3 @@
-/** Local schedule controls use paired dashboard access and have no hosted organization fields. */
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 import {
@@ -21,13 +20,6 @@ import {
 const app = { app: AppId };
 const copy = { ...app, name: Schema.NonEmptyString, copy: ScheduleId };
 const prefix = "/dashboard/api";
-/**
- * DashboardAccess is attached by the containing API to avoid a contract import cycle. User schedules
- * run as the local subject, which has one copy of each user declaration and runs it with the app's
- * linked accounts and the accounts linked to it. An app declaration has one schedule, without an
- * actor, which runs with the app's linked accounts only. Routes by name act on the local subject's
- * copy, or with `scope: "app"` on the app schedule; routes by copy act on one copy.
- */
 export const DashboardSchedules = HttpApiGroup.make("schedules")
   .add(
     HttpApiEndpoint.get("list", `${prefix}/apps/:app/schedules`, {
@@ -49,10 +41,6 @@ export const DashboardSchedules = HttpApiGroup.make("schedules")
       payload: Schema.Struct({
         enabled: Schema.Boolean,
         approvalMode: Schema.optional(ScheduleApprovalMode),
-        /**
-         * `app` configures an app declaration's one schedule, which runs without a caller with the
-         * app's linked accounts; `user`, the default, the local subject's copy of a user declaration.
-         */
         scope: Schema.optional(AccountScope),
       }),
       success: ScheduleSettings,

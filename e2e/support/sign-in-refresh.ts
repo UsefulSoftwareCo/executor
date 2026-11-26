@@ -3,7 +3,6 @@ import { Effect } from "effect";
 import { Browser } from "./browser.ts";
 import { holdQuery, refreshVisiblePage } from "./query-transition.ts";
 
-/** The server verifies there is no session before sending the sign-in form. */
 export const openSignedOutLogin = (path: string) =>
   Effect.gen(function* () {
     const browser = yield* Browser;
@@ -13,7 +12,6 @@ export const openSignedOutLogin = (path: string) =>
     );
   });
 
-/** Carry a synthetic sign-in draft through pending, failed and recovered session checks. */
 export const retainedDraft = (field: "Password" | "Sign-in code", value: string) =>
   Effect.gen(function* () {
     const browser = yield* Browser;

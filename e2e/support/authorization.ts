@@ -1,5 +1,6 @@
 import { expect } from "@effect/vitest";
-import { Effect, Redacted, Schema } from "effect";
+import { Effect, Schema } from "effect";
+import { reveal } from "./failure-text.ts";
 import { saveAndDeploy } from "./app-authoring.ts";
 import { Api, body } from "./api.ts";
 import { Actors } from "./actors.ts";
@@ -10,7 +11,6 @@ import { McpClient } from "./mcp-client.ts";
 import { deployMcpApp } from "./mcp-app.ts";
 import { appsManifest } from "./apps-release.ts";
 const Tools = Schema.Struct({ items: Schema.Array(Schema.Struct({ name: Schema.String })) });
-/** Grant fixtures use public browser consent and preserve exact tool restrictions. */
 export const authorizationFixture = (audience: "api" | "mcp") =>
   Effect.gen(function* () {
     const api = yield* Api,
@@ -46,13 +46,12 @@ export const authorizationFixture = (audience: "api" | "mcp") =>
         policy: { ...policy, apps: [{ app: app.id, tools: { kind: "all" } }] },
       })).status,
     ).toBe(403);
-    const headers = { authorization: `Bearer ${Redacted.value(grant.tokens).access_token}` };
+    const headers = { authorization: `Bearer ${reveal(grant.tokens).access_token}` };
     const call = (tool: string, token = headers) =>
       api.request(
         anonymous,
         "POST",
         `${prefix}/apps/${app.id}/tools/call`,
-        // Both fixture tools are mutations.
         { tool, kind: "mutation", input: { message: "shared policy" } },
         token,
       );

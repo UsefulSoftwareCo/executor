@@ -1,10 +1,3 @@
-/**
- * The SQL migrator: wires DDL rendering, the settings table, introspection,
- * and the SQLite transformer into the generic migration engine.
- *
- * Every migration runs inside one `sql.withTransaction`. Statements are
- * executed unprepared, because raw DDL cannot be prepared on every driver.
- */
 import { Effect, Option, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import type { SqlError } from "effect/sql/SqlError";
@@ -29,17 +22,8 @@ import {
 } from "./settings.ts";
 import { sqliteTransformer } from "./sqlite-transformer.ts";
 
-/** Stored name variants are written by FumaDB itself; a corrupt value is ignored, not fatal. */
 const parseNameVariants = Schema.decodeUnknownOption(Schema.fromJsonString(NameVariantsConfig));
 
-/**
- * Create the migrator for the SQL adapter.
- *
- * `up`, `down`, `migrateTo`, and `migrateToLatest` fail with a
- * `MigrationError` of reason `"Unsupported"` when the plan contains an
- * operation the provider cannot express, so the caller never receives a
- * `MigrationResult` whose `sql` is incomplete.
- */
 export const createSqlMigrator = (
   context: AdapterContext,
   config: ResolvedSqlAdapterConfig,
@@ -47,11 +31,6 @@ export const createSqlMigrator = (
   const { provider, relationMode } = config;
   const table = settingsTableName(context.namespace);
 
-  /**
-   * MySQL applies foreign keys eagerly, so a migration that reorders tables
-   * has to switch the checks off. SQLite can defer them to the end of the
-   * transaction instead.
-   */
   const preprocess = (
     operations: ReadonlyArray<MigrationOperation>,
   ): ReadonlyArray<MigrationOperation> => {
@@ -147,8 +126,6 @@ export const createSqlMigrator = (
       getNameVariants,
       updateSettingsInMigration,
     },
-    // A plan this provider cannot render fails the migration, so a caller
-    // never receives a `MigrationResult` whose script is incomplete.
     toSql: (operations) => renderScript(preprocess(operations), config),
     transformers: provider === "sqlite" ? [sqliteTransformer] : [],
   });

@@ -1,4 +1,3 @@
-/** The paired operator's scoped connections. Stored with the local OAuth grants. */
 import {
   Connection,
   ConnectionAccessInvalid,
@@ -16,10 +15,6 @@ import type { LocalMcpOAuth } from "./mcp-oauth.ts";
 import type { SqlClient } from "effect/sql";
 import { linkedAccounts } from "./app-accounts.ts";
 
-/**
- * Check one app's runs-as targets: the app itself for an app without user requirements, or
- * accounts linked to the app.
- */
 const resolveApp = (sql: SqlClient.SqlClient, executor: Executor, input: ConnectionApp) =>
   Effect.gen(function* () {
     const invalid = (reason: ConnectionAccessInvalid["reason"]) =>
@@ -27,7 +22,6 @@ const resolveApp = (sql: SqlClient.SqlClient, executor: Executor, input: Connect
     const app = yield* executor.apps
       .get({ app: input.app })
       .pipe(Effect.catchTag("AppNotFound", () => Effect.fail(invalid("app"))));
-    // Connections name only user links; the app links need no target.
     const needsAccount = Object.values(app.requirements.accounts).some(
       (requirement) => requirement.scope === "user",
     );
@@ -46,7 +40,6 @@ const resolveApp = (sql: SqlClient.SqlClient, executor: Executor, input: Connect
     return input;
   });
 
-/** Pairing authorizes these handlers; the OAuth store owns the records. */
 export const localMcpConnectionHandlers = (
   executor: Executor,
   sql: SqlClient.SqlClient,

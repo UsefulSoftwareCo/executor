@@ -1,4 +1,3 @@
-/** PostHog owns allocation. The host only asks it which variant a person gets. */
 import { Context, Effect, Schema } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 
@@ -9,13 +8,6 @@ const Flags = Schema.Struct({
 });
 const Flag = Schema.Struct({ enabled: Schema.Boolean, variant: Schema.optional(Schema.String) });
 
-/**
- * Evaluate flags for one person in one request with the public project token, through PostHog's
- * documented `/flags?v=2` endpoint; no management credential enters the Worker. Each key answers
- * its variant, or `undefined` when the flag is missing, disabled or not multivariate. An errored or
- * quota-limited evaluation, a failed request and a one-second timeout answer `undefined` for every
- * key, which the caller serves as an untracked control.
- */
 export const evaluateFlags = <const Key extends string>(
   settings: { readonly token: string; readonly host: string },
   keys: readonly Key[],
@@ -55,10 +47,6 @@ export const evaluateFlags = <const Key extends string>(
     Effect.scoped,
   );
 
-/**
- * The request's flag evaluator. Cloud's analytics wrapper installs one when PostHog is
- * configured; without it, as in local development and self-host, every flag is unavailable.
- */
 export const FeatureFlags = Context.Reference<{
   readonly evaluate: <const Key extends string>(
     keys: readonly Key[],

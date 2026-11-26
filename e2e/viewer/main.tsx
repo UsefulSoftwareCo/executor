@@ -15,7 +15,6 @@ type Entry = EvidenceReport["entries"][number];
 const targetNames = { "self-host": "Self-host", local: "Local", cloud: "Cloud" };
 const seconds = (ms: number) => `${(ms / 1000).toFixed(1)}s`;
 const selectedId = () => new URLSearchParams(location.hash.slice(1)).get("test");
-// A scenario is authored once; target runs retain their own IDs, media and outcomes.
 type TestGroup = { key: string; title: string; file: string; entries: Entry[] };
 const groupKey = (entry: Entry) => JSON.stringify([entry.file, entry.title]);
 const grouped = new Map<string, TestGroup>();
@@ -60,7 +59,6 @@ function Evidence({ entry, diagnostics }: { entry: Entry; diagnostics: string })
         onSuccess: setRequests,
       }),
     );
-    // React owns this Effect fiber; unmount interrupts its HTTP scope.
     return Effect.runCallback(load);
   }, [requestFile, videos.length]);
   const video = videos[0];

@@ -17,12 +17,6 @@ import { cn } from "../lib/utils.ts";
 import { display, isSchema, text, type JsonSchema } from "./json-schema.ts";
 import { humanize } from "./tool-schema.tsx";
 
-/**
- * A form for a tool's input JSON Schema. The runner owns the value; each edit emits a rebuilt value.
- * Shapes without a typed control (unions, tuples, open records) get a JSON editor for that field,
- * so every input stays editable.
- */
-
 type JsonObject = Schema.JsonObject;
 
 const isJson = Schema.is(Schema.Json);
@@ -33,10 +27,6 @@ const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Json)
 const maxDepth = 8;
 const localRef = /^#\/(?:\$defs|definitions)\/(.+)$/;
 
-/**
- * Follow local `$ref`s against the root's `$defs` or `definitions`, and unwrap a union with one
- * non-null variant. The referencing schema's own keywords, such as its description, win.
- */
 export function resolveSchema(schema: JsonSchema, root: JsonSchema, depth = 0): JsonSchema {
   if (depth > maxDepth) return schema;
   const ref = typeof schema.$ref === "string" ? schema.$ref.match(localRef)?.[1] : undefined;
@@ -61,7 +51,6 @@ export function resolveSchema(schema: JsonSchema, root: JsonSchema, depth = 0): 
   return resolveSchema({ ...variant, ...rest }, root, depth + 1);
 }
 
-/** The first non-null type, or `object` for a schema that only lists properties. */
 const primaryType = (schema: JsonSchema): string | undefined =>
   Array.isArray(schema.type)
     ? schema.type.find((type): type is string => typeof type === "string" && type !== "null")
@@ -71,7 +60,6 @@ const primaryType = (schema: JsonSchema): string | undefined =>
         ? "object"
         : undefined;
 
-/** Constructs the form does not render as typed controls. */
 const unsupported = (schema: JsonSchema, depth: number) =>
   depth > maxDepth ||
   typeof schema.$ref === "string" ||
@@ -92,11 +80,6 @@ const requiredNames = (schema: JsonSchema) =>
       : [],
   );
 
-/**
- * An object root the form can show: one with listed properties, or one that closes its keys with
- * `additionalProperties: false` and so takes no inputs. A bare `type: "object"` accepts any keys,
- * so it stays in JSON with unions and other open shapes.
- */
 export function isRenderableObjectSchema(schema: unknown): boolean {
   if (!isSchema(schema)) return false;
   const resolved = resolveSchema(schema, schema);
@@ -104,7 +87,6 @@ export function isRenderableObjectSchema(schema: unknown): boolean {
   return properties(resolved).length > 0 || resolved.additionalProperties === false;
 }
 
-/** The value one new field or list item starts with. */
 function defaultValue(schema: JsonSchema, root: JsonSchema): Json {
   const resolved = resolveSchema(schema, root);
   if (isJson(resolved.default)) return resolved.default;
@@ -131,7 +113,6 @@ const pathOf = (parent: string, name: string) => (parent === "" ? name : `${pare
 
 const isEmpty = (value: Json | undefined) => value === undefined || value === null || value === "";
 
-/** A schema the form draws as nested fields at this depth, as `Control` decides. */
 const nestedObject = (schema: JsonSchema, depth: number) =>
   !unsupported(schema, depth) &&
   !Array.isArray(schema.enum) &&
@@ -139,7 +120,6 @@ const nestedObject = (schema: JsonSchema, depth: number) =>
   primaryType(schema) === "object" &&
   isSchema(schema.properties);
 
-/** A list the form draws item by item at this depth, as `Control` decides. */
 const itemList = (schema: JsonSchema, depth: number) =>
   !unsupported(schema, depth) &&
   !Array.isArray(schema.enum) &&
@@ -147,11 +127,6 @@ const itemList = (schema: JsonSchema, depth: number) =>
   primaryType(schema) === "array" &&
   isSchema(schema.items);
 
-/**
- * Required fields without a value, as `/`-joined paths. Nested objects and object list items are
- * checked when present, matching the fields the form shows. `depth` follows the form's own depth,
- * so both stop drawing typed fields at the same level.
- */
 export function missingRequiredFields(schema: unknown, value: Json): readonly string[] {
   if (!isSchema(schema)) return [];
   const within = (node: JsonSchema, current: Json, path: string, depth: number): string[] => {
@@ -183,11 +158,6 @@ interface FormContext {
   readonly onInvalidChange: (path: string, invalid: boolean) => void;
 }
 
-/**
- * The tool's input as labelled fields. `missing` marks required fields a submit found empty.
- * A field whose text does not parse keeps its last good value, so it reports its path through
- * `onInvalidChange` until it parses or unmounts; the runner must not send the value meanwhile.
- */
 export function ToolInputForm({
   schema,
   value,
@@ -201,7 +171,6 @@ export function ToolInputForm({
   readonly onChange: (next: Json) => void;
   readonly missing: readonly string[];
   readonly disabled: boolean;
-  /** Must keep its identity across renders. */
   readonly onInvalidChange: (path: string, invalid: boolean) => void;
 }) {
   const id = useId();
@@ -227,7 +196,6 @@ export function ToolInputForm({
   );
 }
 
-/** Required fields first, then the optional fields present in the value, then buttons for the rest. */
 function ObjectFields({
   schema,
   value,
@@ -296,9 +264,7 @@ interface ControlProps {
   readonly onChange: (next: Json) => void;
   readonly id: string;
   readonly label: string;
-  /** List items have no visible label, so the control carries its own name. */
   readonly named?: boolean;
-  /** A required field reports an empty value as missing; any other empty number is invalid. */
   readonly required?: boolean;
   readonly invalid: boolean;
   readonly describedBy: string | undefined;
@@ -412,7 +378,6 @@ function Field({
   );
 }
 
-/** Hold `path` in the runner's invalid set while `invalid` is true and the field is mounted. */
 function useReportInvalid(context: FormContext, path: string, invalid: boolean) {
   const { onInvalidChange } = context;
   useEffect(() => {
@@ -422,7 +387,6 @@ function useReportInvalid(context: FormContext, path: string, invalid: boolean) 
   }, [onInvalidChange, path, invalid]);
 }
 
-/** The typed control for one resolved schema, or a JSON editor for shapes without one. */
 function Control(props: ControlProps) {
   const { schema, value, onChange, id, invalid, describedBy, context } = props;
   const a11y = {
@@ -508,10 +472,6 @@ function Control(props: ControlProps) {
   return <JsonControl {...props} />;
 }
 
-/**
- * Keep partial text such as `-` locally; only finite numbers reach the value. Clearing a field
- * sets it to null, so a required field reads as missing and the old number is never sent.
- */
 function NumberControl({
   value,
   onChange,
@@ -630,10 +590,6 @@ function ArrayControl({
   );
 }
 
-/**
- * A JSON editor for one field. Invalid text stays local so it never replaces the field's value,
- * and the field reports itself invalid until the text parses.
- */
 function JsonControl({
   schema,
   value,

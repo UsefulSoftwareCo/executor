@@ -1,6 +1,5 @@
 import { withLegacyKeys } from "@executor-js/utils/legacy-keys";
 import { RequiredAction } from "./authorization.ts";
-/** Organization-scoped skill reads expose only the skill directory, never general app source. */
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 import {
@@ -19,7 +18,6 @@ import { OrganizationReference, RequireOrganization } from "./organization.ts";
 const app = { organization: OrganizationReference, app: AppId };
 const version = { version: SkillSelection.version, revision: SkillSelection.revision };
 const prefix = "/api/organizations/:organization/apps/:app/skills";
-/** App and account permissions authorize dynamic skill discovery. */
 export const HostedSkills = HttpApiGroup.make("skills")
   .add(
     HttpApiEndpoint.get("bundle", "/api/organizations/:organization/apps/:app/skill-bundle", {

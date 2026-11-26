@@ -24,7 +24,6 @@ import devinScreenshot from "./assistant-screenshots/devin.webp";
 import grokScreenshot from "./assistant-screenshots/grok.webp";
 import museScreenshot from "./assistant-screenshots/muse.webp";
 
-/** The agent installs Executor itself; the prompt carries everything it needs to start. */
 export const mcpSetupPrompt = (endpoint: string, docs: string, next: string) =>
   `Help me connect to Executor over MCP at ${endpoint}.\n\nRead the docs to understand the product at ${docs}, then ${next}.`;
 
@@ -40,7 +39,6 @@ const OtherLogo = ({ className }: SVGProps<SVGSVGElement>) => (
 interface AssistantGuide {
   readonly name: string;
   readonly logo: ComponentType<SVGProps<SVGSVGElement>>;
-  /** How Executor gets into this assistant, shown under its name. */
   readonly method: string;
   readonly link?: { readonly href: string; readonly label: string };
   readonly steps: readonly ReactNode[];
@@ -48,16 +46,13 @@ interface AssistantGuide {
     readonly src: string;
     readonly alt: string;
     readonly caption: string;
-    /** The capture's pixel size, so its space is reserved before it loads. */
     readonly width: number;
     readonly height: number;
-    /** A short, wide capture sits under the steps instead of beside them. */
     readonly wide?: boolean;
   };
   readonly note?: ReactNode;
 }
 
-/** A label the user will see in the assistant's own interface. */
 const Ui = ({ children }: { readonly children: ReactNode }) => (
   <span className="font-medium text-foreground">{children}</span>
 );
@@ -79,7 +74,6 @@ const Command = ({ children }: { readonly children: string }) => (
   </code>
 );
 
-/** The exact MCP URL, copyable where a step asks for it. */
 export function EndpointField({
   endpoint,
   className,
@@ -94,7 +88,6 @@ export function EndpointField({
         className,
       )}
     >
-      {/* A URL too long for its line wraps only after a slash, never inside a host or port. */}
       <code className="min-w-0 flex-1 font-mono text-[12px] break-normal text-foreground">
         {endpoint.split(/(?<=\/)(?!\/)/u).map((part, index) => (
           <Fragment key={index}>
@@ -125,7 +118,6 @@ function CommandBlock({
   );
 }
 
-/** A chat message for assistants that add MCP servers on request. */
 function MessageBlock({ message }: { readonly message: string }) {
   return (
     <div className="mt-2 overflow-hidden rounded-lg border bg-background">
@@ -146,7 +138,6 @@ const signIn = (assistant: string) => (
   </>
 );
 
-/** The public plugin connects to Executor Cloud; custom endpoints keep their own setup. */
 const openAiPluginGuide = (name: "ChatGPT" | "Codex"): AssistantGuide => ({
   name,
   logo: name === "ChatGPT" ? ChatGptLogo : CodexLogo,
@@ -472,11 +463,9 @@ const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide> 
   },
 });
 
-/** The name an assistant goes by in its guide and the setup around it. */
 export const assistantName = (assistant: AssistantId): string =>
   assistantGuides("")[assistant].name;
 
-/** Assistant logos as a grid of choices; `selected` marks the current one when the choice persists. */
 export function AssistantChoices({
   selected,
   onSelect,
@@ -513,13 +502,11 @@ export function AssistantChoices({
   );
 }
 
-/** One assistant's guide, with the product's exact MCP URL in every copyable example. */
 export const useAssistantGuide = (endpoint: string, assistant: AssistantId): AssistantGuide =>
   assistantGuides(endpoint)[assistant];
 
 export type { AssistantGuide };
 
-/** The guide's numbered steps. */
 export function AssistantGuideSteps({
   guide,
   className,
@@ -546,7 +533,6 @@ export function AssistantGuideSteps({
   );
 }
 
-/** The assistant's logo, sized by the caller. */
 export function AssistantGuideLogo({
   guide,
   className,
@@ -558,7 +544,6 @@ export function AssistantGuideLogo({
   return <Logo className={className} aria-hidden />;
 }
 
-/** The guide's link into the assistant's own settings, when it has one; `children` lead its label. */
 export function AssistantGuideLink({
   guide,
   className,
@@ -580,7 +565,6 @@ export function AssistantGuideLink({
   );
 }
 
-/** One assistant's setup steps, with the product's exact MCP URL in every copyable example. */
 export function AssistantSetupGuide({
   endpoint,
   assistant,
@@ -628,7 +612,6 @@ export function AssistantSetupGuide({
   );
 }
 
-/** The assistant choices above the chosen assistant's guide, for pages that keep both in view. */
 export function AssistantInstallInstructions({ endpoint }: { readonly endpoint: string }) {
   const [selected, setSelected] = useState<AssistantId>("claude");
   return (
@@ -646,7 +629,6 @@ export function AssistantInstallInstructions({ endpoint }: { readonly endpoint: 
   );
 }
 
-/** A real capture of the assistant's form, opened full size on demand. */
 function SetupScreenshot({
   src,
   alt,
@@ -660,8 +642,6 @@ function SetupScreenshot({
   readonly width: number;
   readonly height: number;
 }) {
-  // Fit the capture inside the available width and `--shot-height` without enlarging it. The
-  // width is known before the image loads, and the aspect ratio gives its height.
   const size = {
     width: `min(100%, ${width}px, calc(var(--shot-height) * ${width} / ${height}))`,
     aspectRatio: `${width} / ${height}`,
@@ -709,7 +689,6 @@ function SetupScreenshot({
   );
 }
 
-/** Setup as a prompt for the agent, the raw MCP URL, or a one-line installer command. */
 export function McpInstallInstructions({
   endpoint,
   docs = publicDocsBaseUrl,
@@ -719,9 +698,7 @@ export function McpInstallInstructions({
 }: {
   readonly endpoint: string;
   readonly docs?: string;
-  /** What the agent should do once connected. */
   readonly next?: string;
-  /** Bearer-token setup for scripts and headless agents, where the product offers tokens. */
   readonly token?: ReactNode;
   readonly children?: ReactNode;
 }) {

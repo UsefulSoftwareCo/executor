@@ -25,7 +25,6 @@ const title = "Passkeys";
 const description = "Sign in with your fingerprint, face, or password manager.";
 const hint = "A passkey replaces email codes on devices that have one.";
 
-/** The security card while the passkey bundle loads. */
 export function PasskeysPending() {
   return (
     <AccountSettingPending title={title} description={description} hint={hint} action="Add passkey">
@@ -34,7 +33,6 @@ export function PasskeysPending() {
   );
 }
 
-/** Cloud sign-in passkeys. Registration starts the WebAuthn ceremony only after a click. */
 export function Passkeys() {
   const passkeys = useAtomValue(passkeysAtom);
   const retry = useAtomRefresh(passkeysAtom);

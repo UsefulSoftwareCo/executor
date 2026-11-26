@@ -1,4 +1,3 @@
-/** Local infrastructure. This module is evaluated only by Alchemy in dev mode. */
 import * as Command from "alchemy/Command";
 import * as Docker from "alchemy/Docker";
 import * as Output from "alchemy/Output";
@@ -8,7 +7,6 @@ import { Config, Effect, Schema } from "effect";
 import { cloudDevelopment } from "../contracts/development.ts";
 import { cloudDevelopmentDatabaseUrl } from "../contracts/database.ts";
 
-/** Own a persistent local Postgres instance and apply schemas before the Worker connects to it. */
 export const developmentDatabase = Effect.gen(function* () {
   const configuration = yield* cloudDevelopment;
   const password = yield* Config.Redacted("CLOUD_DEV_DATABASE_PASSWORD").pipe(
@@ -51,7 +49,6 @@ export const developmentDatabase = Effect.gen(function* () {
       });
   const migrations = yield* Command.Exec("DevelopmentMigrations", {
     command: "node scripts/migrate-development.ts",
-    // The Output dependency makes migrations wait for the container.
     env: { DATABASE_URL: connection },
     memo: false,
     timeout: "2 minutes",
@@ -62,12 +59,9 @@ export const developmentDatabase = Effect.gen(function* () {
   };
 });
 
-/** Use native Worker assets for built previews; Alchemy owns Vite for source development. */
 export const developmentWeb = (apiUrl: Output.Output<string | undefined>) =>
   Effect.gen(function* () {
     const configuration = yield* cloudDevelopment.pipe(Effect.orDie);
-    // Built previews use the Worker's asset routing and server-resolved entry pages.
-    // The caller binds the API listener to this origin; no second web server is needed.
     if (configuration.dashboard === "built") return configuration.origin;
     const password = yield* Config.Redacted("CLOUD_DEV_DATABASE_PASSWORD");
     const site = yield* cloudSite;
@@ -75,7 +69,6 @@ export const developmentWeb = (apiUrl: Output.Output<string | undefined>) =>
       command: "node scripts/development-web.ts",
       env: {
         NODE_ENV: "development",
-        // The Site resource owns marketing output; do not start a second writer.
         SITE_BUILD_HASH: site.hash.output,
         DATABASE_URL: cloudDevelopmentDatabaseUrl(password, configuration.databasePort),
         HOSTED_API_URL: apiUrl.pipe(Output.map(() => `http://127.0.0.1:${configuration.apiPort}`)),

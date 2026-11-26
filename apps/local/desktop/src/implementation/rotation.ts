@@ -1,21 +1,12 @@
-/**
- * Local API key rotation. The CLI owns key storage, so the desktop runs `executor rotate-key` while
- * the background server is stopped, then starts it again with the new key.
- */
 import { dialog } from "electron";
 import { Effect, Semaphore, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
-/** How much of a failed rotation's message is shown. */
 const messageLimit = 2000;
 
 const show = (options: Electron.MessageBoxOptions) =>
   Effect.promise(() => dialog.showMessageBox(options));
 
-/**
- * Run `rotate-key` with the CLI `command`, in its environment `env`, on `directory`. Its stderr
- * holds the CLI's sanitized message when it fails, and never a key.
- */
 export const rotateKey = (options: {
   readonly command: ReadonlyArray<string>;
   readonly env: Readonly<Record<string, string | undefined>>;
@@ -27,7 +18,7 @@ export const rotateKey = (options: {
     return yield* Effect.scoped(
       Effect.gen(function* () {
         const child = yield* spawner.spawn(
-          ChildProcess.make(executable, [...args, "rotate-key"], {
+          ChildProcess.make(executable, [...args, "service", "rotate-key"], {
             env: { ...options.env, EXECUTOR_DATA_DIR: options.directory },
             extendEnv: false,
             stdin: "ignore",
@@ -47,7 +38,6 @@ export const rotateKey = (options: {
     Effect.catch(() => Effect.succeed({ rotated: false, message: "" })),
   );
 
-/** Tell the person how the rotation went. */
 export const announceRotation = (result: { readonly rotated: boolean; readonly message: string }) =>
   show(
     result.rotated
@@ -67,7 +57,6 @@ export const announceRotation = (result: { readonly rotated: boolean; readonly m
         },
   );
 
-/** Confirm rotation, then hand the caller the work to run while the server is stopped. */
 export const makeRotateKeyAction = (request: () => void) =>
   Effect.gen(function* () {
     const lock = yield* Semaphore.make(1);

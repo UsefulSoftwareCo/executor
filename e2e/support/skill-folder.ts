@@ -1,4 +1,3 @@
-/** Packaged skill fixtures deployed through the public hosted API. */
 import { expect } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -16,11 +15,9 @@ const Bundle = Schema.Struct({
     }),
   ),
 });
-/** Complete synthetic skill document with a matching name. */
 export const skillDocument = (name: string) =>
   `---\nname: ${name}\ndescription: Packaged instructions.\nmetadata:\n  version: "1"\n---\n# ${name}`;
 const packaged = [
-  // Loose files beside skill directories are not skills.
   { path: "skills/README.md", content: "# Skills\n" },
   { path: "skills/local-guide/SKILL.md", content: skillDocument("local-guide") },
   { path: "skills/local-guide/references/example.md", content: "Packaged reference" },
@@ -28,7 +25,6 @@ const packaged = [
   { path: "private.txt", content: "Outside the selected skill folder" },
 ];
 
-/** Each read owns its deployed app until the case scope closes. */
 export const skillFolderFixture = Effect.gen(function* () {
   const api = yield* Api,
     actors = yield* Actors;

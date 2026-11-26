@@ -1,4 +1,3 @@
-/** A public MCP server whose tools carry each approval-relevant hint; it records every call. */
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Effect, Layer, Ref, Schema } from "effect";
 import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
@@ -10,7 +9,6 @@ const Message = Schema.Struct({
   params: Schema.optional(Schema.Struct({ name: Schema.optional(Schema.String) })),
 });
 
-/** Tool name to upstream annotations. `unhinted` declares none. */
 export const approvalMcpTools = {
   read: { readOnlyHint: true },
   safe: { destructiveHint: false },
@@ -19,7 +17,6 @@ export const approvalMcpTools = {
   conflict: { readOnlyHint: true, destructiveHint: true },
 } as const;
 
-/** Start the server for the case scope. `calls` lists the tool names the server actually ran. */
 export const approvalMcpUpstream = Effect.gen(function* () {
   const calls = yield* Ref.make<readonly string[]>([]);
   const tools = Object.entries(approvalMcpTools).map(([name, annotations]) => ({

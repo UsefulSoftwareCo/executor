@@ -1,42 +1,18 @@
-/**
- * Turn the packaged runtime into the release install: one `executor` executable that carries the
- * runtime's code, and beside it the files it runs or reads from disk. Those are workerd, Git, the
- * native bindings, PGlite, TypeScript, the dashboard and Motel. npm publishes this directory as the
- * platform package, and the same archive is the download the installers and Homebrew use.
- *
- * Layout, relative to the executable:
- * - `runtime/node_modules/`: packages loaded from disk (see `installedPackages`) and resources
- *   read through package resolution, such as the Executor app template.
- * - `runtime/git/`: the bundled Git.
- * - `apps/local/web/dist/client/`, `packages/telemetry/dist/motel/`: static resources.
- * - `licenses/`, `runtime-packages.txt`: notices for everything bundled or copied.
- */
 import { Config, Console, Effect, FileSystem, Option, Path } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { releaseAnalytics } from "./analytics.ts";
 import { type Platform, platformVersion, release } from "./config.ts";
 import { signStandaloneMac } from "./macos-signing.ts";
+import { treeDigest } from "./tree-digest.ts";
 import { npmCommand } from "./npm.ts";
 import { bundleStandaloneRuntime } from "./runtime-bundle.ts";
 
-/** The executable's file name on a platform. */
 export const executableName = (target: Platform) =>
   target.platform === "win32" ? "executor.exe" : "executor";
 
-/**
- * Stock Bun's runtime for a target, for development builds. Intel macOS uses the baseline build,
- * which needs no AVX2: it is the runtime the toolchain installs on the release runner, where it
- * runs under Rosetta.
- */
 const bunTarget = (target: Platform) =>
   `bun-${target.platform === "win32" ? "windows" : target.platform}-${target.arch}${target.platform === "darwin" && target.arch === "x64" ? "-baseline" : ""}`;
 
-/**
- * The Bun runtime the executable is built on. Stock Bun lets any local process run its own code
- * inside a compiled executable through environment variables such as BUN_OPTIONS, so a release
- * uses the locked-down runtime from bun-runtime/ (EXECUTOR_BUN_RUNTIME). CI and publishing
- * builds refuse to fall back to stock Bun.
- */
 const bunRuntime = Effect.gen(function* () {
   const runtime = yield* Config.NonEmptyString("EXECUTOR_BUN_RUNTIME").pipe(Config.option);
   if (Option.isSome(runtime)) return runtime;
@@ -53,16 +29,54 @@ const bunRuntime = Effect.gen(function* () {
   return runtime;
 });
 
-/**
- * Build the release install from `stage`, the packaged runtime, into `<output>/standalone`, and
- * pack it as the platform's npm archive in `output`. Returns the install directory.
- */
+export const smokePackagedCollector = (root: string, target: Platform, directory: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const name = target.platform === "win32" ? "executor-collector.exe" : "executor-collector";
+    const found: Array<string> = [];
+    for (const file of yield* fs.readDirectory(directory, { recursive: true }))
+      if (
+        path.basename(file) === name &&
+        (yield* fs.stat(path.join(directory, file))).type === "File"
+      )
+        found.push(path.join(directory, file));
+    if (found.length === 0) return yield* Effect.die(new Error(`${directory} holds no ${name}`));
+    for (const file of found)
+      for (const step of [["smoke"]]) {
+        const code = yield* processes.exitCode(
+          ChildProcess.make(
+            process.execPath,
+            [
+              path.join(root, "packages/telemetry/scripts/build-collector.ts"),
+              "--target",
+              `${target.platform}-${target.arch}`,
+              "--executable",
+              file,
+              ...step,
+            ],
+            { cwd: root, stdout: "inherit", stderr: "inherit" },
+          ),
+        );
+        if (code !== 0)
+          return yield* Effect.die(
+            new Error(`The packaged collector ${file} failed ${step.join(" ")} (exit ${code})`),
+          );
+      }
+  });
+
+export const payloadDigestFile = "payload.sha256";
+
+const payloadDigest = (install: string) => treeDigest(install);
+
 export const buildStandalone = (
   root: string,
   output: string,
   stage: string,
   target: Platform,
   signing: "unsigned" | "sign" | "notarize",
+  submission?: string,
 ) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -88,9 +102,6 @@ export const buildStandalone = (
     const modules = path.join(install, "runtime", "node_modules");
     yield* fs.makeDirectory(modules, { recursive: true });
 
-    // The code is compiled into the executable. Packages it loads from disk, and resources
-    // found through package resolution, move under runtime/, where resolution from the
-    // executable's runtime/cli.mjs finds them. dugite's JavaScript is bundled; only its Git stays.
     for (const directory of [
       path.join(stage, "node_modules"),
       path.join(stage, "runtime/node_modules"),
@@ -111,7 +122,6 @@ export const buildStandalone = (
       yield* fs.copy(path.join(stage, resource), path.join(install, resource));
 
     const work = yield* fs.makeTempDirectoryScoped({ prefix: "executor-standalone-" });
-    // Kept beside the release for diagnosis, as runtime-meta.json is; it is not published.
     const bundle = path.join(output, "standalone-bundle.mjs");
     const metafile = yield* bundleStandaloneRuntime(root, bundle, {
       version: release.version,
@@ -128,11 +138,9 @@ export const buildStandalone = (
         Option.isSome(runtime)
           ? `--compile-executable-path=${runtime.value}`
           : `--target=${bunTarget(target)}`,
-        // A compiled executable otherwise reads .env and bunfig.toml from the working directory.
         "--no-compile-autoload-dotenv",
         "--no-compile-autoload-bunfig",
         "--no-compile-autoload-tsconfig",
-        // Packages loaded from runtime/node_modules resolve through their package.json.
         "--compile-autoload-package-json",
         ...(target.platform === "win32"
           ? [
@@ -149,7 +157,6 @@ export const buildStandalone = (
       root,
     );
 
-    // The executable must start with no Node or Bun on PATH.
     const version = yield* processes.string(
       ChildProcess.make(executable, ["--version"], {
         env:
@@ -167,11 +174,14 @@ export const buildStandalone = (
       return yield* Effect.die(
         new Error(`The executable reported ${JSON.stringify(version.trim())}`),
       );
+    yield* fs.writeFileString(path.join(output, payloadDigestFile), yield* payloadDigest(install));
     if (signing !== "unsigned")
       yield* signStandaloneMac(install, executable, {
         entitlements: path.join(root, "scripts/releases/entitlements.standalone.plist"),
         notarize: signing === "notarize",
+        ...(submission === undefined ? {} : { submission }),
       });
+    yield* smokePackagedCollector(root, target, install);
 
     yield* fs.writeFileString(
       path.join(install, "package.json"),
@@ -179,14 +189,11 @@ export const buildStandalone = (
         {
           name: "executor",
           version: platformVersion(target),
+          private: true,
           description: "Executor for one platform, started by the executor package",
           license: "MIT",
           homepage: release.cloudOrigin,
           repository: { type: "git", url: `https://github.com/${release.repository}.git` },
-          publishConfig: {
-            access: "public",
-            tag: `${release.channel}-${target.platform}-${target.arch}`,
-          },
           os: [target.platform],
           cpu: [target.arch],
           files: [

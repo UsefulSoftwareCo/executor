@@ -1,9 +1,3 @@
-/**
- * Build the desktop update channel files for this release from every platform's
- * electron-builder metadata. Usage: desktop-feed.ts <downloaded artifacts> <output>.
- * Nothing is uploaded; the release workflow publishes the output after the
- * versioned GitHub release is public.
- */
 import { createHash } from "node:crypto";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -21,6 +15,7 @@ import {
   ReleaseVersion,
   type ReleaseChannel,
 } from "./config.ts";
+import { NotesHistory, notesHistoryProblem } from "./notes-history.ts";
 
 const UpdateFile = Schema.Struct({
   url: Schema.String,
@@ -29,21 +24,58 @@ const UpdateFile = Schema.Struct({
   blockMapSize: Schema.optional(Schema.Number),
   isAdminRightsRequired: Schema.optional(Schema.Boolean),
 });
+const desktopAreas = new Set(["All installs", "CLI and desktop"]);
+
 const UpdateInfo = Schema.Struct({
   version: ReleaseVersion,
   files: Schema.NonEmptyArray(UpdateFile),
   releaseDate: Schema.String,
 });
 
+const readNotes = Effect.fnUntraced(function* (
+  notesFile: string,
+  version: typeof ReleaseVersion.Type,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const notes = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(NotesHistory))(
+    yield* fs.readFileString(notesFile),
+  );
+  const problem = notesHistoryProblem(notes, version);
+  if (problem !== undefined) return yield* Effect.die(new Error(`${notesFile} ${problem}`));
+  const releaseNotes = notes.releases.map((entry) => {
+    const lines = entry.notes
+      .filter((note) => desktopAreas.has(note.area))
+      .map((note) => note.text);
+    return { version: entry.version, note: lines.length === 0 ? null : lines.join("\n") };
+  });
+  return { releaseNotes, since: notes.since };
+});
+
 const program = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const [input, output] = process.argv.slice(2);
+  const argv = process.argv.slice(2);
+  if (
+    argv[0] === "--check-notes" &&
+    argv[1] !== undefined &&
+    (argv.length === 2 || (argv.length === 4 && argv[2] === "--version"))
+  ) {
+    const version = yield* Schema.decodeUnknownEffect(ReleaseVersion)(argv[3] ?? release.version);
+    const checked = yield* readNotes(argv[1], version);
+    return yield* Console.log(
+      `${argv[1]}: notes for ${checked.releaseNotes.length} releases, from ${version}, every one since ${checked.since}`,
+    );
+  }
+  const [input, output, notesFile] = argv;
   if (input === undefined || output === undefined)
-    return yield* Effect.die(new Error("Usage: desktop-feed.ts <artifacts> <output>"));
+    return yield* Effect.die(
+      new Error(
+        "Usage: desktop-feed.ts <artifacts> <output> [<notes>] | --check-notes <notes> [--version <version>]",
+      ),
+    );
+  const notes = notesFile === undefined ? undefined : yield* readNotes(notesFile, release.version);
   const assetBase = `https://github.com/${release.repository}/releases/download/${encodeURIComponent(release.tag)}/`;
 
-  // Every platform must describe this exact version and the installer bytes it ships.
   const describe = Effect.fnUntraced(function* (target: Platform) {
     const directory = path.join(
       input,
@@ -68,7 +100,6 @@ const program = Effect.gen(function* () {
   });
   const described = yield* Effect.forEach(platforms, describe);
 
-  // macOS arm64 and x64 share one file; electron-updater selects the entry for its architecture.
   const feeds = new Map<string, { readonly target: Platform; info: typeof UpdateInfo.Type }>();
   for (const { target, info } of described) {
     const key = desktopUpdateFile(target, release.channel);
@@ -82,7 +113,6 @@ const program = Effect.gen(function* () {
   const channels: ReadonlyArray<ReleaseChannel> =
     release.channel === "latest" ? ["latest", "beta"] : ["beta"];
   const http = yield* HttpClient.HttpClient;
-  // A stable release also moves beta installs forward, but never behind a newer beta.
   const published = (name: string) =>
     http.get(`${desktopUpdateFeed.url}/${name}`).pipe(
       Effect.flatMap((response) =>
@@ -107,12 +137,13 @@ const program = Effect.gen(function* () {
           continue;
         }
       }
-      // Asset URLs are absolute, so the feed release never copies installers.
       const feed = {
         ...info,
         files: info.files.map((file) => ({ ...file, url: assetBase + file.url })),
+        ...(notes === undefined
+          ? {}
+          : { releaseNotes: notes.releaseNotes, releaseNotesSince: notes.since }),
       };
-      // JSON is valid YAML, and electron-updater parses these files as YAML.
       yield* fs.writeFileString(path.join(output, name), `${JSON.stringify(feed, null, 2)}\n`);
       yield* Console.log(`${name} → ${release.version}`);
     }

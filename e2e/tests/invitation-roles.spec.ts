@@ -1,4 +1,3 @@
-/** Role boundaries through the real Better Auth HTTP API, including invitation resend. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { Api, body } from "../support/api.ts";
@@ -29,7 +28,6 @@ layer(HostedLive, { excludeTestServices: true })("Invitation roles", (it) => {
           yield* api.request(actors.owner, "GET", listPath),
         );
         const initialIds = new Set(initial.map((invitation) => invitation.id));
-        // This is the reported attack: native permission checks trim this value differently.
         expect((yield* invite(actors.admin, "admin, owner", "attack@example.test")).status).toBe(
           400,
         );
@@ -51,7 +49,6 @@ layer(HostedLive, { excludeTestServices: true })("Invitation roles", (it) => {
           expect((yield* invite(actors.member, role, `denied-${role}@example.test`)).status).toBe(
             403,
           );
-        // Valid invitations need a free seat on Cloud's Free plan; the member's checks are done.
         yield* freeSeat;
         for (const role of ["admin", "member"]) {
           const email = `invited-${role}@example.test`;

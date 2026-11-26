@@ -1,10 +1,3 @@
-/**
- * OAuth renewal in the released image: the Go host, workerd and the product actor's storage.
- * A token endpoint that rotates refresh tokens answers slowly while callers wait, loses its
- * caller mid-answer, and then the container is killed mid-renewal and started again at once,
- * as an out-of-memory stop and restart policy do. Every caller settles within an execute
- * deadline, and the grant keeps the service's newest refresh token throughout.
- */
 import { randomBytes, randomUUID } from "node:crypto";
 import { createServer } from "node:net";
 import { expect, it } from "@effect/vitest";
@@ -23,11 +16,8 @@ const Read = Schema.Struct({
     authorization: Schema.NullOr(Schema.String),
   }),
 });
-/** Concurrent calls, as a test suite and agents make. */
 const callers = 4;
-/** An agent's execute call gives up after this long; every call must settle within it. */
 const executeDeadline = 30_000;
-/** Close to the 30-second token request timeout, which bounds a live renewal. */
 const slowResponse = 27_000;
 
 it.live(
@@ -49,8 +39,6 @@ it.live(
         const issuer = yield* oauthSetupIssuer;
         const id = `executor-renewal-${randomBytes(8).toString("hex")}`;
         const registry = yield* containerNpmRegistry;
-        // The container shares the runner's network, so it reaches the loopback token endpoint
-        // and the runner reaches its listener directly.
         const port = yield* driver(
           "allocate port",
           () =>
@@ -69,7 +57,6 @@ it.live(
         );
         const origin = `http://127.0.0.1:${port}`;
         const environment: Record<string, string> = {
-          // Release scenarios never send product analytics, even from an image with a baked key.
           DO_NOT_TRACK: "1",
           PORT: String(port),
           HOST: "127.0.0.1",
@@ -148,8 +135,6 @@ it.live(
         );
         const prefix = `/api/organizations/${organization.id}`;
 
-        // Tokens issued inside the host's 30-second renewal window renew on every use, and
-        // every renewal replaces the refresh token, which the service refuses once replaced.
         yield* issuer.configure({
           refreshTokens: true,
           rotateRefreshTokens: true,
@@ -200,8 +185,6 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
         });
         expect(completed.status, completed.text).toBe(200);
         const account = yield* json(Schema.Struct({ id: Schema.String }), completed);
-        // Connecting from the app links the account, which sets it up as a webhook source in the
-        // background; let that finish first.
         yield* request(`${appPath}/webhook-sources`).pipe(
           Effect.flatMap((response) =>
             json(
@@ -217,7 +200,6 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
           Effect.retry({ schedule: Schedule.spaced("200 millis"), times: 150 }),
         );
 
-        // Calls use the account linked to the app.
         const call = { tool: "read", input: {} };
         const read = (signal?: AbortSignal) => request(`${appPath}/tools/call`, call, signal);
         const renewed =
@@ -237,7 +219,6 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
             ),
             Effect.retry({ schedule: Schedule.spaced("50 millis"), times: 600 }),
           );
-        /** Concurrent calls; each must settle within the execute deadline. */
         const concurrentReads = (context: string) =>
           Effect.forEach(
             Array.from({ length: callers }),
@@ -256,7 +237,6 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
               }),
             { concurrency: callers },
           );
-        /** The next renewal presents the saved refresh token, which must be the newest. */
         const newestTokenSaved = (context: string) =>
           Effect.gen(function* () {
             const before = yield* issuer.metrics;
@@ -268,7 +248,6 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
 
         yield* renewed("healthy renewal")(yield* read());
 
-        // A live renewal whose token response is slow: callers wait for it, none takes over.
         {
           const context = "slow live renewal";
           yield* issuer.configure({ hold: "refresh-issued" });
@@ -293,7 +272,6 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
           yield* newestTokenSaved(context);
         }
 
-        // The caller that started a renewal disconnects while the service answers it.
         {
           const context = "caller disconnects mid-renewal";
           yield* issuer.configure({ hold: "refresh-issued" });
@@ -316,8 +294,6 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
           yield* newestTokenSaved(context);
         }
 
-        // The container is killed before the service processes a renewal, and started again at
-        // once. Callers arriving while the dead renewal's claim is recent recover in time.
         {
           const context = "container killed mid-renewal";
           yield* issuer.configure({ hold: "refresh-unprocessed" });

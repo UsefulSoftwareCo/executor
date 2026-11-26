@@ -1,4 +1,3 @@
-/** Failed and recovered OAuth flows against a loopback issuer; assertions read delivered spans. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schedule, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
@@ -22,10 +21,6 @@ const App = Schema.Struct({
   }),
 });
 
-/**
- * Provider text that must never reach telemetry: an address, a URL, tokens, a realm, a
- * person's name, and secrets short or alphabetic enough to pass for prose or a code.
- */
 const privateEmail = "ops.admin@example.com";
 const privateUrl = "https://idp.example/help?ticket=PRIVATE_QUERY";
 const privateToken = "9f8e7d6c5b4a39281706f5e4d3c2b1a0";
@@ -75,7 +70,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth failure diagnostics", (i
           callbackIssuer: null,
         } as const;
 
-        /** The delivered trace of the latest request, once the named spans have arrived. */
         const trace = (...operations: ReadonlyArray<string>) =>
           Effect.gen(function* () {
             const id = (yield* evidence.requests).at(-1)?.traceId;
@@ -94,11 +88,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth failure diagnostics", (i
         type Trace = Effect.Success<ReturnType<typeof trace>>;
         const tags = (result: Trace, operation: string) =>
           result.data.find(({ span }) => span.operationName === operation)?.span.tags;
-        /**
-         * No secret, code, token, name, address or URL anywhere in the delivered trace: span
-         * attributes, and exception events with their messages and stacks. The failed span must
-         * deliver an exception event, so the check reads the channel that carries error messages.
-         */
         const assertPrivate = (
           result: Trace,
           secrets: ReadonlyArray<string>,
@@ -124,7 +113,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth failure diagnostics", (i
                 expect(value, `${span.operationName} ${key}`).not.toMatch(/:\/\/|@/);
         };
 
-        /** Deploy an MCP app and start a sign-in; return the callback the issuer redirects to. */
         const begin = (label: string, configuration: Parameters<typeof issuer.configure>[0]) =>
           Effect.gen(function* () {
             yield* issuer.configure({ ...standard, ...configuration });
@@ -190,15 +178,12 @@ layer(HostedLive, { excludeTestServices: true })("OAuth failure diagnostics", (i
             return yield* trace("oauth.completeOAuth", span);
           });
 
-        /** Provider free text is never recorded; only its length is. */
         const withoutFreeText = (result: Trace, span: string) => {
           const recorded = Object.keys(tags(result, span) ?? {});
           expect(recorded).not.toContain("oauth.error.description");
           expect(recorded).not.toContain("oauth.error.raw_provider_code");
         };
 
-        // The service rejects the request and explains why in private terms. Codes outside the
-        // known vocabulary and every description are recorded only as fixed labels and sizes.
         const rejections: ReadonlyArray<{
           readonly name: string;
           readonly configuration: Parameters<typeof issuer.configure>[0];
@@ -306,7 +291,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth failure diagnostics", (i
             absent: ["oauth.error.provider_code"],
           },
           {
-            // A 401 challenge without an error body names its scheme and error parameter.
             name: "Challenge",
             configuration: {
               tokenError: {
@@ -360,6 +344,15 @@ layer(HostedLive, { excludeTestServices: true })("OAuth failure diagnostics", (i
           const failed = yield* complete(started.connection, started.callback, span);
           const recorded = tags(failed, span);
           expect(recorded, rejection.name).toMatchObject(rejection.expected);
+          if (span === "oauth.exchange") {
+            expect(recorded, rejection.name).toMatchObject({
+              "oauth.client.kind": "stored",
+              "oauth.token_endpoint.host": new URL(issuer.origin).hostname,
+            });
+            expect(Object.keys(recorded ?? {}), rejection.name).not.toContain(
+              "oauth.first_party.id",
+            );
+          }
           for (const name of rejection.absent ?? [])
             expect(Object.keys(recorded ?? {}), rejection.name).not.toContain(name);
           withoutFreeText(failed, span);
@@ -367,10 +360,8 @@ layer(HostedLive, { excludeTestServices: true })("OAuth failure diagnostics", (i
           yield* evidence.json(`${rejection.name.toLowerCase().replaceAll(" ", "-")}.json`, failed);
         }
 
-        // Each rejected callback records the part of the response that failed.
         {
           const started = yield* begin("Callback checks", {});
-          /** The returned callback with some parameters replaced or removed. */
           const edited = (changes: Readonly<Record<string, string | null>>) => {
             const url = new URL(started.callback);
             for (const [name, value] of Object.entries(changes))
@@ -439,7 +430,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth failure diagnostics", (i
           }
         }
 
-        // Discovery that finds metadata only at the origin succeeds without an error span.
         {
           yield* issuer.configure({ ...standard, pathDiscovery: "atlassian" });
           const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
@@ -486,8 +476,6 @@ export default defineApp({user: { accounts:{service} }},async()=>({}));`,
           yield* evidence.json("discovery-fallback.json", discovered);
         }
 
-        // A served metadata document that fails validation is remembered while discovery tries
-        // the OpenID location, and its failure keeps the evidence of what was wrong.
         for (const [discovery, expected] of [
           [
             "invalid-metadata",

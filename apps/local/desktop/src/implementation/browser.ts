@@ -3,12 +3,10 @@ import { PairingLink } from "@executor-js/local-server/auth";
 import { Effect, Redacted, Schema, Semaphore } from "effect";
 import { BrowserOpenFailed, externalUrl } from "../contracts/desktop.ts";
 
-/** Pair the system browser using the desktop session, without exposing the local API key. */
 export const makeOpenBrowserAction = (session: Session, currentOrigin: () => string | undefined) =>
   Effect.gen(function* () {
     const lock = yield* Semaphore.make(1);
     const open = Effect.gen(function* () {
-      // The local server may be restarting; its origin can change when it uses port 0.
       const origin = currentOrigin();
       if (origin === undefined) return yield* new BrowserOpenFailed();
       const response = yield* Effect.tryPromise({

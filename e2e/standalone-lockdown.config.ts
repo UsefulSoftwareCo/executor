@@ -1,6 +1,10 @@
 import { defineConfig } from "vitest/config";
+import { snapshotUpdate } from "./snapshot-updates.ts";
 
-/** Starts the release executable with each Bun override a local process could set. */
 export default defineConfig({
-  test: { include: ["e2e/tests/standalone-lockdown.spec.ts"], testTimeout: 180_000 },
+  test: {
+    update: snapshotUpdate(),
+    include: ["e2e/tests/standalone-lockdown.spec.ts"],
+    testTimeout: 180_000,
+  },
 });

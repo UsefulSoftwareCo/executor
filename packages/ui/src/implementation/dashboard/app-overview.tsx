@@ -16,7 +16,6 @@ import { AppProviderIcon } from "./common.tsx";
 import { Button } from "../components/button.tsx";
 import { cn } from "../lib/utils.ts";
 
-/** The app home shows current configuration; hosts supply independent tool, account, and source reads. */
 export function AppOverview({
   app,
   accounts,
@@ -128,7 +127,6 @@ export function AppOverview({
   );
 }
 
-/** The overview lists each tool once; the Tools tab runs them. */
 export function AppOverviewTools<E>({
   app,
   sources,
@@ -143,7 +141,6 @@ export function AppOverviewTools<E>({
   }[];
   readonly Failure: ComponentType<FailureProps<E>>;
   readonly empty: ReactNode;
-  /** Every source lists tools per account and has none linked, so an empty list is expected. */
   readonly accountsNeeded?: boolean;
 }) {
   const { AppLink } = useDashboard();
@@ -230,16 +227,11 @@ function ToolsPreviewFrame({ app, children }: { readonly app: App; readonly chil
   );
 }
 
-/**
- * Summarize each requirement's linked accounts: the app links of an app requirement, the caller's
- * links of a user requirement. Linking lives in Accounts.
- */
 export function AppOverviewAccounts({
   app,
   requirements,
 }: {
   readonly app: App;
-  /** Each requirement with its linked accounts. */
   readonly requirements: readonly RequirementAccounts<AccountSummary>[];
 }) {
   if (requirements.length === 0)
@@ -299,7 +291,6 @@ export function AppOverviewAccounts({
   );
 }
 
-/** Keep source approachable on the overview; repository details belong on the Source page. */
 export function AppOverviewSource({
   source,
 }: {

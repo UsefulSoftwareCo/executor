@@ -1,9 +1,3 @@
-/**
- * Browser timing through Playwright's Chromium. An interaction is complete when every same-origin
- * request it started (document, assets, API) has finished and the page has been quiet for 300 ms.
- * Telemetry uploads and the analytics proxy are excluded. The measured duration ends at the last
- * such response (or at the URL change when nothing was fetched), not at the end of the quiet window.
- */
 import { Effect } from "effect";
 import { chromium, type Browser, type Page, type Request } from "playwright";
 import type { BrowserCookies } from "../../sdk/contracts.ts";
@@ -79,12 +73,10 @@ export const openBrowser = (origin: string, cookies: BrowserCookies) =>
         .catch(() => undefined);
     };
     page.on("requestfinished", (request) => finish(request, false));
-    // A navigation cancelling its predecessor's requests is not a product failure.
     page.on("requestfailed", (request) =>
       finish(request, !(request.failure()?.errorText ?? "").includes("ERR_ABORTED")),
     );
 
-    /** Run an action and wait until its requests settle; returns the interaction duration. */
     const measure = (action: (page: Page) => Promise<unknown>, expectPath?: string) =>
       Effect.tryPromise({
         try: (signal) => {
@@ -120,7 +112,6 @@ export const openBrowser = (origin: string, cookies: BrowserCookies) =>
             )
             .then(
               () =>
-                // Server-Timing reads resolve asynchronously after requestfinished.
                 new Promise<UiTiming>((resolve) =>
                   setTimeout(
                     () =>
@@ -140,7 +131,6 @@ export const openBrowser = (origin: string, cookies: BrowserCookies) =>
         catch: (cause) =>
           new PerfRequestFailed({ operation: "browser interaction", detail: String(cause) }),
       });
-    /** Client-side navigation: click a matching link, or push history like the router does. */
     const navigate = (path: string) =>
       measure(
         (current) =>

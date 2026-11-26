@@ -18,7 +18,6 @@ import { useOrganizationRoute } from "../components/organization.tsx";
 import { HostedFailure } from "../components/dashboard-bindings.tsx";
 import { ConnectionFields } from "./connect-account.tsx";
 
-/** All connection entry points share the same modal size and submission dismissal guard. */
 export function ConnectionModal({
   open,
   busy,
@@ -44,7 +43,6 @@ export function ConnectionModal({
   );
 }
 
-/** Use the same provider identity and accessible heading for new accounts and resumed requests. */
 export function ConnectionDialogHeader({
   provider,
   action,
@@ -58,7 +56,7 @@ export function ConnectionDialogHeader({
     <div className="flex items-center gap-3 pr-7">
       <ProviderIcon name={provider.definition.name} url={providerDisplayUrl(provider.definition)} />
       <div className="min-w-0">
-        <DialogTitle className="text-base">
+        <DialogTitle className="text-base wrap-anywhere">
           {action} {provider.definition.name}
         </DialogTitle>
         <DialogDescription className={notice ? "mt-1 text-xs" : "sr-only"}>
@@ -69,7 +67,6 @@ export function ConnectionDialogHeader({
   );
 }
 
-/** A connection query parameter opens the existing request over its app page. */
 export function AccountConnectionDialog({
   connectionId,
   client,
@@ -143,7 +140,6 @@ function ResumedConnectionDialog({
   );
 }
 
-/** Resolve a handoff URL into the owning page's modal; no standalone connection screen exists. */
 export function ConnectionEntry({
   connectionId: id,
   client,

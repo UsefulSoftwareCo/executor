@@ -1,4 +1,3 @@
-/** Real local HTTP contracts discover schedules without invoking mutations. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
 import { Api, body } from "../support/api.ts";

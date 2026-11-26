@@ -1,4 +1,3 @@
-/** Paired dashboard reads for app skills, with the app's linked accounts. */
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 import {
   AppId,
@@ -14,7 +13,6 @@ import {
 const params = { app: AppId };
 const prefix = "/dashboard/api/apps/:app";
 const { accounts: _accounts, ...query } = SkillSelection;
-/** The containing API supplies DashboardAccess to every endpoint. */
 export const DashboardAppBrowser = HttpApiGroup.make("appBrowser")
   .add(
     HttpApiEndpoint.get("skillBundle", `${prefix}/skill-bundle`, {

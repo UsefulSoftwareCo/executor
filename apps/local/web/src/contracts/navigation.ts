@@ -2,23 +2,19 @@ import { AppView, AppViewFromUrl } from "@executor-js/ui/contracts/dashboard";
 import { AccountId } from "@executor-js/sdk";
 import { Option, Schema } from "effect";
 
-/** Dashboard areas used by route metadata to highlight the sidebar. */
 export type NavigationSection = "apps" | "accounts" | "connect" | "approvals";
 
-/** Existing app-detail query parameters; an absent view opens the app overview. */
 export interface AppSearch {
   readonly view?: AppView | undefined;
   readonly tool?: string | undefined;
 }
 
-/** The account list marks a linked account, which has no page of its own. */
 export interface AccountsSearch {
   readonly account?: AccountId | undefined;
 }
 
 const text = Schema.decodeUnknownOption(Schema.NonEmptyString);
 
-/** Ignore unsupported views and empty tool names, preserving existing deep links. */
 export function parseAppSearch(search: Record<string, unknown>): AppSearch {
   const view = Schema.decodeUnknownOption(AppViewFromUrl)(search.view);
   const tool = text(search.tool);
@@ -28,14 +24,12 @@ export function parseAppSearch(search: Record<string, unknown>): AppSearch {
   };
 }
 
-/** Ignore a malformed account identity instead of rejecting the list. */
 export function parseAccountsSearch(search: Record<string, unknown>): AccountsSearch {
   return {
     account: Option.getOrUndefined(Schema.decodeUnknownOption(AccountId)(search.account)),
   };
 }
 
-/** Keep conventional URL query values as strings; take the first repeated value like URLSearchParams.get. */
 export function parseSearchParams(search: string): Record<string, string> {
   const values = new Map<string, string>();
   for (const [key, value] of new URLSearchParams(search)) {
@@ -44,7 +38,6 @@ export function parseSearchParams(search: string): Record<string, string> {
   return Object.fromEntries(values);
 }
 
-/** Fallback labels for local routes; loaded app/account views register their own names. */
 export function localPageTitle(pathname: string): string {
   const [section, item, action] = pathname.split("/").filter(Boolean);
   if (section === "webhooks") return "Webhook setup";

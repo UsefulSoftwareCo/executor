@@ -22,7 +22,6 @@ export {
   Empty,
   SectionHeading,
 } from "@executor-js/ui/dashboard/common";
-/** Render the local product's typed failures without exposing transport or credential data. */
 export function Failure({
   cause,
   retry,
@@ -30,7 +29,6 @@ export function Failure({
   layout,
   recovery,
 }: FailureProps<DashboardError> & {
-  /** The page's own next step, when it cannot offer the one the error's recovery names. */
   readonly recovery?: string | undefined;
 }) {
   const error = Cause.findErrorOption(cause);
@@ -46,7 +44,6 @@ export function Failure({
     );
   const { title, description, account } = failureMessage(cause);
   const app = useParams({ strict: false }).appId;
-  // Credentials are replaced from the app that needs them, on its Accounts tab.
   const reconnect = account !== undefined && app !== undefined && (
     <Button variant="outline" size="sm" asChild>
       <Link to="/apps/$appId" params={{ appId: app }} search={{ view: "accounts" }}>
@@ -98,7 +95,6 @@ export function Failure({
     </Alert>
   );
 }
-/** Failures on a connection link page, where only the agent that sent the link can start again. */
 export function ConnectionLinkFailure({
   cause,
   retry,

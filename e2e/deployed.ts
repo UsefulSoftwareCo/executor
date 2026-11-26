@@ -1,4 +1,5 @@
-/** CLI adapter: one deployment is shared by every selected Cloud scenario. */
+import "./support/connect-timeout.ts";
+import "./support/stage-connections.ts";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, Layer } from "effect";

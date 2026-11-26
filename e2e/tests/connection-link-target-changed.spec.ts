@@ -1,7 +1,3 @@
-/**
- * A connection link issued before its app changed provider reports the change, not the old
- * sign-in. One started for a requirement that has since moved to the other scope is refused too.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -55,7 +51,6 @@ const service = defineProvider({
 });
 export default defineApp({ user: { accounts: { service } } }, async () => ({ tools: router({}) }));`;
 
-/** The request names the changed app requirement instead of offering the old provider's sign-in. */
 const targetChanged = (app: string, response: Response) =>
   Effect.gen(function* () {
     expect(response.status).toBe(409);
@@ -74,7 +69,6 @@ layer(HostedLive, { excludeTestServices: true })("Connection link target changes
         const api = yield* Api,
           actors = yield* Actors,
           browser = yield* Browser;
-        // The service refuses registration, as one did when its app moved to API keys.
         const issuer = yield* oauthSetupIssuer;
         yield* issuer.configure({ registrationStatus: 400, registrationError: "invalid_request" });
         const prefix = `/api/organizations/${actors.organization.id}`;
@@ -109,7 +103,6 @@ layer(HostedLive, { excludeTestServices: true })("Connection link target changes
               }),
             );
 
-        // The user opens the link while the app still signs in with OAuth.
         yield* browser.login(actors.owner);
         yield* browser.use("Open the link before the app changes", (page) =>
           page
@@ -122,14 +115,11 @@ layer(HostedLive, { excludeTestServices: true })("Connection link target changes
             ),
         );
 
-        // The app moves to an API key while the dialog is open.
         const redeployed = yield* redeploy(keySource);
         const keyProvider = redeployed.app.requirements.accounts.service.provider;
         expect(keyProvider).not.toBe(stale.provider.id);
 
-        // Hosted connection routes read the request before acting, so each fails in that read.
         const changed = (response: Response) => targetChanged(app.id, response);
-        /** The dialog drops its old form and explains the change once, with hosted's recovery. */
         const replacedByChange = (step: string, dropped: (dialog: Locator) => Promise<void>) =>
           browser
             .use(step, (page) => {
@@ -146,7 +136,6 @@ layer(HostedLive, { excludeTestServices: true })("Connection link target changes
               );
             })
             .pipe(Effect.map((shown) => expect(shown).toBe(1)));
-        // The agent's status check names the change instead of a pending OAuth sign-in.
         yield* changed(
           yield* api.request(actors.owner, "GET", `${prefix}/connections/${stale.id}`),
         );
@@ -161,7 +150,6 @@ layer(HostedLive, { excludeTestServices: true })("Connection link target changes
             },
           ),
         );
-        // The old provider's service is never asked to register another client.
         const after = yield* issuer.metrics;
         expect(after.registrations).toBe(contacted.registrations);
         expect(after.discoveries).toBe(contacted.discoveries);
@@ -172,7 +160,6 @@ layer(HostedLive, { excludeTestServices: true })("Connection link target changes
           }),
         );
 
-        // The dialog opened before the change reads the request again when its sign-in is refused.
         const started = yield* browser.use(
           "Sign in from the dialog opened before the change",
           (page) =>
@@ -232,7 +219,6 @@ layer(HostedLive, { excludeTestServices: true })("Connection link target changes
         );
         expect(signInRequests).toEqual([]);
 
-        // A new link for the same app offers the API key and links the saved account.
         const fresh = yield* issue;
         expect(fresh.provider.id).toBe(keyProvider);
         expect(Object.keys(fresh.provider.definition.auth)).toEqual(["apiKey"]);
@@ -240,7 +226,6 @@ layer(HostedLive, { excludeTestServices: true })("Connection link target changes
           page
             .goto(new URL(fresh.url).pathname)
             .then(() => page.getByRole("dialog").getByLabel("Token", { exact: true }).waitFor())
-            // Let the dialog's entrance finish so the checkpoint shows the settled form.
             .then(() =>
               page.evaluate(() =>
                 Promise.all(
@@ -254,7 +239,6 @@ layer(HostedLive, { excludeTestServices: true })("Connection link target changes
         );
         yield* browser.checkpoint("New connection link");
 
-        // The key form drops the same way when the app moves back to OAuth before it is submitted.
         yield* redeploy(oauthSource(issuer.origin));
         const submitted = yield* browser.use(
           "Submit the key from the dialog opened before",
@@ -283,7 +267,6 @@ layer(HostedLive, { excludeTestServices: true })("Connection link target changes
           dialog.getByLabel("Token", { exact: true }).waitFor({ state: "detached" }),
         );
 
-        // Once the app asks for the key again, a new link saves it and links the account to the app.
         expect((yield* redeploy(keySource)).app.requirements.accounts.service.provider).toBe(
           keyProvider,
         );
@@ -366,7 +349,6 @@ layer(TestLive, { excludeTestServices: true })("Local connection link target cha
           token: new URLSearchParams(new URL(link.url).hash.slice(1)).get("token"),
         };
 
-        // The user opens the link while the app still signs in with OAuth.
         yield* browser.use("Open the link before the app changes", (page) =>
           page
             .goto(link.url)
@@ -374,10 +356,8 @@ layer(TestLive, { excludeTestServices: true })("Local connection link target cha
               page.getByRole("button", { name: "Connect Sample service", exact: true }).waitFor(),
             ),
         );
-        // The app moves to an API key while the page is open.
         yield* redeploy(keySource);
 
-        // Local link routes call the SDK directly, so its OAuth start must refuse the old provider.
         const contacted = yield* issuer.metrics;
         const started = yield* browser.use(
           "Sign in from the page opened before the change",
@@ -393,7 +373,6 @@ layer(TestLive, { excludeTestServices: true })("Local connection link target cha
             ),
         );
         yield* targetChanged(app.id, started);
-        // The page reloads the connection, so the change replaces the old form instead of joining it.
         yield* browser.use("The page replaces the old form with the change", (page) =>
           Promise.all([
             page
@@ -414,7 +393,6 @@ layer(TestLive, { excludeTestServices: true })("Local connection link target cha
             page.getByText("App account setup changed", { exact: true }).count(),
           ),
         ).toBe(1);
-        // The link page cannot start account setup itself; only the agent can issue a new link.
         expect(
           yield* browser.use("The recovery names the agent, not a form to close", (page) =>
             page
@@ -425,12 +403,10 @@ layer(TestLive, { excludeTestServices: true })("Local connection link target cha
           ),
         ).toBe(0);
         yield* browser.checkpoint("Local stale connection link");
-        // The old provider's service is never asked to register another client.
         const after = yield* issuer.metrics;
         expect(after.registrations).toBe(contacted.registrations);
         expect(after.discoveries).toBe(contacted.discoveries);
 
-        // Submitting the new API key on the old link names the change, not an invalid method.
         yield* targetChanged(
           app.id,
           yield* api.request(session, "POST", "/account-connect/api/submit", {
@@ -439,13 +415,11 @@ layer(TestLive, { excludeTestServices: true })("Local connection link target cha
             fields: { token: "synthetic-api-key" },
           }),
         );
-        // The agent's status check names the change instead of a pending OAuth sign-in.
         yield* targetChanged(
           app.id,
           yield* agent.send("GET", `/v1/account-connections/${link.connection}`),
         );
 
-        // A key form opened before the app moves back to OAuth drops its form once the key is refused.
         const fresh = yield* issue;
         yield* browser.use("Open a new link that asks for the API key", (page) =>
           page.goto(fresh.url).then(() => page.getByLabel("Token", { exact: true }).waitFor()),
@@ -482,7 +456,6 @@ layer(TestLive, { excludeTestServices: true })("Local connection link target cha
           ),
         );
 
-        // A sign-in page left in another tab finds the change when the user returns to it.
         const returning = yield* issue;
         yield* browser.use("Open a new link that signs in with OAuth", (page) =>
           page
@@ -529,7 +502,6 @@ layer(TestLive, { excludeTestServices: true })("Local connection link target cha
   );
 });
 
-/** An app whose two requirements, one signed in with OAuth and one keyed, take accounts in `scope`. */
 const scopedSource = (issuer: string, scope: "app" | "user") =>
   `import { defineApp, defineProvider, object, oauth2, router, secrets, string } from "apps";
 const service = defineProvider({ name: "Scope service", auth: { oauth: oauth2({ discover: ${JSON.stringify(issuer)}, scopes: ["reports:read"] }) } });
@@ -618,7 +590,6 @@ layer(TestLive, { excludeTestServices: true })("Local connection scope changes",
             method: "key",
             fields: { token: "synthetic-scope-key" },
           });
-        /** This app's saved accounts and its links in both scopes. */
         const footprint = Effect.gen(function* () {
           const accounts = yield* agent
             .send("GET", "/v1/accounts?owner=local")
@@ -632,9 +603,6 @@ layer(TestLive, { excludeTestServices: true })("Local connection scope changes",
           };
         });
 
-        // The agent starts connections for the user's own accounts: a keyed one through the user
-        // route, another through the plain request route, which keeps the scope it had then, and
-        // an OAuth one the user opens and leaves at the service's consent page.
         const keyLink = yield* connect("user", "keyed");
         const plain = yield* agent
           .send("POST", "/account-connect/api/requests", {
@@ -651,7 +619,6 @@ layer(TestLive, { excludeTestServices: true })("Local connection scope changes",
             .then(() => page.getByRole("button", { name: "Allow access", exact: true }).waitFor()),
         );
 
-        // The app is redeployed with the same providers, now as its own accounts for everyone.
         const redeployed = yield* agent.send("POST", "/v1/apps/deploy", {
           owner: "local",
           app: app.id,
@@ -661,7 +628,6 @@ layer(TestLive, { excludeTestServices: true })("Local connection scope changes",
         const moved = (yield* body(Moved, redeployed)).app.requirements.accounts;
         expect([moved.service.provider, moved.keyed.provider]).toEqual(providers);
 
-        // Neither key form saves an account or links one for everyone the user did not choose.
         for (const link of [keyLink, plain]) {
           const response = yield* submit(link);
           expect(response.status, JSON.stringify(response.body)).toBe(409);
@@ -671,13 +637,10 @@ layer(TestLive, { excludeTestServices: true })("Local connection scope changes",
             requirement: "keyed",
           });
         }
-        // The agent's status check names the change.
         const status = yield* agent.send("GET", `/v1/account-connections/${keyLink.connection}`);
         expect(status.status, JSON.stringify(status.body)).toBe(409);
         expect(status.body).toMatchObject({ _tag: "AccountConnectionTargetChanged" });
 
-        // The user allows access at the service. The token exchange succeeds, and completing the
-        // connection is refused under the app's lock, rolling back the account it signed in to.
         const contacted = (yield* issuer.observations).filter((entry) => entry.tokenAccepted);
         const completed = yield* browser.use("Allow access after the redeploy", (page) =>
           Promise.all([
@@ -702,7 +665,6 @@ layer(TestLive, { excludeTestServices: true })("Local connection scope changes",
         expect(yield* footprint).toEqual({ accounts: [], app: [], user: [] });
         yield* browser.checkpoint("Local connection refused after its requirement changed scope");
 
-        // A connection started for the app's own requirement saves the key and links it for everyone.
         const fresh = yield* connect("app", "keyed");
         const accepted = yield* submit(fresh);
         expect(accepted.status, JSON.stringify(accepted.body)).toBe(200);

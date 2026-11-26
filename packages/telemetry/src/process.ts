@@ -1,4 +1,3 @@
-/** Node-only adapter for measurements of this process, never the whole machine. */
 import { monitorEventLoopDelay, performance } from "node:perf_hooks";
 import { cpuUsage, memoryUsage, pid, uptime } from "node:process";
 import { Effect, Metric } from "effect";
@@ -42,12 +41,6 @@ const metrics = {
   ),
 };
 
-/**
- * Start one sampler in the host's scope and metric registry. The first log follows
- * a one-second measurement window, then one log every 30 seconds. Logs remain
- * useful without a metrics exporter. Closing the scope stops sampling and releases
- * the delay monitor. Install once per process, outside request-owned scopes.
- */
 export const startProcessMetrics = (service: string) =>
   Effect.gen(function* () {
     const delay = yield* Effect.acquireRelease(

@@ -1,4 +1,3 @@
-/** Build-time assets are statically embedded; no runtime compiler or filesystem loader is needed. */
 declare module "executor:skills" {
   const skills: Readonly<Record<string, string>>;
   export default skills;

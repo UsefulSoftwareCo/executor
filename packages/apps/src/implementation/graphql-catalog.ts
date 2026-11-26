@@ -37,7 +37,6 @@ export const graphqlCatalog = (options: GraphqlCatalogOptions, kinds: OperationK
       signal: options.signal,
       timeoutMs: options.timeoutMs,
     }).pipe(Effect.mapError(invalid));
-    // The account's scope separates credentials, so the endpoint alone identifies its schema.
     const cache = yield* catalogScope(options, options.headers, invalid);
     const id = yield* cacheKey({ url: parsed.url });
     const client = yield* graphqlClientEffect(parsed);
@@ -66,7 +65,6 @@ export const graphqlCatalog = (options: GraphqlCatalogOptions, kinds: OperationK
       name: tool.name,
       description: tool.description,
       readOnly: kindOf(tool) === "query",
-      // The app's `kinds`, or the GraphQL operation type Executor sends.
       kindConfirmed: true,
     });
     const describe = (tool: GraphqlToolDefinition) => ({

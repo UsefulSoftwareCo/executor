@@ -1,0 +1,123 @@
+diff --git a/dist/index.mjs b/dist/index.mjs
+index e45d1b9..d1f9fe2 100644
+--- a/dist/index.mjs
++++ b/dist/index.mjs
+@@ -1,8 +1,6 @@
+ import { t as PACKAGE_VERSION } from "./version-COmqWYke.mjs";
+-import { APIError, addOAuthServerContext, createAuthEndpoint, createAuthMiddleware, getSessionFromCtx, sessionMiddleware } from "better-auth/api";
+-import { XMLParser, XMLValidator } from "fast-xml-parser";
++import { APIError, addOAuthServerContext, createAuthEndpoint as createNativeAuthEndpoint, createAuthMiddleware as createNativeAuthMiddleware, getSessionFromCtx, sessionMiddleware } from "better-auth/api";
+ import { X509Certificate } from "node:crypto";
+-import { getHostname } from "tldts";
+ import { generateRandomString } from "better-auth/crypto";
+ import * as z from "zod";
+ import { getCurrentAdapter, getCurrentDBAdapterAsyncLocalStorage, runWithTransaction } from "@better-auth/core/context";
+@@ -13,8 +11,6 @@ import { betterFetch } from "@better-fetch/fetch";
+ import { createRemoteJWKSet, customFetch } from "jose";
+ import { base64, base64Url } from "@better-auth/utils/base64";
+ import { createHash } from "@better-auth/utils/hash";
+-import { DOMParser } from "@xmldom/xmldom";
+-import samlifyDefault, * as samlifyNamespace from "samlify";
+ import { defineErrorCodes } from "@better-auth/core/utils/error-codes";
+ import { parseInputData, toZodSchema } from "better-auth/db";
+ import { isAPIError } from "@better-auth/core/utils/is-api-error";
+@@ -22,6 +18,45 @@ import { appendQueryParams } from "@better-auth/core/utils/url";
+ import { HIDE_METADATA, PRIVATE_KEY_JWT_SIGNING_ALGORITHMS, authorizationCodeRequest, createAuthorizationURL, createPrivateKeyJwtClientAssertionGetter, generateGenericState, generateState, getOAuth2Tokens, parseGenericState, parseState } from "better-auth";
+ import { deleteSessionCookie, setAccountCookie, setSessionCookie } from "better-auth/cookies";
+ import { additionalAuthorizationParamsSchema, handleOAuthUserInfo } from "better-auth/oauth2";
++//#region lazy dependencies
++// SAML, XML and public-suffix parsing are large and only SSO endpoints and hooks use them.
++// Each request imports them itself; module instances are shared, pending promises are not.
++let XMLParser, XMLValidator, getHostname, DOMParser, saml, xmlParser;
++async function loadDependencies() {
++	if (saml !== undefined) return;
++	const [fastXmlParser, tldts, xmldom, samlify] = await Promise.all([
++		import("fast-xml-parser"),
++		import("tldts"),
++		import("@xmldom/xmldom"),
++		import("samlify")
++	]);
++	if (saml !== undefined) return;
++	({ XMLParser, XMLValidator } = fastXmlParser);
++	({ getHostname } = tldts);
++	({ DOMParser } = xmldom);
++	xmlParser = new XMLParser({
++		ignoreAttributes: false,
++		attributeNamePrefix: "@_",
++		removeNSPrefix: true,
++		processEntities: false
++	});
++	const samlifyModule = typeof samlify.SPMetadata === "function" && typeof samlify.setSchemaValidator === "function" ? samlify : samlify.default ?? samlify;
++	samlifyModule.setSchemaValidator({ async validate(xml) {
++		if (XMLValidator.validate(xml, { allowBooleanAttributes: true }) === true) return "SUCCESS_VALIDATE_XML";
++		throw "ERR_INVALID_XML";
++	} });
++	saml = samlifyModule;
++}
++const withDependencies = (create) => (...args) => {
++	const handler = args.pop();
++	return create(...args, async (ctx) => {
++		await loadDependencies();
++		return handler(ctx);
++	});
++};
++const createAuthEndpoint = withDependencies(createNativeAuthEndpoint);
++const createAuthMiddleware = withDependencies(createNativeAuthMiddleware);
++//#endregion
+ //#region src/constants.ts
+ /**
+ * SAML Constants
+@@ -392,8 +427,7 @@ function computeDiscoveryUrl(issuer) {
+ * @throws DiscoveryError if URL is invalid
+ */
+ function validateDiscoveryUrl(url, isTrustedOrigin) {
+-	const discoveryEndpoint = parseURL("discoveryEndpoint", url).toString();
+-	if (!isTrustedOrigin(discoveryEndpoint)) throw new DiscoveryError("discovery_untrusted_origin", `The main discovery endpoint "${discoveryEndpoint}" is not trusted by your trusted origins configuration.`, { url: discoveryEndpoint });
++	validateOIDCEndpointUrl("discoveryEndpoint", url, isTrustedOrigin);
+ }
+ /**
+ * Validate that a user-supplied OIDC endpoint URL is safe to fetch.
+@@ -685,10 +719,7 @@ function normalizeDiscoveryUrls(document, issuer, isTrustedOrigin) {
+ */
+ function normalizeAndValidateUrl(name, endpoint, issuer, isTrustedOrigin) {
+ 	const url = normalizeUrl(name, endpoint, issuer);
+-	if (!isTrustedOrigin(url)) throw new DiscoveryError("discovery_untrusted_origin", `The ${name} "${url}" is not trusted by your trusted origins configuration.`, {
+-		endpoint: name,
+-		url
+-	});
++	validateOIDCEndpointUrl(name, url, isTrustedOrigin);
+ 	return url;
+ }
+ /**
+@@ -967,12 +998,6 @@ async function isCurrentSSOProviderReference(provider, reference) {
+ }
+ //#endregion
+ //#region src/saml/parser.ts
+-const xmlParser = new XMLParser({
+-	ignoreAttributes: false,
+-	attributeNamePrefix: "@_",
+-	removeNSPrefix: true,
+-	processEntities: false
+-});
+ function findNode(obj, nodeName) {
+ 	if (!obj || typeof obj !== "object") return null;
+ 	const record = obj;
+@@ -1176,7 +1201,6 @@ function validateConfigAlgorithms(config, options = {}) {
+ 		});
+ 	}
+ }
+-const saml = typeof samlifyNamespace.SPMetadata === "function" && typeof samlifyNamespace.setSchemaValidator === "function" ? samlifyNamespace : samlifyDefault ?? samlifyNamespace;
+ //#endregion
+ //#region src/saml/assertions.ts
+ const SAML_ASSERTION_NAMESPACE = "urn:oasis:names:tc:SAML:2.0:assertion";
+@@ -4457,10 +4481,6 @@ const initiateSLO = (options) => {
+ };
+ //#endregion
+ //#region src/index.ts
+-saml.setSchemaValidator({ async validate(xml) {
+-	if (XMLValidator.validate(xml, { allowBooleanAttributes: true }) === true) return "SUCCESS_VALIDATE_XML";
+-	throw "ERR_INVALID_XML";
+-} });
+ /**
+ * SAML endpoint paths that should skip origin check validation.
+ * These endpoints receive POST requests from external Identity Providers,
