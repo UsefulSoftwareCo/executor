@@ -98,10 +98,16 @@ layer(HostedLive, { excludeTestServices: true })("App launch links", (it) => {
         const other = yield* deployPage("Other app");
 
         yield* managementApp(actors.owner);
-        const key = yield* ownerKey("Launch link agent");
-        const client = yield* mcp.connect(key.key, "app-launch", {
-          organization: actors.organization.id,
-        });
+        yield* browser.login(actors.owner);
+        const agent = yield* oauth.authorize;
+        yield* browser.use("Sign the browser out of Executor", (page) =>
+          page.context().clearCookies(),
+        );
+        const client = yield* mcp.connect(
+          Redacted.make(Redacted.value(agent.tokens).access_token),
+          "app-launch",
+          { organization: actors.organization.id },
+        );
         const executed = yield* client.use("Get a launch link through MCP", (client, signal) =>
           client.callTool(
             {
@@ -128,6 +134,10 @@ layer(HostedLive, { excludeTestServices: true })("App launch links", (it) => {
         });
         expect(yield* get(link.url, {}, "HEAD")).toMatchObject({ status: 405, cookie: undefined });
         expect(yield* get(link.url, { "sec-purpose": "prefetch" })).toMatchObject({
+          status: 405,
+          cookie: undefined,
+        });
+        expect(yield* get(link.url, { "sec-fetch-dest": "image" })).toMatchObject({
           status: 405,
           cookie: undefined,
         });

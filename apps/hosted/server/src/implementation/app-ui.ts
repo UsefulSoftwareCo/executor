@@ -727,6 +727,7 @@ export const hostedAppUi = <R = never>(
     const { request } = resolved;
     if (
       request.method !== "GET" ||
+      (request.headers["sec-fetch-dest"] ?? "document") !== "document" ||
       request.headers["sec-purpose"]?.includes("prefetch") ||
       request.headers.purpose === "prefetch"
     )
@@ -736,12 +737,9 @@ export const hostedAppUi = <R = never>(
     );
     if (Option.isNone(code)) return yield* refuse("missing", new UiUnauthorized());
     const sessions = yield* HostedAppSessions;
-    const current = Schema.decodeUnknownOption(AppSignInCode)(
-      request.cookies[sessionCookie(resolved.target.origin)],
-    );
     const signedIn =
-      Option.isSome(current) &&
-      (yield* sessions.current(resolved.target, current.value).pipe(
+      Object.hasOwn(request.cookies, sessionCookie(resolved.target.origin)) &&
+      (yield* authorizeTarget(resolved).pipe(
         Effect.as(true),
         Effect.catchTags({
           UiUnauthorized: () => Effect.succeed(false),
