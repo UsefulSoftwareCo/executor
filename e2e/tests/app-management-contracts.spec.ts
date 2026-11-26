@@ -1,4 +1,3 @@
-/** Agents author apps through the Executor app with the contracts its docs describe. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -58,10 +57,8 @@ const Created = Completed(
     files: Schema.Array(File),
   }),
 );
-/** A save reports how many files it removed and lists the first, however many it removed. */
 const Removals = Schema.Struct({ count: Schema.Number, paths: Schema.Array(Schema.String) });
 const Greeted = Completed(Schema.Struct({ message: Schema.Literal("Hello") }));
-/** Writes describe what they saved instead of echoing the files, which grow with the app. */
 const Saved = Completed(
   Schema.Struct({
     saved: Schema.Struct({
@@ -79,7 +76,6 @@ const Commit = Schema.Struct({
   revision: Schema.Struct({ commit: Schema.String }),
   removed: Removals,
 });
-/** A save names the files it removed, and the documented restore brings back the same file. */
 const Removed = Completed(
   Schema.Struct({
     trimmed: Commit,
@@ -88,7 +84,6 @@ const Removed = Completed(
     same: Schema.Boolean,
   }),
 );
-/** A refused save leaves the working revision where it was. */
 const Refused = Schema.Struct({
   status: Schema.Literal("completed"),
   execution: Schema.Struct({
@@ -110,20 +105,16 @@ const Kept = Completed(
     kept: Schema.NullOr(Schema.String),
   }),
 );
-/** The commit result itself, returned straight from execute. */
 const Committed = Completed(Commit);
 const Located = Completed(Schema.Unknown);
-/** A created app; its other fields are not under test here. */
 const Made = Completed(Schema.Struct({ id: Schema.String }));
 type Connection = Effect.Success<ReturnType<Effect.Success<typeof McpClient>["connect"]>>;
 
-/** Local routes have no organization, and their tools accept no empty path. */
 const routes = (organization?: string) => {
   const tenant = organization === undefined ? {} : { organization };
   return { tenant, scope: organization === undefined ? {} : { path: tenant } };
 };
 
-/** One execute program with the Executor app in scope; the result is its structured content. */
 const executeIn = (client: Connection) => (step: string, code: string) =>
   client
     .use(step, (client, signal) =>
@@ -135,18 +126,11 @@ const executeIn = (client: Connection) => (step: string, code: string) =>
     )
     .pipe(Effect.map((result) => result.structuredContent));
 
-/** deploy.md's MCP example: index.ts and a package.json pinning the reported version. */
 const documentedFiles = `[
   { path: "index.ts", content: ${JSON.stringify(helloIndex)} },
   { path: "package.json", content: JSON.stringify({ name: "hello", private: true, type: "module", dependencies: { apps: version } }) },
 ]`;
 
-/**
- * Follow deploy.md: discover the catalog's constraints and the host's apps release, then create
- * the two-file app with files and deploy it. Create without files is refused. Later commit and
- * deploy results stay objects after the source outgrows an execute result. On hosted products
- * the tool-only app's location says it has no UI.
- */
 const deployApp = (client: Connection, organization?: string) =>
   Effect.gen(function* () {
     const evidence = yield* Evidence;
@@ -168,24 +152,17 @@ return { catalog: catalog?.signature, commit: commit?.signature, found: found.it
     );
     yield* evidence.json("discovered.json", discovered);
     const found = (yield* Schema.decodeUnknownEffect(Discovered)(discovered)).execution.value;
-    // A plain service name fails the optional name filter's pattern, so its input must show it.
     const [input] = found.catalog.split("): Promise<");
-    expect(input).toMatch(/@pattern \^@\[a-z0-9\][^\n]*\n\s*name\?: string \| null/);
-    // An app path parameter takes the app's ID, and its signature says so.
+    expect(input).toMatch(/@pattern \^@\[a-z0-9\][^\n]*\n\s*name\?: string,/);
     expect(found.commit).toContain("App ID, such as app_…, from the app's `id`.");
-    // deploy.md names framework.release; searching for it finds it first, saying where it goes.
     expect(found.found[0]?.path).toMatch(/\.framework\.release$/);
     expect(found.found[0]?.description).toContain('{ "dependencies": { "apps": version } }');
     expect(found.release.version).toBe(appsVersion);
-    // Create's signature documents its files, in the block right above them in its input, with
-    // the version framework.release returns.
     const [createInput] = found.create.split("): Promise<");
     expect(createInput?.match(/\/\*\*((?:(?!\*\/)[\s\S])*)\*\/\s*files: /)?.[1]).toContain(
       "a package.json whose dependencies.apps is the exact version framework.release returns",
     );
 
-    // Without files nothing is created. The typed input error names body.files and sends the
-    // agent to create's signature, whose files documentation above names framework.release.
     const name = `Hello ${randomUUID().slice(0, 8)}`;
     const refused = yield* execute(
       "Create an app without files",
@@ -197,9 +174,6 @@ return { catalog: catalog?.signature, commit: commit?.signature, found: found.it
     expect(failure.message).toContain("input.body.files: Missing key");
     expect(failure.recovery.instructions).toContain("tools.search.describe");
 
-    // A request Executor's API rejects against its operation's schema states where and why,
-    // instead of a 400 the document does not declare. The input schema cannot express a root
-    // index.ts, so the call reaches Executor.
     const unrooted = yield* execute(
       "Create an app without a root index.ts",
       `return await executor.appManagement.create({ ...${JSON.stringify(scope)}, body: { name: ${JSON.stringify(name)}, files: [{ path: "src/index.ts", content: "export default {};" }] } });`,
@@ -211,7 +185,6 @@ return { catalog: catalog?.signature, commit: commit?.signature, found: found.it
     expect(unrootedFailure.message).toContain(
       "Executor rejected this request's body because it does not match the operation's schema: $.files: expected a root index.ts.",
     );
-    // A local CLI agent's guess at the format of `links`, a JSON array of account links.
     if (organization === undefined) {
       const health = yield* execute(
         "List account health with links as a flag",
@@ -238,7 +211,6 @@ return { app, deployed, files: source.files };`,
     const app = (yield* Schema.decodeUnknownEffect(Created)(created)).execution.value;
     expect(app.deployed.app.id).toBe(app.app.id);
     expect(declaredApps(app.files)).toBe(appsVersion);
-    // Discovery runs at the start of each execute, so the deployed app answers in a new one.
     const greeted = yield* execute(
       "Call the deployed app",
       `return await tools[${JSON.stringify(app.app.slug)}].hello({});`,
@@ -246,8 +218,6 @@ return { app, deployed, files: source.files };`,
     yield* evidence.json("greeted.json", greeted);
     yield* Schema.decodeUnknownEffect(Greeted)(greeted);
 
-    // Commit and deploy results stay objects when the app's source is larger than the execute
-    // result limit.
     const deployed = yield* execute(
       "Deploy a large saved source",
       `const path = ${JSON.stringify({ ...tenant, app: app.app.id })};
@@ -262,7 +232,6 @@ return { saved, deployed };`,
     expect(large.deployed.app.id).toBe(app.app.id);
     expect(large.deployed.version.id).toBe(large.deployed.app.activeVersion);
 
-    // ui.md: a hosted app without a UI has no address, and the location says why.
     if (organization !== undefined) {
       const location = yield* execute(
         "Get the URL of the tool-only app",
@@ -278,7 +247,6 @@ return { saved, deployed };`,
     return app.app.id;
   });
 
-/** The documented two-file app with the large reference the saves below remove, not deployed. */
 const createWithReference = (client: Connection, organization: string) =>
   Effect.gen(function* () {
     const { scope } = routes(organization);
@@ -291,21 +259,12 @@ return await executor.appManagement.create({ ...${JSON.stringify(scope)}, body: 
     return (yield* Schema.decodeUnknownEffect(Made)(created)).execution.value.id;
   });
 
-/**
- * Saves of an app whose source has `reference.md`. A save that leaves a file out names it in
- * `removed`, and committing it again restores its contents. A save that nests a file under a
- * file, or names a path that is not valid Unicode, is refused and keeps the existing files.
- * Dropping 600 files reports the count and the first 100 paths in an untruncated result, and
- * dropping files with escaped names lists fewer to keep the JSON small.
- */
 const saveSource = (client: Connection, app: string, organization?: string) =>
   Effect.gen(function* () {
     const evidence = yield* Evidence;
     const execute = executeIn(client);
     const path = JSON.stringify({ ...routes(organization).tenant, app });
 
-    // deploy.md: a complete file list deletes what it leaves out, and the result names it before
-    // anything is deployed. Committing the file again restores it.
     const removal = yield* execute(
       "Save the source without a file, then restore it",
       `const path = ${path};
@@ -325,8 +284,6 @@ return { trimmed, restored, working: working.revision.commit, same: content(work
     expect(working).toBe(restored.revision.commit);
     expect(same).toBe(true);
 
-    // Git stores a path as a file or a folder, never both, so a save that nests a file under
-    // an existing file is refused before anything is written, naming both paths.
     const conflicted = yield* execute(
       "Save a file inside a path that is a file",
       `const path = ${path};
@@ -340,8 +297,6 @@ return await executor.appManagement.commit({ path, body: { expected: source.revi
     expect(conflict.message).toBe(
       "The files use reference.md as both a file and a folder: reference.md/part.md is inside it. Git can store only one of them. Rename or remove one, then save again. Nothing was saved.",
     );
-    // Only public files may be stored entries; an ordinary text file sent as one is rejected,
-    // naming the file.
     const stored = yield* execute(
       "Save a text file as a stored entry",
       `const path = ${path};
@@ -364,8 +319,6 @@ return { before: ${JSON.stringify(restored.revision.commit)}, after: source.revi
     const revisions = (yield* Schema.decodeUnknownEffect(Unchanged)(unchanged)).execution.value;
     expect(revisions.after).toBe(revisions.before);
 
-    // Git stores UTF-8 paths. A lone surrogate would encode as U+FFFD and overwrite the kept
-    // `assets\uFFFD` file, so the save is refused and the file and revision survive.
     const kept = yield* execute(
       "Save a file named with U+FFFD",
       `const path = ${path};
@@ -398,9 +351,6 @@ return { before: ${JSON.stringify(keptRevision)}, after: source.revision.commit,
       kept: "kept",
     });
 
-    // A save that drops many files reports the count and the first paths, so the commit result
-    // returned from execute stays an object instead of a truncated string. The drop commits the
-    // files read before the notes, as the restore above does, without reading 600 notes back.
     const dropped = yield* execute(
       "Save 600 notes, then save the source without them",
       `const path = ${path};
@@ -416,8 +366,6 @@ return await executor.appManagement.commit({ path, body: { expected: added.revis
     expect(many.removed.paths[0]).toBe(`notes/000-${"n".repeat(100)}.md`);
     expect(many.removed.paths[99]).toBe(`notes/099-${"n".repeat(100)}.md`);
 
-    // JSON escapes a control character as six bytes, so the listed paths are bounded by their
-    // encoded size: 100 paths of 150 U+0001 each would be over 90 KB, past an execute result.
     const escaped = yield* execute(
       "Save 100 files named with control characters, then save the source without them",
       `const path = ${path};
@@ -431,14 +379,12 @@ return await executor.appManagement.commit({ path, body: { expected: added.revis
     const control = (n: number) =>
       `controls/${String(n).padStart(3, "0")}-${"\u0001".repeat(150)}.md`;
     expect(controls.removed.count).toBe(100);
-    // Each path is 918 bytes of JSON, so 17 fit the 16 KiB budget with their commas.
     expect(controls.removed.paths).toEqual(Array.from({ length: 17 }, (_, n) => control(n)));
     expect(
       new TextEncoder().encode(JSON.stringify(controls.removed.paths)).length,
     ).toBeLessThanOrEqual(16 * 1024);
   });
 
-/** deploy.md's local example deploys through `apps.deploy`; local `apps.commit` saves the same way. */
 const deployThroughApps = (client: Connection, app: string) =>
   Effect.gen(function* () {
     const evidence = yield* Evidence;
@@ -468,11 +414,6 @@ return { saved, deployed };`,
     expect(result.version.id).toBe(result.app.activeVersion);
   });
 
-/**
- * The owner's API key and management app, an MCP session on its organization, and app removal.
- * Deploys and saves are separate cases: on a deployed Cloud stage, each runs about 30 seconds of
- * sequential Git and build work, and together they reached the 60-second limit.
- */
 const hostedAgent = Effect.gen(function* () {
   const api = yield* Api,
     actors = yield* Actors,

@@ -128,7 +128,6 @@ function publicationRepair(issue: PublicationIssue, suggestedName: string | null
 
 const PackageJson = Schema.fromJsonString(Schema.Record(Schema.String, Schema.Json));
 
-/** Set only the package name; every other package.json field keeps its value and order. */
 const renamedPackage = (content: string | null, name: string) => {
   if (content === null) return `${JSON.stringify({ name }, null, 2)}\n`;
   const manifest = Schema.decodeUnknownSync(PackageJson)(content);
@@ -210,7 +209,6 @@ function CopyPrompt({ prompt }: { readonly prompt: string }) {
   );
 }
 
-/** Save the suggested name as a normal source commit, then hand the new revision back for review. */
 function RenameAndContinue<E>({
   app,
   suggestedName,
@@ -281,7 +279,6 @@ function RenameAndContinue<E>({
   );
 }
 
-/** Make publishing available from every app tab; the host still owns permission. */
 export function PublishApp<E>({
   app,
   atoms,
@@ -308,7 +305,6 @@ export function PublishApp<E>({
   );
 }
 
-/** Source and publication reads begin only when someone opens the publishing dialog. */
 function PublishAction<E>({
   app,
   atoms,
@@ -317,7 +313,6 @@ function PublishAction<E>({
   readonly app: App;
 }) {
   const [open, setOpen] = useState(false);
-  // After an in-dialog rename, review the saved revision instead of the one first opened.
   const [renamed, setRenamed] = useState<string | null>(null);
   const publishing = useAtomValue(atoms.publish(app.id));
   return (
@@ -391,7 +386,6 @@ function PublishAction<E>({
   );
 }
 
-/** Keep the reviewed revision fixed while the dialog is open, including during source refreshes. */
 function PublishDialog<E>({
   app,
   source: initialSource,
@@ -511,7 +505,6 @@ function PublishDialog<E>({
   );
 }
 
-/** Confirm successful writes and keep their result visible while registry reads reconcile. */
 function PublicationActions<E>({
   app,
   source,

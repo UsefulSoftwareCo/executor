@@ -1,10 +1,3 @@
-/**
- * The app runtime never decodes a Brotli response. workerd's bundled Brotli decoder has
- * CVE-2026-111497, an out-of-bounds write a crafted stream can turn into code execution, so every
- * Worker sets `no_brotli_content_encoding` and a service's `Content-Encoding: br` body reaches app
- * code as the bytes the service sent, through the platform's `fetch` and the framework's
- * `ctx.fetch` alike.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";

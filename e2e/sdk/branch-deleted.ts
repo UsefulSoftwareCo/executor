@@ -1,0 +1,71 @@
+import { Config, Console, Duration, Effect, Option, Schedule, Schema } from "effect";
+import { HttpClient, HttpClientRequest } from "effect/http";
+import { reveal, secretConfig } from "../support/failure-text.ts";
+
+export class BranchNotDeleted extends Schema.TaggedError<BranchNotDeleted>()("BranchNotDeleted", {
+  message: Schema.String,
+}) {}
+
+class Unconfirmed extends Schema.TaggedError<Unconfirmed>()("Unconfirmed", {
+  reason: Schema.String,
+}) {}
+
+export const confirmBranchDeleted = (
+  slug: string,
+  options: {
+    readonly api?: string;
+    readonly spacing?: Duration.Input;
+    readonly attempts?: number;
+  } = {},
+) =>
+  Effect.gen(function* () {
+    const branch = `test-${slug}`;
+    const api = options.api ?? "https://api.planetscale.com/v1";
+    const status = yield* Effect.gen(function* () {
+      const organization = yield* Config.NonEmptyString("PLANETSCALE_ORGANIZATION");
+      const database = yield* Config.NonEmptyString("TEST_STAGE_DATABASE");
+      const id = yield* secretConfig("PLANETSCALE_API_TOKEN_ID");
+      const token = yield* secretConfig("PLANETSCALE_API_TOKEN");
+      return { organization, database, authorization: `${reveal(id)}:${reveal(token)}` };
+    }).pipe(
+      Effect.mapError(
+        () => new Unconfirmed({ reason: "the run has no PlanetScale credentials to check it" }),
+      ),
+      Effect.flatMap(({ organization, database, authorization }) =>
+        Effect.gen(function* () {
+          const http = yield* HttpClient.HttpClient;
+          const response = yield* http
+            .execute(
+              HttpClientRequest.get(
+                `${api}/organizations/${organization}/databases/${database}/branches/${branch}`,
+              ).pipe(HttpClientRequest.setHeader("authorization", authorization)),
+            )
+            .pipe(
+              Effect.mapError(
+                () => new Unconfirmed({ reason: "PlanetScale could not be reached" }),
+              ),
+            );
+          if (response.status !== 404)
+            return yield* new Unconfirmed({
+              reason: `PlanetScale still answers ${response.status}`,
+            });
+          return response.status;
+        }).pipe(
+          Effect.retry({
+            schedule: Schedule.spaced(options.spacing ?? "10 seconds"),
+            times: options.attempts ?? 12,
+          }),
+        ),
+      ),
+      Effect.catchTag("Unconfirmed", ({ reason }) =>
+        Effect.gen(function* () {
+          const message = `PlanetScale branch ${branch} is not confirmed gone after its teardown (${reason}). The teardown's own line above says whether it sent a delete and what PlanetScale answered. If the branch is still there, it keeps billing until someone with permission deletes it.`;
+          const ci = yield* Config.String("GITHUB_ACTIONS").pipe(Config.option);
+          if (Option.isSome(ci))
+            yield* Console.error(`::error title=Leftover PlanetScale branch::${message}`);
+          return yield* new BranchNotDeleted({ message });
+        }),
+      ),
+    );
+    yield* Console.log(`PlanetScale branch ${branch} is deleted (PlanetScale answers ${status}).`);
+  });

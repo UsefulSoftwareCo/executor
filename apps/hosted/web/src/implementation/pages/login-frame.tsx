@@ -1,7 +1,6 @@
 import type { ReactNode } from "react";
 import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
 
-/** Shared themed card for sign-in, SSO, credential enrollment, and invitations. */
 export function LoginFrame({
   title,
   children,

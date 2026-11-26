@@ -1,7 +1,3 @@
-/**
- * Private entry point for the app domain controller. A coordinator that wakes in a fresh isolate
- * loads and initializes only this Worker, not the API with its routes, auth and executor.
- */
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Output from "alchemy/Output";
 import { Credentials, apiTokenCredentials } from "@distilled.cloud/cloudflare/Credentials";
@@ -26,6 +22,7 @@ import { AppDomainController } from "./infrastructure/app-domain-controller-work
 import { AppDomainCoordinator, AppDomainDrainFailed, Team } from "./infrastructure/app-domains.ts";
 import { appDomainControllerToken, sharedAppDomainZone } from "./infrastructure/app-domain-zone.ts";
 import { cloudDatabaseConnection } from "./infrastructure/database.ts";
+import { previewActivity, PreviewActivityLive } from "./infrastructure/preview-activity.ts";
 import { previewLifetime } from "./infrastructure/test-stage-expiry.ts";
 import {
   cloudObservability,
@@ -52,19 +49,10 @@ const observeDomainFailure = (phase: string, cause: Cause.Cause<unknown>) =>
     })),
   });
 
-/** Teams per plan. One stack of about 5,000 teams exhausted the coordinator's isolate memory. */
 const teamsPerPass = 500;
 
-/**
- * A provider can wait five minutes after HTTP 429. Bound every step that holds the lock, so a
- * deployment can stop this controller and drain its durable journal.
- */
 const stepTimeout = "60 seconds";
 
-/**
- * The certificate inventory runs without the lock and reads up to 6,000 packs in about the time of
- * one page. The bound ends a stalled read, so the pass fails and is retried.
- */
 const inventoryTimeout = "5 minutes";
 
 const makeAppDomainCoordinator = Effect.gen(function* () {
@@ -80,7 +68,6 @@ const makeAppDomainCoordinator = Effect.gen(function* () {
   }
   const suffix = new URL(base).hostname;
   const zone = yield* sharedAppDomainZone;
-  // Mapped-output defaults include function source, which changes under minification.
   const zoneBinding = yield* Output.named(
     zone.pipe(Output.map((value) => value.zone)),
     "AppDomainZoneSettings",
@@ -96,9 +83,8 @@ const makeAppDomainCoordinator = Effect.gen(function* () {
     Effect.flatMap(Schema.decodeUnknownEffect(Schema.Redacted(Schema.NonEmptyString))),
   );
   const connection = yield* cloudDatabaseConnection;
-  // Read during initialization, so deployment binds the preview's deadline and policy here too.
   const lifetime = yield* previewLifetime;
-  /** One short-lived connection per use; the coordinator holds none between passes. */
+  const activity = yield* previewActivity;
   const withDatabase = <A, E, R>(use: Effect.Effect<A, E, R | SqlClient.SqlClient>) =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -120,15 +106,9 @@ const makeAppDomainCoordinator = Effect.gen(function* () {
         const now = yield* Clock.currentTimeMillis;
         const due = now + milliseconds;
         const existing = yield* state.storage.getAlarm();
-        // An alarm whose retries ran out can stay in the past without ever firing again.
         if (existing === null || existing > due || existing < now - 60_000)
           yield* state.storage.setAlarm(due);
       });
-    /**
-     * One plan and apply per group of teams. A plan holds every resource in its stack in memory,
-     * so a single stack for every team ran out of isolate memory. Run the returned passes in order
-     * while holding the lock: they share the journal read here.
-     */
     const dnsPasses = (teams: ReadonlyArray<typeof Team.Type>) =>
       Effect.gen(function* () {
         const zone = yield* configuration;
@@ -165,10 +145,6 @@ const makeAppDomainCoordinator = Effect.gen(function* () {
         });
       }).pipe(Effect.tapCause((cause) => observeDomainFailure("dns", cause)));
     const addressable = (team: typeof Team.Type) => `*.${team.slug}.${suffix}`.length <= 64;
-    /**
-     * Read the desired teams and apply their DNS records. Holds the lock, because the passes read
-     * and write the journal; returns nothing once a drain has stopped this object.
-     */
     const provision = lock.withPermits(1)(
       Effect.gen(function* () {
         if (yield* state.storage.get<boolean>("stopped")) return undefined;
@@ -183,7 +159,6 @@ const makeAppDomainCoordinator = Effect.gen(function* () {
           ),
         ).pipe(Effect.timeout(stepTimeout));
         for (const pass of yield* dnsPasses(teams.filter(addressable))) {
-          // A drain marks the object stopped, then waits for the lock this pass holds.
           if (yield* state.storage.get<boolean>("stopped")) return undefined;
           yield* pass.pipe(Effect.timeout(stepTimeout));
         }
@@ -195,9 +170,6 @@ const makeAppDomainCoordinator = Effect.gen(function* () {
         const teams = yield* provision;
         if (teams === undefined || (yield* state.storage.get<boolean>("stopped"))) return undefined;
         yield* Effect.annotateCurrentSpan("app_domains.teams", teams.length);
-        // Certificates and records are observations outside the journal, so they run without the
-        // lock: a drain or resume waits only for DNS work, and the inventory, which grows with the
-        // zone, is not held to the bound of a step under the lock.
         const zone = yield* configuration;
         const apiToken = yield* secret;
         const certificates = !teams.some(addressable)
@@ -223,14 +195,11 @@ const makeAppDomainCoordinator = Effect.gen(function* () {
               : ("pending" as const);
           return { organization: team.id, slug: team.slug, status };
         });
-        // A drain that started during the inventory is tearing the stage down; write nothing more.
         if (yield* state.storage.get<boolean>("stopped")) return undefined;
         const now = yield* Clock.currentTimeMillis;
         yield* withDatabase(writeAppDomainRecords(records, DateTime.makeUnsafe(now))).pipe(
           Effect.timeout(stepTimeout),
         );
-        // Observations moved to the database; remove the copies this object used to keep.
-        // Remove this cleanup in a later release, once every stage has completed a pass.
         yield* state.storage.delete("reconcileError");
         const legacy = Array.from((yield* state.storage.list({ prefix: "team:" })).keys());
         if (legacy.length > 0) yield* state.storage.delete(legacy);
@@ -247,8 +216,6 @@ const makeAppDomainCoordinator = Effect.gen(function* () {
       heartbeat: () => arm(300_000),
       drain: () =>
         Effect.gen(function* () {
-          // Stop new work before waiting for an in-flight reconciliation.
-          // Queued alarms must not win the lock and start provisioning again.
           yield* state.storage.put("stopped", true);
           yield* state.storage.deleteAlarm();
           yield* lock.withPermits(1)(
@@ -264,12 +231,10 @@ const makeAppDomainCoordinator = Effect.gen(function* () {
         ),
       alarm: () =>
         Effect.gen(function* () {
-          if (yield* lifetime.isBackgroundStopped) {
+          if ((yield* lifetime.isBackgroundStopped) || (yield* activity.isIdle)) {
             yield* state.storage.deleteAlarm();
             return;
           }
-          // Retries an interrupted pass. A completed pass replaces it with its own schedule,
-          // unless a caller asked for an earlier pass meanwhile.
           const retry = (yield* Clock.currentTimeMillis) + 60_000;
           yield* state.storage.setAlarm(retry);
           const next = yield* reconcile;
@@ -293,5 +258,7 @@ export default AppDomainController.make(
       env: yield* telemetryBindings,
     };
   }),
-  Effect.succeed({}).pipe(Effect.provide(Layer.mergeAll(AppDomainCoordinatorLive, cloudTelemetry))),
+  Effect.succeed({}).pipe(
+    Effect.provide(Layer.mergeAll(AppDomainCoordinatorLive, PreviewActivityLive, cloudTelemetry)),
+  ),
 );

@@ -1,14 +1,7 @@
-/** Recognize the Executor app's own skill documents in telemetry without naming anyone else's. */
 import { Effect } from "effect";
 import { Hex } from "effect/encoding";
 import { executorSkillDigests } from "./executor-skill-digests.gen.ts";
 
-/**
- * Record a skill document an agent read on the current span. A document whose content is a file
- * the Executor app publishes is named by skill and file. Every other skill belongs to a customer's
- * app, so only its source is recorded, never the app, skill or file name. Matching on content also
- * tells a renamed Executor app and a customer skill that reuses an Executor skill name apart.
- */
 export const annotateSkillRead = (document: {
   readonly name: string;
   readonly file: string;

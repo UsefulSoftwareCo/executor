@@ -1,4 +1,3 @@
-/** Teardown does not evaluate application configuration or require build artifacts. */
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Command from "alchemy/Command";
@@ -7,7 +6,8 @@ import * as Planetscale from "alchemy/Planetscale";
 import * as Neon from "alchemy/Neon";
 import { Effect, Layer, Schema } from "effect";
 import { Stage } from "alchemy/Stage";
-import { TestStageSlug } from "./src/infrastructure/stage.ts";
+import { TestStageSlug } from "./src/contracts/test-stage-lifetime.ts";
+import { ExecutorShHostnameProvider } from "./src/infrastructure/executor-sh.ts";
 import { PreviousTestDatabaseCleanup } from "./src/infrastructure/previous-test-database-cleanup.ts";
 import {
   TestStageBuildCleanup,
@@ -37,6 +37,7 @@ export default Alchemy.Stack(
       Neon.providers(),
       TestStageDomainCleanup().pipe(Layer.provide(cleanupState)),
       PreviousTestDatabaseCleanup(),
+      ExecutorShHostnameProvider(),
     ),
     state: cleanupState,
   },

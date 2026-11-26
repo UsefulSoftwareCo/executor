@@ -1,4 +1,3 @@
-/** Run the controlled benchmark against a retained stage using its private fixture capability. */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Clock, Console, Effect, FileSystem, Layer, Redacted, Schema } from "effect";

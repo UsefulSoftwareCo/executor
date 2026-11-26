@@ -1,13 +1,3 @@
-/**
- * fumadb-effect: a unified schema, query, and migration layer for library
- * authors, built on Effect v4 and Effect SQL.
- *
- * ```ts
- * const ChatDB = fumadb({ namespace: "fuma-chat", schemas: [v1] })
- * const client = ChatDB.client(sqlAdapter({ provider: "postgresql" }))
- * const orm = client.orm("1.0.0")
- * ```
- */
 import { Effect, Option } from "effect";
 import type { Adapter, AdapterContext, LibraryConfig } from "../contracts/adapter.ts";
 import { MigrationError, NotInitialized, SchemaDefinitionError } from "../contracts/errors.ts";
@@ -17,7 +7,6 @@ import type { AnySchema } from "../contracts/schema/schema.ts";
 import { compareRaw } from "../contracts/version.ts";
 import type { FumaDB, FumaDBFactory } from "../contracts/database.ts";
 
-/** Create the factory for a library's database. */
 export const fumadb = <const Schemas extends ReadonlyArray<AnySchema>>(
   config: LibraryConfig<Schemas>,
 ): FumaDBFactory<Schemas> => {

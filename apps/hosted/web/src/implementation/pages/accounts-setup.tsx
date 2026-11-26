@@ -12,9 +12,14 @@ import { Button } from "@executor-js/ui/components/button";
 import { DialogDescription, DialogTitle } from "@executor-js/ui/components/dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "@executor-js/ui/components/popover";
 import { Skeleton } from "@executor-js/ui/components/skeleton";
+import { cn } from "@executor-js/ui/lib/utils";
 import { Spinner } from "@executor-js/ui/components/spinner";
 import { ProviderIcon } from "@executor-js/ui/dashboard/common";
-import { installedCatalogApps, useCatalogInstall } from "@executor-js/ui/dashboard/catalog";
+import {
+  CatalogFeedNotice,
+  installedCatalogApps,
+  useCatalogInstall,
+} from "@executor-js/ui/dashboard/catalog";
 import { useIncrementalList } from "@executor-js/ui/dashboard/incremental-list";
 import { parseAccountsSetupSearch, setupHandoff } from "../../contracts/navigation.ts";
 import { inventoryAtom } from "../../contracts/organization.ts";
@@ -40,12 +45,6 @@ import {
 } from "./account-actions.tsx";
 import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
 
-/**
- * The apps offered first, by catalog ID, when the catalog lists them: the ones most teams connect
- * an account to, in v2 and in v1, that sign in without an OAuth app of the member's own. Google
- * signs in with Executor for Google, to every Google service at once or to each alone, with
- * narrower access. Slack is left out: its sign-in needs the member's own Slack app.
- */
 const featured: readonly { readonly id: string; readonly detail?: string }[] = [
   { id: "google", detail: "Gmail, Calendar, Drive, Docs and Sheets in one sign-in" },
   { id: "gmail" },
@@ -61,24 +60,17 @@ const featured: readonly { readonly id: string; readonly detail?: string }[] = [
   { id: "google-docs" },
 ];
 
-/** Rows load in pages as the list scrolls. */
 const pageSize = 12;
 
 type Inventory = Atom.Success<ReturnType<typeof inventoryAtom>>;
 
-/** One catalog app as this step lists it: its installed copy, if any, and the accounts it can use. */
 interface SetupApp {
   readonly entry: CatalogEntry;
   readonly detail: string;
   readonly app: App | undefined;
-  /** The accounts linked to the installed app first, then other saved accounts of its providers. */
   readonly accounts: readonly Account[];
 }
 
-/**
- * Catalog apps that take an account, with the accounts the organization's inventory has for them.
- * Executor's own app is already the team's, and the assistant reaches it through MCP.
- */
 function setupApps(entries: readonly CatalogEntry[], inventory: Inventory): readonly SetupApp[] {
   const installed = installedCatalogApps(inventory.apps);
   const details = new Map(featured.map((item) => [item.id, item.detail]));
@@ -103,7 +95,6 @@ function setupApps(entries: readonly CatalogEntry[], inventory: Inventory): read
     });
 }
 
-/** Names that start with the search come first, then other name matches, then descriptions. */
 const searchRank = (item: SetupApp, term: string) => {
   const name = item.entry.name.toLowerCase();
   if (name.startsWith(term)) return 0;
@@ -111,15 +102,9 @@ const searchRank = (item: SetupApp, term: string) => {
   return item.detail.toLowerCase().includes(term) ? 2 : undefined;
 };
 
-/**
- * Onboarding's account step: the catalog in one list, searchable in place, where each app
- * installs on its first connection and then runs the app's own connection flow. Every row keeps
- * one height and one button width, so connecting never moves the list.
- */
 export function AccountsSetupPage() {
   const brand = useProductBrand();
   const { organization, slug } = useOrganizationRoute();
-  // When the assistant connected first, its handoff rides in the URL to the first prompt.
   const handoff = setupHandoff(parseAccountsSetupSearch(useLocation().search));
   const sequence = useSetupSequence();
   useSetupViewed("setup_accounts");
@@ -129,12 +114,12 @@ export function AccountsSetupPage() {
   const retryCatalog = useAtomRefresh(atoms.catalog);
   const inventory = useAtomValue(inventoryAtom(organization));
   const retryInventory = useAtomRefresh(inventoryAtom(organization));
-  const entries = Option.getOrUndefined(AsyncResult.value(catalog));
+  const listing = Option.getOrUndefined(AsyncResult.value(catalog));
+  const entries = listing?.apps;
   const known = Option.getOrUndefined(AsyncResult.value(inventory));
   const apps = entries && known ? setupApps(entries, known) : undefined;
   const connected = new Set(apps?.flatMap((item) => item.accounts.map((account) => account.id)));
   const done = connected.size > 0;
-  // Until one connects, the label it changes to is reserved at one account.
   const count = Math.max(connected.size, 1);
   return (
     <OAuthReturnContext value={{ page: "setup", ...(handoff === undefined ? {} : { handoff }) }}>
@@ -143,10 +128,6 @@ export function AccountsSetupPage() {
         organization={slug}
         onSignOut={() => sequence.report("leave_setup", "started")}
       >
-        {/*
-          Wider screens give the list one height, shrunk only to fit the screen, so the actions
-          keep their place whether the list is loading, short or long. Phones fill the screen.
-        */}
         <section
           aria-labelledby="accounts-setup-title"
           className="flex min-h-0 flex-col max-sm:flex-1"
@@ -168,7 +149,19 @@ export function AccountsSetupPage() {
             ) : apps === undefined || known === undefined ? (
               <LoadingList />
             ) : apps.length === 0 ? (
-              <NotListed query="" />
+              <>
+                {listing && listing.feed.status !== "listed" && (
+                  <div className="px-4 pt-4 max-sm:px-6">
+                    <CatalogFeedNotice
+                      feed={listing.feed}
+                      retry={retryCatalog}
+                      retrying={AsyncResult.isWaiting(catalog)}
+                      layout="compact"
+                    />
+                  </div>
+                )}
+                <NotListed query="" />
+              </>
             ) : (
               <AppList apps={apps} redirectUri={known.accountSetup.redirectUri} />
             )}
@@ -206,7 +199,6 @@ function ListMessage({ children }: { readonly children: ReactNode }) {
   );
 }
 
-/** The search and rows the catalog will fill, at their loaded size, as many as the list shows. */
 function LoadingList() {
   return (
     <div
@@ -234,11 +226,6 @@ function LoadingList() {
   );
 }
 
-/**
- * The list's last row, after every app it can show: any other app or API is one the assistant can
- * add once connected. With a search, it names what was searched for; with no match it is the
- * whole list.
- */
 function NotListed({ query }: { readonly query: string }) {
   const brand = useProductBrand();
   return (
@@ -268,10 +255,6 @@ function SearchField({
   readonly value: string;
   readonly placeholder: string;
   readonly disabled?: boolean;
-  /**
-   * Focus the search when it is shown, where typing is the quickest way to an app: with a fine
-   * pointer on a wider screen. On touch screens and phones the keyboard would cover the list.
-   */
   readonly focus?: boolean;
   readonly onChange: (value: string) => void;
 }) {
@@ -279,7 +262,6 @@ function SearchField({
   useEffect(() => {
     if (!focus || input.current === null) return;
     if (!window.matchMedia("(pointer: fine) and (min-width: 640px)").matches) return;
-    // Only when nothing else has focus, such as a control the member already reached.
     if (document.activeElement !== null && document.activeElement !== document.body) return;
     input.current.focus({ preventScroll: true });
   }, [focus]);
@@ -311,7 +293,6 @@ function SearchField({
   );
 }
 
-/** A connection the step is running: the install first, then the app's connection form. */
 type Connection =
   | { readonly status: "installing"; readonly entry: string }
   | {
@@ -326,7 +307,6 @@ type Connection =
       readonly status: "failed";
       readonly entry: string;
       readonly name: string;
-      /** Unset when the installed app declares no account to connect. */
       readonly cause: Cause.Cause<HostedError> | undefined;
     };
 
@@ -347,8 +327,6 @@ function AppList({
     readonly id: Account["id"];
     readonly kind: AccountDialogKind;
   }>();
-  // Apps connected from the full list or a search join the top list only when the list is shown
-  // again, so a row never moves away from the button that was just clicked.
   const connectedIds = new Set(
     apps.flatMap((item) => (item.accounts.length > 0 ? [item.entry.id] : [])),
   );
@@ -374,7 +352,6 @@ function AppList({
           .toSorted((a, b) => a.rank - b.rank)
           .map(({ item }) => item);
   const visible = useIncrementalList(matches.length, term, pageSize, scroller);
-  // The note follows the last app, once every one the list can show is rendered.
   const end = visible.count >= matches.length;
 
   const open = (item: SetupApp, app: App) => {
@@ -500,11 +477,9 @@ const Check = () => (
   </span>
 );
 
-/**
- * One app in one fixed-height row: its logo, its name over one line of detail, and one button of a
- * fixed width. Connecting changes only the detail line and the button; more accounts open over the
- * list instead of growing the row.
- */
+const rowLabels = ["connect", "connecting", "adding", "add"] as const;
+type RowLabel = (typeof rowLabels)[number];
+
 function AppRow({
   item,
   busy,
@@ -519,6 +494,13 @@ function AppRow({
   const { entry, accounts } = item;
   const [first] = accounts;
   const oauth = entry.auth.some((auth) => auth.kind === "oauth2");
+  const shown: RowLabel = busy
+    ? first === undefined
+      ? "connecting"
+      : "adding"
+    : first === undefined
+      ? "connect"
+      : "add";
   return (
     <div
       role="group"
@@ -561,24 +543,36 @@ function AppRow({
         onClick={onConnect}
         className="min-w-[120px] disabled:text-muted-foreground disabled:opacity-100 max-sm:min-w-[92px] max-sm:px-2.5"
       >
-        {busy ? (
-          <>
-            <Spinner className="size-3" aria-hidden role={undefined} />
-            {first === undefined ? "Connecting" : "Adding"}
-          </>
-        ) : first !== undefined ? (
-          <span>
-            Add<span className="max-sm:hidden"> another</span> +
-          </span>
-        ) : (
-          "Connect"
-        )}
+        <span className="grid justify-items-center">
+          {rowLabels.map((label) => (
+            <span
+              key={label}
+              aria-hidden={label === shown ? undefined : true}
+              className={cn(
+                "flex items-center gap-1.5 [grid-area:1/1]",
+                label !== shown && "invisible",
+              )}
+            >
+              {label === "connecting" || label === "adding" ? (
+                <>
+                  <Spinner className="size-3" aria-hidden role={undefined} />
+                  {label === "connecting" ? "Connecting" : "Adding"}
+                </>
+              ) : label === "add" ? (
+                <span>
+                  Add<span className="max-sm:hidden"> another</span> +
+                </span>
+              ) : (
+                "Connect"
+              )}
+            </span>
+          ))}
+        </span>
       </Button>
     </div>
   );
 }
 
-/** Every account of one app, with the existing account actions, over the list. */
 function AccountsPopover({
   name,
   accounts,
@@ -618,7 +612,6 @@ function AccountsPopover({
               <span className="min-w-0 flex-1 truncate">{account.label || "Unnamed account"}</span>
               <HostedAccountActions
                 account={account}
-                access={undefined}
                 open={(kind) => {
                   setOpen(false);
                   onAccountAction(account.id, kind);

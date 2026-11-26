@@ -1,9 +1,3 @@
-/**
- * Private entry point for Artifacts token coordinators. A coordinator that wakes in a fresh isolate
- * loads and initializes only this Worker, not the API with its routes, auth and executor. It holds
- * the stage's only Artifacts binding, so it also lists commit history, which Git cannot fetch
- * without every file those commits hold.
- */
 import { AppCodeId, SourceError, SourceFilePath, aesGcmCredentials } from "@executor-js/sdk/core";
 import { externalTrace, TraceContext, traceLinks } from "@executor-js/telemetry";
 import * as Cloudflare from "alchemy/Cloudflare";
@@ -33,24 +27,23 @@ const issued = Schema.Struct({
   scope: Schema.Literal("write"),
   expiresAt: Schema.String.check(Schema.makeFilter((value) => Number.isFinite(Date.parse(value)))),
 });
-/** The fields of the binding's commit metadata that history shows. */
 const listedCommit = Schema.Struct({
   hash: Schema.String,
   message: Schema.String,
   author: Schema.Struct({ name: Schema.String }),
   authoredAt: Schema.Number,
 });
-/** A tree entry as the binding returns it. */
 const treeEntry = Schema.Struct({
   name: Schema.String,
   mode: Schema.String,
   hash: Schema.String,
   type: Schema.String,
 });
+type TreeFile = { path: string; mode: string; type: string; object: string };
 const commitTree = Schema.Struct({ hash: Schema.String, treeHash: Schema.String });
 const objectId = Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/u));
-/** Blobs read at once: each is held only until its size, and bytes within budget, are taken. */
 const blobReads = 4;
+const treeReads = 4;
 const pendingPreparation = Schema.Struct({
   repository: AppCodeId,
   trace: Schema.NullOr(TraceContext),
@@ -118,7 +111,6 @@ const makeArtifactsTokenCoordinator = Effect.gen(function* () {
                   .pipe(Effect.withSpan("source.repository.token")),
                 (result) => disposeRpc(result),
               );
-              // RPC properties are read while the provider handle is alive; no plaintext is logged or stored.
               const minted = yield* Effect.tryPromise({
                 try: async () => ({
                   id: await result.id,
@@ -169,8 +161,6 @@ const makeArtifactsTokenCoordinator = Effect.gen(function* () {
           Effect.gen(function* () {
             const repository = yield* Schema.decodeUnknownEffect(AppCodeId)(id);
             const repo = yield* open(repository);
-            // Commit metadata only, newest first along main's first-parent chain. An unresolved
-            // ref lists nothing, as a repository with no commits has no history.
             const commits = yield* Effect.tryPromise({
               try: () => repo.raw.log({ ref: "main", limit }),
               catch: unavailable,
@@ -194,7 +184,6 @@ const makeArtifactsTokenCoordinator = Effect.gen(function* () {
           Effect.gen(function* () {
             const repository = yield* Schema.decodeUnknownEffect(AppCodeId)(id);
             const repo = yield* open(repository);
-            // A commit is read as given; a branch resolves to its head along the first-parent log.
             const found = Schema.is(objectId)(ref)
               ? yield* Effect.tryPromise({
                   try: () => repo.raw.readCommit(ref),
@@ -218,31 +207,41 @@ const makeArtifactsTokenCoordinator = Effect.gen(function* () {
           Effect.gen(function* () {
             const repository = yield* Schema.decodeUnknownEffect(AppCodeId)(id);
             const repo = yield* open(repository);
-            const files: Array<{ path: string; mode: string; type: string; object: string }> = [];
-            const walk = (hash: string, prefix: string): Effect.Effect<void, SourceError> =>
+            const reads = yield* Semaphore.make(treeReads);
+            const walk = (
+              hash: string,
+              prefix: string,
+            ): Effect.Effect<ReadonlyArray<TreeFile>, SourceError> =>
               Effect.gen(function* () {
                 const entries = yield* Effect.tryPromise({
                   try: () => repo.raw.readTree(hash),
                   catch: unavailable,
                 }).pipe(
+                  reads.withPermits(1),
                   Effect.flatMap(
                     Schema.decodeUnknownEffect(Schema.NullOr(Schema.Array(treeEntry))),
                   ),
                   Effect.mapError(unavailable),
                 );
                 if (entries === null) return yield* unavailable();
-                for (const entry of entries) {
-                  if (entry.type === "tree") yield* walk(entry.hash, `${prefix}${entry.name}/`);
-                  else
-                    files.push({
-                      path: `${prefix}${entry.name}`,
-                      mode: entry.mode,
-                      type: entry.type,
-                      object: entry.hash,
-                    });
-                }
+                const listed = yield* Effect.forEach(
+                  entries,
+                  (entry) =>
+                    entry.type === "tree"
+                      ? walk(entry.hash, `${prefix}${entry.name}/`)
+                      : Effect.succeed([
+                          {
+                            path: `${prefix}${entry.name}`,
+                            mode: entry.mode,
+                            type: entry.type,
+                            object: entry.hash,
+                          },
+                        ]),
+                  { concurrency: "unbounded" },
+                );
+                return listed.flat();
               });
-            yield* walk(yield* Schema.decodeUnknownEffect(objectId)(root), "");
+            const files = yield* walk(yield* Schema.decodeUnknownEffect(objectId)(root), "");
             yield* Effect.annotateCurrentSpan("source.tree.files", files.length);
             return files;
           }),
@@ -264,7 +263,6 @@ const makeArtifactsTokenCoordinator = Effect.gen(function* () {
             const repository = yield* Schema.decodeUnknownEffect(AppCodeId)(id);
             const ids = yield* Schema.decodeUnknownEffect(Schema.Array(objectId))(objects);
             const repo = yield* open(repository);
-            // Each blob is held only while its size, and its bytes when asked for, are taken.
             let total = 0;
             return yield* Effect.forEach(
               ids,
@@ -331,9 +329,6 @@ const makeArtifactsTokenCoordinator = Effect.gen(function* () {
                     providerFailureCode(error),
                   ),
                 ),
-                // Creation is keyed by the same immutable repository ID. If an
-                // internal provider failure committed before its reply failed,
-                // ALREADY_EXISTS below reconciles the existing repository.
                 Effect.retry({
                   while: (error) => providerFailureCode(error) === "internal",
                   schedule: Schedule.exponential("1 second"),
@@ -364,7 +359,6 @@ const makeArtifactsTokenCoordinator = Effect.gen(function* () {
             );
             const payload = yield* Schema.encodeEffect(creation)({ repository, namespace, token });
             const encrypted = yield* encryption.encrypt(repository, Redacted.make(payload));
-            // A separate durable alarm owns issuance and its telemetry, even after this RPC returns.
             yield* state.storage.put("prepare", {
               repository,
               trace: Option.getOrNull(Schema.decodeUnknownOption(TraceContext)(trace)),
@@ -401,7 +395,6 @@ const makeArtifactsTokenCoordinator = Effect.gen(function* () {
   }).pipe(Effect.orDie);
 }).pipe(Effect.provide(Cloudflare.Artifacts.ReadWriteNamespaceBinding), Effect.orDie);
 
-/** Dispose provider RPC handles without retaining them in the credential store. */
 const disposeRpc = (value: unknown) =>
   Effect.sync(() => {
     if (

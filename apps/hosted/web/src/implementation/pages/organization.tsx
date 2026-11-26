@@ -40,7 +40,6 @@ import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
 
 export type { MemberLimit };
 
-/** Hosts may compose extra admin settings, a member limit and a footer below the members list. */
 export function OrganizationPage({
   emailInvitations = false,
   memberLimit,

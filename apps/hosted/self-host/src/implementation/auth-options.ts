@@ -1,4 +1,3 @@
-/** Self-host credentials and optional operator-owned OpenID Connect configuration. */
 import { authOptions, authSettings, singleResourceOrigin } from "@executor-js/hosted-server";
 import { genericOAuth } from "better-auth/plugins/generic-oauth";
 import { organization } from "better-auth/plugins/organization";
@@ -27,10 +26,8 @@ const Sso = Schema.Struct({
   allowedDomains: Schema.Array(Schema.NonEmptyString).check(Schema.isMinLength(1)),
 });
 
-/** SSO stays disabled unless explicitly configured; partial configuration fails startup. */
 export const selfHostAuthSettings = Effect.gen(function* () {
   const settings = yield* authSettings;
-  // Self-host serves its MCP and API resources and its issuer on its single browser origin.
   const base = {
     ...settings,
     resourceOrigins: singleResourceOrigin(settings.url),
@@ -56,10 +53,6 @@ export const selfHostAuthSettings = Effect.gen(function* () {
 });
 
 const endpoint = httpsUrl("Every endpoint must be an absolute HTTPS URL");
-/**
- * The provider metadata SSO signs in with. Sign-in, token exchange, signing keys, UserInfo and
- * logout all use HTTPS, so each is confidential and authenticated in transit.
- */
 const SsoDiscovery = Schema.Struct({
   issuer: endpoint,
   authorization_endpoint: endpoint,
@@ -75,12 +68,6 @@ class SsoDiscoveryUnusable extends Schema.TaggedError<SsoDiscoveryUnusable>()(
   { reason: Schema.String },
 ) {}
 
-/**
- * Read the provider's discovery document once at startup, from exactly the configured URL,
- * and refuse a redirect: the metadata, including where signing keys come from, is then always
- * the configured HTTPS origin's. An unusable document leaves SSO unavailable until restart,
- * as an unreachable provider does; other sign-in keeps working.
- */
 export const selfHostSsoDiscovery = (settings: Effect.Success<typeof selfHostAuthSettings>) => {
   if (settings.sso === null) return Effect.succeed(null);
   const { discoveryUrl } = settings.sso;
@@ -101,7 +88,6 @@ export const selfHostSsoDiscovery = (settings: Effect.Success<typeof selfHostAut
   }).pipe(
     Effect.timeout("10 seconds"),
     Effect.provide(FetchHttpClient.layer),
-    // Return a redirect to the filter above, which refuses it.
     Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
     Effect.catchTag(["HttpClientError", "SchemaError", "TimeoutError"], (error) =>
       Effect.fail(new SsoDiscoveryUnusable({ reason: error.message })),
@@ -115,7 +101,6 @@ export const selfHostSsoDiscovery = (settings: Effect.Success<typeof selfHostAut
   );
 };
 
-/** Public registration is handled by the atomic setup/invitation endpoints. */
 export const selfHostAuthOptions = (
   settings: Effect.Success<typeof selfHostAuthSettings>,
   ipAddressHeaders: string[],
@@ -136,8 +121,6 @@ export const selfHostAuthOptions = (
                 {
                   providerId: "sso",
                   name: "Single sign-on",
-                  // The validated document only: without a URL, Better Auth never fetches
-                  // discovery itself.
                   discoveryDocument: discovery,
                   clientId: settings.sso.clientId,
                   clientSecret: Redacted.value(settings.sso.clientSecret),

@@ -1,5 +1,4 @@
 import { openThroughBrowser } from "../support/in-app-navigation.ts";
-/** The same dashboard controls and browser approval, driven through the hosted product. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -62,7 +61,6 @@ layer(HostedLive, { excludeTestServices: true })("Hosted schedule dashboard", (i
                 page.getByRole("region", { name: "App tools preview", exact: true }).waitFor(),
               );
               const reference = yield* frame("Overview");
-              // Inventory can supply the same metadata before the app read completes.
               const metadata = yield* holdQuery(
                 [
                   ...paths,
@@ -110,7 +108,6 @@ layer(HostedLive, { excludeTestServices: true })("Hosted schedule dashboard", (i
               yield* browser.checkpoint(`${viewport.width} schedules metadata pending`);
               yield* metadata.release;
               yield* settings.requested;
-              // Discovery must start while settings is still held, rather than forming a waterfall.
               yield* definitions.requested;
               expect(yield* frame("Schedules")).toEqual(reference);
               expect(
@@ -428,7 +425,6 @@ export default defineApp({}, ${definition});`,
             expect(response.status, JSON.stringify(response.body)).toBe(200);
           });
 
-        // A version that cannot be evaluated proves nothing about its schedules.
         yield* redeploy(files(`async () => { throw new Error("Evaluation fails on purpose"); }`));
         expect(yield* saved).toEqual([
           { name: "evening", enabled: true },

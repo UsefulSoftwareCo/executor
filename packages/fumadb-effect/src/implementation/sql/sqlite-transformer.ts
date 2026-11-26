@@ -1,29 +1,14 @@
-/**
- * The SQLite table-recreate strategy.
- *
- * SQLite's `ALTER TABLE` can only add and rename columns. Anything else - a
- * type change, a nullability change, a default change, or a foreign key - has
- * to be done by building the target table from scratch, copying the rows over,
- * and dropping the old table.
- *
- * This transformer rewrites the automatically generated operations for that.
- * Every operation that touches a table which must be recreated is dropped,
- * because the recreated table already matches the target schema exactly.
- */
 import type { MigrationTransformer } from "../../contracts/migration.ts";
 import type { ColumnOperation, MigrationOperation } from "../../contracts/migration-operation.ts";
 import type { AnyTable } from "../../contracts/schema/table.ts";
 
-/** Column operations SQLite can perform with `ALTER TABLE`. */
 const supportedColumnOperations: ReadonlyArray<ColumnOperation["type"]> = [
   "create-column",
   "rename-column",
 ];
 
-/** The name the target table is built under while the old table still exists. */
 const temporaryName = (name: string): string => `_temp_${name}`;
 
-/** Copy the columns the two tables share, then drop the source table. */
 const transferTable = (from: AnyTable, to: AnyTable): ReadonlyArray<MigrationOperation> => {
   const target = to.names.sql === from.names.sql ? temporaryName(to.names.sql) : to.names.sql;
   const columns: Array<string> = [];
@@ -43,16 +28,8 @@ const transferTable = (from: AnyTable, to: AnyTable): ReadonlyArray<MigrationOpe
   ];
 };
 
-/**
- * Rewrite operations SQLite cannot perform into table recreates.
- *
- * Runs on automatically generated operations only; a custom migration function
- * is responsible for its own SQLite compatibility.
- */
 export const sqliteTransformer: MigrationTransformer = {
   afterAuto(operations, { next, prev }) {
-    // The table each operation acts on, by index, so that operations on a
-    // recreated table can be removed once the whole list has been scanned.
     const operationTables: Array<AnyTable | undefined> = [];
     const nameToTable = new Map<string, AnyTable>();
     const recreate = new Set<AnyTable>();
@@ -110,8 +87,6 @@ export const sqliteTransformer: MigrationTransformer = {
       return table === undefined || !recreate.has(table);
     });
 
-    // Create every replacement table first, so a foreign key between two
-    // recreated tables can be satisfied before any rows move.
     const transfers: Array<() => void> = [];
     for (const previous of recreate) {
       const target = next.tables[previous.ormName];

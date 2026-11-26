@@ -3,7 +3,6 @@ import { Button } from "@executor-js/ui/components/button";
 import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
 import { isDefaultProductBrand } from "@executor-js/ui/contracts/product-brand";
 
-/** Public confirmation: opening a link never saves a preference or requires a session. */
 export const Route = createFileRoute("/email/unsubscribe")({
   validateSearch: (search: Record<string, unknown>) => ({
     result:

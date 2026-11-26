@@ -14,7 +14,6 @@ import { DashboardDocument } from "@executor-js/dashboard-start/shell";
 import styles from "../styles/globals.css?url";
 import { fontPreloads } from "@executor-js/ui/lib/fonts";
 
-/** Standalone connection handoffs and authenticated dashboard routes share only the router. */
 export const Route = createRootRouteWithContext<{
   readonly entry: BrowserEntryValues | undefined;
 }>()({
@@ -33,7 +32,6 @@ function Root() {
     <DocumentTitleProvider fallbackTitle={localPageTitle(pathname)}>
       <BrowserEntry />
       <Outlet />
-      {/* A development overlay; it reads the browser origin and has no server markup. */}
       <ClientOnly>
         <ExecutorDevtools />
       </ClientOnly>
@@ -41,10 +39,6 @@ function Root() {
   );
 }
 
-/**
- * Apply the entry credentials the browser erased from its address. The server rendered without
- * them, so they take effect after hydration instead of changing the first render.
- */
 function BrowserEntry() {
   const { entry } = Route.useRouteContext();
   const setPairingToken = useAtomSet(pairingTokenAtom);

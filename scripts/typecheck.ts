@@ -1,12 +1,3 @@
-/**
- * Typechecks the TypeScript projects concurrently. Each `tsc-rs` already checks a project on
- * several threads, so the script runs one project per four cores: two on a 4-core CI runner, at
- * most four.
- *
- * Every project runs to completion. Its output is printed in one block when it finishes, and the
- * script exits non-zero when any project fails. A signal stops every running project.
- * `e2e/tests/typecheck-runner.spec.ts` checks this.
- */
 import { spawn, type ChildProcess } from "node:child_process";
 import { availableParallelism, constants } from "node:os";
 
@@ -15,12 +6,8 @@ type Step = {
   readonly command: string;
   readonly args: ReadonlyArray<string>;
 };
-// `needs` runs first, in the project's slot. Root is first in the queue: it is the longest
-// project, and only it imports the Cloud framework snapshot that `framework:build` writes.
 type Project = { readonly path: string; readonly needs?: Step };
 
-// The `framework:build` script, without `bun run` in between. The build only stops on SIGINT or
-// SIGTERM once its compiler call returns, and killing a `bun` in front of it would leave it running.
 const frameworkBuild: Step = {
   name: "framework:build",
   command: process.execPath,
@@ -51,12 +38,53 @@ const concurrency =
     ? Math.min(4, Math.max(2, Math.ceil(availableParallelism() / 4)))
     : Number(override);
 
+const warningsMode = process.env.TYPECHECK_WARNINGS;
+if (warningsMode !== undefined && warningsMode !== "all" && warningsMode !== "summary") {
+  console.error(
+    `TYPECHECK_WARNINGS must be "all" or "summary", got ${JSON.stringify(warningsMode)}.`,
+  );
+  process.exit(1);
+}
+const allWarnings = warningsMode === "all" || process.argv.slice(2).includes("--all-warnings");
+
 type Result = { readonly name: string; readonly code: number };
 
-// The steps stay in this process group, so a signal or kill sent to the group (Ctrl-C in a
-// terminal, an agent harness's kill) reaches them directly. A signal sent only to this process,
-// as `bun run` forwards it, is passed on to the steps. `tsc-rs` ignores SIGINT and SIGTERM, so a
-// step that is still running a second later is killed.
+const diagnosticStart = /^(?:(.+?)\(\d+,\d+\): )?(error|warning) TS(\d+): /;
+type Warning = { readonly rule: string; readonly file: string };
+const warnings: Array<Warning> = [];
+
+const splitWarnings = (text: string) => {
+  const kept: Array<string> = [];
+  const found: Array<Warning> = [];
+  let errors = 0;
+  let current: { readonly file: string; readonly code: string; lines: Array<string> } | undefined;
+  const finish = () => {
+    if (current === undefined) return;
+    const rule = /effect\((\w+)\)\s*$/.exec(current.lines.join("\n"))?.[1];
+    found.push({ rule: rule ?? `TS${current.code}`, file: current.file });
+    current = undefined;
+  };
+  for (const line of text.split("\n")) {
+    const start = diagnosticStart.exec(line);
+    if (start) {
+      finish();
+      if (start[2] === "warning") {
+        current = { file: start[1] ?? "(project options)", code: start[3] ?? "", lines: [line] };
+        continue;
+      }
+      errors++;
+    } else if (current && line !== "") {
+      current.lines.push(line);
+      continue;
+    } else {
+      finish();
+    }
+    kept.push(line);
+  }
+  finish();
+  return { kept: kept.join("\n"), warnings: found, errors };
+};
+
 const running = new Set<ChildProcess>();
 let stoppedBy: NodeJS.Signals | undefined;
 const killAll = (signal: NodeJS.Signals) => {
@@ -69,7 +97,6 @@ for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
     setTimeout(() => killAll("SIGKILL"), 1_000).unref();
   });
 }
-// An uncaught error or `process.exit` must not leave compilers running.
 process.on("exit", () => killAll("SIGKILL"));
 
 const run = (step: Step): Promise<Result> =>
@@ -77,21 +104,28 @@ const run = (step: Step): Promise<Result> =>
     const started = performance.now();
     const child = spawn(step.command, [...step.args], { stdio: ["ignore", "pipe", "pipe"] });
     running.add(child);
-    // Kept apart so a chunk on one stream cannot split a line on the other.
     const stdout: Array<Buffer> = [];
     const stderr: Array<Buffer> = [];
     child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
     child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
-    // A process that fails to start emits `error` and then `close` with a negative code.
     child.on("error", (error) => stderr.push(Buffer.from(`${error.message}\n`)));
     child.on("close", (exit, signal) => {
       running.delete(child);
       const code = exit === 0 ? 0 : 1;
       const seconds = ((performance.now() - started) / 1000).toFixed(1);
       const status = code === 0 ? "ok" : `failed (${signal ?? `exit ${exit}`})`;
-      process.stdout.write(`\n── ${step.name}: ${status} in ${seconds}s\n`);
-      process.stdout.write(Buffer.concat(stdout));
-      process.stdout.write(Buffer.concat(stderr));
+      const streams = [Buffer.concat(stdout).toString(), Buffer.concat(stderr).toString()];
+      const split = streams.map(splitWarnings);
+      const hidden = split.flatMap((stream) => stream.warnings);
+      const summarize =
+        !allWarnings &&
+        hidden.length > 0 &&
+        (code === 0 || split.some((stream) => stream.errors > 0));
+      const counted = summarize ? `, ${hidden.length} warnings counted at the end` : "";
+      process.stdout.write(`\n── ${step.name}: ${status} in ${seconds}s${counted}\n`);
+      if (summarize) warnings.push(...hidden);
+      for (const [index, stream] of split.entries())
+        process.stdout.write(summarize ? stream.kept : streams[index]);
       resolve({ name: step.name, code });
     });
   });
@@ -117,6 +151,31 @@ await Promise.all(
   }),
 );
 
+const largestFirst = <T>(items: ReadonlyArray<T>, key: (item: T) => string) => {
+  const groups = new Map<string, Array<T>>();
+  for (const item of items) {
+    const group = groups.get(key(item));
+    if (group) group.push(item);
+    else groups.set(key(item), [item]);
+  }
+  return [...groups].sort((a, b) => b[1].length - a[1].length);
+};
+
+if (warnings.length > 0) {
+  const rules = largestFirst(warnings, (warning) => warning.rule);
+  const width = Math.max(...rules.map(([rule]) => rule.length));
+  console.log(
+    `\n${warnings.length} warnings by rule, with the files that have the most. ` +
+      "`--all-warnings` or TYPECHECK_WARNINGS=all prints each one.",
+  );
+  for (const [rule, found] of rules) {
+    const files = largestFirst(found, (warning) => warning.file);
+    const top = files.slice(0, 3).map(([file, inFile]) => `${file} ${inFile.length}`);
+    if (files.length > 3) top.push(`${files.length - 3} more files`);
+    console.log(`${String(found.length).padStart(6)}  ${rule.padEnd(width)}  ${top.join(", ")}`);
+  }
+}
+
 const failed = results.filter((result) => result.code !== 0);
 const total = ((performance.now() - started) / 1000).toFixed(1);
 console.log(
@@ -124,7 +183,6 @@ console.log(
     (failed.length ? ` Failed: ${failed.map((result) => result.name).join(", ")}.` : "") +
     (stoppedBy ? ` Stopped by ${stoppedBy}.` : ""),
 );
-// No `process.exit`: it would drop stdout that a pipe has not drained yet.
 process.exitCode = stoppedBy
   ? 128 + constants.signals[stoppedBy]
   : failed.length || results.length !== projects.length

@@ -22,11 +22,6 @@ const callbackError = (error: unknown, product: string): string | null => {
   return "Sign-in could not be completed. Please try again.";
 };
 
-/**
- * Preserve internal return paths and render only known, safe OAuth error messages. A missing
- * return path stays missing, so the server renders the requested address instead of redirecting
- * to one with a default added.
- */
 export const loginSearch = (
   search: Record<string, unknown>,
 ): { redirect?: string; error?: string } => {
@@ -37,7 +32,6 @@ export const loginSearch = (
     : { redirect: browserReturnTo(search.redirect), ...error };
 };
 
-/** What a sign-in page receives: where to go afterwards (home when none was given). */
 export interface LoginProps {
   readonly redirect: string;
   readonly error?: string;
@@ -84,7 +78,6 @@ function GitHubIcon() {
   );
 }
 
-/** Cloud social sign-in, composed with additional cloud credentials. */
 export function LoginPage({
   redirect,
   error: callbackCode,
@@ -109,7 +102,6 @@ export function LoginPage({
   const [error, setError] = useState<string | null>(null);
   const [provider, setProvider] = useState<"google" | "github" | "openai" | null>(null);
   const lastSession = AsyncResult.value(session);
-  // Keep child form fields mounted during revalidation of a signed-out session.
   const signedOut = Option.isSome(lastSession) && lastSession.value === null;
   const signedIn = AsyncResult.isSuccess(session) && !session.waiting && session.value !== null;
   if (AsyncResult.isFailure(session) && !signedOut)
@@ -202,7 +194,6 @@ export function LoginPage({
   );
 }
 
-/** Product hosts provide their own legal URLs because cloud and self-host differ. */
 export function LoginLegalFooter({
   privacyUrl,
   termsUrl,

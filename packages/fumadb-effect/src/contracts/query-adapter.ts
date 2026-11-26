@@ -1,4 +1,3 @@
-/** Resolved query inputs implemented by storage adapters. */
 import type { Effect } from "effect";
 import type { SqlError } from "effect/sql/SqlError";
 import type { AnyColumn } from "./schema/column.ts";
@@ -7,17 +6,13 @@ import type { AnyTable } from "./schema/table.ts";
 import type { Condition } from "./condition.ts";
 import type { AnySelectClause, OrderBy, OrmError } from "./query.ts";
 
-/** One database row, keyed by ORM column name. */
 export type Row = Record<string, unknown>;
 
-/** One joined relation of a compiled find. */
 export interface CompiledJoin {
   readonly relation: AnyRelation;
-  /** `false` when the join's `where` can never match. */
   readonly options: CompiledFindOptions | false;
 }
 
-/** `findFirst` / `findMany` options with names resolved and constant conditions folded. */
 export interface CompiledFindOptions {
   readonly select: AnySelectClause;
   readonly computed: ReadonlyArray<{
@@ -32,7 +27,6 @@ export interface CompiledFindOptions {
   readonly offset: number | undefined;
 }
 
-/** `upsert` options with names resolved. `where` is absent when it matches every row. */
 export interface CompiledUpsert {
   readonly where: Condition | undefined;
   readonly create: Row;
@@ -40,10 +34,6 @@ export interface CompiledUpsert {
   readonly returning: boolean;
 }
 
-/**
- * What an adapter implements. Every method receives a resolved table and
- * compiled options; the ORM layer has already handled constant conditions.
- */
 export interface OrmAdapter<R> {
   readonly tables: Record<string, AnyTable>;
   readonly count: (
@@ -62,10 +52,6 @@ export interface OrmAdapter<R> {
     table: AnyTable,
     options: { readonly where: Condition | undefined; readonly set: Row },
   ) => Effect.Effect<void, OrmError, R>;
-  /**
-   * When `returning` is set, the created or updated row must be returned with
-   * every column. Prefer a returning clause; otherwise run an extra query.
-   */
   readonly upsert: (
     table: AnyTable,
     options: CompiledUpsert,

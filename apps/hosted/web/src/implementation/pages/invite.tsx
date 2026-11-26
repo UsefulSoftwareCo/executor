@@ -8,11 +8,9 @@ import { Button } from "@executor-js/ui/components/button";
 import { LoginFrame } from "./login-frame.tsx";
 import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
 
-/** Invitation IDs are untrusted; Better Auth verifies recipient email and expiry. */
 export const inviteSearch = (search: Record<string, unknown>) => ({
   invitation: typeof search.invitation === "string" ? search.invitation : "",
 });
-/** Accept after authentication, including users who have no organization yet. */
 export function InvitePage({ invitation }: { readonly invitation: string }) {
   const brand = useProductBrand();
   const accept = useAtomSet(acceptInvitationAtom, { mode: "promiseExit" });
@@ -60,7 +58,6 @@ export function InvitePage({ invitation }: { readonly invitation: string }) {
   );
 }
 
-/** The invitation was accepted earlier; say so instead of joining again. */
 function AlreadyMember({
   name,
   onContinue,

@@ -30,7 +30,6 @@ const agents = [
   { name: "Gemini", key: "gemini", logo: geminiLogo },
 ] as const;
 
-// Beams draw in currentColor, so the theme's ink colour carries into dark mode.
 const beam = {
   pathColor: "currentColor",
   pathOpacity: 0.14,
@@ -86,7 +85,6 @@ function Column({
   );
 }
 
-// One endpoint and its beam to the hub. Each spoke owns its node's ref.
 function Spoke({
   item,
   side,

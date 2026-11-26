@@ -1,4 +1,3 @@
-/** Accounts with pasted credentials are named after they are saved, in a dialog over the app. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -132,7 +131,6 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
         ]);
         yield* browser.checkpoint("Named account linked to the app");
 
-        // Credentials are replaced from the app that selects the account, not from Accounts.
         yield* browser.use("Open the account's actions on the app", (page) =>
           page
             .getByRole("button", { name: "Manage Work key", exact: true })
@@ -197,7 +195,6 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
             accounts.push(account.id);
             return account.label;
           });
-        // The renamed account freed "Default"; later unnamed accounts take the next free name.
         expect(yield* submit()).toBe("Default");
         expect(yield* submit()).toBe("Default 2");
         expect(yield* submit("Supplied name")).toBe("Supplied name");

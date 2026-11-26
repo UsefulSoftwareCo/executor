@@ -1,4 +1,3 @@
-/** One MCP session object: its protocol servers, held connections and request handling. */
 import {
   CallStateCache,
   type CallState,
@@ -29,36 +28,27 @@ import {
   sessionOrganizationHeader,
   signMcpSessionId,
 } from "../implementation/mcp-session-id.ts";
+import { isolateTelemetryFlushes } from "@executor-js/telemetry/isolate";
 import { makeAnswer } from "../implementation/mcp-session-timing.ts";
+import { makeMcpFirstUse } from "../implementation/mcp-first-use.ts";
 import { observeMcpStream } from "../implementation/mcp-stream-observability.ts";
 import { cloudAnalytics } from "../implementation/product-analytics.ts";
 import type { cloudServingProduct } from "./serving-product.ts";
 import { isolateDeclarations } from "./isolate-memory.ts";
 import { cloudDatabaseConnection } from "./database.ts";
 import { cloudObjectDatabase, ObjectDatabase } from "./object-database.ts";
+import { ObjectRequests, objectRequest } from "./served-request.ts";
 import { interactionFaults } from "./mcp-interaction-faults.ts";
 import { mcpInteractionStore } from "./mcp-interaction-store.ts";
 import { mcpSessionStore } from "./mcp-session-store.ts";
 import { CurrentProductBrand, productBrandConfig } from "@executor-js/utils/product-brand";
 
-/**
- * How often an object holding a program wakes itself. workerd evicts an object 70–140 s after its
- * last request or event, whatever timers it has pending, and a program waiting for a person
- * holds no request; an alarm is an event, so it keeps the object, and the program, in memory
- * until the program ends. Nothing survives a deploy or a crash: their requests read as `lost`.
- */
 const holdMillis = 30_000;
 
-/**
- * The isolate's executor and MCP identity, built once and shared by every session object in
- * it. Both use the calling object's held database connections.
- */
 export interface McpSessionServices {
   readonly executor: Effect.Success<ReturnType<typeof cloudServingProduct>>;
   readonly identity: Layer.Layer<McpAuthentication>;
-  /** Signs the ids of this object's sessions (`mcp-session-keys.ts`). */
   readonly keys: Effect.Effect<McpSessionKeys>;
-  /** Names the object a caller's key selects. */
   readonly idFromName: Effect.Effect<(name: string) => { equals(other: unknown): boolean }>;
 }
 
@@ -70,15 +60,11 @@ export const makeMcpSession = Effect.fn(function* ({
 }: McpSessionServices) {
   const reportErrors = yield* cloudSentry;
   const analytics = yield* cloudAnalytics;
-  // One object per grant: through Hyperdrive, so active sessions share its PgBouncer clients.
   const objectDatabase = yield* cloudObjectDatabase(cloudDatabaseConnection);
   const brand = yield* productBrandConfig.pipe(Effect.orDie);
   return Effect.gen(function* () {
     const state = yield* Cloudflare.DurableObjectState;
-    // Every request and MCP operation of this session shares the object's connections.
     const database = yield* objectDatabase(`mcp ${state.id.toString()}`);
-    // Opaque object identity is stable across activations; the random activation
-    // identifies a fresh in-memory MCP registry without recording session tokens.
     const activation = yield* Effect.sync(() => crypto.randomUUID());
     const answer = makeAnswer(() => {
       const kept = isolateDeclarations.usage();
@@ -86,14 +72,13 @@ export const makeMcpSession = Effect.fn(function* ({
         "executor.mcp.isolate.programs": runningPrograms(),
         "executor.mcp.isolate.kept_entries": kept.entries,
         "executor.mcp.isolate.kept_bytes": kept.bytes,
+        "executor.telemetry.isolate.flushes": isolateTelemetryFlushes(),
       };
     });
-    // What each caller's last tool call read, by app and named accounts (CallStateCache).
     const callState = new Map<string, CallState>();
-    // Protocol sessions are kept in the object's storage, so they outlive its eviction, and so is
-    // the record of the requests it issued, so a resume after a restart learns what became of one.
     const clock = yield* Clock.Clock;
     const faults = interactionFaults(state.storage.kv);
+    const firstUse = makeMcpFirstUse(state.storage);
     const handler = yield* makeHostedMcp(
       undefined,
       undefined,
@@ -103,21 +88,15 @@ export const makeMcpSession = Effect.fn(function* ({
       Effect.provideService(CurrentProductBrand, brand),
       Effect.provide(HttpServer.layerServices),
     );
-    /** While the object holds a program, an alarm is due within `holdMillis`. */
     const hold = Effect.gen(function* () {
       if (handler.programs() === 0) return;
       const now = yield* Clock.currentTimeMillis;
       const due = now + holdMillis;
       const set = yield* state.storage.getAlarm();
-      // An alarm whose retries ran out can stay in the past without ever firing again.
       if (set === null || set > due || set < now - holdMillis) yield* state.storage.setAlarm(due);
     });
     const objectId = state.id.toString();
-    /**
-     * A request may reach this object by a session id alone, so before any work it must carry a
-     * bearer whose own key names this object. The key comes only from the verified bearer. Any
-     * other caller gets the answer an unknown session gets, which does not reveal the session.
-     */
+    const requests = new ObjectRequests();
     const bound = <E, R>(
       access: McpAccess,
       work: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
@@ -126,7 +105,9 @@ export const makeMcpSession = Effect.fn(function* ({
         named(mcpSessionKey(access)).equals(state.id)
           ? work.pipe(
               Effect.map(
-                HttpServerResponse.setHeader(sessionOrganizationHeader, access.access.organization),
+                HttpServerResponse.setHeaders({
+                  [sessionOrganizationHeader]: access.access.organization,
+                }),
               ),
             )
           : Effect.annotateCurrentSpan("executor.mcp.session_binding", "refused").pipe(
@@ -148,15 +129,9 @@ export const makeMcpSession = Effect.fn(function* ({
     const http = authenticatedMcp((access, address) =>
       bound(
         access,
-        dispatchHostedMcp(access, address, handler.http).pipe(
+        firstUse(access, dispatchHostedMcp(access, address, handler.http)).pipe(
           Effect.provideService(CurrentUserId, access.userId),
-          // The object's pool groups statements (`object-database.ts`): a group's concurrent reads
-          // share a write on a connection of their own.
           Effect.provideService(ConcurrentStatements, { group: PgPool.grouped }),
-          // One write and one read-only snapshot per batch: `pipelined` in the @effect/sql-pg patch.
-          // Held (`PgPool.held`): nobody awaits the batch's `COMMIT`, so only a hold keeps its
-          // connection to the batch until `COMMIT` answers; the batch refuses to write `BEGIN` on a
-          // connection that is not held.
           Effect.provideService(StatementBatch, (leaves, { outside }) =>
             PgPool.held(
               PgConnection.pipelined(leaves, {
@@ -173,11 +148,6 @@ export const makeMcpSession = Effect.fn(function* ({
       Effect.provide(identity),
       Effect.provide(HttpServer.layerServices),
     );
-    /**
-     * Effect's MCP server sees only the protocol's own session id: the object removes its prefix
-     * from a request and signs the id the server issues. The gateway verified the prefix's mac; an
-     * id naming another object names no session here.
-     */
     const addressed = <E, R>(handle: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>) =>
       Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest;
@@ -196,7 +166,6 @@ export const makeMcpSession = Effect.fn(function* ({
           );
         }
         const response = yield* routed;
-        // Effect adds the issued id in its own pre-response handler, which runs before this one.
         yield* HttpEffect.appendPreResponseHandler((_request, sent) => {
           const sessionId = sent.headers["mcp-session-id"];
           return sessionId === undefined
@@ -220,7 +189,6 @@ export const makeMcpSession = Effect.fn(function* ({
         ),
       ).pipe(
         Effect.flatMap(observeMcpStream("session")),
-        // A request may leave a program waiting for an answer: keep the object until it ends.
         Effect.tap(() => hold.pipe(Effect.ignore)),
         Effect.tap((response) =>
           Effect.annotateCurrentSpan("http.response.status_code", response.status),
@@ -235,17 +203,13 @@ export const makeMcpSession = Effect.fn(function* ({
         analytics.wrap,
         reportErrors,
         Effect.provideService(ObjectDatabase, database),
+        objectRequest(requests),
       ),
-      // An alarm only renews the hold. One that wakes a restarted object finds no program and stops.
       alarm: () => hold.pipe(Effect.ignore),
     } satisfies McpSessionHandler;
   });
 });
 
-/**
- * The object supplies only the request and its scope. Everything else a session reads must come
- * from {@link McpSessionServices}, or this fails to typecheck rather than at the first request.
- */
 interface McpSessionHandler {
   readonly fetch: Effect.Effect<
     HttpServerResponse.HttpServerResponse,
@@ -255,5 +219,4 @@ interface McpSessionHandler {
   readonly alarm: () => Effect.Effect<void, never, RuntimeContext>;
 }
 
-/** What the gateway binds on a session object. */
 export type McpSessionObject = Effect.Success<Effect.Success<ReturnType<typeof makeMcpSession>>>;

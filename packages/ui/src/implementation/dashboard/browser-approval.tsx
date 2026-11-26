@@ -68,7 +68,6 @@ const replyUnreadable = (cause: Cause.Cause<BrowserApprovalFailure>) => {
 };
 type Outcome = "answered" | "unavailable" | "reply-unreadable";
 
-/** Authentication is provided by the product; the server independently checks every read and answer. */
 export function BrowserApprovalPage({ atoms }: { readonly atoms: BrowserApprovalAtoms }) {
   const brand = useProductBrand();
   return (
@@ -81,7 +80,6 @@ export function BrowserApprovalPage({ atoms }: { readonly atoms: BrowserApproval
     </main>
   );
 }
-/** Reuse the same form inside a product page; completion copy belongs to the delivery surface. */
 export function BrowserApprovalCard({
   atoms,
   completion,
@@ -105,7 +103,6 @@ export function BrowserApprovalCard({
   return (
     <ApprovalCard>
       {refused !== undefined ? (
-        // Reading again cannot change a refusal, so it shows its cause and recovery, not a retry.
         <ErrorNotice error={refused} context="Reviewing a tool request from the Tools tab" />
       ) : AsyncResult.isFailure(view) ? (
         <>
@@ -244,8 +241,6 @@ function ApprovalForm({
         </h1>
       </header>
       <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted p-4 font-sans text-sm">
-        {/* An approval shows the exact call it runs. Its saved prompt, which MCP clients are
-            sent, shortens long arguments. */}
         {request.status === "approval-required"
           ? `Approve ${tool}?\n\nArguments:\n${JSON.stringify(request.invocation.input, null, 2)}`
           : request.elicitation.message}

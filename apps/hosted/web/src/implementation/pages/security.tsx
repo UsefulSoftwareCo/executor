@@ -35,7 +35,6 @@ export const securityErrorMessage = (cause: Cause.Cause<AccountFailed>) => {
 const actionClass =
   "flex items-center gap-2.5 text-[12px] [&_>_button]:h-7.5 [&_>_button]:py-0 [&_>_button]:px-[12px] [&_>_button]:text-[12px] [&_>_button]:bg-transparent [&_>_button]:shadow-none max-[640px]:[&_>_button]:min-h-10";
 
-/** A readable device label from the user agent; API clients rarely send a browser one. */
 export const describeClient = (userAgent: string | null | undefined): string => {
   if (!userAgent) return "API client";
   const browser = /Edg\//.test(userAgent)
@@ -66,10 +65,6 @@ export const describeClient = (userAgent: string | null | undefined): string => 
   return system === undefined ? browser : `${browser} on ${system}`;
 };
 
-/**
- * How this person signs in. Hosts add their own sign-in sections (passkeys, password); every
- * host shows the signed-in sessions.
- */
 export function SecurityPage({ children }: { readonly children?: ReactNode }) {
   useDocumentTitle(securityTitle);
   return (

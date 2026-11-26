@@ -20,7 +20,6 @@ import { CopyButton } from "./code.tsx";
 import { useProductBrand } from "../hooks/product-brand.ts";
 
 type Action<E> = () => Promise<Exit.Exit<WebhookSubscription, E>>;
-/** Compact setup UI shared by every product; authentication and exact error types stay in the caller. */
 export function WebhookSetupPage<E>({
   result,
   complete,

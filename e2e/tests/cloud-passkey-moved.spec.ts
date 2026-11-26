@@ -1,7 +1,3 @@
-/**
- * After Cloud's dashboard moved from its deployment origin to `app.`, passkeys made for the old
- * host cannot sign in. A failed passkey sign-in explains that and names the other ways in.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { Browser } from "../support/browser.ts";
@@ -18,14 +14,12 @@ layer(TestLive, { excludeTestServices: true })("Cloud passkey after the move", (
         const browser = yield* Browser,
           target = yield* Target;
         const hosts = targetHosts(target);
-        // The old host's sign-in page now opens on the browser origin.
         yield* browser.use("Open sign-in at the deployment origin", (page) =>
           page.goto(`${hosts.deployment}/login`),
         );
         yield* browser.use("Sign-in moved to the browser origin", (page) =>
           page.waitForURL(`${hosts.browser}/login`),
         );
-        // A real authenticator that holds no passkey for this relying party.
         const session = yield* browser.use("Enable the browser's virtual authenticator", (page) =>
           page.context().newCDPSession(page),
         );
@@ -61,7 +55,6 @@ layer(TestLive, { excludeTestServices: true })("Cloud passkey after the move", (
         expect(notice).toBe(
           `Passkey sign-in didn't finish. If you made your passkey on ${new URL(hosts.deployment).hostname} before sign-in moved, it no longer works. Sign in with email, Google or GitHub, then add a new passkey in account settings.`,
         );
-        // A muted notice, not an error: the page shows no alert.
         expect(
           yield* browser.use("No error alert", (page) => page.locator(".auth-error").count()),
         ).toBe(0);

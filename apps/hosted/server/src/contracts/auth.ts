@@ -1,6 +1,6 @@
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
 import type { ApiKeyId } from "./api-keys.ts";
-import type { ResourceOrigins } from "@executor-js/mcp-auth";
+import type { GrantId, ResourceOrigins } from "@executor-js/mcp-auth";
 import type { AuthorizationPolicy } from "@executor-js/authorization";
 import type { OrganizationAccess, OrganizationReference } from "./organization.ts";
 import { CurrentActor } from "@executor-js/sdk/core";
@@ -8,18 +8,22 @@ import { Context, Effect, Schema } from "effect";
 import { HttpApiMiddleware } from "effect/http-api";
 import type { OrganizationId, OrganizationRole, OrganizationForbidden } from "./organization.ts";
 
-/** A hosted login identity, separate from SDK provider accounts and owners. */
-export const Principal = Schema.Struct({
+export const Viewer = Schema.Struct({
   userId: Schema.String.pipe(Schema.brand("HostedUserId")),
   sessionId: Schema.String.pipe(Schema.brand("HostedSessionId")),
   name: Schema.String,
 });
+export type Viewer = typeof Viewer.Type;
+
+export const Principal = Schema.Struct({
+  ...Viewer.fields,
+  impersonatedBy: Schema.optionalKey(Viewer.fields.userId),
+});
 export type Principal = typeof Principal.Type;
 
-/** No valid hosted session was supplied. */
-export const Unauthorized = UserFacingError.define({
-  tag: "Unauthorized",
-  status: 401,
+const unknownApiKeyDescription =
+  "This Executor API key was revoked, has expired or does not exist; unless Executor restores access by itself, create a new token on the Tokens page and connect it to the account that uses this key.";
+const signInRequired = {
   title: "Sign-in required",
   description: "Executor needs a valid sign-in session to complete this action.",
   recovery: {
@@ -27,10 +31,28 @@ export const Unauthorized = UserFacingError.define({
     instructions:
       "Restore the user’s Executor session through the normal sign-in flow and retry the failed operation. If the session expires repeatedly, investigate session handling. Do not change the integration’s OAuth configuration to work around an Executor login failure.",
   },
+};
+export const Unauthorized = UserFacingError.define({
+  tag: "Unauthorized",
+  status: 401,
+  fields: { credential: Schema.optional(Schema.Literal("apiKey")) },
+  recorded: ({ credential }) =>
+    credential === "apiKey" ? unknownApiKeyDescription : signInRequired.description,
+  presentation: ({ credential }) =>
+    credential === "apiKey"
+      ? {
+          title: "API key not accepted",
+          description: unknownApiKeyDescription,
+          recovery: {
+            action:
+              "Create a new token on the Tokens page, then connect it to the account that uses this key.",
+            instructions:
+              "The presented Executor API key is not usable. Do not retry with the same key. Ask the user to create a token on the Tokens page and connect it as an Executor API key account, with the organization's URL slug.",
+          },
+        }
+      : signInRequired,
 });
-/** Parsed Unauthorized failure. */
 export type Unauthorized = typeof Unauthorized.Type;
-/** Cookie-authenticated writes must come from this deployment's browser origin. */
 export const Forbidden = UserFacingError.define({
   tag: "Forbidden",
   status: 403,
@@ -43,16 +65,10 @@ export const Forbidden = UserFacingError.define({
       "Check the request’s browser origin and the access requirements for the failed operation. Correct a wrong origin or context through the supported configuration. Preserve server authorization and origin validation.",
   },
 });
-/** Parsed Forbidden failure. */
 export type Forbidden = typeof Forbidden.Type;
-/**
- * An operation that refuses every Authorization header. Its handler enforces that; this annotation
- * makes the OpenAPI document list only the browser session for it.
- */
 export const BrowserSessionOnly = Context.Reference<boolean>("hosted/BrowserSessionOnly", {
   defaultValue: () => false,
 });
-/** The session store is unavailable; this must not be treated as signed out. */
 export const AuthenticationUnavailable = UserFacingError.define({
   tag: "AuthenticationUnavailable",
   status: 503,
@@ -66,10 +82,8 @@ export const AuthenticationUnavailable = UserFacingError.define({
   },
   retryable: true,
 });
-/** Parsed AuthenticationUnavailable failure. */
 export type AuthenticationUnavailable = typeof AuthenticationUnavailable.Type;
 
-/** Verified API identity. API keys and OAuth both retain live organization membership. */
 export interface ApiAccess {
   readonly userId: string;
   readonly access: OrganizationAccess;
@@ -78,39 +92,40 @@ export interface ApiAccess {
   readonly key?: {
     readonly id: typeof ApiKeyId.Type;
   };
+  readonly grant?: {
+    readonly id: GrantId;
+  };
+  readonly desktop?: true;
 }
 
-/** Organization API grants; browser sessions and bearer grants never fall back to one another. */
-export class ApiAuthentication extends Context.Service<
-  ApiAuthentication,
+export interface AlsoAccepted {
+  readonly desktop?: boolean | undefined;
+  readonly tools?: boolean | undefined;
+}
+
+export class BearerAuthentication extends Context.Service<
+  BearerAuthentication,
   {
-    /** The browser origin: dashboard, sign-in, cookies and Origin checks. */
     readonly origin: string;
-    /** The origins of MCP and API OAuth resources; the first is canonical. They may differ from the browser origin. */
     readonly resourceOrigins: ResourceOrigins;
-    /** The authorization server's exact issuer identifier, which discovery names. */
     readonly issuer: string;
     readonly authenticate: (
       headers: Headers,
       organization?: OrganizationReference,
+      options?: AlsoAccepted,
     ) => Effect.Effect<ApiAccess, Unauthorized | OrganizationForbidden | AuthenticationUnavailable>;
   }
->()("hosted/ApiAuthentication") {}
+>()("hosted/BearerAuthentication") {}
 
-/** Host-specific session lookup. Refresh belongs to Better Auth's browser endpoint. */
-export class Authentication extends Context.Service<
-  Authentication,
+export class SessionAuthentication extends Context.Service<
+  SessionAuthentication,
   {
-    /** The browser origin: dashboard, sign-in, cookies and Origin checks. */
     readonly origin: string;
-    /** The origins of MCP and API OAuth resources; the first is canonical. They may differ from the browser origin. */
     readonly resourceOrigins: ResourceOrigins;
-    /** Optional provider callback relay; the browser still returns to the canonical dashboard origin. */
     readonly oauthRedirectUri?: string | undefined;
     readonly current: (
       headers: Headers,
     ) => Effect.Effect<Principal | null, AuthenticationUnavailable>;
-    /** Resolve an explicit URL/API reference to its canonical storage identity. */
     readonly organization: (
       reference: OrganizationReference,
     ) => Effect.Effect<OrganizationId, AuthenticationUnavailable | OrganizationForbidden>;
@@ -118,7 +133,6 @@ export class Authentication extends Context.Service<
       headers: Headers,
       organization: OrganizationId,
     ) => Effect.Effect<string, AuthenticationUnavailable | OrganizationForbidden>;
-    /** Read live membership for a principal already verified in this request. */
     readonly membership: (
       principal: Principal,
       organization: OrganizationId,
@@ -128,32 +142,62 @@ export class Authentication extends Context.Service<
       },
       AuthenticationUnavailable | OrganizationForbidden
     >;
-    /** Remove the organization, its members, invitations and MCP grants. Product data is removed first. */
     readonly removeOrganization: (
       organization: OrganizationId,
     ) => Effect.Effect<
       { readonly logo: string | null },
       AuthenticationUnavailable | OrganizationForbidden
     >;
+    readonly removeUser: (user: Viewer["userId"]) => Effect.Effect<void, AuthenticationUnavailable>;
   }
->()("hosted/Authentication") {}
+>()("hosted/SessionAuthentication") {}
 
-/**
- * Verified actor for browser sessions and bearer grants; absent for background setup. It is the
- * SDK's `CurrentActor`: providing the caller here is what scopes SDK operations to them, and the
- * SDK provides the saved actor here around schedules, webhook callbacks and workflow steps.
- */
 export const CurrentUserId = CurrentActor;
 
-/** Request-local identity supplied only after successful authentication. */
+export const callerSpanAttributes = (organization: string, user: string) => ({
+  "executor.organization.id": organization,
+  "executor.user.id": user,
+});
+
+export const AuthCredentialKind = Schema.Literals([
+  "session",
+  "oauth_access_token",
+  "api_key",
+  "v1_forward",
+  "app_session",
+  "none",
+]);
+export type AuthCredentialKind = typeof AuthCredentialKind.Type;
+
+export const AuthFailureReason = Schema.Literals([
+  "missing",
+  "malformed",
+  "unknown",
+  "expired",
+  "revoked",
+  "wrong_resource",
+  "attempts_exceeded",
+  "origin_mismatch",
+  "bearer_not_allowed",
+  "organization_required",
+  "organization_mismatch",
+  "organization_not_found",
+  "not_member",
+  "insufficient_scope",
+  "insufficient_role",
+  "resource_denied",
+  "app_not_found",
+  "unclassified",
+]);
+export type AuthFailureReason = typeof AuthFailureReason.Type;
+
 export class CurrentPrincipal extends Context.Service<CurrentPrincipal, Principal>()(
   "hosted/CurrentPrincipal",
 ) {}
 
-/** Hosted identity boundary; resource permissions remain separate product checks. */
-export class RequireUser extends HttpApiMiddleware.Service<
-  RequireUser,
+export class RequireBrowserSession extends HttpApiMiddleware.Service<
+  RequireBrowserSession,
   { provides: CurrentPrincipal }
->()("hosted/RequireUser", {
+>()("hosted/RequireBrowserSession", {
   error: [Unauthorized, Forbidden, AuthenticationUnavailable],
 }) {}

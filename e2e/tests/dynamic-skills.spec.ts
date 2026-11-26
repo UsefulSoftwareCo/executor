@@ -1,4 +1,3 @@
-/** Dynamic skill freshness through the real app compiler, runtime, HTTP, MCP and browser. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Layer, Redacted, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -25,10 +24,6 @@ const Bundle = Schema.Struct({
   ),
 });
 
-/**
- * An app reading skills from a private GitHub repository with its selected account's token. App
- * code holds a handle; the outbound network substitutes the token for the provider's hosts.
- */
 const privateSkillsApp = (options: {
   readonly provider: string;
   readonly hosts: readonly string[];
@@ -261,16 +256,13 @@ export default defineApp({}, async (ctx) => ({
             );
             return `${prefix}/apps/${app.id}`;
           });
-        /** Connect a GitHub account with this token from the app, which links it. */
         const connect = (path: string, label: string, value: string) =>
           Effect.gen(function* () {
             const pending = yield* api.request(
               actors.owner,
               "POST",
               connectionsPath(path, "user", "github"),
-              {
-                destination: { kind: "personal" },
-              },
+              {},
             );
             expect(pending.status, JSON.stringify(pending.body)).toBe(200);
             const saved = yield* api.request(
@@ -288,10 +280,6 @@ export default defineApp({}, async (ctx) => ({
             );
             return account;
           });
-        /**
-         * Read the skills with the app's linked account. Connecting another account from the app
-         * replaces the link, so the read uses the account connected or linked last.
-         */
         const read = (path: string) => api.request(actors.owner, "GET", `${path}/skill-bundle`);
 
         const host = new URL(upstream.url).host;
@@ -310,8 +298,6 @@ export default defineApp({}, async (ctx) => ({
             ]),
           },
         ]);
-        // Every request carried the real token, substituted outside app code: git as a Basic
-        // password and raw files as a token.
         const sent = yield* upstream.credentials;
         expect(sent.length).toBeGreaterThan(2);
         for (const { path, authorization } of sent)
@@ -321,8 +307,6 @@ export default defineApp({}, async (ctx) => ({
               : `token ${token}`,
           );
 
-        // Another account, connected in place of the first, does not read the first account's
-        // cached catalog; its rejected token is reported against that account.
         const outsider = yield* connect(path, "Outsider", `synthetic-revoked-${randomUUID()}`);
         const rejected = yield* read(path);
         expect(rejected.status, JSON.stringify(rejected.body)).toBe(502);
@@ -333,8 +317,6 @@ export default defineApp({}, async (ctx) => ({
           account: { id: outsider, label: "Outsider" },
         });
 
-        // GitHub answers 404 with a token for a repository the token cannot read, as for one that
-        // does not exist: the copy says it is not available with the token, and claims neither.
         const absentPath = yield* deploy([host], "synthetic/absent-skills");
         yield* connect(absentPath, "Reader", token);
         const absent = yield* read(absentPath);
@@ -353,8 +335,6 @@ export default defineApp({}, async (ctx) => ({
           },
         });
 
-        // An app whose provider allows only GitHub's own hosts cannot send this account's token
-        // elsewhere, and says which hosts the read needs.
         const before = (yield* upstream.credentials).length;
         const elsewhere = yield* deploy(["github.com", "raw.githubusercontent.com"]);
         yield* linkAccount(actors.owner, elsewhere, "github", reader);
@@ -365,7 +345,6 @@ export default defineApp({}, async (ctx) => ({
           skills: {
             reason: "source",
             status: 421,
-            // The loader names the host it requested, before the app's fetch redirected it here.
             message: expect.stringContaining(
               "A request with the GitHub token to github.com was refused because the account's provider does not declare that host. The provider must declare hosts github.com and raw.githubusercontent.com",
             ),

@@ -1,4 +1,3 @@
-/** Portable Effect cache mechanics. Adapters own storage and the background task lifetime. */
 import { Clock, Duration, Effect, Exit, Option, Schedule, Schema, Scope } from "effect";
 import {
   CacheAcquired,
@@ -10,7 +9,6 @@ import {
 } from "./contracts/cache.ts";
 export * from "./contracts/cache.ts";
 
-/** Canonical JSON prevents object property order from changing key identity. */
 const canonical = (value: Schema.Json): string => {
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
   if (value !== null && typeof value === "object")
@@ -21,7 +19,6 @@ const canonical = (value: Schema.Json): string => {
   return JSON.stringify(value);
 };
 
-/** Hash key material before storage or transport; keys and credential scope never enter telemetry. */
 export const cacheKey = (key: unknown) =>
   Effect.gen(function* () {
     const parsed = yield* Schema.decodeUnknownEffect(Schema.Json)(key).pipe(
@@ -38,36 +35,23 @@ export const cacheKey = (key: unknown) =>
     return [...new Uint8Array(hash)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
   });
 
-/** A cache hit is decoded with the caller's schema. Loader failures are never cached. */
 export interface CacheGet<A> {
   readonly key: Schema.Json;
   readonly schema: Schema.Decoder<A>;
   readonly freshFor: Duration.Input;
   readonly staleFor?: Duration.Input;
-  /**
-   * What a read does with a value past `freshFor` and within `staleFor`. `serve`, the default,
-   * returns it while one background load replaces it. `revalidate` awaits that load first, like a
-   * miss; the value stays readable to the load, which can confirm it instead of rebuilding it.
-   */
   readonly stale?: "serve" | "revalidate";
   readonly load: Effect.Effect<A, unknown>;
 }
 
-/** Create a scoped cache client; a background runner must retain all task resources until completion. */
 export const makeCache = (
   host: CacheTransport,
   background: (task: Effect.Effect<void, unknown>) => Effect.Effect<void>,
   scope: Schema.Json = "shared",
-  /** The caller's own deadline, when the host supplies one. Waiting never runs past it. */
   deadline?: number,
-  /**
-   * Wraps the time this caller waits on another caller's load of the same entry, polls included,
-   * so the host can trace it and count it as waiting rather than as its own work.
-   */
   leaseWait: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R> = (effect) =>
     effect,
 ) => {
-  // Every round trip to the host store is visible from the app, whichever host runs it.
   const transport: CacheTransport = (command) =>
     host(command).pipe(
       Effect.withSpan("app.cache.command", {
@@ -91,18 +75,12 @@ export const makeCache = (
       Effect.flatMap(({ fresh, stale }) =>
         ![fresh, stale].every((value) => Number.isFinite(value) && value >= 0)
           ? Effect.fail(new CacheError({ reason: "invalid" }))
-          : // The cache keeps nothing past its retention: a longer lifetime loses staleness first.
-            Effect.succeed({
+          : Effect.succeed({
               fresh: Math.min(fresh, cacheLimits.retentionMs),
               stale: Math.max(0, Math.min(stale, cacheLimits.retentionMs - fresh)),
             }),
       ),
     );
-  /**
-   * `also` names other keys of this scope to read in the same transaction as the entry, given the
-   * entry's store key. They come back only with a value read from the store (fresh, stale or
-   * refreshed), never with a load's.
-   */
   const get = <A>(
     options: CacheGet<A>,
     refresh: boolean,
@@ -143,7 +121,6 @@ export const makeCache = (
         }).pipe(
           Effect.withSpan("app.cache.load"),
           Effect.timeout(cacheLimits.loadTimeoutMs),
-          // Publishing clears the lease in the same transaction. Only an unpublished load releases it.
           Effect.onExit((exit) =>
             Exit.isSuccess(exit)
               ? Effect.void
@@ -152,15 +129,11 @@ export const makeCache = (
                 ),
           ),
         );
-      // Another caller's lease is renewed while its invocation runs, however slowly it loads.
-      // Waiting is bounded here instead: past it, this caller loads for itself.
       const waitUntil = Math.min(
         (yield* Clock.currentTimeMillis) + cacheLimits.waitMs,
         deadline ?? Number.POSITIVE_INFINITY,
       );
       let initialVersion: string | null | undefined;
-      // One transaction reads the entry and, when it needs loading, claims the lease. Decides what
-      // this caller does next; the work itself runs outside any wait for another caller.
       const attempt = Effect.gen(function* () {
         const acquired = yield* transport({
           operation: "acquire",
@@ -176,12 +149,10 @@ export const makeCache = (
           ),
         );
         const { entry, lease } = acquired;
-        // Reads the store left out (an older store, or past its byte bound) are not reported.
         const together = acquired.reads?.length === reads?.length ? acquired.reads : undefined;
         const now = yield* Clock.currentTimeMillis;
         if (initialVersion === undefined) initialVersion = entry?.version ?? null;
         const refreshed = refresh && entry !== null && entry.version !== initialVersion;
-        // A lease means the store found the entry due for loading; this caller must not drop it.
         if (entry !== null && (refreshed || (!refresh && lease === null && now < entry.freshUntil)))
           return { next: "fresh", entry, together } as const;
         const kept = !refresh && entry !== null && now < entry.staleUntil;
@@ -192,8 +163,6 @@ export const makeCache = (
         return { next: "wait" } as const;
       });
       let decided = yield* attempt;
-      // Another caller holds the lease: this caller waits on that caller's load, polling the
-      // store, until the entry is published, the lease frees up or waiting runs out.
       if (decided.next === "wait")
         decided = yield* Effect.gen(function* () {
           while (true) {
@@ -214,7 +183,6 @@ export const makeCache = (
           yield* Effect.annotateCurrentSpan("cache.result", decided.kept ? "revalidated" : "miss");
           return loaded(yield* load(decided.lease));
         case "local":
-          // Without the lease this value is not published; the holder or a later caller does.
           yield* Effect.annotateCurrentSpan("cache.result", "local");
           return loaded(
             yield* options.load.pipe(
@@ -226,10 +194,8 @@ export const makeCache = (
       }
     }).pipe(Effect.withSpan("app.cache.get"));
   return {
-    /** Read arbitrary retained JSON entries without initiating a refresh. Missing and null are distinct. */
     read: (keys: readonly Schema.Json[]) =>
       Effect.forEach(keys, keyOf).pipe(Effect.flatMap(readKeys)),
-    /** Publish bounded immutable parts before publishing the manifest that references them. */
     write: (
       entries: readonly { readonly key: Schema.Json; readonly value: Schema.Json }[],
       retention: Duration.Input,
@@ -252,38 +218,19 @@ export const makeCache = (
         );
         yield* transport({ operation: "write", entries: values });
       }),
-    /** Revoke retained data and any loader's right to publish its in-flight result. */
     invalidate: (key: Schema.Json) =>
       keyOf(key).pipe(
         Effect.flatMap((key) => transport({ operation: "invalidate", key })),
         Effect.asVoid,
       ),
-    /**
-     * Read fresh data, refresh stale data in the background (or first, with `stale: "revalidate"`),
-     * or wait for the lease owner.
-     */
     get: <A>(options: CacheGet<A>) => get(options, false).pipe(Effect.map(({ value }) => value)),
-    /**
-     * `get`, also reading the keys of this scope that `keys` names in the same round trip. `keys`
-     * gets the entry's store key, which is unique to this scope and key, so a caller can remember
-     * what it read under it. `reads` holds their entries, undecoded and in order, when the value
-     * was read from the store; it is undefined when the value was loaded or the store did not read
-     * them, and the caller then reads what it still needs.
-     */
     getWith: <A>(options: CacheGet<A>, keys: (key: string) => readonly Schema.Json[]) =>
       get(options, false, keys),
-    /** Force one awaited refresh without removing the retained value. Concurrent refreshes share a load. */
     revalidate: <A>(options: CacheGet<A>) =>
       get(options, true).pipe(Effect.map(({ value }) => value)),
   };
 };
 
-/**
- * Host-side lease ownership for one app invocation. Leases the invocation claims are renewed while
- * it runs, so a slow load keeps its key, and released when the host ends the invocation, including
- * interrupted and cancelled ones and loads whose own release never arrived. A holder that stops
- * running, or whose store channel stops answering, loses its lease within `leaseMs`.
- */
 export const holdLeases = (transport: CacheTransport) =>
   Effect.gen(function* () {
     const scope = yield* Scope.make();
@@ -293,7 +240,6 @@ export const holdLeases = (transport: CacheTransport) =>
         Effect.timeout(cacheLimits.commandTimeoutMs),
         Effect.catchTag("TimeoutError", () => Effect.fail(new CacheError({ reason: "timeout" }))),
       );
-    // Renew what is held at each tick; leases claimed or released since are seen next time.
     const renew = Effect.suspend(() => {
       const leases = [...held];
       return leases.length === 0
@@ -344,10 +290,8 @@ export const holdLeases = (transport: CacheTransport) =>
         }
       });
     return {
-      /** Use for every command of the invocation. Each command is bounded by `commandTimeoutMs`. */
       transport: ((input) =>
         command(input).pipe(Effect.tap((reply) => observe(input, reply)))) satisfies CacheTransport,
-      /** Stop renewing and release every lease the invocation still holds. */
       close: Effect.gen(function* () {
         yield* Scope.close(scope, Exit.void);
         const leases = [...held];

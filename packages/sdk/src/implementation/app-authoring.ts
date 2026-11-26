@@ -1,11 +1,11 @@
-/** Undeployed apps and source edits belong to the same app identities as running versions. */
-import { Clock, Crypto, Effect, Option } from "effect";
+import { Clock, Effect, Option } from "effect";
+import type { HostCrypto } from "./host-crypto.ts";
 import type { BlobStorage } from "../contracts/blobs.ts";
 import { initializeAppRepository, writeInitialSource } from "./initial-source.ts";
 import { adoptStoredFiles, type StoredBytes } from "./public-files.ts";
 import { appSlug } from "../contracts/app-slug.ts";
 import { AppNameTaken, type AppCopyOrigin } from "../contracts/apps.ts";
-import { AppCodeId, AppId, StorageError } from "../contracts/shared.ts";
+import { AppCodeId, AppId } from "../contracts/shared.ts";
 import {
   SourceError,
   sourcePathsFit,
@@ -16,13 +16,12 @@ import type { Executor, ResourceLifecycle } from "../contracts/executor.ts";
 import { query, transaction, type Query } from "./database.ts";
 import { storedApp, createApp as storeApp } from "./apps.ts";
 
-/** Product hosts authorize the owner; SDK mutations enforce names and optimistic Git writes. */
 export const makeAppAuthoring = (
   db: Query,
   sources: AppSourceStorage,
   repositories: RepositoryBackend,
   blobs: BlobStorage,
-  crypto: Crypto.Crypto,
+  crypto: HostCrypto,
   lifecycle?: ResourceLifecycle,
 ) => {
   const create = (
@@ -33,20 +32,12 @@ export const makeAppAuthoring = (
   ) =>
     Effect.gen(function* () {
       yield* sourcePathsFit(input.files);
-      const code = AppCodeId.make(
-        `code_${yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()))}`,
-      );
-      // A new app has no repository yet. Stored files of a copy are first copied into its own
-      // store, which its initial files then name; anything else stored names nothing it owns.
+      const code = AppCodeId.make(`code_${yield* crypto.random.uuidV4()}`);
       if (input.files.some((file) => "object" in file)) {
         if (stored === undefined) return yield* new SourceError({ reason: "invalid-source" });
         yield* adoptStoredFiles(blobs, code, input.files, stored);
       }
-      const id =
-        reserved ??
-        AppId.make(
-          `app_${yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()))}`,
-        );
+      const id = reserved ?? AppId.make(`app_${yield* crypto.random.uuidV4()}`);
       yield* writeInitialSource(blobs, code, input.files);
       const app = {
         id,
@@ -87,7 +78,6 @@ export const makeAppAuthoring = (
       Effect.gen(function* () {
         const app = yield* storedApp(db, input);
         yield* initializeAppRepository(db, sources, blobs, app);
-        // The commit pins the listed revision; the app's own code lineage pins its repository.
         return yield* sources.read({ code: app.code, commit: input.commit });
       }),
     workspace: (input: Parameters<Executor["apps"]["workspace"]>[0]) =>

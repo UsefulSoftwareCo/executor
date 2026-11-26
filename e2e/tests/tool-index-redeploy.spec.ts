@@ -1,4 +1,3 @@
-/** A deploy reaches an app's MCP tools without relinking its accounts, in the same execute and the next. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -72,12 +71,9 @@ layer(HostedLive, { excludeTestServices: true })("Tool index after redeploy", (i
           });
         const app = yield* deploy(`Redeploy ${randomUUID().slice(0, 8)}`, source("ping")),
           path = `${prefix}/apps/${app.id}`;
-        // Connecting an account from the app links it to the app.
         const connection = yield* body(
           Resource,
-          yield* api.request(actors.owner, "POST", connectionsPath(path, "user", "service"), {
-            destination: { kind: "personal" },
-          }),
+          yield* api.request(actors.owner, "POST", connectionsPath(path, "user", "service"), {}),
         );
         const submitted = yield* api.request(
           actors.owner,
@@ -126,8 +122,6 @@ return found.items.map((item) => item.path.split(".").at(-1)).sort();`,
           );
         expect(yield* listed("Search before the redeploy")).toEqual(["ping"]);
 
-        // A deploy is a new version for every caller: the next execute lists and calls the new
-        // tool without relinking the account or a reconcile.
         const redeployed = yield* api.request(actors.owner, "POST", `${path}/deploy`, {
           files: [{ path: "index.ts", content: source("ping, diagnose") }, appsManifest],
         });
@@ -136,18 +130,14 @@ return found.items.map((item) => item.path.split(".").at(-1)).sort();`,
         expect(yield* listed("Search after the redeploy")).toEqual(["diagnose", "ping"]);
         const called = yield* execute("Call the new tool", `return await ${tools}.diagnose({});`);
         expect(called.execution.value, JSON.stringify(called)).toBe("healthy");
-        // The deploy kept the link.
         expect(yield* linkedAccountIds(actors.owner, path)).toEqual([account]);
 
-        // The Executor app is provisioned with the member's key linked to it.
         yield* managementApp(actors.owner);
         const executor = "const executor = tools.executor;";
         const organization = { organization: actors.organization.id };
         const deployFrom = (content: string) =>
           `await executor.appManagement.deploy({ path: ${JSON.stringify({ ...organization, app: app.id })}, body: { files: ${JSON.stringify([{ path: "index.ts", content }, appsManifest])} } })`;
 
-        // Deploying and calling an existing tool in one execute: the program loaded the app
-        // before the deploy, and the call still runs on the version the program just made.
         const changed = yield* execute(
           "Deploy and call a changed tool in one execute",
           `${executor}
@@ -170,8 +160,6 @@ return { version: deployed.app.activeVersion, health: await ${tools}.diagnose({}
         );
         expect(nextChanged.execution.value, JSON.stringify(nextChanged)).toBe("recovered");
 
-        // A tool the deploy added is not in the program's listing of the app, so the program
-        // names the version it listed and the next execute instead of a removed tool.
         const sameProgram = yield* execute(
           "Deploy and call the new tool in one execute",
           `${executor}
@@ -183,7 +171,7 @@ return await ${tools}.status({});`,
         ]);
         expect(sameProgram.execution.error?.kind).toBe("UnknownTool");
         expect(sameProgram.execution.error?.suggestions).toEqual([
-          `This execute loaded '${app.slug}' from version ${recovered} when it first reached the app. If the app was deployed after that, call its new tools in a new execute. Otherwise use search to find the app's tools.`,
+          `This execute loaded '${app.slug}' from version ${recovered} when it first reached the app. If the app was deployed after that, call its new tools in a new execute. If the tool was added to the service behind the app, Executor is checking the app for new tools now; they appear within a few minutes, so call it again in a new execute. Otherwise use search to find the app's tools.`,
         ]);
         const nextProgram = yield* execute(
           "Call the new tool in the next execute",
@@ -191,7 +179,6 @@ return await ${tools}.status({});`,
         );
         expect(nextProgram.execution.value, JSON.stringify(nextProgram)).toBe("pong");
 
-        // An app created in the same execute did not exist when its apps were listed.
         const createdSlug = `created-${randomUUID().slice(0, 8)}`;
         const creating = yield* execute(
           "Create an app and call it in one execute",
@@ -211,8 +198,6 @@ return await tools[${JSON.stringify(createdSlug)}].ping({});`,
           `No app '${createdSlug}' existed when this execute started. If it was created or deployed during this execute, call it in a new execute. Otherwise use search to find available tools.`,
         ]);
 
-        // A new app that needs an account has no tools until an account is linked to it. Searching
-        // it by name says so; a search of everything stays quiet about it.
         const fresh = yield* deploy(`Fresh ${randomUUID().slice(0, 8)}`, source("ping"));
         const named = yield* execute(
           "Search a new account app by name",

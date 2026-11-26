@@ -23,7 +23,6 @@ import { SelfHostLoginPending } from "../components/login-pending.tsx";
 import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
 import { productWordmark } from "@executor-js/ui/contracts/product-brand";
 
-/** Password login and first-run setup; only an operator-configured SSO button is shown. */
 export function SelfHostLoginPage({ redirect, error: callbackError }: LoginProps) {
   const brand = useProductBrand();
   useDocumentTitle("Sign in");
@@ -37,7 +36,6 @@ export function SelfHostLoginPage({ redirect, error: callbackError }: LoginProps
   const [joining, setJoining] = useState(false);
   const [submittedKind, setSubmittedKind] = useState<SelfHostSignIn["kind"] | null>(null);
   const lastSession = AsyncResult.value(session);
-  // A background check must not unmount a form shown after confirmed sign-out.
   const signedOut = Option.isSome(lastSession) && lastSession.value === null;
   const signedIn = AsyncResult.isSuccess(session) && !session.waiting && session.value !== null;
   if (AsyncResult.isFailure(session) && !signedOut)
@@ -76,7 +74,6 @@ export function SelfHostLoginPage({ redirect, error: callbackError }: LoginProps
   const registration = setup || (joining && invitation !== null);
   const complete = async (input: SelfHostSignIn) => {
     setError(null);
-    // Select the destination before the successful write refreshes the session.
     setSubmittedKind(input.kind);
     const result = await submit(input);
     if (Exit.isFailure(result)) {

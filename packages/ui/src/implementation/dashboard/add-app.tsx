@@ -30,21 +30,17 @@ import { AgentSetupPrompt, newAppPrompt } from "./agent-setup.tsx";
 import { useProductBrand } from "../hooks/product-brand.ts";
 import { CustomAppForm } from "./custom-app.tsx";
 
-/** The product's bindings for the custom app and MCP server dialogs. */
 export type AddAppDialogProps<E> = MutationProps<CustomAppInput, DeployedApp, E> & {
   readonly onInstalled: (app: DeployedApp) => void | Promise<void>;
-  /** This installation's MCP URL, included so an unconnected agent can connect first. */
   readonly endpoint?: string;
 };
 
 type Opened = "custom" | "mcp" | undefined;
 
-/** Apps' Add app menu: create your own app first, or browse the app catalog. */
 export function AddAppMenu<E>({
   catalog,
   ...dialogs
 }: AddAppDialogProps<E> & {
-  /** Wraps the catalog entry in the product's link to its catalog page. */
   readonly catalog: (content: ReactNode) => ReactElement;
 }) {
   const [opened, setOpened] = useState<Opened>();
@@ -71,7 +67,6 @@ export function AddAppMenu<E>({
   );
 }
 
-/** The catalog page's header button and way out when nothing fits: Add app's create choices. */
 export function MakeYourOwn<E>({
   appearance = "link",
   ...dialogs
@@ -221,7 +216,6 @@ function AddAppDialogs<E>({
   );
 }
 
-/** A custom app starts as a description that the user's agent turns into code. */
 function CustomAppDialog({ endpoint }: { readonly endpoint: string | undefined }) {
   const brand = useProductBrand();
   const [description, setDescription] = useState("");

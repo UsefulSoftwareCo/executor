@@ -1,11 +1,5 @@
-/**
- * Atomic file replacement for the files a data directory keeps: keys, its installation record and
- * the background service's files. It needs only the platform's file services, so clients such as
- * Executor desktop can use it without loading key setup.
- */
 import { Effect, FileSystem, Path } from "effect";
 
-/** Stage, fsync and atomically rename so an interrupted write never leaves a partial file. */
 export const writeAtomically = (
   platform: string,
   directory: string,
@@ -28,10 +22,8 @@ export const writeAtomically = (
           yield* file.sync;
         }),
       );
-      // The create mode is masked by umask; set it explicitly as v1 did.
       yield* fs.chmod(staged, 0o600);
       yield* fs.rename(staged, destination);
-      // Windows does not allow opening directories as ordinary file handles.
       if (platform !== "win32") {
         const parent = yield* fs.open(directory);
         yield* parent.sync;

@@ -36,7 +36,6 @@ const Users = Schema.Struct({
   ),
   total: Schema.Number,
 });
-/** Bounded directory search, authorized by Better Auth on every request. */
 export const operatorUsersAtom = Atom.family((search: string) =>
   runtime.atom(
     authRequest((options) =>
@@ -56,11 +55,9 @@ export const operatorUsersAtom = Atom.family((search: string) =>
     ).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Users))),
   ),
 );
-/** Native impersonation preserves the original admin session in an HttpOnly cookie. */
 export const impersonateAtom = runtime.fn((userId: string) =>
   authRequest((options) => client.admin.impersonateUser({ userId }, options)).pipe(Effect.asVoid),
 );
-/** Restore the original session and revoke the impersonated session. */
 export const stopImpersonatingAtom = runtime.fn(() =>
   authRequest((options) => client.admin.stopImpersonating({}, options)).pipe(Effect.asVoid),
 );

@@ -7,22 +7,13 @@ import { SessionMenu } from "./auth.tsx";
 import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
 import { productWordmark } from "@executor-js/ui/contracts/product-brand";
 
-/**
- * Onboarding pages are one 600px column under the Executor mark, with their actions right below
- * the step. Identity controls stay outside the instructions: wide screens pin them to the bottom
- * corner; narrower ones place them above the column. The column starts at a fixed top, so a step
- * that grows or shrinks never moves what is above it. A step that keeps its own content scrolling,
- * such as a list, passes `h-dvh` so the column ends at the bottom of the screen.
- */
 export function SetupPage({
   className,
   children,
   organization,
   onSignOut,
 }: ComponentProps<"main"> & {
-  /** The team whose setup this is, so account settings know the way back to it. */
   readonly organization?: string;
-  /** Reports leaving from a setup step, before the session ends. */
   readonly onSignOut?: () => void;
 }) {
   const brand = useProductBrand();
@@ -47,7 +38,6 @@ export function SetupPage({
   );
 }
 
-/** The step's heading. Screens that replace one another focus it through `ref`. */
 export function SetupTitle({ className, ...props }: ComponentProps<"h1">) {
   return (
     <h1
@@ -61,15 +51,10 @@ export function SetupTitle({ className, ...props }: ComponentProps<"h1">) {
   );
 }
 
-/** One short line under the heading. */
 export function SetupLede({ className, ...props }: ComponentProps<"p">) {
   return <p className={cn("mt-3 text-sm leading-6 text-muted-foreground", className)} {...props} />;
 }
 
-/**
- * The step's list or instructions. On phones it runs edge to edge; rows inside it use `px-4
- * max-sm:px-6` so their content lines up with the heading.
- */
 export function SetupCard({ className, ...props }: ComponentProps<"div">) {
   return (
     <div
@@ -82,10 +67,6 @@ export function SetupCard({ className, ...props }: ComponentProps<"div">) {
   );
 }
 
-/**
- * The step's actions. Wider screens place them right under the step, in the column, and keep them
- * on screen while a long step scrolls. Phones pin them to the bottom edge, full width.
- */
 export function SetupActions({ children }: { readonly children: ReactNode }) {
   return (
     <div className="z-20 shrink-0 bg-background max-sm:fixed max-sm:inset-x-0 max-sm:bottom-0 max-sm:border-t max-sm:pb-[env(safe-area-inset-bottom)] sm:sticky sm:bottom-0 sm:mt-3">
@@ -96,15 +77,6 @@ export function SetupActions({ children }: { readonly children: ReactNode }) {
   );
 }
 
-/**
- * The step's one way forward, last on the row and full width on phones. Until the step's action is
- * done it is a quiet "Skip for now"; once `done`, the primary action named by `label`. Both labels
- * hold the button's box, so it keeps its size and place when it changes. `children` renders the
- * link or button for the current state around the content it is given.
- *
- * A `required` step cannot be skipped: until it is done the button is disabled and reads `hint`,
- * saying what to do, in place of "Skip for now".
- */
 export function SetupNext({
   done,
   label,
@@ -118,14 +90,12 @@ export function SetupNext({
   readonly hint: string;
   readonly children: (content: ReactNode) => ReactElement;
 }) {
-  // Hidden labels keep their width and leave the accessible name to the one shown.
   const content = (
     <span className="grid">
       <ForwardLabel shown={!done}>{required ? hint : "Skip for now"}</ForwardLabel>
       <ForwardLabel shown={done}>{label}</ForwardLabel>
     </span>
   );
-  // Only its colors fade; its size follows the screen at once, so a resize never animates it.
   const forward = "ml-auto transition-[color,background-color,box-shadow,opacity] max-sm:flex-1";
   if (!required)
     return (
@@ -144,7 +114,6 @@ export function SetupNext({
   );
 }
 
-/** One of the forward button's labels, with its arrow; a hidden one only holds its width. */
 function ForwardLabel({ shown, children }: { readonly shown: boolean; readonly children: string }) {
   return (
     <span
@@ -159,10 +128,6 @@ function ForwardLabel({ shown, children }: { readonly shown: boolean; readonly c
   );
 }
 
-/**
- * Returns to the screen this one was chosen from, first on the row; `children` is its link. Phones
- * show only its icon, so the forward action keeps most of the row.
- */
 export function SetupBack({ children }: { readonly children: ReactNode }) {
   return (
     <Button variant="outline" className="max-sm:w-9 max-sm:px-0" asChild>

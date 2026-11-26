@@ -5,7 +5,6 @@ import { AlertCircleIcon, InformationCircleIcon } from "@hugeicons/core-free-ico
 import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
 import { productWordmark } from "@executor-js/ui/contracts/product-brand";
 
-/** Center connection progress or failure content; callers own recovery actions and navigation. */
 export function ConnectionStatusPage({
   status,
   message,

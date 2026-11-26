@@ -10,11 +10,9 @@ import { jobCompleted, jobFailed } from "../contracts/job-outcome.ts";
 import { unsubscribeHandler, unsubscribeLinks } from "../implementation/email-preferences.ts";
 import { CurrentProductBrand, isDefaultProductBrand } from "@executor-js/utils/product-brand";
 
-/** The cron invocation owns its database connection and closes it after the batch. */
 export const cloudWelcomeEmails = (send: SendWelcomeEmail) =>
   Effect.gen(function* () {
     const connection = yield* cloudDatabaseConnection;
-    // Email links open the browser origin; the MCP endpoint is the canonical MCP resource.
     const hosts = yield* cloudHosts.pipe(Effect.orDie);
     const origin = hosts.browser;
     const resourceOrigin = hosts.resourceOrigins.mcp[0];

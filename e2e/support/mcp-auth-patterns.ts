@@ -1,32 +1,9 @@
-/**
- * Remote MCP servers emulating the authorization patterns real services use. Each pattern is
- * its own loopback origin, so path-suffixed and root well-known metadata stay independent.
- */
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Deferred, Effect, Layer, Schema } from "effect";
 import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { createServer } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
 
-/**
- * - `anonymous`: initialize and tools/list work without credentials; nothing about OAuth.
- * - `anonymous-oauth`: works anonymously over SSE and also publishes OAuth metadata (Exa).
- * - `oauth-dcr`: rejects anonymous use; OAuth with dynamic client registration.
- * - `oauth-manual`: rejects anonymous use; its authorization server registers no clients (GitHub).
- * - `challenge-only`: the only metadata is the document its challenge names.
- * - `scopes-provided`: root metadata lists scopes as `scopes_provided` (Ahrefs).
- * - `dcr-rejects-redirect`: registration refuses Executor's callback (Fastmail).
- * - `client-auth-unsupported`: the token endpoint accepts only `private_key_jwt` clients.
- * - `pkce-unadvertised`: authorization-server metadata lists no PKCE methods but the server
- *   accepts S256, as Microsoft Entra ID does.
- * - `pkce-plain`: authorization-server metadata lists only the `plain` PKCE method.
- * - `bearer-key`: a Bearer challenge and no OAuth anywhere: an API key.
- * - `initialize-fails`: initialize answers with a JSON-RPC error.
- * - `older-protocol`: works anonymously, negotiates protocol 2025-06-18 and issues a session.
- *   Like MCP SDK servers that predate 2025-11-25, it refuses any later request, including the
- *   DELETE that ends a session, whose MCP-Protocol-Version header names a version it lacks.
- * - `refused`: a firewall answers every request with a 403 page.
- */
 export type McpAuthPattern =
   | "anonymous"
   | "anonymous-oauth"
@@ -54,7 +31,6 @@ const page = (status: number) =>
     contentType: "text/html",
   });
 
-/** Start one pattern's server; the listener closes with the caller's scope. */
 export const mcpAuthServer = Effect.fn(function* (
   pattern: McpAuthPattern,
   tls?: { readonly key: string; readonly cert: string },
@@ -62,7 +38,6 @@ export const mcpAuthServer = Effect.fn(function* (
   const address = yield* Deferred.make<string>();
   let registrations = 0;
   let requests = 0;
-  /** Sessions `older-protocol` issued, ended, and refused to end for an unsupported version. */
   const sessions = { opened: 0, released: 0, refused: 0 };
   const supportedVersions = ["2025-06-18", "2025-03-26", "2024-11-05", "2024-10-07"];
   const versionRefused = (request: HttpServerRequest.HttpServerRequest) => {
@@ -82,7 +57,6 @@ export const mcpAuthServer = Effect.fn(function* (
   const origin = Deferred.await(address);
   const anonymous =
     pattern === "anonymous" || pattern === "anonymous-oauth" || pattern === "older-protocol";
-  /** Patterns with an authorization server, and those that publish path-suffixed metadata. */
   const oauth = ![
     "anonymous",
     "bearer-key",
@@ -99,7 +73,6 @@ export const mcpAuthServer = Effect.fn(function* (
     "pkce-unadvertised",
     "pkce-plain",
   ];
-  /** Ahrefs names its origin, with a trailing slash, as both resource and issuer. */
   const issuer = (base: string) => (pattern === "scopes-provided" ? `${base}/` : base);
   const resource = Effect.gen(function* () {
     const base = yield* origin;
@@ -318,11 +291,8 @@ export const mcpAuthServer = Effect.fn(function* (
   return {
     origin: base,
     url: `${base}/mcp`,
-    /** Dynamic client registration requests received. */
     registrations: Effect.sync(() => registrations),
-    /** HTTP requests received, including MCP and OAuth discovery. */
     requests: Effect.sync(() => requests),
-    /** Sessions `older-protocol` issued, ended, and refused to end. */
     sessions: Effect.sync(() => ({ ...sessions })),
   };
 });

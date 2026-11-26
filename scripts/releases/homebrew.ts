@@ -1,11 +1,3 @@
-/**
- * Write the Homebrew formula for this release from its SHA256SUMS. The formula installs the same
- * release archive the install scripts use, for macOS and Linux on both architectures. Stable
- * releases update `executor`; beta releases update `executor-beta`, so a stable install never
- * moves to a beta.
- *
- * Usage: `node scripts/releases/homebrew.ts <SHA256SUMS> <tap directory>`
- */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Console, Effect, FileSystem, Path, Schema } from "effect";

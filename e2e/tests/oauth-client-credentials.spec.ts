@@ -7,10 +7,12 @@ import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Resource, Inventory } from "../support/contracts.ts";
 import { clientCredentialsIssuer, machineClient } from "../support/client-credentials-issuer.ts";
 import { linkedAccountIds, connectionsPath } from "../support/app-accounts.ts";
+import { Evidence, Telemetry } from "../support/evidence.ts";
 import { linkedChoice } from "../support/account-choices.ts";
 import { settleWebhookSources } from "../support/webhook-sources.ts";
 import { scenarios } from "../test-plan.ts";
 import { Browser } from "../support/browser.ts";
+import { replaceResponses } from "../support/browser-responses.ts";
 import { managementApp } from "../support/management-app.ts";
 import {
   accountNameField,
@@ -104,24 +106,22 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
           page.setViewportSize({ width: 1440, height: 1000 }),
         );
         let dropped = false;
-        yield* browser.use("Lose the first response after committing the account", (page) =>
-          page.route(/\/connections\/[^/]+\/oauth\/start$/, (route) => {
-            if (dropped) return route.fallback();
-            dropped = true;
-            const request: unknown = route.request().postDataJSON();
-            const submitted = Schema.decodeUnknownSync(
-              Schema.Struct({ client: Schema.Record(Schema.String, Schema.Unknown) }),
-            )(request);
-            expect(Object.keys(submitted.client).sort()).toEqual(["clientId", "clientSecret"]);
-            return route
-              .fetch()
-              .then((response) => response.json())
-              .then((value: unknown) => {
-                saved = value;
-                return route.abort("failed");
-              });
-          }),
-        );
+        yield* replaceResponses("*/connections/*/oauth/start", (response) => {
+          if (
+            dropped ||
+            !/\/connections\/[^/]+\/oauth\/start$/.test(new URL(response.url).pathname)
+          )
+            return "unchanged";
+          dropped = true;
+          const submitted = Schema.decodeUnknownSync(
+            Schema.Struct({ client: Schema.Record(Schema.String, Schema.Unknown) }),
+          )(JSON.parse(response.requestBody));
+          expect(Object.keys(submitted.client).sort()).toEqual(["clientId", "clientSecret"]);
+          return response.body().then((text) => {
+            saved = JSON.parse(text);
+            return "failed" as const;
+          });
+        });
         yield* browser.use("Connect using the declared grant", (page) =>
           page
             .getByRole("dialog")
@@ -144,7 +144,6 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
             .getByRole("button", { name: "Connect Reporting", exact: true })
             .click(),
         );
-        // Immediate completion closes the connection dialog and asks for a name over the app.
         const prompt = yield* browser.use("Immediate completion asks to name the account", (page) =>
           page
             .getByRole("dialog", { name: "Connect Reporting", exact: true })
@@ -181,7 +180,6 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
           actors = yield* Actors;
         const issuer = yield* clientCredentialsIssuer;
         const prefix = `/api/organizations/${actors.organization.id}`;
-        // The inventory baseline must include the asynchronously provisioned personal account.
         yield* managementApp(actors.owner);
         for (const authMethod of [
           "client_secret_basic",
@@ -221,9 +219,7 @@ export default defineApp({user: { accounts:{service} }},async({user: { accounts 
               actors.owner,
               "POST",
               connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
-              authMethod === "client_secret_post"
-                ? { destination: { kind: "shared", audience: { kind: "everyone" } } }
-                : {},
+              {},
             ),
           );
           const path = `${prefix}/connections/${connection.id}/oauth/start`;
@@ -241,27 +237,29 @@ export default defineApp({user: { accounts:{service} }},async({user: { accounts 
           ).toBe(422);
           const saved = yield* api.request(actors.owner, "POST", path, payload);
           expect(saved.status).toBe(200);
+          const traceId = (yield* (yield* Evidence).requests).at(-1)?.traceId;
+          if (traceId === undefined) return yield* Effect.die("Missing request trace");
+          const exchanged = (yield* (yield* Telemetry).settled(traceId, (spans) =>
+            spans.some((span) => span.operationName === "oauth.clientCredentials"),
+          )).filter((span) => span.operationName === "oauth.clientCredentials");
+          for (const { tags } of exchanged) {
+            expect(tags).toMatchObject({
+              "oauth.client.kind": "entered",
+              "oauth.token_endpoint.host": new URL(issuer.origin).hostname,
+            });
+            expect(Object.keys(tags)).not.toContain("oauth.first_party.id");
+          }
           const completed = yield* body(Completed, saved);
           expect(completed.account.label).toBe("Reporting");
-          const access = yield* body(
-            Schema.Struct({
-              ownership: Schema.Struct({ kind: Schema.String }),
-              canUse: Schema.Boolean,
-            }),
-            yield* api.request(
-              actors.owner,
-              "GET",
-              `${prefix}/accounts/${completed.account.id}/access`,
-            ),
+          const detail = yield* body(
+            Schema.Struct({ canManage: Schema.Boolean }),
+            yield* api.request(actors.owner, "GET", `${prefix}/accounts/${completed.account.id}`),
           );
-          expect(access.ownership.kind).toBe(
-            authMethod === "client_secret_post" ? "shared" : "personal",
-          );
-          expect(access.canUse).toBe(true);
+          expect(detail.canManage).toBe(true);
           expect(
             (yield* api.request(actors.member, "GET", `${prefix}/accounts/${completed.account.id}`))
               .status,
-          ).toBe(authMethod === "client_secret_post" ? 200 : 403);
+          ).toBe(403);
           yield* Effect.addFinalizer(() =>
             api
               .request(actors.owner, "DELETE", `${prefix}/accounts/${completed.account.id}`)
@@ -282,14 +280,9 @@ export default defineApp({user: { accounts:{service} }},async({user: { accounts 
           );
           expect(repeated.account.id).toBe(completed.account.id);
           expect((yield* issuer.metrics).generation).toBe(issued);
-          // Connecting from the app linked the account to it, once.
           expect(yield* linkedAccountIds(actors.owner, `${prefix}/apps/${app.id}`)).toEqual([
             completed.account.id,
           ]);
-          // Linking sets the account up as the app's webhook source in the background, which
-          // resolves the account. Once the renewal phase issues tokens inside the host's refresh
-          // window, every resolve renews, so it must be done before then or its renewals are
-          // counted here.
           yield* settleWebhookSources(actors.owner, `${prefix}/apps/${app.id}`, (sources) =>
             sources.some(
               (source) => source.account === completed.account.id && source.status !== "pending",
@@ -329,8 +322,6 @@ export default defineApp({user: { accounts:{service} }},async({user: { accounts 
           expect(value.authenticated).toBe(true);
           expect(value.generation).toBeGreaterThan(beforeRenewal);
           expect((yield* issuer.metrics).observed?.scope).toBe("reports:read");
-          // A refused client keeps the grant. The renewed token is still valid, so the call's
-          // renewal ahead of expiry fails and the call uses that token.
           yield* issuer.configure({ rejected: true });
           const requests = (yield* issuer.metrics).requests;
           const kept = yield* api.request(
@@ -368,9 +359,6 @@ export default defineApp({user: { accounts:{service} }},async({user: { accounts 
             Inventory,
             yield* api.request(actors.owner, "GET", `${prefix}/inventory`),
           );
-          // The app a connection was started for changes the requirement's provider while the
-          // token exchange is in flight: the exchange fails and neither an account nor a link is
-          // saved.
           const racedApp = yield* deploy;
           const pause = yield* issuer.pauseNextToken;
           const raced = yield* body(
@@ -420,7 +408,6 @@ export default defineApp({user: { accounts:{service} }},async({user: { accounts 
           expect(after.accounts.map((account) => account.id).sort()).toEqual(
             before.accounts.map((account) => account.id).sort(),
           );
-          // Unnamed machine accounts take the owner's next free default name for the provider.
           const unnamed = [];
           for (const expected of ["Default", "Default 2"]) {
             const next = yield* body(
@@ -429,9 +416,7 @@ export default defineApp({user: { accounts:{service} }},async({user: { accounts 
                 actors.owner,
                 "POST",
                 connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
-                authMethod === "client_secret_post"
-                  ? { destination: { kind: "shared", audience: { kind: "everyone" } } }
-                  : {},
+                {},
               ),
             );
             const named = yield* body(
@@ -486,7 +471,6 @@ export default defineApp({user: { accounts:{service} }},async({user: { accounts 
         const api = yield* Api,
           actors = yield* Actors;
         const issuer = yield* clientCredentialsIssuer;
-        // A service that reads only JSON token requests and comma-separated scopes.
         yield* issuer.configure({ method: "client_secret_basic", format: "json", expiresIn: 20 });
         const prefix = `/api/organizations/${actors.organization.id}`;
         const connect = (options: string) =>
@@ -528,7 +512,6 @@ export default defineApp({user: { accounts:{service} }},async({user: { accounts 
             return { app, started };
           });
 
-        // The default form request is refused by this service.
         const requests = (yield* issuer.metrics).requests;
         const form = yield* connect("");
         expect(form.started.status, JSON.stringify(form.started.body)).toBe(422);
@@ -561,8 +544,6 @@ export default defineApp({user: { accounts:{service} }},async({user: { accounts 
         };
         expect((yield* issuer.metrics).observed).toEqual(sent);
 
-        // The token expires inside the host's refresh window, so the call renews with the same
-        // options the account connected with.
         const before = (yield* issuer.metrics).generation;
         const read = yield* api.request(
           actors.owner,

@@ -1,5 +1,4 @@
 import type { RegistryError } from "@executor-js/sdk";
-/** Safe messages for expected public registry failures. */
 export const registryErrorMessage = (error: RegistryError) =>
   ({
     "not-found": "This public app is no longer listed. Existing installed copies are unchanged.",

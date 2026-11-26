@@ -1,4 +1,3 @@
-/** An agent can hand the user the sign-in link again from a connection it already requested. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -44,7 +43,6 @@ const Refused = Schema.Struct({
     }),
   }),
 });
-/** One secrets provider; its display name is part of the provider's identity. */
 const files = (name: string) => [
   {
     path: "index.ts",
@@ -96,12 +94,10 @@ layer(HostedLive, { excludeTestServices: true })("Connection link", (it) => {
             .request(actors.owner, "POST", "/api/auth/api-key/delete", { keyId: token.id })
             .pipe(Effect.orDie),
         );
-        // The Executor app is provisioned with the member's key linked to it.
         yield* managementApp(actors.owner);
         const client = yield* mcp.connect(token.key, "connection-link", { organization });
         const executor = "const executor = tools.executor;";
 
-        /** Request a link as the code-mode skill says, then read the request back as an agent would. */
         const run = (step: string, account?: string) =>
           client
             .use(step, (client, signal) =>
@@ -136,7 +132,6 @@ return { connect, read };`,
             `/org/${actors.organization.slug}/connections/${connection.id}`,
           );
 
-        // Reading a pending request returns the link the user still has to open.
         const added = yield* request("connect-new-account");
         expectLink(added.connect);
         expect(added.read.id).toBe(added.connect.id);
@@ -157,15 +152,12 @@ return { connect, read };`,
         );
         accounts.push(account.id);
 
-        // Reconnecting the saved account goes through the same request and returns its own link.
         const reconnected = yield* request("reconnect-account", account.id);
         expect(reconnected.connect.id).not.toBe(added.connect.id);
         expectLink(reconnected.connect);
         expect(reconnected.read.url).toBe(reconnected.connect.url);
         expect(reconnected.read.state.status).toBe("pending");
 
-        // Renaming the provider makes a new provider for the slot. Reconnecting the saved account
-        // says it no longer fits the slot, instead of claiming the account is gone.
         const renamed = yield* api.request(
           actors.owner,
           "POST",
@@ -180,10 +172,6 @@ return { connect, read };`,
         );
         const error = refused.execution.error;
         expect(error.response.code).toBe("AccountSelectionInvalid");
-        // The agent reads why the account no longer fits and that it must connect a new one,
-        // not the generic advice to review the selected accounts. `appAccounts.userConnect` is a
-        // mutation the host handed to the management app's code, so its recovery first says not
-        // to repeat the call, then quotes the API's own advice, whose other steps still apply.
         expect(error.response.message).toContain("different provider definition");
         expect(error.response.message).not.toBe(
           "The selected accounts do not match this app’s requirements.",
@@ -195,13 +183,10 @@ return { connect, read };`,
         expect(error.response.recovery.instructions).toContain("without `account`");
         expect(error.message).toContain("different provider definition");
 
-        // Following that recovery requests a new account for the renamed provider.
         const replacement = yield* request("connect-after-rename");
         expectLink(replacement.connect);
         expect(replacement.read.url).toBe(replacement.connect.url);
 
-        // An admin of another organization can read neither the request nor its link. Self-host
-        // permits one organization, so only Cloud has a real other organization.
         if (target.metadata.target === "cloud") {
           const fixtures = target.fixtures;
           if (fixtures === undefined) return yield* Effect.die("Cloud runs own a fixture control");

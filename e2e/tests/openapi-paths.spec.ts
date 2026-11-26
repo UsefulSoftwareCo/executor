@@ -39,7 +39,6 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI paths", (it) => {
         expect(imported.status, JSON.stringify(imported.body)).toBe(200);
         const app = yield* body(App, imported),
           path = `${prefix}/apps/${app.id}`;
-        // Connecting from the app links the account; the account array uses it.
         const connection = yield* body(
           Resource,
           yield* api.request(actors.owner, "POST", connectionsPath(path, "user", "service"), {}),

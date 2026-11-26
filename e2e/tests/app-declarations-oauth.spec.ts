@@ -1,7 +1,3 @@
-/**
- * Kept app declarations and tool listings are never served for an OAuth account that a live read
- * would refuse.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
@@ -22,7 +18,6 @@ const Bundle = Schema.Struct({
 });
 const Failure = Schema.Struct({ _tag: Schema.String });
 
-/** Token lifetime in seconds. Renewal starts 30 s before expiry, so 40 s gives a 10 s window. */
 const lifetime = 40;
 
 layer(HostedLive, { excludeTestServices: true })("App declarations and OAuth grants", (it) => {
@@ -73,7 +68,6 @@ export default defineApp({user: { accounts:{service} }},async({user: { accounts 
                 yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`);
             }).pipe(Effect.orDie),
           );
-          // Connecting from the app links the account, so reads and calls use it.
           const connection = yield* body(
             Resource,
             yield* api.request(actors.owner, "POST", connectionsPath(path, "user", "service"), {}),
@@ -116,7 +110,6 @@ export default defineApp({user: { accounts:{service} }},async({user: { accounts 
               Effect.map((value) => value.skills.map((skill) => skill.description)),
             );
 
-          // Evaluated with the first issued token, then kept for identical reads.
           const first = yield* workflows;
           expect(first.status, JSON.stringify(first.body)).toBe(200);
           expect(yield* names(first)).toEqual(["grant_token"]);
@@ -129,11 +122,8 @@ export default defineApp({user: { accounts:{service} }},async({user: { accounts 
           expect(listed.status, JSON.stringify(listed.body)).toBe(200);
           expect(listed.body).toMatchObject({ items: [{ name: "read" }] });
           expect((yield* listing).body).toEqual(listed.body);
-          // Every read above ran before renewal was due, so the stored credential never changed.
           expect(Date.now() - connectedAt).toBeLessThan((lifetime - 30) * 1000);
 
-          // Once renewal is due, the provider refuses the grant with invalid_grant, and the grant
-          // needs reconnecting.
           yield* Effect.sleep(Math.max(0, connectedAt + (lifetime - 29) * 1000 - Date.now()));
           yield* issuer.configure({
             tokenError: { status: 400, body: { error: "invalid_grant" } },
@@ -146,7 +136,6 @@ export default defineApp({user: { accounts:{service} }},async({user: { accounts 
           expect(refused.status, JSON.stringify(refused.body)).toBe(409);
           expect((yield* body(Failure, refused))._tag).toBe("OAuthReconnectRequired");
 
-          // Every kept result is still within its stale bound, yet none is served.
           for (const read of [workflows, bundle, listing]) {
             const denied = yield* read;
             expect(denied.status, JSON.stringify(denied.body)).toBe(409);

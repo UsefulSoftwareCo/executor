@@ -18,7 +18,6 @@ export const newAppPrompt = (product: string, description: string, endpoint?: st
         ]),
   ].join("\n");
 
-/** A copyable handoff to the user's agent. */
 export function AgentSetupPrompt({
   title,
   description,

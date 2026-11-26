@@ -1,6 +1,7 @@
 import { Link, useLocation } from "@tanstack/react-router";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
+  Activity01Icon,
   BoxesIcon,
   FingerPrintIcon,
   Key01Icon,
@@ -27,6 +28,7 @@ const items = [
   { to: "/org/$organizationSlug/accounts", label: "Accounts", icon: UserCircleIcon },
   { to: "/org/$organizationSlug/approvals", label: "Approvals", icon: Shield01Icon },
   { to: "/org/$organizationSlug/groups", label: "Groups", icon: UserGroupIcon },
+  { to: "/org/$organizationSlug/activity", label: "Activity", icon: Activity01Icon },
 ] as const;
 const settings = {
   to: "/org/$organizationSlug/organization",
@@ -74,7 +76,6 @@ function NavigationItem({
   );
 }
 
-/** The same navigation labels and icons, disabled until an organization target is known. */
 export function DashboardNavigation({
   organization,
   pendingPage = "apps",
@@ -85,7 +86,6 @@ export function DashboardNavigation({
     readonly role: OrganizationAccess["role"] | undefined;
   };
   readonly pendingPage?: string;
-  /** The host's own organization pages, after the common ones. */
   readonly children?: ReactNode;
 }) {
   return (
@@ -103,14 +103,12 @@ export function DashboardNavigation({
   );
 }
 
-/** Personal settings belong to the signed-in user, not to the organization in the URL. */
 const accountItems = [
   { to: "/account/profile", label: "Profile", icon: UserIcon },
   { to: "/account/security", label: "Security", icon: FingerPrintIcon },
   { to: "/account/tokens", label: "Tokens", icon: Key01Icon },
 ] as const;
 
-/** Links for the account area; none of them take an organization. */
 export function AccountNavigation() {
   const { search } = useLocation();
   const { organization } = parseAccountSearch(search);
@@ -131,7 +129,6 @@ export function AccountNavigation() {
   );
 }
 
-/** Shared organization-picker geometry before its name and choices are available. */
 export function OrganizationSwitcherSkeleton() {
   return (
     <div className="organization-switcher min-w-0 pb-2">
@@ -143,7 +140,6 @@ export function OrganizationSwitcherSkeleton() {
   );
 }
 
-/** Hosted layout slots shared by the resolved dashboard and authenticated entry. */
 export function DashboardFrame({
   organizationSlug,
   organization,
@@ -151,21 +147,19 @@ export function DashboardFrame({
   banner,
   support,
   notice,
+  news,
   pendingPage = "apps",
   account = false,
   children,
 }: {
   readonly organizationSlug?: string;
-  /** The organization switcher, or the account area's way back to an organization. */
   readonly organization: ReactNode;
   readonly navigation: ReactNode;
   readonly banner?: ReactNode;
-  /** Cloud offers a support dialog; self-host has no support channel of its own. */
   readonly support?: ReactNode;
-  /** A small product-owned card above the resource links. */
   readonly notice?: ReactNode;
+  readonly news?: ReactNode;
   readonly pendingPage?: string;
-  /** Account pages have no organization settings link; their wordmark returns to the root. */
   readonly account?: boolean;
   readonly children: ReactNode;
 }) {
@@ -191,6 +185,7 @@ export function DashboardFrame({
       banner={banner}
       support={support}
       notice={notice}
+      news={news}
       navigation={
         <>
           {navigation}

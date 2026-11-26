@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react";
-import { HugeiconsIcon } from "@hugeicons/react";
+import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import {
   BookOpen01Icon,
   Menu01Icon,
@@ -12,7 +12,6 @@ import { useMediaQuery } from "../hooks/media-query.ts";
 import { useProductBrand } from "../hooks/product-brand.ts";
 import { isDefaultProductBrand } from "@executor-js/utils/product-brand";
 
-/** The public issue tracker, shared by the Feedback link and the support channels. */
 export const issuesUrl = "https://github.com/UsefulSoftwareCo/executor/issues";
 
 /** Executor's own feedback and source links appear only while the deployment presents Executor. */
@@ -30,21 +29,14 @@ const resources = (docsUrl: string, executor: boolean) => [
     : []),
 ];
 
-/** Between the phone layout and a wide screen the rail starts collapsed and can be toggled. */
 const mediumViewport = "(min-width: 741px) and (max-width: 1000px)";
 
-/** Sidebar nav link styles, shared by the desktop rail and the phone menu sheet. */
 const navigationClass =
   "[&_nav]:grid [&_nav]:gap-0.5 [&_nav_a]:flex [&_nav_a]:items-center [&_nav_a]:py-[6px] [&_nav_a]:px-[8px] [&_nav_a]:gap-2 [&_nav_a]:rounded-[6px] [&_nav_a]:text-[13px] [&_nav_a]:font-medium [&_nav_a]:text-muted-foreground [&_nav_a.active]:bg-accent [&_nav_a.active]:text-foreground [&_nav_a:hover]:bg-accent [&_nav_a:hover]:text-foreground [&_nav_a_>_span]:ml-auto [&_nav_a_>_span]:text-muted-foreground [&_nav_a_>_span]:font-mono [&_nav_a_>_span]:text-[11px] [&_nav_a_>_span]:font-normal";
 
-/**
- * Icon-only rail. Labels stay in the DOM for assistive technology, so they are
- * collapsed with a zero font size rather than removed; icons keep their own size.
- */
 const collapsedClass =
   "[&_.sidebar-header]:justify-center [&_.wordmark]:hidden [&_nav_a]:justify-center [&_nav_a]:gap-0! [&_nav_a]:px-0! [&_nav_a]:h-9 [&_nav_a]:text-[0px]! [&_nav_a_>_span]:hidden [&_.sidebar-resource-links]:items-center [&_.sidebar-resource-links]:px-0 [&_.sidebar-resource-links_a]:w-full [&_.sidebar-resource-links_a]:justify-center [&_.sidebar-resource-links_a]:min-h-8 [&_.sidebar-resource-links_a_>_span]:hidden [&_.sidebar-resource-links_button]:w-full [&_.sidebar-resource-links_button]:justify-center [&_.sidebar-resource-links_button]:min-h-8 [&_.sidebar-resource-links_button_>_span]:hidden [&_.hosted-identity]:px-0 [&_.organization-trigger]:justify-center [&_.organization-trigger]:px-0 [&_.organization-name]:hidden [&_.organization-chevron]:hidden [&_.session-menu]:justify-center [&_.session-menu]:px-0 [&_.session-name]:hidden [&_.sidebar-version]:hidden";
 
-/** Links and the optional support trigger share one compact style. */
 function ResourceLinks({
   docsUrl,
   support,
@@ -66,12 +58,6 @@ function ResourceLinks({
   );
 }
 
-/**
- * The dashboard layout: a sidebar rail on wide screens, which collapses to an
- * icon rail on medium ones, where it can be toggled either way. On phones the rail
- * becomes a floating Menu pill that opens the same navigation, resource links and
- * footer in a bottom sheet, so page content starts at the top of the screen.
- */
 export function DashboardShell({
   docsUrl,
   brand,
@@ -79,19 +65,25 @@ export function DashboardShell({
   banner,
   support,
   notice,
+  noticeMark,
+  news,
   footer,
   children,
 }: {
-  /** The owning product chooses same-origin or public documentation. */
   readonly docsUrl: string;
   readonly brand: ReactNode;
   readonly navigation: ReactNode;
-  /** A full-width notice above the navigation and page content. */
   readonly banner?: ReactNode;
-  /** A product-owned way to reach the team, shown with the resource links. */
   readonly support?: ReactNode;
-  /** A small product-owned card above the resource links; the icon rail hides it. */
   readonly notice?: ReactNode;
+  readonly noticeMark?:
+    | {
+        readonly label: string;
+        readonly icon: IconSvgElement;
+        readonly dot: boolean;
+      }
+    | undefined;
+  readonly news?: ReactNode;
   readonly footer?: ReactNode;
   readonly children: ReactNode;
 }) {
@@ -100,6 +92,11 @@ export function DashboardShell({
   const medium = useMediaQuery(mediumViewport);
   const [mediumCollapsed, setMediumCollapsed] = useState(true);
   const collapsed = medium && mediumCollapsed;
+  const block = notice ? notice : news ? news : null;
+  const links = (sheet: boolean) =>
+    notice && (sheet || !collapsed) ? null : <ResourceLinks docsUrl={docsUrl} support={support} />;
+  const railBlock = collapsed ? null : block;
+  const railMark = collapsed && notice ? noticeMark : undefined;
   return (
     <div
       className={`shell grid h-dvh max-[740px]:grid-cols-1 ${banner ? "grid-rows-[auto_minmax(0,_1fr)]" : "max-[740px]:grid-rows-[minmax(0,_1fr)]"} ${collapsed ? "grid-cols-[60px_minmax(0,_1fr)]" : "grid-cols-[224px_minmax(0,_1fr)] max-[1000px]:grid-cols-[190px_minmax(0,_1fr)]"}`}
@@ -140,11 +137,30 @@ export function DashboardShell({
           {brand}
         </div>
         <nav aria-label="Main navigation">{navigation}</nav>
-        {notice && !collapsed && <div className="sidebar-notice mt-auto pt-4 pb-3">{notice}</div>}
+        {railBlock && <div className="sidebar-notice mt-auto pt-4 pb-3">{railBlock}</div>}
+        {railMark && (
+          <div className="sidebar-notice-mark mt-auto flex justify-center pt-4 pb-2">
+            <button
+              type="button"
+              className="relative flex items-center justify-center size-8 rounded-[6px] text-muted-foreground hover:bg-accent hover:text-foreground outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+              aria-label={railMark.label}
+              title={railMark.label}
+              onClick={() => setMediumCollapsed(false)}
+            >
+              <HugeiconsIcon icon={railMark.icon} strokeWidth={2} size={16} aria-hidden />
+              {railMark.dot && (
+                <span
+                  className="sidebar-notice-dot absolute top-1.5 right-1.5 size-1.5 rounded-full bg-foreground"
+                  aria-hidden
+                />
+              )}
+            </button>
+          </div>
+        )}
         <div
-          className={`sidebar-utilities ${notice && !collapsed ? "" : "mt-auto"} [padding:12px_0_16px] border-t border-t-border text-muted-foreground [&_a:hover]:text-foreground`}
+          className={`sidebar-utilities ${railBlock || railMark ? "" : "mt-auto"} [padding:12px_0_16px] border-t border-t-border text-muted-foreground [&_a:hover]:text-foreground`}
         >
-          <ResourceLinks docsUrl={docsUrl} support={support} />
+          {links(false)}
           {footer}
         </div>
       </aside>
@@ -170,16 +186,15 @@ export function DashboardShell({
           showCloseButton={false}
           className={`shell-menu sidebar top-auto bottom-0 left-0 translate-x-0 translate-y-0 w-full max-w-none sm:max-w-none gap-0 rounded-b-none rounded-t-[14px] border-b-0 p-[8px_8px_max(12px,_env(safe-area-inset-bottom))] max-h-[85dvh] overflow-y-auto data-[state=open]:slide-in-from-bottom-4 data-[state=closed]:slide-out-to-bottom-4 data-[state=open]:zoom-in-100 data-[state=closed]:zoom-out-100 [&_nav_a]:min-h-11 [&_nav_a]:text-[14px] [&_nav_a]:px-[10px] ${navigationClass}`}
           onClickCapture={(event) => {
-            // Following a link closes the sheet; the route change happens as usual.
             if ((event.target as Element).closest("a")) setMenuOpen(false);
           }}
         >
           <DialogTitle className="sr-only">Menu</DialogTitle>
           <div className="mx-auto mb-2 h-1 w-9 rounded-full bg-border" aria-hidden />
           <nav aria-label="Main navigation">{navigation}</nav>
-          {notice && <div className="sidebar-notice mt-3">{notice}</div>}
+          {block && <div className="sidebar-notice mt-3">{block}</div>}
           <div className="sidebar-utilities mt-3 [padding:12px_0_0] border-t border-t-border text-muted-foreground [&_a:hover]:text-foreground">
-            <ResourceLinks docsUrl={docsUrl} support={support} />
+            {links(true)}
             {footer}
           </div>
         </DialogContent>

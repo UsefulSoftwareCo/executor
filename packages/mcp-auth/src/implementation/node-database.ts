@@ -1,4 +1,3 @@
-/** Promise boundary required by Better Auth's Kysely driver. */
 import { PgliteClient } from "@effect/sql-pglite";
 import { Effect, Exit, Scope, Schema } from "effect";
 import {
@@ -10,18 +9,11 @@ import {
   type DatabaseConnection,
   type Driver,
 } from "kysely";
-/** A native auth database operation failed; driver details remain private. */
 export class DatabaseUnavailable extends Schema.TaggedError<DatabaseUnavailable>()(
   "AuthDatabaseUnavailable",
   { stage: Schema.Literal("query") },
 ) {}
 
-/**
- * Reserve Effect's connection for each Kysely checkout, including its entire
- * transaction. Raw PGlite access is safe only while this reservation is held.
- * Auth queries cannot join or commit another SDK operation's transaction.
- * The host owns the engine; Kysely releases reservations, not the engine.
- */
 export const makeAuthDatabase = Effect.gen(function* () {
   const client = yield* PgliteClient.PgliteClient;
   const owner = yield* Effect.scope;

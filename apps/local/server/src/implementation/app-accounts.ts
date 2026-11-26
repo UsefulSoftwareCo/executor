@@ -1,9 +1,3 @@
-/**
- * The accounts linked to each local app's requirements, kept in `local_app_account_links`, and the
- * accounts every operation runs with: resolved by the same rules as hosted, app requirements from
- * the app links and user requirements from the user links. Local has one subject, so an app's user
- * links are its only ones, and the owner links in both scopes without an access policy.
- */
 import {
   AccountChoiceUnsupported,
   AccountId,
@@ -30,7 +24,6 @@ import type { SqlClient } from "effect/sql";
 import type { AppAccountLink, AppAccountRequirement } from "../contracts/dashboard.ts";
 import { RequirementMismatch } from "../contracts/requirement-mismatch.ts";
 
-/** The one local subject; background work and its user links run as it. */
 export const localActor = "local";
 
 const storage = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
@@ -47,12 +40,7 @@ const LinkRow = Schema.Struct({
   createdAt: Schema.Date,
 });
 const scopeOf = (subject: string | null): AccountScope => (subject === null ? "app" : "user");
-/** The subject of a scope's links: none for app links, the local subject for user links. */
 export const scopeSubject = (scope: AccountScope) => (scope === "app" ? null : localActor);
-/**
- * Every statement on the links table names it to the executor's tracking, so live reads that
- * resolve accounts, such as the tool catalog, follow committed link changes from every surface.
- */
 const linksTable = ["local_app_account_links"];
 const readLinks = <A, E, R>(executor: Executor, effect: Effect.Effect<A, E, R>) =>
   executor[StorageHost].read(linksTable, effect);
@@ -61,7 +49,6 @@ const writeLinks = <A, E, R>(executor: Executor, effect: Effect.Effect<A, E, R>)
 const sameSubject = (sql: SqlClient.SqlClient, subject: string | null) =>
   subject === null ? sql`l.subject is null` : sql`l.subject = ${subject}`;
 
-/** The app owner's accounts by ID, read only when some are needed. */
 const ownerAccounts = (executor: Executor, app: App, needed: boolean) =>
   needed
     ? Effect.map(
@@ -70,7 +57,6 @@ const ownerAccounts = (executor: Executor, app: App, needed: boolean) =>
       )
     : Effect.succeed(new Map<AccountId, Account>());
 
-/** The app's links in one scope to its owner's accounts, oldest first per requirement. */
 const linkRows = (
   sql: SqlClient.SqlClient,
   executor: Executor,
@@ -88,10 +74,6 @@ const linkRows = (
     order by l.created_at, l.account`,
   ).pipe(Effect.flatMap(decode(LinkRow)));
 
-/**
- * The app's links in one scope, as the owner's accounts, oldest first. Accounts that are gone drop
- * out and nothing is substituted.
- */
 const linkedAccountsOf = (
   sql: SqlClient.SqlClient,
   executor: Executor,
@@ -109,16 +91,11 @@ const linkedAccountsOf = (
     });
   }).pipe(Effect.catchTags(sqlFailures));
 
-/** The accounts of the app's owner linked to its user requirements, oldest link first. */
 export const linkedAccounts = (sql: SqlClient.SqlClient, executor: Executor, app: App) =>
   Effect.map(linkedAccountsOf(sql, executor, app, localActor), (links) =>
     links.map((link) => link.account),
   );
 
-/**
- * The app's links in one scope, oldest first per requirement, with each account and its checks by
- * this app. A link whose account is gone, or belongs to another owner, is left out.
- */
 export const appAccountLinks = (
   sql: SqlClient.SqlClient,
   executor: Executor,
@@ -147,7 +124,6 @@ const AnyLink = Schema.Struct({
   account: AccountId,
   subject: Schema.NullOr(Schema.String),
 });
-/** Every link in both scopes, oldest first, or those of one account. */
 export const accountLinks = (sql: SqlClient.SqlClient, executor: Executor, account?: AccountId) =>
   readLinks(
     executor,
@@ -158,7 +134,6 @@ export const accountLinks = (sql: SqlClient.SqlClient, executor: Executor, accou
         where account = ${account} order by created_at, app`,
   ).pipe(Effect.flatMap(decode(AnyLink)), Effect.catchTags(sqlFailures));
 
-/** The requirement in this scope of the app's active version, or `RequirementMismatch`. */
 const scopedRequirement = (app: App, scope: AccountScope, requirement: string) => {
   const required = Object.hasOwn(app.requirements.accounts, requirement)
     ? app.requirements.accounts[requirement]
@@ -170,7 +145,6 @@ const scopedRequirement = (app: App, scope: AccountScope, requirement: string) =
     : Effect.succeed(required);
 };
 
-/** Refuse a dashboard sign-in for a requirement the route's scope does not declare. */
 export const requireScopedRequirement = (
   executor: Executor,
   input: { readonly app: AppId; readonly requirement: string; readonly scope: AccountScope },
@@ -179,10 +153,6 @@ export const requireScopedRequirement = (
     scopedRequirement(app, input.scope, input.requirement),
   );
 
-/**
- * One requirement in one scope: its linked accounts, oldest first, then the app owner's other
- * accounts of its provider, which could be linked.
- */
 export const appAccountRequirement = (
   sql: SqlClient.SqlClient,
   executor: Executor,
@@ -219,10 +189,6 @@ export const appAccountRequirement = (
     } satisfies AppAccountRequirement;
   });
 
-/**
- * One version of an app and the requirements its code declares: the active one for new
- * operations, or a retained one an operation pins, such as reading an earlier skill.
- */
 interface AppVersion {
   readonly app: App;
   readonly version: VersionId | null;
@@ -233,7 +199,6 @@ const activeVersion = (app: App): AppVersion => ({
   version: app.activeVersion,
   requirements: app.requirements,
 });
-/** The app at a retained version of its code lineage when pinned, else its active one. */
 export const appVersion = (executor: Executor, app: App, version: VersionId | undefined) =>
   version === undefined || version === app.activeVersion
     ? Effect.succeed(activeVersion(app))
@@ -245,10 +210,6 @@ export const appVersion = (executor: Executor, app: App, version: VersionId | un
         })),
       );
 
-/**
- * Each app requirement of the version with its app links, and each user requirement with its user
- * links; no read without requirements.
- */
 export const versionRequirementAccounts = (
   sql: SqlClient.SqlClient,
   executor: Executor,
@@ -266,7 +227,6 @@ export const versionRequirementAccounts = (
         })),
       );
 
-/** The accounts an operation runs with, for every requirement of the version. */
 export const versionAccounts = (
   sql: SqlClient.SqlClient,
   executor: Executor,
@@ -276,15 +236,9 @@ export const versionAccounts = (
     resolveLinkedAccounts({ app: version.app.id, version: version.version, ...accounts }),
   );
 
-/** The accounts an operation runs with, for every requirement of the app's active version. */
 export const callerAccounts = (sql: SqlClient.SqlClient, executor: Executor, app: App) =>
   versionAccounts(sql, executor, activeVersion(app));
 
-/**
- * Serve an SDK operation with the app's linked accounts, for the requirements of the
- * version its input pins. Callers never choose accounts: an input that names them fails with
- * `AccountChoiceUnsupported`.
- */
 export const linkedOperation =
   (sql: SqlClient.SqlClient, executor: Executor) =>
   <
@@ -310,14 +264,9 @@ export const linkedOperation =
       return yield* operation({ ...input, accounts }, ...rest);
     });
 
-/**
- * Take the SDK's app lock before reading or writing the app's links. Webhook source changes take
- * the same lock, so a change and the source change it causes are serialized per app.
- */
 const lockApp = (sql: SqlClient.SqlClient, app: AppId) =>
   sql`select id from executor_apps where id = ${app} for no key update`.pipe(Effect.asVoid);
 
-/** Stop the app's webhook source for an account that no longer serves it. */
 const unlinkSource = (executor: Executor, app: AppId, account: AccountId) =>
   executor.webhooks.unlink({ app, account }).pipe(
     Effect.catchTag("WebhookNotFound", () => Effect.void),
@@ -325,15 +274,6 @@ const unlinkSource = (executor: Executor, app: AppId, account: AccountId) =>
   );
 
 const SubjectRow = Schema.Struct({ subject: Schema.NullOr(Schema.String) });
-/**
- * Bring the app's webhook source for an account in line with its links, as hosted does: with an app
- * link it is the app's own source, without an actor (an account also linked for the local user
- * serves as its app link only); otherwise with a user link it runs as the local subject; without
- * links it stops. It serves the webhooks of the requirements it is linked to in its scope.
- * `changed` names whose link was just added or removed, null for an app link: when that changes
- * the requirements the source serves, new intent is saved on it, so reconciliation registers or
- * removes the webhooks of the requirement linked or unlinked.
- */
 const syncSource = (
   sql: SqlClient.SqlClient,
   executor: Executor,
@@ -379,7 +319,6 @@ const syncSource = (
     if (live) yield* unlinkSource(executor, input.app, input.account);
   }).pipe(Effect.catchTags(sqlFailures));
 
-/** One link: `subject` null for an app link, else the local subject. */
 interface LinkKey {
   readonly app: AppId;
   readonly requirement: string;
@@ -387,10 +326,6 @@ interface LinkKey {
   readonly subject: string | null;
 }
 
-/**
- * Remove one link, in the caller's transaction, under the app's lock, and bring the account's
- * webhook source in line. Returns whether a link was removed.
- */
 const removeLink = (sql: SqlClient.SqlClient, executor: Executor, input: LinkKey) =>
   Effect.gen(function* () {
     yield* lockApp(sql, input.app);
@@ -410,14 +345,6 @@ const removeLink = (sql: SqlClient.SqlClient, executor: Executor, input: LinkKey
     return true;
   }).pipe(Effect.catchTag("SqlError", () => new StorageError()));
 
-/**
- * Link one of the app owner's accounts to a requirement of the app's active version in the
- * link's scope, in the caller's transaction, under the app's lock. The requirement must be declared
- * in that scope and use the account's provider (`RequirementMismatch`). A plain requirement keeps
- * one link per scope: linking another account replaces it, as {@link removeLink} removes it; the
- * replaced account stays saved. many() keeps every one. `config` configures the webhook source the
- * first link creates. Linking again changes nothing. Returns whether a link changed.
- */
 const addLink = (
   sql: SqlClient.SqlClient,
   executor: Executor,
@@ -459,7 +386,6 @@ const addLink = (
         account: previous.account,
         subject,
       });
-    // Each link is dated when it is made, so links made in one transaction keep their order.
     const inserted = yield* writeLinks(
       executor,
       sql`insert into local_app_account_links
@@ -477,10 +403,6 @@ const addLink = (
     return true;
   }).pipe(Effect.catchTags(sqlFailures));
 
-/**
- * Link one of the app owner's accounts to a requirement in a scope (see {@link addLink}), and
- * return the link with its checks. Wake webhook source reconciliation once it commits.
- */
 export const linkAccount = (
   sql: SqlClient.SqlClient,
   executor: Executor,
@@ -495,7 +417,6 @@ export const linkAccount = (
   Effect.gen(function* () {
     yield* executor[StorageHost].transaction(
       Effect.gen(function* () {
-        // The lock is taken before the app is read, so its active version holds while linking.
         yield* lockApp(sql, input.app).pipe(Effect.catchTag("SqlError", () => new StorageError()));
         const app = yield* executor.apps.get({ app: input.app });
         const account = yield* executor.accounts.get({ owner: app.owner, account: input.account });
@@ -516,10 +437,6 @@ export const linkAccount = (
     return link;
   });
 
-/**
- * Unlink an account from a requirement in a scope (see {@link removeLink}). The account stays
- * saved. Wake webhook source reconciliation once it commits.
- */
 export const unlinkAccount = (
   sql: SqlClient.SqlClient,
   executor: Executor,
@@ -544,7 +461,6 @@ export const unlinkAccount = (
     }),
   );
 
-/** The apps an account is linked to for every call, which must unlink it before it is deleted. */
 export const appLinkApps = (sql: SqlClient.SqlClient, executor: Executor, account: AccountId) =>
   readLinks(
     executor,
@@ -556,15 +472,6 @@ export const appLinkApps = (sql: SqlClient.SqlClient, executor: Executor, accoun
     Effect.catchTags(sqlFailures),
   );
 
-/**
- * Local's part of data step `10_profile_app_copies`: a copy has its app's owner, and links each
- * account of the profiles it replaces to the requirement they selected it for, in their order, as
- * the local subject's user links. Accounts that are gone, or no longer the copy owner's, are
- * skipped. Links are saved as step `2_app_account_links` saves the app's own, without reading the
- * copy's requirements: a copy saved undeployed declares none until it is deployed, and its links
- * must wait for that, not be dropped. Runs resolve links only for the requirements a version
- * declares in their scope.
- */
 export const localAppCopies = (
   sql: SqlClient.SqlClient,
   executor: Executor,
@@ -577,7 +484,6 @@ export const localAppCopies = (
       Effect.gen(function* () {
         yield* lockApp(sql, app);
         for (const { requirement, account } of links) {
-          // Each link is dated when it is made, so the plan's order is kept.
           const inserted = yield* writeLinks(
             executor,
             sql`insert into local_app_account_links
@@ -601,13 +507,11 @@ export const localAppCopies = (
   },
 });
 
-/** The IDs of the user accounts, and of the app accounts that pass `linked`. */
 const passing = (
   accounts: readonly Pick<Account, "id">[],
   uses: readonly AppAccountUse[],
   linked: (use: AppAccountUse) => boolean,
 ) => {
-  // An account used by both scopes must pass both checks: refused for any requirement, refused.
   const refused = new Set(uses.filter((use) => !linked(use)).map((use) => use.account.id));
   return new Set(
     [...accounts.map((account) => account.id), ...uses.map((use) => use.account.id)].filter(
@@ -616,41 +520,11 @@ const passing = (
   );
 };
 
-/**
- * Background work resolves the local subject's accounts from its user links, and the app's from its
- * app links. Local has no other product authority: every linked account it resolves is usable, and
- * an app account is authorized by its current app link to the requirement. An account connected
- * from an app is linked to its requirement in the scope the requirement has, replacing as linking
- * does.
- */
 export const localResourceLifecycle = (
   executor: Effect.Effect<Executor>,
   sql: SqlClient.SqlClient,
-): ResourceLifecycle => ({
-  userLinks: (input) =>
-    Effect.gen(function* () {
-      const sdk = yield* executor;
-      const app = yield* storage(sdk.apps.get({ app: input.app }));
-      return (yield* linkedAccountsOf(sql, sdk, app, localActor)).map((link) => ({
-        requirement: link.requirement,
-        account: link.account.id,
-      }));
-    }),
-  appLinks: (input) =>
-    Effect.gen(function* () {
-      const sdk = yield* executor;
-      const app = yield* storage(sdk.apps.get({ app: input.app }));
-      return (yield* linkedAccountsOf(sql, sdk, app, null)).map((link) => ({
-        requirement: link.requirement,
-        account: link.account.id,
-      }));
-    }),
-  // Nobody else links the account, so a source the app no longer uses stops.
-  sourceActorLost: (input) =>
-    Effect.flatMap(executor, (sdk) => unlinkSource(sdk, input.app, input.account)),
-  // The local subject may use every account it resolves. An app requirement's account must still
-  // be the app owner's and linked to the app for that requirement: unlinking refuses it at once.
-  appResolving: (app, accounts, appUses) =>
+): ResourceLifecycle => {
+  const appResolving: ResourceLifecycle["appResolving"] = (app, accounts, appUses) =>
     Effect.gen(function* () {
       if (appUses.length === 0) return passing(accounts, [], () => true);
       const sdk = yield* executor;
@@ -674,34 +548,54 @@ export const localResourceLifecycle = (
           use.account.owner === app.owner &&
           current.has(`${use.requirement}\u0000${use.account.id}`),
       );
-    }).pipe(Effect.catchTags(sqlFailures)),
-  // Removing what the app registered needs no current app link: unlinking is what removes its
-  // registrations. An app account passes while it is the app owner's, so the app could have linked
-  // it.
-  removalResolving: (app, accounts, appUses) =>
-    Effect.succeed(passing(accounts, appUses, (use) => use.account.owner === app.owner)),
-  accountsResolving: (accounts) => Effect.succeed(new Set(accounts.map((account) => account.id))),
-  connectionCompleting: () => Effect.void,
-  appCreated: () => Effect.void,
-  appRemoving: () => Effect.void,
-  // The owner links in both scopes. The SDK has checked, under the app's lock, that the
-  // requirement still has the scope the connection was started for.
-  appAccountConnected: (input) =>
-    Effect.gen(function* () {
-      const sdk = yield* executor;
-      const app = yield* storage(sdk.apps.get({ app: input.app }));
-      yield* addLink(sql, sdk, {
-        app,
-        requirement: input.requirement,
-        account: input.account,
-        subject: scopeSubject(input.scope),
-      }).pipe(Effect.mapError(() => new StorageError()));
-    }),
-  accountCreated: () => Effect.void,
-  // An app link is used by its app for every call; the route refuses with the apps that link it,
-  // and this refuses an app link made since. Its user links are removed with it.
-  accountRemoving: (account) =>
-    Effect.flatMap(executor, (sdk) => appLinkApps(sql, sdk, account.id)).pipe(
-      Effect.flatMap((apps) => (apps.length > 0 ? new StorageError() : Effect.void)),
-    ),
-});
+    }).pipe(Effect.catchTags(sqlFailures));
+  return {
+    userLinks: (input) =>
+      Effect.gen(function* () {
+        const sdk = yield* executor;
+        const app = yield* storage(sdk.apps.get({ app: input.app }));
+        return (yield* linkedAccountsOf(sql, sdk, app, localActor)).map((link) => ({
+          requirement: link.requirement,
+          account: link.account.id,
+        }));
+      }),
+    appLinks: (input) =>
+      Effect.gen(function* () {
+        const sdk = yield* executor;
+        const app = yield* storage(sdk.apps.get({ app: input.app }));
+        return (yield* linkedAccountsOf(sql, sdk, app, null)).map((link) => ({
+          requirement: link.requirement,
+          account: link.account.id,
+        }));
+      }),
+    sourceActorLost: (input) =>
+      Effect.flatMap(executor, (sdk) => unlinkSource(sdk, input.app, input.account)),
+    appResolving,
+    appsResolving: (owner, apps) =>
+      Effect.forEach(apps, (app) =>
+        Effect.result(appResolving({ id: app.id, owner }, app.accounts, app.appUses)),
+      ),
+    removalResolving: (app, accounts, appUses) =>
+      Effect.succeed(passing(accounts, appUses, (use) => use.account.owner === app.owner)),
+    accountsResolving: (accounts) => Effect.succeed(new Set(accounts.map((account) => account.id))),
+    connectionCompleting: () => Effect.void,
+    appCreated: () => Effect.void,
+    appRemoving: () => Effect.void,
+    appAccountConnected: (input) =>
+      Effect.gen(function* () {
+        const sdk = yield* executor;
+        const app = yield* storage(sdk.apps.get({ app: input.app }));
+        yield* addLink(sql, sdk, {
+          app,
+          requirement: input.requirement,
+          account: input.account,
+          subject: scopeSubject(input.scope),
+        }).pipe(Effect.mapError(() => new StorageError()));
+      }),
+    accountCreated: () => Effect.void,
+    accountRemoving: (account) =>
+      Effect.flatMap(executor, (sdk) => appLinkApps(sql, sdk, account.id)).pipe(
+        Effect.flatMap((apps) => (apps.length > 0 ? new StorageError() : Effect.void)),
+      ),
+  };
+};

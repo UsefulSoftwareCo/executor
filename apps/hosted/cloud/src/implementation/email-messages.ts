@@ -6,7 +6,6 @@ import {
   type ProductBrand,
 } from "@executor-js/utils/product-brand";
 
-/** Shared with Better Auth so the message always states the code's actual lifetime. */
 export const emailCodeExpiresIn = 300;
 
 const purposes = (product: string) => ({
@@ -14,12 +13,10 @@ const purposes = (product: string) => ({
     heading: "Your sign-in code",
     instruction: `Copy and paste this code into ${product} to sign in.`,
   },
-  /** A sign-in code for an email with no account yet; verifying it creates the account. */
   "sign-up": {
     heading: "Your sign-up code",
     instruction: `Copy and paste this code into ${product} to create your account.`,
   },
-  /** Sent to the current address; an email change needs this code before the new address gets one. */
   "email-verification": {
     heading: "Approve your email change",
     instruction: `Someone asked to change the email address of your ${product} account. Copy and paste this code into ${product} to approve the change.`,
@@ -42,7 +39,6 @@ const escapeHtml = (value: string) =>
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
 
-/** Render a team invite with one acceptance URL in HTML and text; both payloads contain a secret. */
 export const invitationEmailMessage = ({
   email,
   id,
@@ -110,21 +106,11 @@ export const invitationEmailMessage = ({
   };
 };
 
-/**
- * The docs live on the site origin, the edge when the deployment has role hosts; the MCP
- * endpoint is on the canonical MCP origin.
- */
 export interface WelcomeEmailOrigins {
   readonly site: string;
   readonly resourceOrigin: string;
 }
 
-/**
- * A personal welcome with matching text and HTML; recipient names are escaped, never
- * markup. It carries one starter prompt with the deployment's MCP URL and the docs link.
- * The body reads as a direct note, so unsubscribing is left to the inbox's
- * List-Unsubscribe control.
- */
 export const welcomeEmailMessage = (
   email: string,
   name: string,
@@ -159,7 +145,6 @@ export const welcomeEmailMessage = (
   };
 };
 
-/** Render a compact code email with equivalent HTML and text; neither payload is log-safe. */
 export const emailCodeMessage = ({
   email,
   otp,

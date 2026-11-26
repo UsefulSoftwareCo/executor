@@ -1,10 +1,12 @@
-/** MCP grant checks for the API's MCP gateway and the MCP server's session objects. */
 import {
   AuthenticationUnavailable,
   McpAuthentication,
   authOptions,
+  recordCaller,
   type HostedOAuthOrigins,
+  type UnknownApiKeys,
   mcpBrowserGrantError,
+  describeMcpAccess,
   mcpBearerAccess,
   mcpConnectionStore,
 } from "@executor-js/hosted-server";
@@ -20,17 +22,13 @@ import {
   v1ForwardAccess,
   v1ForwardBrowserAccess,
 } from "../implementation/v1-mcp-forward.ts";
+import { legacyToolkitAccess } from "../implementation/v1-legacy-mcp.ts";
 import { organizationTables } from "./app-sessions.ts";
 import { AuthDatabase, type AuthDatabaseService } from "./auth-database.ts";
 import { invocationSql } from "./invocation-database.ts";
 import { cloudSecrets, v1McpForwardSecret } from "./secrets.ts";
 import { cloudHosts } from "./stage.ts";
 
-/**
- * Better Auth with the shared grant, API key and admin plugins and the organization columns the
- * grant checks read. The dashboard's instance adds sign-in, email and billing to the same
- * plugins and writes the same rows; none of its additions take part in a grant check.
- */
 const mcpGrantAuth = (
   { origin, resourceOrigins, issuer }: HostedOAuthOrigins,
   database: AuthDatabaseService,
@@ -48,14 +46,12 @@ const mcpGrantAuth = (
     advanced: {
       ...base.advanced,
       cookiePrefix: cloudSessionCookiePrefix(origin),
-      // As in the dashboard: the deployment migration validates the schema, not requests.
       database: { ...base.advanced.database, validateSchema: false },
       backgroundTasks: { handler: database.background },
     },
   });
 };
 
-/** The server-only grant endpoints; both instances register them through the shared plugins. */
 type McpGrantApi = Pick<
   ReturnType<typeof mcpGrantAuth>["api"],
   | "getMcpBrowserAccess"
@@ -67,24 +63,18 @@ type McpGrantApi = Pick<
   | "listMcpAgents"
   | "revokeMcpAgent"
 > & {
-  /** The signed-in browser's user, for a forwarded grant's approval page. */
   readonly getSession: (input: {
     readonly headers: Headers;
     readonly query: { readonly disableRefresh: true; readonly disableCookieCache: true };
   }) => Promise<{ readonly user: { readonly id: string } } | null>;
 };
 
-/**
- * MCP authentication. Bearer checks read their rows in one statement through `withSql`; browser
- * grants, metadata and connections use the isolate's Better Auth instance, which `bound` pairs
- * with the calling invocation's pool. Every check uses the caller's connections. A bearer v1
- * signed for a request it forwards is checked with `v1Forward`, v1's shared secret.
- */
 export const mcpAuthentication = (
   origins: HostedOAuthOrigins,
   bound: Effect.Effect<readonly [{ readonly api: McpGrantApi }, <A>(run: () => A) => A]>,
   withSql: <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) => Effect.Effect<A, E>,
   v1Forward: Option.Option<Redacted.Redacted<string>>,
+  unknownKeys?: UnknownApiKeys,
 ) =>
   Layer.effect(
     McpAuthentication,
@@ -93,13 +83,12 @@ export const mcpAuthentication = (
         ...origins,
         authenticate: (headers, mode, organization) =>
           withSql(
-            isV1Forward(headers)
+            (isV1Forward(headers)
               ? v1ForwardAccess(v1Forward, { headers, mode, organization })
-              : mcpBearerAccess(origins, { headers, mode, organization }),
+              : mcpBearerAccess(origins, { headers, mode, organization }, unknownKeys)
+            ).pipe(Effect.flatMap((access) => legacyToolkitAccess(headers, access))),
           ).pipe(
-            Effect.tap(({ access }) =>
-              Effect.annotateCurrentSpan("executor.organization.id", access.organization),
-            ),
+            Effect.tap(({ access, userId }) => recordCaller(access.organization, userId)),
             Effect.withSpan("auth.authenticate"),
           ),
         browserGrant: (headers, id) =>
@@ -128,6 +117,7 @@ export const mcpAuthentication = (
                   }),
                 ),
               ),
+        describe: (access) => withSql(describeMcpAccess(access)),
         metadata: bound.pipe(
           Effect.flatMap(([instance, bind]) =>
             Effect.tryPromise({
@@ -156,10 +146,6 @@ export const mcpAuthentication = (
     }),
   );
 
-/**
- * The MCP server Worker's identity. Bearer checks need no Better Auth instance; the one built for
- * browser grants and connections is per isolate, like the dashboard's, and holds no request state.
- */
 export const cloudMcpIdentity = Effect.gen(function* () {
   const hosts = yield* cloudHosts.pipe(Effect.orDie);
   const origins = {

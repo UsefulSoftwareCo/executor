@@ -1,4 +1,5 @@
 import { LocalTime } from "@executor-js/ui/components/local-time";
+import { copyText } from "@executor-js/ui/lib/clipboard";
 import { Link } from "@tanstack/react-router";
 import { EmptyState } from "@executor-js/ui/dashboard/empty-state";
 import { PageFrame, PageHeader } from "@executor-js/ui/dashboard/page";
@@ -13,7 +14,12 @@ import {
   tokensDescription,
   tokensTitle,
 } from "../components/tokens-pending.tsx";
-import type { ApiKeySummary, CreatedApiKey } from "@executor-js/hosted-server/api-keys";
+import {
+  isManagedKey,
+  managedKeyName,
+  type ApiKeySummary,
+  type CreatedApiKey,
+} from "@executor-js/hosted-server/api-keys";
 import { OrganizationId } from "@executor-js/hosted-server/organization";
 import { Button } from "@executor-js/ui/components/button";
 import { Input } from "@executor-js/ui/components/input";
@@ -45,17 +51,12 @@ import { OrganizationAvatar } from "../components/organization.tsx";
 import { useAccountOrganization } from "../components/account.tsx";
 import { useDocumentationUrl } from "../documentation.ts";
 
-/** The organization select value: one organization id, or the whole account. */
 const fullAccount = "account";
 const errorMessage = (cause: Cause.Cause<ApiKeyFailed>) => {
   const error = Cause.squash(cause);
   return error instanceof ApiKeyFailed ? error.message : "Could not update API keys. Try again.";
 };
 
-/**
- * Every token the signed-in user owns, across organizations. The organization a visitor came
- * from only preselects the scope of a new token.
- */
 export function TokensPage({
   organization: reference,
 }: {
@@ -65,7 +66,6 @@ export function TokensPage({
   const { organizations, memberships, selected } = useAccountOrganization(reference);
   const retryOrganizations = useAtomRefresh(organizationsAtom);
   const tokenDocsUrl = useDocumentationUrl("api-keys/#personal-access-tokens");
-  /** A pinned key names its organization; one the user has left keeps a plain label. */
   const pinnedOrganization = (key: ApiKeySummary) =>
     key.metadata?.organization === undefined
       ? undefined
@@ -190,9 +190,18 @@ export function TokensPage({
                         <td className="min-w-44 px-4 py-4">
                           <div className="font-medium break-words">{key.name}</div>
                           <code className="text-xs text-muted-foreground">{key.start}…</code>
-                          <p className="mt-1 text-xs text-muted-foreground">
-                            Created by you · {date(key.createdAt)}
-                          </p>
+                          {isManagedKey(key) ? (
+                            <p className="mt-1 text-xs text-muted-foreground">
+                              <span className="me-1.5 rounded-sm border px-1.5 py-0.5 font-medium text-foreground">
+                                In use by the Executor app
+                              </span>
+                              Created by Executor · {date(key.createdAt)}
+                            </p>
+                          ) : (
+                            <p className="mt-1 text-xs text-muted-foreground">
+                              Created by you · {date(key.createdAt)}
+                            </p>
+                          )}
                         </td>
                         <td className="px-4 py-4 text-xs">
                           {(() => {
@@ -294,6 +303,12 @@ export function TokensPage({
               event.preventDefault();
               if (creating || scope === undefined) return;
               setError(undefined);
+              if (name.trim() === managedKeyName) {
+                setError(
+                  "That name is reserved for the key Executor creates for the Executor app. Choose another name.",
+                );
+                return;
+              }
               const result = await create({
                 name: name.trim(),
                 ...(scope === fullAccount
@@ -425,7 +440,6 @@ export function TokensPage({
           </DialogDescription>
           {created && (
             <>
-              {/* A text input masked with CSS: password inputs refuse to copy the secret. */}
               <Input
                 type="text"
                 aria-label="New token"
@@ -466,7 +480,7 @@ export function TokensPage({
                 <Button
                   onClick={async () => {
                     try {
-                      await navigator.clipboard.writeText(Redacted.value(created.key));
+                      await copyText(Redacted.value(created.key));
                       setCopied(true);
                       setError(undefined);
                     } catch {
@@ -489,10 +503,20 @@ export function TokensPage({
       >
         <DialogContent>
           <DialogTitle>Revoke {target?.name}?</DialogTitle>
-          <DialogDescription>
-            New requests using this key will fail. Running requests may finish. Create and install a
-            replacement first if an integration still needs access.
-          </DialogDescription>
+          {target !== undefined && isManagedKey(target) ? (
+            <DialogDescription>
+              The Executor app uses this key to run its management tools for you, for agents
+              connected to {pinnedOrganization(target)?.name ?? "its organization"}. Requests using
+              it right now will fail. On the next call, Executor creates a new key for the app
+              automatically, so revoking it does not turn the app off. To stop the app acting for
+              you, remove its account under Apps, Executor, Accounts instead.
+            </DialogDescription>
+          ) : (
+            <DialogDescription>
+              New requests using this key will fail. Running requests may finish. Create and install
+              a replacement first if an integration still needs access.
+            </DialogDescription>
+          )}
           {error && (
             <p role="alert" className="text-sm text-destructive">
               {error}

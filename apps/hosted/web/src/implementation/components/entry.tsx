@@ -13,7 +13,6 @@ import { SessionMenu } from "./auth.tsx";
 import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
 import { productWordmark } from "@executor-js/ui/contracts/product-brand";
 
-/** A shared entry frame before an organization URL is known. */
 export function HostedEntry({
   title,
   description,
@@ -23,7 +22,6 @@ export function HostedEntry({
   readonly title: string;
   readonly description?: string;
   readonly children: ReactNode;
-  /** Room for a long review, such as an import preview. */
   readonly wide?: boolean;
 }) {
   const brand = useProductBrand();
@@ -54,7 +52,6 @@ export function HostedEntry({
   );
 }
 
-/** Neutral entry content does not assume an organization count or a setup outcome. */
 export function HostedEntryLoading({
   title,
   description = "Loading your organizations…",
@@ -76,7 +73,6 @@ export function HostedEntryLoading({
   );
 }
 
-/** Prefer the signed-in dashboard shape while its organization is being resolved. */
 export function DashboardEntryPending({
   children,
   pathname,
@@ -86,11 +82,8 @@ export function DashboardEntryPending({
 }: {
   readonly children?: ReactNode;
   readonly pathname?: string;
-  /** The same banner the resolved dashboard shows, so the frame does not move when it arrives. */
   readonly banner?: ReactNode;
-  /** The resolved dashboard's support entry, for the same reason. */
   readonly support?: ReactNode;
-  /** The resolved dashboard's host pages, for the same reason; links stay disabled until it loads. */
   readonly navigation?: ReactNode;
 } = {}) {
   const pendingPage = pathname?.split("/")[3] ?? "apps";
@@ -112,7 +105,6 @@ export function DashboardEntryPending({
   );
 }
 
-/** An unresolved organization keeps its dashboard frame and offers an explicit retry. */
 export function OrganizationLookupError({ retry }: { readonly retry: () => void }) {
   return (
     <PageFrame>

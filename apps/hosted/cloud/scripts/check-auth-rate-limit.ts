@@ -1,15 +1,3 @@
-/**
- * Better Auth's per-address limit throttles Cloud sign-in and OAuth client registration. Only
- * automated environments may turn it off (`cloudAuthRateLimit`). This check evaluates the rule for
- * every combination of stage, origin, `TEST_STAGE_AUTH_RATE_LIMIT` and runtime, with the stage
- * given as Alchemy's `Stage` service (as a deploy reads it) and as `ALCHEMY_STAGE` (as a deployed
- * Worker reads it). It fails when:
- *
- * - production (`v2`) runs without the limit in any combination;
- * - a deployed Worker runs without it on any stage but `test-e2e-*`;
- * - `alchemy dev` runs without it on an origin that is not loopback;
- * - the switches the local e2e runner and deployed e2e stages use stop working.
- */
 import { Stage } from "alchemy/Stage";
 import { ConfigProvider, Effect } from "effect";
 import { cloudAuthRateLimit, productionStage } from "../src/infrastructure/stage.ts";
@@ -85,7 +73,6 @@ for (const c of cases) {
     failures.push(`Cloud dev runs without the limit off loopback: ${describe(c)}`);
 }
 
-// The off switches must keep working, or the rules above would pass with the limit always on.
 const expected: ReadonlyArray<readonly [Case, boolean]> = [
   [
     {

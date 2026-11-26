@@ -1,8 +1,3 @@
-/**
- * Authored JSON imports as Worker modules of their own, which parse the file's text when the
- * Worker loads them. The compiler never parses the JSON: printing a large document, such as an
- * OpenAPI app's, as JavaScript needs many times its size in compiler memory.
- */
 import type { Plugin } from "esbuild";
 import type { SourceTextFile } from "../contracts/source.ts";
 import type { SourceLocation } from "../contracts/version.ts";
@@ -13,13 +8,8 @@ const space = (code: number) => code === 32 || code === 9 || code === 10 || code
 const digit = (code: number) => code >= 48 && code <= 57;
 const hex = (code: number) =>
   digit(code) || (code >= 65 && code <= 70) || (code >= 97 && code <= 102);
-/** The characters `JSON.parse` accepts after a backslash, other than `u`. */
 const escapes = new Set([34, 47, 92, 98, 102, 110, 114, 116]);
 
-/**
- * The offset of the first character `JSON.parse` would reject, or undefined when it accepts the
- * text. Unlike `JSON.parse`, this builds no values, so checking a large document costs no memory.
- */
 const invalidOffset = (text: string): number | undefined => {
   const end = text.length;
   let at = 0;
@@ -75,7 +65,6 @@ const invalidOffset = (text: string): number | undefined => {
     at += literal.length;
     return true;
   };
-  /** A member's name and colon; the value follows. */
   const member = () => {
     skipSpace();
     if (!string()) return false;
@@ -84,7 +73,6 @@ const invalidOffset = (text: string): number | undefined => {
     at++;
     return true;
   };
-  // The open objects (123) and arrays (91), innermost last.
   const open: number[] = [];
   for (;;) {
     skipSpace();
@@ -103,7 +91,6 @@ const invalidOffset = (text: string): number | undefined => {
     } else if (code === 45 || digit(code)) {
       if (!number()) return at;
     } else if (!word("true") && !word("false") && !word("null")) return at;
-    // A value ended: close the containers it ends, then read the next member or element.
     for (;;) {
       skipSpace();
       const container = open.at(-1);
@@ -122,7 +109,6 @@ const invalidOffset = (text: string): number | undefined => {
   }
 };
 
-/** The line and column, from 1 and in UTF-16 code units, of an offset in a file. */
 const locate = (file: string, text: string, offset: number) => {
   let line = 1;
   let start = 0;
@@ -133,12 +119,6 @@ const locate = (file: string, text: string, offset: number) => {
   return { file, line, column: offset - start + 1 } satisfies SourceLocation;
 };
 
-/**
- * Applies to the server build. Each JSON source file an authored module imports becomes a module
- * whose default export is the parsed file, as a JSON module's is. A file `ctx.files` holds is
- * parsed from there, so the build keeps one copy of its text. Dependencies' own JSON files are
- * bundled as before.
- */
 export const jsonModules = (files: readonly SourceTextFile[], entry: string) => {
   const retained = serverFiles(files);
   const modules: Record<string, string> = {};
@@ -149,8 +129,6 @@ export const jsonModules = (files: readonly SourceTextFile[], entry: string) => 
     setup(build) {
       const entries = build.initialOptions.entryPoints;
       if (!Array.isArray(entries) || entries[0] !== entry) return;
-      // Only the entry imports the files module, and only a JSON file's stand-in its module, so an
-      // authored file of the same name still resolves to itself.
       build.onResolve({ filter: /^\.\/__executor_/ }, (args) =>
         (args.importer === entry && args.path === `./${serverFilesModule}`) ||
         names.get(args.importer) === args.path.slice(2)
