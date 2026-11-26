@@ -1,4 +1,3 @@
-/** Native Effect MCP protocol sessions; product data and grants stay in Postgres. */
 import { traceHeaders } from "@executor-js/telemetry";
 import {
   McpAuthentication,
@@ -38,14 +37,6 @@ export class McpSession extends Cloudflare.DurableObject<McpSession, McpSessionO
   "McpSession",
 ) {}
 
-/**
- * Resolve the session binding at startup; return a handler for each request.
- *
- * A request without a session id (initialize, the stateless 2026-07-28 protocol, approvals) is
- * authenticated here and sent to the object its user/client/organization/grant names. A request
- * inside a session is sent to the object its signed id names, with no bearer check and no
- * database here: the object checks the bearer and that the bearer's key names it before any work.
- */
 export const cloudMcp = Effect.gen(function* () {
   const sessions = yield* inJurisdiction(McpSession.from(McpServer));
   const sessionNamespace = yield* durableNamespace("McpSession");
@@ -135,8 +126,6 @@ export const cloudMcp = Effect.gen(function* () {
         return mcpSessionNotFound();
       }
       const namespace = yield* sessionNamespace;
-      // Only ids this namespace generated are signed, so this refuses only an id minted under a
-      // namespace the class has since moved from; its sessions are gone with that namespace.
       const id = yield* Effect.try(() => namespace.idFromString(address.value.objectId)).pipe(
         Effect.option,
       );

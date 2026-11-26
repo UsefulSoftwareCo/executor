@@ -22,7 +22,6 @@ import { workerBuild } from "./infrastructure/worker-build.ts";
 
 const mcpSession = Effect.gen(function* () {
   const executor = yield* cloudServingProduct(yield* appDataSupervisors);
-  // `McpSession.make` binds this Worker's own namespace; an object names itself through it.
   const sessions = yield* durableNamespace("McpSession");
   const idFromName = Effect.map(
     sessions,

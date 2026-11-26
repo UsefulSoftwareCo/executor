@@ -3,6 +3,7 @@ import * as Cloudflare from "alchemy/Cloudflare";
 import { Clock, Config, Effect, Option } from "effect";
 import { HttpServerRequest, type HttpServerResponse } from "effect/http";
 import { AppDomainController } from "./app-domain-controller-worker.ts";
+import { inJurisdiction } from "./jurisdiction.ts";
 import { testStage } from "./stage.ts";
 
 export const previewIdleMilliseconds = 30 * 60_000;
@@ -79,7 +80,7 @@ export const previewActivity = Effect.gen(function* () {
           handle,
       isIdle: Effect.succeed(false),
     };
-  const objects = yield* PreviewActivity.from(AppDomainController);
+  const objects = yield* inJurisdiction(PreviewActivity.from(AppDomainController));
   // external: a Worker request cannot wait on another request's I/O, so overlapping requests each report.
   let reported = Number.NEGATIVE_INFINITY;
   const visit = Effect.gen(function* () {

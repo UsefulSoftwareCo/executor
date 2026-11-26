@@ -1,18 +1,3 @@
-/**
- * Cloud keeps Durable Object and R2 data in the jurisdiction `CLOUD_JURISDICTION` names
- * (`src/infrastructure/jurisdiction.ts`). A namespace reached any other way is the default one: it
- * holds other objects than its callers expect, and its IDs never equal the jurisdiction's. Local
- * workerd does not implement jurisdictions, so no local Cloud can run with one; this check keeps
- * every use on the seam instead. It fails when:
- *
- * - a Durable Object class is used other than hosted (`.make`) or through `inJurisdiction`;
- * - a namespace binding is read from the Worker environment other than through `durableNamespace`;
- * - an R2 bucket this stack declares does not take `bucketJurisdiction`, or a bucket is bound by
- *   name without a jurisdiction, other than the buckets listed in `foreignBuckets`;
- * - with the setting on, a handle or namespace from the seam addresses anything but the
- *   jurisdiction's namespace, or a bucket lacks it; with it unset, anything differs from the plain
- *   binding and bucket; or an unsupported value deploys.
- */
 import * as Cloudflare from "alchemy/Cloudflare";
 import { ConfigProvider, Effect, Exit } from "effect";
 import { readdirSync, readFileSync } from "node:fs";
@@ -27,7 +12,6 @@ import {
 const root = join(import.meta.dirname, "..");
 const seam = "src/infrastructure/jurisdiction.ts";
 
-/** Buckets another stack owns, in the jurisdiction it chose; this stack only binds them by name. */
 const foreignBuckets: Record<string, string> = {
   "src/infrastructure/v1-blobs.ts": "v1's blob bucket, read only by production's v1 import",
 };
@@ -54,7 +38,6 @@ const at = (file: ts.SourceFile, node: ts.Node) =>
     file.getLineAndCharacterOfPosition(node.getStart()).line + 1
   }`;
 
-// Durable Object classes, by class name, with the binding name Alchemy gives their namespace.
 const classes = new Map<string, string>();
 for (const { file } of sources)
   walk(file, (node) => {
@@ -84,13 +67,10 @@ const callsSeam = (node: ts.Node, name: string) =>
 
 for (const { path, file } of sources)
   walk(file, (node) => {
-    // A class is hosted (`X.make`), or addressed only through the seam: `inJurisdiction(X)` or
-    // `inJurisdiction(X.from(Worker))`.
     if (ts.isIdentifier(node) && classes.has(node.text) && !isTypePosition(node)) {
       const parent = node.parent;
       const declared =
         (ts.isClassDeclaration(parent) && parent.name === node) ||
-        // A property of that name, such as the binding itself, is not the class.
         (ts.isPropertyAccessExpression(parent) && parent.name === node) ||
         (ts.isPropertyAssignment(parent) && parent.name === node) ||
         ts.isImportSpecifier(parent) ||
@@ -108,7 +88,6 @@ for (const { path, file } of sources)
           `${at(file, node)}: reach ${node.text} through inJurisdiction(...), which applies CLOUD_JURISDICTION.`,
         );
     }
-    // A namespace binding is read from the environment only by the seam.
     if (path !== seam) {
       const name = ts.isPropertyAccessExpression(node)
         ? node.name.text
@@ -125,14 +104,12 @@ for (const { path, file } of sources)
       if (binding === undefined || !ts.isStringLiteral(binding) || !bindings.has(binding.text))
         failures.push(`${at(file, node)}: durableNamespace needs a Durable Object binding name.`);
     }
-    // Every bucket this stack declares takes the jurisdiction; its binding follows the bucket.
     if (
       ts.isCallExpression(node) &&
       node.expression.getText(file) === "Cloudflare.R2.Bucket" &&
       !node.arguments.some((argument) => argument.getText(file).includes("bucketJurisdiction"))
     )
       failures.push(`${at(file, node)}: give the bucket bucketJurisdiction's props.`);
-    // A bucket bound by name carries no jurisdiction from a declaration.
     if (
       ts.isObjectLiteralExpression(node) &&
       node.properties.some(
@@ -148,7 +125,6 @@ for (const { path, file } of sources)
       failures.push(`${at(file, node)}: a bucket bound by name needs the configured jurisdiction.`);
   });
 
-// The seam itself, against a namespace that records which jurisdiction each call reached.
 type Id = { readonly at: string; readonly name: string; equals(other: Id): boolean };
 const recorded: string[] = [];
 const namespace = (at: string) => {
@@ -198,7 +174,6 @@ const evaluate = (configured: string | undefined) => {
   );
 };
 
-// GitHub Actions passes an unset variable as an empty string.
 for (const configured of [undefined, "", "eu", "fedramp"]) {
   const exit = evaluate(configured);
   const label = `CLOUD_JURISDICTION=${configured === undefined ? "<unset>" : JSON.stringify(configured)}`;

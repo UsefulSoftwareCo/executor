@@ -202,7 +202,6 @@ export const cloudArtifactsTokens = (
     } satisfies ArtifactsTokens;
   }).pipe(Effect.orDie);
 
-/** Every source caller binds the single coordinator namespace across scripts. */
 export const cloudArtifactsTokensLive = inJurisdiction(
   ArtifactsTokenCoordinator.from(ArtifactsCredentials),
 ).pipe(Effect.flatMap(cloudArtifactsTokens));

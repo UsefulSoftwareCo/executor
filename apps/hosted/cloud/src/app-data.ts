@@ -11,7 +11,7 @@ import {
 import { AppData, runnerReadsBuilds } from "./infrastructure/app-data-worker.ts";
 import { AppDataSupervisor, appDataSupervisors } from "./infrastructure/app-data.ts";
 import { AppCluster } from "./infrastructure/app-cluster.ts";
-import { durableNamespace } from "./infrastructure/jurisdiction.ts";
+import { durableNamespace, inJurisdiction } from "./infrastructure/jurisdiction.ts";
 import { RuntimeContext } from "alchemy";
 import { CacheCommand } from "@executor-js/app-cache/contracts";
 import { BlobStore } from "@executor-js/sdk/core";
@@ -159,8 +159,6 @@ const AppDataSupervisorLive = AppDataSupervisor.make(
       const loader = yield* Schema.decodeUnknownEffect(NativeLoader)(
         environment.AppDataLoader,
       ).pipe(Effect.orDie);
-      // Each supervisor is named by its app's immutable ID. Its own object ID, not a caller, says
-      // which app that is: the ID `getByName` derives from that name. Derived locally, no I/O.
       const supervisors = yield* namespace;
       const serves = (app: string) => state.raw.id.equals(supervisors.idFromName(app));
       const supervisor = yield* makeFacetSupervisor(
@@ -263,7 +261,7 @@ export default AppData.make(
     const credentials = yield* appCredentialOutbound;
     const databases = yield* appDataSupervisors;
     // external: a binding naming this Worker's own script is checked against the live version, which lacks the class on the deploy that adds it, and Cloudflare refuses that deploy.
-    yield* AppCluster;
+    yield* inJurisdiction(AppCluster);
     const runnerFor = yield* runnerBindings;
     const runner = Effect.gen(function* () {
       const { waitUntil } = yield* Effect.promise(() => import("cloudflare:workers"));

@@ -20,5 +20,4 @@ export class AppDataSupervisor extends Cloudflare.DurableObject<AppDataSuperviso
   { transferredFrom: "Api" },
 ) {}
 
-/** Every other Worker binds the namespace across scripts. */
 export const appDataSupervisors = inJurisdiction(AppDataSupervisor.from(AppData));
