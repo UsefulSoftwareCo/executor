@@ -1,21 +1,9 @@
-/**
- * The newest Executor 2 release that installs can get. The committed version names the release
- * being built: the release commit merges before publication, and its image, npm launcher and Git
- * tag exist only once the release workflow publishes them. Install instructions name this one
- * instead, so they work while a newer release is still building.
- *
- * npm's dist-tags are the record. The release workflow moves them last, after the Docker manifest
- * and the public GitHub release, so a version they name has every artifact. `latest` still names
- * Executor 1 until Executor 2 is stable, so it counts only once it names a version 2 release,
- * as in `install.sh`.
- */
 import { Effect, Option, Schedule, Schema } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientResponse } from "effect/http";
 import { ReleaseVersion } from "./config.ts";
 
 const DistTags = Schema.Record(Schema.String, Schema.String);
 
-/** npm's dist-tags named no Executor 2 release. */
 class PublishedReleaseUnknown extends Schema.TaggedError<PublishedReleaseUnknown>()(
   "PublishedReleaseUnknown",
   { message: Schema.String },

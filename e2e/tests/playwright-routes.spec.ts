@@ -1,16 +1,3 @@
-/**
- * When a page's last route goes away, Playwright 1.63 sends `Fetch.disable`, and Chromium drops a
- * request it has paused but not yet reported: the request is never sent and never fails. The patch
- * keeps the Fetch domain enabled and continues the requests no route handles
- * (patches/playwright-core.md). These cases run real Playwright and Chromium against a small local
- * server, with no product, so they fail on the unpatched build.
- *
- * - A `{ times: 1 }` route that expires on its one answer, while the page sends its next reads on
- *   that answer, as a dashboard does. Unpatched, about 1 round in 100 strands a read.
- * - A route removed with `unroute` while the page is sending reads, as the support helpers do.
- * - The HTTP cache: off while a route is registered and on again once the last one is removed,
- *   as before the patch, so keeping Fetch enabled changes nothing a scenario sees.
- */
 import { expect, layer } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, Option, Path, Schema, Stream } from "effect";
@@ -95,7 +82,6 @@ const Stranded = Schema.fromJsonString(
 );
 const Cache = Schema.fromJsonString(Schema.Struct({ hits: Schema.Array(Schema.Number) }));
 
-/** Runs one probe under Node; Playwright's Node build is the one the suite drives. */
 const run = (name: "expiring" | "unrouted" | "cache") =>
   Effect.gen(function* () {
     const path = yield* Path.Path;
@@ -138,8 +124,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Playwright routes", (i
   it.effect("the HTTP cache is off only while a route is registered", () =>
     Effect.gen(function* () {
       const report = yield* Schema.decodeUnknownEffect(Cache)(yield* run("cache"));
-      // Two reads before any route reach the server once; the read under a route reaches it
-      // again; the read after the last route is gone is answered from the cache.
       expect(report.hits).toEqual([1, 2, 2]);
     }),
   );

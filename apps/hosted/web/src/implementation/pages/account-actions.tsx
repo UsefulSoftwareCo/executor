@@ -23,13 +23,8 @@ import type { HostedError } from "../../contracts/errors.ts";
 import { HostedFailure } from "../components/dashboard-bindings.tsx";
 import { useOrganizationRoute } from "../components/organization.tsx";
 
-/** The list page owns an open dialog, so it outlives the row if the account changes underneath it. */
 export type AccountDialogKind = "edit" | "health" | "delete";
 
-/**
- * Row actions replace the account page: name, health and deletion, in place. Credentials
- * are replaced from an app that uses the account, which knows the hosts they are sent to.
- */
 export function HostedAccountActions({
   account,
   open,
@@ -55,7 +50,6 @@ const titles = {
   delete: "Delete account?",
 } satisfies Record<AccountDialogKind, string>;
 
-/** Editing, health and deletion load the account themselves and report it if it disappears. */
 export function HostedAccountDialog({
   id,
   dialog,

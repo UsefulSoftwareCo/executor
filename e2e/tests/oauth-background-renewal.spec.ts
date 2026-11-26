@@ -1,9 +1,3 @@
-/**
- * A dashboard batch read served a stale skill catalog and refreshed it in the background. The
- * refresh renewed the app's OAuth account against a service that rotates refresh tokens. The
- * renewal must be saved even though the batch has already answered: otherwise the service has
- * replaced the only saved refresh token, and the account must reconnect.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Fiber, Schedule, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
@@ -27,9 +21,7 @@ const Read = Schema.Struct({
     authorization: Schema.NullOr(Schema.String),
   }),
 });
-/** Past the 10 s after which kept declarations are served stale and refreshed in the background. */
 const catalogTurnsStale = "11 seconds";
-/** How long the service takes to answer the background renewal after rotating the token. */
 const slowAnswer = "3 seconds";
 
 const backgroundRenewalAfterBatch = Effect.gen(function* () {
@@ -39,8 +31,6 @@ const backgroundRenewalAfterBatch = Effect.gen(function* () {
   const issuer = yield* oauthSetupIssuer;
   const organization = actors.organization.id;
   const prefix = `/api/organizations/${organization}`;
-  // Tokens issued inside the host's 30-second renewal window renew on every use, and every
-  // renewal replaces the refresh token the service accepts.
   yield* issuer.configure({
     refreshTokens: true,
     rotateRefreshTokens: true,
@@ -97,21 +87,16 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
   );
   expect(completed.status, JSON.stringify(completed.body)).toBe(200);
   const account = yield* body(Resource, completed);
-  // Connecting from the app links the account, which sets it up as the app's webhook source in
-  // the background. That resolves, and so renews, the new account. Let it finish first.
   yield* settleWebhookSources(actors.owner, appPath, (sources) =>
     sources.some((source) => source.account === account.id && source.status !== "pending"),
   );
 
-  // The skill catalog is evaluated once and kept, then left to turn stale.
   const listed = yield* api.request(actors.owner, "GET", `${appPath}/skills`);
   expect(listed.status, JSON.stringify(listed.body)).toBe(200);
   yield* Effect.sleep(catalogTurnsStale);
 
-  // The service rotates the token for the background renewal and answers it slowly.
   yield* issuer.configure({ hold: "refresh-issued" });
   const before = yield* issuer.metrics;
-  // The dashboard's batch read answers with the stale catalog and refreshes it in the background.
   const batch = yield* Effect.forkChild(
     api.request(actors.owner, "POST", "/api/dashboard/batch", {
       reads: [
@@ -142,9 +127,6 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
   expect(answered.status, JSON.stringify(answered.body)).toBe(200);
   expect(yield* body(BatchAnswer, answered)).toMatchObject({ id: 0, status: 200 });
 
-  // The saved grant holds the rotated refresh token. A call may still wait for the background
-  // renewal to save and use its token; the call after it renews from the saved grant. The service
-  // refuses replaced refresh tokens, so neither call may present one.
   const read = api.request(actors.owner, "POST", `${appPath}/tools/call`, {
     tool: "read",
     input: {},

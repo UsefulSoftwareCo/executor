@@ -1,4 +1,3 @@
-/** One execution manager with model, native and browser delivery adapters. */
 import {
   Cause,
   Clock,
@@ -27,10 +26,10 @@ import { makeExecutions } from "./executions.ts";
 import { executeNative } from "./native-elicitation.ts";
 import { callTools, describeCatalog, executeProgram, searchCatalog } from "./execute.ts";
 import { decodeSkillsInput, skills } from "./skills.ts";
+import { skillCatalog } from "./skill-catalog.ts";
 import { eventsHandler } from "./events.ts";
 import { withOperationSpan } from "./telemetry.ts";
 
-// Observe the final protocol value after timeout, admission and resume handling.
 const observeExecution =
   (name: "mcp.execute" | "mcp.call" | "mcp.resume") =>
   <A extends McpExecutionResult, E, R>(work: Effect.Effect<A, E, R>) =>
@@ -92,25 +91,16 @@ const observeExecution =
       );
     }).pipe(withOperationSpan(name));
 
-/**
- * MCP revisions every product serves, newest first. An initialize offering an unlisted revision
- * negotiates the newest initialize-based one; a session without an MCP-Protocol-Version header
- * keeps the revision it negotiated.
- */
 const protocols = [
   McpProtocol.v2026_07_28,
   McpProtocol.v2025_11_25,
   McpProtocol.v2025_06_18,
   McpProtocol.v2025_03_26,
 ] as const;
-/** Native approval needs form elicitation, which 2025-06-18 introduced. */
 const nativeProtocols = [McpProtocol.v2025_11_25, McpProtocol.v2025_06_18] as const;
 
-// Model, native and automatic programs belong to the authenticated caller, so a client may resume
-// from any of its MCP sessions. Browser approval links address one protocol session.
 const callerIdentity = (product: string, mode: Exclude<ElicitationMode, "browser">) =>
   JSON.stringify([product, mode]);
-/** The end of every browser identity of one protocol session, whichever product it belongs to. */
 const browserSessionSuffix = (session: string) => `,"browser",${JSON.stringify(session)}]`;
 const browserIdentity = (product: string, session: string) =>
   JSON.stringify([product, "browser", session]);
@@ -123,9 +113,6 @@ const withSseHeartbeat = (response: HttpServerResponse.HttpServerResponse) => {
     contentType?.split(";")[0]?.trim() !== "text/event-stream"
   )
     return response;
-  // A quiet SSE connection may not report a remote disconnect until another
-  // write. Comments keep that transport active so abandoned subscriptions can
-  // release their scopes. Ending the protocol stream also stops the heartbeat.
   const comment = new TextEncoder().encode(": keep-alive\n\n");
   const heartbeat = Stream.tick("5 seconds").pipe(
     Stream.drop(1),
@@ -148,7 +135,6 @@ const withLink = (
         .pipe(Effect.map((approvalUrl) => ({ ...result, approvalUrl })))
     : Effect.succeed(result);
 
-/** Build protocol state and its browser accessors together. Hosts authorize browser calls separately from MCP. */
 export const makeMcp = (options: McpOptions) =>
   Effect.gen(function* () {
     const executions = yield* makeExecutions(
@@ -179,7 +165,6 @@ export const makeMcp = (options: McpOptions) =>
             sessionId,
           };
         });
-        // Which skills agents read, and in what order, shows whether they follow the entry skill.
         const skill = (params: unknown) =>
           decodeSkillsInput(params).pipe(
             Effect.flatMap((input) =>
@@ -195,10 +180,7 @@ export const makeMcp = (options: McpOptions) =>
               ),
             ),
           );
-        // Automatic mode accepts policy approvals at once: the agent's own permission prompt already
-        // confirmed the call or execute that started the run. Tool input still pauses for the model.
         const approval = mode === "automatic" ? "client" : "ask";
-        // Search and describe read the catalog directly; call runs as an execution so it can pause.
         const search = (input: Parameters<typeof searchCatalog>[1]) =>
           searchCatalog(options.backend, input).pipe(withOperationSpan("mcp.search"));
         const describe = (input: Parameters<typeof describeCatalog>[1]) =>
@@ -334,6 +316,7 @@ export const makeMcp = (options: McpOptions) =>
         return yield* Layer.mergeAll(
           toolkit,
           McpServer.events(eventsHandler(options.backend)),
+          McpServer.skillCatalog(skillCatalog(options.backend)),
         ).pipe(
           Layer.provide(
             McpServer.layerHttp({
@@ -344,8 +327,6 @@ export const makeMcp = (options: McpOptions) =>
               protocols: served,
               sessions: options.sessions?.(mode),
               maxSessions: options.maxSessions,
-              // A browser program is resumed only through the protocol session it started in, so
-              // that session is kept while the program runs or waits for its approval.
               ...(mode === "browser" && options.maxSessions !== undefined
                 ? {
                     heldSession: (session: string) => {
@@ -365,10 +346,6 @@ export const makeMcp = (options: McpOptions) =>
           Context.omit(Tracer.ParentSpan)(context),
         ),
       );
-    // Each mode's protocol server is built on its first request. A client keeps one
-    // mode, so a host does not build all four. The build replaces the request's
-    // context with this construction's: the server outlives the request, so it must
-    // never capture a caller's backend, identity or scope.
     const context = yield* Effect.context<Effect.Services<ReturnType<typeof handler>>>();
     const onFirstUse = (mode: ElicitationMode) =>
       Effect.cached(
@@ -393,8 +370,6 @@ export const makeMcp = (options: McpOptions) =>
             Match.exhaustive,
           ),
         ),
-        // Hosts may mount the transport under another path, such as an organization URL; the
-        // protocol router itself is fixed at /mcp.
         Effect.provideService(
           HttpServerRequest.HttpServerRequest,
           request.modify({ url: `/mcp${url.search}` }),
@@ -414,6 +389,5 @@ export const makeMcp = (options: McpOptions) =>
     return { http, approvals, programs: executions.live };
   });
 
-/** Mount MCP alone when a host does not need direct browser accessors. */
 export const mcp = (options: McpOptions) =>
   Layer.unwrap(makeMcp(options).pipe(Effect.map(({ http }) => HttpRouter.add("*", "/mcp", http))));

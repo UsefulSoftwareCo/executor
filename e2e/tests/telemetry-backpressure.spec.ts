@@ -1,4 +1,3 @@
-/** Browser and app crash reports survive a collector that sheds load, within the relay's budget. */
 import { expect, layer } from "@effect/vitest";
 import { Clock, Effect, Layer, Schedule, Schema } from "effect";
 import { randomBytes } from "node:crypto";
@@ -11,9 +10,7 @@ import { Target } from "../support/platform.ts";
 import { type Refusal, throttlingCollector } from "../support/throttling-collector.ts";
 import { scenarios } from "../test-plan.ts";
 
-/** Node timers may fire up to a millisecond early; both clocks are this machine's. */
 const early = 5;
-/** More app calls than the relay could once hold while an export waited. */
 const burstCalls = 40;
 
 layer(TestLive, { excludeTestServices: true })("Telemetry backpressure", (it) => {
@@ -32,7 +29,6 @@ layer(TestLive, { excludeTestServices: true })("Telemetry backpressure", (it) =>
           Effect.provideService(Target, { ...target, metadata: { ...target.metadata, origin } }),
         );
         const visitor = yield* api.session();
-        // Each report is its own trace; the proxy refuses the exports that carry its ID.
         const report = (refusals: ReadonlyArray<Refusal>) =>
           Effect.gen(function* () {
             const traceId = randomBytes(16).toString("hex");
@@ -75,7 +71,6 @@ layer(TestLive, { excludeTestServices: true })("Telemetry backpressure", (it) =>
             Effect.retry({ schedule: Schedule.spaced("200 millis"), times: 25 }),
           );
 
-        // The collector's answer when its ingest queue is full.
         const full = yield* report([{ status: 429, retryAfter: () => "1" }]);
         expect(full.status, "a report the full queue refused is sent again").toBe(202);
         expect(full.arrivals.map(({ status }) => status)).toEqual([429, 200]);
@@ -100,7 +95,6 @@ layer(TestLive, { excludeTestServices: true })("Telemetry backpressure", (it) =>
         );
         yield* stored(dated.traceId);
 
-        // OTLP throttles with 503 too, as the collector does while it stops.
         const unavailable = yield* report([{ status: 503, retryAfter: () => "2" }]);
         expect(unavailable.status, "a throttled 503 is sent again after its delay").toBe(202);
         expect(unavailable.arrivals.map(({ status }) => status)).toEqual([503, 200]);
@@ -110,7 +104,6 @@ layer(TestLive, { excludeTestServices: true })("Telemetry backpressure", (it) =>
         ).toBeGreaterThanOrEqual(2_000 - early);
         yield* stored(unavailable.traceId);
 
-        // A delay past the budget ends the attempt instead of sending early.
         const later = yield* report([{ status: 503, retryAfter: () => "10" }]);
         expect(later.status, "the relay stops at its three-second budget").toBe(504);
         expect(
@@ -118,7 +111,6 @@ layer(TestLive, { excludeTestServices: true })("Telemetry backpressure", (it) =>
           "never sent again before the collector's delay",
         ).toEqual([503]);
 
-        // A rejected export is not throttling and is never resent.
         const rejected = yield* report([{ status: 400 }]);
         expect(rejected.status).toBe(502);
         expect(rejected.arrivals.map(({ status }) => status)).toEqual([400]);
@@ -170,8 +162,6 @@ export default defineApp({}, {
               Effect.sync(() => expect(response.status, JSON.stringify(response.body)).toBe(200)),
             ),
           );
-        // Each call is its own trace. Wait until the first call's app telemetry has arrived, then
-        // count only the traces the burst adds.
         yield* call;
         const before = yield* collector.appTraces(app.id).pipe(
           Effect.filterOrFail(
@@ -181,8 +171,6 @@ export default defineApp({}, {
           Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 40 }),
         );
 
-        // The collector sheds the next export of this app's telemetry for two seconds, which
-        // holds the relay's export while a burst of calls finishes behind it.
         yield* collector.refuse(app.id, [{ status: 503, retryAfter: () => "2" }]);
         yield* Effect.forEach(Array.from({ length: burstCalls }), () => call, {
           concurrency: burstCalls,

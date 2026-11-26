@@ -2,14 +2,8 @@ import { Effect, Schema } from "effect";
 import { release } from "../../scripts/releases/config.ts";
 import { publishedRelease } from "../../scripts/releases/published.ts";
 
-/**
- * Snippets name the newest published release, not this checkout's version: a merged version bump
- * precedes its publication, and its image and Git tag do not exist until then. Building the docs
- * fails when npm cannot be read, rather than naming a version that may not exist.
- */
 const published = await Effect.runPromise(publishedRelease);
 
-/** Release snippets shared by the browser docs and Blume's Markdown output. */
 export const ReleaseCommandProduct = Schema.Literals([
   "cli",
   "cli-script",
@@ -21,7 +15,6 @@ export const ReleaseCommandProduct = Schema.Literals([
   "source",
 ]);
 
-/** Concrete instructions generated from the same identity as the published artifacts. */
 export const releaseCommands = {
   cli: {
     description: `With npm, on Node ${release.minimumNodeVersion} or newer. The package is a launcher that downloads Executor's own runtime for your platform on first run, so Node only starts it. Check that executor --version prints ${published.version} before starting. Supports macOS on Apple Silicon and Intel, Linux (glibc) on ARM64 and x64, and Windows on x64.`,
@@ -60,7 +53,6 @@ export const releaseCommands = {
   },
 };
 
-/** Render a parsed docs component as plain Markdown for agents and raw-page downloads. */
 export const releaseCommandMarkdown = (product: unknown): string => {
   const snippet = releaseCommands[Schema.decodeUnknownSync(ReleaseCommandProduct)(product)];
   return `${snippet.description}\n\n\`\`\`bash\n${snippet.command}\n\`\`\``;

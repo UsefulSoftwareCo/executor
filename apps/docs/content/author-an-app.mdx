@@ -1,6 +1,6 @@
 ---
 title: Author an app
-description: "Write an app in plain TypeScript: a provider, some queries and mutations, the approvals that guard them, stored data, and the call that deploys it."
+description: "Write an app in plain TypeScript with tools, storage, accounts, and an optional React UI that can be installed as its own desktop app."
 ---
 
 An app is TypeScript source with a default `defineApp` export from the `apps`
@@ -617,13 +617,28 @@ return await tools.executor.appUi.location({
 
 Open the returned `url` in a browser. Executor Cloud uses
 `https://<app-slug>.<org-slug>.executor.website`; self-host uses its configured
-app domain. Use the returned URL instead of guessing it. A null URL with
+app domain. Use the returned URL instead of guessing it. A ready location also
+has the app's `name`, and `icon` and `menuBar`, which say whether the active
+version has `ui/icon.svg` and `ui/menubar.html`. A null URL with
 `status: "unavailable"` gives a `reason`: `"no_ui"` when the app has no UI, or
 `"no_app_domain"` when the host has no app domain configured.
 
 App pages are private. Opening the link starts browser sign-in through Executor.
 A successful tool call or a `403` from a guessed address does not verify that
 the UI renders. Check the actual page before reporting it as working.
+
+### Install as a desktop app
+
+A deployed app whose active version serves a UI (`ui/index.html`) can be
+installed in the Executor desktop app, for local Executor, Executor Cloud and
+self-hosted servers with app pages enabled. Add an optional `ui/icon.svg` for
+its launcher, menu-bar or tray icon, and main window's icon outside macOS, an
+optional `ui/menubar.html` for a menu-bar popover, and use `desktop` from
+`apps/client` and hooks from `apps/react` for menu-bar titles, global shortcuts,
+window controls, badges and system audio.
+
+See [Desktop apps](/desktop-apps) for setup, desktop abilities, permissions,
+launchers and a complete example.
 
 ## What is coming later
 

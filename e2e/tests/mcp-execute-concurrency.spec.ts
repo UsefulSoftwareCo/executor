@@ -1,13 +1,3 @@
-/**
- * JavaScript runs one job at a time: an async function's code between two awaits finishes before
- * another job starts. Programs that run async functions together with Promise.all and update
- * shared state between awaits must get exactly the values JavaScript gives. Before the fix the
- * interpreter interleaved those jobs mid-statement and silently lost updates. Jobs also run in
- * JavaScript's order: a promise settles when it is resolved, a combinator in a reaction job on the
- * member that decides it, and an async generator settles each request before it takes the next.
- * Runaway async recursion fails with the nesting-depth error instead of hanging, a call that fails
- * at the depth limit leaves the program's objects usable, and deep generator chains return.
- */
 import { expect, layer } from "@effect/vitest";
 import { Duration, Effect, Fiber, Option, Schema } from "effect";
 import { scenarios } from "../test-plan.ts";
@@ -19,14 +9,9 @@ import { McpClient } from "../support/mcp-client.ts";
 import { runInNode } from "../support/native-javascript.ts";
 import { Target } from "../support/platform.ts";
 
-/**
- * Each program awaits `tools.search`, which every product serves without setup, and returns
- * values that standard JavaScript fixes exactly, however the tool calls are timed.
- */
 const programs = [
   {
     name: "reporter",
-    // The reported program: read-modify-write of a binding, a string, a property and Map entries.
     code: `
 let counter = 0; let text = ''; const record = { n: 0 }; const byKey = new Map();
 async function extract() {
@@ -47,7 +32,6 @@ return { counter, text: text.length, property: record.n, entries };`,
   },
   {
     name: "closures",
-    // A closure's own state, read and written by nested functions within one job.
     code: `
 function makeCounter() {
   let n = 0;
@@ -69,7 +53,6 @@ return { added, total: shared.read(), text: text.length };`,
   },
   {
     name: "call-runs-to-first-await",
-    // Calling an async function runs its body up to the first await before the caller continues.
     code: `
 let counter = 0;
 async function job() {
@@ -88,7 +71,6 @@ return { afterFirst, afterSecond, total: counter };`,
   },
   {
     name: "many-tasks",
-    // Forty extraction tasks append rows and CSV lines across tool calls and microtask awaits.
     code: `
 const rows = []; const totals = { rows: 0, cells: 0 }; let csv = 'id,round\\n';
 async function extract(id) {
@@ -108,7 +90,6 @@ return { rows: rows.length, totalRows: totals.rows, cells: totals.cells, csvLine
   },
   {
     name: "generators-and-reactions",
-    // Generator steps, for await over async generators and then handlers are whole jobs too.
     code: `
 function* numbers(n) { for (let i = 0; i < n; i++) yield i; }
 async function* pages() { for (let p = 0; p < 3; p++) { await tools.search({ query: 'page', limit: 1 }); yield p; } }
@@ -128,7 +109,6 @@ return { sum, seen, handled };`,
   },
   {
     name: "job-order",
-    // Jobs still run in JavaScript's order: synchronous code, then reactions and continuations.
     code: `
 const log = [];
 async function tick(name, n) { for (let i = 0; i < n; i++) { log.push(name + i); await null; } }
@@ -142,11 +122,6 @@ return log;`,
   },
 ] as const;
 
-/**
- * A combinator settles in a reaction job on the member that decides it, so its result's reaction
- * runs after a continuation that another job queued first, even when the interpreter preempts that
- * job: each loop runs longer than Effect's 2,048-operation budget.
- */
 const combinatorPrograms = (["race", "any", "all", "allSettled"] as const).flatMap((combinator) => [
   {
     name: `${combinator}-order`,
@@ -158,15 +133,9 @@ const combinatorPrograms = (["race", "any", "all", "allSettled"] as const).flatM
   },
 ]);
 
-/**
- * Programs whose result depends on when promises settle and in which order reactions,
- * continuations, combinators and async generator steps run. The expected result is Node's own:
- * the test runs the same source natively.
- */
 const orderPrograms = [
   {
     name: "resolve",
-    // A promise resolved in its executor queues the reaction before the await's continuation.
     code: `let x = 0; new Promise((resolve) => resolve()).then(() => { x = 1; }); await null; return x;`,
   },
   {
@@ -175,7 +144,6 @@ const orderPrograms = [
   },
   {
     name: "captured-resolver",
-    // A resolver called later in the same job settles the promise at that call.
     code: `let resolve; let x = 0; const p = new Promise((r) => { resolve = r; }); resolve(); p.then(() => { x = 1; }); await null; return x;`,
   },
   {
@@ -188,12 +156,10 @@ const orderPrograms = [
   },
   {
     name: "generator-next",
-    // The first step's reaction runs before the generator returns, so it reads x = 9.
     code: `let x = 0; async function* g() { yield 1; yield 2; return x; } const it = g(); const a = it.next().then((result) => { x = 9; return result; }); const b = it.next(); const c = it.next(); return await Promise.all([a, b, c]);`,
   },
   {
     name: "generator-return",
-    // A queued return() runs the finally block after the first step's reaction.
     code: `let x = 0; async function* g() { try { yield 1; } finally { x = 1; } } const it = g(); const a = it.next().then(() => x); const b = it.return(2); return [await a, await b];`,
   },
   {
@@ -209,12 +175,6 @@ const orderPrograms = [
 
 const nestingDepth = "Execution exceeded the maximum nesting depth.";
 
-/**
- * Async functions that call themselves before their first await nest every call, as JavaScript's
- * call stack does, so runaway recursion must fail promptly with the nesting-depth error. Each
- * call's fiber holds the turn while it runs, and the patched interpreter once overflowed the host
- * stack there and hung with the turn held. A deep chain that ends must still return.
- */
 const recursionPrograms = [
   {
     name: "recursion-caught",
@@ -238,15 +198,6 @@ const recursionPrograms = [
   },
 ] as const;
 
-/**
- * The call depth limit counts program calls: async function calls, generator steps and combinators.
- * A call that fails there must leave the program's objects as they were. Each generator program
- * recurses until a call fails, then steps the generator in the catch of every frame on the way out,
- * so the step fails once at the limit and must work one frame up. The patched interpreter once
- * failed such a step after marking the generator started (or after taking its parked body's wake),
- * so the next step waited forever. It also once counted a generator's request and body as two
- * calls, so 1,000 levels of `yield*` failed; a chain of generators exactly at the limit must return.
- */
 const callDepthPrograms = [
   {
     name: "generator-after-failed-step",
@@ -274,15 +225,12 @@ const callDepthPrograms = [
   },
   {
     name: "yield-star-1000",
-    // Review's program: the loop runs long enough at each level for Effect to preempt it.
     code: `async function* g(n) { for (let i = 0; i < 300; i++) {} if (n === 0) return 42; return yield* g(n - 1); } return (await g(1000).next()).value;`,
-    // The same 1,001 loops without generators. They are nearly all of the chain's time.
     reference: `for (let n = 0; n <= 1000; n++) { for (let i = 0; i < 300; i++) {} } return 42;`,
     expected: 42,
   },
   {
     name: "yield-star-at-limit",
-    // 2,000 generator bodies nested by `yield*`: the deepest chain the limit allows.
     code: `async function* g(n) { if (n === 0) return 42; return yield* g(n - 1); } return (await g(1999).next()).value;`,
     expected: 42,
   },
@@ -316,7 +264,6 @@ const execute = (client: Connected, name: string, code: string) =>
     };
   });
 
-/** Runs every program, then compares them all, so a failure shows each program's result. */
 const runPrograms = (client: Connected) =>
   Effect.gen(function* () {
     const actual: Record<string, unknown> = {};
@@ -335,16 +282,6 @@ const runPrograms = (client: Connected) =>
     expect(actual).toEqual(expected);
   });
 
-/**
- * Runs every program, then compares them all, so a failure shows each program's result. A program
- * that hangs is recorded instead of holding the case, so the others still report and the case ends
- * within its minute. Most programs take under a second and get 10 seconds. A program with a
- * `reference` spends its time in loops: the interpreter takes several microseconds per iteration,
- * and a busy runner or coverage slows it by several times, so a fixed bound measured the runner.
- * Its reference runs the same loops without the behavior under test, beside it on the same server.
- * A busy runner slows both alike, and the program must answer within as long again as the
- * reference took.
- */
 const runBoundedPrograms = (
   client: Connected,
   programs: ReadonlyArray<{ name: string; code: string; reference?: string; expected: unknown }>,
@@ -385,14 +322,12 @@ const runBoundedPrograms = (
 const runRecursionPrograms = (client: Connected) =>
   Effect.gen(function* () {
     const actual = yield* runBoundedPrograms(client, recursionPrograms);
-    // The recursion goes about as deep as the host stack allowed before the fix, not a few calls.
     const [, depth] = Schema.decodeUnknownSync(Schema.Tuple([Schema.String, Schema.Number]))(
       actual["recursion-depth"],
     );
     expect(depth).toBeGreaterThan(1000);
   });
 
-/** Connects to hosted MCP execute with a new API key for the owner, deleted when the case ends. */
 const connectHosted = (label: string) =>
   Effect.gen(function* () {
     const api = yield* Api,

@@ -1,10 +1,4 @@
 import { RequiredAction } from "./authorization.ts";
-/**
- * The accounts linked to an app's requirements. An app link fills an app requirement for every
- * caller and the app's background work; a user link fills a user requirement for the member who
- * made it. Links are keyed by requirement in both scopes, and a link never shares the account
- * with anyone: an app link is used only through the app.
- */
 import {
   Account,
   AccountHealth,
@@ -49,11 +43,6 @@ const mismatch = {
       "Link an account from the provider this requirement names, or connect one for it.",
   },
 } as const;
-/**
- * The account cannot be linked to this requirement in this scope: the app's active version
- * does not declare the requirement in it (`requirement`), or the account's provider is not the
- * requirement's (`provider`).
- */
 export const RequirementMismatch = UserFacingError.define({
   tag: "RequirementMismatch",
   status: 422,
@@ -75,24 +64,14 @@ export const RequirementMismatch = UserFacingError.define({
     },
   }),
 });
-/** Parsed RequirementMismatch failure. */
 export type RequirementMismatch = typeof RequirementMismatch.Type;
 
-/**
- * A linked account's saved sign-in state, so people learn it must be reconnected. Only the state
- * and a non-renewable grant's expiry leave the host.
- */
 export const LinkedAccountSignIn = Schema.Union([
   Schema.Struct({ state: Schema.Literal("saved"), reconnectAt: Schema.NullOr(Schema.Date) }),
   Schema.Struct({ state: Schema.Literals(["reconnect", "unavailable"]) }),
 ]);
 export type LinkedAccountSignIn = typeof LinkedAccountSignIn.Type;
 
-/**
- * One account linked to one of the app's requirements, with its sign-in and checks by this app.
- * Members who cannot edit the app read app links without the upstream identity checks reported
- * (`health.info` is null).
- */
 export const AppAccountLink = Schema.Struct({
   requirement: Schema.NonEmptyString,
   account: Account,
@@ -102,17 +81,12 @@ export const AppAccountLink = Schema.Struct({
 });
 export type AppAccountLink = typeof AppAccountLink.Type;
 
-/** One account a requirement lists: linked to it, or one the caller could link. */
 export const RequirementAccount = Schema.Struct({
   account: Account,
   linked: Schema.Boolean,
 });
 export type RequirementAccount = typeof RequirementAccount.Type;
 
-/**
- * One requirement of the app in one scope: its linked accounts, oldest first, then the other
- * accounts of its provider the caller can use and could link.
- */
 export const AppAccountRequirement = Schema.Struct({
   requirement: Schema.NonEmptyString,
   scope: AccountScope,
@@ -141,13 +115,11 @@ const connectErrors = [
   AccountConnectionTargetChanged,
 ] as const;
 const connectPayload = Schema.Struct({
-  /** Replace this account's credentials instead of adding an account. */
   account: Schema.optional(AccountId),
 });
 const connectDescription =
   "Completing it links the new account to this requirement. redirectUri is the callback to register when the service needs the user's own OAuth client. For an OAuth method of the returned provider, accounts.oauthSetup with provider.id and the method name lists the permissions sign-in will request. Pass account to replace an existing account's credentials instead.";
 
-/** The `/:scope` routes of one scope, named `appAccounts.<scope><Action>` for tools, such as `appAccounts.appList`. */
 const scopeEndpoints = <const S extends AccountScope>(scope: S) => {
   const path = `${prefix}/${scope}` as const;
   const forEveryone = scope === "app";
@@ -218,12 +190,6 @@ const scopeEndpoints = <const S extends AccountScope>(scope: S) => {
   ] as const;
 };
 
-/**
- * Links fill requirements by name, in the scope the route names: `app` routes link for everyone
- * and need edit access to the app (reading the list needs only use of it), `user` routes link the
- * caller's own accounts. A plain requirement keeps one link, and linking another replaces it;
- * many() keeps every one. Connection status and form steps stay under `accounts.connection`.
- */
 const [appList, appGet, appLink, appUnlink, appConnect] = scopeEndpoints("app");
 const [userList, userGet, userLink, userUnlink, userConnect] = scopeEndpoints("user");
 export const HostedAppAccounts = HttpApiGroup.make("appAccounts")

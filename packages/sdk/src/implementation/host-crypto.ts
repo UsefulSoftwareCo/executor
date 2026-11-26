@@ -1,8 +1,3 @@
-/**
- * The host cryptography `createExecutor` captures once: Effect's `SecureRandom` for record IDs and
- * claim tokens, and `Digest` for content hashes. Hosts provide both services from their platform
- * (`NodeCrypto`, `BunCrypto`, or the Web Crypto layers in `effect/crypto`).
- */
 import { Effect } from "effect";
 import { Digest, SecureRandom } from "effect/crypto";
 

@@ -1,9 +1,3 @@
-/**
- * The closed vocabularies the Better Auth security audit (`auth-audit.ts`) reads: which endpoints
- * it audits and how, the failure codes a record may name, the decoders for the request body
- * fields and stored answers it reads, and how an endpoint's answer decodes to its outcome.
- * Anything outside them is never recorded as given.
- */
 import { PASSKEY_ERROR_CODES } from "@better-auth/passkey";
 import { BASE_ERROR_CODES } from "better-auth";
 import { APIError } from "better-auth/api";
@@ -11,10 +5,6 @@ import { Option, Schema } from "effect";
 import { auditFailureCodes } from "@executor-js/hosted-server";
 import { oauthErrorCodes } from "./auth-observability.ts";
 
-/**
- * How each sign-in endpoint signs in. A session it creates is a success. Other endpoints also set
- * a new session, such as `/get-session` when it extends one, so only these count as sign-ins.
- */
 export const signIns: Readonly<Record<string, string>> = {
   "/sign-in/email-otp": "email_otp",
   "/sign-in/social": "social",
@@ -27,7 +17,6 @@ export const signIns: Readonly<Record<string, string>> = {
   "/sso/saml2/sp/acs/:providerId": "sso",
   "/v1-handoff/session": "v1_handoff",
 };
-/** Endpoints that check a one-time code outside sign-in, where a wrong code is the event. */
 export const otpChecks = new Set([
   "/email-otp/verify-email",
   "/email-otp/check-verification-otp",
@@ -35,14 +24,12 @@ export const otpChecks = new Set([
   "/email-otp/change-email",
   "/email-otp/reset-password",
 ]);
-/** Endpoints that end sessions. */
 export const revocations = new Set([
   "/sign-out",
   "/revoke-session",
   "/revoke-sessions",
   "/revoke-other-sessions",
 ]);
-/** The other audited endpoints: API keys, members, invitations, OAuth clients, impersonation. */
 const actions = new Set([
   "/api-key/create",
   "/api-key/delete",
@@ -60,19 +47,12 @@ export const audited = (path: string | undefined) =>
   path !== undefined &&
   (path in signIns || otpChecks.has(path) || revocations.has(path) || actions.has(path));
 
-/**
- * The failure codes these endpoints answer with: Better Auth's own and its passkey plugin's, the
- * codes of the email-code, organization and API key plugins they raise, the OAuth errors a sign-in
- * returns with, and an HTTP status where the answer carries no code. Anything else is `other`.
- */
 export const failureOf = auditFailureCodes([
   ...Object.keys(BASE_ERROR_CODES),
   ...Object.keys(PASSKEY_ERROR_CODES),
-  // Email codes.
   "OTP_EXPIRED",
   "INVALID_OTP",
   "TOO_MANY_ATTEMPTS",
-  // Organization members and invitations.
   "MEMBER_NOT_FOUND",
   "NO_ACTIVE_ORGANIZATION",
   "ORGANIZATION_NOT_FOUND",
@@ -91,12 +71,10 @@ export const failureOf = auditFailureCodes([
   "YOU_ARE_NOT_ALLOWED_TO_INVITE_USER_WITH_THIS_ROLE",
   "YOU_ARE_NOT_THE_RECIPIENT_OF_THE_INVITATION",
   "YOU_CANNOT_LEAVE_THE_ORGANIZATION_AS_THE_ONLY_OWNER",
-  // API keys.
   "KEY_NOT_FOUND",
   "UNAUTHORIZED_SESSION",
   "INVALID_NAME_LENGTH",
   "NAME_REQUIRED",
-  // Impersonation.
   "YOU_ARE_NOT_ALLOWED_TO_IMPERSONATE_USERS",
   "YOU_CANNOT_IMPERSONATE_ADMINS",
   ...oauthErrorCodes,
@@ -104,10 +82,6 @@ export const failureOf = auditFailureCodes([
 ]);
 
 const Id = Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(256));
-/**
- * The request body fields the endpoints read, each decoded on its own. Better Auth ignores a field
- * an endpoint does not take, so one such field's value must not hide another's.
- */
 export const decodeKeyId = Schema.decodeUnknownOption(Schema.Struct({ keyId: Id }));
 export const decodeRole = Schema.decodeUnknownOption(
   Schema.Struct({ role: Schema.Literals(["owner", "admin", "member"]) }),
@@ -116,7 +90,6 @@ export const decodeAccept = Schema.decodeUnknownOption(Schema.Struct({ accept: S
 export const decodeOAuthQuery = Schema.decodeUnknownOption(
   Schema.Struct({ oauth_query: Schema.String }),
 );
-/** The stored records the endpoints answer with. */
 const Returned = Schema.Struct({
   id: Schema.optionalKey(Id),
   client_id: Schema.optionalKey(Id),
@@ -132,12 +105,10 @@ export const decodeReturned = Schema.decodeUnknownOption(Returned);
 const decodeError = Schema.decodeUnknownOption(ErrorBody);
 export const decodeId = Schema.decodeUnknownOption(Id);
 
-/** A signed-in session, as a hook or the endpoint's authentication loaded it. */
 export interface Session {
   readonly user: { readonly id: string };
   readonly session: { readonly id: string; readonly impersonatedBy?: string | null | undefined };
 }
-/** The structural part of Better Auth's hook context this module reads. */
 export interface HookContext {
   readonly path?: string | undefined;
   readonly body?: unknown;
@@ -155,10 +126,6 @@ export interface HookContext {
   };
 }
 
-/**
- * The endpoint's outcome: failure with Better Auth's error code, or the `error` a redirect carries
- * back to the browser; success otherwise. A redirect is an `APIError` whatever it means.
- */
 export const outcome = (ctx: HookContext) => {
   const returned = ctx.context.returned;
   if (returned instanceof APIError && returned.statusCode >= 400)

@@ -22,7 +22,6 @@ import {
   visibleApps,
   requireAppAccess,
 } from "./resource-policy.ts";
-/** Hosted catalog and execution policy for the shared MCP engine; no HTTP transport or credentials. */
 import { CurrentMcpExecution, ToolCallRecorded, type McpBackend } from "@executor-js/mcp";
 import {
   AccountRequired,
@@ -53,13 +52,12 @@ import { loggedToolCall, loggedToolResume, recordCallDetails } from "./tool-call
 import { patGrantOf } from "./mcp-oauth.ts";
 import { listTools, searchableTools, searchTools } from "./tools.ts";
 import { observeToolSearch } from "./product-analytics.ts";
-import { listAppSkills, readAppSkill } from "./skills.ts";
+import { bundleAppSkills, listAppSkills, readAppSkill } from "./skills.ts";
 
-/**
- * Bind one request's verified membership and lazy SDK. The host must authenticate
- * and check membership before supplying CurrentOrganization, on every request.
- * Do not retain this adapter in an MCP session or a process-global layer.
- */
+const requestClient = Effect.map(Effect.serviceOption(McpSchema.McpRequestContext), (request) =>
+  Option.flatMapNullishOr(request, (context) => context.clientInfo),
+);
+
 export const hostedMcpBackend = Effect.gen(function* () {
   const organization = yield* CurrentOrganization;
   const policy = yield* CurrentPolicy;
@@ -69,11 +67,6 @@ export const hostedMcpBackend = Effect.gen(function* () {
   const grant = yield* CurrentMcpGrant;
   const session = yield* CurrentMcpSession;
   const background = yield* HostedBackground;
-  /**
-   * The log's caller for a call in `execution`: an API key's synthetic grant names its key, any
-   * other grant is the agent's. The session is recorded only when the call runs in an initialized
-   * session, which the protocol server found by the ID it issued, and the ID has this server's form.
-   */
   const caller = Effect.fn(function* (execution: string | undefined) {
     if (grant === undefined) return undefined;
     const pat = patGrantOf(grant);
@@ -95,7 +88,6 @@ export const hostedMcpBackend = Effect.gen(function* () {
     Context.add(CurrentUserId, user),
     Context.add(HostedBackground, background),
   );
-  // Discovery reads are traced only; clients repeat them on every session and poll.
   const observe = <A, E, R>(
     operation: string,
     work: Effect.Effect<A, E, R>,
@@ -103,7 +95,7 @@ export const hostedMcpBackend = Effect.gen(function* () {
   ) =>
     Effect.gen(function* () {
       const current = yield* CurrentUsage;
-      const client = yield* Effect.serviceOption(McpSchema.McpServerClient);
+      const client = yield* requestClient;
       const properties = { area: "mcp", operation };
       return yield* (
         kind === "read"
@@ -113,15 +105,11 @@ export const hostedMcpBackend = Effect.gen(function* () {
         Effect.provideService(CurrentUsage, {
           ...current,
           source: "mcp",
-          ...(Option.isSome(client)
-            ? { client_name: client.value.clientInfo.name.slice(0, 100) }
-            : {}),
+          ...(Option.isSome(client) ? { client_name: client.value.name.slice(0, 100) } : {}),
         }),
         Effect.provideContext(context),
       );
     });
-  // A single metadata snapshot feeds this request's catalog. Each call still checks the app and
-  // resolves the caller's accounts again.
   const discoveryApps = yield* Effect.cached(
     Effect.flatMap(sdk, (executor) =>
       executor.apps
@@ -136,19 +124,11 @@ export const hostedMcpBackend = Effect.gen(function* () {
         .pipe(Effect.flatMap(visibleApps)),
     ).pipe(Effect.provideContext(context)),
   );
-  // Resolve linked account labels once per request, even when discovery fans out over apps.
   const discoveryAccounts = yield* Effect.cached(
     Effect.flatMap(discoveryApps, (apps) => callerLinkedAccounts(apps.map((app) => app.id))).pipe(
       Effect.provideContext(context),
     ),
   );
-  /**
-   * The caller's access to every app the request lists for discovery, their links to them and
-   * the apps' links, read in one statement once per request, when discovery first needs it, so
-   * discovery does not check each app in a statement of its own. Each app is still decided on its
-   * own from it, as its own reads would decide it. Undefined when the read did not answer: each
-   * app then reads for itself.
-   */
   const discoveryAccess = yield* Effect.cached(
     Effect.gen(function* () {
       const apps = (yield* discoveryApps).filter((app) => permitsApp(policy, app.id));
@@ -161,35 +141,30 @@ export const hostedMcpBackend = Effect.gen(function* () {
       Effect.provideContext(context),
     ),
   );
-  /** This app's access as {@link discoveryAccess} read it, when it covered the app. */
   const accessFromDiscovery = (app: AppId) =>
     Effect.map(discoveryAccess, (read) =>
       read === undefined || !read.apps.some((listed) => listed.id === app)
         ? undefined
         : { access: read.access.find((policy) => policy.app === app) },
     );
-  /**
-   * What search needs for every app it lists: each app's selection decided from
-   * {@link discoveryAccess}, then the SDK's reads for the target of every app that selected
-   * (`PrefetchHost.searchable`), a fixed number of statements however many apps there are. Made once
-   * per request, when search first needs it. Undefined when the access read did not answer.
-   */
-  const searchReads = yield* Effect.cached(
+  const searchReadsFor = (batch: ReadonlySet<AppId>) =>
     Effect.gen(function* () {
       const read = yield* discoveryAccess;
       if (read === undefined) return undefined;
       const selections = new Map(
-        yield* Effect.forEach(read.apps, (app) =>
-          Effect.map(
-            Effect.exit(
-              selectedAppFrom(
-                app,
-                read.access.find((policy) => policy.app === app.id),
-                read.links,
+        yield* Effect.forEach(
+          read.apps.filter((app) => batch.has(app.id)),
+          (app) =>
+            Effect.map(
+              Effect.exit(
+                selectedAppFrom(
+                  app,
+                  read.access.find((policy) => policy.app === app.id),
+                  read.links,
+                ),
               ),
+              (selected) => [app.id, selected] as const,
             ),
-            (selected) => [app.id, selected] as const,
-          ),
         ),
       );
       const targets = [...selections.values()].flatMap((selected) =>
@@ -211,13 +186,23 @@ export const hostedMcpBackend = Effect.gen(function* () {
     }).pipe(
       Effect.catch(() => Effect.succeed(undefined)),
       Effect.provideContext(context),
-    ),
-  );
-  /**
-   * An operation resolves the caller's links narrowed to the grant's targets, so a plain user
-   * requirement whose links the grant does not target fails as `AccountRequired`. When the caller
-   * did link an account for it, the grant refused that account: report that instead.
-   */
+    );
+  type SearchReads = Effect.Success<ReturnType<typeof searchReadsFor>>;
+  const searchBatches = new Map<AppId, Effect.Effect<SearchReads>>();
+  const searchReads = (app: AppId, batch: ReadonlyArray<AppId> | undefined) =>
+    Effect.gen(function* () {
+      if (batch === undefined || !batch.includes(app)) return undefined;
+      const claimed = searchBatches.get(app);
+      if (claimed !== undefined) return yield* claimed;
+      const members = new Set<AppId>();
+      const reads = yield* Effect.cached(Effect.suspend(() => searchReadsFor(members)));
+      for (const member of batch)
+        if (!searchBatches.has(member)) {
+          members.add(member);
+          searchBatches.set(member, reads);
+        }
+      return yield* searchBatches.get(app) ?? reads;
+    });
   const explained = (error: AccountRequired) =>
     Effect.gen(function* () {
       if (error.scope !== "user" || user === undefined) return error;
@@ -247,12 +232,10 @@ export const hostedMcpBackend = Effect.gen(function* () {
         (error) => Effect.flatMap(explained(error), Effect.fail),
       ),
     );
-  /** Event subscriptions belong to the request's grant and act for its user. */
   const subscriber = Effect.gen(function* () {
     if (grant === undefined || user === undefined) return yield* new OrganizationForbidden();
     return { principal: grant, subject: user };
   });
-  /** The app is this organization's, visible to the caller, and theirs to use. */
   const eventApp = (app: AppId) =>
     Effect.gen(function* () {
       yield* authorizeApp(app);
@@ -260,7 +243,6 @@ export const hostedMcpBackend = Effect.gen(function* () {
         return yield* new AppNotFound({ app });
       yield* requireAppAccess(app, "use");
     });
-  /** Check the call as discovery would, then make it with the caller's resolved accounts. */
   const startCall = (
     input: Parameters<McpBackend<Error>["callTool"]>[0],
     options?: ToolInvocationOptions,
@@ -268,8 +250,6 @@ export const hostedMcpBackend = Effect.gen(function* () {
     Effect.gen(function* () {
       const owner = yield* currentOwner;
       const executor = yield* sdk;
-      // Under a read-only rule the grant check evaluates the app before the call reaches here,
-      // so an app read made beside authentication would be older than that evaluation.
       const ahead = yield* SelectionReadAhead;
       const read =
         ahead !== undefined && !requiresToolMetadata(policy.tools, input.app) ? ahead : undefined;
@@ -282,7 +262,6 @@ export const hostedMcpBackend = Effect.gen(function* () {
       );
       yield* recordCallDetails({ version, accounts, ...(kind === undefined ? {} : { kind }) });
       const call = executor.tools.call({ ...input, version, accounts, kind }, options);
-      // The check has finished: the call may read its state and recheck its accounts at once.
       return yield* (yield* ConcurrentStatements) !== undefined
         ? call.pipe(Effect.provideService(InvocationSelection, { app: input.app, owner, accounts }))
         : call;
@@ -298,8 +277,6 @@ export const hostedMcpBackend = Effect.gen(function* () {
       Effect.gen(function* () {
         const { principal, subject } = yield* subscriber;
         const { target } = input;
-        // A saved subscription can name an app the caller no longer sees; to them it has no event.
-        // A selection of every app is the organization's; each delivery checks its app.
         if (target.app !== null)
           yield* eventApp(target.app).pipe(
             Effect.catchTag("AppNotFound", () => Effect.fail(new EventNotFound({ kind: "event" }))),
@@ -321,13 +298,14 @@ export const hostedMcpBackend = Effect.gen(function* () {
       }).pipe((work) => observe("unsubscribeEvent", work)),
     listSkills: (input, options) =>
       observe("listSkills", grantRefusal(listAppSkills(input, options)), "read"),
+    bundleSkills: (input, options) =>
+      observe("bundleSkills", grantRefusal(bundleAppSkills(input, options)), "read"),
     readSkill: (input) => observe("readSkill", grantRefusal(readAppSkill(input)), "read"),
     authorizeElicitation: (input) =>
       Effect.gen(function* () {
         const owner = yield* currentOwner;
         const executor = yield* sdk;
         const { version, accounts } = yield* selectedActiveVersion(executor, owner, input);
-        // A tool whose permission cannot be confirmed cannot receive input.
         yield* authorizeTool({ ...input, version, accounts }).pipe(
           Effect.mapError(() => new ElicitationFailed({ reason: "forbidden" })),
         );
@@ -360,7 +338,6 @@ export const hostedMcpBackend = Effect.gen(function* () {
           return yield* new OrganizationForbidden();
         const app = (yield* discoveryApps).find((app) => app.id === input.app);
         if (app === undefined) return yield* new AppNotFound({ app: input.app });
-        // A read pinned to a retained version resolves that version's requirements.
         const requirements =
           input.version === undefined || input.version === app.activeVersion
             ? app.requirements
@@ -381,7 +358,7 @@ export const hostedMcpBackend = Effect.gen(function* () {
       observe("listTools", grantRefusal(listTools(input, options)), "read"),
     searchableTools: (input, options) =>
       Effect.gen(function* () {
-        const reads = yield* searchReads;
+        const reads = yield* searchReads(input.app, options?.searchBatch);
         const selected = reads?.selections.get(input.app);
         return yield* reads === undefined || selected === undefined
           ? searchableTools(input, options)
@@ -400,11 +377,9 @@ export const hostedMcpBackend = Effect.gen(function* () {
           true,
           grantRefusal(startCall(input, options)),
         );
-        // The agent is told the call's reference beside its outcome.
         if (logged.reference !== undefined) (yield* ToolCallRecorded)?.(logged.reference);
         return yield* logged.exit;
       }).pipe((work) => observe("callTool", work)),
-    // The call's reference was given when the call paused; the resume reports its outcome only.
     resumeInvocation: (request, response, options?: ToolInvocationOptions) =>
       loggedToolResume(
         request.requestId,

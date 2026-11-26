@@ -1,11 +1,3 @@
-/**
- * Own a retained perf stage's fixture authority for the lifetime of this process.
- *
- * The stage deploy transfers its database and signing settings to a loopback fixture process that
- * this command starts first. The command stays in the foreground afterwards so benchmark runs can
- * mint synthetic sessions through the private control file. Stopping it only closes the fixture
- * process; the retained stage keeps running until it is explicitly destroyed.
- */
 import { Clock, Console, Effect, FileSystem, Path, Redacted, Schedule, Schema } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { HttpClient } from "effect/http";
@@ -15,7 +7,6 @@ export class StageFailed extends Schema.TaggedError<StageFailed>()("StageFailed"
   message: Schema.String,
 }) {}
 
-/** Private control file shared by the benchmark commands; mode 0600, never committed. */
 export const StageControl = Schema.Struct({
   slug: Schema.String,
   origin: Schema.String,
@@ -76,7 +67,6 @@ export const serveStage = (input: {
             "retained",
             "--background",
             "active",
-            // The harness reads its spans back from Axiom.
             "--telemetry",
             "export",
             "--owner",

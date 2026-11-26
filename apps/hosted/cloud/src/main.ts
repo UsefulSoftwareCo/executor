@@ -4,6 +4,7 @@ import {
   dispatchProvisioning,
   provisionTeamNow,
 } from "./infrastructure/provisioning.ts";
+import { previewActivity } from "./infrastructure/preview-activity.ts";
 import { previewLifetime } from "./infrastructure/test-stage-expiry.ts";
 import { ExecutorCloudApi, executorCloudApiDocument } from "./contracts/api.ts";
 import { hostedAppUi, appAddresses } from "@executor-js/hosted-server/app-ui";
@@ -38,7 +39,6 @@ import { BillingMeter } from "./contracts/billing-meter.ts";
 import { billingBindings } from "./infrastructure/billing.ts";
 import { frameworkDocumentation, registryRoutes, gitRoutes } from "@executor-js/app-management";
 import { hostedAppGitAccess } from "@executor-js/hosted-server/app-management";
-/** Cloudflare composition edge. Alchemy owns the Effect runtime and request scopes. */
 import { publishedSkillRoutes } from "@executor-js/app-templates/executor";
 import { hideRemovedOrganizations } from "./implementation/organization-removal.ts";
 import {
@@ -54,6 +54,7 @@ import {
   mcpAuthorizationServer,
   apiChallenge,
   apiProtectedResource,
+  desktopProtectedResource,
 } from "@executor-js/hosted-server";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { cloudSite } from "./infrastructure/site.ts";
@@ -101,7 +102,7 @@ import { cloudEntryApi, cloudEntryDocument, resolveCloudEntry } from "./implemen
 import { browserReturnTo } from "@executor-js/hosted-server/browser/contracts";
 import { HttpServerRequest } from "effect/http";
 import { homepage, staticDocument } from "./implementation/homepage.ts";
-import { sitePageRoutes } from "./contracts/site-paths.ts";
+import { securityTxt, sitePageRoutes } from "./contracts/site-paths.ts";
 import {
   accountCallback,
   apiGoneOnEdge,
@@ -134,6 +135,7 @@ import {
   customDomain,
   productionApiWorkerName,
   productionStage,
+  removalRevocationBudgetBindings,
   stageName,
 } from "./infrastructure/stage.ts";
 import { roleHostRoutes } from "./infrastructure/role-hosts.ts";
@@ -153,6 +155,12 @@ import {
   requestTiming,
 } from "@executor-js/telemetry/http";
 import { recordClientNetwork } from "./implementation/client-network.ts";
+import { executorServerIdentityPath } from "apps/ui/contracts";
+import {
+  publicIdentityCache,
+  serverIdentity,
+  serverIdentityResponse,
+} from "@executor-js/utils/server-identity";
 
 import { appCatalogBinding } from "./infrastructure/app-catalog.ts";
 import { Api } from "./infrastructure/api-worker.ts";
@@ -163,21 +171,16 @@ export { Api } from "./infrastructure/api-worker.ts";
 
 export default Api.make(
   Effect.gen(function* () {
-    // Native Worker props are also evaluated during runtime initialization.
-    // The build-time flag also lets Rolldown remove provisioning imports.
     if (globalThis.__ALCHEMY_RUNTIME__) return { main: import.meta.url };
     const { dev } = yield* AlchemyContext;
     const path = yield* Path.Path;
     const origin = dev ? undefined : new URL(yield* cloudOrigin.pipe(Effect.orDie));
-    // The schedule coordinator is created beside its first caller, which must be this Worker's
-    // placed fetch handler, so a deployed API Worker cannot go out unplaced.
     const placement = dev
       ? undefined
       : { region: yield* Config.NonEmptyString("CLOUD_PLACEMENT_REGION") };
     const analytics = yield* postHogBindings;
     const sentry = yield* sentryBindings;
     const site = yield* cloudSite;
-    // v1's edge binds to production's Worker by name.
     const pinnedName =
       Option.getOrUndefined(yield* stageName) === productionStage
         ? { name: productionApiWorkerName }
@@ -190,29 +193,19 @@ export default Api.make(
         ...(yield* telemetryBindings),
         ...analytics.env,
         CLOUDFLARE_ACCOUNT_ID: yield* Config.String("CLOUDFLARE_ACCOUNT_ID"),
-        // Cron Triggers reach the placed fetch handler through this binding.
         [selfBinding]: Cloudflare.Workers.Self,
         ...sentry.env,
         ...(yield* billingBindings),
-        // Local tests stall chosen removal starts; deployed Workers never install the hook.
         ...(yield* removalStallBindings),
-        // Only local e2e Clouds may turn the auth rate limit off; deployed Workers get `false`.
         ...(yield* authRateLimitSwitchBindings),
-        // A deployed stage identifies Executor to authorization servers by its own document.
+        ...(yield* removalRevocationBudgetBindings),
         ...(origin === undefined ? {} : yield* clientMetadataBinding.pipe(Effect.orDie)),
-        // Every deployed stage lists production's official app feed.
         ...(origin === undefined ? {} : yield* appCatalogBinding),
       },
       build: workerBuild("api"),
-      // Auth callbacks and the dashboard share the configured canonical origin.
       ...(origin === undefined ? {} : { domain: yield* customDomain(origin) }),
-      // The role hosts are zone routes, not custom domains: they order no certificate.
       ...(dev ? {} : yield* roleHostRoutes),
-      // The database's cloud region is a proximity hint, not a Cloudflare data center or a
-      // change to local development routing.
       ...(placement === undefined ? {} : { placement }),
-      // A deploy copies each changed ui/public/ file from Git into R2: a read and a write per
-      // file, up to `publicFileLimits.files` (10,000) of them, beyond the default 10,000.
       limits: { subrequests: 50_000 },
       compatibility: {
         date: "2026-09-08",
@@ -229,15 +222,11 @@ export default Api.make(
         strictPort: true,
       },
       assets: {
-        // Resolve the dev asset root once before Alchemy hands it to workerd.
         directory: dev
           ? site.outdir.pipe(Output.map((directory) => path.resolve(directory)))
           : site.outdir,
         hash: site.hash.output,
-        // A miss reaches the Worker: an earlier deploy's retained file, or 404.html; see
-        // `site-assets.ts` and `not-found.ts`.
         notFoundHandling: "none",
-        // Preserve TanStack paths after an internal index.html rewrite.
         htmlHandling: "none",
         runWorkerFirst: workerFirstRoutes,
       },
@@ -245,6 +234,7 @@ export default Api.make(
   }),
   Effect.gen(function* () {
     const lifetime = yield* previewLifetime;
+    const activity = yield* previewActivity;
     const analytics = yield* cloudAnalytics;
     const reportErrors = yield* cloudSentry;
     const errorTunnel = yield* cloudErrorTunnel;
@@ -259,7 +249,6 @@ export default Api.make(
       yield* cloudArtifactsTokensLive,
     );
     const billing = yield* billingLive.pipe(Effect.orDie);
-    // The removal workflow runs in this isolate and shares its services.
     const removal = yield* OrganizationRemoval.pipe(
       Effect.provide(Layer.mergeAll(executor, auth.identity, billing)),
     );
@@ -271,13 +260,8 @@ export default Api.make(
       yield* cloudOrganizationRemovalRecovery,
     );
     const schedules = yield* cloudSchedules;
-    // A new team's default app is installed right after its workflow starts, in this isolate,
-    // rather than after the workflow is scheduled. The workflow finishes an install cut short
-    // here, so a failure is only logged.
     const installTeam = (job: string) =>
       provisionTeamNow(job).pipe(
-        // The installation links managed keys; their webhook sources start at once, not on a later wake.
-        // It already runs after its request's response.
         Effect.provide(schedules.immediateLayer),
         Effect.timeoutOption("15 seconds"),
         Effect.withSpan("job.provisioning.install"),
@@ -287,31 +271,20 @@ export default Api.make(
     const dispatchWith = <R>(install: (job: string) => Effect.Effect<void, never, R>) =>
       dispatchProvisioning(install).pipe(
         Effect.provide(executor),
-        // A request finalizer runs after its SQL pool closes. Dispatch owns a
-        // fresh scope so execution memos cannot reuse that closed pool.
         Effect.scoped,
         Effect.withSpan("job.provisioning.dispatch"),
         Effect.catch((error) =>
           Effect.logWarning("Provisioning outbox unavailable").pipe(Effect.as(jobFailed(error))),
         ),
       );
-    // Cron only recovers lost dispatches; their workflows install any team.
     const dispatch = dispatchWith(() => Effect.void);
-    // Fails while a start remains pending, so the recovery alarm that requested it tries again.
     const organizationRemovals = dispatchOrganizationRemovals.pipe(
       Effect.provide(Layer.merge(executor, removals)),
       Effect.scoped,
       Effect.as(jobCompleted),
     );
-    // Jobs are queued by triggers on users, teams and members. Only auth and dashboard API
-    // writes change those rows, so only their requests start the jobs at once. MCP, telemetry
-    // and the other routes skip the extra connection and query. Cron recovers any lost dispatch.
     const startJobs = dispatchWith(installTeam).pipe(lifetime.background);
     const cleanup = yield* EventCleanup;
-    // The event scope closes through waitUntil after a complete response is sent, so it waits
-    // for the jobs and exports their telemetry. A streamed body closes that scope at EOF instead;
-    // the jobs then detach so they cannot hold EOF. Either way they end by the event's cleanup
-    // deadline, after the Better Auth work the request left running, and before the export.
     const dispatchAfterWrites = <E, R>(
       handler: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
     ) =>
@@ -333,7 +306,6 @@ export default Api.make(
         );
       });
     const dataSteps = (yield* cloudDataSteps(auth.agentGrants)).pipe(
-      // A step's redeploys wake webhook source reconciliation once, after the job's request answers.
       Effect.provide(schedules.layer),
       Effect.provide(executor),
       reportErrors,
@@ -350,7 +322,6 @@ export default Api.make(
     );
     const appDomains = yield* cloudAppDomains;
     const siteAssets = yield* cloudSiteAssets;
-    // Keeps this build's browser files in R2 for pages still on it after the next deploy.
     const siteAssetRetention = siteAssets.retainCurrent.pipe(
       reportErrors,
       Effect.scoped,
@@ -359,22 +330,17 @@ export default Api.make(
     );
     const dashboard = cloudDashboard(yield* Cloudflare.Workers.bindWorker(Dashboard), {
       resourceOrigins: auth.resourceOrigins,
-      // Passkeys made before the dashboard moved belong to the deployment's own host. They stay
-      // unusable under the rollback switch: the relying party remains the role hosts' domain.
       formerPasskeyHost: Option.isSome(auth.hosts.roles)
         ? new URL(auth.hosts.deployment).hostname
         : null,
-      // Documentation is a site page, served by the edge when the deployment has role hosts.
       documentation: new URL("/docs/", auth.hosts.site).href,
     });
     const appUi = hostedAppUi(
       appAddresses(auth.origin, yield* cloudAppUiBase.pipe(Effect.orDie)),
       appDomains.status,
     );
-    // Session objects run in the MCP server Worker; this isolate authenticates and forwards.
     const mcp = yield* cloudMcp;
     const meter = yield* BillingMeter.pipe(Effect.provide(billing));
-    // Each job reports its own failure, so a workflow problem cannot prevent email delivery.
     const workflowReconcile = Effect.flatten(HostedExecutor).pipe(
       Effect.flatMap((sdk) => sdk[WorkflowHost].reconcile),
       Effect.provide(executor),
@@ -384,8 +350,6 @@ export default Api.make(
       Effect.as(jobCompleted),
       handledJob(Effect.logWarning("Workflow queue reconciliation failed")),
     );
-    // Membership changes sync seats through durable provisioning jobs. This daily
-    // pass only repairs what those jobs cannot see, such as edits made in Autumn.
     const billingReconcile = meter.reconcileSeats.pipe(
       reportErrors,
       Effect.scoped,
@@ -393,8 +357,6 @@ export default Api.make(
       Effect.as(jobCompleted),
       handledJob(Effect.logError("Billing seat reconciliation failed")),
     );
-    // Repeats the reviewed idle grant data step for grants that became idle since; it does
-    // nothing until that step has applied here.
     const agentGrantExpiry = Effect.gen(function* () {
       const sql = yield* Effect.flatten(GroupDatabase);
       yield* expireIdleAgentGrants(auth.agentGrants, "private_hosted").pipe(
@@ -407,7 +369,6 @@ export default Api.make(
       Effect.as(jobCompleted),
       handledJob(Effect.logWarning("Idle agent grant expiry failed")),
     );
-    // Marks approvals that lapsed unanswered and deletes calls past the retention.
     const toolCallLog = Effect.gen(function* () {
       const sql = yield* Effect.flatten(GroupDatabase);
       yield* pruneToolCallLog.pipe(Effect.provideService(SqlClient.SqlClient, sql));
@@ -454,15 +415,12 @@ export default Api.make(
     const egress = yield* cloudEgress;
     const clientMetadata = yield* cloudClientMetadata.pipe(Effect.orDie);
     const deploymentDocument = yield* deploymentClientMetadata(clientMetadata).pipe(Effect.orDie);
-    // The official app feed Add app lists; without it, only the built-in Executor app is listed.
     const catalogFeedUrl = Option.getOrUndefined(
       yield* Config.String("EXECUTOR_CATALOG_URL").pipe(Config.option),
     );
-    // Only /openapi.json and preparing the Executor catalog app read the document.
-    // Clients and the Executor app call the API at its canonical origin.
     const apiOrigin = auth.resourceOrigins.api[0];
+    const serverId = yield* serverIdentity("cloud", auth.origin);
     const document = lazyHostedApiDocument(() => executorCloudApiDocument(apiOrigin));
-    // Only framework lookups and the published skills read the large authoring reference.
     const authoring = yield* cloudAuthoringReference;
     const api = cloudApi(document).pipe(
       Layer.provide(frameworkDocumentation(authoring)),
@@ -488,7 +446,6 @@ export default Api.make(
       Layer.provide(removals),
       Layer.provide(onboarding),
       Layer.provide(hostedMiddlewareLive),
-      // Organization middleware reads the product's removal tombstones when it is built.
       Layer.provide(executor),
       HttpRouter.provideRequest(executor),
       Layer.provide(auth.identity),
@@ -496,9 +453,6 @@ export default Api.make(
       Layer.provide(auth.mcpIdentity),
     );
     const memoMap = yield* Layer.makeMemoMap;
-    // The dashboard API holds most routes and their schema decoders. MCP, auth, telemetry
-    // and document requests do not use it, so it is built on its first request and kept
-    // for the isolate. Building is synchronous: no other request can see a partial build.
     const buildApi = api.pipe(
       Layer.provide(HttpServer.layerServices),
       toRequestHttpEffect,
@@ -509,11 +463,8 @@ export default Api.make(
     const apiRequest = Effect.suspend(
       () => (apiHandle ??= Effect.runSync(Effect.provideContext(buildApi, apiServices))),
     );
-    // Register the API's own paths here, so routing precedence is unchanged. One layer adds
-    // them all: a layer per endpoint cost a fresh isolate's first request a layer build each.
     const apiRoutes = HttpRouter.addAll([
       HttpRouter.route("GET", "/openapi.json", apiRequest),
-      // A page's reads, started together in the browser, run here in one isolate.
       HttpRouter.route("POST", dashboardBatchPath, apiRequest),
       ...Object.values(ExecutorCloudApi.groups).flatMap((group) =>
         Object.values(group.endpoints).map((endpoint) =>
@@ -537,9 +488,6 @@ export default Api.make(
       HttpRouter.add("GET", "/.well-known/oauth-protected-resource", mcpProtectedResource),
       HttpRouter.add("GET", "/.well-known/oauth-protected-resource/mcp", mcpProtectedResource),
     ).pipe(HttpRouter.provideRequest(auth.mcpIdentity));
-    // v1's MCP URLs and their discovery, which the edge serves once v1 shuts down
-    // (`notes/v1-shutdown.md`): each resolves its v1 organization and toolkit, if it names them,
-    // and is served as v2's MCP.
     const withSql = yield* invocationSql;
     const legacy = legacyMcp(withSql, mcp.http);
     const legacyDiscovery = legacyProtectedResource(withSql);
@@ -565,16 +513,17 @@ export default Api.make(
     const apiDiscoveryRoutes = Layer.mergeAll(
       HttpRouter.add("GET", "/api", apiChallenge),
       HttpRouter.add("GET", "/.well-known/oauth-protected-resource/api", apiProtectedResource),
+      HttpRouter.add(
+        "GET",
+        "/.well-known/oauth-protected-resource/api/desktop",
+        desktopProtectedResource,
+      ),
     ).pipe(HttpRouter.provideRequest(auth.apiIdentity));
     const appWebhookRoutes = HttpRouter.add(
       "*",
       "/api/webhooks/:appId/:subscriptionId",
       hostedWebhookCallback,
-    ).pipe(
-      HttpRouter.provideRequest(executor),
-      // A delivery can hand a webhook source to another actor; that change wakes reconciliation.
-      HttpRouter.provideRequest(schedules.layer),
-    );
+    ).pipe(HttpRouter.provideRequest(executor), HttpRouter.provideRequest(schedules.layer));
     const withGitAccess = <A, E, R>(layer: Layer.Layer<A, E, R>) =>
       layer.pipe(
         HttpRouter.provideRequest(hostedAppGitAccess),
@@ -583,9 +532,6 @@ export default Api.make(
         Layer.provide(auth.apiIdentity),
       );
     const authoringRoutes = withGitAccess(Layer.mergeAll(registryRoutes, gitRoutes));
-    // Site pages run through the Worker (`worker-first-routes.ts`) and come from the assets.
-    // A file the current build lacks may be a retained docs file from an earlier build;
-    // anything else the assets do not hold gets the ordinary 404.
     const sitePage = Effect.gen(function* () {
       const response = yield* staticDocument();
       if (response.status !== 404) return response;
@@ -597,7 +543,7 @@ export default Api.make(
     const siteRoutes = HttpRouter.addAll(
       sitePageRoutes.map((page) => HttpRouter.route("GET", page, sitePage)),
     );
-    // The site's first-party analytics proxy and error tunnel.
+    const securityTxtRoute = HttpRouter.add("GET", securityTxt, staticDocument());
     const siteTelemetryRoutes = Layer.mergeAll(
       HttpRouter.add("*", "/api/:channel/*", analytics.proxy),
       HttpRouter.add("POST", "/api/:channel/submit", errorTunnel),
@@ -628,20 +574,19 @@ export default Api.make(
         HttpRouter.provideRequest(onboarding),
       ),
       apiRoutes,
-      // Only asset misses reach these paths: files of builds a page loaded before a deploy.
       ...retainedAssetFolders.map((folder) =>
         HttpRouter.add("GET", `/${folder}/*`, siteAssets.serve),
       ),
       publishedSkillRoutes(authoring),
       siteRoutes,
+      securityTxtRoute,
       siteTelemetryRoutes,
       browserTelemetry.pipe(HttpRouter.provideRequest(auth.identity)),
       HttpRouter.add("GET", "/", homepage(auth.cookiePrefix, dashboard(null))),
       HttpRouter.add("GET", "/org/:organizationSlug", organizationRoot),
       ...dashboardPageRoutes.map((route) =>
         route === "/app-auth"
-          ? // Resolved on the server so opening an app never renders an intermediate page.
-            HttpRouter.add("GET", route, appUi.signIn(dashboard(null))).pipe(
+          ? HttpRouter.add("GET", route, appUi.signIn(dashboard(null))).pipe(
               Layer.provide(requestServices(auth.appSessions).layer),
               HttpRouter.provideRequest(executor),
               HttpRouter.provideRequest(auth.identity),
@@ -655,7 +600,19 @@ export default Api.make(
         auth.handler.pipe(Effect.flatMap(hideRemovedOrganizations), Effect.provide(executor)),
       ),
       HttpRouter.add("*", "/api/auth/*", dispatchAfterWrites(auth.handler)),
-      // A member of a moved v1 workspace, signed in to v1, opens it here without signing in again.
+      HttpRouter.add(
+        "GET",
+        executorServerIdentityPath,
+        serverIdentityResponse(
+          serverId,
+          {
+            dashboard: auth.hosts.browser,
+            api: auth.hosts.resourceOrigins.api[0],
+            auth: new URL(auth.hosts.issuer).origin,
+          },
+          publicIdentityCache,
+        ),
+      ),
       HttpRouter.add("GET", v1HandoffPath, auth.v1Handoff),
       HttpRouter.add("*", "/api/email/unsubscribe", welcomeEmails.unsubscribe),
       HttpRouter.add(
@@ -663,7 +620,6 @@ export default Api.make(
         "/api/oauth/callback",
         cloudAccountCallback(auth.returnsStageAccountCallback),
       ).pipe(HttpRouter.provideRequest(auth.identity)),
-      // The document grants issued before it moved to the edge renew with.
       HttpRouter.add(
         "GET",
         clientMetadataDocumentPath,
@@ -678,19 +634,16 @@ export default Api.make(
       ).pipe(HttpRouter.provideRequest(auth.mcpIdentity)),
       apiDiscoveryRoutes,
     );
-    // Routes are immutable per isolate; requestServices keeps live auth resources in each event.
     const handle = yield* routes.pipe(
       Layer.provide(HttpServer.layerServices),
       toRequestHttpEffect,
       Effect.provideService(Layer.CurrentMemoMap, memoMap),
     );
-    // Each role host has its own router, built from the same route layers, so it can serve no
-    // other path. Each build registers its routes in its own router.
     const mcpHost = yield* Layer.mergeAll(
       mcpRoutes,
       authorizationServerRoutes,
-      // ChatGPT verifies the domain of the app's MCP URL, now `mcp.`, at this path.
       HttpRouter.add("GET", "/.well-known/openai-apps-challenge", openAiAppsChallenge),
+      securityTxtRoute,
     ).pipe(
       Layer.provide(HttpServer.layerServices),
       toRequestHttpEffect,
@@ -699,48 +652,33 @@ export default Api.make(
     const apiHost = yield* Layer.mergeAll(
       apiRoutes,
       apiDiscoveryRoutes,
-      // The host people sign in to says where its MCP endpoint is: this names the canonical MCP
-      // resource, on `mcp.`, since `api.` is not an MCP origin. `executor login` reads it.
       HttpRouter.add("GET", "/.well-known/oauth-protected-resource/mcp", mcpProtectedResource).pipe(
         HttpRouter.provideRequest(auth.mcpIdentity),
       ),
       authorizationServerRoutes,
       appWebhookRoutes,
-      // The Executor app reads its skills beside the API it calls.
       publishedSkillRoutes(authoring),
-      // The public app registry, the SDK's and CLI's default host.
       withGitAccess(registryRoutes),
     ).pipe(
       Layer.provide(HttpServer.layerServices),
       toRequestHttpEffect,
       Effect.provideService(Layer.CurrentMemoMap, memoMap),
     );
-    // The paths v1's edge forwards from `executor.sh`. Issuer metadata is served here, never
-    // redirected: clients require the issuer to share an origin with the URL they fetched. A
-    // social provider's return answers with a redirect to the browser origin, where the
-    // sign-in's state cookie is.
     const edgeHost = yield* Layer.mergeAll(
       authorizationServerRoutes,
       legacyMcpRoutes,
       HttpRouter.add("GET", "/api/auth/callback/:provider", redirectTo(auth.origin, 302)),
-      // A connected-account sign-in's return opens the browser origin's callback page, or a
-      // stage's when the sign-in is the stage's. One v1 started finds a page saying v1 is gone.
       HttpRouter.add(
         "GET",
         "/api/oauth/callback",
         accountCallback(auth.origin, cloudAccountCallback(auth.returnsStageAccountCallback)),
       ).pipe(HttpRouter.provideRequest(auth.identity)),
-      // The OAuth client metadata document sign-ins start with; its callback is the edge's.
       HttpRouter.add("GET", clientMetadataDocumentPath, clientMetadataDocument(clientMetadata)),
       withGitAccess(gitRoutes),
-      // The public site. Nobody is signed in to v2 on the edge, so `/` is always the site's.
       HttpRouter.add("GET", "/", staticDocument("/index.html")),
       siteRoutes,
       siteTelemetryRoutes,
       publishedSkillRoutes(authoring),
-      // What v1 served on `executor.sh`, which the edge serves once v1 shuts down
-      // (`notes/v1-shutdown.md`): its client ID metadata documents, its sign-in
-      // and dashboard paths, the redirects v1's edge made, and 410 for the rest of its API.
       HttpRouter.addAll([
         HttpRouter.route("GET", "/api/oauth/client-id-metadata.json", v1ClientIdMetadata),
         HttpRouter.route("GET", "/api/oauth/client-id-metadata/*", v1ClientIdMetadata),
@@ -774,7 +712,6 @@ export default Api.make(
         mcp: mcpHost,
         api: apiHost,
         edge: edgeHost.pipe(apiGoneOnEdge(`${auth.resourceOrigins.api[0]}/api`)),
-        // What v1's AuthKit host answers once v2 takes it over from WorkOS.
         authKit: v1AuthKitHost(auth.origin),
       },
     );
@@ -798,23 +735,24 @@ export default Api.make(
         requestTiming,
         recordClientNetwork,
         recordUnclassifiedRefusals,
-        // Server-rendered pages read the API through this complete pipeline, in-process.
         withHostPipeline,
+        activity.http(
+          (request) =>
+            request.headers.authorization !== undefined ||
+            hasSessionCookie(new Headers(request.headers), auth.cookiePrefix),
+        ),
         lifetime.http,
-        // The request whose close waits for the background work nested scopes offer while it runs.
         servedRequest,
       ),
     };
   }).pipe(
     Effect.provide(
       Layer.mergeAll(
-        // The coordinator calls the retired one once, at handover.
         PlacedScheduleCoordinatorLive.pipe(Layer.provideMerge(ScheduleCoordinatorLive)),
         OrganizationRemovalRecoveryLive,
         cloudAuthDatabase,
         cloudTelemetry,
         Cloudflare.Workers.CronEventSourceLive,
-        // The published skills' versions are digests; Workers compute them with Web Crypto.
         Digest.layerWebCrypto,
       ),
     ),

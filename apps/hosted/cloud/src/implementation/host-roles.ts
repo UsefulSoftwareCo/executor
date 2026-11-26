@@ -31,13 +31,11 @@ import type { CloudHosts, HostRole, RoleHosts } from "../infrastructure/stage.ts
 import { isBrowserPage, isMcpPath } from "../contracts/browser-pages.ts";
 import { isSitePage } from "../contracts/site-paths.ts";
 
-/** The host of the URL a request arrived at; never a forwarding header. */
 const requestHost = (request: HttpServerRequest.HttpServerRequest) =>
   URL.parse(request.originalUrl)?.host;
 
 type Route = HostRole | "edge" | "authkit" | "deployment";
 
-/** The role host or edge `host` is, if it is one of them. */
 const roleHostOf = (roles: RoleHosts, host: string | undefined) => {
   if (host === new URL(roles.origins.app).host) return "app";
   if (host === new URL(roles.origins.mcp).host) return "mcp";
@@ -47,33 +45,21 @@ const roleHostOf = (roles: RoleHosts, host: string | undefined) => {
   return undefined;
 };
 
-/** The part of the product a request's host names. */
 const routeOf = (hosts: CloudHosts, host: string | undefined): Route =>
   Option.match(hosts.roles, {
     onNone: () => "deployment" as const,
     onSome: (roles): Route => roleHostOf(roles, host) ?? "deployment",
   });
 
-/**
- * The role of the host a request to any Cloud Worker was sent to, for records of every Worker's
- * invocations. The API Worker serves an unnamed host as the deployment origin; here such a host is
- * `other`, because other Workers receive other hosts: an app's own domain, or the upstream of a
- * request an app sends out.
- */
 export const hostRoleOf = (hosts: CloudHosts, host: string | undefined): Route | "other" =>
   (Option.isSome(hosts.roles) ? roleHostOf(hosts.roles.value, host) : undefined) ??
   (host === new URL(hosts.deployment).host ? "deployment" : "other");
 
-/** The same path and query on `origin`. */
 const sameRequestAt = (request: HttpServerRequest.HttpServerRequest, origin: string) => {
   const url = new URL(request.originalUrl);
   return new URL(`${url.pathname}${url.search}`, origin).href;
 };
 
-/**
- * A redirect to the same path and query on `origin`: 308 for a permanent move, 307 for a page the
- * rollback switch moves, 302 for a provider callback whose code is single-use.
- */
 export const redirectTo = (origin: string, status: 302 | 307 | 308) =>
   Effect.map(HttpServerRequest.HttpServerRequest, (request) =>
     HttpServerResponse.redirect(sameRequestAt(request, origin), {
@@ -84,11 +70,6 @@ export const redirectTo = (origin: string, status: 302 | 307 | 308) =>
 
 const notFound = HttpServerResponse.empty({ status: 404 });
 
-/**
- * Name the request's host and the role it reaches on the request's server span, so traffic can be
- * split by host. The host is this Worker's own: Cloudflare routes it only Executor's domains. The
- * role is one of a closed set, and the query string never leaves the URL.
- */
 const annotateHost = (request: HttpServerRequest.HttpServerRequest, role: Route) => {
   const hostname = URL.parse(request.originalUrl)?.hostname;
   return Effect.annotateCurrentSpan({
@@ -97,14 +78,9 @@ const annotateHost = (request: HttpServerRequest.HttpServerRequest, role: Route)
   });
 };
 
-/**
- * Serve each role host from its own handler and every other host from `main`. Without role
- * hosts, `main` serves every request. Either way the request's span names its host and role.
- */
 export const withRoleHosts =
   <E1, R1, E2, R2, E3, R3, E4, R4>(
     hosts: CloudHosts,
-    /** Whether the request carries a session cookie: a routing hint, never authority. */
     hasSession: (headers: HttpServerRequest.HttpServerRequest["headers"]) => boolean,
     handlers: {
       readonly mcp: Effect.Effect<HttpServerResponse.HttpServerResponse, E1, R1>;
@@ -128,7 +104,6 @@ export const withRoleHosts =
           const url = new URL(request.originalUrl);
           const { pathname } = url;
           const page = request.method === "GET" || request.method === "HEAD";
-          // Under the rollback switch the deployment origin is the browser origin again.
           const rolledBack = hosts.browser === hosts.deployment;
           switch (route) {
             case "app":
@@ -147,7 +122,6 @@ export const withRoleHosts =
             case "api":
               return yield* handlers.api;
             case "edge":
-              // The edge's own router answers every path it serves and 404s the rest.
               return yield* handlers.edge;
             case "authkit":
               return yield* handlers.authKit;

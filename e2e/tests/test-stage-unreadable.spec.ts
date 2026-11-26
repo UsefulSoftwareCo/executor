@@ -1,10 +1,3 @@
-/**
- * A test stage whose Alchemy records the state store cannot read is removed only by an explicit
- * `test-stage destroy --by-name`, by the names and tags the stage implies. These cases run the
- * `test-stage` CLI as a process against a recorded copy of the state store and the Cloudflare,
- * Neon and Axiom APIs, which also holds production's resources and neighbouring stages' shaped as
- * the real ones are, and a disposable Postgres for the stage registry.
- */
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { randomBytes } from "node:crypto";
 import { describe, expect, it } from "@effect/vitest";
@@ -22,7 +15,6 @@ const tags = (stage: string, id: string, stack = stackTag) => [
   `alchemy:stage:${stage}`,
   `alchemy:id:${id}`,
 ];
-/** Physical names as Alchemy gave them to real stages: untruncated for pr-2994, hashed for search-loop. */
 const pr2994 = {
   api: "executor-next-hosted-api-test-pr-2994-s6qio74pydelrhgd",
   pages: "executor-next-hosted-apppages-2hh3rqvfveyv4kykb7awstll",
@@ -37,17 +29,13 @@ const searchLoop = {
 
 interface Fault {
   readonly method: string;
-  /** Matches the request path, query included. */
   readonly path: RegExp;
   readonly status: number;
   readonly headers?: Record<string, string>;
-  /** How many requests it answers; omitted, every one. */
   times?: number;
-  /** It answers only after this many DELETE requests, as a check after removal would see. */
   readonly afterDeletes?: number;
 }
 
-/** The services' contents, which the recorded APIs list and delete from. */
 interface World {
   workers: Array<{ id: string; tags: string[] | null }>;
   zones: Array<{ id: string; name: string }>;
@@ -59,21 +47,18 @@ interface World {
   destinations: Array<{ slug: string; name: string }>;
   hyperdrive: Array<{ id: string; name: string }>;
   certificates: Array<{ id: string; name: string | null }>;
-  /** The Artifacts namespaces and how many repositories each holds. */
   artifacts: Record<string, number>;
-  /** Whether a namespace's repository list leaves out its total, as no real answer does. */
   repositoriesWithoutTotal?: boolean;
-  /** Whether the namespace list hands back the second page's cursor again and again. */
   repeatNamespaceCursor?: boolean;
   branches: Array<{ id: string; name: string; default: boolean }>;
   monitors: Array<{ id: string; name: string }>;
   tokens: Array<{ id: string; name: string }>;
-  /** Alchemy records by stage and logical ID: readable, undecryptable, or failing that many reads. */
   state: Record<string, Record<string, "readable" | "undecryptable" | number>>;
   faults: Fault[];
-  /** Pages of the bucket listing, by name, when the listing is paginated. */
+  planetscale?: Record<string, { production: boolean; deleteStatus: number }>;
+  namespaces?: Array<{ script: string }>;
+  namespacesUnlisted?: number;
   bucketPages?: ReadonlyArray<ReadonlyArray<string>>;
-  /** Listing results that report more pages than they return. */
   partial?: ReadonlyArray<string>;
   requests: string[];
 }
@@ -82,12 +67,10 @@ const pr2994World = (): World => ({
   workers: [
     { id: pr2994.api, tags: tags("test-pr-2994", "Api") },
     { id: pr2994.pages, tags: tags("test-pr-2994", "AppPages") },
-    // Another stack's Worker in the same stage is not this stack's.
     {
       id: "executor-pr-preview-comments-x-test-pr-2994-aaaaaaaaaaaaaaaa",
       tags: tags("test-pr-2994", "Comment", "alchemy:stack:executor-pr-preview-comments"),
     },
-    // A neighbour whose slug is a prefix of this one, and one this one is a prefix of.
     {
       id: "executor-next-hosted-api-test-pr-299-bbbbbbbbbbbbbbbb",
       tags: tags("test-pr-299", "Api"),
@@ -97,7 +80,6 @@ const pr2994World = (): World => ({
       tags: tags("test-pr-29940", "Api"),
     },
     { id: "executor-next-hosted-api-v2-dddddddddddddddd", tags: tags("v2", "Api") },
-    // Named like this stage's but untagged.
     { id: "executor-next-hosted-api-test-pr-2994-eeeeeeeeeeeeeeee", tags: null },
   ],
   zones: [testZone, appZone, otherZone],
@@ -155,7 +137,6 @@ const pr2994World = (): World => ({
     [appZone.id]: [
       { id: "dns-team", name: "*.team.pr-2994.executor.website", type: "AAAA" },
       { id: "dns-team-host", name: "team.pr-2994.executor.website", type: "AAAA" },
-      // Production writes one label per team, and a team may be named like the base.
       { id: "dns-production-team", name: "*.pr-2994.executor.website", type: "AAAA" },
       { id: "dns-neighbour-team", name: "*.team.pr-299.executor.website", type: "AAAA" },
     ],
@@ -167,7 +148,6 @@ const pr2994World = (): World => ({
   hyperdrive: [],
   certificates: [],
   artifacts: {
-    // More than one page of namespaces, as the account has, with this stage's on the second.
     ...Object.fromEntries(
       Array.from({ length: 150 }, (_, index) => [`executor-test-e2e-${index}-apps`, 0]),
     ),
@@ -208,7 +188,6 @@ const envelope = (result: unknown, result_info?: unknown) => ({
   ...(result_info === undefined ? {} : { result_info }),
 });
 
-/** Answer one request from the world, or a fault queued for it. */
 const answer = (world: World, method: string, url: URL, body: string, authorization = "") => {
   const path = url.pathname;
   const query = url.search;
@@ -237,7 +216,6 @@ const answer = (world: World, method: string, url: URL, body: string, authorizat
   const cf = `/client/v4/accounts/${account}`;
   let match: RegExpExecArray | null;
 
-  // The state store.
   if (path === "/version") return json({ version: 7 });
   if ((match = /^\/state\/stacks\/([^/]+)\/stages\/([^/]+)\/resources$/u.exec(path)))
     return json(Object.keys(world.state[decodeURIComponent(match[2]!)] ?? {}));
@@ -265,7 +243,39 @@ const answer = (world: World, method: string, url: URL, body: string, authorizat
     return { status: 204, headers: {}, body: "" };
   }
 
-  // Cloudflare.
+  if (
+    (match =
+      /^\/v1\/organizations\/synthetic-org\/databases\/executor-test\/branches(?:\/([^/]+))?$/u.exec(
+        path,
+      ))
+  ) {
+    const branches = world.planetscale ?? {};
+    const name = match[1] === undefined ? undefined : decodeURIComponent(match[1]);
+    if (name === undefined && method === "GET")
+      return json({
+        type: "list",
+        current_page: 1,
+        next_page: null,
+        data: Object.keys(branches).map((branch) => ({
+          name: branch,
+          created_at: "2026-11-16T00:00:00Z",
+        })),
+      });
+    const branch = name === undefined ? undefined : branches[name];
+    if (branch === undefined) return missing;
+    if (method === "GET") return json({ name, production: branch.production, ready: false });
+    if (method === "DELETE") {
+      if (branch.deleteStatus !== 204)
+        return {
+          status: branch.deleteStatus,
+          headers: {},
+          body: JSON.stringify({ code: "forbidden" }),
+        };
+      delete branches[name!];
+      return { status: 204, headers: {}, body: "" };
+    }
+  }
+
   if (path === `${cf}/workers/scripts`) {
     if (method === "GET")
       return ok(
@@ -280,6 +290,18 @@ const answer = (world: World, method: string, url: URL, body: string, authorizat
     const name = decodeURIComponent(match[1]!);
     world.workers = world.workers.filter((worker) => worker.id !== name);
     return gone;
+  }
+  if (path === `${cf}/workers/durable_objects/namespaces` && method === "GET") {
+    const all = world.namespaces ?? [];
+    const page = Number(url.searchParams.get("page") ?? "1");
+    const per = Math.min(Number(url.searchParams.get("per_page") ?? "20"), 300);
+    const results = all.slice((page - 1) * per, page * per);
+    return ok(results, {
+      page,
+      per_page: per,
+      count: results.length,
+      total_count: all.length + (world.namespacesUnlisted ?? 0),
+    });
   }
   if (path === "/client/v4/zones") return ok(world.zones, { page: 1, total_pages: 1 });
   if ((match = /^\/client\/v4\/zones\/([^/]+)\/workers\/routes(?:\/([^/]+))?$/u.exec(path))) {
@@ -355,7 +377,6 @@ const answer = (world: World, method: string, url: URL, body: string, authorizat
   }
   if (path === `${cf}/hyperdrive/configs`) return ok(world.hyperdrive);
   if (path === `${cf}/mtls_certificates`) return ok(world.certificates);
-  // Artifacts answer only the token minted for them, never the test-stage token.
   if (path.startsWith(`${cf}/artifacts/`) && authorization !== "Bearer artifacts-token")
     return { status: 401, headers: {}, body: "" };
   if (path === `${cf}/artifacts/namespaces` && method === "GET") {
@@ -380,7 +401,6 @@ const answer = (world: World, method: string, url: URL, body: string, authorizat
     );
   }
   if ((match = new RegExp(`^${cf}/artifacts/namespaces/([^/]+)/repos$`, "u").exec(path))) {
-    // A namespace that does not exist lists as empty, as Cloudflare's does.
     const total = world.artifacts[decodeURIComponent(match[1]!)] ?? 0;
     const shown = Math.min(total, 50);
     return ok(
@@ -397,14 +417,12 @@ const answer = (world: World, method: string, url: URL, body: string, authorizat
     );
   }
 
-  // Neon.
   if ((match = /^\/api\/v2\/projects\/test-project\/branches(?:\/([^/]+))?$/u.exec(path))) {
     if (method === "GET") return json({ branches: world.branches });
     world.branches = world.branches.filter((branch) => branch.id !== match![1]);
     return json({});
   }
 
-  // Axiom.
   if ((match = /^\/v2\/(monitors|tokens)(?:\/([^/]+))?$/u.exec(path))) {
     const kind = match[1] as "monitors" | "tokens";
     if (method === "GET") return json(world[kind]);
@@ -414,7 +432,6 @@ const answer = (world: World, method: string, url: URL, body: string, authorizat
   return missing;
 };
 
-/** The recorded APIs on a local port, for the life of the scope. */
 const recordedApis = (world: World) =>
   Effect.acquireRelease(
     Effect.callback<{ readonly origin: string; readonly close: () => void }>((resume) => {
@@ -448,7 +465,6 @@ const recordedApis = (world: World) =>
     (apis) => Effect.sync(apis.close),
   );
 
-/** A disposable Postgres with the registry's admin role, removed when the scope closes. */
 const registry = Effect.gen(function* () {
   const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
   const container = `executor-stage-registry-${randomBytes(6).toString("hex")}`;
@@ -481,7 +497,6 @@ const registry = Effect.gen(function* () {
     .trim()
     .split(":")
     .at(-1);
-  // The image's first server is Unix-only while it initialises; wait for the TCP listener.
   yield* processes
     .string(
       ChildProcess.make("sh", [
@@ -517,14 +532,12 @@ const registry = Effect.gen(function* () {
   return { url: `postgresql://stage.admin:${password}@127.0.0.1:${port}/postgres`, psql };
 });
 
-/** Run the CLI once against the world. */
 const cli = (
   world: World,
   args: ReadonlyArray<string>,
   options: {
     readonly registry?: string;
     readonly env?: Record<string, string>;
-    /** Run as the CLI runs without `apps/hosted/cloud/scripts/with-artifacts-token.sh`. */
     readonly withoutArtifactsToken?: boolean;
   } = {},
 ) =>
@@ -552,6 +565,7 @@ const cli = (
           TEST_STAGE_AXIOM_API: apis.origin,
           TEST_STAGE_STATE_STORE_URL: apis.origin,
           TEST_STAGE_STATE_STORE_TOKEN: "state-token",
+          TEST_STAGE_PLANETSCALE_API: apis.origin,
           TEST_STAGE_REMOVAL_SETTLE: "10 millis",
           TEST_STAGE_API_BACKOFF: "10 millis",
           ...(options.registry === undefined
@@ -588,7 +602,6 @@ const deletes = (world: World) => world.requests.filter((request) => request.sta
 const lease = (slug: string, database = "neon", createdAt = "2026-10-15T00:00:00Z", owner = slug) =>
   `insert into executor_test_stage_leases (slug, owner, created_at, expires_at, database_provider, retention, background)
    values ('${slug}', '${owner.replaceAll("'", "''")}', '${createdAt}', null, '${database}', 'retained', 'active')`;
-/** The registry table exists once the CLI has connected; `inventory` does not connect, `list` does. */
 const prepareRegistry = (world: World, url: string) =>
   cli(world, ["list"], { registry: url }).pipe(
     Effect.tap((result) => Effect.sync(() => expect(result.code, result.output).toBe(0))),
@@ -651,7 +664,6 @@ describe("Removing a test stage by name", () => {
       Object.assign(world.buckets, {
         [searchLoop.appBuilds]: [],
         [searchLoop.siteAssets]: [],
-        // The same truncated start and instance characters with another stage's hash.
         "executor-next-hosted-siteassets-test-seaaaaaaaaetonhh4hwltku7qi": [],
       });
       world.state["test-search-loop"] = { Api: "undecryptable" };
@@ -668,7 +680,6 @@ describe("Removing a test stage by name", () => {
       ];
       world.dns[appZone.id] = [
         { id: "dns-own-team", name: "*.team.reload0922.executor.website", type: "AAAA" },
-        // Another stage whose app base is this one's slug.
         { id: "dns-other-stage", name: "*.team.pr-2994.executor.website", type: "AAAA" },
         { id: "dns-production-team", name: "*.reload0922.executor.website", type: "AAAA" },
       ];
@@ -726,7 +737,6 @@ describe("Removing a test stage by name", () => {
     () =>
       Effect.gen(function* () {
         const transient = pr2994World();
-        // More failures than Alchemy's client retries by itself, fewer than the CLI's retries add.
         transient.state["test-pr-2994"] = { Api: 7, AuthSecret: "readable" };
         expect((yield* inventory(transient, "pr-2994")).state).toEqual({
           records: 2,
@@ -780,7 +790,6 @@ describe("Removing a test stage by name", () => {
       });
       const later = yield* inventory(failing, "pr-2994");
       expect(later.blockers).toEqual([blocker("Listing Artifacts namespaces returned HTTP 500.")]);
-      // The first page was read; only the later page failed, five times.
       expect(
         failing.requests.filter((request) => /artifacts\/namespaces\?.*cursor=/u.test(request)),
       ).toHaveLength(5);
@@ -799,8 +808,6 @@ describe("Removing a test stage by name", () => {
     () =>
       Effect.gen(function* () {
         const world = pr2994World();
-        // pr-39's namespace holds more than a page of repositories; pr-399's and production's are
-        // decoys with repositories of their own.
         Object.assign(world.artifacts, {
           "executor-test-pr-39-apps": 60,
           "executor-test-pr-399-apps": 0,
@@ -835,7 +842,6 @@ describe("Removing a test stage by name", () => {
   );
 });
 
-/** These run on the real clock: they wait for Postgres and for the CLI's retries. */
 describe("Removing a test stage by name, with its registry", () => {
   it.live(
     "removes the stage in order, retrying 429 and 5xx, and deletes its records only after an empty check",
@@ -865,7 +871,6 @@ describe("Removing a test stage by name, with its registry", () => {
         );
         const first = (fragment: string) =>
           order.findIndex((request) => request.includes(fragment));
-        // App-zone DNS first, then the Workers, then what is found by their names.
         expect(first("/dns_records/dns-team")).toBe(0);
         expect(first("/workers/scripts/")).toBeGreaterThan(first("/dns_records/dns-team-host"));
         expect(first("/workers/routes/")).toBeGreaterThan(first("/workers/scripts/"));
@@ -876,7 +881,6 @@ describe("Removing a test stage by name, with its registry", () => {
             order.filter((request) => request.includes(`/workers/scripts/${pr2994.pages}`)).length,
         ).toBe(3);
         expect(order.filter((request) => request.includes("/workflows/"))).toHaveLength(3);
-        // Everything of the stage is gone and nothing else is.
         expect(world.workers.map((worker) => worker.id)).not.toContain(pr2994.api);
         expect(world.workers).toHaveLength(5);
         expect(Object.keys(world.buckets)).toHaveLength(3);
@@ -901,7 +905,6 @@ describe("Removing a test stage by name, with its registry", () => {
         const world = pr2994World();
         yield* prepareRegistry(world, url);
         yield* psql(lease("pr-2994"));
-        // Every attempt at the first bucket is refused, so the run stops there.
         world.faults.push({
           method: "DELETE",
           path: /\/r2\/buckets\/[^/]+$/u,
@@ -913,7 +916,6 @@ describe("Removing a test stage by name, with its registry", () => {
         });
         expect(failedRun.code).not.toBe(0);
         expect(failedRun.output).toContain("returned HTTP 403");
-        // The Workers and routes went; the records and the registry entry stay.
         expect(world.workers.map((worker) => worker.id)).not.toContain(pr2994.pages);
         expect(Object.keys(world.state["test-pr-2994"]!)).toHaveLength(3);
         expect(
@@ -937,7 +939,6 @@ describe("Removing a test stage by name, with its registry", () => {
         const world = pr2994World();
         yield* prepareRegistry(world, url);
         yield* psql(lease("pr-2994"));
-        // The stage's 18 deletions all succeed; only the check after them cannot list.
         world.faults.push({ method: "GET", path: /\/v2\/tokens$/u, status: 500, afterDeletes: 18 });
         const result = yield* cli(world, ["destroy", "pr-2994", "--by-name", "--yes"], {
           registry: url,
@@ -985,7 +986,6 @@ describe("Removing a test stage by name, with its registry", () => {
         const { url, psql } = yield* registry;
         const world = pr2994World();
         yield* prepareRegistry(world, url);
-        // The oldest of 80 stages, owned by someone whose name breaks a workflow command.
         yield* psql(
           lease("pr-2994", "neon", "2026-10-01T00:00:00Z", "Owner 100%\r\n::error::spoof"),
         );
@@ -994,7 +994,6 @@ describe("Removing a test stage by name, with its registry", () => {
          select 'filler-' || n, 'Filler', '2026-11-01'::timestamptz + n * interval '1 minute', null, 'neon', 'retained', 'active'
          from generate_series(1, 79) as n`,
         );
-        // The deploy stops at its first build step, after eviction.
         const directory = yield* fs.makeTempDirectoryScoped({ prefix: "executor-stage-evict-" });
         const bin = path.join(directory, "bin");
         yield* fs.makeDirectory(bin);
@@ -1030,6 +1029,693 @@ describe("Removing a test stage by name, with its registry", () => {
         expect(
           yield* psql("select count(*) from executor_test_stage_leases where slug = 'pr-2994'"),
         ).toBe("1\n");
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    180_000,
+  );
+
+  const deployAmong = (
+    stages: number,
+    flags: ReadonlyArray<string>,
+    {
+      readable = false,
+      namespaces = [],
+      namespacesUnlisted = 0,
+      workers = 0,
+      env = {},
+    }: {
+      readonly readable?: boolean;
+      readonly namespaces?: Array<{ script: string }>;
+      readonly namespacesUnlisted?: number;
+      readonly workers?: number;
+      readonly env?: Record<string, string>;
+    } = {},
+  ) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const { url, psql } = yield* registry;
+      const world = pr2994World();
+      world.namespaces = namespaces;
+      world.namespacesUnlisted = namespacesUnlisted;
+      for (let index = 0; index < workers; index += 1)
+        world.workers.push({
+          id: `executor-next-hosted-worker${index}-v2-ffffffffffffffff`,
+          tags: tags("v2", `Worker${index}`),
+        });
+      if (readable)
+        world.state["test-pr-2994"] = {
+          Api: "readable",
+          AppPages: "readable",
+          AuthSecret: "readable",
+        };
+      yield* prepareRegistry(world, url);
+      yield* psql(lease("pr-2994", "neon", "2026-10-01T00:00:00Z", "Owner"));
+      yield* psql(
+        `insert into executor_test_stage_leases (slug, owner, created_at, expires_at, database_provider, retention, background)
+         select 'filler-' || n, 'Filler', '2026-11-01'::timestamptz + n * interval '1 minute', null, 'neon', 'retained', 'active'
+         from generate_series(1, ${stages - 1}) as n`,
+      );
+      const directory = yield* fs.makeTempDirectoryScoped({ prefix: "executor-stage-no-evict-" });
+      const bin = path.join(directory, "bin");
+      const built = path.join(directory, "built");
+      yield* fs.makeDirectory(bin);
+      for (const tool of ["bun", "alchemy"]) {
+        yield* fs.writeFileString(
+          path.join(bin, tool),
+          `#!/bin/sh\n${tool === "alchemy" ? 'if [ "$1" = destroy ]; then exit 0; fi\n' : ""}touch '${built}'\nexit 1\n`,
+        );
+        yield* fs.chmod(path.join(bin, tool), 0o755);
+      }
+      const result = yield* cli(
+        world,
+        ["deploy", "new-stage", "--owner", "Deployer", "--no-input", "--yes", ...flags],
+        { registry: url, env: { PATH: `${bin}:${process.env.PATH ?? ""}`, ...env } },
+      );
+      return {
+        result,
+        built: yield* fs.exists(built),
+        deletes: deletes(world),
+        leases: (yield* psql("select count(*) from executor_test_stage_leases")).trim(),
+        oldest: (yield* psql(
+          "select count(*) from executor_test_stage_leases where slug = 'pr-2994'",
+        )).trim(),
+      };
+    });
+
+  it.live(
+    "with --no-evict, a deploy that would evict a stage refuses before it reserves, builds or destroys anything, naming the stage",
+    () =>
+      Effect.gen(function* () {
+        const { result, built, deletes, leases, oldest } = yield* deployAmong(80, ["--no-evict"]);
+        expect(result.code).not.toBe(0);
+        expect(result.output).toContain("Deploying new-stage would evict 1 test stage");
+        expect(result.output).toContain("pr-2994 (Owner)");
+        expect(result.output).not.toContain("Evicting the oldest test stage");
+        expect([built, deletes, leases, oldest]).toEqual([false, [], "80", "1"]);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    180_000,
+  );
+
+  it.live(
+    "with --no-evict, a deploy that evicts nothing goes on as before",
+    () =>
+      Effect.gen(function* () {
+        const { result, built, deletes, oldest } = yield* deployAmong(79, ["--no-evict"]);
+        expect(result.output).not.toContain("would evict");
+        expect(result.output).not.toContain("Evicting the oldest test stage");
+        expect([built, deletes, oldest]).toEqual([true, [], "1"]);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    180_000,
+  );
+
+  it.live(
+    "without --no-evict, a deploy at the limit tries to evict the oldest stage, as before",
+    () =>
+      Effect.gen(function* () {
+        const { result, built } = yield* deployAmong(80, []);
+        expect(result.output).toContain(
+          "Evicting the oldest test stage, pr-2994 (Owner), to stay within 80.",
+        );
+        expect(result.output).not.toContain("would evict");
+        expect(built).toBe(true);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    180_000,
+  );
+
+  it.live(
+    "without --no-evict, a deploy at the limit removes a readable oldest stage and stays within 80",
+    () =>
+      Effect.gen(function* () {
+        const { result, built, leases, oldest } = yield* deployAmong(80, [], { readable: true });
+        expect(result.output).toContain("Evicted pr-2994.");
+        expect(result.output).not.toContain("Could not evict");
+        expect([built, oldest, leases]).toEqual([true, "0", "80"]);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    180_000,
+  );
+
+  const namespaces = (stage: number, others: number) => [
+    ...Array.from({ length: stage }, () => ({ script: pr2994.api })),
+    ...Array.from({ length: others }, () => ({
+      script: "executor-next-hosted-api-v2-dddddddddddddddd",
+    })),
+  ];
+
+  const classLimit = "TEST_STAGE_DURABLE_OBJECT_CLASS_LIMIT";
+  const workerLimit = "TEST_STAGE_WORKER_LIMIT";
+  const pastClasses =
+    "Deploying new-stage brings the account to about 505 Durable Object namespaces (497 now, up to 8 for a test stage), past Cloudflare's documented limit of 500 Durable Object classes per Workers Paid account. This account's real limit is unknown and may have been raised, so the deploy goes on; if it is lower, the deploy fails part way through. Set TEST_STAGE_DURABLE_OBJECT_CLASS_LIMIT to the account's limit to refuse such a deploy instead.";
+
+  it.live(
+    "past Cloudflare's documented class quota with no limit configured, a new stage warns once and deploys",
+    () =>
+      Effect.gen(function* () {
+        const { result, built } = yield* deployAmong(10, [], { namespaces: namespaces(8, 489) });
+        expect(result.output).toContain(pastClasses);
+        expect(result.output.split(pastClasses).length - 1).toBe(1);
+        expect(result.output).not.toContain("Workers per Workers Paid account");
+        expect(built).toBe(true);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    180_000,
+  );
+
+  it.live(
+    "past a configured class limit, a new stage is refused before it evicts, reserves or builds anything",
+    () =>
+      Effect.gen(function* () {
+        const { result, built, deletes, leases } = yield* deployAmong(10, [], {
+          namespaces: namespaces(8, 489),
+          env: { [classLimit]: "500" },
+        });
+        expect(result.code).not.toBe(0);
+        expect(result.output).toContain(
+          "Deploying new-stage would bring the account to about 505 Durable Object namespaces (497 now, up to 8 for a test stage), over the TEST_STAGE_DURABLE_OBJECT_CLASS_LIMIT limit of 500 Durable Object classes. Nothing was evicted, reserved, deployed or destroyed. Destroy test stages you own, or redeploy one instead of a new slug.",
+        );
+        expect(result.output).not.toContain("past Cloudflare's documented limit");
+        expect([built, deletes, leases]).toEqual([false, [], "10"]);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    180_000,
+  );
+
+  it.live(
+    "past Cloudflare's documented Workers quota with no limit configured, a new stage warns and deploys",
+    () =>
+      Effect.gen(function* () {
+        const { result, built } = yield* deployAmong(10, [], { workers: 492 });
+        expect(result.output).toContain(
+          "Deploying new-stage brings the account to about 501 Workers (499 now, up to 2 for a test stage), past Cloudflare's documented limit of 500 Workers per Workers Paid account. This account's real limit is unknown and may have been raised, so the deploy goes on; if it is lower, the deploy fails part way through. Set TEST_STAGE_WORKER_LIMIT to the account's limit to refuse such a deploy instead.",
+        );
+        expect(result.output).not.toContain("Durable Object namespaces");
+        expect(built).toBe(true);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    180_000,
+  );
+
+  it.live(
+    "past a configured Workers limit, a new stage is refused, and one message names every limit it passes",
+    () =>
+      Effect.gen(function* () {
+        const workersOnly = yield* deployAmong(10, [], {
+          workers: 492,
+          env: { [workerLimit]: "500" },
+        });
+        expect(workersOnly.result.code).not.toBe(0);
+        expect(workersOnly.result.output).toContain(
+          "Deploying new-stage would bring the account to about 501 Workers (499 now, up to 2 for a test stage), over the TEST_STAGE_WORKER_LIMIT limit of 500 Workers. Nothing was evicted, reserved, deployed or destroyed.",
+        );
+        expect([workersOnly.built, workersOnly.leases]).toEqual([false, "10"]);
+        const both = yield* deployAmong(10, [], {
+          namespaces: namespaces(8, 489),
+          workers: 492,
+          env: { [classLimit]: "500", [workerLimit]: "500" },
+        });
+        expect(both.result.output).toContain(
+          "Deploying new-stage would bring the account to about 505 Durable Object namespaces (497 now, up to 8 for a test stage), over the TEST_STAGE_DURABLE_OBJECT_CLASS_LIMIT limit of 500 Durable Object classes; and to about 501 Workers (499 now, up to 2 for a test stage), over the TEST_STAGE_WORKER_LIMIT limit of 500 Workers.",
+        );
+        expect(both.built).toBe(false);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    180_000,
+  );
+
+  it.live(
+    "a new stage within the documented quotas, or within configured limits above them, deploys without a word",
+    () =>
+      Effect.gen(function* () {
+        const fits = yield* deployAmong(10, [], { namespaces: namespaces(8, 484), workers: 491 });
+        expect(fits.result.output).not.toContain("Durable Object namespaces");
+        expect(fits.result.output).not.toContain("Workers (");
+        expect(fits.built).toBe(true);
+        const raised = yield* deployAmong(10, [], {
+          namespaces: namespaces(8, 489),
+          workers: 492,
+          env: { [classLimit]: "505", [workerLimit]: "1000" },
+        });
+        expect(raised.result.output).not.toContain("Durable Object namespaces");
+        expect(raised.result.output).not.toContain("Workers (");
+        expect(raised.built).toBe(true);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    180_000,
+  );
+
+  it.live(
+    "the namespaces of a stage the deploy evicts count as freed",
+    () =>
+      Effect.gen(function* () {
+        const { result, built, oldest } = yield* deployAmong(80, [], {
+          readable: true,
+          namespaces: namespaces(8, 489),
+          env: { [classLimit]: "500" },
+        });
+        expect(result.output).not.toContain("Durable Object namespaces");
+        expect(result.output).toContain("Evicted pr-2994.");
+        expect([built, oldest]).toEqual([true, "0"]);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    180_000,
+  );
+
+  it.live(
+    "a stage whose eviction fails frees nothing: past a configured limit the deploy stops before it reserves or builds",
+    () =>
+      Effect.gen(function* () {
+        const { result, built, leases, oldest } = yield* deployAmong(80, [], {
+          namespaces: namespaces(8, 489),
+          env: { [classLimit]: "500" },
+        });
+        expect(result.code).not.toBe(0);
+        expect(result.output).toContain("Could not evict pr-2994");
+        expect(result.output).toContain(
+          "Deploying new-stage would bring the account to about 505 Durable Object namespaces (497 now, up to 8 for a test stage), over the TEST_STAGE_DURABLE_OBJECT_CLASS_LIMIT limit of 500 Durable Object classes. An eviction failed, so this deploy stopped; nothing was reserved or deployed.",
+        );
+        expect([built, leases, oldest]).toEqual([false, "80", "1"]);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    180_000,
+  );
+
+  it.live(
+    "a stage whose eviction fails frees nothing: with no limit configured the deploy warns and goes on",
+    () =>
+      Effect.gen(function* () {
+        const { result, built } = yield* deployAmong(80, [], { namespaces: namespaces(8, 489) });
+        expect(result.output).toContain("Could not evict pr-2994");
+        expect(result.output).toContain(pastClasses);
+        expect(
+          result.output.indexOf(pastClasses) > result.output.indexOf("Could not evict pr-2994"),
+        ).toBe(true);
+        expect(built).toBe(true);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    180_000,
+  );
+
+  it.live(
+    "a namespace listing that ends before the total it states is not taken as the count",
+    () =>
+      Effect.gen(function* () {
+        const { result, built, leases } = yield* deployAmong(10, [], {
+          namespaces: namespaces(8, 292),
+          namespacesUnlisted: 300,
+        });
+        expect(result.code).not.toBe(0);
+        expect(result.output).toContain(
+          "Could not count the account's Workers and Durable Object namespaces, so a new test stage was not started.",
+        );
+        expect([built, leases]).toEqual([false, "10"]);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    180_000,
+  );
+
+  it.live(
+    "a new stage is not started when the namespaces cannot be counted",
+    () =>
+      Effect.gen(function* () {
+        const { url, psql } = yield* registry;
+        const world = pr2994World();
+        world.faults.push({
+          method: "GET",
+          path: /\/workers\/durable_objects\/namespaces/u,
+          status: 403,
+        });
+        yield* prepareRegistry(world, url);
+        const result = yield* cli(
+          world,
+          ["deploy", "new-stage", "--owner", "Deployer", "--no-input", "--yes"],
+          { registry: url },
+        );
+        expect(result.code).not.toBe(0);
+        expect(result.output).toContain(
+          "Could not count the account's Workers and Durable Object namespaces, so a new test stage was not started.",
+        );
+        expect(deletes(world)).toEqual([]);
+        expect((yield* psql("select count(*) from executor_test_stage_leases")).trim()).toBe("0");
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    180_000,
+  );
+
+  it.live(
+    "plan takes no --no-evict: it is refused as an unknown flag, before anything is read or reserved",
+    () =>
+      Effect.gen(function* () {
+        const { url, psql } = yield* registry;
+        const world = pr2994World();
+        yield* prepareRegistry(world, url);
+        yield* psql(lease("pr-2994"));
+        const result = yield* cli(
+          world,
+          ["plan", "new-stage", "--owner", "Deployer", "--no-input", "--no-evict"],
+          { registry: url },
+        );
+        expect(result.code).not.toBe(0);
+        expect(result.output).toContain("Unrecognized flag: --no-evict in command test-stage plan");
+        expect(deletes(world)).toEqual([]);
+        expect((yield* psql("select count(*) from executor_test_stage_leases")).trim()).toBe("1");
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    180_000,
+  );
+});
+
+describe("Retrying a new stage's deploy", () => {
+  const colour = (text: string) => `\u001b[31m${text}\u001b[39m`;
+  const line = (text: string) => `[01:48:25.603] INFO (#1): ${text}`;
+  const durableObjectTags = [
+    line(
+      "[AppDataSupervisor] fail — Cannot apply new-sqlite-class migration to class 'AppDataSupervisor' that is already depended on by existing Durable Objects. [code: 10074] (15.2s)",
+    ),
+    line(
+      "[AppOutboundRelay] fail — Cannot apply new-sqlite-class migration to class 'AppOutboundRelay' that is already depended on by existing Durable Objects. [code: 10074] (15.2s)",
+    ),
+    line(""),
+    line("Failed: 44 succeeded, 2 failed (2m 41s)"),
+  ].join("\n");
+  const hyperdriveOrigin = (took: string) =>
+    [
+      line("[DatabaseConnection] creating"),
+      line(
+        "[McpServer] fail — BadRequest: Network connection to the provided database timed out. (158.0s)",
+      ),
+      line(
+        "[AppDomains] fail — BadRequest: Network connection to the provided database timed out.",
+      ),
+      line(
+        "[Api] fail — BadRequest: Network connection to the provided database timed out. (158.0s)",
+      ),
+      line(
+        `[DatabaseConnection] ${colour("fail")} — ${colour("BadRequest: Network connection to the provided database timed out.")} (${took})`,
+      ),
+      line(""),
+      line(`${colour("Failed:")} 41 succeeded, 4 failed (158.6s)`),
+    ].join("\n");
+  const succeeded = [
+    line("[Api] updated (20.1s)"),
+    line(""),
+    line("Done: 46 succeeded (31.0s)"),
+  ].join("\n");
+  interface Attempt {
+    readonly output: string;
+    readonly code: number;
+  }
+  const deployAttempts = (url: string, slug: string, attempts: ReadonlyArray<Attempt>) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const directory = yield* fs.makeTempDirectoryScoped({ prefix: "executor-stage-retry-" });
+      const bin = path.join(directory, "bin");
+      const runs = path.join(directory, "runs");
+      yield* fs.makeDirectory(bin);
+      const version = `0.0.0-deploy-retry-${randomBytes(4).toString("hex")}`;
+      const stageApps = path.resolve(".local/stage-apps");
+      yield* Effect.addFinalizer(() =>
+        fs.readDirectory(stageApps).pipe(
+          Effect.flatMap((entries) =>
+            Effect.forEach(
+              entries.filter((entry) => entry.startsWith(`apps-${version}-`)),
+              (entry) => fs.remove(path.join(stageApps, entry), { recursive: true }),
+              { discard: true },
+            ),
+          ),
+          Effect.ignore,
+        ),
+      );
+      for (const [index, attempt] of attempts.entries()) {
+        yield* fs.writeFileString(path.join(directory, `attempt-${index + 1}.out`), attempt.output);
+        yield* fs.writeFileString(
+          path.join(directory, `attempt-${index + 1}.code`),
+          `${attempt.code}`,
+        );
+      }
+      const tools = {
+        bun: "#!/bin/sh\nexit 0\n",
+        tar: `#!/bin/sh\nwhile [ $# -gt 0 ]; do if [ "$1" = -C ]; then out="$2"; fi; shift; done\nmkdir -p "$out/package"\nprintf '%s' '{"version":"${version}"}' > "$out/package/package.json"\n`,
+        alchemy: `#!/bin/sh\nn=$(( $(cat '${runs}' 2>/dev/null || echo 0) + 1 ))\necho $n > '${runs}'\ncat '${directory}/attempt-'$n.out 2>/dev/null\necho 'Cloudflare Worker startup summary: 0 upload attempts.' >&2\nexit $(cat '${directory}/attempt-'$n.code 2>/dev/null || echo 99)\n`,
+      };
+      for (const [tool, script] of Object.entries(tools)) {
+        yield* fs.writeFileString(path.join(bin, tool), script);
+        yield* fs.chmod(path.join(bin, tool), 0o755);
+      }
+      const health = path.join(directory, "health.mjs");
+      yield* fs.writeFileString(
+        health,
+        `const real = globalThis.fetch;
+globalThis.fetch = (input, init) => {
+  const url = new URL(input instanceof Request ? input.url : String(input));
+  const host = url.hostname === "${slug}.executor.engineering" || url.hostname.endsWith(".${slug}.executor.engineering");
+  return url.pathname === "/health" && host
+    ? Promise.resolve(Response.json({ status: "ok" }))
+    : real(input, init);
+};
+`,
+      );
+      const result = yield* cli(
+        pr2994World(),
+        ["deploy", slug, "--owner", "Deployer", "--no-input", "--yes"],
+        {
+          registry: url,
+          env: {
+            PATH: `${bin}:${process.env.PATH ?? ""}`,
+            NODE_OPTIONS: `--import=${health}`,
+            TEST_STAGE_DEPLOY_RETRY_WAIT: "10 millis",
+          },
+        },
+      );
+      const ran = yield* fs.readFileString(runs).pipe(Effect.orElseSucceed(() => "0"));
+      return {
+        result,
+        runs: Number(ran.trim()),
+        retries: result.output.split("Retrying the deploy once").length - 1,
+      };
+    }).pipe(Effect.scoped);
+
+  it.live(
+    "a new stage whose Hyperdrive config cannot reach its new database yet waits, then deploys once more",
+    () =>
+      Effect.gen(function* () {
+        const { url } = yield* registry;
+        const { result, runs, retries } = yield* deployAttempts(url, "retry-hyperdrive", [
+          { output: hyperdriveOrigin("12.8s"), code: 1 },
+          { output: succeeded, code: 0 },
+        ]);
+        expect(result.code, result.output).toBe(0);
+        expect([runs, retries]).toEqual([2, 1]);
+        expect(result.output).toContain(
+          "Retrying the deploy once (hyperdrive-origin): its first attempt failed only because Hyperdrive config DatabaseConnection could not reach the new database's pooled origin; waiting 10ms first.",
+        );
+        expect(result.output).toContain("Ready: https://retry-hyperdrive.executor.engineering");
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    180_000,
+  );
+
+  it.live(
+    "a retried deploy that fails again stops after its second attempt, with both attempts' output",
+    () =>
+      Effect.gen(function* () {
+        const { url } = yield* registry;
+        const { result, runs, retries } = yield* deployAttempts(url, "retry-twice", [
+          { output: hyperdriveOrigin("12.8s"), code: 1 },
+          { output: hyperdriveOrigin("9.7s"), code: 1 },
+        ]);
+        expect(result.code).not.toBe(0);
+        expect([runs, retries]).toEqual([2, 1]);
+        for (const took of ["12.8s", "9.7s"])
+          expect(result.output).toContain(
+            `BadRequest: Network connection to the provided database timed out.\u001b[39m (${took})`,
+          );
+        expect(result.output).toContain("The child command exited with status 1.");
+        expect(result.output).not.toContain("Ready:");
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    180_000,
+  );
+
+  it.live(
+    "a deploy that fails otherwise, with the Durable Object tag race, or with the signature beside another failure, is not retried",
+    () =>
+      Effect.gen(function* () {
+        const { url } = yield* registry;
+        const unrelated = [
+          line("[AuthSecret] fail — Unauthorized: Authentication error [code: 10000] (0.4s)"),
+          line("Failed: 50 succeeded, 1 failed (40.0s)"),
+        ].join("\n");
+        const mixed = [
+          line(
+            "[DatabaseConnection] fail — BadRequest: Network connection to the provided database timed out. (12.8s)",
+          ),
+          line("[Edge] fail — Unauthorized: Authentication error [code: 10000] (0.4s)"),
+          line("Failed: 49 succeeded, 2 failed (40.0s)"),
+        ].join("\n");
+        const uncounted = [
+          line(
+            "[DatabaseConnection] fail — BadRequest: Network connection to the provided database timed out. (12.8s)",
+          ),
+          line("Failed: 49 succeeded, 2 failed (40.0s)"),
+        ].join("\n");
+        const unfinished = line(
+          "[DatabaseConnection] fail — BadRequest: Network connection to the provided database timed out. (12.8s)",
+        );
+        for (const [slug, output] of [
+          ["retry-unrelated", unrelated],
+          ["retry-durable-object", durableObjectTags],
+          ["retry-mixed", mixed],
+          ["retry-uncounted", uncounted],
+          ["retry-unfinished", unfinished],
+          ["retry-silent", ""],
+        ] as const) {
+          const { result, runs, retries } = yield* deployAttempts(url, slug, [
+            { output, code: 1 },
+            { output: succeeded, code: 0 },
+          ]);
+          expect(result.code, slug).not.toBe(0);
+          expect([slug, runs, retries]).toEqual([slug, 1, 0]);
+          expect(result.output).toContain("The child command exited with status 1.");
+        }
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    180_000,
+  );
+
+  it.live(
+    "a redeploy of an existing stage whose Hyperdrive config cannot reach its database is not retried",
+    () =>
+      Effect.gen(function* () {
+        const { url, psql } = yield* registry;
+        yield* prepareRegistry(pr2994World(), url);
+        yield* psql(lease("retry-existing"));
+        const { result, runs, retries } = yield* deployAttempts(url, "retry-existing", [
+          { output: hyperdriveOrigin("12.8s"), code: 1 },
+          { output: succeeded, code: 0 },
+        ]);
+        expect(result.code).not.toBe(0);
+        expect([runs, retries]).toEqual([1, 0]);
+        expect(result.output).toContain(
+          "[DatabaseConnection] \u001b[31mfail\u001b[39m — \u001b[31mBadRequest: Network connection to the provided database timed out.",
+        );
+        expect(result.output).toContain("The child command exited with status 1.");
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    180_000,
+  );
+});
+
+describe("Removing a branch a PlanetScale stage's destroy left", () => {
+  const leftWorld = (slug: string, deleteStatus: number): World => ({
+    workers: [],
+    zones: [testZone, appZone, otherZone],
+    routes: {},
+    domains: [],
+    workflows: [],
+    buckets: {},
+    dns: {},
+    destinations: [],
+    hyperdrive: [],
+    certificates: [],
+    artifacts: {},
+    branches: [],
+    monitors: [],
+    tokens: [],
+    state: { [`test-${slug}`]: { Api: "readable", PreviewDatabase: "readable" } },
+    faults: [],
+    planetscale: {
+      [`test-${slug}`]: { production: false, deleteStatus },
+      main: { production: true, deleteStatus: 500 },
+      "idx-lock-38132096340-1": { production: true, deleteStatus: 500 },
+      [`test-${slug}-copy`]: { production: false, deleteStatus: 500 },
+    },
+    requests: [],
+  });
+  const planetscaleEnv = (bin: string) => ({
+    PATH: `${bin}:${process.env.PATH ?? ""}`,
+    TEST_STAGE_DATABASE: "executor-test",
+    PLANETSCALE_ORGANIZATION: "synthetic-org",
+    PLANETSCALE_API_TOKEN_ID: "synthetic-id",
+    PLANETSCALE_API_TOKEN: "synthetic-token",
+    TEST_STAGE_BRANCH_POLL: "10 millis",
+  });
+  const quietAlchemy = Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const directory = yield* fs.makeTempDirectoryScoped({ prefix: "executor-stage-branch-" });
+    const bin = path.join(directory, "bin");
+    yield* fs.makeDirectory(bin);
+    yield* fs.writeFileString(path.join(bin, "alchemy"), "#!/bin/sh\nexit 0\n");
+    yield* fs.chmod(path.join(bin, "alchemy"), 0o755);
+    return bin;
+  });
+  const planetscaleRequests = (world: World) =>
+    world.requests.filter((request) => request.includes("/v1/organizations/"));
+  const leaseCount = (psql: (sql: string) => Effect.Effect<string, unknown>, slug: string) =>
+    psql(`select count(*) from executor_test_stage_leases where slug = '${slug}'`);
+  const planetscaleLease = (slug: string, createdAt: string) =>
+    `insert into executor_test_stage_leases (slug, owner, created_at, expires_at, database_provider, retention, background)
+     values ('${slug}', 'CI', '${createdAt}', '${createdAt}'::timestamptz + interval '3 hours', 'planetscale', 'temporary', 'active')`;
+
+  it.live(
+    "destroy deletes the left branch by its exact name, and only then removes the lease",
+    () =>
+      Effect.gen(function* () {
+        const { url, psql } = yield* registry;
+        const world = leftWorld("e2e-left1", 204);
+        yield* prepareRegistry(world, url);
+        yield* psql(planetscaleLease("e2e-left1", "2099-01-01T00:00:00Z"));
+        const bin = yield* quietAlchemy;
+        const result = yield* cli(world, ["destroy", "e2e-left1", "--no-input", "--yes"], {
+          registry: url,
+          env: planetscaleEnv(bin),
+        });
+        expect(result.code, result.output).toBe(0);
+        expect(result.output).toContain(
+          "PlanetScale branch test-e2e-left1 was left by the destroy; a delete was sent (PlanetScale answered 204) and it is gone (404).",
+        );
+        const branch =
+          "/v1/organizations/synthetic-org/databases/executor-test/branches/test-e2e-left1";
+        expect(
+          planetscaleRequests(world).filter((request) => request.startsWith("DELETE ")),
+        ).toEqual([`DELETE ${branch}`]);
+        expect(Object.keys(world.planetscale!).toSorted()).toEqual([
+          "idx-lock-38132096340-1",
+          "main",
+          "test-e2e-left1-copy",
+        ]);
+        expect(yield* leaseCount(psql, "e2e-left1")).toBe("0\n");
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    180_000,
+  );
+
+  it.live(
+    "destroy keeps the lease when the delete is refused, and says so",
+    () =>
+      Effect.gen(function* () {
+        const { url, psql } = yield* registry;
+        const world = leftWorld("e2e-left2", 403);
+        yield* prepareRegistry(world, url);
+        yield* psql(planetscaleLease("e2e-left2", "2099-01-01T00:00:00Z"));
+        const bin = yield* quietAlchemy;
+        const result = yield* cli(world, ["destroy", "e2e-left2", "--no-input", "--yes"], {
+          registry: url,
+          env: planetscaleEnv(bin),
+        });
+        expect(result.code, result.output).not.toBe(0);
+        expect(result.output).toContain(
+          "PlanetScale branch test-e2e-left2 was left by the destroy. A delete was sent and PlanetScale refused it (403). Its stage lease is kept",
+        );
+        expect(yield* leaseCount(psql, "e2e-left2")).toBe("1\n");
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    180_000,
+  );
+
+  it.live(
+    "scheduled cleanup retries a due lease's left branch and keeps the lease it could not finish",
+    () =>
+      Effect.gen(function* () {
+        const { url, psql } = yield* registry;
+        const world = leftWorld("e2e-left3", 403);
+        yield* prepareRegistry(world, url);
+        yield* psql(planetscaleLease("e2e-left3", "2026-11-16T01:00:00Z"));
+        const bin = yield* quietAlchemy;
+        const result = yield* cli(world, ["cleanup"], { registry: url, env: planetscaleEnv(bin) });
+        expect(result.code, result.output).not.toBe(0);
+        expect(result.output).toContain(
+          "Cleanup failed for e2e-left3; its lease remains for retry. PlanetScale branch test-e2e-left3 was left by the destroy. A delete was sent and PlanetScale refused it (403).",
+        );
+        expect(
+          planetscaleRequests(world).filter((request) => request.startsWith("DELETE ")),
+        ).toEqual([
+          "DELETE /v1/organizations/synthetic-org/databases/executor-test/branches/test-e2e-left3",
+        ]);
+        expect(yield* leaseCount(psql, "e2e-left3")).toBe("1\n");
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
     180_000,
   );

@@ -1,22 +1,3 @@
-/**
- * Every patch in package.json's `patchedDependencies` must be in node_modules. Bun applies a patch
- * only while its selector names an installed version, and an install with a stale selector still
- * exits 0, even with --frozen-lockfile. The package then runs unpatched.
- *
- * For each selector this fails unless the package is installed at exactly that version, and every
- * installed copy at that version holds the whole patch. Git decides that, not a parser here: in the
- * copy, the patch must reverse at exactly the lines its hunks name (`git apply --reverse --check`,
- * which writes nothing: no fuzz, and an offset counts as a failure) and must not apply forward. A
- * copy missing any hunk, created or deleted file, or rename does not reverse; a patch that changes
- * nothing also applies forward. Patches may change, create, delete and rename text files; anything
- * else (mode changes, copies, binary files) is rejected, as is a copy whose file mode differs from
- * the patch's (compared here: Git before 2.45 does not warn about it under --reverse). So is a patch Git cannot read exactly, such as a missing `\ No newline at end of
- * file`, even where Bun is lenient, and a file section Git skips.
- *
- * Before checking this repository it runs the same check on the fixtures in
- * check-patches-fixtures.ts, broken setups it must reject and applied ones it must accept.
- * Run after `bun install`; it reads Bun's isolated store, `node_modules/.bun`.
- */
 import { execFile } from "node:child_process";
 import {
   existsSync,
@@ -36,10 +17,6 @@ import { fixtures, type Fixture } from "./check-patches-fixtures.ts";
 
 const { GIT_DIR: _dir, GIT_WORK_TREE: _tree, ...inherited } = process.env;
 
-/**
- * Git in `cwd` as a plain patch tool, outside any repository (node_modules is inside this one), with
- * no user config and English output.
- */
 const git = (cwd: string, args: ReadonlyArray<string>) =>
   new Promise<{ ok: boolean; stdout: string; stderr: string }>((resolve, reject) =>
     execFile(
@@ -57,14 +34,12 @@ const git = (cwd: string, args: ReadonlyArray<string>) =>
         },
       },
       (error, stdout, stderr) => {
-        // A number is Git's exit status; anything else means Git did not run.
         if (error !== null && typeof error.code !== "number") reject(error);
         else resolve({ ok: error === null, stdout, stderr });
       },
     ),
   );
 
-/** Git's errors, on one line. */
 const errors = (stderr: string) =>
   stderr
     .split("\n")
@@ -72,10 +47,6 @@ const errors = (stderr: string) =>
     .map((line) => line.slice("error: ".length))
     .join("; ") || stderr.trim();
 
-/**
- * `git apply --check` at exactly the lines each hunk names. Git reports an offset under -v, and
- * warns but succeeds when a file's mode differs from the patch's.
- */
 const appliesExactly = async (directory: string, patch: string, reverse: boolean) => {
   const result = await git(directory, [
     "apply",
@@ -93,20 +64,11 @@ const appliesExactly = async (directory: string, patch: string, reverse: boolean
   return { ok: true } as const;
 };
 
-/** A `---`/`+++` path without its first component (Git's -p1), or undefined for /dev/null. */
 const headerPath = (line: string) => {
   const path = line.slice(4).replace(/\t.*$/, "");
   return path === "/dev/null" ? undefined : path.slice(path.indexOf("/") + 1);
 };
 
-/**
- * Every file section of a patch, with its line, the path Git names its change by (the new path;
- * the old one for a deletion) and the mode the patched file has (from its `index` or
- * `new file mode` line), if the section names one. A section starts at `diff --git` or at a `---` line followed by
- * `+++` outside a hunk, whether or not Git would read it: Git skips a `---`/`+++` pair with no
- * hunk as garbage, which is what this has to catch. Hunks are skipped by their line counts, as Git
- * does, so a hunk line that looks like a header is not one.
- */
 const sections = (patch: string) => {
   const lines = patch.split("\n").map((line) => line.replace(/\r$/, ""));
   const found: Array<{ line: number; path: string | undefined; mode?: string }> = [];
@@ -165,9 +127,7 @@ const sections = (patch: string) => {
   return found;
 };
 
-/** Why Git or this check refuses a patch, if it does. Reads only the patch; `cwd` is any directory. */
 const refused = async (cwd: string, patch: string) => {
-  // With -z, the numstat entries are NUL-terminated and the summary follows as text.
   const result = await git(cwd, ["apply", "--numstat", "--summary", "-z", patch]);
   if (!result.ok) return errors(result.stderr);
   const fields = result.stdout.split("\0");
@@ -185,8 +145,6 @@ const refused = async (cwd: string, patch: string) => {
     paths.push(entry[3]!);
   }
   if (paths.length === 0) return "changes no file";
-  // Git lists its changes in patch order. Each section must be exactly the change at its place, or
-  // Git skipped it, however its paths read.
   const found = sections(readFileSync(patch, "utf8"));
   for (const [index, section] of found.entries()) {
     if (section.path === undefined) return `cannot read the section header at line ${section.line}`;
@@ -198,7 +156,6 @@ const refused = async (cwd: string, patch: string) => {
   return undefined;
 };
 
-/** A file's mode as Git records it: a symlink, or a regular file with or without the owner's x bit. */
 const gitMode = (file: string) => {
   const stat = lstatSync(file, { throwIfNoEntry: false });
   if (stat === undefined) return undefined;
@@ -206,11 +163,9 @@ const gitMode = (file: string) => {
   return (stat.mode & 0o100) === 0 ? "100644" : "100755";
 };
 
-/** Why one installed copy does not hold the patch, if it doesn't. */
 const notApplied = async (copy: string, patch: string) => {
   const reverse = await appliesExactly(copy, patch, true);
   if (!reverse.ok) return `not applied: ${reverse.reason}`;
-  // Git 2.45 and later warn about this under --reverse and fail above; older versions say nothing.
   for (const section of sections(readFileSync(patch, "utf8"))) {
     if (section.path === undefined || section.mode === undefined) continue;
     const mode = gitMode(join(copy, section.path));
@@ -222,12 +177,6 @@ const notApplied = async (copy: string, patch: string) => {
   return undefined;
 };
 
-/**
- * The store folders the project uses: those reached by following links from the node_modules
- * folders of the root and of each workspace package (the directories of the package.json files Git
- * tracks), then from each reached folder's own node_modules. A folder nothing reaches is left over
- * from an earlier install, even when another left-over folder links it.
- */
 const reachableStoreFolders = async (root: string, store: string) => {
   const real = realpathSync(store);
   const listed = await git(root, ["ls-files", "-z", "--", "package.json", "**/package.json"]);
@@ -260,15 +209,8 @@ const reachableStoreFolders = async (root: string, store: string) => {
   return reached;
 };
 
-/** Store folders each project reaches, worked out once per project. */
 const reachable = new Map<string, Promise<Set<string>>>();
 
-/**
- * What the check can establish about a copy that does not hold its patch, and what to do. Bun's
- * isolated store keeps a folder per package, version and peer set, and leaves old ones behind; on
- * Linux each copy's files are hard links into Bun's shared install cache, which every workspace on
- * the host uses, so an edit through those links changes every workspace's copy.
- */
 const notAppliedHint = async (
   root: string,
   store: string,
@@ -306,7 +248,6 @@ const notAppliedHint = async (
   return `. It is hard-linked to Bun's cache entry ${entry}, which does not hold the patch either, and \`bun install --force\` links that entry again. Either the entry was changed through its hard links after Bun built it (an edit in some workspace's node_modules made without \`bun patch\` first; every workspace linking it fails the same way), or Bun applies ${relative_(root, patch)} in a way Git does not reverse exactly (the patch file is at fault; a rebuilt entry fails the same way). To tell them apart, move the entry aside and run \`bun install\` and this check in a new workspace: if that passes, the entry had been changed, so delete it and run ${relink} here and in each workspace linking it; if it fails the same way, fix the patch, for example with \`bun patch ${name}@${version}\` and \`bun patch --commit\``;
 };
 
-/** Every installed copy of a package in Bun's isolated store, with its version. */
 const copies = (store: string, name: string) => {
   const prefix = `${name.replace("/", "+")}@`;
   return readdirSync(store)
@@ -323,7 +264,6 @@ const copies = (store: string, name: string) => {
     .filter((copy) => copy.name === name);
 };
 
-/** What is wrong with one selector's patch in the project at `root`. */
 const checkPatch = async (
   root: string,
   store: string,
@@ -371,7 +311,6 @@ const checkPatch = async (
   return problems.flat();
 };
 
-/** What is wrong with the patches of the project at `root`, and how many there are. */
 const check = async (root: string) => {
   const store = join(root, "node_modules", ".bun");
   if (!existsSync(store))
@@ -386,7 +325,6 @@ const check = async (root: string) => {
   return { checked: selectors.length, problems: problems.flat() };
 };
 
-/** A fixture project: its manifest, patch and store. */
 const build = (fixture: Fixture) => {
   const root = mkdtempSync(join(tmpdir(), "patch-fixture-"));
   writeFileSync(

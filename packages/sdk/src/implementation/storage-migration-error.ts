@@ -1,7 +1,5 @@
-/** Startup diagnostics keep codes and schema versions without retaining driver messages or SQL. */
 import { Schema } from "effect";
 
-/** Error classes a cause chain may name; any other is reported as `UnknownError`. */
 const CauseTag = Schema.Literals([
   "StorageError",
   "MigrationError",
@@ -22,11 +20,9 @@ const CauseTag = Schema.Literals([
   "RangeError",
   "DatabaseError",
 ]);
-/** How far along the cause chain a failure is read. */
 const maxDepth = 8;
 const sqlStatePattern = /^(?:[0-5][0-9A-Z]|F0|HV|P0|XX)[0-9A-Z]{3}$/u;
 
-/** Every field is bounded by its schema, so no instance can carry text from its cause. */
 export class StorageMigrationFailed extends Schema.TaggedError<StorageMigrationFailed>()(
   "StorageMigrationFailed",
   {
@@ -64,12 +60,10 @@ const fromCause = (cause: unknown, migrationVersion: string | undefined) => {
   });
 };
 
-/** `migrationVersion` comes from the registered schemas, never the stored journal or driver. */
 export const storageMigrationFailed = (cause: unknown, migrationVersion?: string) => {
   try {
     return fromCause(cause, migrationVersion);
   } catch {
-    // A cause whose getters throw is reported without anything read from it or thrown by it.
     return new StorageMigrationFailed({
       causeTags: ["UnknownError"],
       ...(migrationVersion === undefined ? {} : { migrationVersion }),

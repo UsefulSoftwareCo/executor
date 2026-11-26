@@ -1,10 +1,3 @@
-/**
- * A deployed stage names the OAuth client metadata document on its edge (standing in for
- * `executor.sh`) as its client ID, and that document lists the edge's callback, on its own
- * origin. The deployment origin (`v2.executor.sh`) and `app.` keep serving the document they
- * published before the move, unchanged: grants issued to it renew with its URL as their client ID,
- * and an authorization server may fetch it again.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { HostedLive, withHostedCase } from "../support/case.ts";
@@ -24,11 +17,6 @@ const Document = Schema.fromJsonString(
 );
 const path = "/oauth/client-metadata.json";
 
-/**
- * The document at `origin`, which must name itself and list `origin`'s callback. Its logo must
- * be an image on `origin`: authorization servers show it on their consent page, and the edge
- * answers paths it does not serve with something else.
- */
 const documentAt = (at: string, origin: string) =>
   Effect.gen(function* () {
     const response = yield* rawRequest(`${at}${path}`);
@@ -55,9 +43,7 @@ layer(HostedLive, { excludeTestServices: true })("Cloud client metadata document
       Effect.gen(function* () {
         const hosts = targetHosts(yield* Target);
         expect(hosts.edge).not.toBe(hosts.deployment);
-        // The document sign-ins start with: on the edge, listing the edge's callback.
         yield* documentAt(hosts.edge, hosts.edge);
-        // The document earlier grants were issued to, on the deployment origin and `app.`.
         yield* documentAt(hosts.deployment, hosts.deployment);
         yield* documentAt(hosts.browser, hosts.deployment);
       }),

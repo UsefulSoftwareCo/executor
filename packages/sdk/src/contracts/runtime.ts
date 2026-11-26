@@ -21,7 +21,7 @@ import { RecordedMessage } from "@executor-js/utils/recorded-message";
 import { BuildStage, SourceLocation, type BuildMemoryExceeded } from "./version.ts";
 import type { CodeFiles } from "./source.ts";
 import { BuildId, Json } from "./shared.ts";
-import type { BlobKey, BlobRange } from "./blobs.ts";
+import type { BlobKey, BlobRange, BlobStoreError } from "./blobs.ts";
 import type { HostApiCheck } from "./host-api.ts";
 
 /**
@@ -281,8 +281,10 @@ export class RuntimeBuildFailed extends Schema.TaggedError<RuntimeBuildFailed>()
     message: Schema.optional(BuildMessage),
     location: Schema.optional(SourceLocation),
     /**
-     * The compiler did not answer in time: a host failure that says nothing about the source, and
-     * that building again may not repeat.
+     * The host's compiler or runner did not answer: the compiler did not reply in time, or a call
+     * to the compiler or to the runner that reads the build's requirements failed before it
+     * replied. A host failure that says nothing about the source, and that building again may not
+     * repeat. Set only where the host made the call, never from an error's text.
      */
     unanswered: Schema.optional(Schema.Literal(true)),
   },
@@ -314,6 +316,7 @@ export const RuntimeFailure = Schema.Literals([
   "invalid-reply",
   "too-large",
   "data",
+  "unloading",
   "build",
   "unsupported",
   "managed",
@@ -334,6 +337,7 @@ export const runtimeFailures: Record<RuntimeFailure, string> = {
   "invalid-reply": "The app's reply does not match its host protocol",
   "too-large": "A value crossing Workers RPC for the app exceeded its size limit",
   data: "The app's data supervisor failed the call",
+  unloading: "The app's previous Worker did not finish unloading",
   build: "The app's build could not be read",
   unsupported: "The app's build speaks a host protocol this host does not run",
   managed:
@@ -348,7 +352,17 @@ export const runtimeFailures: Record<RuntimeFailure, string> = {
  */
 export class RuntimeProtocolFailed extends Schema.TaggedError<RuntimeProtocolFailed>()(
   "RuntimeProtocolFailed",
-  { reason: Schema.optional(RuntimeFailure), message: Schema.optional(BuildMessage) },
+  {
+    reason: Schema.optional(RuntimeFailure),
+    message: Schema.optional(BuildMessage),
+    /**
+     * Nothing of the failed exchange left the host: its connection never formed, so the runtime
+     * received no work. Only the host's own transport sets it, from its socket's state, never from
+     * an error's text, so an app cannot produce it. Its `reason` stays `disconnected`, the value
+     * older readers know; they drop this field.
+     */
+    notSent: Schema.optional(Schema.Literal(true)),
+  },
 ) {
   get [RecordedMessage]() {
     return this.reason === undefined && !this.message
@@ -418,7 +432,8 @@ export interface Runtime<Requirements = never> {
     | RuntimeBuildFailed
     | RuntimeProtocolUnsupported
     | RuntimeAppsDependencyMissing
-    | BuildMemoryExceeded,
+    | BuildMemoryExceeded
+    | BlobStoreError,
     Requirements
   >;
   readonly asset?: (input: {

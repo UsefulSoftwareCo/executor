@@ -11,7 +11,10 @@ import {
   combineJsonSchemas,
   importedJsonSchema,
   once,
+  schemaIdentity,
+  schemaMemo,
   withLazyJsonSchemaDocument,
+  type SchemaMemo,
 } from "./schema.ts";
 
 type Selection = { readonly accountId: string; readonly input: unknown };
@@ -39,10 +42,13 @@ const decoderDocument = (decoder: Schema.Decoder<unknown>) => {
  * through many accounts would otherwise be described once per account. Branch definitions stay in
  * the root `$defs`, where a listing shares them among its tools.
  */
-const accountBranches = (variants: readonly (readonly [string, JsonObject])[]) => {
+const accountBranches = (
+  variants: readonly (readonly [string, JsonObject])[],
+  memo: SchemaMemo = schemaMemo(),
+): JsonObject => {
   const groups = new Map<string, { schema: JsonObject; first: string; rest: string[] }>();
   for (const [accountId, schema] of variants) {
-    const key = JSON.stringify(schema);
+    const key = variants.length === 1 ? "" : schemaIdentity(schema, memo);
     const group = groups.get(key);
     if (group === undefined) groups.set(key, { schema, first: accountId, rest: [] });
     else group.rest.push(accountId);
@@ -51,6 +57,7 @@ const accountBranches = (variants: readonly (readonly [string, JsonObject])[]) =
   const { $defs, schemas } = combineJsonSchemas(
     branches.map(({ schema }) => schema),
     (index) => `#/anyOf/${index}/properties/input`,
+    memo,
   );
   return {
     type: "object",
@@ -73,11 +80,15 @@ const accountBranches = (variants: readonly (readonly [string, JsonObject])[]) =
 };
 
 /** Each distinct output schema once: a value matches the union whichever account returned it. */
-const outputBranches = (outputs: readonly JsonObject[]) => {
-  const { $defs, schemas } = combineJsonSchemas(
-    [...new Map(outputs.map((output) => [JSON.stringify(output), output])).values()],
-    (index) => `#/anyOf/${index}`,
-  );
+const outputBranches = (
+  outputs: readonly JsonObject[],
+  memo: SchemaMemo = schemaMemo(),
+): JsonObject => {
+  const distinct =
+    outputs.length === 1
+      ? outputs
+      : [...new Map(outputs.map((output) => [schemaIdentity(output, memo), output])).values()];
+  const { $defs, schemas } = combineJsonSchemas(distinct, (index) => `#/anyOf/${index}`, memo);
   return { ...($defs === undefined ? {} : { $defs }), anyOf: schemas };
 };
 
@@ -119,7 +130,6 @@ const combineOperation = (
       Schema.Struct({ accountId: Schema.Literal(accountId), input: Schema.Unknown }),
     ),
   ]);
-  // Combined schemas are built when a tool is described, not on every evaluation for a call.
   const inputSchema = () =>
     accountBranches(
       [...accounts].map(([accountId, operation]) => [accountId, decoderDocument(operation.input)]),
@@ -140,7 +150,6 @@ const combineOperation = (
       : { _meta: first._meta }),
     input: withLazyJsonSchemaDocument(input, inputSchema),
     approval: (context) => {
-      // A failed account's call fails before it reaches the service, so it has nothing to approve.
       if (failed.has(context.toolInput.accountId)) return Effect.succeed("approved" as const);
       const operation = select(context.toolInput);
       return operation.approval === undefined
@@ -207,24 +216,42 @@ const mergeSummary = (
   });
 };
 
+/**
+ * A merged tool with its schemas read as objects of entries. Their values are checked by a catalog
+ * read, which checks every tool's schemas in one pass (`DescribedTools`) and so walks a definition
+ * many tools share once. Checking them for each merged tool walked those definitions once per tool,
+ * as did writing each tool's schemas to compare its accounts': for Stripe's description that cost
+ * seconds of CPU for every account a listing merges.
+ */
+const Entries = Schema.Record(Schema.String, Schema.Unknown);
+const MergedTool = HostedTool.mapFields((fields) => ({
+  ...fields,
+  inputSchema: Entries,
+  outputSchema: Schema.optionalKey(Entries),
+  _meta: Schema.optionalKey(Entries),
+}));
+
 /** Calls take { accountId, input }, so each distinct account schema is one branch of the union. */
-const merge = (name: string, variants: readonly (readonly [string, HostedTool])[]) =>
-  Schema.decodeUnknownSync(HostedTool)({
+const merge = (
+  name: string,
+  variants: readonly (readonly [string, HostedTool])[],
+  memo: SchemaMemo,
+): HostedTool => {
+  const outputs = variants.flatMap(([, tool]) =>
+    tool.outputSchema === undefined ? [] : [tool.outputSchema],
+  );
+  const merged: HostedTool = {
     ...mergeSummary(name, variants),
     inputSchema: accountBranches(
       variants.map(([accountId, tool]) => [accountId, tool.inputSchema]),
+      memo,
     ),
-    ...(variants.every(([, tool]) => tool.outputSchema !== undefined)
-      ? {
-          outputSchema: outputBranches(
-            variants.flatMap(([, tool]) =>
-              tool.outputSchema === undefined ? [] : [tool.outputSchema],
-            ),
-          ),
-        }
-      : {}),
+    ...(outputs.length === variants.length ? { outputSchema: outputBranches(outputs, memo) } : {}),
     ...sameAcross("_meta", variants),
-  });
+  };
+  Schema.decodeUnknownSync(MergedTool)(merged);
+  return merged;
+};
 
 /** Accounts whose sources are read at once. Each read may reach its account's upstream service. */
 const accountConcurrency = 8;
@@ -288,7 +315,6 @@ const combineDynamic = (sources: ReadonlyMap<string, DynamicRouter>): DynamicRou
     });
   return {
     kind: "dynamic",
-    // Accounts share one source, so the first account that can describe it describes the router.
     ...(first?.meta === undefined
       ? {}
       : {
@@ -305,7 +331,14 @@ const combineDynamic = (sources: ReadonlyMap<string, DynamicRouter>): DynamicRou
             }),
         }),
     ...(first?.overrides === undefined ? {} : { overrides: first.overrides }),
-    list: () => grouped((source) => source.list(), merge),
+    list: () =>
+      Effect.suspend(() => {
+        const memo = schemaMemo();
+        return grouped(
+          (source) => source.list(),
+          (name, variants) => merge(name, variants, memo),
+        );
+      }),
     summaries: () =>
       grouped(
         (source) => (source.summaries === undefined ? source.list() : source.summaries()),
@@ -321,10 +354,9 @@ const combineDynamic = (sources: ReadonlyMap<string, DynamicRouter>): DynamicRou
           const variants = [...values].flatMap(([accountId, tool]) =>
             tool === undefined ? [] : [[accountId, tool] as const],
           );
-          // No account that answered has it; it may be a failed account's.
           if (variants.length === 0)
             return failed.size > 0 ? Effect.fail(firstFailure(failed)) : Effect.succeed(undefined);
-          return Effect.succeed(merge(name, variants));
+          return Effect.succeed(merge(name, variants, schemaMemo()));
         }),
       ),
     resolve: (name: string) =>

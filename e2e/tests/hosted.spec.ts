@@ -26,34 +26,10 @@ export default defineApp({user: { accounts:{service:service.many()} }},async()=>
   },
   appsManifest,
 ];
-/**
- * SQL statements one save of a new account runs, as its two requests' traces record them. Creating
- * the connection runs 10: the caller's access to the app, the app's row, version and provider, the
- * connection and its access row. Submitting the key runs 36: the caller's access to the connection
- * and the app, the account and its access row, the app link, and the account's webhook source on
- * the app, read by its key and then created. These are ceilings: a change that adds a statement to
- * every save fails them. Listing the app's webhook sources to find the account's ran 38.
- */
 const connectStatements = 10;
 const submitStatements = 36;
-/**
- * The first saves, made one at a time and read before the others start, so each finds exactly as
- * many accounts already linked as saves before it. Their spans are complete only while the server
- * exports at its own pace: the four writers sent spans faster than Motel, the server's collector
- * before the Rust one, stored them (not measured since), and the exporter the self-host server has always shipped drops what it holds, and
- * every span for 60 seconds, once an export fails after its retries. A trace read during or just
- * after the other saves may never arrive. That a later save does the same work is checked in
- * webhook-source-lookup.spec.ts, by the query plans of a save beside 100,000 accounts.
- */
 const sampledSaves = 8;
-/**
- * A loose bound on the saves, for the same statements run much more slowly, such as a lost index.
- * The statements are checked by the traces, not by this. In CI the 300 saves took 15.8 s on the
- * merged head; on the desktop runner, at load 12 to 20, 20 runs took 15 to 37 s (median 18 s).
- * 60 s is about 3.8 times the CI time and 1.6 times the slowest desktop run.
- */
 const saveBoundMs = 60_000;
-/** The SQL statements of one request's trace, in the order they ran. */
 const statementsOf = (spans: ReadonlyArray<DeliveredSpan>) =>
   spans
     .filter((span) => span.operationName === "sql.execute")
@@ -147,7 +123,6 @@ layer(HostedLive, { excludeTestServices: true })("Self-host", (it) => {
           yield* browser.use("Open account inventory", (page) =>
             page.goto(`/org/${actors.organization.slug}/accounts`),
           );
-          // Each save's two requests get their own traces, so the work a save did can be read back.
           const save = (row: number) =>
             Effect.gen(function* () {
               const actor = row % 2 === 0 ? actors.owner : actors.admin,
@@ -184,7 +159,6 @@ layer(HostedLive, { excludeTestServices: true })("Self-host", (it) => {
               saveMs += (yield* Clock.currentTimeMillis) - started;
               return saves;
             });
-          // The request's own span ends after every statement it ran, so once it is in, they are.
           const statements = (traceId: string) =>
             telemetry
               .settled(traceId, (spans) =>
@@ -235,9 +209,6 @@ layer(HostedLive, { excludeTestServices: true })("Self-host", (it) => {
                   submitStatements,
                 );
               }
-              // Save n finds n accounts already linked to the app, and each runs the same statements
-              // with the same text: one that lists the app's accounts by their IDs, or runs once per
-              // account, differs between them.
               for (const save of first.slice(1))
                 expect(
                   { connect: save.connect, submit: save.submit },
@@ -250,8 +221,6 @@ layer(HostedLive, { excludeTestServices: true })("Self-host", (it) => {
             "Every record and selection survives an independent read",
             Effect.gen(function* () {
               expect(new Set(ids).size).toBe(count);
-              // Every saved account belongs to the writer who connected it, so each writer's
-              // inventory lists exactly their own accounts.
               const inventoryOf = (actor: typeof actors.owner, writer: number) =>
                 Effect.gen(function* () {
                   const start = yield* Clock.currentTimeMillis;
@@ -277,7 +246,6 @@ layer(HostedLive, { excludeTestServices: true })("Self-host", (it) => {
                 });
               yield* inventoryOf(actors.owner, 0);
               yield* inventoryOf(actors.admin, 1);
-              // Connecting from the app links each account to the app for the writer only.
               const [owner, admin] = yield* Effect.all(
                 [actors.owner, actors.admin].map((actor) =>
                   linkedAccountIds(actor, `${prefix}/apps/${app.id}`),
@@ -299,8 +267,6 @@ layer(HostedLive, { excludeTestServices: true })("Self-host", (it) => {
           yield* browser.checkpoint("Account inventory ready for manual use");
         }),
       ),
-    // The saves' 60-second backstop, with room for the reads and the browser after it. The
-    // inventory read keeps its own 5-second budget.
     120_000,
   );
   it.effect(scenarios.telemetry.title, (context) =>
@@ -319,22 +285,23 @@ layer(HostedLive, { excludeTestServices: true })("Self-host", (it) => {
         expect(response.status).toBe(200);
         const request = (yield* evidence.requests).at(-1);
         if (!request) return yield* Effect.die(new Error("Request evidence missing"));
-        const delivered = telemetry.query(request.traceId).pipe(
-          Effect.flatMap((value) =>
-            value.data.some(
-              (entry) =>
-                entry.traceId === request.traceId &&
-                entry.span.serviceName === "executor-selfhost" &&
-                // The path records the route's template; the organization is recorded by ID.
-                entry.span.tags["url.path"] === "/api/organizations/:organization/inventory" &&
-                entry.span.tags["executor.organization.id"] === actors.organization.id &&
-                entry.span.tags["http.request.method"] === "GET" &&
-                entry.span.tags["http.response.status_code"] === "200",
-            )
-              ? Effect.succeed(value)
-              : Effect.fail(new Error("The actual HTTP server span must reach the collector")),
-          ),
-        );
+        const delivered = telemetry
+          .query(request.traceId)
+          .pipe(
+            Effect.flatMap((value) =>
+              value.data.some(
+                (entry) =>
+                  entry.traceId === request.traceId &&
+                  entry.span.serviceName === "executor-selfhost" &&
+                  entry.span.tags["url.path"] === "/api/organizations/:organization/inventory" &&
+                  entry.span.tags["executor.organization.id"] === actors.organization.id &&
+                  entry.span.tags["http.request.method"] === "GET" &&
+                  entry.span.tags["http.response.status_code"] === "200",
+              )
+                ? Effect.succeed(value)
+                : Effect.fail(new Error("The actual HTTP server span must reach the collector")),
+            ),
+          );
         const result = yield* delivered.pipe(
           Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 40 }),
           Effect.timeout("20 seconds"),

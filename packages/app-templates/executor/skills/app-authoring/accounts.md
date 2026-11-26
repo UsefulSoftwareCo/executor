@@ -517,6 +517,10 @@ in app code:
   of the token response when the top level has no access token or scope.
   Slack returns user tokens there. Comma-separated scopes in that member become
   space-separated.
+- `pkce: false` signs in without PKCE, for declared endpoints whose token
+  endpoint refuses a confidential client's `code_verifier`. LinkedIn answers
+  `invalid_client` to it, which looks like a wrong secret. It requires a secret
+  `tokenEndpointAuthMethod`.
 
 ```ts
 oauth2({
@@ -529,8 +533,11 @@ oauth2({
 });
 ```
 
-A connected account keeps the settings it signed in with; reconnect it after
-changing them.
+A connected account keeps the settings it signed in with. These settings,
+`pkce` included, are part of the provider ID, so changing one after users
+connect gives a new provider: accounts connected before can't be reconnected
+into it, and users must connect a new account. A sign-in in progress when the
+app is redeployed fails when it saves, and the user starts it again.
 
 When the service documents an RFC 7009 token revocation endpoint, also declare
 `revocationUrl`. Executor calls it when a user deletes the account, so the

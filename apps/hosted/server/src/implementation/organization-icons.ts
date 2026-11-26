@@ -14,7 +14,6 @@ import {
   organizationIconContentType,
 } from "../contracts/organization-icon.ts";
 
-/** Bound bytes before decoding, including when Content-Length is absent. */
 export const readOrganizationIconUpload = Effect.gen(function* () {
   const request = yield* HttpServerRequest.HttpServerRequest;
   const limit = 3 * 1024 * 1024;
@@ -34,7 +33,6 @@ export const readOrganizationIconUpload = Effect.gen(function* () {
   );
 }).pipe(Effect.mapError(() => new OrganizationIconInvalid()));
 
-/** Organization namespaces prevent references from another team from granting image access. */
 export const makeOrganizationIcons = (blobs: BlobStorage) =>
   OrganizationIcons.of({
     upload: (organization, image) =>
@@ -72,7 +70,6 @@ export const makeOrganizationIcons = (blobs: BlobStorage) =>
         .pipe(Effect.mapError(() => new OrganizationIconUnavailable())),
   });
 
-/** The saved logo is the only addressable icon; other values are external URLs. */
 export const organizationIconKey = (organization: OrganizationId, logo: string | null) => {
   if (logo === null) return undefined;
   const prefix = `/api/organizations/${encodeURIComponent(organization)}/icons/`;

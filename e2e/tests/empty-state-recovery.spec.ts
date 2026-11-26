@@ -233,7 +233,6 @@ layer(HostedLive, { excludeTestServices: true })("Empty state recovery", (it) =>
         yield* browser.use("Owner opens the empty Accounts tab", (page) =>
           page.goto(`/org/${actors.organization.slug}/apps/${deployed.id}?view=accounts`),
         );
-        // Both sections stay, each explaining its scope instead of disappearing.
         for (const [section, heading, read] of [
           ["App accounts", "No app accounts", "ctx.app.accounts"],
           ["Your accounts", "No user accounts", "ctx.user.accounts"],
@@ -345,8 +344,6 @@ export default defineApp({ user: { accounts: { service: service.many() } } }, as
         yield* Effect.addFinalizer(() =>
           api.request(actors.owner, "DELETE", `${prefix}/apps/${deployed.id}`).pipe(Effect.orDie),
         );
-        // A many-account requirement with no linked account is valid, so tool discovery runs
-        // and the app lists nothing. The page must ask for an account rather than report no tools.
         const appPath = `${prefix}/apps/${deployed.id}`,
           url = `/org/${actors.organization.slug}/apps/${deployed.id}`;
         expect(yield* linkedAccountIds(actors.owner, appPath)).toEqual([]);
@@ -375,7 +372,6 @@ export default defineApp({ user: { accounts: { service: service.many() } } }, as
             (next) =>
               next.pathname === url &&
               next.searchParams.get("view") === "accounts" &&
-              // The page made no account choice, so none is carried.
               (next.searchParams.get("accounts") ?? "{}") === "{}",
           ),
         );

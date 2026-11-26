@@ -1,7 +1,3 @@
-/**
- * Some services sign in through an emailed link, which opens a new tab or browser. The callback
- * there has none of the starting tab's context; the server finds the connection from its state.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
@@ -16,7 +12,6 @@ import { scenarios } from "../test-plan.ts";
 import { connectionsPath } from "../support/app-accounts.ts";
 import { noPageErrors } from "../support/page-errors.ts";
 
-/** React reports a server/browser markup difference with one of these messages or codes. */
 const hydrationFailure = /hydrat|Minified React error #(418|419|423|425)/i;
 const SignIn = Schema.Struct({ authorizationUrl: Schema.String });
 const Connection = Schema.Struct({
@@ -26,10 +21,6 @@ const Connection = Schema.Struct({
   }),
 });
 
-/**
- * The owner starts sign-in through the API, so no browser holds its context, and the service
- * returns the callback URL it would put in the emailed link.
- */
 const pendingSignIn = Effect.gen(function* () {
   const api = yield* Api,
     actors = yield* Actors,
@@ -90,7 +81,6 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools:router(
   return { prefix, app: app.id, connection: connection.id, callbackUrl, read, removeAccount };
 });
 
-/** Open the emailed link and wait until the callback page settles on success or failure. */
 const openLink = (label: string, callbackUrl: URL, organizationSlug: string, app: string) =>
   Effect.flatMap(Browser, (browser) =>
     browser.use(label, (page) =>
@@ -98,7 +88,6 @@ const openLink = (label: string, callbackUrl: URL, organizationSlug: string, app
         Promise.race([
           page
             .waitForURL((url) => url.pathname === `/org/${organizationSlug}/apps/${app}`)
-            // The app asks for a name for the new account, as after a same-tab sign-in.
             .then(() => page.getByRole("heading", { name: "Name this account" }).waitFor())
             .then(() => ({ connected: true, alert: null })),
           page
@@ -120,11 +109,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth callback in a new tab", 
           browser = yield* Browser;
         const signIn = yield* pendingSignIn;
         yield* browser.omitNetworkTrace;
-        // A fresh browser context: it shares the session cookie but nothing from the start.
         yield* browser.login(actors.owner);
-        // The server renders the callback page itself. A page that throws while the server
-        // renders it is sent as the router's loading placeholder and only appears after the
-        // browser renders it again. Rendering reads nothing, so the link still works afterwards.
         const html = yield* browser.use("Request the sign-in link's document", (page) =>
           page
             .context()
@@ -185,7 +170,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth callback in a new tab", 
             "Another Executor user started this sign-in. Sign in as that user and open the link again.",
         });
         yield* browser.checkpoint("OAuth-link-refused-for-another-member");
-        // Neither the callback route nor the organization route lets them finish it.
         const resolved = yield* api.request(actors.member, "POST", "/api/oauth/callback/resolve", {
           callbackUrl: signIn.callbackUrl.href,
         });
@@ -198,7 +182,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth callback in a new tab", 
         );
         expect(completed.status).toBe(403);
         expect((yield* signIn.read).state.status).toBe("pending");
-        // The refused attempts did not use up the sign-in: its creator still finishes it.
         yield* browser.login(actors.owner);
         const outcome = yield* openLink(
           "The member who started it opens the same link",

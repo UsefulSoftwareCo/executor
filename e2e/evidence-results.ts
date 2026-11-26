@@ -25,7 +25,6 @@ const TestResults = Schema.Struct({
   ),
 });
 
-/** Read saved case results without launching a browser, encoding media or generating HTML. */
 export const readEvidence = (directory: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem,
@@ -52,8 +51,6 @@ export const readEvidence = (directory: string) =>
         return [entry];
       }),
     ).pipe(Effect.map((entries) => entries.flat()));
-    // Scope exit cannot know about later cleanup failures or native hook timeouts.
-    // Vitest is authoritative when present; interactive SDK sessions have no report.
     const diagnostics = path.join(directory, "report/diagnostics/results.json");
     if (!(yield* fs.exists(diagnostics))) return yield* withRuntimeCrashNotes(directory, entries);
     const results = yield* fs
@@ -90,10 +87,6 @@ export const readEvidence = (directory: string) =>
     return yield* withRuntimeCrashNotes(directory, [...reconciled.values()]);
   });
 
-/**
- * Add, to each failed case that ran while one of local Cloud's runtimes had crashed, a line naming
- * the crash (`support/runtime-crashes.ts`), so the failure does not read as the case's own.
- */
 const withRuntimeCrashNotes = (
   directory: string,
   entries: ReadonlyArray<typeof EvidenceEntry.Type>,
@@ -117,7 +110,6 @@ const withRuntimeCrashNotes = (
     });
   });
 
-/** Combine target reports with links relative to their shared manifest or rendered report. */
 export const combineEvidenceReports = (
   reports: ReadonlyArray<{ readonly report: EvidenceReport; readonly prefix: string }>,
   plan: EvidenceReport["plan"],
@@ -134,11 +126,6 @@ export const combineEvidenceReports = (
   ),
 });
 
-/**
- * Print each of local Cloud's runtime crashes in `directory` and the failed cases caught in it, in
- * the job log and, in CI, the job's summary, where the count sits beside the run's other totals. A
- * run without a crash prints nothing.
- */
 export const reportRuntimeCrashes = (
   directory: string,
   entries: ReadonlyArray<typeof EvidenceEntry.Type>,

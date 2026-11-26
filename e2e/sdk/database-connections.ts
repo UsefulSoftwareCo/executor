@@ -1,16 +1,3 @@
-/**
- * How long a deployed run's stage waited for database connections, read once after its scenarios
- * and before teardown. A stage's PlanetScale branch is reached through the stage's own Hyperdrive
- * configuration; when the pool between them runs short, statements wait for a connection, which
- * Hyperdrive reports as connection latency. Production's own configuration stays near 0 ms, so a
- * run far above the morning's 2-6 ms measured a test database's ceiling, not the product.
- *
- * The figure comes from Cloudflare's Hyperdrive analytics for the stage's configuration, found by
- * the runtime role the branch carries. When that cannot be read, it comes from the stage's own
- * spans: per minute, the average `sql.execute` minus the average `sql.wire`, the time a statement
- * spent before its round trip. It informs and never fails or delays a run: every failure is
- * recorded as `unavailable` with its reason, and the whole reading is bounded.
- */
 import { Clock, Config, Console, Effect, FileSystem, Option, Path, Redacted, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
 import { reveal, secretConfig } from "../support/failure-text.ts";
@@ -20,13 +7,10 @@ import {
   type DatabaseConnections,
 } from "../database-connections.ts";
 
-/** Minutes with fewer statements say little about a pool, so they are not a worst minute. */
 const minimumQueries = 100;
 
-/** One minute's statements and their average latency, in milliseconds. */
 type Minute = { readonly queries: number; readonly latencyMs: number };
 
-/** The run's figure from its minutes; exported for its spec. */
 export const summarize = (source: "hyperdrive" | "spans", minutes: ReadonlyArray<Minute>) => {
   const counted = minutes.filter((minute) => minute.queries >= minimumQueries);
   const queries = counted.reduce((total, minute) => total + minute.queries, 0);
@@ -83,7 +67,6 @@ class Unreadable extends Schema.TaggedError<Unreadable>()("Unreadable", {
 }) {}
 const unreadable = (note: string) => () => new Unreadable({ note });
 
-/** The stage's connection latency from Cloudflare's Hyperdrive analytics. */
 const fromHyperdrive = (stage: string, since: Date) =>
   Effect.gen(function* () {
     const http = (yield* HttpClient.HttpClient).pipe(HttpClient.filterStatusOk);
@@ -93,7 +76,6 @@ const fromHyperdrive = (stage: string, since: Date) =>
     const planetscaleToken = yield* secretConfig("PLANETSCALE_API_TOKEN");
     const account = yield* Config.NonEmptyString("CLOUDFLARE_ACCOUNT_ID");
     const cloudflare = yield* secretConfig("CLOUDFLARE_API_TOKEN");
-    // The branch carries the stage's roles; its Hyperdrive configuration connects as one of them.
     const roles = yield* http
       .execute(
         HttpClientRequest.get(
@@ -142,7 +124,6 @@ const fromHyperdrive = (stage: string, since: Date) =>
       Effect.flatMap(Schema.decodeUnknownEffect(Analytics)),
       Effect.mapError(unreadable("Cloudflare's Hyperdrive analytics could not be read")),
     );
-    // Groups of several configurations or cache statuses share a minute; weigh them by count.
     const byMinute = new Map<string, { queries: number; weighted: number }>();
     for (const group of analytics.data.viewer.accounts.flatMap(
       (entry) => entry.hyperdriveQueriesAdaptiveGroups,
@@ -164,7 +145,6 @@ const fromHyperdrive = (stage: string, since: Date) =>
     return summary;
   });
 
-/** The stage's statement time before its round trip, from its own spans. */
 const fromSpans = (
   stage: string,
   since: Date,
@@ -188,7 +168,6 @@ const fromSpans = (
       Effect.flatMap(Schema.decodeUnknownEffect(SpanMinutes)),
       Effect.mapError(unreadable("The stage's spans could not be read")),
     );
-    // Durations are nanoseconds; each bucket's aggregations are execute, wire and queries.
     const minutes = response.buckets.totals.flatMap(({ aggregations }) => {
       const [execute, wire, queries] = aggregations.map((aggregation) => aggregation.value);
       return execute === null || execute === undefined || wire === null || wire === undefined
@@ -206,9 +185,6 @@ const describe = (record: DatabaseConnections) =>
     ? `Database connection latency: unavailable (${record.note ?? "no reason recorded"}).`
     : `Database connection latency: ${record.level}, average ${record.averageMs} ms, worst minute ${record.worstMinuteMs} ms over ${record.minutes} minutes and ${record.queries} statements, from ${record.source === "hyperdrive" ? "Cloudflare's Hyperdrive analytics" : "the stage's own spans (Hyperdrive's analytics were unavailable)"}${record.note === undefined ? "" : `: ${record.note}`}.`;
 
-/**
- * Read and record the stage's connection latency. Bounded to 45 seconds; never fails.
- */
 export const recordDatabaseConnections = (environment: {
   readonly slug: string;
   readonly directory: string;

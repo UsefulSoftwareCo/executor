@@ -1,4 +1,3 @@
-/** Apps CLI and standard Git credential helper, sharing the product's app APIs. */
 import {
   Config,
   Console,
@@ -73,15 +72,14 @@ import {
 import { frameworkApi } from "./contracts/framework.ts";
 import {
   RegistryOrigin,
+  appManagementSession,
   gitSession,
-  registryLogin,
-  registrySession,
   sessionRefreshMarginMs,
 } from "./implementation/node-auth.ts";
 
 const organization = Flag.String("organization").pipe(
   Flag.withDescription(
-    "Hosted organization. Required with EXECUTOR_ACCESS_TOKEN; after executor apps login it defaults to the signed-in organization",
+    "Hosted organization. Required with EXECUTOR_ACCESS_TOKEN; after executor login it defaults to the organization that sign-in was approved for",
   ),
   Flag.optional,
 );
@@ -112,28 +110,17 @@ const publication = {
   commit: commit("of the published version to install"),
 };
 export type { LocalServer } from "./implementation/hosts.ts";
-/**
- * The local Executor could not be started or reached for a command without a named or
- * remembered host. `message` is the local server's own explanation and what to do about it.
- */
 export class LocalServerUnavailable extends Schema.TaggedError<LocalServerUnavailable>()(
   "LocalServerUnavailable",
   { message: Schema.String },
 ) {}
-/**
- * The host one command talks to: the named or remembered origin, or the local server with the
- * token its resolver supplied. A named host resolves its credential for each request, as a hosted
- * session can refresh during a long command.
- */
 interface Host {
   readonly origin: string;
   readonly local?: Redacted.Redacted<string>;
 }
-/** Resolve the credential and, for hosted Executor, the organization every request targets. */
 const access = ({ origin: host, local: localToken }: Host, organization: Option.Option<string>) =>
   Effect.gen(function* () {
     if (localToken !== undefined) {
-      // The local server has no organizations; a hosted one must be named with --host.
       if (Option.isSome(organization))
         return yield* new AppClientError({ reason: "authentication" });
       return { token: localToken, organization: undefined };
@@ -154,12 +141,11 @@ const access = ({ origin: host, local: localToken }: Host, organization: Option.
       ["127.0.0.1", "localhost", "[::1]"].includes(new URL(host).hostname)
     )
       return { token: local.value, organization: undefined };
-    const session = Redacted.value(yield* registrySession(host));
+    const session = Redacted.value(yield* appManagementSession(host));
     if (Option.isSome(organization) && organization.value !== session.organization)
       return yield* new AppClientError({ reason: "forbidden" });
     return { token: Redacted.make(session.accessToken), organization: session.organization };
   });
-/** Authenticated requests to the host; redirects are refused so credentials never follow them. */
 const transport = (host: string, token: Redacted.Redacted<string>, path = (url: string) => url) =>
   Effect.map(HttpClient.HttpClient, (client) =>
     client.pipe(
@@ -175,7 +161,6 @@ const transport = (host: string, token: Redacted.Redacted<string>, path = (url: 
       ),
     ),
   ).pipe(Effect.provide(FetchHttpClient.layer));
-/** An Executor API error body this CLI's contract does not declare, as every Executor host writes it. */
 const HostAnswer = Schema.fromJsonString(
   Schema.Struct({
     _tag: Schema.NonEmptyString.check(Schema.isMaxLength(128)),
@@ -183,7 +168,6 @@ const HostAnswer = Schema.fromJsonString(
     recovery: Schema.optional(HostRecovery),
   }),
 );
-/** Read a host's own JSON error from a bounded body; any other response text is never kept. */
 const hostAnswer = (response: HttpClientResponse.HttpClientResponse) =>
   /^application\/(?:[\w.-]+\+)?json$/i.test(
     response.headers["content-type"]?.split(";")[0]?.trim() ?? "",
@@ -198,11 +182,6 @@ const hostAnswer = (response: HttpClientResponse.HttpClientResponse) =>
         Effect.option,
       )
     : Effect.succeedNone;
-/**
- * A response outside the operation's contract keeps its method, path, status and any Executor
- * error the body states, so the command can say what the host answered. Credentials and other
- * response text are never kept.
- */
 const hostFailure = (error: HttpClientError.HttpClientError | Schema.SchemaError) =>
   Effect.gen(function* () {
     if (!HttpClientError.isHttpClientError(error))
@@ -232,10 +211,8 @@ const localManagementApi = appManagementApi("/api", AppAccess);
 const hostedManagementApi = appManagementApi("/api/organizations/:organization", AppAccess);
 const localFrameworkApi = frameworkApi("/api", AppAccess);
 const hostedFrameworkApi = frameworkApi("/api/organizations/:organization", AppAccess);
-/** Both hosts serve one app management contract; hosted routes add the organization. */
 type Management = HttpApiClient.ForApi<typeof localManagementApi>["appManagement"];
 type Framework = HttpApiClient.ForApi<typeof localFrameworkApi>["framework"];
-/** Typed clients for one host. Both hosts serve the shared contracts; hosted adds the organization. */
 const connect = (host: Host, organization: Option.Option<string>) =>
   Effect.gen(function* () {
     const target = yield* access(host, organization);
@@ -254,7 +231,6 @@ const connect = (host: Host, organization: Option.Option<string>) =>
       .framework;
     return { management, framework, tenant: { organization: target.organization } };
   });
-/** Run one app management operation; contract errors stay typed for command diagnostics. */
 const manage = <A, E>(
   host: Host,
   organization: Option.Option<string>,
@@ -267,33 +243,22 @@ const manage = <A, E>(
     Effect.flatMap(({ management, tenant }) => operation(management, tenant)),
     Effect.catchIf(isTransportFailure, hostFailure),
   );
-/** Print a validated response exactly as the host sent it. */
 const printResponse = <A>([, response]: readonly [A, HttpClientResponse.HttpClientResponse]) =>
   response.json.pipe(Effect.flatMap((json) => Console.log(JSON.stringify(json, null, 2))));
-/** Print a value the CLI assembled from host responses, in its wire form. */
 const print =
   <S extends Schema.Top & { readonly EncodingServices: never }>(schema: S) =>
   (value: S["Type"]) =>
     Schema.encodeEffect(Schema.toCodecJson(schema))(value).pipe(
       Effect.flatMap((json) => Console.log(JSON.stringify(json, null, 2))),
     );
-/** The working source the host holds now, with its revision and Git location. */
 const workingSource = (host: Host, organization: Option.Option<string>, app: AppId) =>
   manage(host, organization, (api, tenant) => api.source({ params: { ...tenant, app } }));
 
-/** The credential Git requests carry, the same one the API requests use. */
 const gitAuthorization = (host: Host, organization: Option.Option<string>) =>
   access(host, organization).pipe(Effect.map(({ token }) => `Bearer ${Redacted.value(token)}`));
 
-/** An app's working source as the host returned it. */
 type WorkingSource = Effect.Success<ReturnType<typeof workingSource>>;
 
-/**
- * Save a local source as the commit after `expected`. A source that fits one request is sent as
- * files; a larger one is pushed with Git, sending only the files the app does not already hold.
- * A caller that already read the working source passes it as `read`: reading a source with many
- * public files lists and sizes each of them, so a second read is not free.
- */
 const saveSource = (input: {
   readonly host: Host;
   readonly organization: Option.Option<string>;
@@ -333,46 +298,37 @@ const saveSource = (input: {
     });
   });
 
-const notSignedIn = `Not signed in to this host for app commands. Run executor apps login, which signs in to hosted Executor and makes later commands use it, or executor apps login --host <origin> for another host. Commands use --host, then EXECUTOR_HOST, then the host you signed in to last, then the local background Executor; for a local server at --host, set EXECUTOR_API_KEY to its API key.`;
-/** No credential for a tool command's host. */
+const notSignedIn = `Not signed in to this host for app commands. Run executor login, which signs in to hosted Executor and makes later commands use it, or executor login --host <origin> for another host. A self-hosted Executor from before app commands used that sign-in refuses it: update the host. Commands use --host, then EXECUTOR_HOST, then the host you signed in to last, then the local background Executor; for a local server at --host, set EXECUTOR_API_KEY to its API key.`;
 const toolsNotSignedIn = (host: string | undefined) =>
   host === undefined
     ? "No Executor host is named or signed in to. Run executor login to sign in to hosted Executor, or pass --host."
     : `Not signed in to ${host} for tools. Run executor login --host ${host}. For a local server at --host, set EXECUTOR_API_KEY to its API key; EXECUTOR_ACCESS_TOKEN sends a pasted access token instead.`;
-/** What each sign-in failure means and what to do next; `command` is the sign-in to repeat. */
-const loginFailure = (reason: LoginFailed["reason"], command: string): string =>
+const loginFailure = (reason: LoginFailed["reason"]): string =>
   ({
     host: `Could not read this host's sign-in settings. Check --host, for example --host ${hostedExecutorOrigin}, and your network connection.`,
     unsupported:
       "This host does not support signing in from the CLI. Update it to a release with device sign-in.",
     registration: "The host did not start a sign-in for the CLI. Try again in a moment.",
-    denied: `Sign-in was cancelled or denied in the browser. Run ${command} to try again.`,
-    expired: `Sign-in was not approved in time. Run ${command} again and approve it within 10 minutes.`,
-    token: `The host did not complete the approved sign-in. Run ${command} to try again.`,
-    context:
-      "Signed in, but the host did not return your organization. Check that your account belongs to an organization, then sign in again.",
+    denied: "Sign-in was cancelled or denied in the browser. Run executor login to try again.",
+    expired:
+      "Sign-in was not approved in time. Run executor login again and approve it within 10 minutes.",
+    token: "The host did not complete the approved sign-in. Run executor login to try again.",
     storage:
       "Signed in, but the session could not be saved in the system credential store or in ~/.local/state/executor/auth. Check that this directory is writable.",
   })[reason];
 
-/**
- * A failed command, as agents read it: the error code, the HTTP status when the host answered, the
- * message, the declared recovery, and the error's other fields as the host sent them.
- */
 export const AppCommandFailure = Schema.Struct({
   code: Schema.String,
   status: Schema.optional(Schema.Int),
   message: Schema.String,
   recovery: Schema.optional(HostRecovery),
   details: Schema.optional(Schema.Record(Schema.String, Schema.Json)),
-  /** Set when a newer CLI release exists: which one, and how to install it. */
   update: Schema.optional(Schema.String),
 });
 export type AppCommandFailure = typeof AppCommandFailure.Type;
 
 const updateCli =
   "Check executor --version, then install the current release: npm i -g executor@beta --include=optional";
-/** The wire form of a contract error: its code, message, recovery and other fields. */
 const encodeOperationError = Schema.encodeUnknownOption(Schema.toCodecJson(AppOperationError));
 const operationStatus = (error: unknown) => {
   for (const member of appOperationErrors)
@@ -381,12 +337,12 @@ const operationStatus = (error: unknown) => {
 };
 const WireError = Schema.Struct({ _tag: Schema.String, message: Schema.String });
 const presentation = new Set(["_tag", "message", "recovery"]);
-/** The fields an error carries besides its code, message and recovery, such as a build's stage. */
 const errorDetails = (wire: Record<string, Schema.Json>) => {
   const details = Object.entries(wire).filter(([key]) => !presentation.has(key));
   return details.length === 0 ? {} : { details: Object.fromEntries(details) };
 };
-/** What the host or the CLI said, for a request the host answered outside the contract. */
+const scopedSignIn =
+  "If executor login was approved for a scoped connection or for selected apps, that sign-in cannot read, create, change or deploy apps: run executor login again and choose All apps.";
 const hostRequestFailure = (error: HostRequestFailed): AppCommandFailure => {
   const request =
     error.method === undefined ? "the request" : `${error.method} ${error.path ?? ""}`;
@@ -394,7 +350,10 @@ const hostRequestFailure = (error: HostRequestFailed): AppCommandFailure => {
     return {
       code: error.answer.code,
       ...(error.status === undefined ? {} : { status: error.status }),
-      message: error.answer.message,
+      message:
+        error.status === 403 && error.answer.code === "OrganizationForbidden"
+          ? `${error.answer.message} ${scopedSignIn}`
+          : error.answer.message,
       ...(error.answer.recovery === undefined ? {} : { recovery: error.answer.recovery }),
     };
   const status = error.status === undefined ? {} : { status: error.status };
@@ -449,11 +408,6 @@ const hostRequestFailure = (error: HostRequestFailed): AppCommandFailure => {
   };
 };
 
-/**
- * Describe an apps command failure. Host errors keep their code, status, message and recovery
- * exactly as the host states them; the CLI's own failures say what it checked. Credentials and
- * other response text are never included. Undefined for failures outside the apps commands.
- */
 export const describeAppFailure = (error: unknown): AppCommandFailure | undefined => {
   if (Schema.is(LocalServerUnavailable)(error))
     return { code: "LocalServerUnavailable", message: error.message };
@@ -501,10 +455,7 @@ export const describeAppFailure = (error: unknown): AppCommandFailure | undefine
   if (Schema.is(LoginFailed)(error))
     return {
       code: "LoginFailed",
-      message: loginFailure(
-        error.reason,
-        error.signIn === "api" ? "executor apps login" : "executor login",
-      ),
+      message: loginFailure(error.reason),
       details: { reason: error.reason },
     };
   if (Schema.is(ToolsSignInRequired)(error))
@@ -549,7 +500,6 @@ export const describeAppFailure = (error: unknown): AppCommandFailure | undefine
       };
     }
   }
-  // Skill reads use the SDK's own routes; their errors are schema classes with a declared status.
   if (error instanceof Error && Schema.isSchema(error.constructor)) {
     const status = SchemaAST.resolveAt<number>("httpApiStatus")(error.constructor.ast);
     return {
@@ -562,7 +512,6 @@ export const describeAppFailure = (error: unknown): AppCommandFailure | undefine
   return undefined;
 };
 
-/** One failure as people read it: the message, its code and status, then the recovery. */
 export const renderAppFailure = (failure: AppCommandFailure): string =>
   [
     `Error: ${failure.message}`,
@@ -573,20 +522,12 @@ export const renderAppFailure = (failure: AppCommandFailure): string =>
     ...(failure.update === undefined ? [] : [failure.update]),
   ].join("\n");
 
-/** The failure as one JSON document, `{ "error": ... }`, for callers that parse stdout. */
 export const encodeAppFailure = (failure: AppCommandFailure): string =>
   JSON.stringify({ error: Schema.encodeSync(AppCommandFailure)(failure) }, null, 2);
 
-/**
- * The executable supplies one platform layer and owns process lifetime. `localServer` resolves the
- * local Executor that commands use when neither --host nor EXECUTOR_HOST names a host; without it,
- * such a command fails as not signed in.
- */
 export const appsCommand = <E = never, R = never>(
-  platform: string,
   localServer?: Effect.Effect<LocalServer, E, R>,
 ) => {
-  /** Run with the named or remembered host, or else the local server, resolved once per command. */
   const withHost = <A, E2, R2>(
     flag: Option.Option<string>,
     run: (host: Host) => Effect.Effect<A, E2, R2>,
@@ -604,8 +545,8 @@ export const appsCommand = <E = never, R = never>(
     ),
     Command.withExamples([
       {
-        command: "executor apps login",
-        description: "Sign in to hosted Executor once",
+        command: "executor login",
+        description: "Sign in to hosted Executor once, for app commands and tool commands alike",
       },
       {
         command: "executor apps list",
@@ -617,26 +558,6 @@ export const appsCommand = <E = never, R = never>(
       },
     ]),
     Command.withSubcommands([
-      Command.make("login", {
-        host: Flag.String("host").pipe(
-          Flag.withDescription(
-            `Executor origin to sign in to. Defaults to EXECUTOR_HOST, then hosted Executor, ${hostedExecutorOrigin}`,
-          ),
-          Flag.withFallbackConfig(Config.String("EXECUTOR_HOST")),
-          Flag.withDefault(hostedExecutorOrigin),
-        ),
-      }).pipe(
-        Command.withDescription(
-          "Sign in to a hosted Executor for app commands with a code approved in any browser. Later commands use this host by default",
-        ),
-        Command.withExamples([
-          {
-            command: "executor apps login",
-            description: "Print a link and a code, and wait until it is approved in a browser",
-          },
-        ]),
-        Command.withHandler((args) => registryLogin(args.host, platform)),
-      ),
       Command.make("list", connection).pipe(
         Command.withDescription("List apps"),
         Command.withHandler((args) =>
@@ -679,8 +600,6 @@ export const appsCommand = <E = never, R = never>(
                     .pipe(Effect.flatMap(printResponse)),
                 );
               }
-              // Too large for one request: create the app from its code, then push the whole
-              // directory, public files included, as its next commit.
               const [created, response] = yield* manage(host, args.organization, (api, tenant) =>
                 requestFiles(codeOnly(local)).pipe(
                   Effect.flatMap((files) =>
@@ -770,7 +689,6 @@ export const appsCommand = <E = never, R = never>(
                       stored.set(file.object, [...(stored.get(file.object) ?? []), file.path]);
                     else yield* write(file.path, inlineBytes(file));
                   }
-                  // Files listed by their blob come from the app's Git remote.
                   if (stored.size > 0)
                     yield* readCommitBlobs({
                       url: source.gitUrl,
@@ -1055,12 +973,19 @@ export const appsCommand = <E = never, R = never>(
             );
             const origin = `${fields.get("protocol")}://${fields.get("host")}`;
             if (!Schema.is(RegistryOrigin)(origin)) return;
-            const session = Redacted.value(yield* gitSession(origin));
+            const found = yield* gitSession(origin).pipe(
+              Effect.catch((error) => {
+                const failure = describeAppFailure(error);
+                return Console.error(
+                  failure === undefined
+                    ? "Executor could not supply a Git credential for this remote."
+                    : renderAppFailure(failure),
+                ).pipe(Effect.as(Option.none()));
+              }),
+            );
+            if (Option.isNone(found)) return;
+            const session = Redacted.value(found.value);
             if (!fields.get("path")?.startsWith(`git/${session.organization}/`)) return;
-            // Git stores what a helper returns with every other helper it has, such as macOS's
-            // keychain, and asks them first next time. With the expiry, Git (2.41 and later)
-            // drops a kept copy when this helper would refresh it, instead of sending an expired
-            // token that the host refuses as a failed sign-in.
             const expiry = Math.floor((session.expiresAt - sessionRefreshMarginMs) / 1000);
             yield* Stream.succeed(
               `username=executor\npassword=${session.accessToken}\npassword_expiry_utc=${expiry}\n\n`,

@@ -1,18 +1,10 @@
-/**
- * A v1 organization that moved to v2, as the v1 import recorded it in Cloud's database before it
- * was removed (`notes/v1-import.md`). MCP forwarding, the session handoff and the WorkOS API key
- * check still read these records, so scenarios write them directly for synthetic WorkOS ids.
- */
 import { randomBytes } from "node:crypto";
 import { Effect } from "effect";
 import { writeRows, type RowStatement } from "./cloud-rows.ts";
 
-/** A synthetic WorkOS organization id. */
 export const v1OrganizationId = () => `org_${randomBytes(13).toString("hex").toUpperCase()}`;
-/** A synthetic WorkOS user id. */
 export const v1UserId = () => `user_${randomBytes(13).toString("hex").toUpperCase()}`;
 
-/** One import map row of an imported item: the v1 item and the v2 resource it became. */
 const imported = (
   v1Organization: string,
   kind: "organization" | "user" | "toolkit",
@@ -26,11 +18,6 @@ const imported = (
   params: [v1Organization, kind, v1, v2Kind, v2],
 });
 
-/**
- * Record `v1Organization` as imported into the v2 organization `v2Organization`, each of `users`
- * (a WorkOS user and its v2 user) as imported, and each of `toolkits` as a member's copy: the
- * scoped connection the import made for that member of the v1 toolkit's row.
- */
 export const recordMovedV1Organization = (input: {
   readonly v1Organization: string;
   readonly v2Organization: string;

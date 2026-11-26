@@ -1,10 +1,3 @@
-/**
- * What a person chooses when they approve `executor login` holds for every CLI command: a chosen
- * connection limits `executor search` and `executor call` to its apps, browser approval links the
- * pending request to its review page for `executor resume`, and native approval reaches the MCP
- * client of `executor mcp` as an elicitation. The choice is the grant settings the device approval
- * page sends.
- */
 import { expect, layer } from "@effect/vitest";
 import { randomUUID } from "node:crypto";
 import { Effect, Schema } from "effect";
@@ -44,10 +37,6 @@ const Pending = Schema.Struct({
   approvalUrl: Schema.optional(Schema.String),
 });
 
-/**
- * An account-free app whose tools all mention `word` in their descriptions: `read` answers its
- * receipt and `review` waits for approval first.
- */
 const deployApp = (label: string, word: string) =>
   Effect.gen(function* () {
     const api = yield* Api,
@@ -81,12 +70,10 @@ export default defineApp({}, async () => ({
     return { app, receipt };
   });
 
-/** Every tool path `executor search` printed. */
 const paths = (result: Finished) => {
   expect(result.code, result.stderr).toBe(0);
   return Schema.decodeUnknownSync(Search)(result.stdout).items.map((item) => item.path);
 };
-/** The one outcome `executor call <path>` printed. */
 const outcome = (result: Finished) => {
   expect(result.code, result.stderr).toBe(0);
   return Schema.decodeUnknownSync(Schema.fromJsonString(Called))(result.stdout).execution.value;
@@ -140,29 +127,52 @@ layer(HostedLive, { excludeTestServices: true })("CLI grant choice", (it) => {
           organization,
           access: { kind: "connection", id: connection.id, name: connection.name, apps: 1 },
           mode: "model",
-          apps: false,
         });
 
-        // Search finds only the connection's app, though both apps' tools mention the word.
         const found = paths(yield* cli.executor(["search", word]));
         const read = pathOf(found, chosen.app.slug, "read");
         expect(found.filter((path) => path.includes(outside.app.slug))).toEqual([]);
         expect(paths(yield* cli.executor(["search", "--namespace", outside.app.slug]))).toEqual([]);
 
-        // A call to the connection's app runs; one outside it gets the host's refusal.
         expect(outcome(yield* cli.executor(["call", read]))).toMatchObject({
           ok: true,
           value: { read: chosen.receipt },
         });
         const outsidePath = read.replace(chosen.app.slug, outside.app.slug);
         const refused = outcome(yield* cli.executor(["call", outsidePath]));
-        // The host hides apps outside the connection, so it answers as for a tool that is not there.
         expect(refused, JSON.stringify(refused)).toMatchObject({
           path: outsidePath,
           ok: false,
           error: { kind: "UnknownTool" },
         });
         expect(JSON.stringify(refused.error)).not.toContain(outside.receipt);
+
+        const listed = yield* cli.cli(["list"]);
+        expect(listed.code, listed.stderr).toBe(0);
+        expect(
+          Schema.decodeUnknownSync(
+            Schema.fromJsonString(Schema.Array(Schema.Struct({ id: Schema.String }))),
+          )(listed.stdout).map((app) => app.id),
+        ).toEqual([chosen.app.id]);
+        const source = yield* cli.fs.makeTempDirectoryScoped({ prefix: "executor-scoped-app-" });
+        yield* cli.fs.writeFileString(
+          cli.path.join(source, "index.ts"),
+          'export default "scoped";',
+        );
+        const refusedCreate = yield* cli.cli([
+          "create",
+          "--name",
+          `Scoped ${word}`,
+          "--files",
+          source,
+        ]);
+        expect(refusedCreate.code, refusedCreate.stdout).toBe(1);
+        expect(refusedCreate.stderr).toContain("Code: OrganizationForbidden (HTTP 403)");
+        expect(refusedCreate.stderr).toContain("run executor login again and choose All apps");
+        const refusedSource = yield* cli.cli(["source", "--app", chosen.app.id]);
+        expect(refusedSource.code, refusedSource.stdout).toBe(1);
+        expect(refusedSource.stderr).toContain("Code: OrganizationForbidden (HTTP 403)");
+        expect(refusedSource.stdout).not.toContain(chosen.receipt);
       }),
     ),
   );
@@ -186,14 +196,12 @@ layer(HostedLive, { excludeTestServices: true })("CLI grant choice", (it) => {
           "review",
         );
 
-        // The call pauses with a link to its review page, and nothing has run yet.
         const paused = yield* cli.executor(["call", review]);
         expect(paused.code, paused.stderr).toBe(0);
         const pending = Schema.decodeUnknownSync(Schema.fromJsonString(Pending))(paused.stdout);
         expect(pending.approvalUrl, paused.stdout).toBeDefined();
         const url = new URL(pending.approvalUrl ?? "");
 
-        // The person approves on that page, signed in to the browser.
         yield* browser.login(actors.owner);
         yield* browser.use("Open the review page and approve", (page) =>
           page
@@ -206,7 +214,6 @@ layer(HostedLive, { excludeTestServices: true })("CLI grant choice", (it) => {
         );
         yield* browser.checkpoint("Approval saved for the CLI's call");
 
-        // resume with only the ID collects the answer given in the browser and runs the call.
         expect(outcome(yield* cli.executor(["resume", pending.requestId]))).toMatchObject({
           ok: true,
           value: { reviewed: receipt },
@@ -227,7 +234,6 @@ layer(HostedLive, { excludeTestServices: true })("CLI grant choice", (it) => {
         expect(login.finished.code, login.finished.stderr).toBe(0);
         expect(login.finished.stdout).toContain("every app, approvals in native mode.");
 
-        // A real MCP client that answers elicitation starts the relay, as Claude Code would.
         const client = yield* stdioMcp({
           ...cli.command(["mcp", "--host", host]),
           elicit: () => ({ action: "accept", content: {} }),
@@ -240,9 +246,6 @@ layer(HostedLive, { excludeTestServices: true })("CLI grant choice", (it) => {
           app.slug,
           "review",
         );
-        // A program's approval reaches the client as an elicitation, through the relay; accepting
-        // it runs the call in the same request. (A native `call` needs none: the client confirmed
-        // that call itself.)
         const executed = Schema.decodeUnknownSync(Executed)(
           yield* client.call("execute", { code: `return await ${review}({})` }),
         );

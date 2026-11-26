@@ -181,7 +181,6 @@ export const inflateZlib = (
     }
   }
 
-  // The Adler-32 trailer starts at the next byte boundary; unused bits belong to the last byte read.
   if (position + 4 > input.byteLength) throw new InflateError("truncated checksum");
   const data = output.subarray(0, length);
   let a = 1;

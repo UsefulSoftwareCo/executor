@@ -1,11 +1,9 @@
-/** Restart the runner-owned product through its loopback-only test control plane. */
 import { Config, Effect, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
 import { Target } from "./platform.ts";
 import { Evidence } from "./evidence.ts";
 import type { OperatorSettings } from "./managed-server.ts";
 
-/** Control calls never touch a shared developer preview or production service. */
 export const controlRequest = (path: string, expectedStatus: number, body?: unknown) =>
   Effect.gen(function* () {
     const target = yield* Target,
@@ -40,7 +38,6 @@ export const controlRequest = (path: string, expectedStatus: number, body?: unkn
           body === undefined ? request : yield* HttpClientRequest.bodyJson(request, body),
         );
         const text = yield* response.text;
-        // Control responses carry no credentials; a failed fixture explains itself.
         if (response.status !== expectedStatus)
           return yield* Effect.die(
             `Product control ${path} returned ${response.status}, expected ${expectedStatus}${text === "" ? "" : `: ${text.slice(0, 500)}`}`,
@@ -50,10 +47,6 @@ export const controlRequest = (path: string, expectedStatus: number, body?: unkn
     );
   });
 
-/**
- * Stop, start, restart or kill the product, advance its clock, set its data-step mode or
- * turn on an operator setting for its next start.
- */
 export const serverControl = (
   action: "start" | "stop" | "restart" | "kill" | "clock/advance" | "data-steps" | "environment",
   expectedStatus: 200 | 500 = 200,
@@ -72,11 +65,6 @@ export const serverControl = (
 
 const Stopped = Schema.Struct({ stoppedMs: Schema.Number });
 
-/**
- * Stop the product and return how long it took to stop: from the request until the product wrote
- * its exit line or ended. It excludes the coverage the suite collects as the product exits; see
- * `shutdown` in managed-server.ts.
- */
 export const stopProductTimed = Effect.gen(function* () {
   const evidence = yield* Evidence;
   const text = yield* evidence.step("Product process stop", controlRequest("stop", 200));

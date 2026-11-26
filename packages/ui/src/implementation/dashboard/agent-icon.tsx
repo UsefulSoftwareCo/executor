@@ -18,12 +18,6 @@ import {
 
 type Mark = typeof ClaudeLogo;
 
-/**
- * Products an agent's name says it is, matched in order, ignoring case. A mark is one of the
- * dashboard's own logos, or the product's site, whose logo comes through the same proxy as provider
- * logos. Names are self-declared, so this says what an agent calls itself, never who it is.
- * Claude Code names itself `Claude Code (<server name>)`.
- */
 const products: readonly (readonly [RegExp, Mark | string])[] = [
   [/^executor\b/iu, "/favicon.png"],
   [/\bclaude\b/iu, ClaudeLogo],
@@ -52,7 +46,6 @@ const products: readonly (readonly [RegExp, Mark | string])[] = [
   [/\bnotion\b/iu, "notion.so"],
 ];
 
-/** The size proxy logos are fetched for; `faviconUrl` doubles it for 2x screens. */
 const fetchSize = 32;
 
 const productMark = (name: string | null): Mark | string | null => {
@@ -63,20 +56,13 @@ const productMark = (name: string | null): Mark | string | null => {
   return mark.startsWith("/") ? mark : faviconUrl(mark, fetchSize);
 };
 
-/**
- * An agent's mark: the logo its client registered when it is an HTTPS URL, else the mark of the
- * product its name matches, else a robot. A logo that fails to load gives way to the next. Remote
- * images load only through an image element, without a referrer.
- */
 export function AgentIcon({
   name,
   icon,
   className,
 }: {
   readonly name: string | null;
-  /** The logo URL the client registered, if any. */
   readonly icon: string | null;
-  /** Sizes the mark; the robot draws at the same size. */
   readonly className?: string;
 }) {
   const [failed, setFailed] = useState<readonly string[]>([]);

@@ -1,4 +1,3 @@
-/** MinGit omits the CGI helper Executor uses for Git clone/push over HTTP. */
 import { createHash } from "node:crypto";
 import { Effect, FileSystem, Path, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
@@ -6,7 +5,6 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 const gitHash = "987381598c5cc4e7b6d7fb2c6b82e5d072dc47cce3d9d64ffb097352fee708c8";
 const helperHash = "0a9ee3fe066386ecafed969c3cf3b55239283302ada9962eeceb83e77fa8cbfa";
-// Upstream retained an older filename; its git.exe is byte-identical to the pinned MinGit 2.53.0.windows.4.
 const archiveUrl =
   "https://github.com/git-for-windows/git/releases/download/v2.53.0.windows.4/mingw-w64-x86_64-git-2.52.0.1-1-any.pkg.tar.xz";
 const archiveHash = "3bdf3b1059dfc740d2f28945767924b04363e52df43e6f9413ce00908c79bf77";
@@ -17,7 +15,6 @@ class WindowsGitFailed extends Schema.TaggedError<WindowsGitFailed>()("WindowsGi
   stage: Schema.Literals(["architecture", "git-version", "archive", "extract", "helper"]),
 }) {}
 
-/** Add only the matching upstream helper, retaining the existing Git runtime and its DLLs. */
 export const installWindowsGitHttpBackend = (stage: string) =>
   Effect.gen(function* () {
     if (process.platform !== "win32") return;
@@ -36,7 +33,6 @@ export const installWindowsGitHttpBackend = (stage: string) =>
     const archive = path.join(temporary, "git-package.tar.xz");
     yield* fs.writeFile(archive, bytes);
     const code = yield* processes.exitCode(
-      // GNU tar reads drive-prefixed archive paths as remote hosts. Keep every path relative.
       ChildProcess.make("tar", ["-xf", path.basename(archive), helper], {
         cwd: temporary,
         stdout: "inherit",
@@ -47,7 +43,6 @@ export const installWindowsGitHttpBackend = (stage: string) =>
     const extracted = path.join(temporary, helper);
     if (hash(yield* fs.readFile(extracted)) !== helperHash)
       return yield* new WindowsGitFailed({ stage: "helper" });
-    // The staged Git keeps nothing else in libexec/git-core (keptGit in runtime-bundle.ts).
     yield* fs.makeDirectory(path.dirname(path.join(git, helper)), { recursive: true });
     yield* fs.copyFile(extracted, path.join(git, helper));
   }).pipe(Effect.provide(FetchHttpClient.layer), Effect.scoped);

@@ -1,4 +1,3 @@
-/** Local product sessions survive host restarts without entering the SDK schema. */
 import { localDatabase } from "./local-database.ts";
 import { Context, Effect, FileSystem, Layer, Option, Path, Schema } from "effect";
 import { SqlClient } from "effect/sql";
@@ -20,7 +19,6 @@ const sessionSchema = schema({
 });
 const database = fumadb({ namespace: "local-auth", schemas: [sessionSchema] });
 
-/** Store token digests, expiry dates and access restrictions for all browser sessions. */
 export const openBrowserSessions = (directory: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -55,7 +53,6 @@ export const openBrowserSessions = (directory: string) =>
           orm.transaction(
             Effect.gen(function* () {
               yield* orm.deleteMany("sessions", { where: (b) => b("expiresAt", "<=", now) });
-              // App launches cannot evict their parent login or another app's sessions.
               const rows = yield* orm.findMany("sessions", {
                 where: (b) => b("access", "=", session.access),
                 orderBy: ["expiresAt", "desc"],
@@ -75,6 +72,5 @@ export const openBrowserSessions = (directory: string) =>
     };
     return store;
   }).pipe(
-    // A database that could not be created says why; any other failure is the store's.
     Effect.mapError((error) => (Schema.is(StartupFailed)(error) ? error : new AuthStorageError())),
   );

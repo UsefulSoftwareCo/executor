@@ -3247,7 +3247,22 @@ diff --git a/lib/Cloudflare/Workers/WorkerProvider.js b/lib/Cloudflare/Workers/W
          const versionId = created.id ?? undefined;
          if (versionId === undefined) {
              return yield* Effect.fail(new WorkerVersionConfigError({
-@@ -3063,7 +3137,7 @@ export const LiveWorkerProvider = () => Provider.effect(Worker, Effect.gen(funct
+@@ -2755,7 +2829,13 @@
+                 scriptName: name,
+             })
+                 .pipe(Effect.map((s) => s), Effect.catch(() => Effect.succeed(undefined))));
+-        const oldTags = Array.from(new Set(oldSettings?.tags ?? []));
++        // Executor patch: a settings read right after a precreate can lag behind it and show none of
++        // the Durable Object tags it wrote. Its output still names them, and their classes exist, so
++        // they count as the script's own instead of being created again (which Cloudflare refuses).
++        const readTags = Array.from(new Set(oldSettings?.tags ?? []));
++        const oldTags = readTags.some(isDurableObjectTag)
++            ? readTags
++            : [...readTags, ...(output?.tags ?? []).filter(isDurableObjectTag)];
+         const oldBindings = oldSettings?.bindings ?? [];
+         // Parse the DO logical-id→class mapping from script tags (packed
+         // `alchemy:dos:` and legacy per-DO `alchemy:do:` formats)
+@@ -3063,7 +3143,7 @@ export const LiveWorkerProvider = () => Provider.effect(Worker, Effect.gen(funct
                  }));
              }
              yield* session.note(`Uploading version of ${name} (${bundleSize}) ...`, { kind: "status" });
@@ -3256,7 +3271,7 @@ diff --git a/lib/Cloudflare/Workers/WorkerProvider.js b/lib/Cloudflare/Workers/W
                  .createScriptVersion({
                  accountId,
                  scriptName: name,
-@@ -3090,7 +3164,7 @@ export const LiveWorkerProvider = () => Provider.effect(Worker, Effect.gen(funct
+@@ -3090,7 +3170,7 @@ export const LiveWorkerProvider = () => Provider.effect(Worker, Effect.gen(funct
                  .pipe(Effect.retry({
                  while: isBindingTargetNotFound,
                  schedule: bindingTargetNotFoundRetrySchedule(),
@@ -3479,7 +3494,22 @@ diff --git a/src/Cloudflare/Workers/WorkerProvider.ts b/src/Cloudflare/Workers/W
          const versionId = created.id ?? undefined;
          if (versionId === undefined) {
            return yield* Effect.fail(
-@@ -4249,8 +4360,10 @@ export const LiveWorkerProvider = () =>
+@@ -3843,7 +3954,13 @@
+               Effect.catch(() => Effect.succeed(undefined)),
+             ));
+ 
+-        const oldTags = Array.from(new Set(oldSettings?.tags ?? []));
++        // Executor patch: a settings read right after a precreate can lag behind it and show none of
++        // the Durable Object tags it wrote. Its output still names them, and their classes exist, so
++        // they count as the script's own instead of being created again (which Cloudflare refuses).
++        const readTags = Array.from(new Set(oldSettings?.tags ?? []));
++        const oldTags = readTags.some(isDurableObjectTag)
++          ? readTags
++          : [...readTags, ...(output?.tags ?? []).filter(isDurableObjectTag)];
+         const oldBindings = oldSettings?.bindings ?? [];
+ 
+         // Parse the DO logical-id→class mapping from script tags (packed
+@@ -4249,8 +4366,10 @@ export const LiveWorkerProvider = () =>
              `Uploading version of ${name} (${bundleSize}) ...`,
              { kind: "status" },
            );
@@ -3492,7 +3522,7 @@ diff --git a/src/Cloudflare/Workers/WorkerProvider.ts b/src/Cloudflare/Workers/W
                accountId,
                scriptName: name,
                metadata: {
-@@ -4273,13 +4386,13 @@ export const LiveWorkerProvider = () =>
+@@ -4273,13 +4392,13 @@ export const LiveWorkerProvider = () =>
                      : undefined,
                },
                files: bundle.files,

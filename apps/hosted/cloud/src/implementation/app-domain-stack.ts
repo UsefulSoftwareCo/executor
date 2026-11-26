@@ -1,4 +1,3 @@
-/** Runtime Alchemy reconciliation. Only DNS records belong to this stack; credentials never enter its state. */
 import { Record as DnsRecord, RecordProvider } from "alchemy/Cloudflare/DNS";
 import { Providers, CloudflareEnvironment } from "alchemy/CloudflareRuntimeServices";
 import { Credentials, type ApiTokenCredentials } from "@distilled.cloud/cloudflare/Credentials";
@@ -17,19 +16,13 @@ import { State, type StateService } from "alchemy/State/State";
 import { Effect, Exit, Layer, Option, Request, RequestResolver, Schema } from "effect";
 import { HttpClient } from "effect/http";
 
-/** DNS follows current team names; immutable team IDs remain authorization identities and ownership metadata. */
 export interface TeamDomain {
   readonly id: string;
   readonly slug: string;
 }
 
-/** Alchemy's logical ID, and so its journal FQN, for a team's wildcard record. */
 const teamResource = (team: TeamDomain) => `team-${team.slug}`;
 
-/**
- * Which of `count` partial stacks owns a journal row. A partial stack's desired teams and its
- * journal view hash the same FQN, so its plan only deletes orphans of its own.
- */
 export const appDomainShard = (fqn: string, count: number) => {
   let hash = 0x811c9dc5;
   for (let index = 0; index < fqn.length; index++)
@@ -51,10 +44,6 @@ const ObservedRecord = Schema.Struct({
   modifiedOn: Schema.optional(Schema.NullOr(Schema.String)),
 });
 
-/** A live inventory scan batches absence checks for new team domains and detects drift.
- * Existing names still use Alchemy's ownership and interrupted-create recovery.
- * Updates use the original provider; creation and deletion batches read a fresh inventory.
- */
 const planningRecords = (zoneId: string, suffix: string) =>
   providerEffect(
     DnsRecord,
@@ -85,8 +74,6 @@ const planningRecords = (zoneId: string, suffix: string) =>
         read: (input) => {
           const observed = input.output && byId.get(input.output.recordId);
           if (!observed) {
-            // Absence is known from this complete live scan. Existing names still
-            // go through the provider's ownership checks before any adoption.
             if (!input.output && !names.has(input.olds.name)) return Effect.succeed(undefined);
             return read(input);
           }
@@ -111,7 +98,6 @@ class DomainDnsBatchFailed extends Schema.TaggedError<DomainDnsBatchFailed>()(
   { reason: Schema.Literals(["changed", "acknowledgement"]) },
 ) {}
 
-/** Batch Alchemy's new records and deletions while retaining per-record ownership and recovery. */
 const batchingRecords = (zoneId: string, suffix: string) =>
   providerEffect(
     DnsRecord,
@@ -131,8 +117,6 @@ const batchingRecords = (zoneId: string, suffix: string) =>
         Effect.gen(function* () {
           const live = yield* appDomainDnsRecords(zoneId, suffix);
           const names = new Set(live.map((record) => record.name));
-          // A record appeared after planning. Let the next native ownership read
-          // recover our interrupted create or reject the other owner's record.
           if (entries.some(({ request }) => names.has(request.name)))
             return yield* new DomainDnsBatchFailed({ reason: "changed" });
           const response = yield* batchRecord({
@@ -200,9 +184,6 @@ const batchingRecords = (zoneId: string, suffix: string) =>
       const DeleteRecord = Request.of<DeleteRecord>();
       const resolver = RequestResolver.make<DeleteRecord>((entries) =>
         Effect.gen(function* () {
-          // A prior interrupted commit or external deletion can leave a missing
-          // ID in the journal. Cloudflare rejects the whole batch if any ID is
-          // absent, so confirm the live set before sending the owned subset.
           const live = yield* appDomainDnsRecords(zoneId, suffix);
           const ids = new Set(live.map((record) => record.id));
           const deletes = entries.flatMap(({ request }) =>
@@ -259,7 +240,6 @@ const batchingRecords = (zoneId: string, suffix: string) =>
     }),
   ).pipe(Layer.provide(RecordProvider()));
 
-/** Plan and apply the complete desired set. A failed database read must never be supplied as an empty set. */
 export const reconcileAppDomainStack = (input: {
   readonly stage: string;
   readonly accountId: string;

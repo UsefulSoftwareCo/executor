@@ -1,22 +1,3 @@
-/**
- * Fail a pull request that changes the `apps` package without moving its version past the base's.
- * Merging to `main` allocates the version and the deploy publishes it, so two different packages
- * must never carry the same version, even before either is on npm. The version must also be
- * greater, not only different: a lower number can be one a deploy never published (Deploy runs
- * only the newest pending commit), and taking it would move the `beta` tag backwards.
- *
- * Usage: `node scripts/releases/apps-bumped.ts <main staged directory> [<merge base staged
- * directory>]` after `bun run apps:build` in this checkout and in main's. Packages are packed
- * without scripts and compared file by file; npm packs the same tree identically in any checkout.
- *
- * The base is main's tip, so a branch that claims a version main has since taken fails before it
- * is brought up to date. An upper stack layer is built from the stack's branch, which can be behind
- * main: its build then differs from main's and carries main's older version even when the stack
- * never touched `apps`. So when the build differs from main's and its version is not above main's,
- * the check needs the build where the pull request meets main. Without that directory it exits 3
- * (the job then builds it and asks again); with it, a pull request whose build equals its merge
- * base's passes, and one that changed `apps` must take a version above main's tip.
- */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, FileSystem, Path } from "effect";
@@ -30,10 +11,6 @@ import {
   unpack,
 } from "./apps-package.ts";
 
-/**
- * Compare two semver versions by precedence: the core numerically, then a version without a
- * prerelease above one with it, then prerelease identifiers, numeric ones numerically.
- */
 const compareVersions = (left: string, right: string) => {
   const parse = (version: string) => {
     const [core = "", prerelease] = version.split(/-(.*)/su);
@@ -58,7 +35,6 @@ const compareVersions = (left: string, right: string) => {
   return 0;
 };
 
-/** The base's version with its last prerelease number, or its patch, one higher. */
 const next = (version: string) =>
   version.replace(/(\d+)$/u, (number) => String(Number(number) + 1));
 

@@ -1,4 +1,3 @@
-/** Public Promise boundary for host-supplied runtime implementations. */
 import { Clock, Effect, Option, Schema } from "effect";
 import {
   HostAccountsInvalid,
@@ -18,16 +17,14 @@ import {
 import type { DeclarationCache } from "../contracts/declarations.ts";
 import type { CodeFiles } from "../contracts/source.ts";
 import type { BuildId, Json } from "../contracts/shared.ts";
-import { BlobStore, type BlobStorage } from "../contracts/blobs.ts";
+import { BlobStore, type BlobKey, type BlobStorage } from "../contracts/blobs.ts";
 
 const NativeRuntime = Symbol("executor.Runtime");
 
-/** Runtime definition. createExecutor supplies its host-owned binary storage. */
 export interface AppRuntime {
   readonly [NativeRuntime]: Runtime<BlobStore>;
 }
 
-/** Standalone Promise adapter after host dependencies have been resolved. */
 export interface ResolvedAppRuntime {
   readonly build: (input: {
     readonly files: CodeFiles;
@@ -90,19 +87,16 @@ export interface ResolvedAppRuntime {
   }) => Promise<Json>;
 }
 
-/** Adapt a native implementation without running any effects during construction. */
 export const runtimeAdapter = (runtime: Runtime<BlobStore>): AppRuntime => ({
   [NativeRuntime]: runtime,
 });
 
-/** Bind storage for standalone runtime callers. SDK callers supply these options to createExecutor instead. */
 export const createAppRuntime = (options: {
   readonly runtime: AppRuntime;
   readonly blobs: BlobStorage;
 }): ResolvedAppRuntime => {
   const runtime = toEffectRuntime(options.runtime, options.blobs);
   const asset = runtime.asset;
-  // Standalone callers serve no host API, so each build's app cache is its own.
   const context = (accounts: ResolvedAccountsInput) =>
     Schema.decodeUnknownEffect(Schema.RedactedFromValue(ResolvedAccounts))(accounts).pipe(
       Effect.map((accounts) => ({ accounts, hostApi: undefined })),
@@ -157,10 +151,39 @@ export const createAppRuntime = (options: {
   };
 };
 
-/**
- * Provide the host store without changing caller cancellation, tracing, or resource scopes. App
- * cache changes the runtime reports forget that app's kept results in `declarations`.
- */
+export const blobKind = (key: string) =>
+  key.startsWith("frameworks/")
+    ? "framework"
+    : /^bld_[^/]+(\/worker)?\.json$/u.test(key)
+      ? "build"
+      : /^bld_[^/]+\/ui\//u.test(key)
+        ? "build-ui"
+        : /^bld_[^/]+\/public\.json$/u.test(key)
+          ? "public-manifest"
+          : /^deployments\/[^/]+\/source\.json$/u.test(key)
+            ? "version-source"
+            : /^app-source\/[^/]+\/initial\.json$/u.test(key)
+              ? "initial-source"
+              : key.startsWith("app-public/")
+                ? "public-file"
+                : key.startsWith("team-icons/")
+                  ? "team-icon"
+                  : "other";
+
+const tracedPut = (blobs: BlobStorage, key: BlobKey, body: Uint8Array) =>
+  blobs.put(key, body).pipe(
+    Effect.tap(() => Effect.annotateCurrentSpan("storage.blob.outcome", "stored")),
+    Effect.tapError(() => Effect.annotateCurrentSpan("storage.blob.outcome", "failed")),
+    Effect.withSpan("storage.blob.put", {
+      attributes: { "storage.blob.size": body.byteLength, "storage.blob.kind": blobKind(key) },
+    }),
+  );
+
+export const withTracedPuts = (blobs: BlobStorage): BlobStorage => ({
+  ...blobs,
+  put: (key, body) => tracedPut(blobs, key, body),
+});
+
 export const toEffectRuntime = (
   definition: AppRuntime,
   blobs: BlobStorage,
@@ -193,12 +216,7 @@ export const toEffectRuntime = (
         Effect.tap((found) => Effect.annotateCurrentSpan("storage.blob.found", found)),
         Effect.withSpan("storage.blob.exists"),
       ),
-    put: (key, body) =>
-      blobs.put(key, body).pipe(
-        Effect.withSpan("storage.blob.put", {
-          attributes: { "storage.blob.size": body.byteLength },
-        }),
-      ),
+    put: (key, body) => tracedPut(blobs, key, body),
     remove: (key) => blobs.remove(key).pipe(Effect.withSpan("storage.blob.remove")),
     removeAll: (keys) =>
       blobs.removeAll(keys).pipe(

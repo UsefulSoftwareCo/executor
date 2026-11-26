@@ -1,14 +1,3 @@
-/**
- * Cloud's gateway routes an MCP request inside a session by the session id its object issued,
- * `<objectId>.<mac>.<sessionId>`, without checking the bearer or opening a database connection.
- * The session object checks the bearer on every request, and that the bearer's own
- * user/client/organization/grant names this object, before any work. These cases hold that
- * boundary: a forged or tampered id reaches no object, another user's bearer gets the answer an
- * unknown session gets, a missing or revoked bearer is refused as before, the previous signing key
- * still verifies and an unknown one does not, the stateless protocol and OAuth refresh keep
- * working, and a session the object no longer holds is not found until the client initializes again.
- * The gateway's spans name each request's JSON-RPC method and Executor tool from closed sets.
- */
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { expect, layer } from "@effect/vitest";
 import { Effect, FileSystem, Layer, Redacted, Schema } from "effect";
@@ -24,7 +13,6 @@ import { scenarios } from "../test-plan.ts";
 
 type Span = DeliveredSpan;
 
-/** A trace's spans, split at the session object: what the object ran and what the gateway ran. */
 const split = (all: ReadonlyArray<Span>) => {
   const byId = new Map(all.map((span) => [span.spanId, span]));
   const inObject = (span: Span) => {
@@ -48,20 +36,16 @@ const split = (all: ReadonlyArray<Span>) => {
 };
 
 const Token = Schema.Struct({ id: Schema.String, key: Schema.RedactedFromValue(Schema.String) });
-/** The stateful revision; its sessions carry an `Mcp-Session-Id`. */
 const stateful = "2025-06-18";
-/** The stateless revision names itself in every request and has no session. */
 const stateless = "2026-07-28";
 const signedId =
   /^([0-9a-f]{64})\.([A-Za-z0-9_-]{43})\.([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
 const sessionNotFound = "Session not found";
 
-/** The key Alchemy minted for one logical id, read from this local Cloud's state. */
 const RandomState = Schema.Struct({
   attr: Schema.Struct({ text: Schema.Struct({ __redacted__: Schema.String }) }),
 });
 
-/** The mac a session object makes over its id and the protocol's session id. */
 const mac = (key: string, objectId: string, sessionId: string) =>
   createHmac("sha256", Buffer.from(key, "hex"))
     .update(`executor mcp session\n${objectId}\n${sessionId}`)
@@ -100,10 +84,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session routing", (i
               return key;
             });
 
-          /**
-           * One MCP POST under its own trace; the answer is JSON or one SSE message. A `batch`
-           * sends its messages as one array in place of `message`.
-           */
           const post = (
             input: {
               readonly credential?: Redacted.Redacted<string> | undefined;
@@ -159,7 +139,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session routing", (i
               }),
             ).pipe(Effect.provideService(HttpClient.TracerPropagationEnabled, false));
 
-          /** A stateful session: initialize, then the notification that completes it. */
           const initialize = (credential: Redacted.Redacted<string>, label: string) =>
             evidence.step(
               `Initialize a session (${label})`,
@@ -215,19 +194,11 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session routing", (i
             return { objectId: match[1] ?? "", mac: match[2] ?? "", sessionId: match[3] ?? "" };
           };
 
-          /**
-           * A finished request's spans, split at the session object: what the object ran and what
-           * the gateway ran. `ready` says when the spans that prove the outcome have arrived.
-           */
           const spans = (traceId: string, ready: (spans: ReadonlyArray<Span>) => boolean) =>
             telemetry.settled(traceId, ready).pipe(
               Effect.map(split),
               Effect.tap((found) => evidence.json(`trace-${traceId}.json`, found.all)),
             );
-          /**
-           * The object answered, and the gateway's forward and bearer check have arrived: the
-           * gateway exports its spans apart from the object's, often in a later flush.
-           */
           const checkedInGateway = (list: ReadonlyArray<Span>) => {
             const { gateway, named } = split(list);
             return forwardedAndAnswered(list) && named(gateway, "auth.authenticate").length > 0;
@@ -240,14 +211,9 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session routing", (i
                 span.operationName === "mcp.session.request" &&
                 span.tags["http.response.status_code"] !== undefined,
             );
-          /**
-           * The object answered and the gateway's spans have arrived too. The gateway exports its
-           * spans apart from the object, so a step that reads them waits for its forward.
-           */
           const forwardedAndAnswered = (list: ReadonlyArray<Span>) =>
             objectAnswered(list) &&
             list.some((span) => span.operationName === "mcp.session.forward");
-          /** As above, and the gateway's request span, which can end in a later export, arrived. */
           const forwardedWithRequest = (list: ReadonlyArray<Span>) =>
             forwardedAndAnswered(list) &&
             list.some(
@@ -256,7 +222,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session routing", (i
                 list.some((parent) => parent.spanId === span.parentSpanId),
             );
 
-          /** A key Alchemy minted for this local Cloud, read from its state. */
           const state = yield* fs
             .readFileString(`${target.directory}/alchemy-state.json`)
             .pipe(
@@ -371,8 +336,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session routing", (i
                   trace: (yield* inSession({ id: 5, method: chosen })).traceId,
                   method: "other",
                 },
-                // MCP defines these, but only a server sends them, so Executor's server never
-                // takes them from a client.
                 {
                   label: "a notification only a server sends",
                   trace: (yield* inSession({
@@ -438,7 +401,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session routing", (i
             }),
           );
 
-          /** A refused id is answered in the gateway: no forward, no object, no database. */
           const refusedInGateway = (label: string, session: string) =>
             evidence.step(
               label,
@@ -458,13 +420,11 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session routing", (i
                   expect(trace.named(trace.all, name).length, `No ${name}`).toBe(0);
               }),
             );
-          /** The mac with one byte changed, so it decodes to different bytes. */
           const flipped = (value: string) => {
             const bytes = Buffer.from(value, "base64url");
             bytes[10] = (bytes[10] ?? 0) ^ 0xff;
             return bytes.toString("base64url");
           };
-          /** The same 256 bits spelled with different padding bits in the last character. */
           const respelled = (value: string) => {
             const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
             const last = alphabet.indexOf(value.at(-1) ?? "A");
@@ -504,9 +464,7 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session routing", (i
                 trace.all.filter((span) => span.operationName.endsWith("/tools/list")).length,
                 "The protocol server never sees the request",
               ).toBe(0);
-              // The victim's session is untouched and keeps working.
               listsTools(yield* listTools(owner.key, ownerSession.session));
-              // The same bearer at another delivery mode is another grant, so another object.
               const native = yield* listTools(
                 owner.key,
                 ownerSession.session,
@@ -539,7 +497,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session routing", (i
               expect(challenge.status).toBe(401);
               const anonymous = yield* listTools(undefined, ownerSession.session);
               expect(anonymous.status).toBe(401);
-              // Wait for whichever side answered: the gateway's refusal or an object's request.
               const unwoken = yield* spans(
                 anonymous.traceId,
                 (all) =>
@@ -635,9 +592,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session routing", (i
           yield* evidence.step(
             "A signed id for a session the object never opened is not found, and the client starts a new one",
             Effect.gen(function* () {
-              // The gateway accepts the id's signature and routes it; the object has no such session
-              // in memory or in its storage. Sessions that outlive an eviction are covered by
-              // cloud-mcp-session-restore.spec.ts.
               const forgotten = randomUUID();
               const lost = `${victim.objectId}.${mac(yield* currentKey, victim.objectId, forgotten)}.${forgotten}`;
               const answer = yield* listTools(owner.key, lost);

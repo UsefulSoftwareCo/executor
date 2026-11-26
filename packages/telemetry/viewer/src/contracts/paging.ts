@@ -1,8 +1,3 @@
-/**
- * A list the collector returns a page at a time. The first page is an ordinary query atom; each
- * "Load more" adds the page after the last one shown, read with that page's `nextCursor`. Pages
- * already shown stay mounted, so loading another neither requests nor reorders them.
- */
 import { AsyncResult, Atom } from "effect/reactivity";
 import type { Cause } from "effect";
 
@@ -17,7 +12,6 @@ export interface ListPage<A> {
 
 type PageAtom<A, E> = Atom.Atom<AsyncResult.AsyncResult<ListPage<A>, E>>;
 
-/** What follows the rows shown. */
 export type PagedListEnd<E> =
   | { readonly status: "complete" }
   | { readonly status: "more" }
@@ -25,33 +19,23 @@ export type PagedListEnd<E> =
   | {
       readonly status: "failed";
       readonly cause: Cause.Cause<E>;
-      /** The page that failed; refresh it to try again. */
       readonly page: Atom.Atom<unknown>;
     };
 
 export interface PagedListState<A, E> {
-  /** The first page's result. Until it succeeds there are no rows to show. */
   readonly first: AsyncResult.AsyncResult<ListPage<A>, E>;
   readonly rows: ReadonlyArray<A>;
-  /** The time window the collector applied, such as `1h`. */
   readonly lookback: string | null;
   readonly end: PagedListEnd<E>;
-  /** How many pages after the first are shown. */
   readonly extraPages: number;
 }
 
 export interface PagedList<A, E> {
-  /** The first page. Refreshing it starts the list again from the newest rows. */
   readonly first: PageAtom<A, E>;
   readonly state: Atom.Atom<PagedListState<A, E>>;
-  /** The number of pages after the first that the viewer asked for. */
   readonly requested: Atom.Writable<number>;
 }
 
-/**
- * Build the paged list for one query. Make a new one whenever the query's filters change, so a
- * page still loading for the old filters is dropped with its atom.
- */
 export const pagedList = <A, E>(
   first: PageAtom<A, E>,
   next: (cursor: string) => PageAtom<A, E>,
@@ -72,7 +56,6 @@ export const pagedList = <A, E>(
     const wanted = get(requested);
     const seen = new Set<string>();
     const rows: A[] = [];
-    // A summary that changed between two reads can come back on a later page too; show it once.
     const append = (page: ListPage<A>) => {
       for (const row of page.data) {
         const id = key(row);

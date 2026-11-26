@@ -1,4 +1,3 @@
-/** Promise SDK example using caller-provided storage, credentials and runtime. */
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, FileSystem } from "effect";
 import {
@@ -13,7 +12,6 @@ import apps from "apps/package.json" with { type: "json" };
 
 const me = OwnerId.make("app-user-me");
 
-/** Deploy one configured app, connect an account for it, and call the tool. */
 export async function vercelProjectsReport(executor: Executor) {
   const source = await Effect.runPromise(
     FileSystem.FileSystem.use((fs) =>
@@ -29,12 +27,9 @@ export async function vercelProjectsReport(executor: Executor) {
     ],
   });
 
-  // Runtime metadata has dynamic slot names; check the expected slot exists.
   if (app.requirements.accounts.vercel === undefined)
     throw new Error("This app must declare a vercel account");
 
-  // Every account is connected for an app requirement. Completing the request saves the
-  // account; calls then name it. Products give users the request as a browser link.
   const connection = await executor.accountConnections.create({
     owner: me,
     target: { app: app.id, requirement: "vercel" },
@@ -48,7 +43,6 @@ export async function vercelProjectsReport(executor: Executor) {
 
   const projects = await executor.tools.call({
     app: app.id,
-    // Each call names its accounts; the product decides which ones the caller may use.
     accounts: { app: {}, user: { vercel: [account.id] } },
     tool: ToolName.make("listProjects"),
     kind: "query",
@@ -57,11 +51,9 @@ export async function vercelProjectsReport(executor: Executor) {
   return { app, account, projects };
 }
 
-/** Local/remote parity; neither function starts work until called. */
 export const inProcess = async (options: ExecutorOptions) =>
   vercelProjectsReport(await createExecutor(options));
 
-/** The remote client exposes exactly the same operations. */
 export const remote = async () =>
   vercelProjectsReport(
     await createRemoteExecutor({

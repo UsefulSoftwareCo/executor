@@ -1,37 +1,3 @@
-/**
- * Refuse to ship a host whose `apps` release is not on npm exactly as this checkout builds it.
- * New apps pin the version in `packages/apps/package.json`. A host shipping an unpublished version
- * cannot build them, and a host whose framework changed after that version was published pins
- * new apps to code other than its own.
- *
- * Run `bun run apps:build` first. The staged package is packed as npm would publish it, and every
- * file is compared byte for byte with the published archive.
- *
- * Modes:
- * - no flag: the version must be on npm with identical content (release publication).
- * - `--publish`: the deploy from `main` publishes an unpublished version with `NPM_TOKEN`, waits
- *   until the registry serves it with the local archive's integrity, then compares as above. A
- *   version already on npm is only compared, so rerunning a deploy is idempotent.
- * - `--allow-unpublished`: pull requests only warn about an unpublished bump, because merging to
- *   `main` publishes it. A published version whose content differs still fails.
- * - `--await`: the production deploy runs beside the job that publishes. It waits for the registry
- *   to serve the version, then compares as above. It never publishes.
- *
- * npm lists a new version minutes after `npm publish` returns, sometimes before it serves the
- * version's archive. Its CDN caches an archive's 404 for five minutes (`cache-control: public,
- * max-age=300`), so one early request for the archive holds every reader of that URL, app builds
- * included, for five minutes after npm stores it. Every mode therefore asks for the archive under a
- * URL no one has asked for before (a fresh query string, which npm's CDN keys separately and the
- * origin ignores) until npm serves it, and only then requests the archive's own URL, the one app
- * builds use, and compares that. Each wait is bounded. Any other status, or an archive whose
- * integrity differs from the registry's, fails at once. A version's document is not cached while
- * it answers 404, so asking for it early costs nothing.
- *
- * `APPS_REGISTRY` points the checks at another registry; e2e/tests/apps-published.spec.ts uses it
- * to replay npm's propagation. The production deploy's modes, `--publish` and `--await`, refuse it
- * before any request, so a stray override cannot let a deploy pass without npm. Against another
- * registry only, `APPS_ARCHIVE_ATTEMPTS` shortens the archive wait so a test can reach its end.
- */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { randomUUID } from "node:crypto";
@@ -60,10 +26,6 @@ const Published = Schema.Struct({
 });
 const Tags = Schema.Record(Schema.String, Schema.String);
 
-/**
- * Seven minutes of waits between attempts cover the CDN's five-minute 404 for an archive npm did
- * not yet store. Request time comes on top; this is not a deadline.
- */
 const archiveWait = Schedule.spaced(10_000);
 const archiveAttempts = 42;
 
@@ -90,7 +52,6 @@ NodeRuntime.runMain(
         message: `${staged} holds apps@${built}, not ${version}; run bun run apps:build again.`,
       });
 
-    // npm's own wait is fixed; only a test registry may shorten it.
     const attempts =
       registry === npm
         ? archiveAttempts
@@ -134,11 +95,9 @@ NodeRuntime.runMain(
         const token = yield* Config.Redacted("NPM_TOKEN");
         const before = yield* tags;
         const npmrc = path.join(directory, "npmrc");
-        // npm substitutes the explicitly supplied environment variable. The file contains no secret.
         yield* fs.writeFileString(npmrc, "//registry.npmjs.org/:_authToken=${NPM_TOKEN}\n", {
           mode: 0o600,
         });
-        // Publishing the directory runs the staged package's own hook, which rejects non-beta releases.
         const code = yield* processes.exitCode(
           ChildProcess.make("npm", ["publish", staged, "--tag", "beta", "--access", "public"], {
             env: { NPM_CONFIG_USERCONFIG: npmrc, NPM_TOKEN: Redacted.value(token) },
@@ -190,9 +149,6 @@ NodeRuntime.runMain(
           });
         return new Uint8Array(yield* archive.arrayBuffer);
       });
-    // The archive's own URL is requested only once npm serves the archive under a fresh URL, so
-    // this check never caches a 404 that app builds would then read for five minutes.
-    // Each attempt asks under a new URL: a fresh URL's own 404 is cached too.
     const download = Effect.suspend(() =>
       fetchArchive(`${published.dist.tarball}?served=${randomUUID()}`),
     ).pipe(Effect.andThen(fetchArchive(published.dist.tarball)));

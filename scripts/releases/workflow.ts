@@ -1,6 +1,5 @@
-/** Resolve workflow inputs and platform paths from the release identity before building. */
-import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import { runMain } from "../../e2e/run-main.ts";
 import { Config, Effect, FileSystem } from "effect";
 import {
   desktopAsset,
@@ -12,10 +11,9 @@ import {
   recoveryParts,
 } from "./config.ts";
 
-/** The job kinds a build run can be narrowed to (RELEASE_JOBS). */
 const narrowableJobs = ["local", "checks", "cli", "recovery", "docker"] as const;
 
-NodeRuntime.runMain(
+runMain(
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const output = yield* Config.String("GITHUB_OUTPUT");
@@ -23,9 +21,6 @@ NodeRuntime.runMain(
       ["build", "check", "beta", "latest"],
       "RELEASE_CHANNEL",
     );
-    // A build run may be narrowed to some targets and job kinds, to prove one job on one platform
-    // without building and testing the rest. Checks and publications always run everything: a
-    // check is main's record that the matrix is green, and a publication tests what it publishes.
     const list = (variable: string) =>
       Config.String(variable).pipe(
         Config.withDefault(""),
@@ -63,9 +58,6 @@ NodeRuntime.runMain(
           new Error("Publish from main and select the channel recorded in apps/cli/package.json."),
         );
     }
-    // A notarizing run signs the desktop app with the company's Developer ID, has Apple notarize
-    // it, and leaves it downloadable as an artifact. Only main may ask for it. Only main's runs
-    // sign the CLI as well: a build from another branch uses no release credentials.
     const notarizeRequested =
       (yield* Config.Literals(["true", "false"], "RELEASE_NOTARIZE").pipe(
         Config.withDefault("false"),
@@ -80,12 +72,6 @@ NodeRuntime.runMain(
       return yield* Effect.die(
         new Error("Notarize from main: it signs and notarizes the desktop app."),
       );
-    // The paced check on main, which runs every two hours or so when a push changed what a
-    // release lane builds or runs: Linux x64 packaging and its installed CLI suite, and the image
-    // on both architectures, at about USD 1 a run. macOS
-    // runners cost 20 times as much as Linux x64 and Windows 8 to 16 times, so Linux arm64,
-    // Windows and macOS packaging run in the publishing runs, which test every target before
-    // they publish, and in manual build runs. CI's release lanes skip darwin too.
     const event = yield* Config.String("GITHUB_EVENT_NAME");
     const targets = (
       requested === "check"
@@ -97,12 +83,10 @@ NodeRuntime.runMain(
       (target) =>
         onlyTargets.length === 0 || onlyTargets.includes(`${target.platform}-${target.arch}`),
     );
-    /** Whether this run runs a job kind; a kind with no target left runs nothing either. */
     const runs = (job: (typeof narrowableJobs)[number]) =>
       onlyJobs.length === 0 || onlyJobs.includes(job);
     const ifRuns = <A>(job: (typeof narrowableJobs)[number], entries: ReadonlyArray<A>) =>
       runs(job) ? entries : [];
-    // Each job's matrix entry names the runner it runs on: `cli` overrides the platform's runner.
     const entry = (target: (typeof targets)[number]) => {
       const { cli, ...fields } = target;
       const directory = `.local/releases/${release.version}-${target.platform}-${target.arch}`;
@@ -131,8 +115,6 @@ NodeRuntime.runMain(
     const macosArm64 = (target: { readonly platform: string; readonly arch: string }) =>
       target.platform === "darwin" && target.arch === "arm64";
     const publishing = requested !== "build" && requested !== "check";
-    // A build run asked to notarize signs, notarizes and tests the macOS apps as a publishing run
-    // does, and publishes nothing.
     const notarizing = publishing || (requested === "build" && notarizeRequested);
     const recovery = targets.flatMap((target) =>
       target.packagedTests
@@ -154,9 +136,6 @@ NodeRuntime.runMain(
       desktop_package: release.desktop.executableName,
       desktop_update_feed: desktopUpdateFeed.tag,
       matrix: JSON.stringify({ include: matrix }),
-      // macOS arm64 builds, signs and notarizes the app the notarized recovery parts test, so it
-      // is a job of its own (local-macos-arm64): those parts wait for it alone, whatever the
-      // other targets' local legs are still doing.
       local_matrix: JSON.stringify({
         include: ifRuns(
           "local",
@@ -167,7 +146,6 @@ NodeRuntime.runMain(
         include: ifRuns("local", matrix.filter(macosArm64)),
       }),
       macos_arm64: ifRuns("local", matrix).some(macosArm64) ? "true" : "false",
-      // Every part of the installed CLI suite runs on its own runner (e2e/run.ts --part).
       cli_matrix: JSON.stringify({
         include: ifRuns("cli", targets).flatMap((target) =>
           target.cli === undefined
@@ -180,11 +158,7 @@ NodeRuntime.runMain(
               })),
         ),
       }),
-      // The launcher, install script and credential store checks, beside the packaging in `local`.
       checks_matrix: JSON.stringify({ include: ifRuns("checks", matrix) }),
-      // Each part of the desktop crash recovery scenarios (e2e/desktop-recovery.config.ts). A
-      // run that notarizes tests the macOS app it notarizes, so its macOS parts wait for `local` and
-      // run in `recovery-notarized`; every other part builds an unpacked app of its own.
       recovery_matrix: JSON.stringify({
         include: ifRuns(
           "recovery",
@@ -194,7 +168,6 @@ NodeRuntime.runMain(
       notarized_recovery_matrix: JSON.stringify({
         include: recovery.filter((part) => notarizing && part.platform === "darwin"),
       }),
-      // The image builds and its scenarios run on each Linux platform's `local` runner size.
       docker_matrix: JSON.stringify({
         include: ifRuns("docker", platforms)
           .filter((target) => target.platform === "linux")
@@ -208,15 +181,10 @@ NodeRuntime.runMain(
           })),
       }),
     };
-    // Each kind runs when its matrix has an entry: GitHub refuses an empty matrix, so its job is
-    // skipped instead, and the releases job expects exactly these.
     const included = (key: keyof typeof values) =>
       (JSON.parse(values[key]) as { include: ReadonlyArray<unknown> }).include.length > 0
         ? "true"
         : "false";
-    // The collector is built for each target a job that packages the CLI runtime runs on, and only
-    // those: every packaging job of a target downloads that one build (.github/actions/collector).
-    // The image and the notarized recovery parts package nothing.
     const packagedOn = new Set(
       (
         [
@@ -259,8 +227,6 @@ NodeRuntime.runMain(
           ? "true"
           : "false",
     };
-    // A narrowed run must still run something, and a whole-matrix run, a check or a publication
-    // must run every kind: one left empty would pass untested.
     const empty = Object.entries(kinds)
       .filter(([key, value]) => key.startsWith("run_") && value !== "true")
       .map(([key]) => key.slice("run_".length));

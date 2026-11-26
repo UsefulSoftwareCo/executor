@@ -18,7 +18,6 @@ import { accountNeedsSignIn } from "./dashboard.ts";
 import { acknowledgedQuery, currentQuery } from "@executor-js/ui/contracts/mutations";
 import { refreshedOnFocus } from "@executor-js/ui/contracts/refresh";
 
-/** The browser uses the same schemas and route definitions as the local product server. */
 export class DashboardClient extends AtomHttpApi.Service<DashboardClient>()("DashboardClient", {
   api: DashboardApi.addHttpApi(LocalAppManagementApi),
   httpClient: dashboardHttpClient,
@@ -27,7 +26,6 @@ export class DashboardClient extends AtomHttpApi.Service<DashboardClient>()("Das
   transformResponse: observeBrowserResponse,
 }) {}
 
-/** An ended connection is resubscribed from current state, never treated as a completed query. */
 export class LiveConnectionLost extends Schema.TaggedError<LiveConnectionLost>()(
   "LiveConnectionLost",
   {},
@@ -38,8 +36,6 @@ type Snapshot<A, E> =
   | { readonly type: "failure"; readonly revision: number; readonly error: E }
   | { readonly type: "heartbeat" };
 
-/** Own one subscription. Each restart emits Initial until its first fresh snapshot.
- * The outer Effect stream stays waiting throughout its lifetime; only frame state is query state. */
 const liveStreamAtom = <A, Q, E, E2>(
   query: Effect.Effect<Stream.Stream<Snapshot<A, Q>, E>, E2, DashboardClient>,
 ) =>
@@ -48,7 +44,6 @@ const liveStreamAtom = <A, Q, E, E2>(
       Stream.concat(
         Stream.make(AsyncResult.initial<A, Q>(true)),
         Stream.unwrap(query).pipe(
-          // Heartbeats detect half-open connections even when product data has not changed.
           Stream.timeout("45 seconds"),
           Stream.concat(Stream.fail(new LiveConnectionLost())),
           Stream.retry(
@@ -89,17 +84,8 @@ const liveStreamAtom = <A, Q, E, E2>(
       ),
     );
 
-/** Results a live query showed from the page before it first showed its own subscription's state. */
 const pageSnapshots = new WeakSet<AsyncResult.AsyncResult<unknown, unknown>>();
 
-/**
- * A live read that a server render can display. The server waits for the first snapshot and sends
- * it with the page under a key derived from `name` and `key`, which must identify the subscription
- * completely. The browser shows that snapshot instead of a loading state until its own subscription
- * delivers one. From then on it follows the subscription only: a restart, even one before that
- * first snapshot, waits for a fresh snapshot, and the page's value is consumed once, so a later
- * mount starts from the subscription.
- */
 export const liveQueryAtom = <A, I, Q, E, E2>(options: {
   readonly name: string;
   readonly key: object;
@@ -107,8 +93,6 @@ export const liveQueryAtom = <A, I, Q, E, E2>(options: {
   readonly query: Effect.Effect<Stream.Stream<Snapshot<A, Q>, E>, E2, DashboardClient>;
 }) => {
   const live = liveStreamAtom(options.query);
-  // On the server this follows the subscription and is sent with the page. In the browser the
-  // page's value replaces it when the node is created; otherwise it also follows the subscription.
   const rendered = Atom.readable((get) => AsyncResult.value(get(live))).pipe(
     Atom.serializable({
       key: `local:live:${options.name}:${requestKey(options.key)}`,
@@ -118,7 +102,6 @@ export const liveQueryAtom = <A, I, Q, E, E2>(options: {
   return Atom.readable(
     (get): Atom.Type<typeof live> => {
       const result = get(live);
-      // Reading it on the server keeps the snapshot in the request's registry until it is sent.
       const snapshot = get(rendered);
       const previous = get.self<Atom.Type<typeof live>>();
       const following = Option.isSome(previous) && !pageSnapshots.has(previous.value);
@@ -129,14 +112,11 @@ export const liveQueryAtom = <A, I, Q, E, E2>(options: {
     },
     (refresh) => {
       refresh(live);
-      // A restart before the subscription's first snapshot also waits for a fresh one: the page's
-      // value predates the restart, such as an account change the user returned to the tab after.
       refresh(rendered);
     },
   );
 };
 
-/** The inventory updates from committed storage changes, including writes made through MCP and the SDK. */
 const liveOverviewAtom = liveQueryAtom({
   name: "overview",
   key: {},
@@ -144,7 +124,6 @@ const liveOverviewAtom = liveQueryAtom({
   query: Effect.flatMap(DashboardClient, (client) => client.dashboard.liveOverview()),
 });
 
-/** Repaint at the next known expiry without polling the server or loading every app's tools. */
 export const overviewAtom = acknowledgedQuery(
   Atom.readable(
     (get) => {
@@ -181,7 +160,6 @@ export const overviewAtom = acknowledgedQuery(
   ),
 );
 
-/** Follow current configuration and version activation while this app is mounted. */
 export const appAtom = Atom.family((app: AppId) =>
   liveQueryAtom({
     name: "app",
@@ -193,7 +171,6 @@ export const appAtom = Atom.family((app: AppId) =>
   }).pipe(acknowledgedQuery),
 );
 
-/** Immutable retained source follows the version selected by its live app atom. */
 export const sourceAtom = Atom.family((key: { readonly app: AppId; readonly version: VersionId }) =>
   DashboardClient.query("dashboard", "sourceDisplay", hydrated({ params: key })),
 );
@@ -212,15 +189,9 @@ const sourceFileQuery = Atom.family((key: SourceFileKey) =>
     }),
   ).pipe(Atom.setIdleTTL("5 minutes")),
 );
-/** One display file of a retained version, read when the listing did not inline it. */
 export const sourceFileAtom = (key: ConstructorParameters<typeof SourceFileKey>[0]) =>
   sourceFileQuery(new SourceFileKey(key));
 
-/**
- * Tool discovery follows the app's version. It is read again after linking, unlinking or
- * connecting an account, and by the page's normal refresh on returning to it. It lists tools
- * without their schemas; `toolDetailAtom` reads a selected tool's.
- */
 class ToolKey extends Data.Class<{
   readonly app: AppId;
   readonly version?: VersionId | null | undefined;
@@ -228,7 +199,6 @@ class ToolKey extends Data.Class<{
 const toolQueries = Atom.family((key: ToolKey) =>
   liveQueryAtom({
     name: "tools",
-    // Every part of the key selects a distinct subscription, including those the request omits.
     key: { app: key.app, version: key.version },
     success: DashboardTools,
     query: Effect.flatMap(DashboardClient, (client) =>
@@ -240,7 +210,6 @@ const toolQueries = Atom.family((key: ToolKey) =>
   }).pipe(refreshedOnFocus, currentQuery),
 );
 
-/** One catalog per app and version. */
 export const toolsAtom = (key: ConstructorParameters<typeof ToolKey>[0]) =>
   toolQueries(new ToolKey(key));
 
@@ -250,10 +219,8 @@ const toolLists = Atom.family((key: ToolKey) =>
     AsyncResult.map((page) => page.tools),
   ),
 );
-/** The catalog's tools alone, for pickers that do not group them. */
 export const toolListAtom = (key: ConstructorParameters<typeof ToolKey>[0]) =>
   toolLists(new ToolKey(key));
-/** Shared browser view for the page's accounts, with the routers that group its tools. */
 export const toolCatalogAtom = (key: ConstructorParameters<typeof ToolKey>[0]) =>
   toolQueries(new ToolKey(key));
 class ToolDetailKey extends Data.Class<
@@ -264,7 +231,6 @@ class ToolSchemaKey extends Data.Class<{
   readonly tool: ToolName;
   readonly version: VersionId;
 }> {}
-/** A server render sends the schemas it read with the page, so hydration shows the same ones. */
 const toolSchemaQueries = Atom.family(({ app, tool, version }: ToolSchemaKey) =>
   DashboardClient.query(
     "dashboard",
@@ -272,11 +238,6 @@ const toolSchemaQueries = Atom.family(({ app, tool, version }: ToolSchemaKey) =>
     hydrated({ params: { app, tool }, query: { version } }),
   ),
 );
-/**
- * The schema read for a tool in the current catalog snapshot, in the version the catalog listed it
- * in. It follows only the catalog, so a later snapshot, such as after an account changes, reads the
- * schemas again. A tool the catalog does not list has none.
- */
 const listedToolSchemas = Atom.family(({ tool, ...key }: ToolDetailKey) =>
   Atom.readable((get) => {
     const listed = get(toolLists(new ToolKey(key)));
@@ -298,7 +259,6 @@ const listedToolSchemas = Atom.family(({ tool, ...key }: ToolDetailKey) =>
     return query;
   }),
 );
-/** One tool's schemas for the live catalog. A tool that left it since has none. */
 const toolDetails = Atom.family((key: ToolDetailKey) =>
   DashboardClient.runtime.atom((get) =>
     Effect.gen(function* () {
@@ -329,11 +289,9 @@ const calls = Atom.family(({ app, ...target }: CallKey) =>
     ),
   ),
 );
-/** Each tool call runs with the app's linked accounts and the page's version. */
 export const callToolAtom = (key: ConstructorParameters<typeof CallKey>[0]) =>
   calls(new CallKey(key));
 const toolRunApprovals = Atom.family((endpoint: string) => toolRunApproval(BrowserAtoms, endpoint));
-/** One pending dashboard run's review; each request owns its answer state. */
 export const toolRunApprovalAtoms = (key: {
   readonly app: AppId;
   readonly requestId: ApprovalRequestId;

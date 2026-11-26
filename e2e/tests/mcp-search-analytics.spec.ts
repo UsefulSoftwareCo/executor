@@ -1,4 +1,3 @@
-/** Empty MCP searches use the hosted analytics sink without exporting the query. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { scenarios } from "../test-plan.ts";
@@ -67,7 +66,6 @@ export default defineApp({}, async () => ({ tools: router({
           call("search", { namespace: app.slug, ...args }).pipe(
             Effect.flatMap((result) => Schema.decodeUnknownEffect(Page)(result.structuredContent)),
           );
-        // Browsing, matches and pagination are not new unmet searches.
         expect((yield* search({})).items).toHaveLength(1);
         expect((yield* search({ query: "   " })).items).toHaveLength(1);
         expect((yield* search({ query: "echo" })).items).toHaveLength(1);
@@ -81,7 +79,6 @@ export default defineApp({}, async () => ({ tools: router({
           (yield* Schema.decodeUnknownEffect(Completed)(nested.structuredContent)).execution.value
             .items,
         ).toEqual([]);
-        // A later operation fences delivery of the searches, including the absence checks.
         expect(
           (yield* api.request(actors.owner, "POST", `${prefix}/feedback`, {
             message: "Search analytics delivery fence",

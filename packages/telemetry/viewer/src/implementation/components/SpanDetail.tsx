@@ -6,7 +6,6 @@ import type { TraceSpanItem } from "../../contracts/api.ts";
 interface Props {
   span: TraceSpanItem;
   logs: ReadonlyArray<{ id: string; timestamp: Date; severityText: string; body: string }>;
-  /** False while the trace has log pages that are not loaded, so `logs` may be missing some. */
   logsComplete: boolean;
   onClose: () => void;
 }
@@ -16,7 +15,6 @@ export function SpanDetailPanel({ span, logs, logsComplete, onClose }: Props) {
 
   return (
     <div className="w-[440px] min-w-80 border-l border-white/5 overflow-auto bg-zinc-900/50 shrink-0">
-      {/* Header */}
       <div className="px-4 py-3 border-b border-white/5 flex items-center justify-between gap-3">
         <p className="text-sm font-semibold text-zinc-100 truncate" title={span.operationName}>
           {span.operationName}
@@ -29,7 +27,6 @@ export function SpanDetailPanel({ span, logs, logsComplete, onClose }: Props) {
         </button>
       </div>
 
-      {/* Overview */}
       <Section title="Overview">
         <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm">
           <dt className="text-zinc-500 font-medium">Service</dt>

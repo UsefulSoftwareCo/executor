@@ -1,8 +1,3 @@
-/**
- * Local event authority: the grant that subscribed must still exist and include the event. A
- * subscription to a selection of several events or apps drops an occurrence the grant does not
- * include, and continues for the others.
- */
 import { GrantId, grantEventAccess } from "@executor-js/mcp-auth";
 import {
   EventAccessRevoked,
@@ -12,7 +7,6 @@ import {
 import { Effect, Option } from "effect";
 import type { LocalMcpOAuth } from "./mcp-oauth.ts";
 
-/** The administrative key is the instance owner; it is never revoked by a grant change. */
 const administrator = "local-administrator";
 
 export const localEventAuthority =
@@ -28,6 +22,5 @@ export const localEventAuthority =
             return yield* subscription.app === null || subscription.event === null
               ? new EventNotVisible()
               : new EventAccessRevoked();
-          // A grant limited to some accounts receives only occurrences from those accounts.
           return access;
         });

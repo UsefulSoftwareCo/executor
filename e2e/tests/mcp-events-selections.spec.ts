@@ -1,9 +1,3 @@
-/**
- * Selections through the one listed event, `executor.app_event`, as ChatGPT uses it: the client
- * saves that event once and offers it to every user, who selects their own apps' events with its
- * arguments. Every app, including one deployed after subscribing; one app; or one event with its
- * filters. Each selection is its own subscription, and each delivery names its app and event.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -48,7 +42,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP event selections", (it) =>
               ttlMs: 60 * 60_000,
             });
 
-          // Arguments that select nothing are refused with the extension's codes.
           expect(yield* refused(yield* select({ event: "issue.opened" }))).toMatchObject({
             code: -32602,
             data: { field: "arguments" },
@@ -68,7 +61,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP event selections", (it) =>
             ),
           ).toMatchObject({ code: -32602, data: { field: "arguments" } });
 
-          // Three selections from one subscriber to one callback stay three subscriptions.
           const everything = yield* ok(Granted, yield* select({}));
           const oneApp = yield* ok(Granted, yield* select({ app: emitter.slug }));
           const oneEvent = yield* ok(
@@ -76,10 +68,8 @@ layer(HostedLive, { excludeTestServices: true })("MCP event selections", (it) =>
             yield* select({ app: emitter.slug, event: "issue.opened", repo: "acme/widgets" }),
           );
           expect(new Set([everything.id, oneApp.id, oneEvent.id]).size).toBe(3);
-          // Repeating a selection refreshes it, and a new secret rotates it.
           expect((yield* ok(Granted, yield* select({}, secrets[1]))).id).toBe(everything.id);
 
-          // An app deployed after subscribing is among every app's events.
           const later = yield* deploy(`Later issue events ${suffix}`, emitterFiles);
           const widgets = yield* emit("acme/widgets", 1);
           const gadgets = yield* emit("acme/gadgets", 2);
@@ -108,7 +98,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP event selections", (it) =>
             number: 3,
           });
 
-          // Unsubscribing one selection leaves the others.
           yield* ok(
             Schema.Struct({}),
             yield* rpcAs(key.key, "events/unsubscribe", {

@@ -1,5 +1,4 @@
 import { scenarios } from "../test-plan.ts";
-/** Cloud-only: a person deletes their own user, with the organizations only they belong to. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -12,7 +11,6 @@ import { Organization } from "../support/contracts.ts";
 import { appLinksFixture, keyProvider, ok } from "../support/app-links.ts";
 import { managementApp } from "../support/management-app.ts";
 
-/** An app whose many() app requirement reports the accounts a call ran with. */
 const source = `import { defineApp, defineProvider, query, secrets, object, string, router, type QueryContext } from "apps";
 const team = ${keyProvider("User removal link fixture")};
 const requirements = { app: { accounts: { team: team.many() } } };
@@ -22,7 +20,6 @@ const accounts = query({ input: object({}) }, async (ctx: QueryContext<typeof re
 export default defineApp(requirements, async () => ({ tools: router({ accounts }) }));`;
 const Accounts = Schema.Struct({ team: Schema.Array(Schema.String) });
 
-/** Public projections owned by this scenario; no server or SDK implementation is imported. */
 const Session = Schema.Struct({ user: Schema.Struct({ id: Schema.String, email: Schema.String }) });
 const Preview = Schema.Struct({
   organizations: Schema.Array(
@@ -40,7 +37,6 @@ const Members = Schema.Struct({
   members: Schema.Array(Schema.Struct({ user: Schema.Struct({ email: Schema.String }) })),
 });
 const ToolIndex = Schema.Struct({ items: Schema.Array(Schema.Struct({ name: Schema.String })) });
-/** The organization row is deleted by a durable step, not by the request that deletes the user. */
 class StillListed extends Error {}
 
 layer(HostedLive, { excludeTestServices: true })("User removal", (it) => {
@@ -79,7 +75,6 @@ layer(HostedLive, { excludeTestServices: true })("User removal", (it) => {
             return yield* body(Organization, response);
           }),
         );
-        // Removal deletes the organization itself; this covers a failure before that.
         let removedByTest = false;
         yield* Effect.addFinalizer(() =>
           removedByTest
@@ -92,7 +87,6 @@ layer(HostedLive, { excludeTestServices: true })("User removal", (it) => {
         const credentials = yield* evidence.step(
           "The admin holds a personal account linked for everyone and an API key",
           Effect.gen(function* () {
-            // The admin links their personal account to an app for everyone in the organization.
             const account = yield* fixture.connect(actors.admin, "app", "team", `team-${suffix}`);
             expect(yield* used).toEqual([account]);
             const created = yield* api.request(actors.admin, "POST", "/api/auth/api-key/create", {
@@ -115,7 +109,6 @@ layer(HostedLive, { excludeTestServices: true })("User removal", (it) => {
         yield* evidence.step(
           "Neither deletion is reachable from the Executor app or an API key",
           Effect.gen(function* () {
-            // The solo organization's own Executor app runs with the admin's managed key as owner.
             const executor = yield* managementApp(actors.admin, solo.id);
             const path = `/api/organizations/${solo.id}/apps/${executor.app.id}`;
             const index = yield* body(
@@ -123,7 +116,6 @@ layer(HostedLive, { excludeTestServices: true })("User removal", (it) => {
               yield* api.request(actors.admin, "GET", `${path}/tools/index`),
             );
             const names = index.items.map((tool) => tool.name);
-            // The read-only preview stays an agent tool; the deletions are not.
             expect(names).toContain("organizationRemoval.preview");
             expect(names).not.toContain("organizationRemoval.remove");
             expect(names).not.toContain("userRemoval.remove");
@@ -134,7 +126,6 @@ layer(HostedLive, { excludeTestServices: true })("User removal", (it) => {
             });
             expect(called.status, JSON.stringify(called.body)).toBe(404);
             expect(called.body).toMatchObject({ _tag: "ToolNotFound" });
-            // The API itself refuses the same credentials an app or agent would hold.
             const bearer = { authorization: `Bearer ${Redacted.value(credentials.key.key)}` };
             const organization = yield* api.request(
               anonymous,
@@ -147,7 +138,6 @@ layer(HostedLive, { excludeTestServices: true })("User removal", (it) => {
             expect(organization.body).toMatchObject({ _tag: "Forbidden" });
             const user = yield* api.request(anonymous, "DELETE", "/api/user", undefined, bearer);
             expect(user.status, JSON.stringify(user.body)).toBe(401);
-            // Both are still there for the admin's own browser to delete.
             expect(
               (yield* api.request(actors.admin, "GET", `/api/organizations/${solo.id}/inventory`))
                 .status,
@@ -175,7 +165,6 @@ layer(HostedLive, { excludeTestServices: true })("User removal", (it) => {
               _tag: "UserRemovalBlocked",
               organizations: [shared?.name],
             });
-            // Nothing was deleted: the owner is still signed in and still owns the organization.
             expect((yield* api.request(actors.owner, "GET", "/api/viewer")).status).toBe(200);
             const access = yield* api.request(
               actors.owner,
@@ -236,8 +225,6 @@ layer(HostedLive, { excludeTestServices: true })("User removal", (it) => {
         );
         yield* browser.checkpoint("Confirm dialog with the email typed");
 
-        // The tab leaves for the public root as soon as the deletion succeeds, which discards
-        // the response body; the checks below read what it deleted from the product instead.
         const status = yield* browser.use("Confirm the deletion", (page) =>
           Promise.all([
             page.waitForResponse(
@@ -282,12 +269,10 @@ layer(HostedLive, { excludeTestServices: true })("User removal", (it) => {
             expect(members.members.map((entry) => entry.user.email)).not.toContain(
               admin.user.email,
             );
-            // The account no longer serves the app, and its link is gone with it.
             expect(yield* used).toEqual([]);
             expect((yield* fixture.links()).map((link) => link.account.id)).not.toContain(
               credentials.account,
             );
-            // The shared organization and its owner are untouched.
             expect(
               (yield* api.request(
                 actors.owner,
@@ -295,7 +280,6 @@ layer(HostedLive, { excludeTestServices: true })("User removal", (it) => {
                 `/api/organizations/${actors.organization.id}/inventory`,
               )).status,
             ).toBe(200);
-            // The admin's own organization is erased by its workflow, which frees its URL.
             const reused = yield* api
               .request(actors.owner, "POST", "/api/auth/organization/create", {
                 name,

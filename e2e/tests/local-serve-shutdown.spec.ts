@@ -1,4 +1,3 @@
-/** The real local server while nothing reads its output, or after its reader goes away. */
 import { expect, layer } from "@effect/vitest";
 import { Config, Effect, FileSystem, Option, Path, Schema } from "effect";
 import { randomBytes } from "node:crypto";
@@ -11,11 +10,6 @@ import { throughPipe, type Reader } from "../support/pipe-readers.ts";
 
 const LogLine = Schema.fromJsonString(Schema.Struct({ message: Schema.Unknown }));
 
-/**
- * Start the server with these arguments under one of the pipe readers and return what the reader
- * saw, with the messages the server logged. `setup` chooses the reader for the server's origin and
- * adds to its environment, given the server's own temporary directory.
- */
 const serveThrough = (
   args: ReadonlyArray<string>,
   setup: (
@@ -32,16 +26,13 @@ const serveThrough = (
     const entry = path.resolve(
       Option.isSome(packagedEntry) ? packagedEntry.value : "apps/local/server/src/bin.ts",
     );
-    // Startup deploys the bundled Executor app, which pins this checkout's apps release.
     const registry = yield* Config.NonEmptyString("E2E_NPM_REGISTRY").pipe(Config.option);
     const directory = yield* fs.makeTempDirectoryScoped({ prefix: "executor-serve-stop-" });
     const port = yield* freePort;
     const { reader, env } = yield* setup(directory, `http://127.0.0.1:${port}`);
     const observed = yield* throughPipe(reader, localEntryCommand(entry, args), {
       HOME: directory,
-      // Release scenarios never send product analytics, even from a build with a baked key.
       DO_NOT_TRACK: "1",
-      // Scenarios never reach the public registry.
       EXECUTOR_NO_UPDATE_CHECK: "1",
       EXECUTOR_API_KEY: randomBytes(32).toString("hex"),
       EXECUTOR_ENCRYPTION_KEY: randomBytes(32).toString("hex"),
@@ -52,7 +43,6 @@ const serveThrough = (
       ...(Option.isSome(registry) ? { EXECUTOR_NPM_REGISTRY: registry.value } : {}),
       ...env,
     });
-    // Every log line also goes to the data directory's diagnostics, which shutdown writes last.
     const diagnostics = yield* fs
       .readFileString(path.join(directory, "data", "diagnostics", "executor-local.jsonl"))
       .pipe(Effect.orElseSucceed(() => ""));
@@ -71,15 +61,11 @@ layer(TestLive, { excludeTestServices: true })("Local serve shutdown", (it) => {
         context,
         Effect.gen(function* () {
           const evidence = yield* Evidence;
-          // serve logs on stderr, here into a pipe already full, and prints its connection link on
-          // stdout only after logging that it is ready. Shutdown waited for the logs it could not
-          // write until something read the pipe, so SIGTERM never finished.
           const stopped = yield* serveThrough(["serve"], (_, origin) =>
             Effect.succeed({ reader: { mode: "stalled", origin } }),
           );
           yield* evidence.json("serve-sigterm.json", stopped);
           expect(stopped.pipeFullAtSignal).toBe(true);
-          // Its shutdown finished: the last log of the product's scope reached the diagnostics.
           expect(stopped.logged).toContain("Local server ready");
           expect(stopped.logged).toContain("Local server stopped");
           expect(stopped.signal).toBeNull();
@@ -98,18 +84,9 @@ layer(TestLive, { excludeTestServices: true })("Local serve shutdown", (it) => {
           const fs = yield* FileSystem.FileSystem,
             path = yield* Path.Path,
             evidence = yield* Evidence;
-          // A closed stdout or stderr pipe ended the server with exit code 0, so its clients lost
-          // it. Each reader closes one pipe once the server answers, and the server then writes
-          // that stream again with output it always prints.
-          //
-          // `serve` logs a runtime sample on stderr every 30 seconds.
           const stderrClosed = serveThrough(["serve"], (_, origin) =>
             Effect.succeed({ reader: { mode: "late", origin, stream: "stderr", holdMs: 32_000 } }),
           );
-          // `executor --standalone` serves in the foreground. It opens the connection link in a
-          // browser and, when the opener fails, prints on stdout to open it by hand. The stand-in
-          // opener fails once the reader has closed stdout. Windows opens links through rundll32,
-          // which has no stand-in. Its private server picks its own port, which it prints.
           const stdoutClosed = serveThrough(["--standalone"], (directory) =>
             Effect.gen(function* () {
               const bin = path.join(directory, "bin"),
@@ -118,7 +95,6 @@ layer(TestLive, { excludeTestServices: true })("Local serve shutdown", (it) => {
               for (const opener of ["open", "xdg-open"])
                 yield* fs.writeFileString(
                   path.join(bin, opener),
-                  // Gives up after two minutes if the reader never closes stdout.
                   `#!/bin/sh\ni=0\nwhile [ ! -e '${gate}' ] && [ $i -lt 1200 ]; do sleep 0.1; i=$((i + 1)); done\nexit 1\n`,
                   { mode: 0o755 },
                 );
@@ -141,8 +117,6 @@ layer(TestLive, { excludeTestServices: true })("Local serve shutdown", (it) => {
           expect(afterStderr.millisecondsAfterSignal).toBeLessThan(5_000);
           if (afterStdout !== undefined) {
             expect(afterStdout.answeredAfterClose).toBe(true);
-            // The private server's log stays in its own process. Its process, and every other the
-            // command started, exited after the command, and its shutdown reached the diagnostics.
             expect(afterStdout.startedProcesses).toBeGreaterThan(0);
             expect(afterStdout.stoppedAfterExit).toBe(true);
             expect(afterStdout.logged).toContain("Local server stopped");

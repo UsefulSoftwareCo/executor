@@ -28,7 +28,7 @@ Write a JavaScript program for `execute` when one call's result feeds another,
 or a large result should be filtered before it reaches you. Inside it, the same
 paths are async functions, and `tools.search` and `tools.search.describe` work
 as above. Return only the data you need. For depth, read the `code-mode` skill;
-it says how to see images and hear audio a tool returns, without reading base64.
+it says how to see images, hear audio and read files tools return, not base64.
 When `call` or `execute` pauses for approval or input, show the request to the
 user and resume it; never repeat the call or run the program again.
 

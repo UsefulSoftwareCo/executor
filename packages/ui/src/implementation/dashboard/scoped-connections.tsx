@@ -1,9 +1,3 @@
-/**
- * Connections the current user owns. The full-access URL reaches every app; each scoped
- * connection issues its own MCP URL, and edits apply to connected agents immediately. The list
- * shows every connection as a card, and each scoped connection has its own page, where its access
- * is edited in place.
- */
 import {
   useDeferredValue,
   useId,
@@ -72,29 +66,24 @@ import {
 } from "./connection-app-picker.tsx";
 import { useIncrementalList } from "./incremental-list.tsx";
 
-/** Each host supplies its existing authorized catalog read of the app's tools. */
 export interface ConnectionToolPickerProps {
   readonly app: App;
   readonly names: readonly ToolName[];
   readonly onChange: (names: readonly ToolName[]) => void;
 }
 
-/** Host routing remains typed by that host's router. */
 export interface ConnectionLinkProps {
-  /** The connection's page, `new` for the page that creates one, or the list when omitted. */
   readonly connection?: ConnectionId | "new";
   readonly className?: string;
   readonly children: ReactNode;
 }
 
-/** The URL an agent connects to; `apps` is undefined for the full-access URL. */
 export interface ConnectTarget {
   readonly name: string;
   readonly url: string;
   readonly apps: readonly string[] | undefined;
 }
 
-/** What both connection pages read and render through the host. */
 interface ConnectionPageBindings<
   E,
   EL extends E,
@@ -102,17 +91,14 @@ interface ConnectionPageBindings<
   ER extends E,
 > extends ScopedConnectionBindings<EL, ES, ER> {
   readonly query: Query<Inventory, E>;
-  /** Renders every failure: inventory, connection reads, saves and revocation. */
   readonly Failure: ComponentType<FailureProps<E>>;
   readonly ConnectionLink: ComponentType<ConnectionLinkProps>;
-  /** How an agent connects to a target's URL, shown in the Connect dialog. */
   readonly renderInstallation: (target: ConnectTarget) => ReactNode;
 }
 
 const plural = (count: number, one: string, many = `${one}s`) =>
   `${count.toLocaleString("en-US")} ${count === 1 ? one : many}`;
 
-/** The inventory and connections as one read, so both pages wait for and report them once. */
 function ConnectionReads<E, EL extends E>({
   query,
   connections,
@@ -151,7 +137,6 @@ interface ConnectionCardView {
   readonly apps: readonly { readonly app: App | undefined; readonly name: string }[];
 }
 
-/** The full-access URL first, then each scoped connection. */
 const connectionCards = (
   endpoint: string,
   connections: readonly ConnectionView[],
@@ -177,15 +162,12 @@ const connectionCards = (
   ];
 };
 
-/** Every connection as a card; each opens the Connect dialog, and a scoped one opens its page. */
 export function ScopedConnectionsPage<E, EL extends E, ES extends E, ER extends E>({
   endpoint,
   agents,
   ...bindings
 }: ConnectionPageBindings<E, EL, ES, ER> & {
-  /** The full-access URL. */
   readonly endpoint: string;
-  /** The agents connected through these URLs, when the host lists them. */
   readonly agents?: ReactNode;
 }) {
   const { query, connections, Failure, ConnectionLink, renderInstallation } = bindings;
@@ -274,7 +256,6 @@ function ConnectDialog({
   );
 }
 
-/** A scoped card opens its page; the stretched name link keeps Connect a separate button. */
 function ConnectionCard({
   connection,
   ConnectionLink,
@@ -336,7 +317,6 @@ const choicesFor = (inventory: Inventory): ReadonlyMap<AppId, AppChoices> =>
     inventory.apps.map((app) => [app.id, appChoices(app, inventory.links, inventory.accounts)]),
   );
 
-/** A stored connection as an editable draft, keeping removed apps and accounts visible. */
 const draftFrom = (
   connection: ConnectionView,
   choices: ReadonlyMap<AppId, AppChoices>,
@@ -361,10 +341,6 @@ const draftFrom = (
   }),
 });
 
-/**
- * One connection's page: its name, how to connect an agent, and which apps it reaches, edited in
- * place. `new` creates one.
- */
 export function ScopedConnectionPage<E, EL extends E, ES extends E, ER extends E>({
   connectionId,
   ...props
@@ -372,7 +348,6 @@ export function ScopedConnectionPage<E, EL extends E, ES extends E, ER extends E
   ConnectionFormActions & {
     readonly connectionId: string;
   }) {
-  // Chosen once, so a retried create returns the same connection.
   const [created] = useState(() => ConnectionId.make(randomUuid()));
   return (
     <PageFrame>
@@ -424,7 +399,6 @@ export function ScopedConnectionPage<E, EL extends E, ES extends E, ER extends E
   );
 }
 
-/** Where the host goes after a write, and how an app without an account gets one. */
 interface ConnectionFormActions {
   readonly onCreated: (connection: ConnectionId) => void;
   readonly onRevoked: () => void;
@@ -465,7 +439,6 @@ function ConnectionForm<E, EL extends E, ES extends E, ER extends E>({
   ConnectionFormActions & {
     readonly choices: ReadonlyMap<AppId, AppChoices>;
     readonly accounts: Inventory["accounts"];
-    /** Undefined while creating. */
     readonly stored: ConnectionView | undefined;
     readonly initial: ConnectionDraft;
   }) {
@@ -480,7 +453,6 @@ function ConnectionForm<E, EL extends E, ES extends E, ER extends E>({
   const [needsSetupOnly, setNeedsSetupOnly] = useState(false);
   const query = useDeferredValue(search.trim().toLowerCase());
   const nameId = useId();
-  // Included apps stay on top in a fixed order so rows never jump while you toggle them.
   const [pinned] = useState(() => new Set(initial.apps.map((app) => app.id)));
   const ordered = useMemo(
     () =>
@@ -621,7 +593,6 @@ function ConnectionForm<E, EL extends E, ES extends E, ER extends E>({
           <Input
             id={nameId}
             maxLength={80}
-            // Unnamed, it is named for its apps; the placeholder shows that name.
             placeholder={defaultConnectionName(draft.apps)}
             value={draft.name}
             onChange={(event) =>
@@ -922,7 +893,6 @@ function SearchInput({
   );
 }
 
-/** Bulk-including apps leaves each waiting for an account; assign one account to all that accept it. */
 function AssignAccount({
   apps,
   byId,

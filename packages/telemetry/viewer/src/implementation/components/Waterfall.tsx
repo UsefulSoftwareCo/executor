@@ -10,9 +10,7 @@ interface WaterfallProps {
   selectedSpanId: string | null;
   onSelectSpan: (spanId: string | null) => void;
   logs: ReadonlyArray<{ spanId: string | null }>;
-  /** False while the trace has log pages that are not loaded, so counts are lower bounds. */
   logsComplete: boolean;
-  /** True when the trace was answered in part, so child and descendant counts cover the spans shown. */
   partial: boolean;
 }
 
@@ -22,8 +20,7 @@ const AXIS_HEIGHT = 26;
 const TICK_COUNT = 5;
 const INDENT = 16;
 const MIN_BAR_WIDTH_PX = 3;
-const MIN_VIEW_SPAN = 0.0001; // max zoom: 10000x
-/** A 1px line 5px into each indent step, the colour of `border-white/5`. */
+const MIN_VIEW_SPAN = 0.0001;
 const DEPTH_GUIDE =
   "linear-gradient(to right, transparent 5px, rgb(255 255 255 / 0.05) 5px, rgb(255 255 255 / 0.05) 6px, transparent 6px)";
 
@@ -53,11 +50,9 @@ export function Waterfall({
   const scrollRef = useRef<HTMLDivElement>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
 
-  // View window in fractional units of total trace duration: [0..1]
   const [view, setView] = useState<View>({ start: 0, end: 1 });
   const isZoomed = view.start > 0.0005 || view.end < 0.9995;
 
-  // Reset view when the trace changes
   useEffect(() => {
     setView({ start: 0, end: 1 });
   }, [spans]);
@@ -72,10 +67,6 @@ export function Waterfall({
 
   const spansById = useMemo(() => new Map(spans.map((s) => [s.spanId, s])), [spans]);
 
-  // Each span numbered by its position, with its parent's number, built once per trace for the
-  // counts and for collapsing. Both follow these links rather than the order of `spans`. A span id
-  // that appears twice is numbered by its first position, and its later positions are chained
-  // from there in `same`.
   const links = useMemo(() => {
     const count = spans.length;
     const first = new Map<string, number>();
@@ -100,10 +91,6 @@ export function Waterfall({
     return { first, same, parent };
   }, [spans]);
 
-  // Children and descendants of each span. A span's descendant count is final once every span
-  // naming it as parent has added its own, starting from the spans no span names: no recursion
-  // (a trace can be a chain of many thousands), and spans in a cycle of parent links are never
-  // final, so the walk ends with finite counts for them.
   const { childCounts, descendantCounts } = useMemo(() => {
     const { first, same, parent } = links;
     const counts = new Map<string, number>();
@@ -130,10 +117,8 @@ export function Waterfall({
     return { childCounts: counts, descendantCounts: descendants };
   }, [spans, links]);
 
-  // Collapsed span ids: their descendants are hidden
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
 
-  // Reset collapse state when the trace changes
   useEffect(() => {
     setCollapsed(new Set());
   }, [spans]);
@@ -147,13 +132,9 @@ export function Waterfall({
     });
   }, []);
 
-  // Visible spans: leave out every span with a collapsed ancestor, found by walking parent links
-  // up and remembering the answer for every span passed, then keep the rest in their given order.
-  // A walk that reaches a span already on it stops, so a cycle ends.
   const visibleSpans = useMemo(() => {
     if (collapsed.size === 0) return spans;
     const { first, parent } = links;
-    // For each span: 0 not yet known, 1 it or an ancestor is collapsed, 2 neither, 3 on this walk.
     const state = new Uint8Array(spans.length);
     for (const id of collapsed) {
       const at = first.get(id);
@@ -177,7 +158,6 @@ export function Waterfall({
     return spans.filter((s, i) => {
       if (!s.parentSpanId) return true;
       const up = parent[i]!;
-      // A parent that is not in the trace hides its children only when it is collapsed itself.
       return up === -1 ? !collapsed.has(s.parentSpanId) : !covered(up);
     });
   }, [spans, links, collapsed]);
@@ -196,7 +176,6 @@ export function Waterfall({
     if (idx >= 0) virtualizer.scrollToIndex(idx, { align: "auto" });
   }, [selectedSpanId, visibleSpans, virtualizer]);
 
-  /** Zoom at a fractional anchor (0..1 within the current view) by a factor (<1 zooms in, >1 zooms out) */
   const zoomAt = useCallback((anchorInView: number, factor: number) => {
     setView((v) => {
       const span = v.end - v.start;
@@ -218,7 +197,6 @@ export function Waterfall({
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
-      // Zoom keyboard controls
       if (e.key === "+" || e.key === "=") {
         e.preventDefault();
         zoomAt(0.5, 1 / 1.5);
@@ -261,7 +239,6 @@ export function Waterfall({
     });
   }, []);
 
-  // Wheel: zoom with meta/ctrl/alt or pinch, pan on horizontal scroll
   const handleWheel = useCallback(
     (e: React.WheelEvent) => {
       const rect = timelineRef.current?.getBoundingClientRect();
@@ -269,26 +246,22 @@ export function Waterfall({
       const barColumnLeft = rect.left + LABEL_WIDTH;
       const barColumnWidth = rect.width - LABEL_WIDTH;
       if (barColumnWidth <= 0) return;
-      // Horizontal scroll → pan
       if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
         e.preventDefault();
         const span = view.end - view.start;
         panBy((e.deltaX / barColumnWidth) * span);
         return;
       }
-      // Zoom: ctrlKey is set by browsers for trackpad pinch; meta/alt as explicit modifiers
       if (e.ctrlKey || e.metaKey || e.altKey) {
         e.preventDefault();
         const anchor = (e.clientX - barColumnLeft) / barColumnWidth;
         const factor = e.deltaY > 0 ? 1.15 : 1 / 1.15;
         zoomAt(Math.max(0, Math.min(1, anchor)), factor);
       }
-      // Plain vertical scroll falls through to scroll the row list
     },
     [view, panBy, zoomAt],
   );
 
-  // Drag to pan on empty timeline area (middle-click or click in gaps)
   const dragStart = useRef<{ x: number; viewStart: number; moved: boolean } | null>(null);
   const handleTimelineMouseDown = (e: React.MouseEvent) => {
     if (e.button !== 0 && e.button !== 1) return;
@@ -336,14 +309,12 @@ export function Waterfall({
   const totalHeight = virtualizer.getTotalSize();
   const viewSpan = view.end - view.start;
 
-  // Ticks in view coordinates (positioned at 0%..100% within the timeline column)
   const ticks = Array.from({ length: TICK_COUNT + 1 }, (_, i) => {
     const t = i / TICK_COUNT;
     const absFraction = view.start + t * viewSpan;
     return { pct: t * 100, ms: absFraction * dur };
   });
 
-  /** Convert absolute trace-fraction to visible percent within the timeline column */
   const toViewPct = (absFraction: number) => ((absFraction - view.start) / viewSpan) * 100;
 
   return (
@@ -356,7 +327,6 @@ export function Waterfall({
       onKeyDown={handleKeyDown}
       onWheel={handleWheel}
     >
-      {/* Time axis — sticky; also acts as drag-to-pan handle */}
       <div
         ref={timelineRef}
         className="sticky top-0 z-20 flex bg-zinc-950 border-b border-white/10 select-none"
@@ -403,9 +373,7 @@ export function Waterfall({
         </div>
       </div>
 
-      {/* Rows */}
       <div className="relative w-full" style={{ height: totalHeight }}>
-        {/* Full-height gridlines aligned with view ticks */}
         <div
           className="absolute pointer-events-none"
           style={{ left: LABEL_WIDTH, right: 0, top: 0, bottom: 0 }}
@@ -424,7 +392,6 @@ export function Waterfall({
           const spanStartFrac = (span.startTime.getTime() - traceStartMs) / dur;
           const spanEndFrac = spanStartFrac + span.durationMs / dur;
 
-          // Clip to visible window
           const isVisible = spanEndFrac > view.start && spanStartFrac < view.end;
           const barLeftPct = Math.max(0, toViewPct(Math.max(spanStartFrac, view.start)));
           const barRightPct = Math.min(100, toViewPct(Math.min(spanEndFrac, view.end)));
@@ -444,12 +411,6 @@ export function Waterfall({
           const labelIndent = 8 + span.depth * INDENT;
 
           return (
-            // Keyboard activation lives on the parent scroll container
-            // (role="application" with arrow/j/k handlers); rows are
-            // just visual mouse targets. A per-row onKeyDown would be
-            // unreachable because tabIndex isn't set and the parent
-            // owns focus.
-            // react-doctor-disable-next-line jsx-a11y/click-events-have-key-events
             <div
               key={span.spanId}
               className={`absolute left-0 right-0 flex items-stretch cursor-pointer border-b border-white/[0.03] ${
@@ -459,14 +420,11 @@ export function Waterfall({
               role="row"
               onClick={() => onSelectSpan(span.spanId)}
             >
-              {/* Label column */}
               <div
                 className="shrink-0 flex items-center gap-1.5 overflow-hidden border-r border-white/5 pr-2 relative"
                 style={{ width: LABEL_WIDTH, paddingLeft: labelIndent }}
               >
                 {span.depth > 0 && (
-                  // One guide line per ancestor, drawn as a repeated background on one element:
-                  // a row deep in a long chain would otherwise add thousands of elements.
                   <div
                     className="absolute top-0 bottom-0 pointer-events-none"
                     style={{
@@ -554,7 +512,6 @@ export function Waterfall({
                 </div>
               </div>
 
-              {/* Bar column — rendered only if span intersects the view */}
               <div className="flex-1 relative">
                 {isVisible && (
                   <>
@@ -575,10 +532,6 @@ export function Waterfall({
                     />
                     {showDuration &&
                       (() => {
-                        // Placement strategy:
-                        // - If bar is wide enough, render the label INSIDE the bar, right-aligned, white.
-                        // - Else if the bar is in the right portion of the screen, render LEFT of the bar.
-                        // - Otherwise, render RIGHT of the bar.
                         const barRightPct = barLeftPct + barWPct;
                         const insideBar = barWPct >= 12;
                         const placeLeft = !insideBar && barRightPct > 70;
@@ -614,7 +567,6 @@ export function Waterfall({
                       })()}
                   </>
                 )}
-                {/* Off-screen indicator arrows */}
                 {!isVisible && spanEndFrac <= view.start && (
                   <span className="absolute top-1/2 -translate-y-1/2 left-1 text-sm text-zinc-700">
                     ‹

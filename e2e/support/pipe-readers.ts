@@ -1,30 +1,9 @@
-/**
- * Readers that misbehave the way real ones do: one that closes the pipe early, as `head -c` does,
- * one that stops reading while the command still has output to write, and one that goes away
- * while a server keeps running.
- *
- * Each runs as a Node program that starts the command itself, since only the process holding a
- * pipe's ends can close or stall it, and prints what it saw as JSON.
- */
 import { Effect, FileSystem, Path, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
-/** What the reader does with the command's output. */
 export type Reader =
-  /** Read at least `bytes` of stdout, then close the pipe. */
   | { readonly mode: "head"; readonly bytes: number }
-  /**
-   * Give the command a stderr pipe already full and never read. Read stdout until the server
-   * prints its connection link, which it prints only after logging its startup on stderr, and wait
-   * until the server at `origin` is ready, then stop it.
-   */
   | { readonly mode: "stalled"; readonly origin: string }
-  /**
-   * Read stdout until the server prints its connection link and is ready at `origin`, or without
-   * one at the `Executor:` origin it prints, then close the `stream` pipe and create the `gate`
-   * file, if any. After `holdMs`, in which the server writes that stream again, check that it
-   * is still ready, stop it and check that every process it had started then exits.
-   */
   | {
       readonly mode: "late";
       readonly origin?: string;
@@ -33,12 +12,6 @@ export type Reader =
       readonly holdMs: number;
     };
 
-/**
- * A server is stopped with SIGTERM, except on Windows, where a signal ends a process at once and
- * skips its shutdown; there the reader writes to the private fd3 pipe, which `e2e-process.ts`
- * turns into the SIGTERM event the product listens for. `late` always uses that pipe, so it stops
- * the server the same way on every platform.
- */
 const reader = `import { execFileSync, spawn } from "node:child_process";
 import { writeFileSync } from "node:fs";
 const [spec, command, ...args] = process.argv.slice(2);
@@ -217,15 +190,12 @@ const Observed = Schema.fromJsonString(
     millisecondsAfterClose: Schema.optional(Schema.NullOr(Schema.Number)),
     millisecondsAfterSignal: Schema.optional(Schema.NullOr(Schema.Number)),
     answeredAfterClose: Schema.optional(Schema.Boolean),
-    /** Every process the command had started exited after it, by the process table. */
     stoppedAfterExit: Schema.optional(Schema.Boolean),
-    /** How many processes the command had started when it was stopped. */
     startedProcesses: Schema.optional(Schema.Number),
     pipeFullAtSignal: Schema.optional(Schema.Boolean),
   }),
 );
 
-/** Run the command under one of the readers, with this environment, and return what it saw. */
 export const throughPipe = (
   spec: Reader,
   command: { readonly command: string; readonly args: ReadonlyArray<string> },

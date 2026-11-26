@@ -1,4 +1,3 @@
-/** Teardown does not evaluate application configuration or require build artifacts. */
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Command from "alchemy/Command";
@@ -38,7 +37,6 @@ export default Alchemy.Stack(
       Neon.providers(),
       TestStageDomainCleanup().pipe(Layer.provide(cleanupState)),
       PreviousTestDatabaseCleanup(),
-      // A test stage's switch removes its edge route with the stage (`executor-sh.ts`).
       ExecutorShHostnameProvider(),
     ),
     state: cleanupState,

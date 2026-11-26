@@ -248,8 +248,6 @@ layer(HostedLive, { excludeTestServices: true })("Active version policy", (it) =
           (yield* resume(pending.requestId)).structuredContent,
         );
         expect(resumed.execution).toEqual({ ok: true, value: { version: 1 } });
-        // The program's next call runs on the promoted version, under its approval policy, not
-        // the one the program listed the app from.
         const racedNext = yield* Schema.decodeUnknownEffect(Pending)(
           (yield* resume(racedPending.requestId)).structuredContent,
         );

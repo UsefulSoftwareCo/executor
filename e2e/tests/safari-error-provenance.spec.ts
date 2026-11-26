@@ -1,15 +1,3 @@
-/**
- * In-app browsers built on Safari's engine inject listeners and compiled code
- * into our pages. JavaScriptCore reports that code without a script location,
- * and Sentry's parser drops the frame, so only the raw stack shows that our
- * chunk did not raise it. When such code runs later from a listener or timer,
- * the next frame is Sentry's own wrapper inside our chunk. None of those
- * failures may reach Sentry, while the page's own reports still do.
- *
- * The documentation's genuine copy failure is handled by WebKit's clipboard, so
- * no page failure can be raised here; the page's own error client reports a
- * sentinel instead, after the foreign failures, and the transport keeps order.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schedule } from "effect";
 import { randomUUID } from "node:crypto";
@@ -53,7 +41,6 @@ layer(WebKitLive, { excludeTestServices: true })("Safari error provenance", (it)
           compiledListener = `compiled-listener-${run}`,
           inlineListener = `inline-compiled-listener-${run}`,
           compiledTimer = `compiled-timer-${run}`;
-        // A keyboard bridge listener evaluated into the page, as in-app browsers do.
         yield* browser.use("Register an evaluated focus listener", (page) =>
           page.evaluate(
             `document.addEventListener("focusin", function caret() {
@@ -61,7 +48,6 @@ layer(WebKitLive, { excludeTestServices: true })("Safari error provenance", (it)
             }, { once: true })`,
           ),
         );
-        // Evaluated code that compiles its listener with new Function.
         yield* browser.use("Register an evaluated compiled listener", (page) =>
           page.evaluate(
             `document.addEventListener("focusin", new Function(${JSON.stringify(
@@ -69,7 +55,6 @@ layer(WebKitLive, { excludeTestServices: true })("Safari error provenance", (it)
             )}), { once: true })`,
           ),
         );
-        // An injected document script doing the same for a click and a timer.
         yield* browser.use("Run an injected script with compiled callbacks", (page) =>
           page.addScriptTag({
             content: `document.addEventListener("click", new Function(${JSON.stringify(
@@ -98,7 +83,6 @@ layer(WebKitLive, { excludeTestServices: true })("Safari error provenance", (it)
 
         const sentinel = `docs-sentinel-${run}`;
         yield* captureThroughPage(sentinel);
-        // The sentinel and the raised failures are this run's own, so they are found anywhere.
         const [reported] = yield* awaitSentryWholeEnvironment((event) => mentions(event, sentinel));
         expect(reported?.tags?.surface).toBe("docs");
         const delivered = (yield* sentryEventsWholeEnvironment)

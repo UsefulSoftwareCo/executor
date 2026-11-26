@@ -132,7 +132,6 @@ const summaryFields = (
     description: operation.description ?? `${readOnly ? "Query" : "Mutate"} ${name}`,
     ...(operation.title === undefined ? {} : { title: operation.title }),
     readOnly,
-    // A declared operation's kind is the app's own, or its protocol's, such as an HTTP method.
     kindConfirmed: true,
     annotations: { ...operation.annotations, readOnlyHint: readOnly },
   };
@@ -285,7 +284,6 @@ export const readCatalog = (root: AppRouter | DynamicRouter | undefined, options
     const readSource = (source: DynamicRouter, path: string, relative?: readonly string[]) =>
       Effect.gen(function* () {
         const describe = source.describe;
-        // Read together, so a source that keeps both in one cached manifest reads it once.
         const [meta, { tools: listed, error }] = yield* Effect.all(
           [
             routerMeta(source, secrets),
@@ -431,7 +429,6 @@ export const routerSkills = (root: AppRouter | DynamicRouter | undefined) =>
     const skills = yield* Effect.forEach(
       nodes,
       ({ path, node }) =>
-        // Skills that fail are skipped, so their failures are never reported.
         routerMeta(node, []).pipe(
           Effect.flatMap((meta) => routerSkill(path, meta)),
           Effect.orElseSucceed(() => undefined),

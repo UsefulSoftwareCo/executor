@@ -1,10 +1,8 @@
-/** Write-only browser event ingestion, including sign-in failures. */
 import { receiveBrowserTelemetry } from "@executor-js/telemetry/http";
 import { Effect, Layer } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { SessionAuthentication } from "../contracts/auth.ts";
 
-/** Accept only the configured product origin; exporter credentials stay in the host. */
 const route = (signal: "traces" | "logs") =>
   HttpRouter.add(
     "POST",
@@ -22,5 +20,4 @@ const route = (signal: "traces" | "logs") =>
     }),
   );
 
-/** Same-origin traces and logs share the private host exporters. */
 export const browserTelemetry = Layer.mergeAll(route("traces"), route("logs"));

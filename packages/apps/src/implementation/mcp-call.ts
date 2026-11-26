@@ -151,7 +151,6 @@ export const mcpCall = (
         const callback = Effect.runPromiseWith(runtime)(interaction, { signal }).catch(() => {
           if (!lifetime.signal.aborted)
             Effect.runSync(Deferred.fail(failed, new ElicitationFailed({ reason: "transport" })));
-          // Never send a host error, credential, stack or callback exception to the upstream server.
           throw new ProtocolError(ErrorCode.InternalError, "User input could not be delivered");
         });
         callbacks.add(callback);
@@ -162,7 +161,7 @@ export const mcpCall = (
       return yield* Effect.tryPromise({
         try: (signal) =>
           client.callTool({ name, arguments: input }, undefined, {
-            signal: AbortSignal.any([signal, lifetime.signal]),
+            signal,
             timeout: mcpSdkTimerCeilingMs,
           }),
         catch: (error) => failure("call", error),

@@ -1,25 +1,8 @@
-/**
- * Wait for an organization's own background provisioning through the reads the dashboard uses.
- *
- * Creating an organization queues its Executor app, a managed key for each owner and admin, and
- * those keys' webhook sources. Background work installs them after the creating request answers,
- * so a scenario that starts before they land sees them arrive mid-scenario. Setup waits for the
- * scenario organization's app and keys by default; call {@link settleOrganization} for one a
- * scenario creates.
- *
- * It does not wait for the keys' webhook sources. Setting one up changes nothing a scenario reads
- * through the organization's apps, links or accounts: the Executor app declares no webhooks, so
- * it registers none. A redeploy of the Executor app sets them up again mid-scenario anyway. On
- * Cloud they go through the one schedule coordinator every organization shares, so waiting for
- * them made every scenario's setup wait on other organizations' work. `app-worker-budget`, which
- * counts the Worker that setup loads, waits for its own key's source to be ready.
- */
 import { Clock, Effect, Schema } from "effect";
 import { Api, SessionClients, body, type RequestFailed, type Session } from "./api.ts";
 import { Inventory } from "./contracts.ts";
 import type { Response } from "./platform.ts";
 
-/** Setup's phase deadline is 60 seconds; this leaves the rest of setup room to report. */
 const budgetMs = 30_000;
 const Resources = Schema.Struct({ pendingApp: Schema.Boolean });
 
@@ -39,7 +22,6 @@ const read = <A>(schema: Schema.ConstraintDecoder<A, never>, response: Response)
         }),
       );
 
-/** What is still pending for the organization, or nothing once it has settled. */
 const pending = (
   request: Request,
   organizationId: string,
@@ -84,11 +66,6 @@ const settle = (
     }
   }).pipe(Effect.withSpan("e2e.settleOrganization", { attributes: { organizationId } }));
 
-/**
- * Wait until an organization a scenario created has its Executor app and one managed key linked
- * for each of `managers` (its owners and admins; members link their own). Fails after 30
- * seconds, naming what was still pending.
- */
 export const settleOrganization = (
   organizationId: string,
   managers: Readonly<Record<string, Session>>,
@@ -102,7 +79,6 @@ export const settleOrganization = (
     );
   });
 
-/** The setup form of {@link settleOrganization}: it runs before case evidence exists. */
 export const prepareOrganization = (
   organizationId: string,
   managers: Readonly<Record<string, Session>>,

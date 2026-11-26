@@ -1,4 +1,3 @@
-/** Optional embedded Postgres adapter. Importing it does not open a database. */
 export {
   createPgliteDatabase,
   pgliteLayer,

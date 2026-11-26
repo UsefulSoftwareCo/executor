@@ -3,10 +3,6 @@ import { recordDatabaseConnections } from "./database-connections.ts";
 import { startDeployment } from "./deployment.ts";
 import { runSuite } from "./suite.ts";
 
-/**
- * Deploy once, run the selected committed cases in parallel, record how long the stage waited for
- * database connections, and await owned environment cleanup.
- */
 export const runDeployedSuite = (input: {
   readonly database: "neon" | "planetscale";
   readonly name: string;

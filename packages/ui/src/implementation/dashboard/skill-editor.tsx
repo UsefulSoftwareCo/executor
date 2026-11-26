@@ -1,6 +1,5 @@
-/** Edit a skill file in place from working source and save it as a Git commit. */
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
-import { Settings05Icon } from "@hugeicons/core-free-icons";
+import { AlertCircleIcon, Settings05Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { App } from "@executor-js/sdk";
 import { Exit, type Cause } from "effect";
@@ -9,6 +8,7 @@ import {
   lazy,
   Suspense,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type ComponentType,
@@ -23,6 +23,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "../components/dropdown-menu.tsx";
+import { Popover, PopoverContent, PopoverTrigger } from "../components/popover.tsx";
 import { Textarea } from "../components/textarea.tsx";
 import { useHydrated } from "../hooks/hydrated.ts";
 import {
@@ -32,11 +33,6 @@ import {
   withSkillDescription,
 } from "./skill-document.ts";
 
-/**
- * Readers never download the editor; it loads when an editable file opens. `SkillFileEditor`
- * renders it only in a browser, after hydration, so a server build drops each import below:
- * every module a Worker uploads is compiled whenever one of its isolates starts.
- */
 const serverRender = () => Promise.reject(new Error("The skill editor renders only in a browser"));
 const VisualEditor = lazy(() =>
   (import.meta.env.SSR ? serverRender() : import("./markdown-editor.tsx")).then((module) => ({
@@ -51,10 +47,6 @@ const VimEditor = lazy(() =>
 
 const vimKey = "executor:skill-editor:vim";
 
-/**
- * A per-browser preference: people who use Vim keys want them in every file. The server cannot
- * see it, so it reads as off until the page has hydrated.
- */
 function useVimMode(hydrated: boolean) {
   const [chosen, setChosen] = useState<boolean>();
   const enabled = chosen ?? (hydrated && localStorage.getItem(vimKey) === "on");
@@ -65,7 +57,6 @@ function useVimMode(hydrated: boolean) {
   return [enabled, set] as const;
 }
 
-/** A settings menu row with a switch; the menu stays open so several settings can change. */
 function SwitchItem({
   checked,
   onToggle,
@@ -96,27 +87,17 @@ function SwitchItem({
   );
 }
 
-/** A commit made by the editor, and whether the person asked to deploy it. */
 export interface Committed {
   readonly commit: string;
   readonly deploy: boolean;
 }
 
-/** Hosts that can write app source pass their management atoms; others render skills read-only. */
 export interface SkillEditing<E> {
   readonly atoms: AppManagementAtoms<E>;
   readonly onApp: AppAcknowledgement;
-  /** Report draft state to the host navigation guard. */
   readonly onDirty: (dirty: boolean) => void;
 }
 
-/**
- * The file is the editor: it renders like the reader and is always editable. The header shows
- * the save controls. `reader` stands in while the editor code loads, so the page never jumps.
- * The editor reads this browser's settings and loads its code in the browser, so the server and
- * the hydrating render show the header, description and reader, and the editor then replaces
- * only the reader.
- */
 export function SkillFileEditor<E>({
   app,
   path,
@@ -130,10 +111,8 @@ export function SkillFileEditor<E>({
   onCommitted,
 }: {
   readonly app: App;
-  /** Path in app source, for example `skills/<name>/SKILL.md`. */
   readonly path: string;
   readonly skill: string;
-  /** Exact working-source content. A later read never replaces an open draft's base. */
   readonly stored: string;
   readonly editing: SkillEditing<E>;
   readonly Failure: ComponentType<FailureProps<E>>;
@@ -151,9 +130,7 @@ export function SkillFileEditor<E>({
   const hydrated = useHydrated();
   const [vimMode, setVimMode] = useVimMode(hydrated);
   const [chosenMode, setMode] = useState<"visual" | "markdown">();
-  // Vim keys edit the Markdown source, so Vim users open files there.
   const mode = chosenMode ?? (markdown && !vimMode ? "visual" : "markdown");
-  // Each visual session keeps bytes relative to the text it loaded.
   const [session, setSession] = useState({ id: 0, original: parts.body });
   const commit = useAtomSet(editing.atoms.commitFile(app.id), { mode: "promiseExit" });
   const version = useAtomValue(editing.atoms.deploy(app.id));
@@ -206,7 +183,6 @@ export function SkillFileEditor<E>({
     if (Exit.isFailure(result)) setError(result.cause);
     else if (result.value._tag === "FileChanged") setChanged(true);
     else {
-      // Keep any text typed while saving; only the saved snapshot becomes the new base.
       setBase(content);
       onCommitted({ commit: result.value.commit, deploy: true });
     }
@@ -258,7 +234,6 @@ export function SkillFileEditor<E>({
               size="sm"
               disabled={saving}
               onClick={() => {
-                // `stored` is the latest read, which may be newer than this draft's base.
                 if (window.confirm("Discard your changes to this file?")) load(stored);
               }}
             >
@@ -267,7 +242,7 @@ export function SkillFileEditor<E>({
           )}
           <Button
             size="sm"
-            loading={saving}
+            loading={saving || version.waiting}
             disabled={!dirty || saving || version.waiting || (instructions && !description.trim())}
             onClick={save}
           >
@@ -347,50 +322,88 @@ export function SkillFileEditor<E>({
   );
 }
 
-/** Deploy a commit made by the editor; the committed source is safe even if this fails. */
-export function SkillVersion<E>({
+export function SkillDeploy<E>({
   app,
   commit,
   deployNow,
   onStarted,
   editing,
+}: {
+  readonly app: App;
+  readonly commit: string;
+  readonly deployNow: boolean;
+  readonly onStarted: () => void;
+  readonly editing: SkillEditing<E>;
+}) {
+  const deploy = useAtomSet(editing.atoms.deploy(app.id), { mode: "promise" });
+  const started = useRef(false);
+  useLayoutEffect(() => {
+    if (!deployNow || started.current) return;
+    started.current = true;
+    onStarted();
+    void deploy({ commit, onApp: editing.onApp }).catch(() => {});
+  });
+  return null;
+}
+
+export function SkillDeployStatus<E>({
+  app,
+  commit,
+  deployNow,
+  editing,
   Failure,
 }: {
   readonly app: App;
   readonly commit: string;
-  /** Start deploying on mount, independently of the selected editor. */
   readonly deployNow: boolean;
-  /** The owner clears its request so a remount never deploys twice. */
-  readonly onStarted: () => void;
   readonly editing: SkillEditing<E>;
   readonly Failure: ComponentType<FailureProps<E>>;
 }) {
   const state = useAtomValue(editing.atoms.deploy(app.id));
   const deploy = useAtomSet(editing.atoms.deploy(app.id), { mode: "promise" });
-  const run = () => void deploy({ commit, onApp: editing.onApp }).catch(() => {});
-  const started = useRef(false);
-  useEffect(() => {
-    if (!deployNow || started.current) return;
-    started.current = true;
-    onStarted();
-    run();
-  });
-  // The deploy atom is shared with the Source view; only a deploy of this commit counts.
+  const failure = !state.waiting && AsyncResult.isFailure(state) ? state.cause : undefined;
+  const [seen, setSeen] = useState(failure);
+  const [open, setOpen] = useState(false);
+  if (failure !== seen) {
+    setSeen(failure);
+    if (failure !== undefined) setOpen(true);
+  }
   const deployed = AsyncResult.isSuccess(state) && state.value.version.sourceCommit === commit;
-  if (deployed) return null;
+  const deploying = state.waiting || deployNow;
   return (
-    <div role="status" className="flex flex-wrap items-center gap-3 border-b px-5 py-3 text-xs">
-      <span className="text-muted-foreground">
-        {state.waiting || deployNow
-          ? "Saved. Deploying…"
-          : "Saved, but not deployed. Retry to make your changes live."}
-      </span>
-      {!state.waiting && !deployed && (
-        <Button size="xs" variant="outline" onClick={run}>
-          Retry deploy
-        </Button>
+    <span role="status" className="inline-flex items-center">
+      {deployed ? (
+        <span className="sr-only">Saved and deployed.</span>
+      ) : deploying ? (
+        <span className="sr-only">Saved. Deploying…</span>
+      ) : (
+        <Popover open={open} onOpenChange={setOpen}>
+          <PopoverTrigger asChild>
+            <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive">
+              <HugeiconsIcon icon={AlertCircleIcon} strokeWidth={2} aria-hidden />
+              Not deployed
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent
+            aria-label="Deploy failed"
+            className="flex w-80 flex-col items-start gap-3 text-xs"
+            onOpenAutoFocus={(event) => event.preventDefault()}
+          >
+            <p>Saved, but not deployed. Retry to make your changes live.</p>
+            {failure !== undefined && <Failure cause={failure} layout="compact" />}
+            <Button
+              size="xs"
+              variant="outline"
+              onClick={() => {
+                setOpen(false);
+                void deploy({ commit, onApp: editing.onApp }).catch(() => {});
+              }}
+            >
+              Retry deploy
+            </Button>
+          </PopoverContent>
+        </Popover>
       )}
-      {!state.waiting && AsyncResult.isFailure(state) && <Failure cause={state.cause} />}
-    </div>
+    </span>
   );
 }

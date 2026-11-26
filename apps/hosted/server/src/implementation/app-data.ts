@@ -1,6 +1,5 @@
 import { CurrentPolicy } from "../contracts/authorization.ts";
 import { permitsAction, permitsApp } from "@executor-js/authorization";
-/** Product-owned authorization around the same SDK data operations used by local. */
 import { type AppDataInput } from "@executor-js/sdk/core";
 import { Effect, Stream } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
@@ -17,7 +16,6 @@ import { SessionAuthentication, BearerAuthentication, Unauthorized } from "../co
 import { currentOwner, selectedApp } from "./access.ts";
 import { stillLinked } from "./app-accounts.ts";
 
-/** Recheck both login and membership on long-lived streams; initial middleware is not a saved grant. */
 const currentAccess = (headers: Headers, organization: OrganizationId, app: AppDataInput["app"]) =>
   Effect.gen(function* () {
     if (headers.has("authorization")) {
@@ -37,7 +35,6 @@ const currentAccess = (headers: Headers, organization: OrganizationId, app: AppD
     const membership = yield* auth.membership(principal, organization);
     return { organization, owner: organizationOwner(organization), role: membership.role };
   });
-/** Check the app and resolve the caller's accounts before invoking author code. */
 export const executeAppData = (kind: "query" | "mutate", input: AppDataInput) =>
   Effect.gen(function* () {
     const policy = yield* CurrentPolicy;
@@ -48,7 +45,6 @@ export const executeAppData = (kind: "query" | "mutate", input: AppDataInput) =>
     const { accounts } = yield* selectedApp(executor, owner, input.app);
     return yield* executor.appData[kind]({ ...input, accounts });
   });
-/** Shared routes; the host supplies request-owned SDK and authentication services. */
 export const hostedAppDataHandlers = HttpApiBuilder.group(HostedApi, "appData", (handlers) =>
   Effect.gen(function* () {
     const auth = yield* SessionAuthentication;
@@ -74,7 +70,6 @@ export const hostedAppDataHandlers = HttpApiBuilder.group(HostedApi, "appData", 
           ).pipe(
             Effect.provideService(SessionAuthentication, auth),
             Effect.provideService(BearerAuthentication, api),
-            // Each recheck must still resolve the accounts the stream runs with.
             Effect.tap((access) =>
               selectedApp(executor, access.owner, params.app).pipe(
                 Effect.flatMap((current) =>
@@ -93,7 +88,6 @@ export const hostedAppDataHandlers = HttpApiBuilder.group(HostedApi, "appData", 
             accounts,
           });
           return Stream.merge(
-            // The first result belongs to this request, which was just authorized.
             source.pipe(
               Stream.mapEffect((snapshot) =>
                 snapshot.revision === 0

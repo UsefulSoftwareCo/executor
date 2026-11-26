@@ -1,7 +1,3 @@
-/**
- * Local consent accepts the grant settings the sign-in page sends. Its page offers no choice yet,
- * but its grants follow the same record rule as hosted ones, and `/mcp/whoami` describes them.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -23,7 +19,6 @@ import {
 import { Target } from "../support/platform.ts";
 import { rawRequest } from "../support/role-hosts.ts";
 
-/** `GET /mcp/whoami` with a bearer and no cookies, as a CLI sends it. */
 const whoami = (token: Redacted.Redacted<string> | undefined, query = "") =>
   Effect.gen(function* () {
     const target = yield* Target;
@@ -146,7 +141,6 @@ layer(TestLive, { excludeTestServices: true })("Local MCP grant choice", (it) =>
               access: { kind: "connection", id: connection.id, name: connection.name, apps: 1 },
               mode: "model",
             });
-            // The administrative key has no record: full access in the URL's mode.
             const key = yield* whoami(admin, "?elicitation_mode=native");
             expect(key.status, key.text).toBe(200);
             expect(key.body).toEqual({

@@ -29,7 +29,6 @@ import type { HostedError } from "../../contracts/errors.ts";
 import { HostedFailure } from "../components/dashboard-bindings.tsx";
 import { useOrganizationRoute } from "../components/organization.tsx";
 
-/** Hosts own reads and activation authority; source browsing shares the local presentation. */
 export function AppVersions({ app }: { readonly app: App }) {
   const { organization } = useOrganizationRoute();
   const [selected, setSelected] = useState<VersionId>();
@@ -69,7 +68,6 @@ export function AppVersions({ app }: { readonly app: App }) {
   );
 }
 
-/** The shown version is known from the app, so its source loads alongside the version list. */
 function ReadSourceEarly({ app, version }: { readonly app: App; readonly version: VersionId }) {
   const { organization } = useOrganizationRoute();
   const source = sourceAtom({ organization, app: app.id, version });
@@ -158,7 +156,6 @@ function ActivateVersion({ app, version }: { readonly app: App; readonly version
   );
 }
 
-/** Source inspection, publication, and version history belong to this app's detail page. */
 export function AppSource({
   app,
   view,

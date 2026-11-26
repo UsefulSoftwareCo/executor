@@ -9,11 +9,6 @@ import { Target, driver } from "../support/platform.ts";
 import { targetHosts } from "../support/role-hosts.ts";
 import { scenarios } from "../test-plan.ts";
 
-/**
- * An MCP client opens the consent page in its own tab, as a real client does, and Connect is
- * pressed before the page hydrates. Consent runs on the browser origin; Cloud serves MCP on its
- * own host, which the client names as its resource.
- */
 const approveBeforeHydration = Effect.gen(function* () {
   const actors = yield* Actors,
     browser = yield* Browser,
@@ -57,7 +52,6 @@ layer(HostedLive, { excludeTestServices: true })("Early form submission", (it) =
             scriptsHeld.then(() => route.fallback()),
           );
         });
-        // One step: each step afterwards waits for the page to become interactive.
         expect(
           yield* browser.use(
             "Sign in on the server-rendered page before it is interactive",
@@ -73,7 +67,6 @@ layer(HostedLive, { excludeTestServices: true })("Early form submission", (it) =
           ),
           "the submission happened before hydration",
         ).toBe(false);
-        // A native submission would have sent the fields in the address.
         const leaked = () =>
           addresses.filter(
             (address) =>
@@ -107,7 +100,6 @@ layer(HostedLive, { excludeTestServices: true })("Early form submission", (it) =
           browser = yield* Browser,
           target = yield* Target;
         const hosts = targetHosts(target);
-        // A device client asks to sign in; the owner reviews its code on the device page.
         const started = yield* driver("start a device sign-in", () =>
           fetch(`${hosts.browser}/api/auth/oauth2/register`, {
             method: "POST",
@@ -149,8 +141,6 @@ layer(HostedLive, { excludeTestServices: true })("Early form submission", (it) =
             scriptsHeld.then(() => route.fallback()),
           );
         });
-        // One step: each step afterwards waits for the page to become interactive. Connect waits
-        // for an organization to be chosen, which needs the page's scripts; Deny does not.
         expect(
           yield* browser.use("Deny on the server-rendered device page", (page) =>
             page
@@ -224,8 +214,6 @@ layer(HostedLive, { excludeTestServices: true })("Early form submission", (it) =
         yield* browser.use("Connect is offered", (page) =>
           page.getByRole("button", { name: "Connect", exact: true }).waitFor(),
         );
-        // A replayed early Cancel and a real Connect in the same moment: both buttons are still
-        // enabled, so only the page's one-decision rule can keep the second from being sent.
         yield* browser.use("Submit Cancel, then Connect, before the page renders again", (page) =>
           Promise.all([
             page.waitForRequest((request) => request.url().startsWith(redirect)),

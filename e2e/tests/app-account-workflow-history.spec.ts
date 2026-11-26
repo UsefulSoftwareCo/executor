@@ -1,8 +1,3 @@
-/**
- * Reading a retained workflow run checks each account it captured by the scope its requirement had
- * on the run's version: an app account by its current app link, a user account by the caller's
- * use, whatever later versions declare.
- */
 import { expect, layer } from "@effect/vitest";
 import { Clock, Effect } from "effect";
 import { body, type Session } from "../support/api.ts";
@@ -14,7 +9,6 @@ import { appLinksFixture, keyProvider, ok } from "../support/app-links.ts";
 import { WorkflowRun } from "../support/workflow-app.ts";
 import { scenarios } from "../test-plan.ts";
 
-/** One requirement in `scope`, and a workflow that records the account it captured. */
 const source = (
   scope: "app" | "user",
 ) => `import { defineApp, defineProvider, secrets, query, workflow, object, string, router } from "apps";
@@ -58,8 +52,6 @@ layer(HostedLive, { excludeTestServices: true })("App account workflow history",
             .request(actor, "GET", `${appPath}/workflow-runs/${run}`)
             .pipe(Effect.map((response) => response.status));
 
-        // The owner's run captures the app's linked account, which is the owner's own. Once it is
-        // unlinked, the owner can still use the account but not read the run's history.
         const own = yield* connect(actors.owner, "app", "service", "owner-service");
         const owned = yield* start(actors.owner, path);
         expect((yield* complete(actors.owner, path, owned)).output).toBe(own);
@@ -71,11 +63,6 @@ layer(HostedLive, { excludeTestServices: true })("App account workflow history",
         yield* ok(yield* link(actors.owner, "service", own));
         expect(yield* read(actors.owner, path, owned)).toBe(200);
 
-        // The owner's run captures their account for a user requirement. A later deployment makes
-        // the requirement the app's, and the owner links that same account for everyone. The run
-        // is still checked by the owner's use of it, not by the app link: once the app link goes,
-        // the run stays readable, while a run on the new deployment that captured it as the app's
-        // is refused.
         const later = yield* appLinksFixture([{ path: "index.ts", content: source("user") }]);
         const account = yield* later.connect(actors.owner, "user", "service", "user-service");
         const run = yield* start(actors.owner, later.path);

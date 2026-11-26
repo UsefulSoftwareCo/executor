@@ -12,7 +12,6 @@ import { OrganizationForbidden } from "./contracts/organization.ts";
 import { requireOrganizationAdmin } from "./implementation/access.ts";
 import { HostedAppAccess } from "./contracts/app-management.ts";
 import { withOrganizationRequest } from "./implementation/organization.ts";
-/** Hosted app source uses current organization membership and existing API OAuth grants. */
 import { AppIdentity, AppGitAccess, AppAccessDenied } from "@executor-js/app-management";
 import { Effect, Layer, Schema } from "effect";
 import { Base64 } from "effect/encoding";
@@ -24,10 +23,6 @@ import {
   publishingScope,
 } from "./contracts/organization.ts";
 
-/**
- * Capture only the host database; identity and group grants are checked for every authoring
- * operation. Membership and every app's policy are read once for the whole list.
- */
 export const hostedAppCapabilities = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   return (apps: ReadonlyArray<App>, identity: Context.Service.Shape<typeof AppIdentity>) =>
@@ -38,7 +33,6 @@ export const hostedAppCapabilities = Effect.gen(function* () {
       );
       if (apps.some((app) => app.owner !== `organization:${organization}`))
         return yield* new AppAccessDenied({ reason: "forbidden" });
-      // Membership and every policy are read in one statement, so they share one snapshot.
       const { access: found } = yield* resourceAuthorityForApps(
         organization,
         identity.actor,
@@ -47,7 +41,6 @@ export const hostedAppCapabilities = Effect.gen(function* () {
       const policies = new Map(found.map((access) => [access.app, access]));
       return yield* Effect.forEach(apps, (app) => {
         const access = policies.get(app.id);
-        // A missing policy denies access, as it does for one app.
         return access === undefined
           ? Effect.fail(new AppAccessDenied({ reason: "forbidden" }))
           : Effect.succeed({
@@ -108,6 +101,7 @@ export const hostedAppAccess = Layer.effect(
               endpoint.identifier === "published"
             ? "read"
             : "manage",
+        { tools: true },
       ).pipe(
         Effect.provideService(SessionAuthentication, auth),
         Effect.provideService(BearerAuthentication, api),
@@ -116,7 +110,6 @@ export const hostedAppAccess = Layer.effect(
   }),
 );
 
-/** Git Basic passwords carry API tokens; browser cookies cannot authorize a Git push or clone. */
 export const hostedAppGitAccess = Layer.effect(
   AppGitAccess,
   Effect.gen(function* () {
@@ -140,6 +133,7 @@ export const hostedAppGitAccess = Layer.effect(
           const grant = yield* api.authenticate(
             new Headers({ authorization: `Bearer ${token}` }),
             yield* Schema.decodeUnknownEffect(OrganizationReference)(scope),
+            { tools: true },
           );
           if (
             (grant.access.organization !== scope && grant.organizationSlug !== scope) ||
@@ -157,8 +151,6 @@ export const hostedAppGitAccess = Layer.effect(
             protectedApps: [],
           };
         }).pipe(
-          // Git reports a 401 as a failed sign-in, so only a credential the host refused is one.
-          // A session check that could not run is retryable and leaves the credential in place.
           Effect.catchTags({
             Unauthorized: () => Effect.fail(new AppAccessDenied({ reason: "authentication" })),
             OrganizationForbidden: () => Effect.fail(new AppAccessDenied({ reason: "forbidden" })),

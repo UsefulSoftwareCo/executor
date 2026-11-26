@@ -1,7 +1,6 @@
 import { SkillBrowserLoading, WorkflowBrowserLoading } from "./app-browser-loading.tsx";
 import type { ReactElement, ReactNode } from "react";
 import { AppDetailLayout } from "./app-detail.tsx";
-/** App tabs reserve the layout of their own content at every data-loading boundary. */
 import type { App } from "@executor-js/sdk";
 import type { AppView } from "../../contracts/dashboard.ts";
 import { Skeleton } from "../components/skeleton.tsx";
@@ -12,7 +11,6 @@ import { ToolBrowserLoading } from "./tools.tsx";
 import { AccountScopeSection, NoScopeAccounts, accountScopes } from "./app-accounts.tsx";
 import { cn } from "../lib/utils.ts";
 
-/** Card contents load independently, without replacing a card with a table skeleton. */
 export function OverviewCardLoading({
   label,
   rows = 4,
@@ -39,7 +37,6 @@ export function OverviewCardLoading({
   );
 }
 
-/** Reserve the same fixed-height cards and responsive grid as the app overview. */
 export function AppOverviewLoading({ app }: { readonly app?: App | undefined }) {
   return (
     <section role="status" aria-label="Loading overview" className="app-overview w-full">
@@ -79,14 +76,12 @@ export function AppOverviewLoading({ app }: { readonly app?: App | undefined }) 
   );
 }
 
-/** Account slots use known requirements; zero requirements do not flash invented account rows. */
 export function AppAccountsLoading({
   app,
   canEdit,
   action,
 }: {
   readonly app?: App | undefined;
-  /** Whether the caller can edit the app, once its access is known. */
   readonly canEdit?: boolean | undefined;
   readonly action?: ReactNode;
 }) {
@@ -143,7 +138,6 @@ function RequirementLoading({ name }: { readonly name?: string }) {
   );
 }
 
-/** Settings keeps its compact header and metadata cards, including a known copied origin. */
 export function AppSettingsLoading({ app }: { readonly app?: App | undefined }) {
   return (
     <section role="status" aria-label="Loading settings" className="w-full">
@@ -179,7 +173,6 @@ export function AppSettingsLoading({ app }: { readonly app?: App | undefined }) 
   );
 }
 
-/** Recent history reserves commit rows rather than the generic inventory list. */
 export function SourceHistoryLoading() {
   return (
     <div role="status" aria-label="Loading history">
@@ -198,7 +191,6 @@ export function SourceHistoryLoading() {
   );
 }
 
-/** Working-source reads preserve the real toolbar, shared file-column width and code viewport. */
 export function AppWorkspaceLoading({ view = "source" }: { readonly view?: "source" | "history" }) {
   return (
     <section
@@ -236,7 +228,6 @@ export function AppWorkspaceLoading({ view = "source" }: { readonly view?: "sour
   );
 }
 
-/** The detail read keeps version statistics above the retained file browser. */
 export function VersionSourceLoading() {
   return (
     <div role="status" aria-label="Loading version source" className="flex min-h-0 flex-1 flex-col">
@@ -258,7 +249,6 @@ export function VersionSourceLoading() {
   );
 }
 
-/** Version-list reads reserve both the version selector and retained source panes. */
 export function AppVersionsLoading() {
   return (
     <section role="status" aria-label="Loading versions" className="flex min-h-0 flex-1 flex-col">
@@ -283,7 +273,6 @@ export function AppVersionsLoading() {
   );
 }
 
-/** Choose the destination tab's shape for the initial app metadata read. */
 export function AppDetailLoading({
   view,
   app,
@@ -294,7 +283,6 @@ export function AppDetailLoading({
   readonly view: AppView;
   readonly app?: App | undefined;
   readonly selectedTool?: string | undefined;
-  /** Whether the caller can edit the app, once its access is known. */
   readonly canEdit?: boolean | undefined;
   readonly accountAction?: ReactNode;
 }): ReactElement {
@@ -341,7 +329,6 @@ export function AppDetailLoading({
   }
 }
 
-/** Route and inventory loading keep the same app heading, navigation and selected-tab geometry. */
 export function AppDetailPending({
   view,
   back,

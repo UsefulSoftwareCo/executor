@@ -85,10 +85,16 @@ extra configuration. A full-account token on `/mcp` must say which organization
 to use with an `X-Executor-Organization` header. A token limited to one
 organization is rejected on any other organization's URL.
 
-The same token works with model, native, browser, and automatic approval
-delivery. The plain MCP URL uses model mode; add `?elicitation_mode=native`,
-`?elicitation_mode=browser`, or `?elicitation_mode=automatic` when needed. Tool approval rules still apply. Browser approvals require the token
-owner to sign in. Revocation or expiry stops new MCP calls and continuations,
+The same token works with automatic, model, native, and browser approval
+delivery. The plain MCP URL uses automatic mode: Executor accepts approvals at
+once, and your agent's own permission prompt for `call` or `execute` is the
+check. A question a running tool asks still reaches the agent. To have
+approvals pause instead, add `?elicitation_mode=model` (the agent asks you and
+resumes), `?elicitation_mode=native` (your client's own prompt) or
+`?elicitation_mode=browser` (a signed-in page) to the URL. A token used by a
+script or an unattended agent runs approval-gated tools without asking at the
+plain URL, so give it one of these modes if a person should confirm them.
+Browser approvals require the token owner to sign in. Revocation or expiry stops new MCP calls and continuations,
 including on already-connected clients.
 
 PATs do not require an OAuth sign-in flow. The existing [browser OAuth flow](/mcp-clients)

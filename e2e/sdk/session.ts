@@ -1,4 +1,3 @@
-/** A retained scenario composes the same actors, HTTP, browser and evidence adapters as tests. */
 import { Context, Effect, Exit, Layer, Schema, Semaphore } from "effect";
 import { Api, SessionClients } from "../support/api.ts";
 import { Actors } from "../support/actors.ts";
@@ -10,12 +9,10 @@ import { startScenario } from "./scenario.ts";
 import { seedOrganization, SeedReceipt, DataShape } from "./data.ts";
 import { reveal } from "../support/failure-text.ts";
 
-/** Scenario failures retain safe operation names while detailed evidence stays local. */
 export class ScenarioFailed extends Schema.TaggedError<ScenarioFailed>()("ScenarioFailed", {
   operation: Schema.String,
 }) {}
 
-/** Acquire an interactive scenario. The caller owns its scope and may use identical operations in a test. */
 export const createScenario = (
   base: typeof Target.Service,
   input: { readonly id: string; readonly label: string },

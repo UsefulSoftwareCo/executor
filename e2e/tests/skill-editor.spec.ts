@@ -13,8 +13,6 @@ import { Workspace } from "../support/app-authoring.ts";
 import { appsManifest } from "../support/apps-release.ts";
 import { scenarios } from "../test-plan.ts";
 
-// Deliberately not in the editor's own style: `*` bullets and a padded table must survive
-// untouched when the person edits a different block.
 const skill = `---
 name: search-messages
 description: Search team messages.
@@ -97,10 +95,6 @@ layer(HostedLive, { excludeTestServices: true })("Skill editor", (it) => {
           browser.use(label, action);
         const instructions = (page: Page) =>
           page.getByRole("textbox", { name: "Skill instructions", exact: true });
-        // Focus the editor and place the caret like a click at the text's end in one task, then wait
-        // for the selectionchange that ProseMirror reads: it handles Enter with the selection it last
-        // read, not the DOM caret. A separate click would start ProseMirror's focus timer, which puts
-        // the caret back at the clicked point when it fires before that read.
         const caretAtEnd = (page: Page, text: string) =>
           instructions(page)
             .getByText(text)
@@ -122,15 +116,11 @@ layer(HostedLive, { excludeTestServices: true })("Skill editor", (it) => {
             );
         const skillUrl = `/org/${actors.organization.slug}/apps/${app.id}?view=skills`;
 
-        // Every browser read of the working source passes through this route from the first page
-        // load, so no read can start before a hold and slip past it.
         const workspaceReads = `**${path}/workspace`;
         const passing = new Set<Request>();
         const held: Route[] = [];
-        // A route the test takes answers it itself; a held route waits for `release`.
         let hold: (route: Route) => "pass" | "hold" | "take" | Promise<"pass" | "take"> = () =>
           "pass";
-        // A read the browser sent whose response the test holds until it calls `deliver`.
         let holdResponse: (() => Promise<Answer>) | undefined;
         yield* page("Route working source reads", (page) => {
           const finished = (request: Request) => void passing.delete(request);
@@ -167,10 +157,7 @@ layer(HostedLive, { excludeTestServices: true })("Skill editor", (it) => {
         yield* Effect.addFinalizer(() => Effect.ignore(release));
 
         yield* browser.login(actors.owner);
-        // The server sends the skill as the reader, and the editor replaces it once the page has
-        // hydrated. Hold the page's scripts to see the server's page, then let it hydrate: the
-        // skill's text, from its first heading to its last block, must stay where it was. One
-        // step, since each step waits for hydration.
+        expect(skillFile(yield* workspace())).toBe(skill);
         const positions = (page: Page) =>
           Promise.all(
             [
@@ -188,50 +175,49 @@ layer(HostedLive, { excludeTestServices: true })("Skill editor", (it) => {
             releaseScripts = resolve;
           });
           const assets = /\/assets\/[^/]+\.js$/;
-          return (
-            page
-              .route(assets, (route) => {
-                scriptHeld();
-                return scripts.then(() => route.fallback());
-              })
-              .then(() => page.goto(skillUrl, { waitUntil: "commit" }))
-              .then(() =>
-                Promise.all([
-                  held,
-                  page.getByRole("cell", { name: "Full-text search", exact: true }).waitFor(),
-                ]),
-              )
-              // Measure with the final fonts; a late font load shifts the text by a pixel.
-              .then(() => page.evaluate(() => document.fonts.ready.then(() => undefined)))
-              .then(() =>
-                Promise.all([
-                  positions(page),
-                  instructions(page).count(),
-                  page.evaluate(() => document.documentElement.hasAttribute("data-hydrated")),
-                  page.screenshot(),
-                ]),
-              )
-              .then(([server, editors, hydrated, screenshot]) => {
-                releaseScripts();
-                // The page marks itself once hydrated; the editor's text box appears after that.
-                return page
-                  .waitForFunction(() => document.documentElement.hasAttribute("data-hydrated"))
-                  .then(() => instructions(page).waitFor())
-                  .then(() => positions(page))
-                  .then((editor) => ({ server, editors, hydrated, screenshot, editor }));
-              })
-              .finally(() => {
-                releaseScripts();
-                return page.unroute(assets);
-              })
-          );
+          return page
+            .route(assets, (route) => {
+              scriptHeld();
+              return scripts.then(() => route.fallback());
+            })
+            .then(() => page.goto(skillUrl, { waitUntil: "commit" }))
+            .then(() =>
+              Promise.all([held, page.waitForFunction(() => document.readyState !== "loading")]),
+            )
+            .then(() =>
+              page
+                .getByRole("cell", { name: "Full-text search", exact: true, includeHidden: true })
+                .count(),
+            )
+            .then((cells) => expect(cells, "the server's page shows the skill").toBe(1))
+            .then(() => page.getByRole("cell", { name: "Full-text search", exact: true }).waitFor())
+            .then(() => page.evaluate(() => document.fonts.ready.then(() => undefined)))
+            .then(() =>
+              Promise.all([
+                positions(page),
+                instructions(page).count(),
+                page.evaluate(() => document.documentElement.hasAttribute("data-hydrated")),
+                page.screenshot(),
+              ]),
+            )
+            .then(([server, editors, hydrated, screenshot]) => {
+              releaseScripts();
+              return page
+                .waitForFunction(() => document.documentElement.hasAttribute("data-hydrated"))
+                .then(() => instructions(page).waitFor())
+                .then(() => positions(page))
+                .then((editor) => ({ server, editors, hydrated, screenshot, editor }));
+            })
+            .finally(() => {
+              releaseScripts();
+              return page.unroute(assets);
+            });
         });
         yield* evidence.attach(
           "server-rendered-skill-reader.png",
           "image/png",
           transition.screenshot,
         );
-        // Editors never enter a separate mode: the page itself becomes editable.
         yield* browser.checkpoint("Visual skill editor");
         expect(transition.hydrated, "the server's page was measured before hydration").toBe(false);
         expect(transition.editors).toBe(0);
@@ -244,7 +230,6 @@ layer(HostedLive, { excludeTestServices: true })("Skill editor", (it) => {
         );
         yield* page("Start a paragraph", (page) => page.keyboard.press("Enter"));
         yield* page("Type the paragraph", (page) => page.keyboard.type("Always cite the channel."));
-        // The visual editor reports Markdown after a short pause; the draft exists once it does.
         yield* page("The paragraph is an unsaved change", (page) =>
           page.getByRole("button", { name: "Discard", exact: true }).waitFor(),
         );
@@ -254,14 +239,85 @@ layer(HostedLive, { excludeTestServices: true })("Skill editor", (it) => {
             .fill("Search and cite team messages."),
         );
         yield* browser.checkpoint("Edited skill");
+        const settings = (page: Page) =>
+          page.getByRole("button", { name: "Editor settings", exact: true });
+        const saveButton = (page: Page) =>
+          settings(page).locator("xpath=..").getByRole("button").last();
+        const layout = (page: Page) =>
+          Promise.all(
+            [
+              settings(page).locator("xpath=../.."),
+              saveButton(page),
+              page.getByRole("textbox", { name: "Description", exact: true }),
+              page.getByRole("heading", { name: "Search messages", exact: true }),
+            ].map((element) => element.boundingBox()),
+          );
+        const deploys = `**${path}/deploy`;
+        let heldDeploy: Route | undefined;
+        yield* page("Hold the save's deploy", (page) =>
+          page.route(deploys, (route) => {
+            if (route.request().method() !== "POST" || heldDeploy !== undefined)
+              return route.fallback();
+            heldDeploy = route;
+          }),
+        );
+        yield* Effect.addFinalizer(() =>
+          Effect.ignore(page("Release the held deploy", (page) => page.unroute(deploys))),
+        );
+        const beforeSave = yield* page("Measure the page before saving", layout);
+        expect(beforeSave).not.toContain(null);
         yield* page("Save the skill", (page) =>
           page.getByRole("button", { name: "Save", exact: true }).click(),
         );
         yield* page("Saving clears the draft", (page) =>
           page.getByRole("button", { name: "Discard", exact: true }).waitFor({ state: "hidden" }),
         );
+        const deploy = yield* until("The save's deploy has not arrived", () => heldDeploy);
+        expect(
+          yield* page("Measure the page while deploying", layout),
+          "saving moved the page while it deployed",
+        ).toEqual(beforeSave);
+        expect(
+          yield* page("The save shows its deploy in place", (page) =>
+            Promise.all([
+              saveButton(page).getAttribute("data-loading"),
+              page.getByRole("status").filter({ hasText: "Saved. Deploying…" }).textContent(),
+              page
+                .getByText("Saved. Deploying…", { exact: true })
+                .evaluate((element) => element.getBoundingClientRect().width),
+            ]),
+          ),
+        ).toEqual(["", "Saved. Deploying…", 1]);
+        yield* browser.checkpoint("Deploying the save");
+        yield* page("Fail the deploy", () =>
+          deploy.fulfill({ status: 599, contentType: "text/plain", body: "undeclared" }),
+        );
+        const deployFailure = (page: Page) => page.getByRole("dialog", { name: "Deploy failed" });
+        yield* page("The failed deploy opens its details", (page) =>
+          deployFailure(page)
+            .getByText("Unable to complete this request", { exact: true })
+            .waitFor(),
+        );
+        expect(
+          yield* page("Measure the page after the deploy failed", layout),
+          "a failed deploy moved the page",
+        ).toEqual(beforeSave);
+        expect(
+          yield* page("The failure says the save is not live", (page) =>
+            Promise.all([
+              page.getByRole("status").getByRole("button", { name: "Not deployed" }).count(),
+              deployFailure(page)
+                .getByText("Saved, but not deployed. Retry to make your changes live.")
+                .count(),
+              saveButton(page).getAttribute("data-loading"),
+            ]),
+          ),
+        ).toEqual([1, 1, null]);
+        yield* browser.checkpoint("Failed deploy");
+        yield* page("Retry the deploy", (page) =>
+          deployFailure(page).getByRole("button", { name: "Retry deploy", exact: true }).click(),
+        );
 
-        // Only the edited description and the new paragraph change; other bytes stay as written.
         const committed = yield* workspace();
         expect(skillFile(committed)).toBe(edited);
         const history = yield* body(
@@ -272,7 +328,6 @@ layer(HostedLive, { excludeTestServices: true })("Skill editor", (it) => {
           commit: committed.revision.commit,
           message: "Update search-messages skill",
         });
-        // Saving also deploys the new commit.
         const running = yield* api.request(actors.owner, "GET", `${path}/source`).pipe(
           Effect.flatMap((response) => body(Running, response)),
           Effect.filterOrFail(
@@ -282,12 +337,24 @@ layer(HostedLive, { excludeTestServices: true })("Skill editor", (it) => {
           Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 80 }),
         );
         expect(skillFile(running)).toBe(edited);
-        yield* page("The deploy status clears", (page) =>
-          page.getByRole("status").filter({ hasText: "Saved" }).waitFor({ state: "hidden" }),
+        yield* page("The deploy is announced as live", (page) =>
+          page.getByRole("status").getByText("Saved and deployed.", { exact: true }).waitFor(),
         );
+        expect(
+          yield* page("The save is back at rest", (page) =>
+            Promise.all([
+              saveButton(page).getAttribute("data-loading"),
+              page.getByRole("button", { name: "Not deployed" }).count(),
+              deployFailure(page).count(),
+            ]),
+          ),
+        ).toEqual([null, 0, 0]);
+        expect(
+          yield* page("Measure the page once deployed", layout),
+          "the deploy finishing moved the page",
+        ).toEqual(beforeSave);
         yield* browser.checkpoint("Saved and deployed");
 
-        // Someone else changes the same file while a draft is open; the draft must survive.
         yield* page("Place the cursor after the new paragraph", (page) =>
           caretAtEnd(page, "Always cite the channel."),
         );
@@ -295,7 +362,6 @@ layer(HostedLive, { excludeTestServices: true })("Skill editor", (it) => {
         yield* page("The extension is an unsaved change", (page) =>
           page.getByRole("button", { name: "Discard", exact: true }).waitFor(),
         );
-        // The save's own follow-up read must not deliver the concurrent edit behind the hold.
         yield* readsFinished("Before the concurrent edit");
         const concurrent = yield* api.request(actors.owner, "POST", `${path}/commits`, {
           expected: committed.revision.commit,
@@ -305,8 +371,6 @@ layer(HostedLive, { excludeTestServices: true })("Skill editor", (it) => {
           message: "Concurrent edit",
         });
         expect(concurrent.status).toBe(200);
-        // Save reads the source once to detect the conflict. Hold every later read until the person
-        // has discarded: on a slow connection they can discard before a follow-up read returns.
         let reads = 0;
         hold = () => (++reads > 1 ? "hold" : "pass");
         yield* page("Save against the changed file", (page) =>
@@ -320,7 +384,6 @@ layer(HostedLive, { excludeTestServices: true })("Skill editor", (it) => {
         );
         yield* browser.checkpoint("Conflicting edit keeps the draft");
         expect(skillFile(yield* workspace())).toBe(`${edited}\nConcurrent edit.\n`);
-        // Only held reads remain, so nothing can deliver the newer file before Discard.
         yield* readsFinished("Before discarding");
         const discard = page("Discard the draft", (page) => {
           page.once("dialog", (dialog) => void dialog.accept());
@@ -335,8 +398,6 @@ layer(HostedLive, { excludeTestServices: true })("Skill editor", (it) => {
         yield* readsFinished("After the conflict");
         expect(skillFile(yield* workspace())).toBe(`${edited}\nConcurrent edit.\n`);
 
-        // A save whose read fails reports it beside the editor alone. The loaded source stays as it
-        // was, so the draft survives and saving again recovers.
         yield* page("Place the cursor after the concurrent edit", (page) =>
           caretAtEnd(page, "Concurrent edit."),
         );
@@ -346,8 +407,6 @@ layer(HostedLive, { excludeTestServices: true })("Skill editor", (it) => {
         );
         hold = (route) => {
           hold = () => "pass";
-          // A status no endpoint declares is an unexpected failure; a dropped connection would be
-          // explained as a lost connection instead.
           return route
             .fulfill({ status: 599, contentType: "text/plain", body: "undeclared" })
             .then(() => "take" as const);
@@ -371,9 +430,6 @@ layer(HostedLive, { excludeTestServices: true })("Skill editor", (it) => {
           page.getByRole("button", { name: "Discard", exact: true }).waitFor(),
         );
 
-        // Responses can arrive out of order. A read the page started before the conflict check
-        // returns a newer version first; the check's own older response follows. The page must never
-        // go back to a version older than one it has accepted, while saving or after discarding.
         let saveReads = 0;
         let earlierRead: Route | undefined;
         let checkRead: { readonly deliver: () => void } | undefined;
@@ -383,10 +439,6 @@ layer(HostedLive, { excludeTestServices: true })("Skill editor", (it) => {
         });
         hold = (route) => {
           saveReads += 1;
-          // The save's conflict check passes; its follow-up read becomes the earlier read. The next
-          // save's conflict check reads the server now and answers once the earlier read has. Any
-          // read after that reaches the server directly, once the check's response is held, so the
-          // first response to arrive after the check was sent is the check's.
           if (saveReads === 1) return "pass";
           if (saveReads > 3) return checkHeld.then(() => "pass" as const);
           if (saveReads === 2) {
@@ -416,8 +468,6 @@ layer(HostedLive, { excludeTestServices: true })("Skill editor", (it) => {
         yield* page("The second extension is an unsaved change", (page) =>
           page.getByRole("button", { name: "Discard", exact: true }).waitFor(),
         );
-        // Each concurrent version adds its own file, so the skill's file list shows which version the
-        // page holds. Record every version it renders.
         const olderFile = { path: "skills/search-messages/older-edit.md", content: "Older\n" };
         const newerFile = { path: "skills/search-messages/newer-edit.md", content: "Newer\n" };
         yield* page("Record the versions the skill's file list shows", (page) =>
@@ -461,7 +511,6 @@ layer(HostedLive, { excludeTestServices: true })("Skill editor", (it) => {
         yield* page("Save against the older edit", (page) =>
           page.getByRole("button", { name: "Save", exact: true }).click(),
         );
-        // The conflict check has read the older version on the server; hold its response.
         const check = yield* until("The conflict check has not read the source", () => checkRead);
         const olderSnapshot = yield* workspace();
         const newer = `${skillFile(replied)}\nNewer concurrent edit.\n`;

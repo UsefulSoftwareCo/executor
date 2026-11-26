@@ -1,4 +1,3 @@
-/** Alchemy owns the R2 binding; the SDK receives only its portable blob contract. */
 import {
   BlobStore,
   BlobStoreError,
@@ -12,10 +11,10 @@ import * as Cloudflare from "alchemy/Cloudflare";
 import { Effect, Option, Stream } from "effect";
 import { testStage } from "./stage.ts";
 import { providerFailureCode } from "../implementation/provider-failure.ts";
-import { persistR2Object } from "../implementation/r2-write.ts";
+import { readR2Object } from "../implementation/r2-read.ts";
+import { writeR2Object } from "../implementation/r2-write.ts";
 import type { WorkspaceObjects } from "../implementation/workspace-cache.ts";
 
-/** Configured stages keep retained builds; a destroyed test stage leaves nothing behind. */
 export const AppBuilds = Cloudflare.R2.Bucket(
   "AppBuilds",
   testStage.pipe(
@@ -27,7 +26,6 @@ export const AppBuilds = Cloudflare.R2.Bucket(
 type ReadClient = Effect.Success<ReturnType<typeof Cloudflare.R2.ReadBucket>>;
 type WriteClient = Effect.Success<ReturnType<typeof Cloudflare.R2.ReadWriteBucket>>;
 
-/** R2 pages object names itself; `delimiter` keeps nested folders out. */
 const listFolder = (
   bucket: ReadClient,
   folder: BlobKey,
@@ -47,6 +45,7 @@ const listFolder = (
         names: page.objects.map((object) => object.key.slice(folder.length + 1)),
         truncated: page.truncated,
       })),
+      readR2Object,
       Effect.provide(RuntimeContext.phantom),
       Effect.tapError((error) =>
         Effect.annotateCurrentSpan({ "storage.blob.failure.code": providerFailureCode(error) }),
@@ -54,7 +53,6 @@ const listFolder = (
       Effect.mapError(() => new BlobStoreError({ operation: "list" })),
     );
 
-/** Range reads go to R2; an empty range only needs the object's size. */
 const streamObject = (bucket: ReadClient, key: BlobKey, range: BlobRange | undefined) =>
   Effect.gen(function* () {
     if (range !== undefined && range.length === 0) {
@@ -71,6 +69,7 @@ const streamObject = (bucket: ReadClient, key: BlobKey, range: BlobRange | undef
       body: object.body.pipe(Stream.mapError(() => new BlobStoreError({ operation: "get" }))),
     });
   }).pipe(
+    readR2Object,
     Effect.provide(RuntimeContext.phantom),
     Effect.tapError((error) =>
       Effect.annotateCurrentSpan({ "storage.blob.failure.code": providerFailureCode(error) }),
@@ -78,7 +77,6 @@ const streamObject = (bucket: ReadClient, key: BlobKey, range: BlobRange | undef
     Effect.mapError(() => new BlobStoreError({ operation: "get" })),
   );
 
-/** Delete one object or several in one request; missing objects are already removed. */
 const removeObjects = (bucket: WriteClient, keys: string | string[]) =>
   bucket.delete(keys).pipe(
     Effect.asVoid,
@@ -89,7 +87,6 @@ const removeObjects = (bucket: WriteClient, keys: string | string[]) =>
     Effect.mapError(() => new BlobStoreError({ operation: "remove" })),
   );
 
-/** Resolve a binding at composition; storage I/O executes in the current Worker invocation. */
 export const cloudBlobs = Effect.gen(function* () {
   const bucket = yield* Cloudflare.R2.ReadWriteBucket(AppBuilds);
   return BlobStore.of({
@@ -99,6 +96,7 @@ export const cloudBlobs = Effect.gen(function* () {
         if (object === null) return Option.none();
         return Option.some(new Uint8Array(yield* object.arrayBuffer()));
       }).pipe(
+        readR2Object,
         Effect.provide(RuntimeContext.phantom),
         Effect.tapError((error) =>
           Effect.annotateCurrentSpan({ "storage.blob.failure.code": providerFailureCode(error) }),
@@ -108,6 +106,7 @@ export const cloudBlobs = Effect.gen(function* () {
     exists: (key) =>
       bucket.head(key).pipe(
         Effect.map((object) => object !== null),
+        readR2Object,
         Effect.provide(RuntimeContext.phantom),
         Effect.tapError((error) =>
           Effect.annotateCurrentSpan({ "storage.blob.failure.code": providerFailureCode(error) }),
@@ -115,35 +114,21 @@ export const cloudBlobs = Effect.gen(function* () {
         Effect.mapError(() => new BlobStoreError({ operation: "exists" })),
       ),
     put: (key, body) =>
-      bucket.put(key, body).pipe(
-        // Builds own UUID keys; onboarding icons use content hashes. Rejected
-        // writes can repeat the same complete bytes without replaying app work.
-        persistR2Object,
-        Effect.asVoid,
-        Effect.provide(RuntimeContext.phantom),
-        Effect.tapError((error) =>
-          Effect.annotateCurrentSpan({ "storage.blob.failure.code": providerFailureCode(error) }),
-        ),
-        Effect.mapError(() => new BlobStoreError({ operation: "put" })),
-      ),
+      bucket.put(key, body).pipe(Effect.provide(RuntimeContext.phantom), writeR2Object),
     remove: (key) => removeObjects(bucket, key),
-    // One R2 request deletes up to 1,000 objects; `removeAllKeys` keeps callers within it.
     removeAll: (keys) => (keys.length === 0 ? Effect.void : removeObjects(bucket, [...keys])),
     list: (folder, options) => listFolder(bucket, folder, options),
     stream: (key, range) => streamObject(bucket, key, range),
   });
 }).pipe(Effect.provide(Cloudflare.R2.ReadWriteBucketBinding));
 
-/**
- * Retained builds for the AppData Worker, which only reads them. Its binding client has no write
- * methods, so a write is refused here instead of reaching storage.
- */
 export const cloudBuildReader = Effect.gen(function* () {
   const bucket = yield* Cloudflare.R2.ReadBucket(AppBuilds);
   const observe =
     (operation: "get" | "exists") =>
     <A, E, R>(effect: Effect.Effect<A, E, R>) =>
       effect.pipe(
+        readR2Object,
         Effect.provide(RuntimeContext.phantom),
         Effect.tapError((error) =>
           Effect.annotateCurrentSpan({ "storage.blob.failure.code": providerFailureCode(error) }),
@@ -170,7 +155,6 @@ export const cloudBuildReader = Effect.gen(function* () {
   });
 }).pipe(Effect.provide(Cloudflare.R2.ReadBucketBinding));
 
-/** One mutable object per app code, beside its immutable initial files. R2 versions fence writers. */
 export const cloudWorkspaceObjects = Effect.gen(function* () {
   const bucket = yield* Cloudflare.R2.ReadWriteBucket(AppBuilds);
   const key = (code: AppCodeId) => `app-source/${code}/workspace.json`;
@@ -189,10 +173,9 @@ export const cloudWorkspaceObjects = Effect.gen(function* () {
         const object = yield* bucket.get(key(code));
         if (object === null) return Option.none();
         return Option.some({ etag: object.etag, body: yield* object.bytes() });
-      }).pipe(Effect.provide(RuntimeContext.phantom), observe("get")),
+      }).pipe(readR2Object, Effect.provide(RuntimeContext.phantom), observe("get")),
     put: (code, body) =>
       bucket.put(key(code), body).pipe(
-        // Only a failed precondition returns null, and this write has none.
         Effect.flatMap((object) =>
           object === null
             ? Effect.fail(new BlobStoreError({ operation: "put" }))

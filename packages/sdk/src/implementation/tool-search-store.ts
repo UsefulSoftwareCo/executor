@@ -1,7 +1,3 @@
-/**
- * Tool search rows and their BM25 ranking in the executor's own Postgres database. The SQL client
- * stays inside this module; callers see only these operations.
- */
 import { Array as Arr, Clock, Effect, Schema } from "effect";
 import type { SqlClient } from "effect/sql";
 import type { SqlError } from "effect/sql/SqlError";
@@ -17,36 +13,29 @@ import { ToolRouter, ToolSearchListing, type ToolSearchScope } from "../contract
 import { query, type Query } from "./database.ts";
 import { StoredTool } from "./listing-json.ts";
 
-/** One evaluated listing as search rows describe it. */
 export interface SearchListingRow {
   readonly listing: ToolSearchListing;
   readonly owner: OwnerId;
   readonly app: AppId;
   readonly version: VersionId;
-  /** The digest of the account set the listing was evaluated with; see `toolSearchTarget`. */
   readonly target: string;
   readonly at: number;
   readonly digest: string;
   readonly routers: ReadonlyArray<ToolRouter>;
 }
 
-/** One tool of a listing, with the words it ranks by. */
 export interface SearchToolRow {
   readonly name: ToolName;
   readonly readOnly: boolean;
   readonly terms: ReadonlyArray<string>;
   readonly signature: string;
-  /** The tool as the durable listing text keeps it: shared definitions are positions. */
   readonly tool: StoredTool;
-  /** The positions of the definitions its schemas name. */
   readonly definitions: ReadonlyArray<number>;
 }
 
-/** A target as the ranking query reads it: its labels are already words. */
 export interface RankedTarget {
   readonly listing: ToolSearchListing;
   readonly app: AppId;
-  /** The digest of the target's account set; see `toolSearchTarget`. */
   readonly target: string;
   readonly labels: ReadonlyArray<string>;
   readonly scopes: ReadonlyArray<ToolSearchScope>;
@@ -59,25 +48,18 @@ const Kept = Schema.Struct({
   routers: Schema.Array(ToolRouter),
   superseded: Schema.NullOr(Schema.Number),
 });
-/**
- * {@link Kept} with the listing and target it belongs to, for a read of several listings. Rows
- * written before targets were recorded have none; they match no wanted target, as `listing`'s
- * `target =` filter skips them.
- */
 const KeptOf = Schema.Struct({
   ...Kept.fields,
   listing: Schema.String,
   target: Schema.NullOr(Schema.String),
 });
 const Listed = Schema.Struct({ listing: Schema.String });
-/** A ranked page as one row: every part of it read in the same statement. */
 const Ranked = Schema.Struct({
   total: Schema.Int,
   missing: Schema.Array(Schema.Int),
   items: Schema.Array(
     Schema.Struct({
       target: Schema.Int,
-      /** Every target the item merges, in order; the first is `target`. */
       ordinals: Schema.Array(Schema.Int),
       listing: Schema.String,
       tool: StoredTool,
@@ -88,21 +70,9 @@ const Ranked = Schema.Struct({
 });
 export type RankedPage = typeof Ranked.Type;
 
-/**
- * Rows per insert statement: nine parameters each stays well inside Postgres's bound. A batch
- * also ends once its JSON reaches `batchChars`, so writing a listing holds the JSON text of one
- * batch at a time, plus at most one row larger than the bound, never the whole listing's.
- */
 const batchRows = 500;
 const batchChars = 1_000_000;
 
-/**
- * How long a listing stays after a newer one of its app and account set was written. An execution
- * searches the listings discovery named for its whole life: at most five minutes of running
- * (`defaultMcpLimits.timeoutMs`) plus the time it waits on approvals, each of which expires
- * after fifteen minutes. An hour covers the run and three approvals in a row; a search after
- * that reports the app unavailable instead of ranking a listing it cannot read.
- */
 export const supersededRetentionMillis = 60 * 60_000;
 
 const BM25 = { k1: 1.2, b: 0.75 } as const;
@@ -110,15 +80,10 @@ const BM25 = { k1: 1.2, b: 0.75 } as const;
 export const makeToolSearchStore = (sql: SqlClient.SqlClient) => {
   const failed = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     effect.pipe(Effect.mapError(() => new StorageError()));
-  /** A tool is in a scope when it is read-only under a read-only scope or the scope names it. */
   const inScope = (scope: ToolSearchScope) =>
     sql`(${scope.readOnly ? sql`s.read_only` : sql`false`} or ${
       scope.names.length === 0 ? sql`false` : sql`s.name in ${sql.in(scope.names)}`
     })`;
-  /**
-   * The targets' rows the scopes permit. Each target's listing must be a row for its app and
-   * account set, so a listing named for another target finds nothing.
-   */
   const targets = (input: ReadonlyArray<RankedTarget>) => ({
     values: sql.csv(
       input.map(
@@ -138,10 +103,6 @@ export const makeToolSearchStore = (sql: SqlClient.SqlClient) => {
       ),
     ),
   });
-  /**
-   * Insert rows in batches bounded by count and JSON size. Each row is encoded only when its
-   * batch is built, and a batch is dropped once inserted.
-   */
   const insertBatched = <A, R extends Record<string, unknown>>(
     items: ReadonlyArray<A>,
     encode: (item: A, index: number) => { readonly row: R; readonly chars: number },
@@ -165,23 +126,11 @@ export const makeToolSearchStore = (sql: SqlClient.SqlClient) => {
       }
       if (Arr.isArrayNonEmpty(batch)) yield* insert(batch);
     });
-  /** Delete the tool and definition rows of the listings. */
   const removeRows = (listings: ReadonlyArray<ToolSearchListing>) =>
     Effect.gen(function* () {
       yield* sql`delete from executor_tool_search where listing in ${sql.in(listings)}`;
       yield* sql`delete from executor_tool_search_definitions where listing in ${sql.in(listings)}`;
     });
-  /**
-   * Mark the target's other listings evaluated before this one superseded, and delete those
-   * superseded for longer than an execution may still search them. Listings without a target were
-   * kept per profile before 4.0.13, or by the previous server during its deploy; no target is
-   * theirs, so each write of the app supersedes and then removes them like its own.
-   *
-   * Cleanup locks the expired listing rows first and deletes their rows and them by those ids.
-   * `revive` and writers update or lock the same listing row, so each either takes it first, and
-   * cleanup skips it, or waits for cleanup and finds the listing gone, and writes it again. A
-   * listing row never outlives its tool rows.
-   */
   const supersede = (row: SearchListingRow, now: number) =>
     Effect.gen(function* () {
       const target = sql`app = ${row.app} and (target = ${row.target} or target is null)`;
@@ -197,10 +146,6 @@ export const makeToolSearchStore = (sql: SqlClient.SqlClient) => {
       yield* removeRows(listings);
       yield* sql`delete from executor_tool_search_listings where listing in ${sql.in(listings)}`;
     });
-  /**
-   * Insert the listing's row, or lock the one that is kept. A kept row cleanup deletes while this
-   * waits for it is gone once the lock is granted; the insert is tried again.
-   */
   const claim = (
     listing: Record<string, unknown> & { readonly listing: ToolSearchListing },
   ): Effect.Effect<typeof Kept.Type | undefined, SqlError | Schema.SchemaError> =>
@@ -218,7 +163,6 @@ export const makeToolSearchStore = (sql: SqlClient.SqlClient) => {
       return kept ?? (yield* claim(listing));
     });
   return {
-    /** The kept rows of a listing of this target, if any. */
     listing: (listing: ToolSearchListing, target: string) =>
       sql`select at::float8 as at, digest, routers, superseded::float8 as superseded
         from executor_tool_search_listings where listing = ${listing} and target = ${target}`.pipe(
@@ -226,10 +170,6 @@ export const makeToolSearchStore = (sql: SqlClient.SqlClient) => {
         Effect.map((rows) => rows[0]),
         failed,
       ),
-    /**
-     * The kept rows of each of these listings of its target, in order, read in one statement;
-     * undefined where none is kept. Each answers as `listing` would for it alone.
-     */
     listings: (
       wanted: ReadonlyArray<{ readonly listing: ToolSearchListing; readonly target: string }>,
     ) =>
@@ -258,10 +198,6 @@ export const makeToolSearchStore = (sql: SqlClient.SqlClient) => {
             ),
             failed,
           ),
-    /**
-     * Keep a superseded listing that a target resolves to again for as long as a current one,
-     * so the executions that search it keep finding it.
-     */
     revive: (listing: ToolSearchListing) =>
       sql`update executor_tool_search_listings set superseded = null
         where listing = ${listing} returning listing`.pipe(
@@ -269,15 +205,6 @@ export const makeToolSearchStore = (sql: SqlClient.SqlClient) => {
         Effect.map((rows) => rows.length > 0),
         failed,
       ),
-    /**
-     * Keep a listing's rows unless rows of an evaluation that started no earlier are kept. Rows
-     * with the same digest only take the newer time. Writers of one listing wait for each other on
-     * its row, so a concurrent writer of the same listing finds the first one's rows. Writers of
-     * one target take its transaction lock first: each marks the target's other listings
-     * superseded, so two writers that each held their own listing row could otherwise wait for
-     * each other's. Success means the listing's row, at this evaluation's time or a later one, is
-     * committed.
-     */
     write: (
       row: SearchListingRow,
       content: {
@@ -360,18 +287,6 @@ export const makeToolSearchStore = (sql: SqlClient.SqlClient) => {
         );
         yield* supersede(row, now);
       }).pipe(sql.withTransaction, failed),
-    /**
-     * One page of the targets' tools that match any term, ranked by BM25, or of every tool in
-     * target and name order when there are no terms, with everything the page shows. Statistics
-     * count the rows the scopes permit, each target's labels counted as words of each of its
-     * tools. Tools of one app with the same name and signature merge into one item: when any of
-     * their rows matches, the item is at their first permitted target, lists every other
-     * permitted target with that tool, and ranks by the best matching row.
-     *
-     * Ranking and reading the page's tools, definitions and routers are one statement, so they
-     * read one snapshot: a page never holds a row the scopes did not rank, even while another
-     * evaluation replaces the listing's rows. `missing` names targets whose listing has no rows.
-     */
     page: (input: {
       readonly targets: ReadonlyArray<RankedTarget>;
       readonly terms: ReadonlyArray<string>;
@@ -386,9 +301,7 @@ export const makeToolSearchStore = (sql: SqlClient.SqlClient) => {
         const scored =
           input.terms.length === 0
             ? sql`scored as (select ordinal, id, name, signature, 0::float8 as score from scope)`
-            : // Each aggregate is computed once: inlined, Postgres would recount the scope for
-              // every matching row.
-              sql`q(term) as (select distinct unnest(string_to_array(${terms}::text, ' '))),
+            : sql`q(term) as (select distinct unnest(string_to_array(${terms}::text, ' '))),
               stats as materialized (
                 select count(*)::float8 as n, coalesce(nullif(avg(length), 0), 1)::float8 as avgdl
                 from scope),
@@ -471,7 +384,6 @@ export const makeToolSearchStore = (sql: SqlClient.SqlClient) => {
 };
 export type ToolSearchStore = ReturnType<typeof makeToolSearchStore>;
 
-/** Delete the apps' search rows with the apps, finding their tools through their listings. */
 export const removeToolSearch = (tx: Query, apps: ReadonlyArray<AppId>) =>
   Effect.gen(function* () {
     if (apps.length === 0) return;

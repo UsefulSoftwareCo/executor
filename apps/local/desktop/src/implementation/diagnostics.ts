@@ -1,13 +1,3 @@
-/**
- * Diagnostics export: one zip in Downloads that a user can attach to a report.
- *
- * Only allowlisted log files from the data directory's `diagnostics/` are read. Keys, the
- * installation record, databases, retained builds, the browser profile and the telemetry collector's
- * store are
- * never opened. Logs already carry redacted values; the export also masks credential shapes
- * (bearer values, pairing and signed-link tokens, 64-character hex keys and credential-named
- * JSON fields) as a second barrier before anything leaves the machine.
- */
 import { app, dialog, shell } from "electron";
 import { strToU8, zipSync } from "fflate";
 import { Clock, DateTime, Effect, FileSystem, Option, Path, Semaphore } from "effect";
@@ -16,18 +6,15 @@ import type { PortSource } from "./settings.ts";
 
 const maxFileBytes = 50 * 1024 * 1024;
 const maxAgeMs = 14 * 24 * 60 * 60 * 1000;
-/** Rotating JSONL logs (current file and archives) and the collector status file. */
 const exported = /^(?:executor-[a-z]+\.jsonl(?:\.[1-4])?|collector\.json)$/;
 
 const credentialName = String.raw`[^"\\]*(?:token|secret|password|authorization|cookie|api[-_]?key)[^"\\]*`;
-/** A credential-named JSON string field, and the same field inside an embedded JSON log line. */
 const credentialField = new RegExp(String.raw`("${credentialName}"\s*:\s*)"(?:[^"\\]|\\.)*"`, "gi");
 const embeddedCredentialField = new RegExp(
   String.raw`(\\"${credentialName}\\"\s*:\s*)\\"[^"\\]*\\"`,
   "gi",
 );
 
-/** Mask credential shapes in exported text. Trace and span IDs are shorter than 64 hex digits. */
 export const redact = (text: string) =>
   text
     .replace(credentialField, '$1"[redacted]"')
@@ -38,10 +25,8 @@ export const redact = (text: string) =>
 
 const stamp = (iso: string) => iso.replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z");
 
-/** Make the "Export diagnostics…" action. Failures show a native dialog without file contents. */
 export const makeExportDiagnosticsAction = (options: {
   readonly directory: string;
-  /** The background server's origin, if the window is connected to one. */
   readonly origin: () => string | undefined;
   readonly portSource: Effect.Effect<PortSource>;
 }) =>
@@ -81,7 +66,6 @@ export const makeExportDiagnosticsAction = (options: {
         server: { origin: options.origin() ?? null, portSource: (yield* options.portSource).kind },
         dataDirectory: options.directory,
         files: included,
-        // Keys stay in the OS credential store or keys.json; they are never part of an export.
         excluded: [
           "keys and installation record",
           "databases and retained builds",

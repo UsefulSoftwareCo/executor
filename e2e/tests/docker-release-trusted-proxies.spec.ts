@@ -1,11 +1,3 @@
-/**
- * Behind a reverse proxy every connection comes from the proxy, so the image counted all clients'
- * sign-ins against the proxy's one rate limit. With EXECUTOR_TRUSTED_PROXIES naming the proxy, each
- * client gets its own limit. A client never chooses its own address by sending forwarding headers,
- * through the proxy or around it: a peer that is not a listed proxy is limited by its own address,
- * as every peer is when the setting is empty. The scenario starts one image, since the suite's
- * other files start theirs at the same time.
- */
 import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Config, Effect, Schema, Schedule } from "effect";
@@ -16,10 +8,6 @@ import { releaseNetwork } from "../support/release-networks.ts";
 const node = "node:24-bookworm-slim";
 const origin = "http://executor.example.test";
 
-/**
- * A reverse proxy that appends the address each request came from to X-Forwarded-For, as nginx's
- * `$proxy_add_x_forwarded_for` does, and keeps whatever the client sent to its left.
- */
 const proxy = (upstream: string) => `
 const http = require("node:http");
 http.createServer((request, response) => {
@@ -35,7 +23,6 @@ http.createServer((request, response) => {
 }).listen(8081, "0.0.0.0");
 `;
 
-/** Wrong-password sign-ins, one after another; prints their statuses as JSON. */
 const signIns = `
 const [url, count, forged] = process.argv.slice(1);
 (async () => {
@@ -80,7 +67,6 @@ it.live(
         const trusting = `${id}-server`;
         const proxyName = `${id}-proxy`;
         yield* container(proxyName, ["--memory", "256m", node, "node", "-e", proxy(trusting)]);
-        // Docker can report the address as "invalid IP" for a moment after the container starts.
         const proxyAddress = yield* run([
           "inspect",
           "--format",
@@ -116,7 +102,6 @@ it.live(
           environment,
         );
 
-        // Long-lived clients, so each keeps its own address for the whole scenario.
         const client = (name: string) =>
           container(`${id}-${name}`, [
             "--memory",
@@ -146,7 +131,6 @@ it.live(
           client("direct"),
         ]);
         const throughTrusting = `http://${proxyName}:8081`;
-        // The exit code is the health answer; output alone would accept a server still starting.
         yield* processes
           .exitCode(
             ChildProcess.make("docker", [
@@ -165,14 +149,10 @@ it.live(
             Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 240 }),
           );
 
-        // Each client behind the trusted proxy has its own limit.
         expect(yield* first(throughTrusting, 3)).toEqual([401, 401, 401]);
         expect(yield* second(throughTrusting, 1), "another client still signs in").toEqual([401]);
 
-        // A client that names a new address on each try, in both headers, is still limited by
-        // the address the proxy appended.
         expect(yield* forger(throughTrusting, 4, true)).toEqual([401, 401, 401, 429]);
-        // A client that reaches the instance around the proxy is not trusted to name anyone.
         expect(yield* direct(`http://${trusting}:8080`, 4, true)).toEqual([401, 401, 401, 429]);
       }),
     ).pipe(Effect.provide(NodeServices.layer)),

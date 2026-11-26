@@ -1,16 +1,3 @@
-/**
- * Local Cloud's Worker proxy follows HTTP/1.1 framing so a client keeps its connection when
- * workerd closes its end after an answer that left the body unread
- * (patches/cloudflare-runtime-keep-alive.md). These cases run the patched proxy in front of a fake
- * workerd and check that the framing never strands a connection: under Node, which loads the
- * patched `dist/`, and under Bun, which loads the patched `src/`.
- *
- * - An early answer to a large upload that workerd stops reading, then resets: the proxy must
- *   read and discard the rest of the body, and answer the next request on the same connection.
- * - An answer the proxy cannot frame (a head over 64 KB) while it holds the next request: it must
- *   send the held request on, so every request is answered, in order, including when more than
- *   the 1 MB it reads ahead is held.
- */
 import { expect, layer } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, Option, Path, Schema, Stream } from "effect";
@@ -168,7 +155,6 @@ const runtimes = {
 
 const Report = Schema.fromJsonString(Schema.Record(Schema.String, Schema.Json));
 
-/** Runs one scenario; `exited` is false when the probe was still running after 60 s. */
 const scenario = (
   runtime: keyof typeof runtimes,
   name: "early-answer" | "untracked-held" | "untracked-held-large",

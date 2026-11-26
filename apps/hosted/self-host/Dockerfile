@@ -20,6 +20,8 @@ RUN bun install --frozen-lockfile --filter @executor-js/hosted-self-host --filte
 RUN bun run --cwd apps/hosted/self-host/web build
 RUN bun run --cwd packages/apps build
 RUN bun run --cwd apps/hosted/self-host package:runtime
+# Readable by everyone and writable by none but root, whatever modes the packages it copies carry.
+RUN chmod -R u=rwX,go=rX apps/hosted/self-host/dist/workerd
 
 # The telemetry collector, built from its crate by the same script and toolchain as every release
 # target (packages/telemetry/collector/README.md, Release builds). Only the crate, its toolchain
@@ -78,7 +80,9 @@ ENV EXECUTOR_BUILD_VERSION=$EXECUTOR_BUILD_VERSION EXECUTOR_POSTHOG_PUBLIC_KEY=$
 COPY --from=system /runtime/ /
 ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt NODE_ENV=production EXECUTOR_ENVIRONMENT=self-host HOST=0.0.0.0 PORT=4400 EXECUTOR_DATA_DIR=/app/data EXECUTOR_MOTEL_DATA_DIR=/app/motel-data
 WORKDIR /app
-COPY --from=build --chown=1000:1000 /build/apps/hosted/self-host/dist/workerd ./
+# The runtime belongs to root: the host reads it again at every start, so the user that runs app
+# code must not be able to change it. Only the data directories are that user's (package-system.sh).
+COPY --from=build /build/apps/hosted/self-host/dist/workerd ./
 COPY --from=native /executor-host /usr/local/bin/executor-host
 COPY --from=native /usr/local/go/LICENSE /usr/share/doc/golang/LICENSE
 COPY --from=native /licenses/ /usr/share/doc/executor-host/

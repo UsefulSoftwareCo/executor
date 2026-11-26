@@ -1,8 +1,3 @@
-/**
- * A deployed run's database connection latency: the levels at their thresholds, the run's
- * figure from its minutes, and the check after teardown that the stage's PlanetScale branch is
- * gone. A local server stands in for PlanetScale's API and records what it was asked.
- */
 import { expect, layer } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { ConfigProvider, Effect, Exit, Layer } from "effect";
@@ -21,7 +16,6 @@ const token = "pscale_SYNTHETIC-token-0001";
 
 type Seen = { path: string; authorization: string | undefined };
 
-/** PlanetScale's branch read, answering `status` every time. */
 const planetscale = (seen: Seen[], status: number) =>
   Effect.acquireRelease(
     Effect.callback<{ origin: string; close: () => void }>((resume) => {
@@ -38,7 +32,6 @@ const planetscale = (seen: Seen[], status: number) =>
     ({ close }) => Effect.sync(close),
   );
 
-/** An origin nothing listens on. */
 const unreachable = Effect.callback<string>((resume) => {
   const server = createServer();
   server.listen(0, () => {
@@ -57,7 +50,6 @@ const withPlanetscale = credentials({
 });
 const quickly = { spacing: "10 millis", attempts: 2 } as const;
 
-/** The failure's message, which must name the branch. */
 const failureOf = <A, E extends { readonly message: string }, R>(effect: Effect.Effect<A, E, R>) =>
   Effect.map(Effect.exit(effect), (exit) =>
     Exit.isFailure(exit) && exit.cause.reasons[0]?._tag === "Fail"
@@ -68,18 +60,15 @@ const failureOf = <A, E extends { readonly message: string }, R>(effect: Effect.
 layer(NodeServices.layer, { excludeTestServices: true })("Database connections", (it) => {
   it.effect("levels a run's connection latency at each threshold", () =>
     Effect.sync(() => {
-      // The average alone: elevated from 10 ms, severe from 50 ms.
       expect([9.9, 10, 49.9, 50].map((averageMs) => connectionLevel(averageMs, 0))).toEqual([
         "normal",
         "elevated",
         "elevated",
         "severe",
       ]);
-      // The worst minute alone: elevated from 100 ms, severe from 300 ms.
       expect([99, 100, 299, 300].map((worstMinuteMs) => connectionLevel(0, worstMinuteMs))).toEqual(
         ["normal", "elevated", "elevated", "severe"],
       );
-      // Either one reaching a level is enough.
       expect(connectionLevel(9.9, 300)).toBe("severe");
       expect(connectionLevel(50, 99)).toBe("severe");
     }),
@@ -91,7 +80,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Database connections",
         summarize("hyperdrive", [
           { queries: 100, latencyMs: 10 },
           { queries: 300, latencyMs: 2 },
-          // Too few statements to say anything about the pool: neither the average nor the worst.
           { queries: 99, latencyMs: 999 },
         ]),
       ).toEqual({
@@ -144,7 +132,7 @@ layer(NodeServices.layer, { excludeTestServices: true })("Database connections",
           Effect.provide(withPlanetscale),
         ),
       );
-      expect(message).toContain(`PlanetScale branch test-${slug} was not confirmed deleted`);
+      expect(message).toContain(`PlanetScale branch test-${slug} is not confirmed gone`);
       expect(message).toContain("PlanetScale still answers 200");
       expect(seen).toHaveLength(quickly.attempts + 1);
     }),

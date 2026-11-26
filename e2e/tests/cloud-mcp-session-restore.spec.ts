@@ -1,21 +1,3 @@
-/**
- * A Cloud MCP session outlives its session object's memory. The object keeps each session's
- * negotiated `initialize` in its storage, so after an eviction (or a deploy's restart)
- * the client continues with the same `Mcp-Session-Id` instead of getting 404 and initializing
- * again. These cases hold what a restored session is and is not: it keeps its negotiated
- * version, the log level the client set and its elicitation mode, it is read only after the
- * bearer is verified and names the object, and a session the object never stored is still not
- * found. An object keeps its 64 most recently used sessions; concurrent first requests after a
- * wake restore sessions while another opens and prunes, and every answer agrees with the store.
- * A program waiting for approval through that idle wait keeps its own object in memory, so the
- * person's answer still continues it (FB-069: idle eviction lost it and resume said not-found).
- * After a restart, a resume of an answered request says what the object recorded: `answered`
- * when it stored the answer, and, when that write failed (the local hook in
- * `mcp-interaction-faults-local.ts`), `lost` copy that does not claim the request went unanswered.
- *
- * Not covered here: the 7-day expiry (managed Cloud has no clock control) and a failing session
- * storage call (no public surface can cause one; the hook refuses only request-record writes).
- */
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { expect, layer } from "@effect/vitest";
 import { Duration, Effect, FileSystem, Redacted, Schedule, Schema } from "effect";
@@ -32,19 +14,13 @@ import { scenarios } from "../test-plan.ts";
 type Span = (typeof SpanQuery.Type)["data"][number]["span"];
 
 const Token = Schema.Struct({ id: Schema.String, key: Schema.RedactedFromValue(Schema.String) });
-/** A stateful revision every elicitation mode serves. */
 const stateful = "2025-06-18";
 const signedId =
   /^([0-9a-f]{64})\.([A-Za-z0-9_-]{43})\.([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
 const sessionNotFound = "Session not found";
 const native = "?elicitation_mode=native";
-/**
- * workerd evicts an object some time after its last request once nothing holds it (Cloudflare:
- * 70–140 s). The session's database window holds it for 120 s after its last call. The step after
- * the wait checks that the object did restart.
- */
+const model = "?elicitation_mode=model";
 const idle = Duration.seconds(270);
-/** An app whose one tool always asks for approval. */
 const reviewSource = `import { defineApp, mutation, object, string, router } from "apps";
 import { always } from "apps/operations/approval";
 export default defineApp({}, async () => ({ tools: router({
@@ -77,10 +53,8 @@ const Resumed = Schema.Struct({
     }),
   }),
 });
-/** Sessions an object keeps (`mcp-session-store.ts`). */
 const kept = 64;
 
-/** The key Alchemy minted for one logical id, read from this local Cloud's state. */
 const RandomState = Schema.Struct({
   attr: Schema.Struct({ text: Schema.Struct({ __redacted__: Schema.String }) }),
 });
@@ -120,13 +94,11 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session restore", (i
               return key;
             });
 
-          /** One MCP POST under its own trace; the answer is JSON or one SSE message. */
           const post = (input: {
             readonly credential: Redacted.Redacted<string>;
             readonly session?: string | undefined;
             readonly protocol?: string | undefined;
             readonly query?: string | undefined;
-            /** Refuse the session object's request-record writes while this request runs. */
             readonly refuseRecords?: boolean;
             readonly message: Readonly<Record<string, unknown>>;
           }) =>
@@ -134,7 +106,7 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session restore", (i
               Effect.gen(function* () {
                 const traceId = randomBytes(16).toString("hex");
                 const request = HttpClientRequest.post(
-                  `${target.metadata.origin}/mcp${input.query ?? ""}`,
+                  `${target.metadata.origin}/mcp${input.query ?? model}`,
                 ).pipe(
                   HttpClientRequest.setHeaders({
                     accept: "application/json, text/event-stream",
@@ -168,7 +140,7 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session restore", (i
               }),
             ).pipe(Effect.provideService(HttpClient.TracerPropagationEnabled, false));
 
-          const open = (credential: Redacted.Redacted<string>, label: string, query = "") =>
+          const open = (credential: Redacted.Redacted<string>, label: string, query = model) =>
             Effect.gen(function* () {
               const answer = yield* post({
                 credential,
@@ -196,8 +168,11 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session restore", (i
               expect(initialized.status).toBe(202);
               return session;
             });
-          const initialize = (credential: Redacted.Redacted<string>, label: string, query = "") =>
-            evidence.step(`Initialize a session (${label})`, open(credential, label, query));
+          const initialize = (
+            credential: Redacted.Redacted<string>,
+            label: string,
+            query = model,
+          ) => evidence.step(`Initialize a session (${label})`, open(credential, label, query));
           const listTools = (
             credential: Redacted.Redacted<string>,
             session: string,
@@ -219,7 +194,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session restore", (i
             expect(answer.text).toContain(sessionNotFound);
           };
 
-          /** The object's spans of one finished request, once its request span has arrived. */
           const objectSpans = (traceId: string) =>
             telemetry.query(traceId).pipe(
               Effect.map((result) => result.data.map(({ span }) => span)),
@@ -295,8 +269,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session restore", (i
             }),
           );
 
-          // Another object (its own API key) opens one session more than it keeps, one at a time,
-          // so each is used later than the one before. The first is the least recently used.
           const crowd = yield* evidence.step(
             `Another object opens ${kept + 1} sessions, one more than it keeps`,
             Effect.forEach(
@@ -326,7 +298,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session restore", (i
               return deployedApp;
             }),
           );
-          /** Calls the review tool, which pauses for approval. */
           const pause = (credential: Redacted.Redacted<string>, mcpSession: string, note: string) =>
             Effect.gen(function* () {
               const answer = yield* post({
@@ -388,7 +359,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session restore", (i
               });
             });
 
-          // A third object, of its own API key, holds a program that waits for approval.
           const review = yield* evidence.step(
             "Another object pauses a call for approval",
             Effect.gen(function* () {
@@ -400,8 +370,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session restore", (i
             }),
           );
 
-          // A fourth object answers two requests. Its write of the first answer is refused, as a
-          // failing storage call would, so after the restart its record holds only the issue.
           const answered = yield* evidence.step(
             "Another object answers two requests, the first while it cannot write its record of the answer",
             Effect.gen(function* () {
@@ -532,8 +500,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session restore", (i
           yield* evidence.step(
             "Concurrent first requests to a full object restore its sessions while another opens, and only the least recently used are forgotten",
             Effect.gen(function* () {
-              // While these restore (each one a use), the new session pushes one more out: the
-              // least recently used session no request here touches, crowd[1].
               const restoring = crowd.slice(2, 10);
               const { opened, restored } = yield* Effect.all(
                 {

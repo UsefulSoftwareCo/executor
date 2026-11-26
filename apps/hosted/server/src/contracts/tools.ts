@@ -1,6 +1,5 @@
 import { withLegacyKeys } from "@executor-js/utils/legacy-keys";
 import { RequiredAction } from "./authorization.ts";
-/** Account-dependent discovery and execution within a configured app. */
 import {
   AccountChoiceUnsupported,
   AccountNotFound,
@@ -72,13 +71,11 @@ const discoveryErrors = [
   OrganizationForbidden,
 ] as const;
 const prefix = "/api/organizations/:organization/apps/:app/tools";
-// `deployment` is the former name of `version`; callers written before the rename still send it.
 const versionQuery = Schema.Struct({ version: Schema.optional(VersionId) }).pipe(
   withLegacyKeys({ version: "deployment" }),
 );
 const callPayload = Schema.Struct({
   tool: ToolName,
-  /** "query" for tools the catalog marks readOnly, otherwise "mutation". Omitted, it is read from the catalog. */
   kind: Schema.optional(ToolKind),
   input: Json,
   version: Schema.optional(VersionId),
@@ -96,11 +93,6 @@ const callErrors = [
   RequestInvalid,
   OrganizationForbidden,
 ] as const;
-/**
- * A failed call's errors carry its reference in the tool call log as `reference`. The dashboard
- * run adds the refusal of a bearer credential; `call` shares the run's schemas, so the API document
- * names each once.
- */
 export const RunFailures = referencedErrors([Forbidden, ...callErrors]);
 const [, ...callFailures] = RunFailures.errors;
 export const CallFailures = {
@@ -117,7 +109,6 @@ const reviewErrors = [
   Forbidden,
   ToolRunApprovalRefused,
 ] as const;
-/** Members may discover tools; execution requires an administrator in the handler. */
 export const HostedTools = HttpApiGroup.make("tools")
   .add(
     HttpApiEndpoint.get("list", prefix, {

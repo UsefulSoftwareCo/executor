@@ -8,42 +8,28 @@ import type {
 import type { Atom } from "effect/reactivity";
 import type { Query } from "./dashboard.ts";
 
-/**
- * A connection's tool scope. Rules (all, read-only) include tools added later; selected names
- * never expand automatically.
- */
 export type ConnectionTools = StoredConnectionApp["tools"];
 
-/**
- * A connection's event scope. Omitted or `all` includes events the app adds later; selected names
- * never expand, and none selected means no events.
- */
 export type ConnectionEvents = NonNullable<StoredConnectionApp["events"]>;
 
-/** An app runs without an account, or as accounts the user can use with it. */
 export type ConnectionTarget =
   | { readonly kind: "app" }
   | { readonly kind: "account"; readonly id: AccountId; readonly label: string };
 
-/** Stable UI identity never conflates an account with its app. */
 export const connectionTargetKey = (target: ConnectionTarget): string =>
   target.kind === "app" ? "app" : `${target.kind}:${target.id}`;
 
-/** Human-readable target names for summaries and saved connection details. */
 export const connectionTargetLabel = (target: ConnectionTarget): string =>
   target.kind === "app" ? "No account needed" : target.label;
 
-/** One app appears once per connection; its tool scope applies to every selected account. */
 export interface ConnectionApp {
   readonly id: AppId;
   readonly name: string;
   readonly targets: readonly ConnectionTarget[];
   readonly tools: ConnectionTools;
-  /** Omitted: every event the app declares, now or later. */
   readonly events?: ConnectionEvents;
 }
 
-/** Short summary of an event scope, for an app that declares events. */
 export const connectionEventsLabel = (events: ConnectionEvents | undefined): string =>
   events === undefined || events.kind === "all"
     ? "All events"
@@ -51,7 +37,6 @@ export const connectionEventsLabel = (events: ConnectionEvents | undefined): str
       ? "No events"
       : `${events.names.length.toLocaleString("en-US")} ${events.names.length === 1 ? "event" : "events"}`;
 
-/** An editor draft. Its ID is chosen once so a retried create returns the same connection. */
 export interface ConnectionDraft {
   readonly id: ConnectionId;
   readonly name: string;
@@ -63,10 +48,6 @@ const targetInput = (
 ): ConnectionInput["apps"][number]["runsAs"][number] =>
   target.kind === "app" ? target : { kind: "account", id: target.id };
 
-/**
- * A connection nobody named is named for its apps, so creating one never starts with naming it.
- * The result fits the 80 characters a name allows.
- */
 export const defaultConnectionName = (apps: readonly { readonly name: string }[]): string => {
   const [first, second, ...rest] = apps.map((app) => app.name);
   const name =
@@ -80,7 +61,6 @@ export const defaultConnectionName = (apps: readonly { readonly name: string }[]
   return name.length > 80 ? `${name.slice(0, 79)}…` : name;
 };
 
-/** The request for a complete draft. Undefined while any included app has no way to run. */
 export const connectionInput = (draft: ConnectionDraft): ConnectionInput | undefined => {
   const apps: ConnectionInput["apps"][number][] = [];
   for (const app of draft.apps) {
@@ -96,20 +76,17 @@ export const connectionInput = (draft: ConnectionDraft): ConnectionInput | undef
   return { id: draft.id, name: draft.name.trim() || defaultConnectionName(draft.apps), apps };
 };
 
-/** A saved connection as the sign-in page lists it: its name and the names of the apps it reaches. */
 export interface ConsentConnection {
   readonly id: ConnectionId;
   readonly name: string;
   readonly apps: readonly string[];
 }
 
-/** Create a new connection or replace an existing one's name and access. */
 export interface ConnectionSave {
   readonly existing: boolean;
   readonly input: ConnectionInput;
 }
 
-/** Product bindings for the shared connections page. One renderer handles every failure. */
 export interface ScopedConnectionBindings<EL, ES, ER> {
   readonly connections: Query<readonly ConnectionView[], EL>;
   readonly save: Atom.AtomResultFn<ConnectionSave, ConnectionView, ES>;

@@ -1,4 +1,3 @@
-/** Low-cardinality transport measurements; these are wall/CPU totals with explicit units, not app data. */
 import { Effect, Metric } from "effect";
 
 const boundaries = [1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 30000];
@@ -42,7 +41,6 @@ const group = (path: string | undefined) =>
                 ? "api"
                 : "document";
 
-/** Classify URLs into a fixed set before attaching attributes; raw paths and query strings are never labels. */
 export const recordResponseReady = (
   path: string | undefined,
   method: string,
@@ -56,8 +54,6 @@ export const recordResponseReady = (
   );
 };
 
-/** Fixed failure metadata goes to both local/native logs and the metric registry, even when the remote exporter is down. */
-/** The signal an export path carries. */
 const signalOf = (path: string) =>
   path.endsWith("/traces")
     ? "traces"
@@ -69,11 +65,6 @@ const signalOf = (path: string) =>
           ? "app"
           : "other";
 
-/**
- * Count and log one failed export. `elapsedMs`, when known, is how long its request had run when
- * it failed: an interruption at an exporter's deadline, such as the relay's three seconds, shows
- * that deadline.
- */
 export const recordExportFailure = (
   path: string,
   reason:
@@ -106,7 +97,6 @@ export const recordExportFailure = (
   );
 };
 
-/** Record provider-owned invocation totals separately from response-ready timing. */
 export const recordWorkerMeasurements = (
   worker: string,
   outcome: string,

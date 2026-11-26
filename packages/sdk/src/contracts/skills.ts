@@ -78,7 +78,6 @@ export const AppSkillNotFound = ApiError.define({
   status: 404,
   fields: { app: AppId, name: AppSkillName, file: SourceFilePath },
   message: ({ name, file }) => `The app has no skill “${name}” with the file “${file}”.`,
-  // The skill name and file are the caller's text.
   recorded: () => "The app has no skill with the requested name and file",
 });
 export type AppSkillNotFound = typeof AppSkillNotFound.Type;

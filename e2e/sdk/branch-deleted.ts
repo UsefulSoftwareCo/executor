@@ -1,9 +1,3 @@
-/**
- * Prove that a deployed run's teardown deleted its PlanetScale branch. A teardown that could not
- * delete it (a branch PlanetScale refuses to delete, an expired credential) otherwise leaves a
- * branch that keeps billing while the run looks finished. This fails loudly and names the branch,
- * with a GitHub Actions error annotation when the run is in CI.
- */
 import { Config, Console, Duration, Effect, Option, Schedule, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
 import { reveal, secretConfig } from "../support/failure-text.ts";
@@ -12,17 +6,10 @@ export class BranchNotDeleted extends Schema.TaggedError<BranchNotDeleted>()("Br
   message: Schema.String,
 }) {}
 
-/** Why the branch's deletion is not confirmed yet. Fixed text only. */
 class Unconfirmed extends Schema.TaggedError<Unconfirmed>()("Unconfirmed", {
   reason: Schema.String,
 }) {}
 
-/**
- * Waits for PlanetScale to answer 404 for the stage's branch: by default up to two minutes, every
- * 10 seconds. A branch PlanetScale still lists, a request that keeps failing and missing
- * credentials all end in the same `BranchNotDeleted`, which names the branch. Only the spec
- * passes another API or spacing, for its local stand-in.
- */
 export const confirmBranchDeleted = (
   slug: string,
   options: {
@@ -72,7 +59,7 @@ export const confirmBranchDeleted = (
       ),
       Effect.catchTag("Unconfirmed", ({ reason }) =>
         Effect.gen(function* () {
-          const message = `PlanetScale branch ${branch} was not confirmed deleted after its teardown (${reason}). If it is still there, it keeps billing until someone with permission deletes it.`;
+          const message = `PlanetScale branch ${branch} is not confirmed gone after its teardown (${reason}). The teardown's own line above says whether it sent a delete and what PlanetScale answered. If the branch is still there, it keeps billing until someone with permission deletes it.`;
           const ci = yield* Config.String("GITHUB_ACTIONS").pipe(Config.option);
           if (Option.isSome(ci))
             yield* Console.error(`::error title=Leftover PlanetScale branch::${message}`);

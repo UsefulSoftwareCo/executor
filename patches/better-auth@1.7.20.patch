@@ -106,3 +106,26 @@ index 8109668..30839db 100644
    /**
     * Require discovery to provide the issuer and JWKS metadata needed to verify
     * ID tokens before this provider is registered.
+diff --git a/dist/plugins/organization/routes/crud-invites.mjs b/dist/plugins/organization/routes/crud-invites.mjs
+index 0380d6e..0561765 100644
+--- a/dist/plugins/organization/routes/crud-invites.mjs
++++ b/dist/plugins/organization/routes/crud-invites.mjs
+@@ -452,8 +452,17 @@ const cancelInvitation = (options) => createAuthEndpoint("/organization/cancel-i
+ 	});
+ 	const canceledI = await adapter.updateInvitation({
+ 		invitationId: ctx.body.invitationId,
+-		status: "canceled"
++		status: "canceled",
++		fromStatus: "pending"
+ 	});
++	if (!canceledI) {
++		const current = await adapter.findInvitationById(ctx.body.invitationId);
++		if (current?.status === "accepted") throw APIError.from("BAD_REQUEST", {
++			code: "INVITATION_ALREADY_ACCEPTED",
++			message: "This invitation has already been accepted"
++		});
++		throw APIError.from("BAD_REQUEST", ORGANIZATION_ERROR_CODES.INVITATION_NOT_FOUND);
++	}
+ 	if (options?.organizationHooks?.afterCancelInvitation) await options?.organizationHooks.afterCancelInvitation({
+ 		invitation: canceledI || invitation,
+ 		cancelledBy: session.user,

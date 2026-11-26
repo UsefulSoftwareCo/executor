@@ -1,21 +1,14 @@
-/**
- * Which host a client command talks to. `--host` wins, then EXECUTOR_HOST, then the host signed in
- * to last; with none of them, the command uses the local background Executor.
- */
 import { Config, Effect, FileSystem, Option, Path, Redacted, Schema } from "effect";
 import { Flag } from "effect/cli";
 import { hostedExecutorOrigin } from "@executor-js/sdk/core";
 import { LoginFailed, ToolsSignInRequired } from "../client-error.ts";
 import { RegistryOrigin, mcpResource, rememberedHost, toolsSession } from "./node-auth.ts";
 
-/** The local Executor that commands use when no host is named or remembered. */
 export interface LocalServer {
   readonly url: string;
-  /** Sent as the local API key. */
   readonly token: Redacted.Redacted<string>;
 }
 
-/** `--host`, falling back to EXECUTOR_HOST. The remembered host is read by {@link namedHost}. */
 export const hostFlag = Flag.String("host").pipe(
   Flag.withDescription(
     `Executor origin, such as ${hostedExecutorOrigin}. Defaults to EXECUTOR_HOST, then the host you signed in to last, then the local background Executor, which starts if needed`,
@@ -24,33 +17,19 @@ export const hostFlag = Flag.String("host").pipe(
   Flag.optional,
 );
 
-/** The host `--host` or EXECUTOR_HOST names, or else the one signed in to last. */
 export const namedHost = (flag: Option.Option<string>) =>
   Option.isSome(flag) ? Effect.succeed(flag) : rememberedHost;
 
 const loopback = (origin: string) =>
   ["127.0.0.1", "localhost", "[::1]"].includes(new URL(origin).hostname);
 
-/**
- * Where tool commands send MCP requests, and the bearer each request carries. A tools sign-in
- * refreshes inside `token`, so a long command or `executor mcp` keeps a current one.
- */
 export interface ToolsTarget<E = never> {
-  /** The host the command resolved, for messages. */
   readonly host: string;
-  /** The MCP endpoint. */
   readonly url: string;
   readonly token: Effect.Effect<Redacted.Redacted<string>, E>;
-  /** Whether this is the local Executor rather than a named host. */
   readonly local: boolean;
 }
 
-/**
- * Resolve the tool commands' host and credential. A named host uses a pasted
- * EXECUTOR_ACCESS_TOKEN, EXECUTOR_API_KEY for a loopback server, or the tools sign-in, in that
- * order, as app commands do. Without a host, the local server's key; `fresh` resolves the local
- * server again for every request, so a long-running relay follows a restarted server's password.
- */
 export const toolsTarget = <E, R>(
   flag: Option.Option<string>,
   localServer: Effect.Effect<LocalServer, E, R> | undefined,
@@ -76,14 +55,13 @@ export const toolsTarget = <E, R>(
       });
     }
     const origin = host.value;
-    if (!Schema.is(RegistryOrigin)(origin))
-      return yield* new LoginFailed({ signIn: "mcp", reason: "host" });
+    if (!Schema.is(RegistryOrigin)(origin)) return yield* new LoginFailed({ reason: "host" });
     const pasted = yield* Config.Redacted("EXECUTOR_ACCESS_TOKEN").pipe(Config.option);
     if (Option.isSome(pasted))
       return target({
         host: origin,
         url: yield* mcpResource(origin).pipe(
-          Effect.mapError(() => new LoginFailed({ signIn: "mcp", reason: "host" })),
+          Effect.mapError(() => new LoginFailed({ reason: "host" })),
         ),
         token: Effect.succeed(pasted.value),
         local: false,

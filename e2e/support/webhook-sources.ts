@@ -1,12 +1,18 @@
-/** Hosted webhook sources and subscriptions through the public API. */
 import { expect } from "@effect/vitest";
 import { Clock, Deferred, Effect, Schema } from "effect";
 import { Api, body, type Session } from "./api.ts";
+import { axiomQueryMs } from "./axiom.ts";
+import { collectorReadMs, Evidence, Telemetry } from "./evidence.ts";
+import { Target } from "./platform.ts";
+import { ScenarioDeadline } from "./scenario-deadline.ts";
+import {
+  reconcileSpan,
+  sourcesSpan,
+  type SweepPace,
+  sweepSpan,
+  waitOnSweep,
+} from "./webhook-sweep.ts";
 
-/**
- * One account linked to an app as its webhook source, as the caller may see it. An account with an
- * app link is its source without an actor, even when members also link it.
- */
 export const WebhookSourceRow = Schema.Struct({
   account: Schema.String,
   actor: Schema.NullOr(Schema.String),
@@ -17,7 +23,6 @@ export const WebhookSourceRow = Schema.Struct({
 });
 export type WebhookSourceRow = typeof WebhookSourceRow.Type;
 
-/** A webhook subscription's safe metadata; an app-account webhook has no actor. */
 export const WebhookSubscriptionRow = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
@@ -29,7 +34,6 @@ export const WebhookSubscriptionRow = Schema.Struct({
 });
 export type WebhookSubscriptionRow = typeof WebhookSubscriptionRow.Type;
 
-/** The webhook sources of the app at `appPath` that `actor` may see. */
 export const webhookSources = (actor: Session, appPath: string) =>
   Effect.gen(function* () {
     const api = yield* Api;
@@ -38,7 +42,6 @@ export const webhookSources = (actor: Session, appPath: string) =>
     return yield* body(Schema.Array(WebhookSourceRow), response);
   });
 
-/** The webhook subscriptions of the app at `appPath` that `actor` may see. */
 export const webhookSubscriptions = (actor: Session, appPath: string) =>
   Effect.gen(function* () {
     const api = yield* Api;
@@ -47,29 +50,115 @@ export const webhookSubscriptions = (actor: Session, appPath: string) =>
     return yield* body(Schema.Array(WebhookSubscriptionRow), response);
   });
 
-/**
- * Wait for background registration until `settled` accepts the sources `actor` sees, and return
- * them. Fails with the last observed sources after 30 seconds.
- */
+const appOf = (appPath: string) => appPath.split("/apps/")[1]?.split("/")[0] ?? "";
+
+export const deployedPace: SweepPace = {
+  readSpacingMs: 250,
+  spanSpacingMs: 10_000,
+  deliveryMs: 20_000,
+  queryMs: axiomQueryMs,
+  reportMarginMs: 3_000,
+  servers: "own",
+};
+export const localPace: SweepPace = {
+  readSpacingMs: 250,
+  spanSpacingMs: 2_000,
+  deliveryMs: 5_000,
+  queryMs: collectorReadMs,
+  reportMarginMs: 3_000,
+  servers: "shared",
+};
+export const managedCloudPace: SweepPace = { ...localPace, servers: "own" };
+
+export const sweepPaceFor = (metadata: {
+  readonly target: string;
+  readonly mode?: string | undefined;
+}): SweepPace =>
+  metadata.target !== "cloud"
+    ? localPace
+    : metadata.mode === "attached"
+      ? deployedPace
+      : managedCloudPace;
+
+export const settleOnSweep = <A, E, R>(
+  actor: Session,
+  appPath: string,
+  what: string,
+  attempt: Effect.Effect<
+    { readonly done: boolean; readonly value: A; readonly shown: string },
+    E,
+    R
+  >,
+) =>
+  Effect.gen(function* () {
+    const evidence = yield* Evidence,
+      telemetry = yield* Telemetry,
+      target = yield* Target;
+    const deadline = yield* ScenarioDeadline;
+    const app = appOf(appPath);
+    const minutesSince = (since: number) =>
+      Effect.map(Clock.currentTimeMillis, (now) => (now - since) / 60_000);
+    const pace = sweepPaceFor(target.metadata);
+    return yield* waitOnSweep({
+      what,
+      deadline,
+      pace,
+      reads: {
+        attempt,
+        pending: Effect.gen(function* () {
+          const sources = yield* webhookSources(actor, appPath);
+          const read = (yield* evidence.requests).at(-1);
+          return {
+            accounts: sources.filter((source) => source.status === "pending"),
+            shown: sources.map(({ account, label, status, failure }) => ({
+              account,
+              label,
+              status,
+              failure,
+            })),
+            trace: read?.traceId,
+          };
+        }),
+        passes: (since) =>
+          minutesSince(since).pipe(
+            Effect.flatMap((minutes) => telemetry.searchRecent(sweepSpan, {}, minutes)),
+            Effect.map((found) => found.data),
+          ),
+        served: (account, since) =>
+          minutesSince(since).pipe(
+            Effect.flatMap((minutes) =>
+              telemetry.searchRecent(
+                reconcileSpan,
+                { "executor.app.id": app, "executor.account.id": account },
+                minutes,
+              ),
+            ),
+            Effect.map((found) => found.data),
+          ),
+        readSpan: (trace) =>
+          telemetry
+            .search(sourcesSpan, { traces: [trace] })
+            .pipe(Effect.map((found) => found.data[0]?.span)),
+      },
+    });
+  });
+
 export const settleWebhookSources = (
   actor: Session,
   appPath: string,
   settled: (sources: readonly WebhookSourceRow[]) => boolean,
 ) =>
-  Effect.gen(function* () {
-    const deadline = (yield* Clock.currentTimeMillis) + 30_000;
-    for (;;) {
-      const sources = yield* webhookSources(actor, appPath);
-      if (settled(sources)) return sources;
-      expect(
-        yield* Clock.currentTimeMillis,
-        `Webhook sources did not settle: ${JSON.stringify(sources)}`,
-      ).toBeLessThan(deadline);
-      yield* Effect.sleep("100 millis");
-    }
-  });
+  settleOnSweep(
+    actor,
+    appPath,
+    "Webhook sources",
+    Effect.map(webhookSources(actor, appPath), (sources) => ({
+      done: settled(sources),
+      value: sources,
+      shown: JSON.stringify(sources),
+    })),
+  );
 
-/** Exactly these accounts are sources, each in the given status and failure. */
 export const sourcesAre =
   (
     expected: Readonly<
@@ -85,57 +174,41 @@ export const sourcesAre =
         expected[source.account]?.failure === source.failure,
     );
 
-/**
- * Wait for background registration until `settled` accepts the subscriptions `actor` sees, and
- * return them. Fails with the last observed subscriptions after 30 seconds.
- */
 export const settleWebhookSubscriptions = (
   actor: Session,
   appPath: string,
   settled: (subscriptions: readonly WebhookSubscriptionRow[]) => boolean,
 ) =>
-  Effect.gen(function* () {
-    const deadline = (yield* Clock.currentTimeMillis) + 30_000;
-    for (;;) {
-      const subscriptions = yield* webhookSubscriptions(actor, appPath);
-      if (settled(subscriptions)) return subscriptions;
-      expect(
-        yield* Clock.currentTimeMillis,
-        `Webhook subscriptions did not settle: ${JSON.stringify(subscriptions)}`,
-      ).toBeLessThan(deadline);
-      yield* Effect.sleep("100 millis");
-    }
-  });
+  settleOnSweep(
+    actor,
+    appPath,
+    "Webhook subscriptions",
+    Effect.map(webhookSubscriptions(actor, appPath), (subscriptions) => ({
+      done: settled(subscriptions),
+      value: subscriptions,
+      shown: JSON.stringify(subscriptions),
+    })),
+  );
 
-/**
- * Remove the app at `appPath` once its webhook subscriptions have stopped: removal is refused
- * while any still runs, and removing sources are not listed. Fails after 30 seconds.
- */
 export const removeAppWhenStopped = (actor: Session, appPath: string) =>
   Effect.gen(function* () {
     const api = yield* Api;
-    const deadline = (yield* Clock.currentTimeMillis) + 30_000;
-    for (;;) {
-      const removed = yield* api.request(actor, "DELETE", appPath);
-      if (removed.status !== 409) return removed.status;
-      expect(yield* Clock.currentTimeMillis, JSON.stringify(removed.body)).toBeLessThan(deadline);
-      yield* Effect.sleep("100 millis");
-    }
+    return yield* settleOnSweep(
+      actor,
+      appPath,
+      "App removal",
+      Effect.map(api.request(actor, "DELETE", appPath), (removed) => ({
+        done: removed.status !== 409,
+        value: removed.status,
+        shown: JSON.stringify(removed.body ?? null),
+      })),
+    );
   });
 
 const isConflict = Schema.is(Schema.Struct({ _tag: Schema.Literal("WebhookConflict") }));
 
-/** How often, and for how long, confirming a removal waits out a pass that holds the subscription. */
 const confirmRetry = { spacingMs: 500, leaseMs: 60_000 } as const;
 
-/**
- * Confirm that a disabled subscription was removed at its provider. While a removal pass holds the
- * subscription, or it changed since it was read, the API answers `WebhookConflict` (409), whose
- * documented answer is to read again and retry. This retries on that alone, every 500 ms for at
- * most one webhook lease (60 s), as organization removal does for `webhooks.remove`; a
- * subscription that never becomes confirmable still fails the caller's assertion. `conflicted`,
- * when given, completes on the first conflict. Returns the last response and the conflicts taken.
- */
 export const confirmWebhookRemoval = (
   actor: Session,
   appPath: string,

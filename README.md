@@ -114,6 +114,9 @@ running Executor from source, the repository layout and how the pieces fit
 together. Executor 1 lives on the [`main`](https://github.com/UsefulSoftwareCo/executor/tree/main)
 branch.
 
+To report a security problem, follow [SECURITY.md](SECURITY.md) rather than
+opening a public issue.
+
 ## License
 
 [MIT](LICENSE)

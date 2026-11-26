@@ -1,5 +1,4 @@
 import { RequiredAction } from "./authorization.ts";
-/** Organization-authorized management of ordinary app webhook subscriptions. */
 import { Schema } from "effect";
 import { HttpApiGroup, HttpApiEndpoint } from "effect/http-api";
 import {
@@ -25,11 +24,6 @@ const target = { ...app, subscription: WebhookId };
 const source = { ...app, account: AccountId };
 const path = "/api/organizations/:organization/apps/:app";
 const errors = [...WebhookErrors, OrganizationForbidden] as const;
-/**
- * Subscriptions and webhook sources run as their actor. Reads and changes of one's own need app
- * use; changing someone else's needs app management. Creating one runs it as the caller. Every
- * account they use must also be usable by the caller.
- */
 export const HostedWebhooks = HttpApiGroup.make("webhooks")
   .add(
     HttpApiEndpoint.get("get", `${path}/webhooks/:subscription`, {

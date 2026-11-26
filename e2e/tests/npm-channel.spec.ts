@@ -1,9 +1,3 @@
-/**
- * `scripts/releases/npm-channel.ts` waits for npm's dist-tags to name a release npm already serves,
- * as `publish-npm.ts` does after publishing. These cases run it as a process against a local
- * registry that replays what npm's dist-tags endpoint answered after beta.51's publish: the old
- * tag for a while, then the new one; or the old one for good.
- */
 import { expect, layer } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { createServer, type ServerResponse } from "node:http";
@@ -13,16 +7,11 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 type Tags = Readonly<Record<string, string>>;
 
-/** One answer of the dist-tags endpoint: tags, a status with a body, or no answer at all. */
 type Answer = Tags | { readonly status: number; readonly body: string } | "hang";
 
 const isStatus = (answer: Answer): answer is { readonly status: number; readonly body: string } =>
   typeof answer === "object" && typeof answer.status === "number";
 
-/**
- * A registry whose `/-/package/executor/dist-tags` gives `answers` in order, repeating the last.
- * Counts the requests.
- */
 const registry = (answers: ReadonlyArray<Answer>) =>
   Effect.acquireRelease(
     Effect.callback<{ url: string; requests: () => number; close: () => void }>((resume) => {
@@ -64,7 +53,6 @@ const registry = (answers: ReadonlyArray<Answer>) =>
 const before: Tags = { latest: "1.6.11", beta: "2.0.0-beta.50" };
 const published: Tags = { latest: "1.6.11", beta: "2.0.0-beta.51" };
 
-/** The wait as a process, against `registry` with a 3 s limit, unless `env` says otherwise. */
 const wait = (registry: string, env: Readonly<Record<string, string>> = {}) =>
   Effect.gen(function* () {
     const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -125,13 +113,49 @@ layer(NodeServices.layer)("publication waits for npm's channel tag", (it) => {
     }).pipe(Effect.scoped),
   );
 
-  it.effect("a tag naming some third version fails at once", () =>
+  it.effect("a tag naming some older third version fails at once", () =>
+    Effect.gen(function* () {
+      const stub = yield* registry([{ latest: "1.6.11", beta: "2.0.0-beta.49" }]);
+      const result = yield* wait(stub.url);
+      expect(result.exitCode, result.log).toBe(1);
+      expect(result.log).toContain("names 2.0.0-beta.49: neither 2.0.0-beta.51 nor 2.0.0-beta.50");
+      expect(stub.requests()).toBe(1);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("a tag naming a newer version fails at once: the run is stale", () =>
     Effect.gen(function* () {
       const stub = yield* registry([{ latest: "1.6.11", beta: "2.0.0-beta.52" }]);
       const result = yield* wait(stub.url);
       expect(result.exitCode, result.log).toBe(1);
-      expect(result.log).toContain("names 2.0.0-beta.52: neither 2.0.0-beta.51 nor 2.0.0-beta.50");
+      expect(result.log).toContain(
+        "npm's beta tag names 2.0.0-beta.52, newer than 2.0.0-beta.51: a newer release has published since, so this run is stale. Do not re-run it",
+      );
       expect(stub.requests()).toBe(1);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "an old run re-run after a newer release stops on the first read, not at the limit",
+    () =>
+      Effect.gen(function* () {
+        const newer = { latest: "1.6.11", beta: "2.0.0-beta.52" };
+        const stub = yield* registry([newer]);
+        const result = yield* wait(stub.url, { NPM_CHANNEL_BEFORE: JSON.stringify(newer) });
+        expect(result.exitCode, result.log).toBe(1);
+        expect(result.log).toContain("this run is stale");
+        expect(stub.requests()).toBe(1);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("an answer without a latest tag is asked again, not taken for a moved latest", () =>
+    Effect.gen(function* () {
+      const stub = yield* registry([{ beta: "2.0.0-beta.51" }, {}, published]);
+      const result = yield* wait(stub.url);
+      expect(result.exitCode, result.log).toBe(0);
+      expect(result.log).toContain("the registry answered without a latest tag");
+      expect(result.log).not.toContain("Restore latest");
+      expect(stub.requests()).toBe(3);
     }).pipe(Effect.scoped),
   );
 
@@ -170,11 +194,17 @@ layer(NodeServices.layer)("publication waits for npm's channel tag", (it) => {
     }).pipe(Effect.scoped),
   );
 
-  it.effect("npm's own wait cannot be shortened", () =>
+  it.effect("npm's own wait cannot be shortened, however npm's address is written", () =>
     Effect.gen(function* () {
-      const result = yield* wait("https://registry.npmjs.org");
-      expect(result.exitCode, result.log).toBe(1);
-      expect(result.log).toContain("apply only to another registry");
+      for (const npm of [
+        "https://registry.npmjs.org",
+        "https://registry.npmjs.org/",
+        "https://REGISTRY.npmjs.org/",
+      ]) {
+        const result = yield* wait(npm);
+        expect(result.exitCode, `${npm}\n${result.log}`).toBe(1);
+        expect(result.log).toContain("apply only to another registry");
+      }
     }).pipe(Effect.scoped),
   );
 });

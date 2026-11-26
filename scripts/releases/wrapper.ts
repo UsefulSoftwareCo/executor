@@ -1,10 +1,3 @@
-/**
- * Build the `executor` npm package: a launcher that downloads its platform's release archive on
- * first use and starts the executable in it. The package records each archive's SHA-256, read from
- * `<directory>/<version>-<platform>-<arch>/`, where the directory is the first argument (default
- * `.local/releases`). A publishing run supplies every platform's archive; a test build may have
- * only its own. Nothing is published.
- */
 import { createHash } from "node:crypto";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -35,7 +28,6 @@ const build = Effect.gen(function* () {
     });
   const runtimes: Record<string, string> = {};
   for (const target of platforms) {
-    // `release:cli` and the release workflow's artifacts both lay out <version>-<platform>-<arch>/.
     const file = path.join(
       archives,
       `${release.version}-${target.platform}-${target.arch}`,
@@ -58,25 +50,17 @@ const build = Effect.gen(function* () {
         bin: { executor: "bin.mjs" },
         files: ["bin.mjs", "bin/executor", "bin/package.json", "README.md", "LICENSE"],
         publishConfig: { access: "public", tag: release.channel },
-        // The SHA-256 of each platform's release archive, which the launcher checks a download
-        // against. npm's integrity covers this file, so it covers the runtime too.
         runtimes,
       },
       null,
       2,
     ),
   );
-  // The launcher reads its version, runtimes and channel from this package.json.
   yield* fs.copyFile(
     path.join(root, "scripts/releases/npm-launcher.mjs"),
     path.join(directory, "bin.mjs"),
   );
   yield* fs.chmod(path.join(directory, "bin.mjs"), 0o755);
-  // Executor 1 declared bin/executor. Command shims outlive the package they were made for: an
-  // upgrade that does not relink them, such as `bun add executor@beta` inside Bun's global
-  // directory, leaves them starting this path. Keep every published entry point working.
-  // The extensionless file is CommonJS: Node 20.0 to 20.9 refuse one that the package's
-  // "type": "module" makes ESM.
   yield* fs.makeDirectory(path.join(directory, "bin"));
   yield* fs.writeFileString(
     path.join(directory, "bin/package.json"),

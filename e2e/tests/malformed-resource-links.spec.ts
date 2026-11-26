@@ -1,4 +1,3 @@
-/** Typed resource URLs reject malformed identifiers before any page brands or reads them. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
 import { Actors } from "../support/actors.ts";
@@ -9,7 +8,6 @@ import { Target } from "../support/platform.ts";
 import { scenarios } from "../test-plan.ts";
 import { noPageErrors } from "../support/page-errors.ts";
 
-/** A plain word, as typed or pasted, carries none of the typed identifier prefixes. */
 const malformed = "notes";
 
 const expectNotFound = (path: string) =>
@@ -49,7 +47,6 @@ layer(HostedLive, { excludeTestServices: true })("Hosted malformed resource link
         const org = `/org/${actors.organization.slug}`;
         for (const path of [
           `${org}/apps/${malformed}`,
-          // The app launch route is gone; an old launch link is a missing page too.
           `${org}/apps/${malformed}/open`,
           `${org}/apps/${malformed}/setup`,
           `${org}/connections/${malformed}`,

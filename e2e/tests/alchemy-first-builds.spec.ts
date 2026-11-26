@@ -1,25 +1,8 @@
-/**
- * `alchemy dev`'s sidecar starts every local Worker's watcher at once, and the alchemy patch makes
- * their first builds take turns (patches/alchemy.md). A turn must not outlive what it guards: a
- * Worker that stops while it waits leaves the queue at once, a watcher that fails to set up gives
- * its turn back, and a first build that hangs holds its turn for one minute at most.
- *
- * Each case runs a probe against the alchemy Cloud installs, with rolldown building two one-line
- * modules: under Node, which loads the patched `lib/`, and under Bun, which loads the patched `src/`
- * and runs the dev sidecar when `alchemy dev` runs under Bun. A plugin's `buildStart` hook holds a
- * build or records that it started. The probe must exit by itself: a watcher left open keeps it
- * alive.
- *
- * The same patch sends a Worker upload that Cloudflare refuses for startup CPU again, at most three
- * attempts in all, and nothing else. Those cases wrap a fake upload with the patched provider's
- * `measuredUpload`, under Node and Bun, with a 1 ms pause between attempts.
- */
 import { expect, layer } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, FileSystem, Option, Path, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
-/** How long a first build may hold its turn, as the patch states it. */
 const turnLimit = 60_000;
 
 const probe = `
@@ -110,7 +93,6 @@ if (scenario === "queued") {
 console.log(JSON.stringify(report));
 `;
 
-/** Fake uploads through the patched `measuredUpload`; prints how each went, then its exit summary. */
 const uploadProbe = `
 const { createRequire } = await import("node:module");
 const { fileURLToPath } = await import("node:url");
@@ -157,7 +139,6 @@ const runtimes = {
   bun: ["-e", probe],
 } as const;
 
-/** Runs one scenario; `exited` is false when the probe was still running after 30 s. */
 const scenario = (runtime: keyof typeof runtimes, name: "queued" | "setup" | "hung") =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -236,7 +217,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Alchemy first builds",
   }
 });
 
-/** Runs the upload probe as a GitHub Actions step would, and returns its report and output. */
 const uploads = (runtime: keyof typeof runtimes) =>
   Effect.gen(function* () {
     const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -282,7 +262,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker upload re-sends
               succeeded: false,
               error: expect.stringContaining("Refused on all 3 attempts."),
             },
-            // Cloudflare's 10021 also covers a Worker that throws while it starts: not re-sent.
             otherValidationError: {
               attempts: 1,
               succeeded: false,

@@ -1,6 +1,12 @@
 import { defineConfig } from "vitest/config";
+import { snapshotUpdate } from "./snapshot-updates.ts";
 
-/** Runs CI's program that tells a repeated pull request run as a process, as CI does. */
 export default defineConfig({
-  test: { include: ["e2e/tests/ci-repeat.spec.ts"], testTimeout: 30_000 },
+  test: {
+    update: snapshotUpdate(),
+    include: ["e2e/tests/ci-repeat.spec.ts"],
+    testTimeout: 30_000,
+    sequence: { concurrent: true },
+    maxConcurrency: 2,
+  },
 });

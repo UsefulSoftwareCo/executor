@@ -1,28 +1,19 @@
-/**
- * First app-supervisor call after an idle gap. Cloudflare evicts an idle supervisor after about
- * ten seconds, and its next call often starts a fresh isolate. Each gap gets its own app, so its
- * supervisor always sees exactly that idle time before the measured read.
- */
 import { Clock, Console, Effect } from "effect";
 import type { PerfTarget } from "./scenarios.ts";
 import { spansFor } from "./flamechart.ts";
 
-/** App tab whose read first asks the supervisor for a kept evaluated result. */
 const tab = "skills";
-/** The supervisor calls a read makes; the earliest one is the call that waits for a wake. */
 const supervisorCalls = new Set(["storage.evaluated.read", "runtime.cloud.cache"]);
 
 export interface IdleSample {
   readonly gapSeconds: number;
   readonly round: number;
-  /** `first` follows the idle gap; `second` follows it at once, against a warm supervisor. */
   readonly kind: "first" | "second";
   readonly at: string;
   readonly status: number;
   readonly clientMs: number;
   readonly serverMs: number | undefined;
   readonly traceId: string;
-  /** Duration of the request's first supervisor call, from the stage trace. */
   readonly supervisorMs: number | undefined;
 }
 
@@ -54,7 +45,6 @@ export const runIdle = (input: {
       ({ gapSeconds, app }) =>
         Effect.gen(function* () {
           const path = `/api/organizations/${entry.organization.id}/apps/${app.id}/${tab}`;
-          // Start every supervisor from a known warm state.
           yield* client.request("GET", path);
           for (let round = 0; round < input.rounds; round++) {
             yield* Effect.sleep(`${gapSeconds} seconds`);
@@ -75,7 +65,6 @@ export const runIdle = (input: {
         }),
       { concurrency: "unbounded", discard: true },
     );
-    // Traces arrive after their requests; each lookup retries while its spans are missing.
     const samples: IdleSample[] = yield* Effect.forEach(
       measured,
       (sample) =>

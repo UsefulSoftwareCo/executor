@@ -1,8 +1,3 @@
-/**
- * Global setup for the desktop configs: start each run with no recorded closes, and once every
- * scenario has finished print each desktop close's duration and the slowest one in the job's
- * log, which every run keeps, a passing one included.
- */
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Console, Effect, FileSystem, Option, Schema } from "effect";
 import { CloseDuration, closeDurationsFile } from "./support/desktop-close-durations.ts";
@@ -52,7 +47,6 @@ const run = <A, E>(
   return Effect.runPromise(effect.pipe(Effect.provide(NodeServices.layer)));
 };
 
-/** Vitest's global setup. Returns the teardown, which runs after every test file has finished. */
 export default function setup() {
   return run(reset).then(() => () => run(report.pipe(Effect.ignore)));
 }

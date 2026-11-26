@@ -1,4 +1,3 @@
-/** Reusable setup lifecycle. Hosts own access checks and browser links; each target selects the saved account. */
 import { Clock, Effect, Schema } from "effect";
 import type { HostCrypto } from "./host-crypto.ts";
 import type { ResourceLifecycle } from "../contracts/executor.ts";
@@ -27,7 +26,6 @@ import {
 } from "./connection-target.ts";
 import { query, transaction, type Query } from "./database.ts";
 
-/** Requests survive host restarts. Pending requests expire after thirty minutes. */
 export const makeAccountConnections = (
   db: Query,
   credentials: Credentials,
@@ -60,7 +58,6 @@ export const makeAccountConnections = (
     expiresAt: row.expiresAt,
     state: row.state,
   });
-  /** A connection for an app shows that app's declaration, whose hosts it will grant. */
   const show = (row: ConnectionRow, shown: Provider | undefined) =>
     Effect.gen(function* () {
       return describe(
@@ -74,12 +71,10 @@ export const makeAccountConnections = (
             }),
       );
     });
-  /** Ended requests keep showing the provider they used, even after their app changed. */
   const endedProvider = (row: ConnectionRow) => targetProvider(db, row.target, row.provider);
   const get = (input: typeof GetAccountConnection.Type) =>
     Effect.gen(function* () {
       const row = yield* readConnection(db, input);
-      // A pending request offers only a sign-in its app still accepts.
       return yield* show(
         row,
         row.state.status === "pending"
@@ -96,7 +91,6 @@ export const makeAccountConnections = (
         let reconnectAccount: Account | null = null;
         if (input.account !== undefined) {
           const account = yield* ownedAccount(db, { account: input.account, owner: input.owner });
-          // The account exists, but it was saved for another provider definition of this slot.
           if (account.provider !== resolved.id)
             return yield* new AccountSelectionInvalid({
               app: input.target.app,
@@ -144,7 +138,6 @@ export const makeAccountConnections = (
                 set: { state: { status: "cancelled" }, oauthAttempt: null },
               }),
             );
-          // A request whose app has changed can still be cancelled.
           const cancelled = yield* readConnection(db, input);
           return yield* show(cancelled, yield* endedProvider(cancelled));
         }),

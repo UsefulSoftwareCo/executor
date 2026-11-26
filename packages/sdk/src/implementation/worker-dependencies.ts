@@ -1,4 +1,3 @@
-/** Install declared npm packages only when the authored import graph reaches them. */
 import { installDependencies, type InMemoryFileSystem } from "@cloudflare/worker-bundler";
 import { captureTelemetry } from "@executor-js/telemetry";
 import { Effect, Schema, Semaphore } from "effect";
@@ -12,17 +11,9 @@ const Package = Schema.Struct({
   dependencies: Schema.optional(Schema.Record(Schema.String, Schema.String)),
 });
 
-/**
- * Framework archives are loaded alone; direct npm imports retain their authored declarations and
- * dependency graphs. `registry` replaces the public npm registry when the host configures one.
- * The installer's errors quote the URLs it fetched, which start with that registry. An operator's
- * registry URL can carry credentials or a token, and the deployer reading a failed build is not
- * always the operator, so a failure loses each URL's userinfo, query and fragment. A token the
- * registry takes as a path segment is kept and reaches the deployer: it cannot be told from a path.
- */
 export const workerDependencies = (filesystem: InMemoryFileSystem, host: WorkerHost) =>
   Effect.gen(function* () {
-    const { registry } = host;
+    const { registry, tarballFetch } = host;
     const manifest = filesystem.read("package.json");
     const dependencies =
       manifest === null
@@ -39,7 +30,6 @@ export const workerDependencies = (filesystem: InMemoryFileSystem, host: WorkerH
             try: () =>
               installDependencies(
                 {
-                  // The installer sees one declaration; bundling still sees the unmodified manifest.
                   read: (path) =>
                     path === "package.json"
                       ? JSON.stringify({ dependencies: { [name]: version } })
@@ -49,7 +39,11 @@ export const workerDependencies = (filesystem: InMemoryFileSystem, host: WorkerH
                   list: (prefix) => filesystem.list(prefix),
                   flush: () => filesystem.flush(),
                 },
-                { transitive, ...(registry === undefined ? {} : { registry }) },
+                {
+                  transitive,
+                  ...(registry === undefined ? {} : { registry }),
+                  ...(tarballFetch === undefined ? {} : { tarballFetch }),
+                },
               ),
             catch: (cause) =>
               new RuntimeBuildFailed({
@@ -100,7 +94,6 @@ export const workerDependencies = (filesystem: InMemoryFileSystem, host: WorkerH
           const version = dependencies[name];
           if (version === undefined) return undefined;
           await Effect.runPromiseWith(context)(install(name, version));
-          // Let the existing resolver apply package exports, conditions, and asset handling.
           return undefined;
         });
       },

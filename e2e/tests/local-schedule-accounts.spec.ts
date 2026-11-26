@@ -1,7 +1,3 @@
-/**
- * Local has one member, so each declared schedule has at most one copy. It runs with the accounts
- * linked to the app: the one of each plain requirement, which linking another replaces.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -44,7 +40,6 @@ const Settings = Schema.Struct({
 });
 const Runs = Schema.Array(Schema.Struct({ name: Schema.String, status: Schema.String }));
 
-/** The local agent API, with deploy, account and schedule helpers for one app. */
 const localApp = (name: string, files: ReadonlyArray<{ path: string; content: string }>) =>
   Effect.gen(function* () {
     const { api, agent, target } = yield* localAgent;
@@ -64,7 +59,6 @@ const localApp = (name: string, files: ReadonlyArray<{ path: string; content: st
           yield* api.request(agent, "DELETE", `/v1/accounts/${account}`);
       }).pipe(Effect.orDie),
     );
-    /** Connect an account from the app; it replaces the account linked before. */
     const account = (label: string, fields: Record<string, string>) =>
       Effect.gen(function* () {
         const { id } = yield* connectLocalAccount(agent, {
@@ -86,7 +80,6 @@ const localApp = (name: string, files: ReadonlyArray<{ path: string; content: st
     const runs = api
       .request(agent, "GET", `/v1/scheduled-runs?app=${app.id}`)
       .pipe(Effect.flatMap((response) => body(Runs, response)));
-    /** Wait until `count` runs of the schedule have succeeded. */
     const succeeded = (schedule: string, count: number) =>
       runs.pipe(
         Effect.flatMap((rows) =>
@@ -122,14 +115,11 @@ const localApp = (name: string, files: ReadonlyArray<{ path: string; content: st
     };
   });
 
-/** The schedule's row on the Schedules tab. */
 const row = (page: Page, name: string) => page.locator(`[aria-label="${name}"]`);
 const badge = (page: Page, name: string, state: string) =>
   row(page, name).getByText(state, { exact: true }).waitFor();
 
 layer(TestLive, { excludeTestServices: true })("Local schedule accounts", (it) => {
-  // Declarations can depend on accounts. The local copy is checked against the app evaluated with
-  // the account linked to it now.
   it.effect(scenarios.localScheduleReconcileChoices.title, (context) =>
     withCase(
       context,
@@ -141,10 +131,8 @@ layer(TestLive, { excludeTestServices: true })("Local schedule accounts", (it) =
         expect(enabled.status, JSON.stringify(enabled.body)).toBe(200);
         const copy = yield* body(Settings, enabled);
         expect(copy).toMatchObject({ name: "alphaJob", actor: "local", enabled: true });
-        // The account linked to the app declares only its own job.
         const other = yield* configure("betaJob", true);
         expect(other.status, JSON.stringify(other.body)).toBe(404);
-        // The alpha schedule has run history that a redeploy must keep.
         const started = yield* agent.send(
           "POST",
           `${path}/schedules/alphaJob/copies/${copy.id}/run`,
@@ -162,18 +150,15 @@ layer(TestLive, { excludeTestServices: true })("Local schedule accounts", (it) =
           ["alphaJob", "succeeded"],
         ]);
 
-        // Connecting beta replaces alpha. An evaluation that fails proves nothing about the copy.
         const beta = yield* account("Beta", { job: "betaJob" });
         expect((yield* agent.send("GET", `/v1/accounts/${alpha}`)).status).toBe(200);
         yield* redeploy(jobFiles(failsFor("betaJob")));
         expect(yield* saved).toEqual(["alphaJob"]);
 
-        // Once the linked account's evaluation no longer declares it, it and its history go.
         yield* redeploy(jobFiles(declaresEachJob));
         expect(yield* saved).toEqual([]);
         expect(yield* runs).toEqual([]);
 
-        // With no account linked nothing can be evaluated, so the copy stays and waits for one.
         const betaCopy = yield* configure("betaJob", true);
         expect(betaCopy.status, JSON.stringify(betaCopy.body)).toBe(200);
         yield* unlinkLocal(agent, app.id, "service", beta);
@@ -181,7 +166,6 @@ layer(TestLive, { excludeTestServices: true })("Local schedule accounts", (it) =
         expect(yield* settings).toMatchObject([
           { name: "betaJob", enabled: true, accountRequired: "service" },
         ]);
-        // Linking alpha again lets the next activation remove what alpha does not declare.
         yield* linkLocal(agent, app.id, "service", alpha);
         yield* redeploy(jobFiles(declaresOnly("alphaJob")));
         expect(yield* saved).toEqual([]);
@@ -239,7 +223,6 @@ layer(TestLive, { excludeTestServices: true })("Local schedule accounts", (it) =
         yield* succeeded("tick", 1);
         expect(yield* callLocalQuery(agent, app.id, "ticks")).toEqual([one]);
 
-        // Connecting another account replaces the one the schedule runs with.
         const two = yield* account("Mail two", { token: `synthetic-${randomUUID()}` });
         yield* browser.use("The finished run leaves the schedule enabled", (page) =>
           badge(page, "tick", "Enabled"),
@@ -256,7 +239,6 @@ layer(TestLive, { excludeTestServices: true })("Local schedule accounts", (it) =
           badge(page, "tick", "Enabled"),
         );
 
-        // With nothing linked, runs are skipped until an account is linked again.
         yield* unlinkLocal(agent, app.id, "service", two);
         expect(yield* settings).toMatchObject([{ enabled: true, accountRequired: "service" }]);
         yield* browser.use("Reload the Schedules tab", (page) => page.reload());

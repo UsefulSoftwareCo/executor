@@ -1,4 +1,3 @@
-/** Stage a standalone npm package. Workspace dependencies are included in its JS and declarations. */
 import { build } from "esbuild";
 import ts from "typescript-5";
 import { generateFrameworkReference } from "./reference.mjs";
@@ -10,7 +9,6 @@ import { fileURLToPath } from "node:url";
 const root = fileURLToPath(new URL("../", import.meta.url));
 const packages = resolve(root, "..");
 const out = join(root, "dist");
-// TypeScript reports source file names with POSIX separators on every platform.
 const packagesPrefix = packages.split("\\").join("/") + "/";
 const manifest = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
 const entries = Object.fromEntries(
@@ -21,11 +19,6 @@ const entries = Object.fromEntries(
 await rm(out, { recursive: true, force: true });
 await mkdir(out, { recursive: true });
 
-/**
- * The output files `names` load, directly or through a chunk. esbuild emits a chunk for every
- * dynamic import it finds, even when tree shaking removed the only code that loads it: Effect's
- * HTTP API modules load their Scalar and Swagger pages that way, 5 MB no entry here reaches.
- */
 const loaded = (metafile, names, directory) => {
   const outputs = new Map(
     Object.entries(metafile.outputs).map(([file, output]) => [resolve(file), output]),
@@ -41,8 +34,6 @@ const loaded = (metafile, names, directory) => {
   return { kept, emitted: [...outputs.keys()] };
 };
 
-// Keep a single shared Effect instance across entry points. Optional protocols
-// remain external so importing the root never requires their peer packages.
 const packaged = await build({
   entryPoints: entries,
   outdir: join(out, "js"),
@@ -105,8 +96,6 @@ await writeFile(
   JSON.stringify(await generateFrameworkReference()),
 );
 
-// Internal package declarations travel with apps; consumers never need private
-// workspace packages. Relative .js specifiers work with NodeNext and bundlers.
 async function declarations(directory) {
   for (const entry of await readdir(directory, { withFileTypes: true })) {
     const file = join(directory, entry.name);
@@ -137,8 +126,6 @@ async function declarations(directory) {
 }
 await declarations(join(out, "types"));
 
-// Worker hosts retain these ready-to-link modules with each app version. They
-// include runtime dependencies and do not execute npm package scripts.
 const snapshotDirectory = join(out, ".framework");
 const moduleName = (file) =>
   `node_modules/apps/${relative(snapshotDirectory, file.path).split("\\").join("/")}`;
@@ -190,11 +177,6 @@ await writeFile(
   }),
 );
 
-// E2E coverage of app Workers maps these modules to their sources (see
-// e2e/coverage.ts), through `runtime.json.map`, which the package does not
-// include. A source map changes esbuild's chunk hashes, so a second build makes
-// the maps and each one goes to the module whose code matches apart from chunk
-// names, which keep their length.
 const chunkNames = (text) => text.replace(/-[A-Z0-9]{8}\.js/g, ".js");
 const byCode = new Map(Object.entries(server).map(([name, text]) => [chunkNames(text), name]));
 const mapped = await snapshot(serverEntries, [], true);
@@ -206,7 +188,6 @@ for (const file of mapped) {
   if (name !== undefined)
     maps[name] = {
       ...JSON.parse(file.text),
-      // Source paths resolve from the map's directory, which is this file's.
       sourceRoot: `${relative(out, dirname(file.path)).split("\\").join("/")}/`,
     };
 }

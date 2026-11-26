@@ -1,11 +1,3 @@
-/**
- * Release order for moving MCP session objects from the API Worker's `McpSessions` class to the
- * MCP server Worker's `McpSession`: add the MCP server Worker, forward to it, then delete the old
- * class. Deploys of a stage run one at a time, but a newer push replaces a pending one, so two of
- * these releases can arrive in one deploy, or one can follow a deploy that failed. The gate reads
- * the stage's live Workers before Alchemy plans anything and stops the deploy, with nothing
- * changed, when the step before is not live. A new stage, or one past the step, passes unchecked.
- */
 import { listNamespaces } from "@distilled.cloud/cloudflare/durable-objects";
 import {
   listScriptDeployments,
@@ -34,7 +26,6 @@ const Bindings = Schema.Array(
 );
 type Bindings = typeof Bindings.Type;
 
-/** This stage's Workers by Alchemy logical id, from the ownership tags Alchemy writes. */
 const stageWorkers = Effect.gen(function* () {
   const { accountId } = yield* yield* Cloudflare.CloudflareEnvironment;
   const stage = yield* Stage;
@@ -50,11 +41,9 @@ const stageWorkers = Effect.gen(function* () {
   return { accountId, workers };
 });
 
-/** When the script's active deployment was created and the bindings of every version it serves. */
 const liveDeployment = (accountId: string, scriptName: string) =>
   Effect.gen(function* () {
     const { deployments } = yield* listScriptDeployments({ accountId, scriptName });
-    // Cloudflare lists the deployment serving traffic first.
     const [active] = deployments;
     if (active === undefined) return undefined;
     const versions = yield* Effect.forEach(active.versions, ({ versionId }) =>
@@ -75,10 +64,6 @@ const hostsSessions = (bindings: Bindings) =>
       binding.scriptName === undefined,
   );
 
-/**
- * Alchemy uploads a placeholder for a Worker in a binding cycle that binds only its object
- * classes. The real MCP server also binds the API's app workflow.
- */
 const runsMcpServer = (bindings: Bindings) =>
   hostsSessions(bindings) &&
   bindings.some((binding) => binding.type === "workflow" && binding.name === "AppWorkflows");
@@ -91,7 +76,6 @@ const forwardsTo = (server: string) => (bindings: Bindings) =>
       binding.scriptName === server,
   );
 
-/** Time for old API isolates to finish and for their invocations to reach telemetry. */
 const propagation = Duration.minutes(10);
 
 const Evidence = Schema.Struct({
@@ -114,10 +98,6 @@ class IncompleteSessionEvidence extends Schema.TaggedError<IncompleteSessionEvid
   { reason: Schema.String },
 ) {}
 
-/**
- * The four counts from the query's single result row. A partial or estimated scan, or a missing,
- * repeated or malformed count, is not evidence of zero: the deploy refuses rather than guess.
- */
 const sessionEvidence = (body: unknown) =>
   Effect.gen(function* () {
     const incomplete = (reason: string) => Effect.fail(new IncompleteSessionEvidence({ reason }));
@@ -156,11 +136,6 @@ const sessionEvidence = (body: unknown) =>
     };
   });
 
-/**
- * MCP traffic on the stage since `since`: invocations of each session class, and protocol
- * `initialize` and `tools/call` spans that did not fail. Only session objects run the protocol
- * servers, so with no `McpSessions` invocations every one of them was served by `McpSession`.
- */
 const sessionTraffic = (since: DateTime.Utc) =>
   Effect.gen(function* () {
     const token = yield* Config.Redacted("AXIOM_TOKEN");
@@ -175,7 +150,6 @@ const sessionTraffic = (since: DateTime.Utc) =>
         [
           "legacy = countif(name == 'cloudflare.invocation' and entrypoint == 'McpSessions')",
           "sessions = countif(name == 'cloudflare.invocation' and entrypoint == 'McpSession')",
-          // Effect names an MCP request's server span after its JSON-RPC method.
           "initialize = countif(name == 'initialize' and kind == 'server' and ['status.code'] != 'ERROR')",
           "toolCalls = countif(name == 'tools/call' and kind == 'server' and ['status.code'] != 'ERROR')",
         ].join(", "),
@@ -191,13 +165,6 @@ const sessionTraffic = (since: DateTime.Utc) =>
     return yield* sessionEvidence(yield* response.json);
   });
 
-/**
- * Delete `McpSessions` only after every API version serving the stage forwards to a running MCP
- * server, long enough that old API isolates are gone, and MCP traffic since then shows sessions
- * initializing and calling tools through `McpSession` with none reaching `McpSessions`. Deleting
- * the class earlier fails requests from API isolates that still forward to it.
- */
-/** Lets the test-stage command that started this deploy tell the refusal from a failure. */
 const reportRefusal = (refusal: McpSessionReleaseBlocked) =>
   Effect.gen(function* () {
     const report = yield* Config.String(releaseRefusalReport).pipe(Config.option);
@@ -220,7 +187,6 @@ export const mcpSessionRetirementGate = Effect.gen(function* () {
     new McpSessionReleaseBlocked({
       message: `Not deleting McpSessions from ${api}: ${reason} Nothing was changed. Deploy again once the release that forwards to McpSession is live and serving MCP traffic.`,
     });
-  // The evidence below is the stage's own traces in Axiom.
   if (!(yield* telemetryExport))
     return yield* new McpSessionReleaseBlocked({
       message: `Not deleting McpSessions from ${api}: this test stage does not export telemetry, so there is no MCP traffic evidence to check. Nothing was changed. Deploy it with --telemetry export, and again once it has served MCP traffic.`,

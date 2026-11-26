@@ -1,9 +1,3 @@
-/**
- * Every hosted scenario organization starts with its owner, admin and member.
- * On Cloud those three fill the Free plan, which refuses new invitations. A
- * scenario that creates invitations frees a seat by removing the member actor;
- * `rejoin` invites and accepts that member again when the scenario needs it.
- */
 import { expect } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { Actors } from "./actors.ts";

@@ -1,4 +1,3 @@
-/** Shared authorization vocabulary and pure decisions for Executor products. */
 export {
   Action,
   ToolScope,

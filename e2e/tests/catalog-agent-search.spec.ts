@@ -1,9 +1,3 @@
-/**
- * Agents search the official app catalog instead of reading it whole, and an install or MCP import
- * an agent cannot finish is refused with the steps it takes next. An Executor app still built on
- * `apps` beta.9 refuses the filters from a catalog document it cached before them, and a pin-only
- * redeploy, as `5_redeploy_pre_beta10_executor_apps` makes, accepts them at once.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Layer, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -21,7 +15,6 @@ import { officialApps } from "../support/public-catalogs.ts";
 import { scenarios } from "../test-plan.ts";
 
 const Catalog = Schema.Array(Schema.Struct({ id: Schema.String, package: Schema.String }));
-/** The dashboards' session listing: the same entries, with the feed's state beside them. */
 const SessionCatalog = Schema.Struct({
   apps: Catalog,
   feed: Schema.Struct({ status: Schema.Literal("listed") }),
@@ -79,12 +72,10 @@ layer(HostedLive, { excludeTestServices: true })("Catalog agent search", (it) =>
         const ids = (query: string) =>
           list(query).pipe(Effect.map((entries) => entries.map((entry) => entry.id)));
 
-        // Without filters, every entry in the catalog's order; a blank search is the same listing.
         const all = yield* ids("");
         expect(all.slice(1)).toEqual(feedIds);
         expect(yield* ids("?search=%20%20")).toEqual(all);
         expect(yield* ids("?limit=1000")).toEqual(all);
-        // A search is trimmed and case-insensitive, matches id, name or package, and keeps order.
         expect(yield* ids("?search=%20SYNTHETIC%20")).toEqual(feedIds);
         expect(yield* ids("?search=tracker")).toEqual([officialApps.tracker.id]);
         expect(yield* ids(`?search=${encodeURIComponent(officialApps.mail.package)}`)).toEqual([
@@ -100,7 +91,6 @@ layer(HostedLive, { excludeTestServices: true })("Catalog agent search", (it) =>
           );
           expect(response.status, `limit=${limit}`).toBe(400);
         }
-        // The session catalog the dashboard reads takes the same filters.
         expect(
           (yield* body(
             SessionCatalog,
@@ -108,8 +98,6 @@ layer(HostedLive, { excludeTestServices: true })("Catalog agent search", (it) =>
           )).apps.map((entry) => entry.id),
         ).toEqual([officialApps.tracker.id]);
 
-        // A server URL is not a catalog entry: install says so and names the custom MCP import,
-        // without repeating the URL. An unlisted id gets the same steps.
         const serverUrl = "https://mcp.example.com/mcp";
         const installRefused = (entry: string) =>
           Effect.gen(function* () {
@@ -140,7 +128,6 @@ layer(HostedLive, { excludeTestServices: true })("Catalog agent search", (it) =>
         expect(unlisted.rejected.reason).toContain("no longer in the catalog");
         expect(unlisted.rejected.recovery).toEqual(byUrl.rejected.recovery);
 
-        // The tools an agent reads describe the filters, install and the custom MCP import.
         const document = yield* body(
           Document,
           yield* api.request(actors.owner, "GET", "/openapi.json"),
@@ -158,9 +145,7 @@ layer(HostedLive, { excludeTestServices: true })("Catalog agent search", (it) =>
         );
         expect(document.paths[importPath].post.description).toContain("appAccounts.userConnect");
 
-        // An agent does the same through MCP: it searches, then follows the refusal's recovery.
         const { client, execute, queries } = yield* frameworkSession;
-        // An agent asking how to add an app finds the catalog, install and the custom import.
         for (const query of ["Quick Add", "add an app from the catalog"]) {
           const found = yield* Schema.decodeUnknownEffect(Found)(
             yield* execute(`return await tools.search({ query: ${JSON.stringify(query)} });`),
@@ -204,8 +189,6 @@ layer(HostedLive, { excludeTestServices: true })("Catalog agent search", (it) =>
           );
         expect(refused).toMatchObject({ code: "CatalogImportFailed", status: 422 });
         expect(refused.message).toContain("[entry_missing]");
-        // Install is a write, so the Executor app adds its own advice, but the steps the API
-        // gave reach the agent whole inside it.
         expect(refused.recovery.instructions).toContain(byUrl.rejected.recovery.action);
         expect(refused.recovery.instructions).toContain(byUrl.rejected.recovery.instructions);
       }).pipe(Effect.provide(Layer.mergeAll(McpOAuth.layer, McpClient.layer))),
@@ -225,13 +208,8 @@ const Refused = Schema.Struct({
   problems: Schema.Array(Schema.String),
 });
 
-/** The release `5_redeploy_pre_beta10_executor_apps` pins; it still builds beta.9's source. */
 const redeployRelease = "0.0.1-beta.84";
 
-/**
- * The Executor app's document handling, as its template writes it, without its account: the
- * document at `origin` with the default cache windows, and calls sent to `origin`.
- */
 const documentApp = (origin: string, apps: string) => [
   {
     path: "index.ts",
@@ -271,8 +249,6 @@ layer(HostedLive, { excludeTestServices: true })("Catalog document cached on bet
         const api = yield* Api,
           actors = yield* Actors;
         const prefix = `/api/organizations/${actors.organization.id}`;
-        // This server's catalog operation, and the same operation as servers published it before
-        // the filters: no query parameters. The fixture app takes no account.
         const published = yield* body(
           Published,
           yield* api.request(actors.owner, "GET", "/openapi.json"),
@@ -320,21 +296,14 @@ layer(HostedLive, { excludeTestServices: true })("Catalog document cached on bet
             Effect.map((response) => response.problems.join("\n")),
           );
 
-        // The beta.9 app caches the document from before the filters. Unfiltered calls work; a
-        // filtered call is refused before it is sent.
         const unfiltered = yield* list({ path: organization });
         expect(unfiltered.status, JSON.stringify(unfiltered.body)).toBe(200);
-        // beta.9's schema closes the input, so the filters' `query` key is refused by name.
         expect(yield* refused("Filters on the cached document")).toBe(
           'input.query: Failed the "false" constraint',
         );
         expect(yield* upstream.queries).toEqual([""]);
         expect(yield* upstream.downloads).toBe(1);
 
-        // The server then publishes the filters. Inside the 5-minute fresh window the app keeps its
-        // cached document, so the filters stay refused. This does not cross the window, so it does
-        // not show beta.9's aborted background refresh (#1148): a loopback refresh finishes before
-        // the invocation ends, and with a 1-second window beta.9 refreshed as beta.14 does.
         yield* upstream.publish(document(operation));
         expect(yield* refused("Filters after the server published them")).toBe(
           'input.query: Failed the "false" constraint',
@@ -342,9 +311,6 @@ layer(HostedLive, { excludeTestServices: true })("Catalog document cached on bet
         expect(yield* upstream.queries).toEqual([""]);
         expect(yield* upstream.downloads).toBe(1);
 
-        // The data step's redeploy changes only the framework pin, to `redeployRelease`. The new
-        // build starts with an empty cache, so the next call reads the published document and the
-        // filters work.
         const redeployed = yield* saveAndDeploy(actors.owner, path, {
           files: documentApp(upstream.origin, redeployRelease),
         });

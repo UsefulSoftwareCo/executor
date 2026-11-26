@@ -9,7 +9,7 @@ import {
   observeProductOperation,
   traceProductRead,
 } from "../contracts/product-analytics.ts";
-import { RequiredAction, CurrentPolicy } from "../contracts/authorization.ts";
+import { RequiredAction, CurrentPolicy, DesktopReadable } from "../contracts/authorization.ts";
 import {
   fullAuthority,
   permitsAction,
@@ -18,11 +18,16 @@ import {
 } from "@executor-js/authorization";
 import { AppId } from "@executor-js/sdk/core";
 import { Context } from "effect";
-import { currentResourceAuthority, visibleAccountsAs, visibleAppsAs } from "./resource-policy.ts";
+import {
+  currentResourceAuthority,
+  policyDatabase,
+  visibleAccountsAs,
+  visibleAppsAs,
+} from "./resource-policy.ts";
 import { readOrganizationIconUpload } from "./organization-icons.ts";
 import { OrganizationTombstones } from "../contracts/organization-removal.ts";
 import { requireOrganizationAdmin } from "./access.ts";
-import { callerLinkedAccounts } from "./app-accounts.ts";
+import { appLinkedAccounts, callerLinkedAccounts } from "./app-accounts.ts";
 import { CurrentPrincipal, CurrentUserId } from "../contracts/auth.ts";
 import {
   recordCaller,
@@ -32,7 +37,8 @@ import {
   refusedAs,
 } from "./auth-telemetry.ts";
 import { APIError } from "better-auth/api";
-import { ErrorReporter, Effect, Layer, Schema } from "effect";
+import { ErrorReporter, Effect, Layer, Option, Schema } from "effect";
+import { sessionGrantResource } from "@executor-js/mcp-auth/oauth";
 import { HttpApiBuilder } from "effect/http-api";
 import type { OwnerId } from "@executor-js/sdk/core";
 import { HostedApi } from "../contracts/api.ts";
@@ -41,6 +47,7 @@ import { HostedCatalog } from "../contracts/catalog.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import {
+  type AlsoAccepted,
   BearerAuthentication,
   SessionAuthentication,
   AuthenticationUnavailable,
@@ -60,8 +67,44 @@ import {
   publishingScope,
 } from "../contracts/organization.ts";
 
-/** Read current membership once after native session verification; never retain roles between requests. */
+export const sessionPin = (
+  adapter: Pick<AuthContext["adapter"], "findOne">,
+  principal: Principal,
+) =>
+  sessionGrantResource(adapter, principal.sessionId).pipe(
+    Effect.mapError((error) =>
+      error.status === "UNAUTHORIZED"
+        ? new OrganizationForbidden()
+        : new AuthenticationUnavailable(),
+    ),
+  );
+
+const pinnedTo = (
+  adapter: Pick<AuthContext["adapter"], "findOne">,
+  principal: Principal,
+  organization: OrganizationId,
+) =>
+  sessionPin(adapter, principal).pipe(
+    Effect.flatMap((pinned) =>
+      Option.isSome(pinned) && pinned.value !== organization
+        ? Effect.fail(new OrganizationForbidden())
+        : Effect.void,
+    ),
+  );
+
 export const lookupMembership = (
+  adapter: Pick<AuthContext["adapter"], "findOne">,
+  principal: Principal,
+  organization: OrganizationId,
+) =>
+  Effect.zipWith(
+    pinnedTo(adapter, principal, organization),
+    memberRole(adapter, principal, organization),
+    (_, member) => member,
+    { concurrent: true },
+  );
+
+const memberRole = (
   adapter: Pick<AuthContext["adapter"], "findOne">,
   principal: Principal,
   organization: OrganizationId,
@@ -85,7 +128,6 @@ export const lookupMembership = (
     ),
   );
 
-/** Resolve a checked organization ID for canonical return links without session selection. */
 export const lookupOrganizationSlug = (call: () => Promise<unknown>) =>
   Effect.tryPromise({
     try: call,
@@ -99,14 +141,6 @@ export const lookupOrganizationSlug = (call: () => Promise<unknown>) =>
     Effect.catchTag("SchemaError", () => Effect.fail(new AuthenticationUnavailable())),
   );
 
-/**
- * The single choke point for a removed organization. Removal is durable and
- * asynchronous, so a tombstone stands in for the records its workflow has not
- * deleted yet. Both authentication paths pass through here, so one check hides
- * the organization from membership, inventory, apps, accounts and MCP alike.
- * A tombstone read that fails refuses the request rather than serving an
- * organization that is being erased.
- */
 const refuseRemoved = (organization: OrganizationId) =>
   Effect.flatMap(requestTombstones, (removed) => removed(organization)).pipe(
     Effect.mapError(() => new AuthenticationUnavailable()),
@@ -115,12 +149,12 @@ const refuseRemoved = (organization: OrganizationId) =>
     ),
   );
 
-/** Access resolves only the explicit route ID or slug. Shared session preferences never participate. */
 export const withOrganizationRequest = <E, R>(
   response: (
     namespace: Effect.Effect<string, AuthenticationUnavailable | OrganizationForbidden>,
   ) => Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
   action?: import("@executor-js/authorization").Action,
+  also: AlsoAccepted = {},
 ) =>
   Effect.gen(function* () {
     const auth = yield* SessionAuthentication;
@@ -137,14 +171,10 @@ export const withOrganizationRequest = <E, R>(
     if (headers.has("authorization")) {
       if (request.headers.origin !== undefined && request.headers.origin !== auth.origin)
         return yield* refuse("origin_mismatch", new Forbidden());
-      const grant = yield* api.authenticate(headers, reference);
-      // The request's span records the organization's opaque ID, never the route's reference,
-      // which can be its slug, and the caller's user ID: an OAuth grant's user or a key's. The
-      // bearer check returns only an organization it authorized for the caller, so the refusals
-      // below, a removed organization or a key's policy, keep both.
+      const grant = yield* api.authenticate(headers, reference, also);
       yield* recordCaller(grant.access.organization, grant.userId);
       yield* refuseRemoved(grant.access.organization);
-      if (!permitsAction(grant.policy, action))
+      if (grant.desktop !== true && !permitsAction(grant.policy, action))
         return yield* refuse("insufficient_scope", new OrganizationForbidden());
       if (params.app !== undefined) {
         const app = yield* Schema.decodeUnknownEffect(AppId)(params.app).pipe(
@@ -186,17 +216,10 @@ export const withOrganizationRequest = <E, R>(
     const organization = yield* identity
       .organization(reference)
       .pipe(refusedAs("organization_not_found"));
-    // Removal is reported before membership. The reads run one after the other: on Cloud they
-    // share the event's one SQL connection, and overlapping them would open a second one, a TLS
-    // login that costs far more than the few milliseconds the second read waits.
     yield* refuseRemoved(organization);
     const membership = yield* identity
       .membership(principal, organization)
       .pipe(refusedAs("not_member"));
-    // The route's reference resolves to any organization, so the request names it, and the session's
-    // user, only once the membership shows it is the caller's own. A request refused before then,
-    // for an organization the caller does not belong to or one being removed, names neither, and so
-    // never counts against that organization's failures or among its users.
     yield* recordCaller(organization, principal.userId);
     const access = {
       organization,
@@ -216,7 +239,6 @@ export const withOrganizationRequest = <E, R>(
     )).pipe(HttpServerResponse.setHeader("cache-control", "no-store"));
   });
 
-/** Apply the current organization checks without translating away product failures. */
 export const requireOrganizationLive = Layer.effect(
   RequireOrganization,
   Effect.gen(function* () {
@@ -240,6 +262,7 @@ export const requireOrganizationLive = Layer.effect(
               }));
         },
         Context.getOrUndefined(endpoint.annotations, RequiredAction),
+        { desktop: Context.get(endpoint.annotations, DesktopReadable) },
       ).pipe(
         Effect.provideService(SessionAuthentication, auth),
         Effect.provideService(BearerAuthentication, api),
@@ -248,18 +271,15 @@ export const requireOrganizationLive = Layer.effect(
   }),
 );
 
-/** A host that cannot remove organizations, such as self-host: every organization it serves is live. */
 export const noOrganizationRemovals = Layer.succeed(OrganizationTombstones, () =>
   Effect.succeed(false),
 );
 
-/** List organization metadata through the SDK without evaluating app code. */
 export const inventory = (owner: OwnerId) =>
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
     const policy = yield* CurrentPolicy;
     const listedApps = yield* executor.apps.list({ owner, ids: permittedAppIds(policy) });
-    // Membership is read once for both the app and the account policies.
     const actor = yield* currentResourceAuthority;
     const apps = yield* visibleAppsAs(actor, listedApps);
     const accounts = permitsAction(policy, "read")
@@ -267,83 +287,94 @@ export const inventory = (owner: OwnerId) =>
           .list({ owner })
           .pipe(Effect.flatMap((listed) => visibleAccountsAs(actor, listed)))
       : [];
-    const linked = yield* callerLinkedAccounts(apps.map((app) => app.id));
-    // An account linked to several requirements of one app is listed once for it.
+    const ids = apps.map((app) => app.id);
+    const linked = yield* callerLinkedAccounts(ids);
     const links = [
       ...new Map(
         linked.map((link) => [`${link.app}\u0000${link.id}`, { app: link.app, account: link.id }]),
       ).values(),
     ];
-    // Checks are reported for the apps the caller linked each account to.
+    const appLinks = (yield* appLinkedAccounts(yield* policyDatabase, ids)).map((link) => ({
+      app: link.app,
+      requirement: link.requirement,
+      account: link.id,
+      provider: link.provider,
+      label: link.label,
+    }));
+    const checked = [
+      ...new Map(
+        [...links, ...appLinks].map((link) => [
+          `${link.app}\u0000${link.account}`,
+          { app: link.app, account: link.account },
+        ]),
+      ).values(),
+    ];
     const health = new Map(
-      (accounts.length === 0 ? [] : yield* executor.accounts.listHealth({ owner, links })).map(
-        (entry) => [entry.account, entry],
-      ),
+      (accounts.length === 0
+        ? []
+        : yield* executor.accounts.listHealth({ owner, links: checked })
+      ).map((entry) => [entry.account, entry]),
     );
     const withHealth = (listedAccounts: typeof accounts) =>
       listedAccounts.map((account) => {
         const checks = health.get(account.id);
         return checks === undefined ? account : { ...account, health: checks };
       });
-    if (policy.tools.kind === "all") return { apps, accounts: withHealth(accounts), links };
+    if (policy.tools.kind === "all")
+      return { apps, accounts: withHealth(accounts), links, appLinks };
     const selected = new Set(links.map((link) => link.account));
     return {
       apps,
       accounts: withHealth(accounts.filter((account) => selected.has(account.id))),
       links,
+      appLinks,
     };
   });
-/** Organization routes do not own app/account operations. */
 export const hostedOrganizationHandlers = HttpApiBuilder.group(
   HostedApi,
   "organization",
   (handlers) =>
     Effect.gen(function* () {
       const authentication = yield* SessionAuthentication;
-      return (
-        handlers
-          .handleRaw("uploadIcon", () =>
-            Effect.gen(function* () {
-              const organization = yield* requireOrganizationAdmin;
-              const image = yield* readOrganizationIconUpload;
-              return yield* (yield* OrganizationIcons).upload(organization.organization, image);
-            }),
-          )
-          .handle("icon", ({ params }) =>
-            Effect.gen(function* () {
-              const organization = yield* CurrentOrganization;
-              const image = yield* (yield* OrganizationIcons).read(
-                organization.organization,
-                params.key,
-              );
-              return HttpServerResponse.uint8Array(image.bytes, {
-                contentType: image.contentType,
-                headers: { "x-content-type-options": "nosniff" },
-              });
-            }),
-          )
-          // Agents and API keys keep the array this operation has always returned: a feed that
-          // cannot be read fails it with the error and its recovery. Only the dashboards' session
-          // listing carries the feed's state beside the built-in apps.
-          .handle("catalog", ({ query }) =>
-            Effect.flatMap(HostedCatalog, (catalog) => catalog.list).pipe(
-              Effect.flatMap((listing) =>
-                listing.feed.status === "unavailable"
-                  ? Effect.fail(new CatalogUnavailable())
-                  : Effect.succeed(filterCatalog(listing.apps, query)),
-              ),
+      return handlers
+        .handleRaw("uploadIcon", () =>
+          Effect.gen(function* () {
+            const organization = yield* requireOrganizationAdmin;
+            const image = yield* readOrganizationIconUpload;
+            return yield* (yield* OrganizationIcons).upload(organization.organization, image);
+          }),
+        )
+        .handle("icon", ({ params }) =>
+          Effect.gen(function* () {
+            const organization = yield* CurrentOrganization;
+            const image = yield* (yield* OrganizationIcons).read(
+              organization.organization,
+              params.key,
+            );
+            return HttpServerResponse.uint8Array(image.bytes, {
+              contentType: image.contentType,
+              headers: { "x-content-type-options": "nosniff" },
+            });
+          }),
+        )
+        .handle("catalog", ({ query }) =>
+          Effect.flatMap(HostedCatalog, (catalog) => catalog.list).pipe(
+            Effect.flatMap((listing) =>
+              listing.feed.status === "unavailable"
+                ? Effect.fail(new CatalogUnavailable())
+                : Effect.succeed(filterCatalog(listing.apps, query)),
             ),
-          )
-          .handle("access", () => CurrentOrganization)
-          .handle("inventory", () =>
-            Effect.gen(function* () {
-              const organization = yield* CurrentOrganization;
-              return {
-                ...(yield* inventory(organization.owner)),
-                accountSetup: { redirectUri: accountOAuthRedirectUri(authentication) },
-              };
-            }),
-          )
-      );
+          ),
+        )
+        .handle("access", () => CurrentOrganization)
+        .handle("inventory", () =>
+          Effect.gen(function* () {
+            const organization = yield* CurrentOrganization;
+            return {
+              ...(yield* inventory(organization.owner)),
+              accountSetup: { redirectUri: accountOAuthRedirectUri(authentication) },
+            };
+          }),
+        );
     }),
 );

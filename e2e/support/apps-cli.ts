@@ -1,9 +1,3 @@
-/**
- * The real `executor apps` CLI and Git, signed in with a device code. Each use has its own home.
- * The OS credential store is a stand-in kept in a file, so scenarios run without a Secret Service
- * and never touch the real store; it can also be made unavailable, as on a server without one. The
- * browser opener records the approval page the CLI opens instead of opening a browser.
- */
 import {
   Config,
   Deferred,
@@ -23,29 +17,22 @@ import { Evidence } from "./evidence.ts";
 import { withStandInPackage } from "./stand-in-package.ts";
 import { heldValue } from "./failure-text.ts";
 
-/**
- * What the device approval page sends in `x-executor-grant-settings`: the apps the sign-in reaches
- * and how its approvals are answered.
- */
 export interface GrantSettings {
   readonly access?: { readonly kind: "all" } | { readonly kind: "connection"; readonly id: string };
   readonly mode?: "model" | "native" | "browser";
 }
 
-/** A finished process: its exit code and complete output. */
 export interface Finished {
   readonly code: number;
   readonly stdout: string;
   readonly stderr: string;
 }
 
-/** Where the CLI told the person to approve its sign-in, and the code it showed. */
 export interface DeviceCode {
   readonly verificationUri: string;
   readonly verificationUriComplete: string;
   readonly userCode: string;
 }
-/** Read the instructions `executor apps login` prints once it has a code: one link carrying it. */
 const printedCode = (stderr: string): DeviceCode | undefined => {
   const printed = stderr.match(/open (\S+)\nand check that it shows the code ([A-Z]{4}-[A-Z]{4})/u);
   if (printed?.[1] === undefined || printed[2] === undefined) return undefined;
@@ -57,7 +44,6 @@ const printedCode = (stderr: string): DeviceCode | undefined => {
   };
 };
 
-/** Start the CLI and Git with one home and credential store, removed with the caller's scope. */
 export const appsCli = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem,
     path = yield* Path.Path,
@@ -75,21 +61,14 @@ export const appsCli = Effect.gen(function* () {
   const home = path.join(root, "home");
   const bin = path.join(root, "bin");
   const opened = path.join(root, "opened-url");
-  /** Openers that find no browser, as on a desktop without one configured. */
   const noBrowser = path.join(root, "no-browser");
-  /**
-   * Openers that keep running after opening the page, as xdg-open does outside a desktop it
-   * detects when it has to start the browser: it waits for that browser to quit.
-   */
   const browserStays = path.join(root, "browser-stays");
   const openerPid = path.join(root, "opener-pid");
-  /** The Git working copy every `git` command runs in. */
   const checkout = path.join(root, "checkout");
   yield* fs.makeDirectory(home);
   yield* fs.makeDirectory(bin);
   yield* fs.makeDirectory(noBrowser);
   yield* fs.makeDirectory(browserStays);
-  // A browser left open outlives the CLI that started it; close it with the scope.
   yield* Effect.addFinalizer(() =>
     fs.readFileString(openerPid).pipe(
       Effect.flatMap((pid) => Effect.try(() => process.kill(Number(pid)))),
@@ -148,7 +127,6 @@ export const appsCli = Effect.gen(function* () {
     );
   const env: Record<string, string> = {
     PATH: `${bin}:${process.env.PATH ?? ""}`,
-    // The stand-in openers are a desktop's; without a display the CLI signs in with a code.
     DISPLAY: ":0",
     HOME: home,
     DO_NOT_TRACK: "1",
@@ -190,12 +168,10 @@ export const appsCli = Effect.gen(function* () {
         }),
       ),
     );
-  /** Run `executor apps <args>`. */
   const cli = (args: ReadonlyArray<string>) =>
     run(`executor apps ${args.join(" ")}`, launch.command, [...launch.prefix, "apps", ...args], {
       env,
     });
-  /** Run `executor <args>`, with `extra` added to the environment and `input` on stdin. */
   const executor = (
     args: ReadonlyArray<string>,
     options: { readonly extra?: Record<string, string>; readonly input?: string } = {},
@@ -204,9 +180,7 @@ export const appsCli = Effect.gen(function* () {
       env: { ...env, ...options.extra },
       input: options.input,
     });
-  // Git runs the CLI as its credential helper, configured as the docs configure it.
   const helper = `!${[launch.command, ...launch.prefix].map((part) => `'${part}'`).join(" ")} apps credential`;
-  /** Run Git in the working copy with the CLI as its credential helper and no prompts. */
   const git = (args: ReadonlyArray<string>, input?: string) =>
     run(`git ${args[0] ?? ""}`, "git", args, {
       input,
@@ -228,16 +202,10 @@ export const appsCli = Effect.gen(function* () {
         GIT_COMMITTER_EMAIL: "git-remote@example.test",
       },
     });
-  /**
-   * `executor apps login --host <host>`: with an opener that records the page it opens
-   * (`browser: "opens"`), one that does and then keeps running until its browser quits
-   * (`"stays"`), one that finds no browser (`"fails"`), or a working opener over SSH (`"remote"`). Returns where the CLI said to approve and the code, as soon as it prints them,
-   * and the fiber that ends with the CLI.
-   */
   const deviceLogin = (
     host: string,
     browser: "opens" | "stays" | "fails" | "remote",
-    command: ReadonlyArray<string> = ["apps", "login"],
+    command: ReadonlyArray<string> = ["login"],
   ) =>
     Effect.gen(function* () {
       const args = [...command, "--host", host];
@@ -291,14 +259,9 @@ export const appsCli = Effect.gen(function* () {
       const printed = yield* Deferred.await(shown).pipe(Effect.timeout("30 seconds"));
       return { ...printed, finished: running };
     });
-  /**
-   * `executor apps login --host <host>`, or the sign-in `command` names, approved for the test
-   * organization by the synthetic owner, with `settings` as the grant settings the approval page
-   * sends, when given. The grant is revoked with the caller's scope.
-   */
   const login = (
     host: string,
-    command: ReadonlyArray<string> = ["apps", "login"],
+    command: ReadonlyArray<string> = ["login"],
     settings?: GrantSettings,
   ) =>
     Effect.gen(function* () {
@@ -336,7 +299,6 @@ export const appsCli = Effect.gen(function* () {
       if (decided.status !== 200) return yield* Effect.die(`device decision ${decided.status}`);
       return { ...started, clientId, finished: yield* Fiber.join(started.finished) };
     });
-  /** The page the CLI opened in the browser, if any. Read once the CLI has exited. */
   const browserOpened = fs
     .exists(opened)
     .pipe(
@@ -344,38 +306,31 @@ export const appsCli = Effect.gen(function* () {
         exists ? fs.readFileString(opened).pipe(Effect.map(Option.some)) : Effect.succeedNone,
       ),
     );
-  /** The page the CLI opens once it has printed its code. */
   const openedPage = fs
     .readFileString(opened)
     .pipe(Effect.retry(Schedule.spaced("100 millis")), Effect.timeout("10 seconds"));
-  /** Whether the opener a `"stays"` login started is still running, as its browser would be. */
   const openerRunning = fs.readFileString(openerPid).pipe(
     Effect.flatMap((pid) => Effect.try(() => process.kill(Number(pid), 0))),
     Effect.as(true),
     Effect.orElseSucceed(() => false),
   );
-  /** Make the OS credential store unavailable to every later command. */
   const withoutOsStore = Effect.sync(() => {
     env.EXECUTOR_E2E_NO_OS_STORE = "1";
   });
-  /** What the OS credential store stand-in holds for `service` and `account`, if anything. */
   const storedCredential = (service: string, account: string) =>
     fs.readFileString(path.join(root, "store.json")).pipe(
       Effect.flatMap(
         Schema.decodeUnknownEffect(
-          // Every value in the store is a credential the CLI saved, registered as it is read.
           Schema.fromJsonString(Schema.Record(Schema.String, heldValue(Schema.String))),
         ),
       ),
       Effect.map((store) => Option.fromUndefinedOr(store[`${service}\n${account}`])),
     );
-  /** How to start `executor <args>` with this home and credential store, for an MCP client. */
   const command = (args: ReadonlyArray<string>) => ({
     command: launch.command,
     args: [...launch.prefix, ...args],
     env: { ...env },
   });
-  /** Whether anything reached the OS credential store stand-in. */
   const osStoreUsed = fs.exists(path.join(root, "store.json"));
   return {
     cli,

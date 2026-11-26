@@ -1,9 +1,3 @@
-/**
- * A trace the collector answers in part, because ordering it would take more than the collector's
- * skeleton ceiling (its README, "Readers"), is never read by a check as the whole trace: the
- * suite's `Telemetry.query` fails, without retrying, while `Telemetry.stored`, which failure
- * evidence reads, keeps the spans returned and the collector's marker beside them.
- */
 import { expect, layer } from "@effect/vitest";
 import { Cause, Effect, Exit, FileSystem, Layer } from "effect";
 import { HttpBody, HttpClient } from "effect/http";
@@ -14,10 +8,6 @@ import { ownCollectorSpans, serveOtlpCollector } from "../support/otlp-collector
 import { Target } from "../support/platform.ts";
 import { scenarios } from "../test-plan.ts";
 
-/**
- * Spans that each name a parent that never arrives. The collector counts 640 bytes of skeleton for
- * such a span against a 48 MiB ceiling, so it answers at most 78,643 of them (README, "Readers").
- */
 const spans = 80_000;
 const perExport = 10_000;
 
@@ -29,7 +19,6 @@ layer(TestLive, { excludeTestServices: true })("Telemetry partial trace", (it) =
         const target = yield* Target,
           fs = yield* FileSystem.FileSystem,
           http = yield* HttpClient.HttpClient;
-        // A collector of the scenario's own, so no other scenario's reads meet this trace.
         const directory = yield* fs.makeTempDirectory({
           directory: target.directory,
           prefix: "partial",
@@ -66,7 +55,6 @@ layer(TestLive, { excludeTestServices: true })("Telemetry partial trace", (it) =
           );
           expect(status).toBe(200);
         }
-        // The suite's own reader, pointed at this collector (`collector.json` in its directory).
         const reader = Telemetry.layer.pipe(
           Layer.provide(Layer.succeed(Target, { ...target, directory })),
         );
@@ -81,7 +69,6 @@ layer(TestLive, { excludeTestServices: true })("Telemetry partial trace", (it) =
         );
         expect(kept.meta?.spanCount).toBe(spans);
         expect(kept.meta?.returned).toBeLessThan(spans);
-        // Each returned span comes with a placeholder for its missing parent.
         expect(kept.data.length).toBe(2 * kept.meta!.returned!);
 
         const read = yield* Effect.exit(query(traceId));
@@ -93,7 +80,6 @@ layer(TestLive, { excludeTestServices: true })("Telemetry partial trace", (it) =
           );
         }
 
-        // A span search the collector cut off at its limit fails the same way: 80,000 spans match.
         const searched = yield* Effect.exit(searchWholeEnvironment("orphan", {}));
         expect(Exit.isFailure(searched), "a check cannot read a cut-off search as all").toBe(true);
         if (Exit.isFailure(searched)) {
@@ -110,8 +96,6 @@ layer(TestLive, { excludeTestServices: true })("Telemetry partial trace", (it) =
         expect(Exit.isFailure(windowed), "nor a cut-off search in a time window").toBe(true);
         if (Exit.isFailure(windowed)) expect(Cause.hasDies(windowed.cause)).toBe(true);
 
-        // Log lists are read whole: 601 logs of one trace, more than one page, the oldest holding a
-        // marker a privacy check looks for. Both log readers must see it.
         const logTrace = randomBytes(16).toString("hex");
         const common = `partial-logs-${randomBytes(4).toString("hex")}`;
         const forbidden = `forbidden-${randomBytes(4).toString("hex")}`;

@@ -57,8 +57,6 @@ layer(HostedLive, { excludeTestServices: true })("Seat-only billing", (it) => {
             kind: "mutation",
             input: { message: "seat-only" },
           });
-        // The seeded seat-only catalog has no execution feature at all. The previous
-        // billing admission rejects these calls; both must now execute successfully.
         const calls = yield* Effect.all([call(), call()], { concurrency: 2 });
         expect(calls.map((result) => result.status)).toEqual([200, 200]);
         expect(
@@ -106,7 +104,6 @@ layer(HostedLive, { excludeTestServices: true })("Seat-only billing", (it) => {
           }),
         )(result.structuredContent);
         expect(completed.execution.value).toEqual({ message: "seat-only", receipt });
-        // The owner's agent reads the same plans through the Executor app.
         const agentBilling = yield* client.use(
           "Read billing through the Executor app",
           (client, signal) =>

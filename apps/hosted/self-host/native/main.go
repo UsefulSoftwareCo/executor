@@ -598,6 +598,10 @@ func serve(mode string) error {
 		appWorkerIdle = strconv.Itoa(number)
 	}
 	config = bytes.ReplaceAll(config, []byte("@@APP_WORKER_IDLE_SECONDS@@"), []byte(appWorkerIdle))
+	stall, err := readStallSettings(values)
+	if err != nil {
+		return err
+	}
 	config = bytes.ReplaceAll(config, []byte("@@MEMORY_PRESSURE_MB@@"), []byte(strconv.FormatUint(memoryPressureMiB("/sys/fs/cgroup/memory.max"), 10)))
 	config = bytes.ReplaceAll(config, []byte("@@SELF_ORIGIN@@"), []byte(strconv.Quote(values["BETTER_AUTH_URL"])))
 	// App builds install packages from this registry; empty selects the public registry.
@@ -718,7 +722,9 @@ func serve(mode string) error {
 	}, time.Second, 30*time.Second, time.After)
 	defer stopCollector()
 
+	life := &lifeSigns{}
 	proxy := productProxy(filepath.Join(temporary, "product.sock"), workerdIdleTimeout, proxies...)
+	proxy.Transport = lifeTransport{RoundTripper: proxy.Transport, life: life}
 	publicListener, err := net.Listen("tcp", net.JoinHostPort(setting("HOST", "0.0.0.0"), port))
 	if err != nil {
 		command.Process.Kill()
@@ -731,19 +737,43 @@ func serve(mode string) error {
 	go func() { serverError <- public.Serve(publicListener) }()
 	stopAnnouncing := make(chan struct{})
 	defer close(stopAnnouncing)
-	go announceReady(filepath.Join(temporary, "product.sock"), values["BETTER_AUTH_URL"], startupProgressInterval, time.Second, os.Stderr, opened, stopAnnouncing)
+	// The stall check arms on the product's first ready answer.
+	ready := make(chan struct{})
+	go func() {
+		if announceReady(filepath.Join(temporary, "product.sock"), values["BETTER_AUTH_URL"], startupProgressInterval, time.Second, os.Stderr, opened, stopAnnouncing) {
+			close(ready)
+		}
+	}()
+	stalled := make(chan stallReport)
+	stopWatching := make(chan struct{})
+	var watching sync.WaitGroup
+	if stall.seconds > 0 {
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		pid := command.Process.Pid
+		watching.Go(func() {
+			watchStalls(stall, ready, ticker.C, func() (threadSample, error) { return readThread(pid) }, healthProbe(filepath.Join(temporary, "product.sock"), stallProbeTimeout), life, busyCPU("/sys/fs/cgroup/cpu.max"), os.Stderr, stalled, stopWatching)
+		})
+	}
+	// The check stops before any shutdown begins, so a slow stop is never counted as a stall.
+	endWatching := sync.OnceFunc(func() { close(stopWatching); watching.Wait() })
+	defer endWatching()
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(signals)
 	select {
 	case err := <-stopped:
 		return err
+	case <-stalled:
+		endWatching()
+		return stopStalled(command.Process, stopped, stallGrace)
 	case <-signals:
 	case err := <-serverError:
 		if !errors.Is(err, http.ErrServerClosed) {
 			fmt.Fprintln(os.Stderr, "Native host stopped")
 		}
 	}
+	endWatching()
 	command.Process.Signal(syscall.SIGTERM)
 	select {
 	case err := <-stopped:
@@ -766,8 +796,9 @@ const startupProgressInterval = 15 * time.Second
 // would otherwise initialize only once the first visitor or health probe arrived. It asks the
 // product's /health until one answers 200, waiting retry after the first failure and doubling up
 // to 30 seconds, and logs every progress interval while it waits. It closes opened when the
-// product first answers, ready or not, and returns once the product is ready or done closes.
-func announceReady(socket, origin string, progress, retry time.Duration, log io.Writer, opened chan<- struct{}, done <-chan struct{}) {
+// product first answers, ready or not, and returns once the product is ready, with true, or done
+// closes.
+func announceReady(socket, origin string, progress, retry time.Duration, log io.Writer, opened chan<- struct{}, done <-chan struct{}) bool {
 	started := time.Now()
 	fmt.Fprintln(log, "Executor is starting. The first start initializes the database, which can take a minute or more on slower hardware.")
 	ctx, cancel := context.WithCancel(context.Background())
@@ -810,14 +841,14 @@ func announceReady(socket, origin string, progress, retry time.Duration, log io.
 	for {
 		select {
 		case <-done:
-			return
+			return false
 		case <-ticker.C:
 			fmt.Fprintf(log, "Executor is still starting (%s)\n", time.Since(started).Round(time.Second))
 		case ok := <-answer:
 			answer = nil
 			if ok {
 				fmt.Fprintf(log, "Executor is ready at %s (started in %s)\n", origin, time.Since(started).Round(time.Second))
-				return
+				return true
 			}
 			again = time.After(retry)
 			retry = min(retry*2, 30*time.Second)
@@ -939,6 +970,8 @@ func productProxy(socket string, upstreamIdleTimeout time.Duration, trusted ...n
 			request.Out.Close = request.In.ContentLength != 0
 			address := clientAddress(request.In.RemoteAddr, request.In.Header.Values("X-Forwarded-For"), trusted)
 			request.Out.Header.Set("x-executor-client-ip", address)
+			// Only the host's own stall check may ask for an untraced /health.
+			request.Out.Header.Del(hostProbeHeader)
 		},
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {

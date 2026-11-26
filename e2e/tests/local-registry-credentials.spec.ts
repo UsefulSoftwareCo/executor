@@ -1,10 +1,3 @@
-/**
- * An operator's npm registry URL can carry credentials in its userinfo and a token in its query.
- * When a dependency fails to install, the deployer reads why, with the registry's host and path,
- * but the deployer is not always the operator: the failure never shows the userinfo or the query.
- * A token written into the URL's path is not removed and does reach the deployer: it cannot be told
- * from an ordinary path.
- */
 import { randomUUID } from "node:crypto";
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
@@ -20,7 +13,6 @@ const BuildFailed = Schema.Struct({
   message: Schema.String,
 });
 
-/** A package the suite's registry does not serve, so installing it fails with the registry's 404. */
 const missingPackage = "@executor-fixture/missing-package";
 
 layer(TestLive, { excludeTestServices: true })("Local registry credentials", (it) => {
@@ -61,9 +53,7 @@ export default defineApp({}, { tools: router({
             expect(deployed.text, "the failure omits the registry's credentials").not.toContain(
               secret,
             );
-          // The installer's failure reaches the deployer through the bundler's import resolution.
           expect(failed.stage).toBe("compile");
-          // Still useful: it names the package and the registry's host and path.
           expect(failed.message).toContain(`Installing ${missingPackage}@1.0.0 failed`);
           expect(failed.message).toContain(registry.location);
         }),

@@ -390,9 +390,10 @@ Do not configure a client with the `server.json` password, which changes every
 time the server starts. The client reaches the background server only while it
 runs; after a reboot, run `executor` or `executor service start` first.
 
-The server sends the Executor app's `executor` skill as its MCP instructions.
-Discover the Executor app with `skills({})`, then read that skill with
-`{ app: "executor", name: "executor" }` using its current slug. It links to
+The server sends the Executor app's `executor` skill as its MCP instructions,
+so an agent need not read it again. Only a client that did not show the
+instructions reads it, with `{ app: "executor", name: "executor" }` using the
+slug `skills({})` lists for that app. It links to
 `code-mode`, which covers calling tools from `execute`, and `app-authoring`,
 which has runnable source, schema helpers, provider accounts and the deploy
 flow. Read `app-authoring` before writing an app. These are ordinary skill files
@@ -423,8 +424,8 @@ and tool calls resolve their accounts again.
 Run a new execute to discover apps added or configured during a previous one.
 Incomplete or failing apps appear in `unavailableApps` with a safe error tag.
 
-Programs support `await`, `Promise.all`, loops and data transformation. There
-are no direct imports, fetch, process or filesystem globals. App tools still run
+Programs support `await`, `Promise.allSettled`, `Promise.all`, loops and data
+transformation. There are no direct imports, fetch, process or filesystem globals. App tools still run
 as trusted Node code with the selected credentials. Interpreter limits are
 cooperative; they do not isolate arbitrary app code or bound process memory.
 App code can pass `context.signal` to fetch to observe cancellation. Effects

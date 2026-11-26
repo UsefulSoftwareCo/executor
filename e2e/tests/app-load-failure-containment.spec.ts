@@ -1,9 +1,3 @@
-/**
- * An app whose code throws while it loads fails only that app's reads. Its workflow listing
- * reports the app's own evaluation error, as its tool and skill listings do, instead of an opaque
- * workflow failure. A dashboard batch that carries its reads still answers every other read,
- * including another app's, and the other app's page still loads.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { Actors } from "../support/actors.ts";
@@ -72,7 +66,6 @@ layer(HostedLive, { excludeTestServices: true })("App load failure containment",
         const failing = yield* deploy("Failing loader", broken);
         const working = yield* deploy("Working reports", healthy);
 
-        // Listing the failing app's workflows reports its own error, as listing its tools does.
         const failed = yield* api.request(
           actors.owner,
           "GET",
@@ -96,7 +89,6 @@ layer(HostedLive, { excludeTestServices: true })("App load failure containment",
         yield* browser.use("Open the dashboard", (page) =>
           page.goto(`/org/${actors.organization.slug}/apps`),
         );
-        // One batch, as the dashboard sends it, with the failing app's reads among the others.
         const reads = [
           { group: "organization", endpoint: "inventory", app: undefined },
           { group: "workflows", endpoint: "definitions", app: failing.id },

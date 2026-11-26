@@ -1,11 +1,3 @@
-/**
- * A failed case's evidence keeps the trace of every request it sent, with the server's spans: the
- * failing request whether it failed in the test, in its cleanup or in an acquisition, behind
- * unanswered, refused, background or cleanup requests. Past its trace budget it leaves out the
- * oldest traces, and past its collection deadline it lists the oldest as not read. The cases in
- * e2e/failure-evidence fail on purpose, so they run in their own Vitest process with a run
- * directory of their own, and this scenario reads the results and evidence they leave there.
- */
 import { expect, layer } from "@effect/vitest";
 import { Config, Effect, FileSystem, Path, Schema } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
@@ -111,7 +103,6 @@ layer(TestLive, { excludeTestServices: true })("Failure evidence", (it) => {
             const result = yield* read(CaseResult, path.join(folders, name, "result.json"));
             cases.set(result.title, path.join(folders, name));
           }
-          // Each probe's path names its role, so traces are compared by role.
           const kept = (title: string) =>
             Effect.gen(function* () {
               const folder = cases.get(title);
@@ -131,7 +122,6 @@ layer(TestLive, { excludeTestServices: true })("Failure evidence", (it) => {
                 title,
                 result,
                 reported: results.get(title),
-                // Probe roles, newest first. The session's own requests have no role.
                 failure: traceIds.failure.map(role).filter((name) => name !== undefined),
                 dropped: traceIds.dropped.map(role),
                 state: traceIds.state,
@@ -150,7 +140,6 @@ layer(TestLive, { excludeTestServices: true })("Failure evidence", (it) => {
                   error,
                 })),
                 keptReasons: telemetry.flatMap(({ kept }) => kept),
-                // The server's spans arrived: one of them answered the test's client span.
                 serverAnswered: (wanted: string) => {
                   const spans = traceOf(wanted)?.data ?? [];
                   const client = spans.find(({ span }) => span.serviceName === "executor-e2e");
@@ -165,7 +154,6 @@ layer(TestLive, { excludeTestServices: true })("Failure evidence", (it) => {
               prefix,
               Array.from({ length: from - to + 1 }, (_, index) => from - index),
             );
-          // A failed case under its budget keeps every request it sent, the failing one included.
           const everyRequestKept = (title: string, also: ReadonlyArray<string> = []) =>
             Effect.gen(function* () {
               const evidence = yield* kept(title);
@@ -189,7 +177,6 @@ layer(TestLive, { excludeTestServices: true })("Failure evidence", (it) => {
 
           for (const title of [failureCases.innerScope, failureCases.sameMillisecond]) {
             const cleanup = yield* everyRequestKept(title, down("cleanup", 9, 0));
-            // The cleanup ran after the failing request answered, so it is newer.
             expect(cleanup.failure, title).toEqual([...down("cleanup", 9, 0), "failing"]);
             expect(cleanup.serverAnswered("failing"), title).toBe(true);
           }
@@ -202,14 +189,12 @@ layer(TestLive, { excludeTestServices: true })("Failure evidence", (it) => {
           expect(timeout.reported?.failureMessages.join("\n")).toContain("timed out");
           expect(timeout.failure).toEqual(["before-deadline"]);
 
-          // Evidence waits five seconds for the unanswered request's spans, past the deadline.
           const nearDeadline = yield* everyRequestKept(failureCases.nearDeadline, ["answered"]);
           const reported = nearDeadline.reported?.failureMessages.join("\n") ?? "";
           expect(reported).toContain("cross-origin request rejected");
           expect(reported).not.toContain("timed out");
           expect(nearDeadline.result.errors.join("\n")).toContain("cross-origin request rejected");
           expect(nearDeadline.failure).toEqual(["failing", "answered"]);
-          // Its evidence was finished after the deadline, and the reported error is still its own.
           expect(nearDeadline.result.duration).toBeGreaterThan(caseDeadlineMs);
 
           const passing = yield* kept(failureCases.passing);
@@ -219,10 +204,8 @@ layer(TestLive, { excludeTestServices: true })("Failure evidence", (it) => {
           expect(passing.dropped).toEqual([]);
           expect(passing.unanswered).toEqual([]);
           expect(passing.keptReasons.filter((reason) => reason !== "slowest")).toEqual([]);
-          // It has no failure traces to wait five seconds for; it takes about a tenth of a second.
           expect(passing.result.duration).toBeLessThan(5_000);
 
-          // The failing request was sent before sixteen refused requests and answered after them.
           const refused = yield* everyRequestKept(
             failureCases.answeredAfterRefused,
             down("refused", 15, 0),
@@ -231,7 +214,6 @@ layer(TestLive, { excludeTestServices: true })("Failure evidence", (it) => {
           expect(refused.failure.slice(0, 17)).toEqual(["failing", ...down("refused", 15, 0)]);
           expect(refused.serverAnswered("failing")).toBe(true);
 
-          // A recovered attempt's requests are kept too, older than the failure's.
           const retried = yield* everyRequestKept(failureCases.retriedStep, ["recovered"]);
           expect(retried.failure).toEqual([
             "failing",
@@ -248,7 +230,6 @@ layer(TestLive, { excludeTestServices: true })("Failure evidence", (it) => {
             expect(recovered.serverAnswered("failing"), title).toBe(true);
           }
 
-          // Release, onExit, a closed scope's finalizer and ensuring, all inside the step.
           const inStep = yield* everyRequestKept(failureCases.cleanupInStep, [
             ...down("release", 2, 0),
             ...down("on-exit", 2, 0),
@@ -257,7 +238,6 @@ layer(TestLive, { excludeTestServices: true })("Failure evidence", (it) => {
           ]);
           expect(inStep.serverAnswered("failing")).toBe(true);
 
-          // An acquisition runs uninterruptibly like cleanup, and the scope's cleanup follows it.
           const acquire = yield* everyRequestKept(
             failureCases.failedAcquire,
             down("cleanup", 3, 0),
@@ -265,7 +245,6 @@ layer(TestLive, { excludeTestServices: true })("Failure evidence", (it) => {
           expect(acquire.failure.slice(0, 5)).toEqual([...down("cleanup", 3, 0), "failing"]);
           expect(acquire.serverAnswered("failing")).toBe(true);
 
-          // Twelve background requests sent after the failing one, in a step of their own.
           const background = yield* everyRequestKept(
             failureCases.backgroundAfterFailure,
             down("background", 11, 0),
@@ -276,7 +255,6 @@ layer(TestLive, { excludeTestServices: true })("Failure evidence", (it) => {
           ]);
           expect(background.serverAnswered("failing")).toBe(true);
 
-          // The body passed; the case's own finalizer failed. Vitest and the evidence agree.
           const caseCleanup = yield* everyRequestKept(failureCases.failedCaseCleanup, [
             "answered",
             ...down("cleanup", 3, 0),
@@ -289,8 +267,6 @@ layer(TestLive, { excludeTestServices: true })("Failure evidence", (it) => {
           ]);
           expect(caseCleanup.serverAnswered("failing")).toBe(true);
 
-          // Past the budget the oldest answered traces are left out. The newest request, the
-          // unanswered one and the slowest five are kept however old they are.
           const budget = yield* kept(failureCases.overBudget);
           expect(budget.reported?.status).toBe("failed");
           expect(budget.result.status).toBe("failed");
@@ -304,12 +280,9 @@ layer(TestLive, { excludeTestServices: true })("Failure evidence", (it) => {
           expect(budget.dropped.length, "traces left out").toBeGreaterThanOrEqual(10);
           expect(recent.length, "recent traces kept within the budget").toBeGreaterThanOrEqual(3);
           expect(budget.dropped.every((role) => role?.startsWith("old-"))).toBe(true);
-          // Every trace left out is older than every trace kept for fitting the budget.
           expect(Math.max(...budget.dropped.map(index))).toBeLessThan(Math.min(...recent));
           expect(budget.failureIds.length + budget.droppedIds.length).toBe(budget.every.length);
 
-          // Reading every trace through a slow collector takes longer than the evidence may spend.
-          // It stops at its deadline with the newest traces read, inside the cleanup hook's time.
           const slow = yield* kept(failureCases.slowCollector);
           const slowReported = slow.reported?.failureMessages.join("\n") ?? "";
           expect(slow.reported?.status).toBe("failed");
@@ -328,16 +301,13 @@ layer(TestLive, { excludeTestServices: true })("Failure evidence", (it) => {
           expect(slow.unfetched.length, "traces not read").toBeGreaterThanOrEqual(50);
           expect(readOld.length, "traces read").toBeGreaterThanOrEqual(32);
           expect(slow.unfetched.every((role) => role?.startsWith("old-"))).toBe(true);
-          // Newest first: every trace not read is older than every trace read.
           expect(Math.max(...slow.unfetched.map(index))).toBeLessThan(Math.min(...readOld));
           expect(slow.failureIds.length + slow.unfetchedIds.length).toBe(slow.every.length);
           expect(slow.every.length).toBeGreaterThan(slowTraceRead.requests);
-          // telemetry.json lists each trace not read.
           expect(
             slow.telemetry.filter(({ error }) => error === "Not read before the evidence deadline")
               .length,
           ).toBe(slow.unfetchedIds.length);
-          // The cleanup hook finished, so the product was stopped: none of its processes runs.
           const lifecycles = path.join(run, "report/lifecycle");
           const cleanups: (number | null)[] = [];
           for (const name of yield* fs.readDirectory(lifecycles)) {
@@ -346,8 +316,6 @@ layer(TestLive, { excludeTestServices: true })("Failure evidence", (it) => {
           }
           expect(cleanups).toHaveLength(1);
           expect(cleanups[0]).toBeLessThan(60_000);
-          // Identified by its process group, not its origin: once the product freed its port, another
-          // server on this runner can be handed it and answer there.
           const { processGroup } = yield* read(
             ServerProcess,
             path.join(slow.folder, "product.json"),

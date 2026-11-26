@@ -12,7 +12,6 @@ import { companyLookupLive } from "../implementation/company-profile.ts";
 import { makeOnboarding } from "../implementation/onboarding.ts";
 import { cloudDatabaseConnection } from "./database.ts";
 
-/** Resolve the secret at composition; each request owns its SQL client and company request. */
 export const cloudOnboarding = Effect.gen(function* () {
   const blobs = yield* cloudBlobs;
   const origin = yield* cloudOrigin;

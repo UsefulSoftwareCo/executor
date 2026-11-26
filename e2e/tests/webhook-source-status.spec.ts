@@ -1,4 +1,3 @@
-/** A linked account's webhook source registers silently; failures and configuration live in Webhooks. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -28,7 +27,6 @@ import { appsManifest } from "../support/apps-release.ts";
 
 const Viewer = Schema.Struct({ userId: Schema.String });
 
-/** An app whose webhook registers through `register`, keeping the configured channel as state. */
 const webhookApp = (name: string, register: string) => ({
   name,
   files: [
@@ -48,10 +46,6 @@ export default defineApp({user: { accounts:{service} }},{tools: router({
   ],
 });
 
-/**
- * Connect the actor's own account from the app for `requirement` in `scope`, which links it: for
- * the connecting member, or for everyone.
- */
 const connect = (
   actor: Session,
   prefix: string,
@@ -121,7 +115,6 @@ layer(HostedLive, { excludeTestServices: true })("Webhook source status", (it) =
         );
         const account = yield* connect(actors.owner, prefix, path, "My account");
         created.account = account;
-        // Connecting from the app links the account, which becomes the app's webhook source.
         expect(yield* linkedAccountIds(actors.owner, path)).toEqual([account]);
         const owner = yield* body(Viewer, yield* api.request(actors.owner, "GET", "/api/viewer"));
         yield* browser.login(actors.owner);
@@ -193,7 +186,6 @@ layer(HostedLive, { excludeTestServices: true })("Webhook source status", (it) =
         expect(first).toMatchObject([
           { name: "incoming", sourceAccount: account, actor: owner.userId },
         ]);
-        // Saving the source's configuration registers its subscription again with it.
         yield* browser.use("Open the source configuration", (page) =>
           page
             .locator("summary")
@@ -254,7 +246,6 @@ layer(HostedLive, { excludeTestServices: true })("Webhook source status", (it) =
           actors = yield* Actors,
           browser = yield* Browser;
         const prefix = `/api/organizations/${actors.organization.id}`;
-        // A user requirement and an app requirement of one provider, each with a webhook.
         const editors = `import {defineApp,defineProvider,secrets,query,object,string,router} from "apps";
 const service=defineProvider({name:"Webhook editors fixture",auth:{key:secrets({label:"Key",fields:object({token:string()})})}});
 const hook=(account)=>({account,config:object({channel:string().optional()}),state:object({}),
@@ -274,7 +265,6 @@ export default defineApp({app:{accounts:{team:service}},user:{accounts:{service}
           [];
         yield* Effect.addFinalizer(() =>
           Effect.gen(function* () {
-            // An app link is removed by a manager, a member's link by that member.
             for (const account of accounts)
               yield* api.request(
                 account.scope === "app" ? actors.owner : account.actor,
@@ -302,9 +292,6 @@ export default defineApp({app:{accounts:{team:service}},user:{accounts:{service}
             accounts.push({ actor, scope, requirement, id });
             return id;
           });
-        // The admin links their account for the app, so its source runs without an actor; the
-        // owner and the member then each link their own. A user source registers only once the
-        // app requirement it also runs with is linked.
         const teamAccount = yield* add(actors.admin, "Admin team", "app", "team");
         const ownerAccount = yield* add(actors.owner, "Owner account", "user", "service");
         const memberAccount = yield* add(actors.member, "Member account", "user", "service");
@@ -316,9 +303,6 @@ export default defineApp({app:{accounts:{team:service}},user:{accounts:{service}
         if (owner === undefined || member === undefined)
           return yield* Effect.die(new Error("Missing viewers"));
         const ready = { status: "ready", failure: null };
-        // A member who is neither the source's actor nor an app manager cannot see it: the member
-        // sees only their own. An app manager sees the app link's source without use of its
-        // account, and their own, but not the member's, whose account only the member uses.
         const managerView = yield* settleWebhookSources(
           actors.owner,
           path,
@@ -338,7 +322,6 @@ export default defineApp({app:{accounts:{team:service}},user:{accounts:{service}
           [memberAccount]: member.userId,
           [teamAccount]: null,
         });
-        // Nor can the member change a source they cannot see.
         for (const [account, hook] of [
           [ownerAccount, "incoming"],
           [teamAccount, "teamHook"],
@@ -351,7 +334,6 @@ export default defineApp({app:{accounts:{team:service}},user:{accounts:{service}
           );
           expect(forbidden.status, JSON.stringify(forbidden.body)).toBe(403);
         }
-        // The manager changes the app link's source, but not the member's.
         const managed = yield* api.request(
           actors.owner,
           "PUT",
@@ -511,21 +493,18 @@ export default defineApp({user: { accounts:{service,other} }},{tools: router({
           });
         const work = yield* connectFor("other", "Work other");
         const home = yield* connectFor("other", "Home other");
-        // The other requirement is plain, so connecting Home for it replaces Work.
         expect(yield* accountLinks(actors.member, path)).toEqual([["other", home]]);
         const service = yield* connectFor("service", "Member service");
         expect(yield* accountLinks(actors.member, path)).toEqual([
           ["other", home],
           ["service", service],
         ]);
-        // The source registers with the actor's link for the other requirement; nothing is chosen.
         const [ready] = yield* settleWebhookSources(actors.member, path, (sources) =>
           sources.some((item) => item.account === service && item.status === "ready"),
         ).pipe(Effect.map((sources) => sources.filter((item) => item.account === service)));
         expect(ready).toBeDefined();
         const listed = yield* api.request(actors.member, "GET", `${path}/webhook-sources`);
         expect(listed.status, JSON.stringify(listed.body)).toBe(200);
-        // Every linked account is a source of the app; none carries account choices.
         expect(
           (listed.body as ReadonlyArray<Record<string, unknown>>)
             .map((item) => ({
@@ -539,7 +518,6 @@ export default defineApp({user: { accounts:{service,other} }},{tools: router({
             .sort((a, b) => a.localeCompare(b))
             .map((account) => ({ account, accounts: false })),
         );
-        // Deliver to the source's current active registration.
         const deliver = Effect.gen(function* () {
           const hook = (yield* webhookSubscriptions(actors.member, path)).find(
             (item) => item.sourceAccount === service && item.status === "active",
@@ -555,8 +533,6 @@ export default defineApp({user: { accounts:{service,other} }},{tools: router({
           return delivered.body;
         });
         expect(yield* deliver).toEqual({ account: service, other: home });
-        // A saved choice is no longer accepted: an `accounts` field is not saved, and deliveries
-        // keep following the actor's link.
         const saved = yield* api.request(
           actors.member,
           "PUT",
@@ -590,8 +566,6 @@ export default defineApp({user: { accounts:{service,other} }},{tools: router({
           ),
         ).toBe(0);
         yield* browser.checkpoint("A webhook source without an account choice");
-        // Linking Work replaces Home for the other requirement; the next delivery uses Work while
-        // the source keeps its own account.
         yield* linkAccount(actors.member, path, "other", work);
         expect(yield* accountLinks(actors.member, path)).toEqual([
           ["other", work],

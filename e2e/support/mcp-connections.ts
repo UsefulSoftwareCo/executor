@@ -1,6 +1,5 @@
-/** Scoped connection fixtures through public product routes and the standard OAuth endpoints. */
 import { expect } from "@effect/vitest";
-import { Effect, Schema } from "effect";
+import { Effect, Redacted, Schema } from "effect";
 import { secret } from "./failure-text.ts";
 import { HttpClient, HttpClientRequest } from "effect/http";
 import { createHash, randomBytes } from "node:crypto";
@@ -15,7 +14,6 @@ const RunTarget = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("app") }),
   Schema.Struct({ kind: Schema.Literal("account"), id: Schema.String }),
 ]);
-/** The public connection record, including the MCP URL that issues grants bound to it. */
 export const ConnectionView = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
@@ -26,12 +24,10 @@ export const ConnectionView = Schema.Struct({
     ),
   }),
 });
-/** An `execute` result: the program's completion and its value. */
 export const Execution = Schema.Struct({
   status: Schema.Literal("completed"),
   execution: Schema.Struct({ ok: Schema.Boolean, value: Schema.optional(Schema.Unknown) }),
 });
-/** A tool call's refusal as code mode's `error.message` carries it. */
 export const TargetRefusal = Schema.Struct({
   code: Schema.String,
   status: Schema.Number,
@@ -39,10 +35,6 @@ export const TargetRefusal = Schema.Struct({
   recovery: Schema.Struct({ action: Schema.String, instructions: Schema.String }),
   retryable: Schema.Boolean,
 });
-/**
- * `GrantForbidden` for the reason `target`: the grant includes `app` but not running it with
- * `account`. Its message names the refused account.
- */
 export const targetRefusal = (app: string, account: string): typeof TargetRefusal.Type => ({
   code: "GrantForbidden",
   status: 403,
@@ -69,7 +61,6 @@ const Grants = Schema.Array(
  * goes to a loopback URL that is never contacted; the consent response carries it.
  * An undefined resource sends no RFC 8707 `resource` parameter, as some MCP clients do.
  */
-/** The logo the scoped connection client registers; the tool call log reads it back. */
 export const scopedClientLogo = "https://scoped-client.e2e.invalid/logo.png";
 
 export const consentTo = (
@@ -82,7 +73,6 @@ export const consentTo = (
     const api = yield* Api,
       target = yield* Target,
       http = yield* HttpClient.HttpClient;
-    // Authorization and consent run on the browser origin, Cloud's `app.` host.
     const origin = targetHosts(target).browser;
     const redirect = "http://127.0.0.1:9/callback";
     const registered = yield* api.request(
@@ -124,7 +114,6 @@ export const consentTo = (
     );
     expect(opened.status).toBe(200);
     const next = new URL((yield* body(Schema.Struct({ url: Schema.String }), opened)).url, origin);
-    // An unknown or disabled resource is refused before consent, back at the client's redirect.
     if (next.origin !== origin)
       return {
         status: undefined,
@@ -132,6 +121,7 @@ export const consentTo = (
         clientId,
         consentResources: undefined,
         tokens: Effect.die("The authorization request was refused"),
+        tokenPair: Effect.die("The authorization request was refused"),
       };
     const consentPage = next;
     const consented = yield* api.request(
@@ -141,8 +131,7 @@ export const consentTo = (
       { accept: true, oauth_query: consentPage.search.slice(1) },
       headers,
     );
-    /** Exchange the approved code; only an accepted consent has one. */
-    const tokens = Effect.gen(function* () {
+    const exchange = Effect.gen(function* () {
       const { url } = yield* body(Schema.Struct({ url: Schema.String }), consented);
       const code = new URL(url).searchParams.get("code");
       expect(code).not.toBeNull();
@@ -164,19 +153,45 @@ export const consentTo = (
           return yield* response.json;
         }),
       );
-      return secret((yield* Schema.decodeUnknownEffect(Tokens)(exchanged)).access_token);
+      return yield* Schema.decodeUnknownEffect(Tokens)(exchanged);
     });
     return {
       status: consented.status,
       refused: null,
       clientId,
-      /** The resources the consent page was asked to approve. */
       consentResources: consentPage.searchParams.getAll("resource"),
-      tokens,
+      tokens: Effect.map(exchange, (exchanged) => secret(exchanged.access_token)),
+      tokenPair: Effect.map(exchange, tokenPair),
     };
   });
 
-/** The ID of the grant this session issued to a client, read from the public grants list. */
+const tokenPair = (tokens: typeof Tokens.Type) => ({
+  access: secret(tokens.access_token),
+  refresh: secret(tokens.refresh_token),
+});
+
+export const refreshGrant = (clientId: string, refresh: Redacted.Redacted<string>) =>
+  Effect.gen(function* () {
+    const target = yield* Target,
+      http = yield* HttpClient.HttpClient;
+    return yield* Effect.scoped(
+      Effect.gen(function* () {
+        const response = yield* http.execute(
+          HttpClientRequest.post(`${targetHosts(target).browser}/api/auth/oauth2/token`).pipe(
+            HttpClientRequest.bodyUrlParams({
+              grant_type: "refresh_token",
+              client_id: clientId,
+              refresh_token: Redacted.value(refresh),
+            }),
+          ),
+        );
+        if (response.status !== 200) return { status: response.status, tokens: undefined };
+        const tokens = yield* Schema.decodeUnknownEffect(Tokens)(yield* response.json);
+        return { status: response.status, tokens: tokenPair(tokens) };
+      }),
+    );
+  });
+
 export const clientGrantId = (session: Session, clientId: string) =>
   Effect.gen(function* () {
     const api = yield* Api;
@@ -186,7 +201,6 @@ export const clientGrantId = (session: Session, clientId: string) =>
     return grant.grant.id;
   });
 
-/** Revoke every grant this session issued to the given clients, even after a failed scenario. */
 export const revokeClientGrants = (session: Session, clients: () => readonly string[]) =>
   Effect.addFinalizer(() =>
     Effect.gen(function* () {
@@ -201,7 +215,6 @@ export const revokeClientGrants = (session: Session, clients: () => readonly str
     }).pipe(Effect.orDie),
   );
 
-/** Account-free app with one read-only and one writing tool. */
 export const readWriteAppFiles = (receipt: string) => [
   {
     path: "index.ts",
@@ -221,7 +234,6 @@ export default defineApp({}, async () => ({
 const Organizations = Schema.Array(
   Schema.Struct({ id: Schema.String, slug: Schema.String, name: Schema.String }),
 );
-/** The scenario organization as `/mcp/whoami` names it. */
 export const scenarioOrganization = Effect.gen(function* () {
   const api = yield* Api,
     actors = yield* Actors;

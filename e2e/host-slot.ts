@@ -1,19 +1,3 @@
-/**
- * One local e2e run at a time per machine. Each worker runs its own product server, database and
- * browser, so two agents' runs on one host starve each other's servers and make their timing
- * failures meaningless. Outside CI, `e2e/run.ts` takes a host-wide slot before it starts the suite,
- * waits while another run holds it, and lowers its default workers to the cores the machine has
- * free.
- *
- * A slot is a file in the temporary directory, created exclusively, naming its holder. The holder
- * touches it every few seconds and deletes it when the run ends, including on Ctrl-C. A killed
- * holder cannot, so a waiter clears a slot whose holder's PID is gone or that has not been touched
- * for `staleAfterMs` (a reused PID). It renames the file aside first and deletes it only if it
- * still names that holder, so it never removes a successor's slot.
- *
- * `EXECUTOR_E2E_HOST_SLOTS=off` skips the slot and the sizing; `EXECUTOR_E2E_HOST_SLOTS=2` lets two
- * runs share the machine. CI (`CI` set) never takes a slot: each job owns its runner.
- */
 import { randomBytes } from "node:crypto";
 import { Console, Effect, FileSystem, Option, Path, type Scope } from "effect";
 
@@ -24,7 +8,6 @@ const reportEveryMs = 60_000;
 
 type Owner = { holder: string; pid: number; cwd: string; args: string; startedAt: number };
 
-/** Whether a process with this PID exists. A PID owned by another user counts as alive. */
 export const alive = (pid: number) => {
   try {
     process.kill(pid, 0);
@@ -36,10 +19,6 @@ export const alive = (pid: number) => {
 
 const minutes = (ms: number) => `${Math.max(0, Math.round(ms / 60_000))} min`;
 
-/**
- * Holds a host slot for the enclosing scope and returns the default worker count to use: `base`,
- * lowered to half the cores not already busy (each worker keeps about two cores busy), at least 1.
- */
 export const hostSlot = (
   base: number,
 ): Effect.Effect<number, never, FileSystem.FileSystem | Path.Path | Scope.Scope> =>
@@ -69,21 +48,18 @@ export const hostSlot = (
         Effect.option,
       );
 
-    /** Clears `file` if it still names `stale`. */
     const clear = (file: string, stale: Owner) =>
       Effect.gen(function* () {
         const aside = `${file}.${owner.holder}.clearing`;
         if (Option.isNone(yield* Effect.option(fs.rename(file, aside)))) return;
         const moved = yield* read(aside);
         if (Option.isSome(moved) && moved.value.holder !== stale.holder)
-          // A successor took the slot after we looked: put its file back.
           yield* Effect.ignore(
             fs.writeFileString(file, JSON.stringify(moved.value), { flag: "wx" }),
           );
         yield* Effect.ignore(fs.remove(aside));
       });
 
-    /** Takes `file`, or returns its holder (undefined while it is being written or cleared). */
     const take = (file: string) =>
       Effect.gen(function* () {
         const created = yield* Effect.option(
@@ -147,7 +123,6 @@ export const hostSlot = (
       ),
     );
 
-    // The 1-minute load average, where the OS reports it (Linux); elsewhere the default stands.
     const load = yield* fs.readFileString("/proc/loadavg").pipe(
       Effect.map((text) => Number(text.split(" ")[0])),
       Effect.option,

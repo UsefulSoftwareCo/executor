@@ -1,4 +1,3 @@
-/** The local dashboard keeps its resource links without Cloud's support dialog. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
 import { Api, body } from "../support/api.ts";

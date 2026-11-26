@@ -1,9 +1,3 @@
-/**
- * The `apps` package staged by `bun run e2e:prepare`: what an author can import from it, read with
- * TypeScript 5.9's compiler API, and whether app source type-checks against it the way the
- * app-authoring skill tells an agent to check it, with the checkout's TypeScript 7 `tsc`. Nothing
- * from the package is executed.
- */
 import ts from "typescript-5";
 import { Effect, FileSystem, Path, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
@@ -27,7 +21,6 @@ class TypeCheckUnreadable extends Schema.TaggedError<TypeCheckUnreadable>()("Typ
   output: Schema.String,
 }) {}
 
-/** One `tsc` diagnostic. `file` and `line` are absent for an option or configuration error. */
 export interface TypeProblem {
   readonly file?: string;
   readonly line?: number;
@@ -35,16 +28,12 @@ export interface TypeProblem {
   readonly message: string;
 }
 
-// `tsc --pretty false` prints `file(line,column): error TS1234: message`, or `error TS1234:
-// message` without a location, and indents the lines that continue a message.
 const diagnosticLine = /^(?:(.+)\((\d+),\d+\): )?error TS(\d+): (.*)$/;
 
-/** Unpack the staged archive into `directory` and return the package's root. */
 const unpack = Effect.fn(function* (directory: string) {
   const path = yield* Path.Path;
   const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
   const archive = path.resolve(".local/test-runtime/apps.tgz");
-  // A relative archive path: GNU tar on Windows reads a drive letter as a remote host.
   const code = yield* processes.exitCode(
     ChildProcess.make("tar", ["-xzf", path.basename(archive), "-C", directory], {
       cwd: path.dirname(archive),
@@ -57,7 +46,6 @@ const unpack = Effect.fn(function* (directory: string) {
   return path.join(directory, "package");
 });
 
-/** Exported names by module specifier, such as `apps` or `apps/mcp`. */
 export const appsPackageExports = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -102,18 +90,12 @@ export const appsPackageExports = Effect.gen(function* () {
   return exports;
 });
 
-/**
- * Compiler diagnostics for app source checked as deploy.md tells an agent to: `tsc --ignoreConfig
- * --noEmit --strict --skipLibCheck --module nodenext --moduleResolution nodenext --target es2022
- * index.ts` with the staged package installed. Empty means the source type-checks.
- */
 export const strictTypeProblems = Effect.fn(function* (
   files: readonly { readonly path: string; readonly content: string }[],
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
-  // Under the checkout, so the package's own dependencies such as `effect` resolve as installed.
   const directory = yield* fs.makeTempDirectoryScoped({
     directory: path.resolve(".local"),
     prefix: "executor-app-types-",
@@ -127,8 +109,6 @@ export const strictTypeProblems = Effect.fn(function* (
     yield* fs.makeDirectory(path.dirname(path.join(directory, file.path)), { recursive: true });
     yield* fs.writeFileString(path.join(directory, file.path), file.content);
   }
-  // `--ignoreConfig` also skips the checkout's tsconfig.json, an ancestor of the directory, so
-  // deploy.md's flags are the whole configuration.
   const child = yield* processes.spawn(
     ChildProcess.make(
       "node",
@@ -177,7 +157,6 @@ export const strictTypeProblems = Effect.fn(function* (
       message,
     });
   }
-  // A clean run exits 0 with no diagnostics; anything else must explain its exit status.
   if (stderr.trim() !== "" || (exitCode === 0) !== (problems.length === 0))
     return yield* unreadable();
   return problems;
