@@ -68,6 +68,27 @@ const googleSignInScopes = [
   "https://www.googleapis.com/auth/script.metrics",
 ];
 
+const googleAdminScopes = [
+  "https://www.googleapis.com/auth/admin.directory.user",
+  "https://www.googleapis.com/auth/admin.directory.user.alias",
+  "https://www.googleapis.com/auth/admin.directory.user.security",
+  "https://www.googleapis.com/auth/admin.directory.userschema",
+  "https://www.googleapis.com/auth/admin.directory.group",
+  "https://www.googleapis.com/auth/admin.directory.group.member",
+  "https://www.googleapis.com/auth/admin.directory.orgunit",
+  "https://www.googleapis.com/auth/admin.directory.domain",
+  "https://www.googleapis.com/auth/admin.directory.customer",
+  "https://www.googleapis.com/auth/admin.directory.rolemanagement",
+  "https://www.googleapis.com/auth/admin.directory.device.chromeos",
+  "https://www.googleapis.com/auth/admin.directory.device.mobile",
+  "https://www.googleapis.com/auth/admin.directory.device.mobile.action",
+  "https://www.googleapis.com/auth/admin.directory.resource.calendar",
+  "https://www.googleapis.com/auth/admin.chrome.printers",
+  "https://www.googleapis.com/auth/admin.reports.audit.readonly",
+  "https://www.googleapis.com/auth/admin.reports.usage.readonly",
+  "https://www.googleapis.com/auth/admin.datatransfer",
+];
+
 /**
  * Scopes Executor for Google grants hold that Google has not approved for the production client,
  * so no sign-in on Cloud asks for them. The grants keep renewing; a sign-in or reconnect asking for
@@ -166,7 +187,7 @@ export const firstPartyOAuthClientDefinitions: readonly FirstPartyOAuthClientDef
     },
     tokenEndpointAuthMethod: "client_secret_post",
     defaultScopes: ["openid", "email", "profile"],
-    allowedScopes: googleSignInScopes,
+    allowedScopes: [...googleSignInScopes, ...googleAdminScopes],
     heldScopes: googleHeldScopes,
     placement: { hosts: ["*.googleapis.com"] },
   },
