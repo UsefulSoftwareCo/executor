@@ -269,7 +269,7 @@ export const cloudAuth = (send: SendAuthEmail) =>
             withSql(
               apiBearerAccess(
                 origins,
-                { headers, organization, desktop: options?.desktop },
+                { headers, organization, desktop: options?.desktop, tools: options?.tools },
                 v1Keys,
               ),
             ).pipe(

@@ -15,7 +15,12 @@ import {
 import { Hex } from "effect/encoding";
 import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
-import { AppClientError, LoginFailed, SignInStateInvalid } from "../client-error.ts";
+import {
+  AppClientError,
+  HostRequestFailed,
+  LoginFailed,
+  SignInStateInvalid,
+} from "../client-error.ts";
 
 /**
  * Credential-bearing traffic is permitted only over TLS or to loopback development hosts,
@@ -42,14 +47,9 @@ const Token = Schema.Struct({
   refresh_token: Schema.NonEmptyString,
   expires_in: Schema.Number,
 });
-const Session = Schema.Struct({
-  clientId: Schema.String,
-  accessToken: Schema.String,
-  refreshToken: Schema.String,
-  expiresAt: Schema.Number,
+const AppManagement = Schema.Struct({
   organization: Schema.String,
-  namespace: Schema.String,
-  gitOrigins: Schema.optional(Schema.Array(Schema.String)),
+  gitOrigins: Schema.Array(Schema.String),
 });
 const ToolsSession = Schema.Struct({
   clientId: Schema.String,
@@ -57,9 +57,9 @@ const ToolsSession = Schema.Struct({
   refreshToken: Schema.String,
   expiresAt: Schema.Number,
   resource: Schema.String,
+  appManagement: Schema.optional(AppManagement),
 });
 export type ToolsSession = typeof ToolsSession.Type;
-export type SignIn = "api" | "mcp";
 const authError = () => new AppClientError({ reason: "authentication" });
 const authDirectory = Effect.gen(function* () {
   const path = yield* Path.Path;
@@ -73,7 +73,7 @@ const digest = (input: string) =>
       ),
     catch: authError,
   });
-const sessionService = "Executor Registry";
+const retiredAppSignInService = "Executor Registry";
 const toolsService = "Executor Tools";
 const gitService = "Executor Registry Git";
 const osEntry = (service: string, account: string) =>
@@ -171,26 +171,21 @@ const isMcpResource = (resource: string) => {
   );
 };
 /**
- * Find one of the host's resources and its authorization server, as RFC 9728 and RFC 8414 clients
+ * Find the host's MCP resource and its authorization server, as RFC 9728 and RFC 8414 clients
  * do: the resource names its issuer, and the issuer's own origin serves the endpoints, which may
- * be on another host than the API (hosted Executor's are). The issuer must match exactly. The API
- * resource is the host's own `/api`; the MCP resource is the `/mcp` endpoint the host names.
+ * be on another host than the API (hosted Executor's are). The issuer must match exactly. The
+ * resource is the `/mcp` endpoint the host names.
  */
-const discover = (host: string, signIn: SignIn) =>
+const discover = (host: string) =>
   Effect.gen(function* () {
     const protectedResource = yield* fetchJson(
-      HttpClientRequest.get(`${host}/.well-known/oauth-protected-resource/${signIn}`),
+      HttpClientRequest.get(`${host}/.well-known/oauth-protected-resource/mcp`),
       Schema.Struct({
         resource: Schema.String,
         authorization_servers: Schema.NonEmptyArray(Endpoint),
       }),
     );
-    if (
-      signIn === "api"
-        ? protectedResource.resource !== `${host}/api`
-        : !isMcpResource(protectedResource.resource)
-    )
-      return yield* authError();
+    if (!isMcpResource(protectedResource.resource)) return yield* authError();
     const issuer = protectedResource.authorization_servers[0];
     const issuerUrl = new URL(issuer);
     const metadata = yield* fetchJson(
@@ -216,12 +211,9 @@ const discover = (host: string, signIn: SignIn) =>
 export const mcpResource = (host: string) =>
   Schema.decodeUnknownEffect(RegistryOrigin)(host).pipe(
     Effect.mapError(authError),
-    Effect.andThen(discover(host, "mcp")),
+    Effect.andThen(discover(host)),
     Effect.map(({ resource }) => resource),
   );
-const save = (host: string, session: typeof Session.Type) =>
-  writeCredential(sessionService, host, JSON.stringify(session));
-
 const withSessionLock = <A, E, R>(host: string, work: Effect.Effect<A, E, R>) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -248,14 +240,10 @@ const withSessionLock = <A, E, R>(host: string, work: Effect.Effect<A, E, R>) =>
 
 export const sessionRefreshMarginMs = 60_000;
 
-const refreshDue = <S extends { clientId: string; refreshToken: string; expiresAt: number }>(
-  host: string,
-  signIn: SignIn,
-  saved: S,
-) =>
+const refreshDue = (host: string, saved: ToolsSession) =>
   Effect.gen(function* () {
-    if (saved.expiresAt > Date.now() + sessionRefreshMarginMs) return Option.none<S>();
-    const endpoints = yield* discover(host, signIn);
+    if (saved.expiresAt > Date.now() + sessionRefreshMarginMs) return Option.none<ToolsSession>();
+    const endpoints = yield* discover(host);
     const fresh = yield* request(
       endpoints.token,
       new URLSearchParams({
@@ -272,23 +260,6 @@ const refreshDue = <S extends { clientId: string; refreshToken: string; expiresA
       expiresAt: Date.now() + fresh.expires_in * 1000,
     });
   });
-
-export const registrySession = (host: string) =>
-  withSessionLock(
-    host,
-    Effect.gen(function* () {
-      yield* Schema.decodeUnknownEffect(RegistryOrigin)(host).pipe(Effect.mapError(authError));
-      const raw = yield* readCredential(sessionService, host);
-      if (raw === undefined) return yield* authError();
-      const saved = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Session))(raw).pipe(
-        Effect.mapError(authError),
-      );
-      const fresh = yield* refreshDue(host, "api", saved);
-      if (Option.isNone(fresh)) return Redacted.make(saved);
-      yield* save(host, fresh.value);
-      return Redacted.make(fresh.value);
-    }),
-  );
 
 const readToolsSession = (host: string) =>
   Effect.gen(function* () {
@@ -308,33 +279,99 @@ export const toolsSession = (host: string) =>
       yield* Schema.decodeUnknownEffect(RegistryOrigin)(host).pipe(Effect.mapError(authError));
       const saved = yield* readToolsSession(host);
       if (Option.isNone(saved)) return yield* authError();
-      const fresh = yield* refreshDue(host, "mcp", saved.value);
+      const fresh = yield* refreshDue(host, saved.value);
       if (Option.isNone(fresh)) return Redacted.make(saved.value);
       yield* writeCredential(toolsService, host, JSON.stringify(fresh.value));
       return Redacted.make(fresh.value);
     }),
   );
 
-export const hasRegistrySession = (host: string) =>
-  readCredential(sessionService, host).pipe(Effect.map((raw) => raw !== undefined));
+const contextRequest = { method: "GET", path: "/api/context" };
+const ContextAnswer = Schema.Struct({
+  organization: Schema.String,
+  gitOrigins: Schema.optional(Schema.Array(RegistryOrigin)),
+});
+const readAppManagement = (host: string, accessToken: string) =>
+  Effect.gen(function* () {
+    const response = yield* HttpClient.execute(
+      HttpClientRequest.get(`${host}${contextRequest.path}`).pipe(
+        HttpClientRequest.bearerToken(accessToken),
+      ),
+    ).pipe(Effect.mapError(() => new HostRequestFailed({ reason: "network", ...contextRequest })));
+    const { status } = response;
+    if (status === 401) return yield* authError();
+    if (status === 403) return yield* new AppClientError({ reason: "forbidden" });
+    if (status !== 200)
+      return yield* new HostRequestFailed({ reason: "status", ...contextRequest, status });
+    const context = yield* response.json.pipe(
+      Effect.flatMap(Schema.decodeUnknownEffect(ContextAnswer)),
+      Effect.mapError(
+        () => new HostRequestFailed({ reason: "response", ...contextRequest, status }),
+      ),
+    );
+    return {
+      organization: context.organization,
+      gitOrigins: (context.gitOrigins ?? []).filter((origin) => origin !== host),
+    } satisfies typeof AppManagement.Type;
+  }).pipe(
+    Effect.timeoutOrElse({
+      duration: "10 seconds",
+      orElse: () => Effect.fail(new HostRequestFailed({ reason: "network", ...contextRequest })),
+    }),
+    Effect.provideService(FetchHttpClient.RequestInit, { redirect: "error" }),
+    Effect.provide(FetchHttpClient.layer),
+  );
+
+const saveWithAppManagement = (host: string, session: ToolsSession) =>
+  Effect.gen(function* () {
+    const file = yield* writeCredential(toolsService, host, JSON.stringify(session));
+    for (const origin of session.appManagement?.gitOrigins ?? [])
+      yield* writeCredential(gitService, origin, host);
+    return file;
+  });
+
+export const appManagementSession = (host: string) =>
+  withSessionLock(
+    host,
+    Effect.gen(function* () {
+      yield* Schema.decodeUnknownEffect(RegistryOrigin)(host).pipe(Effect.mapError(authError));
+      const saved = yield* readToolsSession(host);
+      if (Option.isNone(saved)) return yield* authError();
+      const refreshed = yield* refreshDue(host, saved.value);
+      if (Option.isSome(refreshed))
+        yield* writeCredential(toolsService, host, JSON.stringify(refreshed.value));
+      const current = Option.getOrElse(refreshed, () => saved.value);
+      const appManagement =
+        current.appManagement ?? (yield* readAppManagement(host, current.accessToken));
+      if (current.appManagement === undefined)
+        yield* saveWithAppManagement(host, { ...current, appManagement });
+      return Redacted.make({
+        accessToken: current.accessToken,
+        expiresAt: current.expiresAt,
+        ...appManagement,
+      });
+    }),
+  );
 
 export const gitSession = (origin: string) =>
   Effect.gen(function* () {
-    const host = (yield* readCredential(gitService, origin)) ?? origin;
-    const session = yield* registrySession(host);
-    if (host !== origin && !(Redacted.value(session).gitOrigins ?? []).includes(origin))
-      return yield* authError();
-    return session;
+    const named = yield* readCredential(gitService, origin);
+    const signedInAtOrigin = (yield* readCredential(toolsService, origin)) !== undefined;
+    const lastSignedIn = yield* rememberedHost.pipe(
+      Effect.orElseSucceed(() => Option.none<string>()),
+    );
+    const host =
+      named ?? (signedInAtOrigin ? origin : Option.getOrElse(lastSignedIn, () => origin));
+    const session = yield* appManagementSession(host);
+    return host === origin || Redacted.value(session).gitOrigins.includes(origin)
+      ? Option.some(session)
+      : Option.none();
   });
 
-const scopes: Record<SignIn, string> = {
-  api: "executor offline_access",
-  mcp: "mcp offline_access",
-};
+const scope = "mcp offline_access";
 const deviceGrant = "urn:ietf:params:oauth:grant-type:device_code";
 type Endpoints = Effect.Success<ReturnType<typeof discover>>;
-const failure = (signIn: SignIn) => (reason: LoginFailed["reason"]) => () =>
-  new LoginFailed({ reason, signIn });
+const fail = (reason: LoginFailed["reason"]) => () => new LoginFailed({ reason });
 const TokenError = Schema.Struct({ error: Schema.String });
 const retryAfter = (headers: Readonly<Record<string, string | undefined>>) => {
   const seconds = Number(headers["retry-after"] ?? headers["x-retry-after"]);
@@ -375,10 +412,8 @@ const openBrowser = (platform: string, url: string) =>
  * open that page when a browser can, then poll the token endpoint at the host's interval, slowing
  * down when asked, until approval, denial or expiry.
  */
-const deviceLogin = (endpoints: Endpoints, signIn: SignIn, platform: string) =>
+const deviceLogin = (endpoints: Endpoints, platform: string) =>
   Effect.gen(function* () {
-    const fail = failure(signIn);
-    const scope = scopes[signIn];
     if (endpoints.device === undefined) return yield* fail("unsupported")();
     const client = yield* request(
       endpoints.registration,
@@ -495,64 +530,26 @@ const reportFileFallback = (saved: Option.Option<string>) =>
       )
     : Effect.void;
 
-export const registryLogin = (host: string, platform: string) =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const fail = failure("api");
-      yield* Schema.decodeUnknownEffect(RegistryOrigin)(host).pipe(Effect.mapError(fail("host")));
-      const endpoints = yield* discover(host, "api").pipe(Effect.mapError(fail("host")));
-      const { clientId, token } = yield* deviceLogin(endpoints, "api", platform);
-      const context = yield* fetchJson(
-        HttpClientRequest.get(`${host}/api/context`).pipe(
-          HttpClientRequest.bearerToken(token.access_token),
-        ),
-        Schema.Struct({
-          organization: Schema.String,
-          slug: Schema.String,
-          gitOrigins: Schema.optional(Schema.Array(RegistryOrigin)),
-        }),
-      ).pipe(Effect.mapError(fail("context")));
-      const gitOrigins = (context.gitOrigins ?? []).filter((origin) => origin !== host);
-      const saved = yield* withSessionLock(
-        host,
-        Effect.gen(function* () {
-          const file = yield* save(host, {
-            clientId,
-            accessToken: token.access_token,
-            refreshToken: token.refresh_token,
-            expiresAt: Date.now() + token.expires_in * 1000,
-            organization: context.organization,
-            namespace: context.slug,
-            gitOrigins,
-          });
-          for (const origin of gitOrigins) yield* writeCredential(gitService, origin, host);
-          yield* remember(host);
-          return file;
-        }),
-      ).pipe(Effect.mapError(fail("storage")));
-      yield* reportFileFallback(saved);
-      yield* Console.log(`Connected to ${host} as @${context.slug}.`);
-    }),
-  );
-
 export const toolsLogin = (host: string, platform: string) =>
   Effect.scoped(
     Effect.gen(function* () {
-      const fail = failure("mcp");
       yield* Schema.decodeUnknownEffect(RegistryOrigin)(host).pipe(Effect.mapError(fail("host")));
-      const endpoints = yield* discover(host, "mcp").pipe(Effect.mapError(fail("host")));
-      const { clientId, token } = yield* deviceLogin(endpoints, "mcp", platform);
+      const endpoints = yield* discover(host).pipe(Effect.mapError(fail("host")));
+      const { clientId, token } = yield* deviceLogin(endpoints, platform);
+      const appManagement = yield* readAppManagement(host, token.access_token).pipe(Effect.option);
       const session: ToolsSession = {
         clientId,
         accessToken: token.access_token,
         refreshToken: token.refresh_token,
         expiresAt: Date.now() + token.expires_in * 1000,
         resource: endpoints.resource,
+        ...(Option.isSome(appManagement) ? { appManagement: appManagement.value } : {}),
       };
       const saved = yield* withSessionLock(
         host,
         Effect.gen(function* () {
-          const file = yield* writeCredential(toolsService, host, JSON.stringify(session));
+          const file = yield* saveWithAppManagement(host, session);
+          yield* deleteCredential(retiredAppSignInService, host);
           yield* remember(host);
           return file;
         }),
@@ -567,24 +564,24 @@ export const logout = (host: string) =>
     host,
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
-      const raw = yield* readCredential(sessionService, host);
-      const api =
-        raw === undefined
+      const retired = yield* readCredential(retiredAppSignInService, host);
+      const tools = yield* readCredential(toolsService, host);
+      const signIn =
+        tools === undefined
           ? undefined
-          : Schema.decodeUnknownOption(Schema.fromJsonString(Session))(raw).pipe(
+          : Schema.decodeUnknownOption(Schema.fromJsonString(ToolsSession))(tools).pipe(
               Option.getOrUndefined,
             );
-      for (const origin of api?.gitOrigins ?? [])
+      for (const origin of signIn?.appManagement?.gitOrigins ?? [])
         if ((yield* readCredential(gitService, origin)) === host)
           yield* deleteCredential(gitService, origin);
-      const tools = yield* readCredential(toolsService, host);
-      yield* deleteCredential(sessionService, host);
+      yield* deleteCredential(retiredAppSignInService, host);
       yield* deleteCredential(toolsService, host);
       const remembered = yield* rememberedHost.pipe(
         Effect.catchTag("SignInStateInvalid", () => Effect.succeed(Option.some(host))),
       );
       if (Option.isSome(remembered) && remembered.value === host)
         yield* fs.remove(yield* rememberedFile, { force: true });
-      return raw !== undefined || tools !== undefined;
+      return retired !== undefined || tools !== undefined;
     }),
   );

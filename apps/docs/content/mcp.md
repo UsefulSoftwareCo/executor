@@ -211,8 +211,9 @@ The [`executor` command](/run/cli#use-your-tools-from-a-shell) calls the same
 tools from a shell: `executor search`, `describe`, `call`, `execute`, `resume`
 and `skills` each call the tool of the same name and print its result as JSON.
 `executor login` signs it in through the browser, where you choose which apps
-the sign-in reaches and its approval mode, as on the consent screen. Without a
-sign-in, it uses the local server.
+the sign-in reaches and its approval mode, as on the consent screen.
+`executor apps` uses that sign-in too, and needs **All apps** to create, change
+or deploy apps. Without a sign-in, it uses the local server.
 
 `executor mcp` is a stdio MCP server that passes every message to the endpoint
 of the host you signed in to, approvals and questions included, and renews the

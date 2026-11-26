@@ -127,7 +127,6 @@ layer(HostedLive, { excludeTestServices: true })("CLI grant choice", (it) => {
           organization,
           access: { kind: "connection", id: connection.id, name: connection.name, apps: 1 },
           mode: "model",
-          apps: false,
         });
 
         const found = paths(yield* cli.executor(["search", word]));
@@ -147,6 +146,33 @@ layer(HostedLive, { excludeTestServices: true })("CLI grant choice", (it) => {
           error: { kind: "UnknownTool" },
         });
         expect(JSON.stringify(refused.error)).not.toContain(outside.receipt);
+
+        const listed = yield* cli.cli(["list"]);
+        expect(listed.code, listed.stderr).toBe(0);
+        expect(
+          Schema.decodeUnknownSync(
+            Schema.fromJsonString(Schema.Array(Schema.Struct({ id: Schema.String }))),
+          )(listed.stdout).map((app) => app.id),
+        ).toEqual([chosen.app.id]);
+        const source = yield* cli.fs.makeTempDirectoryScoped({ prefix: "executor-scoped-app-" });
+        yield* cli.fs.writeFileString(
+          cli.path.join(source, "index.ts"),
+          'export default "scoped";',
+        );
+        const refusedCreate = yield* cli.cli([
+          "create",
+          "--name",
+          `Scoped ${word}`,
+          "--files",
+          source,
+        ]);
+        expect(refusedCreate.code, refusedCreate.stdout).toBe(1);
+        expect(refusedCreate.stderr).toContain("Code: OrganizationForbidden (HTTP 403)");
+        expect(refusedCreate.stderr).toContain("run executor login again and choose All apps");
+        const refusedSource = yield* cli.cli(["source", "--app", chosen.app.id]);
+        expect(refusedSource.code, refusedSource.stdout).toBe(1);
+        expect(refusedSource.stderr).toContain("Code: OrganizationForbidden (HTTP 403)");
+        expect(refusedSource.stdout).not.toContain(chosen.receipt);
       }),
     ),
   );

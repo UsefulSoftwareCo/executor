@@ -55,14 +55,13 @@ export const toolsTarget = <E, R>(
       });
     }
     const origin = host.value;
-    if (!Schema.is(RegistryOrigin)(origin))
-      return yield* new LoginFailed({ signIn: "mcp", reason: "host" });
+    if (!Schema.is(RegistryOrigin)(origin)) return yield* new LoginFailed({ reason: "host" });
     const pasted = yield* Config.Redacted("EXECUTOR_ACCESS_TOKEN").pipe(Config.option);
     if (Option.isSome(pasted))
       return target({
         host: origin,
         url: yield* mcpResource(origin).pipe(
-          Effect.mapError(() => new LoginFailed({ signIn: "mcp", reason: "host" })),
+          Effect.mapError(() => new LoginFailed({ reason: "host" })),
         ),
         token: Effect.succeed(pasted.value),
         local: false,

@@ -98,6 +98,11 @@ export interface ApiAccess {
   readonly desktop?: true;
 }
 
+export interface AlsoAccepted {
+  readonly desktop?: boolean | undefined;
+  readonly tools?: boolean | undefined;
+}
+
 export class BearerAuthentication extends Context.Service<
   BearerAuthentication,
   {
@@ -107,7 +112,7 @@ export class BearerAuthentication extends Context.Service<
     readonly authenticate: (
       headers: Headers,
       organization?: OrganizationReference,
-      options?: { readonly desktop: boolean },
+      options?: AlsoAccepted,
     ) => Effect.Effect<ApiAccess, Unauthorized | OrganizationForbidden | AuthenticationUnavailable>;
   }
 >()("hosted/BearerAuthentication") {}

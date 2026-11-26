@@ -182,7 +182,6 @@ layer(TestLive, { excludeTestServices: true })("CLI tool commands", (it) => {
           organization: null,
           access: { kind: "all" },
           mode: "model",
-          apps: false,
         });
 
         const skills = Schema.decodeUnknownSync(Skills)(yield* cli.ok(["skills"]));

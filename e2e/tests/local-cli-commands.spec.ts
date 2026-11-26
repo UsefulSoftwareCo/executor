@@ -92,6 +92,7 @@ layer(TestLive, { excludeTestServices: true })("Local CLI commands", (it) => {
           const apps = yield* run(["apps", "--help"]);
           expect(apps.code, apps.stderr).toBe(0);
           expect(listed(apps.stdout)).not.toContain("skills");
+          expect(listed(apps.stdout)).not.toContain("login");
 
           for (const args of [["web"], ["daemon", "run"], ["tools"], ["pair"], ["rotate-key"]]) {
             const result = yield* run(args);

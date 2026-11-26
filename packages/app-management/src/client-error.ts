@@ -32,7 +32,6 @@ export class SourceRejected extends Schema.TaggedError<SourceRejected>()("Source
 }) {}
 
 export class LoginFailed extends Schema.TaggedError<LoginFailed>()("LoginFailed", {
-  signIn: Schema.Literals(["api", "mcp"]),
   reason: Schema.Literals([
     "host",
     "unsupported",
@@ -40,7 +39,6 @@ export class LoginFailed extends Schema.TaggedError<LoginFailed>()("LoginFailed"
     "denied",
     "expired",
     "token",
-    "context",
     "storage",
   ]),
 }) {}

@@ -125,7 +125,7 @@ layer(TestLive, { excludeTestServices: true })("Local apps CLI", (it) => {
         yield* evidence.json("signed-out.json", signedOut);
         expect(signedOut.code).toBe(1);
         expect(signedOut.stderr).toContain(
-          "Run executor apps login, which signs in to hosted Executor and makes later commands use it, or executor apps login --host <origin> for another host.",
+          "Run executor login, which signs in to hosted Executor and makes later commands use it, or executor login --host <origin> for another host.",
         );
         expect(signedOut.stderr).toContain(
           "Commands use --host, then EXECUTOR_HOST, then the host you signed in to last, then the local background Executor; for a local server at --host, set EXECUTOR_API_KEY to its API key.",

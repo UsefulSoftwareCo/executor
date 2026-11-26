@@ -49,6 +49,7 @@ export interface BearerRequest {
   readonly headers: Headers;
   readonly organization?: OrganizationReference | undefined;
   readonly desktop?: boolean | undefined;
+  readonly tools?: boolean | undefined;
 }
 
 export interface ApiBearerAccess {
@@ -628,7 +629,11 @@ export const apiBearerAccess = (
       : yield* oauthAccess(
           sql,
           origins,
-          request.desktop === true ? ["api", "desktop"] : ["api"],
+          [
+            "api",
+            ...(request.desktop === true ? (["desktop"] as const) : []),
+            ...(request.tools === true ? (["mcp"] as const) : []),
+          ],
           token,
           request,
         ).pipe(

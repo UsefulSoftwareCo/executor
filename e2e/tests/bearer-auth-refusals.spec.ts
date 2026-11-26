@@ -639,10 +639,22 @@ layer(HostedLive, { excludeTestServices: true })("Bearer authentication refusals
                 forbidden,
               ],
               [
-                "MCP grant on the Executor API",
+                "MCP grant on the Executor API's context",
+                oauthCase(() => []).pipe(Effect.orDie),
+                accepted,
+                "/api/context",
+              ],
+              [
+                "MCP grant on the Executor API's apps",
+                oauthCase(() => []).pipe(Effect.orDie),
+                accepted,
+                `/api/organizations/${organization}/apps`,
+              ],
+              [
+                "MCP grant on another Executor API route",
                 oauthCase(() => []).pipe(Effect.orDie),
                 unauthorized,
-                "/api/context",
+                `/api/organizations/${organization}/inventory`,
               ],
             ];
             for (const [name, create, expected, path] of cases) {

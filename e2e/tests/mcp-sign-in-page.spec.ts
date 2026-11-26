@@ -193,7 +193,9 @@ layer(HostedLive, { excludeTestServices: true })("MCP sign-in page", (it) => {
           const access = yield* browser.use("The Access menu starts with every app", (page) =>
             page.getByRole("option").allInnerTexts(),
           );
-          expect(access[0]).toBe("All apps\nEvery app you can use, including apps you add later.");
+          expect(access[0]).toBe(
+            "All apps\nEvery app you can use, including later ones, and deploying apps.",
+          );
           expect(access.at(-1)).toBe("New connection");
           yield* shot("access-open-desktop");
           yield* browser.use("Close the Access menu", (page) => page.keyboard.press("Escape"));

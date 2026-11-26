@@ -67,7 +67,7 @@ value that does not match the directory stops startup and changes nothing.
 | `executor` | Start the background Executor if it is not running, open the dashboard and exit. |
 | `executor serve` | Run Executor in this terminal, without opening a browser, until you press Ctrl+C. |
 | `executor service` | Start, stop and configure the background Executor, print a connection link and replace its API key. |
-| `executor login`, `logout`, `whoami` | Sign in to an Executor host for tools, sign out, and show what the sign-in reaches. See [Use your tools from a shell](#use-your-tools-from-a-shell). |
+| `executor login`, `logout`, `whoami` | Sign in to an Executor host, sign out, and show what the sign-in reaches. See [Use your tools from a shell](#use-your-tools-from-a-shell). |
 | `executor search`, `describe`, `call`, `execute`, `resume`, `skills` | Call your tools from a shell. |
 | `executor mcp` | Serve your tools to an MCP client over stdio. |
 | `executor apps` | Create, edit, deploy and install apps. See [Author an app](/author-an-app). |
@@ -105,13 +105,18 @@ executor login --host https://executor.example.com
 The sign-in is saved in your operating system's credential store, or, on a
 machine without one, in a file under `~/.local/state/executor/auth` that only
 you can read. It renews itself. `executor whoami` prints the host, its
-organization, what the sign-in reaches, its approval mode and whether
-`executor apps` is signed in too. `executor logout` removes this computer's
-sign-ins for the host.
+organization, what the sign-in reaches and its approval mode.
+`executor logout` removes this computer's sign-in for the host.
+
+`executor apps` uses the same sign-in. Creating, changing and deploying apps
+needs a sign-in approved for **All apps**; one approved for a scoped connection
+lists that connection's apps and cannot change them. A self-hosted Executor
+from before this sign-in covered app commands refuses it there until the host
+is updated.
 
 Every client command, the tool commands, `executor mcp` and `executor apps`,
 talks to one host: `--host`, then `EXECUTOR_HOST`, then the host you signed in
-to last, with `executor login` or `executor apps login`. With none of these, it
+to last with `executor login`. With none of these, it
 uses the background Executor on this computer, which starts if needed, with
 its API key. `executor logout` forgets the host it signs out of, so commands go
 back to the background Executor. Set `EXECUTOR_ACCESS_TOKEN` to send a pasted

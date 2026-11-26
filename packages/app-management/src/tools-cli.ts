@@ -14,7 +14,7 @@ import { McpWhoami } from "@executor-js/mcp-auth/grants";
 import { hostedExecutorOrigin } from "@executor-js/sdk/core";
 import { ToolInputInvalid, ToolsSignInRequired } from "./client-error.ts";
 import { hostFlag, namedHost, toolsTarget, type LocalServer } from "./implementation/hosts.ts";
-import { hasRegistrySession, logout, toolsLogin } from "./implementation/node-auth.ts";
+import { logout, toolsLogin } from "./implementation/node-auth.ts";
 import { saveContentFiles } from "./implementation/tool-files.ts";
 
 const toolsClient = Effect.promise(() => import("./implementation/tools-client.ts"));
@@ -97,7 +97,7 @@ export const toolCommands = <E, R>(
   return [
     Command.make("login", { host: loginHost }).pipe(
       Command.withDescription(
-        "Sign in to a host for the tool commands and executor mcp, with a code approved in any browser. Choose which apps the sign-in reaches and how approvals are answered on the approval page. Later commands use this host by default",
+        "Sign in to a host, with a code approved in any browser. The tool commands, executor mcp and executor apps all use this sign-in. Choose which apps it reaches and how approvals are answered on the approval page; creating, changing and deploying apps needs All apps. Later commands use this host by default",
       ),
       Command.withExamples([
         { command: "executor login", description: "Sign in to hosted Executor" },
@@ -131,9 +131,7 @@ export const toolCommands = <E, R>(
       ),
     ),
     Command.make("logout", { host: hostFlag }).pipe(
-      Command.withDescription(
-        "Remove this CLI's sign-ins for a host, for tools and for app commands, and stop using it by default",
-      ),
+      Command.withDescription("Remove this CLI's sign-in for a host and stop using it by default"),
       Command.withHandler(({ host }) =>
         Effect.gen(function* () {
           const named = yield* namedHost(host);
@@ -147,7 +145,7 @@ export const toolCommands = <E, R>(
     ),
     Command.make("whoami", { host: hostFlag }).pipe(
       Command.withDescription(
-        "Print the host, its organization, what the tools sign-in reaches and how its approvals are answered, and whether app commands are signed in, as JSON",
+        "Print the host, its organization, what the sign-in reaches and how its approvals are answered, as JSON",
       ),
       Command.withHandler(({ host }) =>
         Effect.gen(function* () {
@@ -160,7 +158,6 @@ export const toolCommands = <E, R>(
             host: target.host,
             mcp: target.url,
             ...Schema.encodeSync(McpWhoami)(known),
-            apps: yield* hasRegistrySession(target.host),
           });
         }),
       ),

@@ -1,5 +1,6 @@
 import { expect, layer } from "@effect/vitest";
 import { Effect, Option, Schema } from "effect";
+import { HttpClient, HttpClientRequest } from "effect/http";
 import { Actors } from "../support/actors.ts";
 import { Api } from "../support/api.ts";
 import { appsCli, type Finished } from "../support/apps-cli.ts";
@@ -80,7 +81,6 @@ layer(HostedLive, { excludeTestServices: true })("CLI sign-in", (it) => {
           organization,
           access: { kind: "all" },
           mode: "model",
-          apps: false,
         });
 
         ran(
@@ -102,10 +102,58 @@ layer(HostedLive, { excludeTestServices: true })("CLI sign-in", (it) => {
         }
         ran(yield* cli.executor(["execute", "--code", program]));
 
-        failedWith(yield* cli.cli(["list"]), "NotSignedIn");
-
         const api = yield* Api,
-          actors = yield* Actors;
+          actors = yield* Actors,
+          http = yield* HttpClient.HttpClient;
+        const prefix = `/api/organizations/${actors.organization.id}`;
+        const source = yield* cli.fs.makeTempDirectoryScoped({ prefix: "executor-one-sign-in-" });
+        yield* cli.fs.writeFileString(
+          cli.path.join(source, "index.ts"),
+          'export default "one sign-in";',
+        );
+        const created = yield* cli.cli(["create", "--name", "One sign-in", "--files", source]);
+        expect(created.code, created.stderr).toBe(0);
+        const app = Schema.decodeUnknownSync(
+          Schema.fromJsonString(Schema.Struct({ id: Schema.String })),
+        )(created.stdout);
+        yield* Effect.addFinalizer(() =>
+          api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
+        );
+        const listed = yield* cli.cli(["list"]);
+        expect(listed.code, listed.stderr).toBe(0);
+        expect(Schema.decodeUnknownSync(Apps)(listed.stdout).map((item) => item.id)).toContain(
+          app.id,
+        );
+
+        const current = (yield* cli.storedCredential("Executor Tools", host)).pipe(
+          Option.map(Schema.decodeUnknownSync(ToolsSession)),
+        );
+        const statusOf = (path: string) =>
+          Option.match(current, {
+            onNone: () => Effect.succeed(0),
+            onSome: ({ accessToken }) =>
+              http
+                .execute(
+                  HttpClientRequest.get(`${host}${path}`).pipe(
+                    HttpClientRequest.bearerToken(accessToken),
+                  ),
+                )
+                .pipe(
+                  Effect.map((response) => response.status),
+                  Effect.orDie,
+                ),
+          });
+        const unrelated = yield* cli.executor(["apps", "credential", "get"], {
+          input: `protocol=https\nhost=git.example.test\npath=git/${actors.organization.id}/app.git\n\n`,
+        });
+        expect(unrelated.code, unrelated.stderr).toBe(0);
+        expect(unrelated.stdout, "no credential and nothing else for another Git host").toBe("");
+        expect(unrelated.stderr).toBe("");
+
+        expect(yield* statusOf("/api/context")).toBe(200);
+        expect(yield* statusOf(`${prefix}/apps`)).toBe(200);
+        expect(yield* statusOf(`${prefix}/inventory`)).toBe(401);
+
         const narrowed = yield* api.request(actors.owner, "POST", "/api/auth/mcp/grants/narrow", {
           id: yield* clientGrantId(actors.owner, login.clientId),
           policy: { kind: "tools", apps: [], approval: "client" },
@@ -117,6 +165,11 @@ layer(HostedLive, { excludeTestServices: true })("CLI sign-in", (it) => {
           access: { kind: "tools", apps: 0 },
           mode: "model",
         });
+        const refused = failedWith(
+          yield* cli.cli(["create", "--name", "Narrowed", "--files", source]),
+          "OrganizationForbidden",
+        );
+        expect(refused.message).toContain("run executor login again and choose All apps");
       }),
     ),
   );
@@ -127,14 +180,11 @@ layer(HostedLive, { excludeTestServices: true })("CLI sign-in", (it) => {
       Effect.gen(function* () {
         const host = targetHosts(yield* Target).api;
         const cli = yield* appsCli;
-        const apps = yield* cli.login(host);
-        expect(apps.finished.code, apps.finished.stderr).toBe(0);
+        const signedIn = yield* cli.login(host);
+        expect(signedIn.finished.code, signedIn.finished.stderr).toBe(0);
         const listed = yield* cli.cli(["list"]);
         expect(listed.code, listed.stderr).toBe(0);
         Schema.decodeUnknownSync(Apps)(listed.stdout);
-
-        const tools = yield* cli.login(host, ["login"]);
-        expect(tools.finished.code, tools.finished.stderr).toBe(0);
 
         const elsewhere = { EXECUTOR_HOST: "http://127.0.0.1:9" };
         failedWith(
@@ -154,7 +204,14 @@ layer(HostedLive, { excludeTestServices: true })("CLI sign-in", (it) => {
           yield* cli.executor(["execute", "--host", host, "--code", program]),
           "NotSignedIn",
         );
-        failedWith(yield* cli.cli(["list", "--host", host]), "NotSignedIn");
+        expect(
+          failedWith(yield* cli.cli(["list", "--host", host]), "NotSignedIn").message,
+        ).toContain("Run executor login,");
+        const signedOut = yield* cli.executor(["apps", "credential", "get"], {
+          input: `protocol=${new URL(host).protocol.slice(0, -1)}\nhost=${new URL(host).host}\npath=git/organization/app.git\n\n`,
+        });
+        expect(signedOut.stdout, "Git reads this as its credential protocol").toBe("");
+        expect(signedOut.stderr).toContain("Not signed in to this host for app commands.");
         const forgotten = failedWith(yield* cli.executor(["logout"]), "NotSignedIn");
         expect(forgotten.message).toContain("No Executor host is named or signed in to");
         const again = yield* cli.executor(["logout", "--host", host]);

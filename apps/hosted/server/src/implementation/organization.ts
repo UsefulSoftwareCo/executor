@@ -47,6 +47,7 @@ import { HostedCatalog } from "../contracts/catalog.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import {
+  type AlsoAccepted,
   BearerAuthentication,
   SessionAuthentication,
   AuthenticationUnavailable,
@@ -153,7 +154,7 @@ export const withOrganizationRequest = <E, R>(
     namespace: Effect.Effect<string, AuthenticationUnavailable | OrganizationForbidden>,
   ) => Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
   action?: import("@executor-js/authorization").Action,
-  desktop = false,
+  also: AlsoAccepted = {},
 ) =>
   Effect.gen(function* () {
     const auth = yield* SessionAuthentication;
@@ -170,7 +171,7 @@ export const withOrganizationRequest = <E, R>(
     if (headers.has("authorization")) {
       if (request.headers.origin !== undefined && request.headers.origin !== auth.origin)
         return yield* refuse("origin_mismatch", new Forbidden());
-      const grant = yield* api.authenticate(headers, reference, { desktop });
+      const grant = yield* api.authenticate(headers, reference, also);
       yield* recordCaller(grant.access.organization, grant.userId);
       yield* refuseRemoved(grant.access.organization);
       if (grant.desktop !== true && !permitsAction(grant.policy, action))
@@ -261,7 +262,7 @@ export const requireOrganizationLive = Layer.effect(
               }));
         },
         Context.getOrUndefined(endpoint.annotations, RequiredAction),
-        Context.get(endpoint.annotations, DesktopReadable),
+        { desktop: Context.get(endpoint.annotations, DesktopReadable) },
       ).pipe(
         Effect.provideService(SessionAuthentication, auth),
         Effect.provideService(BearerAuthentication, api),

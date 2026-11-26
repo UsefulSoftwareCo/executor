@@ -84,7 +84,7 @@ const cli = executorCommand.pipe(
     loaded(launcher, ({ launch }) => processOutput.serve(launch(options, process.platform, entry))),
   ),
   Command.withSubcommands([
-    appsCommand(process.platform, localServer),
+    appsCommand(localServer),
     ...toolCommands(process.platform, localServer),
     serveCommand.pipe(
       Command.withHandler(({ service, stdio }) =>

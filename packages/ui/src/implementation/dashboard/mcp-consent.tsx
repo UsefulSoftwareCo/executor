@@ -426,7 +426,7 @@ export function McpConsentAccess({
           {
             value: everyApp,
             label: "All apps",
-            detail: "Every app you can use, including apps you add later.",
+            detail: "Every app you can use, including later ones, and deploying apps.",
           },
           ...connections.map((item) => ({
             value: item.id,

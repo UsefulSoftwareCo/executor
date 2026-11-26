@@ -1,8 +1,8 @@
 /**
- * `executor apps login` signs in with a code (RFC 8628) that a signed-in person approves on the
+ * `executor login` signs in with a code (RFC 8628) that a signed-in person approves on the
  * dashboard's device page, which the CLI opens when a browser can. The CLI ends up with a grant
- * for the organization chosen on the page, the API audience, and a refresh token. The token endpoint answers polls with RFC 8628's errors and redeems an approved
- * code once.
+ * for the organization chosen on the page and a refresh token, and app commands use it too. The
+ * token endpoint answers polls with RFC 8628's errors and redeems an approved code once.
  */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Fiber, Option, Redacted, Schema } from "effect";
@@ -68,7 +68,7 @@ const decideInBrowser = (input: {
       yield* browser.use("The page states the requested access", (page) =>
         consentValue(page, "Access"),
       ),
-    ).toBe("Executor API");
+    ).toBe("All apps");
     if (!input.accept) {
       yield* browser.checkpoint("Review the device request");
       yield* browser.use("Deny the request", (page) =>
@@ -297,7 +297,7 @@ layer(HostedLive, { excludeTestServices: true })("Device login", (it) => {
         const finished = yield* Fiber.join(login.finished);
         expect(finished.code).toBe(1);
         expect(finished.stderr).toContain(
-          "Sign-in was cancelled or denied in the browser. Run executor apps login to try again.",
+          "Sign-in was cancelled or denied in the browser. Run executor login to try again.",
         );
         expect(finished.stderr).not.toContain("Not signed in");
       }),

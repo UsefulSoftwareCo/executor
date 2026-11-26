@@ -101,6 +101,7 @@ export const hostedAppAccess = Layer.effect(
               endpoint.identifier === "published"
             ? "read"
             : "manage",
+        { tools: true },
       ).pipe(
         Effect.provideService(SessionAuthentication, auth),
         Effect.provideService(BearerAuthentication, api),
@@ -132,6 +133,7 @@ export const hostedAppGitAccess = Layer.effect(
           const grant = yield* api.authenticate(
             new Headers({ authorization: `Bearer ${token}` }),
             yield* Schema.decodeUnknownEffect(OrganizationReference)(scope),
+            { tools: true },
           );
           if (
             (grant.access.organization !== scope && grant.organizationSlug !== scope) ||

@@ -248,7 +248,7 @@ layer(HostedLive, { excludeTestServices: true })("App Git remotes", (it) => {
           expect((yield* tools.git(["config", "credential.helper", keeper])).code).toBe(0);
 
           const store = tools.path.join(tools.home, "..", "store.json");
-          const sessionKey = `Executor Registry\n${hosts.api}`;
+          const sessionKey = `Executor Tools\n${hosts.api}`;
           const Store = Schema.Record(Schema.String, Schema.String);
           const Session = Schema.Struct({ accessToken: Schema.String, expiresAt: Schema.Number });
           const readStore = Effect.flatMap(

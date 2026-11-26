@@ -49,7 +49,9 @@ const apiContext = HttpApiBuilder.group(HostedApi, "context", (handlers) =>
     return handlers.handle("get", () =>
       Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest;
-        const grant = yield* auth.authenticate(new Headers(request.headers));
+        const grant = yield* auth.authenticate(new Headers(request.headers), undefined, {
+          tools: true,
+        });
         if (grant.key !== undefined)
           yield* Effect.annotateCurrentSpan({
             "executor.api_key.id": grant.key.id,

@@ -205,7 +205,7 @@ export const appsCli = Effect.gen(function* () {
   const deviceLogin = (
     host: string,
     browser: "opens" | "stays" | "fails" | "remote",
-    command: ReadonlyArray<string> = ["apps", "login"],
+    command: ReadonlyArray<string> = ["login"],
   ) =>
     Effect.gen(function* () {
       const args = [...command, "--host", host];
@@ -261,7 +261,7 @@ export const appsCli = Effect.gen(function* () {
     });
   const login = (
     host: string,
-    command: ReadonlyArray<string> = ["apps", "login"],
+    command: ReadonlyArray<string> = ["login"],
     settings?: GrantSettings,
   ) =>
     Effect.gen(function* () {

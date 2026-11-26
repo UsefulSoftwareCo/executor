@@ -117,7 +117,12 @@ export const selfHostAuth = Effect.gen(function* () {
   const apiIdentity = Layer.succeed(BearerAuthentication, {
     ...origins,
     authenticate: (headers, organization, options) =>
-      apiBearerAccess(origins, { headers, organization, desktop: options?.desktop }).pipe(
+      apiBearerAccess(origins, {
+        headers,
+        organization,
+        desktop: options?.desktop,
+        tools: options?.tools,
+      }).pipe(
         Effect.provideService(SqlClient.SqlClient, sql),
         Effect.tap(({ access, userId }) =>
           Effect.annotateCurrentSpan(callerSpanAttributes(access.organization, userId)),
