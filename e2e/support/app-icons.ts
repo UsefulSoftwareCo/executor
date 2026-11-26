@@ -11,11 +11,20 @@ export const appIconFile = {
 
 const shownIcon = (mark: Locator) =>
   mark
-    .locator('img[data-icon="app"]')
-    .evaluate((image) =>
-      image instanceof HTMLImageElement && image.complete && image.naturalWidth > 0
-        ? new URL(image.src).pathname
-        : "",
+    .elementHandle()
+    .then((element) =>
+      mark.page().waitForFunction((element) => {
+        const image = element.querySelector('img[data-icon="app"]');
+        return element.isConnected && (!(image instanceof HTMLImageElement) || image.complete);
+      }, element),
+    )
+    .then(() =>
+      mark.evaluate((element) => {
+        const image = element.querySelector('img[data-icon="app"]');
+        return image instanceof HTMLImageElement && image.complete && image.naturalWidth > 0
+          ? new URL(image.src).pathname
+          : "";
+      }),
     );
 
 const cube = (mark: Locator) =>

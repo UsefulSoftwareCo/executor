@@ -215,11 +215,19 @@ const userAgents = {
 
 const downloadPage = "https://executor.sh/#install";
 
-const installDialogOn = (page: Page, userAgent: string) =>
-  page
-    .evaluate((value) => sessionStorage.setItem("userAgentOverride", value), userAgent)
-    .then(() => page.reload())
-    .then(() => button(page, "Install as app").click())
+const reloadOn = (device: string, userAgent: string) =>
+  Effect.gen(function* () {
+    const browser = yield* Browser;
+    yield* browser.use(`Reload the page on ${device}`, (page) =>
+      page
+        .evaluate((value) => sessionStorage.setItem("userAgentOverride", value), userAgent)
+        .then(() => page.reload()),
+    );
+  });
+
+const installDialog = (page: Page) =>
+  button(page, "Install as app")
+    .click()
     .then(() => {
       const dialog = page.getByRole("dialog");
       return Promise.all([
@@ -242,6 +250,13 @@ const installDialogOn = (page: Page, userAgent: string) =>
         .then(() => page.getByRole("dialog").waitFor({ state: "detached" }))
         .then(() => ({ title, description, links })),
     );
+
+const installDialogOn = (device: string, userAgent: string) =>
+  Effect.gen(function* () {
+    const browser = yield* Browser;
+    yield* reloadOn(device, userAgent);
+    return yield* browser.use(`Open the install dialog on ${device}`, installDialog);
+  });
 
 const desktopReleases = "https://api.github.com/repos/UsefulSoftwareCo/executor/releases*";
 
@@ -284,9 +299,7 @@ export const desktopHostAbsent = (
     const title = `Install ${app.name} as a desktop app`;
     const description =
       "In the Executor desktop app, it gets its own window and icon, and can use the menu bar and keyboard shortcuts.";
-    const mac = yield* browser.use("Open the install dialog on a Mac", (page) =>
-      installDialogOn(page, userAgents.mac),
-    );
+    const mac = yield* installDialogOn("a Mac", userAgents.mac);
     const handoff = mac.links.find((link) => link.name === "Open in Executor")?.href ?? "";
     const handoffUrl = new URL(handoff);
     expect({
@@ -311,11 +324,7 @@ export const desktopHostAbsent = (
         { name: "Update Executor", href: downloadPage },
       ],
     });
-    expect(
-      yield* browser.use("Open the install dialog on Windows", (page) =>
-        installDialogOn(page, userAgents.windows),
-      ),
-    ).toEqual({
+    expect(yield* installDialogOn("Windows", userAgents.windows)).toEqual({
       title,
       description,
       links: [
@@ -324,11 +333,7 @@ export const desktopHostAbsent = (
         { name: "Update Executor", href: downloadPage },
       ],
     });
-    expect(
-      yield* browser.use("Open the install dialog on Linux", (page) =>
-        installDialogOn(page, userAgents.linux),
-      ),
-    ).toEqual({
+    expect(yield* installDialogOn("Linux", userAgents.linux)).toEqual({
       title,
       description:
         "The Executor desktop app is for Mac and Windows. There, this app gets its own window and icon, and can use the menu bar and keyboard shortcuts.",
@@ -342,20 +347,15 @@ export const desktopHostAbsent = (
       ["an iPhone", userAgents.iPhone],
       ["an iPad", userAgents.iPad],
     ] as const)
-      expect(
-        yield* browser.use(`Open the install dialog on ${name}`, (page) =>
-          installDialogOn(page, handheld),
-        ),
-      ).toEqual({
+      expect(yield* installDialogOn(name, handheld)).toEqual({
         title,
         description: "Executor's desktop app is for Mac and Windows.",
         links: [],
       });
+    yield* reloadOn("a Mac", userAgents.mac);
     yield* browser.use("Show the install dialog on a Mac", (page) =>
-      page
-        .evaluate((value) => sessionStorage.setItem("userAgentOverride", value), userAgents.mac)
-        .then(() => page.reload())
-        .then(() => button(page, "Install as app").click())
+      button(page, "Install as app")
+        .click()
         .then(() => page.getByRole("dialog").waitFor())
         .then(() =>
           page.evaluate(() =>
