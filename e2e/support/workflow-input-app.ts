@@ -1,4 +1,3 @@
-/** An ordinary authored app asks, records one continuation and keeps consent separate. */
 import { appsManifest } from "./apps-release.ts";
 export const workflowInputFiles = [
   appsManifest,

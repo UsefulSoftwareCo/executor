@@ -5,12 +5,7 @@ import { StorageError } from "../contracts/shared.ts";
 import type { ExecutorDatabase } from "./storage.ts";
 
 export type Query = ReturnType<typeof database>;
-/** Select the latest migrated storage schema. */
 export const database = (storage: ExecutorDatabase) => storage.orm("4.0.18");
-/**
- * Run a lazy native query without leaking SQL or driver details. The query's own
- * `sql.execute` spans cover the same interval, so this boundary adds no span of its own.
- */
 export const query = <A, E, R>(work: () => Effect.Effect<A, E, R>) =>
   Effect.suspend(work).pipe(
     Effect.mapError((error) => withFailureAttributes(new StorageError(), failureAttributes(error))),

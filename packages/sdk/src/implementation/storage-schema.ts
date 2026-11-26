@@ -666,7 +666,6 @@ export const eventSelectionIndexes = [
   "CREATE INDEX IF NOT EXISTS executor_event_subscriptions_owner_selection ON executor_event_subscriptions (owner, status) WHERE app IS NULL",
 ] as const;
 
-/** Questions and wake receipts survive process loss; form content is encrypted. */
 export const version4018Tables = {
   ...version4017Tables,
   workflowInputs: table("executor_workflow_inputs", {

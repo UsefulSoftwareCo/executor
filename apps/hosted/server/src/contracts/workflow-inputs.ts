@@ -1,4 +1,3 @@
-/** Durable workflow questions share the product's authenticated Approvals boundary. */
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 import {

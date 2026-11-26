@@ -1,5 +1,4 @@
 import { makeWorkflowInputStore, type WorkflowInputRun } from "./workflow-input-store.ts";
-/** Encrypted questions, one winning answer and durable wake receipts. Product access stays outside. */
 import { Clock, Effect, Schema } from "effect";
 import { prepareElicitation } from "apps/host";
 import {
@@ -35,7 +34,6 @@ export const makeWorkflowInputs = (options: {
   const { db } = options;
   const { find, payload, seal, view, lock, bound, settle } = makeWorkflowInputStore(options);
   type Row = NonNullable<Effect.Success<ReturnType<typeof find>>>;
-  /** Event submission can repeat after a lost receipt. Its payload never contains an answer. */
   const wake = (row: Row) =>
     Effect.gen(function* () {
       if (!row.wakePending || options.backend?.signalInput === undefined) return;

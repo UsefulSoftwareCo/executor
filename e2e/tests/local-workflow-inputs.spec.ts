@@ -1,4 +1,3 @@
-/** The local bearer API can observe work; only a paired browser answers the human question. */
 import { expect, layer } from "@effect/vitest";
 import { Clock, Effect, Redacted, Schema } from "effect";
 import { Api, body } from "../support/api.ts";

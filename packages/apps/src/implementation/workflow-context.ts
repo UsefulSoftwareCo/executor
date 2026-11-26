@@ -218,7 +218,6 @@ export const makeWorkflowContext = (
             const input = execution.input;
             if (input === undefined)
               return yield* new WorkflowFailure({ reason: "unavailable", retryable: false });
-            // A lost reply retries the same run/step identity. The host refuses changed form content.
             return yield* input({ operation: "request", stepId, name, request: parsed });
           }),
         ),

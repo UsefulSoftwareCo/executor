@@ -518,7 +518,6 @@ export const storageSchemas = [
         ]),
       ),
   }),
-  // Additive for the running server: it neither reads nor writes workflow questions.
   schema({
     version: "4.0.18",
     tables: version4018Tables,

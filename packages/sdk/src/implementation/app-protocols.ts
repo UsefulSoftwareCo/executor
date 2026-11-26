@@ -45,7 +45,6 @@ const protocol14: AppProtocol = {
   accounts: (accounts) => accounts,
 };
 
-/** Protocol 15 adds durable workflow questions. */
 const protocol15: AppProtocol = {
   ...protocol14,
   version: 15,

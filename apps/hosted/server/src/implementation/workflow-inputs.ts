@@ -1,4 +1,3 @@
-/** A response never changes the workflow's saved execution actor. */
 import { Effect } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 import { AppId } from "@executor-js/sdk/core";

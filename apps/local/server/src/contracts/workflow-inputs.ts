@@ -1,4 +1,3 @@
-/** The local subject reviews durable questions through the paired dashboard. */
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 import {

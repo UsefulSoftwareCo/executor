@@ -306,7 +306,6 @@ export const localApi = (
           ).pipe(Effect.result);
           if (Result.isFailure(pathname)) return HttpServerResponse.empty({ status: 400 });
           const target = pathname.success.replace(/\/$/, "");
-          // SDK review primitives are only delivered through the product's browser session routes.
           if (
             /^\/v1\/scheduled-runs\/[^/]+\/approval$/.test(target) ||
             /^\/v1\/apps\/[^/]+\/workflow-inputs\/[^/]+\/answer$/.test(target)

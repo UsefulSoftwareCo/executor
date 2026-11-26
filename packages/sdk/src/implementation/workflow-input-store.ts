@@ -1,4 +1,3 @@
-/** Persistence and encryption for durable questions; callers own authorization and transactions. */
 import { Clock, Effect, Redacted, Schema } from "effect";
 import {
   WorkflowFailure,
@@ -86,7 +85,6 @@ export const makeWorkflowInputStore = (options: {
             }),
       });
     });
-  /** The parent lock serializes question creation/answers with run completion and termination. */
   const lock = (run: WorkflowRunId) =>
     Effect.gen(function* () {
       const before = yield* options.readRun(run);

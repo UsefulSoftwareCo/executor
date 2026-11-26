@@ -1,4 +1,3 @@
-/** Durable human input through the actual hosted HTTP and workflow engine. */
 import { expect, layer } from "@effect/vitest";
 import { Clock, Effect, Schema } from "effect";
 import { Api, body, type Session } from "../support/api.ts";
@@ -134,7 +133,6 @@ layer(HostedLive, { excludeTestServices: true })("Durable workflow input", (it) 
         expect(updated.body).toMatchObject({ id: input.id, status: "pending", evidence });
         expect((yield* f.answer(input.id, "invalid")).status).toBe(400);
         expect((yield* f.pending(run.id)).id).toBe(input.id);
-        // Crash recovery must use the same question and its retained workflow, without an MCP session.
         yield* serverControl("restart");
         expect((yield* f.pending(run.id)).id).toBe(input.id);
         expect(
