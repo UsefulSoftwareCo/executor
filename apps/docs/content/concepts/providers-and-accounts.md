@@ -52,9 +52,13 @@ refuses raw HTML, images, a guide over 4,000 characters and a description over
 A provider is not registered anywhere and has no owner and no slug. Two apps
 that declare the same provider resolve to the same provider reference, so an
 account saved for one can be used by the other. You do not coordinate an
-identifier between apps; matching definitions are enough. Setup help is not part
-of what has to match: editing it keeps the provider and its accounts, and two
-apps may explain one provider differently.
+identifier between apps; matching definitions are enough. Hosts and setup help
+do not count, nor do secrets method labels or field titles and descriptions.
+Each app's connect form shows its own wording. Other definition content,
+including interactive method labels, still counts. Providers stored before
+display text left the reference keep their IDs. An app using the exact wording
+of a stored provider keeps its ID; other wordings share the least stored ID
+with the same identity.
 
 A provider reference is also not permission. Knowing it does not let an app read
 an account. Access is authorized separately.

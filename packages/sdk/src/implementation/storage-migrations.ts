@@ -15,7 +15,9 @@ import {
   version4014Tables,
   version4015Tables,
   version4017Tables,
+  providerIdentityIndex,
   eventSelectionIndexes,
+  version4018Tables,
   appScheduleIndex,
   scopedRunKeyIndex,
   version402Tables,
@@ -67,6 +69,7 @@ export const currentIndexes = [
   ...storedOAuthClientIssuerIndexes,
   ...queueReadIndexes,
   ...eventSelectionIndexes,
+  providerIdentityIndex,
 ] as const;
 
 const indexOnlyVersions = new WeakSet<AnySchema>();
@@ -362,6 +365,18 @@ const version4015Schema = schema({
   },
 });
 
+const version4018Schema = schema({
+  version: "4.0.18",
+  tables: version4018Tables,
+  relations: {
+    accounts: ({ one }) => ({
+      providerDefinition: one("providers", ["provider", "id"]).foreignKey(),
+    }),
+    apps: ({ one }) => ({
+      deployment: one("deployments", ["activeDeployment", "id"], ["code", "code"]).foreignKey(),
+    }),
+  },
+});
 export const storageSchemas = [
   version4("4.0.0"),
   version4("4.0.1", () =>
@@ -515,6 +530,8 @@ export const storageSchemas = [
         ]),
       ),
   }),
+  version4018Schema,
+  indexOnlyVersion(version4018Schema, "4.0.19", [providerIdentityIndex]),
 ] as const;
 
 export const trailingStorageIndexVersions = trailingIndexVersions(storageSchemas);

@@ -23,6 +23,7 @@ import { StorageHost, type Credentials } from "./storage.ts";
 import { PrefetchHost } from "./tools.ts";
 import { SavedOAuthClientsHost } from "./oauth-clients.ts";
 import { OwnerMovesHost } from "./owner.ts";
+import { ProviderIdentitiesHost } from "./provider.ts";
 import type { ExecutorDatabase } from "../implementation/storage.ts";
 import type { AppRuntime } from "../implementation/runtime.ts";
 import type { OAuthOptions } from "./oauth.ts";
@@ -529,6 +530,7 @@ export type Executor = Omit<FlatExecutor, "apps" | "appWorkflows" | "appWorkflow
   readonly [PrefetchHost]: PrefetchHost;
   readonly [SavedOAuthClientsHost]: import("./oauth-clients.ts").SavedOAuthClients;
   readonly [OwnerMovesHost]: import("./owner.ts").OwnerMoves;
+  readonly [ProviderIdentitiesHost]: import("./provider.ts").ProviderIdentities;
   /** Host-only: data step 11's repair of registrations no removal can finish. */
   readonly [UnremovableWebhooksHost]: UnremovableWebhooks;
   readonly scheduler: import("./scheduler.ts").ScheduleDispatcher;
@@ -556,6 +558,7 @@ export type PromiseExecutor = Promisify<
     | typeof PrefetchHost
     | typeof SavedOAuthClientsHost
     | typeof OwnerMovesHost
+    | typeof ProviderIdentitiesHost
     | typeof UnremovableWebhooksHost
     | "scheduler"
     | "events"

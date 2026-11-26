@@ -8,7 +8,7 @@ export const storageWalkthrough = () =>
       Effect.gen(function* () {
         const storage = yield* makeExecutorStorage({ provider: "postgresql" });
         yield* storage.migrate;
-        const orm = storage.orm("4.0.17");
+        const orm = storage.orm("4.0.19");
         const createdAt = new Date("2026-01-01T00:00:00.000Z");
         const version = yield* Schema.decodeUnknownEffect(StoredVersion)({
           id: "dpl_example",

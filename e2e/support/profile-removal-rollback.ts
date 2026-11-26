@@ -32,6 +32,8 @@ export const profileAppCopiesPending = (
 ];
 
 export const beforeAppAccounts = (): ReadonlyArray<{ readonly sql: string }> => [
+  { sql: "DROP INDEX executor_providers_identity" },
+  { sql: "ALTER TABLE executor_providers DROP COLUMN identity" },
   { sql: "DROP INDEX executor_event_subscriptions_owner_selection" },
   {
     sql: `ALTER TABLE executor_event_subscriptions DROP COLUMN selection,

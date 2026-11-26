@@ -41,6 +41,11 @@ import {
   type CatalogCopyRebuildHost,
 } from "./catalog-copy-rebuild.ts";
 import { catalogCopyRebuildStepName } from "../contracts/catalog-copy-rebuild.ts";
+import {
+  providerIdentitiesStep,
+  providerIdentitiesStepName,
+  type ProviderIdentitiesStepHost,
+} from "./provider-identities.ts";
 import type { SqlClient } from "effect/sql";
 import type { DataStep } from "../contracts/data-steps.ts";
 
@@ -53,7 +58,8 @@ export type DataStepHost = FrameworkPinHost &
   OAuthClientsByIssuerHost &
   ProfileAppCopiesHost &
   UnremovableWebhooksHostServices &
-  CatalogCopyRebuildHost;
+  CatalogCopyRebuildHost &
+  ProviderIdentitiesStepHost;
 
 type ListedStep =
   | {
@@ -93,6 +99,7 @@ const listedSteps: ReadonlyArray<ListedStep> = [
     step: catalogCopyRebuildStep,
     listed: (host) => host.catalogCopyRebuild !== undefined,
   },
+  { name: providerIdentitiesStepName, step: providerIdentitiesStep },
 ];
 
 export const hostDataSteps = (host: DataStepHost): ReadonlyArray<DataStep<SqlClient.SqlClient>> =>

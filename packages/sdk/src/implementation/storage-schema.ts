@@ -665,3 +665,16 @@ export const version4017Tables = {
 export const eventSelectionIndexes = [
   "CREATE INDEX IF NOT EXISTS executor_event_subscriptions_owner_selection ON executor_event_subscriptions (owner, status) WHERE app IS NULL",
 ] as const;
+
+const identifiedProviders = table("executor_providers", {
+  ...version4017Tables.providers.columns,
+  identity: column("identity", Schema.NullOr(ProviderId), { type: "varchar(255)" }).default(null),
+});
+
+export const version4018Tables = {
+  ...version4017Tables,
+  providers: identifiedProviders,
+};
+
+export const providerIdentityIndex =
+  "CREATE INDEX IF NOT EXISTS executor_providers_identity ON executor_providers (identity)";

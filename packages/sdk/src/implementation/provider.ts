@@ -26,20 +26,88 @@ export function canonical(value: Json): string {
   return JSON.stringify(value);
 }
 
-export const identifyProvider = (definition: ProviderDefinition, crypto: HostCrypto) =>
+const subschema = new Set([
+  "items",
+  "additionalItems",
+  "additionalProperties",
+  "unevaluatedItems",
+  "unevaluatedProperties",
+  "contains",
+  "propertyNames",
+  "contentSchema",
+  "not",
+  "if",
+  "then",
+  "else",
+]);
+const subschemaLists = new Set(["prefixItems", "allOf", "anyOf", "oneOf"]);
+const subschemaMaps = new Set([
+  "properties",
+  "dependencies",
+  "patternProperties",
+  "dependentSchemas",
+  "$defs",
+  "definitions",
+]);
+
+const withoutDisplayText = (schema: Json): Json => {
+  if (schema === null || typeof schema !== "object") return schema;
+  if (Array.isArray(schema)) return schema.map(withoutDisplayText);
+  return Object.fromEntries(
+    Object.entries(schema).flatMap(([keyword, value]): Array<[string, Json]> => {
+      if (keyword === "title" || keyword === "description") return [];
+      if (subschema.has(keyword) || subschemaLists.has(keyword))
+        return [[keyword, withoutDisplayText(value)]];
+      if (subschemaMaps.has(keyword) && value !== null && typeof value === "object")
+        return [
+          [
+            keyword,
+            Array.isArray(value)
+              ? value
+              : Object.fromEntries(
+                  Object.entries(value).map(([name, item]) => [name, withoutDisplayText(item)]),
+                ),
+          ],
+        ];
+      return [[keyword, value]];
+    }),
+  );
+};
+
+export const methodCredential = (method: ProviderDefinition["auth"][string]) => {
+  if (method.type !== "secrets") return method;
+  const { label: _label, fields, ...credential } = method;
+  return { ...credential, fields: withoutDisplayText(fields) };
+};
+
+const withoutDisplay = (shared: Omit<ProviderDefinition, "hosts">) => ({
+  ...shared,
+  auth: Object.fromEntries(
+    Object.entries(shared.auth).map(([name, method]) => [name, methodCredential(method)]),
+  ),
+});
+
+const contentId = (value: unknown, crypto: HostCrypto) =>
   Effect.gen(function* () {
-    const parsed = yield* Schema.decodeUnknownEffect(ProviderDefinition)(definition).pipe(
-      Effect.mapError(() => new StorageError()),
-    );
-    const { hosts: _hosts, ...shared } = withoutHelp(parsed);
-    const content = yield* Schema.decodeUnknownEffect(JsonObject)(shared).pipe(
+    const content = yield* Schema.decodeUnknownEffect(JsonObject)(value).pipe(
       Effect.mapError(() => new StorageError()),
     );
     const hash = yield* crypto.digest.digest(
       Digest.sha256,
       new TextEncoder().encode(canonical(content)),
     );
-    return { id: ProviderId.make(`prv_${Hex.encode(hash)}`), definition: parsed, shared };
+    return ProviderId.make(`prv_${Hex.encode(hash)}`);
+  });
+
+export const identifyProvider = (definition: ProviderDefinition, crypto: HostCrypto) =>
+  Effect.gen(function* () {
+    const parsed = yield* Schema.decodeUnknownEffect(ProviderDefinition)(definition).pipe(
+      Effect.mapError(() => new StorageError()),
+    );
+    const { hosts: _hosts, ...shared } = withoutHelp(parsed);
+    const identity = yield* contentId(withoutDisplay(shared), crypto);
+    const legacy = yield* contentId(shared, crypto);
+    return { identity, legacy, definition: parsed, shared };
   });
 
 export const grantedHosts = (

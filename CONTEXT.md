@@ -8,7 +8,12 @@ access those resources.
 **Provider**:
 A service/auth definition authored in app code, with named authentication
 methods. Matching normalized definitions have the same provider reference and
-can reuse accounts; hosts and setup help are not compared. It has no separately
+can reuse accounts. Hosts, setup help, and display text from secrets method
+labels and field titles and descriptions do not count. Other definition
+content, including interactive method labels, still counts. Providers stored
+before display text left the reference keep their IDs. An app using a stored
+provider's exact wording keeps its ID; other wordings use the least stored ID
+with the same identity. It has no separately
 registered owner or slug.
 
 **Authentication method**:

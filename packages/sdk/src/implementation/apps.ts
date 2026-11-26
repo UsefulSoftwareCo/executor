@@ -42,11 +42,13 @@ import {
   OwnerId,
   StorageError,
   JsonObject,
+  type ProviderId,
 } from "../contracts/shared.ts";
 import { StoredApp, StoredVersion } from "../contracts/storage.ts";
 import { query, transaction, type Query } from "./database.ts";
 import { removeToolSearch } from "./tool-search-store.ts";
 import { identifyProvider } from "./provider.ts";
+import { recordStoredIdentities } from "./provider-identities.ts";
 import { setupHelp, setupHelpProblems } from "./help-text.ts";
 import type { MarkdownReader } from "../contracts/markdown.ts";
 import {
@@ -186,6 +188,75 @@ export const gotApp = (row: { readonly deployment: unknown }) => {
   return projectedApp({ app, version });
 };
 
+const chooseProviderIds = <
+  Entry extends {
+    readonly slot: string;
+    readonly provider: {
+      readonly identity: ProviderId;
+      readonly legacy: ProviderId;
+      readonly shared: { readonly name: string };
+    };
+  },
+>(
+  db: Query,
+  crypto: HostCrypto,
+  entries: ReadonlyArray<Entry>,
+  previous: AppRequirements["accounts"] | undefined,
+) =>
+  Effect.gen(function* () {
+    const identities = new Set(entries.map(({ provider }) => provider.identity));
+    const kept = yield* Effect.forEach(Object.entries(previous ?? {}), ([slot, required]) =>
+      identities.has(required.provider)
+        ? Effect.succeed({ slot, identity: required.provider, provider: required.provider })
+        : identifyProvider(required.definition, crypto).pipe(
+            Effect.map(({ identity }) => ({ slot, identity, provider: required.provider })),
+          ),
+    );
+    const continued = entries.map((entry) => {
+      const same = kept.filter((item) => item.identity === entry.provider.identity);
+      return (same.find((item) => item.slot === entry.slot) ?? same[0])?.provider;
+    });
+    const open = entries.filter((_, index) => continued[index] === undefined);
+    yield* recordStoredIdentities(
+      db,
+      crypto,
+      new Set(open.map(({ provider }) => provider.shared.name)),
+    );
+    const rows =
+      open.length === 0
+        ? []
+        : yield* query(() =>
+            db.findMany("providers", {
+              select: ["id", "identity"],
+              where: (b) =>
+                b.or(
+                  b(
+                    "identity",
+                    "in",
+                    open.map(({ provider }) => provider.identity),
+                  ),
+                  b(
+                    "id",
+                    "in",
+                    open.map(({ provider }) => provider.legacy),
+                  ),
+                ),
+            }),
+          );
+    return entries.map((entry, index) => {
+      const { identity, legacy } = entry.provider;
+      const exact = rows.some((row) => row.id === legacy) ? legacy : undefined;
+      const stored = rows
+        .filter((row) => row.identity === identity)
+        .map((row) => row.id)
+        .toSorted()[0];
+      return {
+        ...entry,
+        provider: { ...entry.provider, id: continued[index] ?? exact ?? stored ?? identity },
+      };
+    });
+  });
+
 function project(db: Query, app: StoredApp) {
   if (app.activeVersion === null)
     return Effect.succeed({
@@ -264,7 +335,11 @@ export const makeApps = (
     owner: OwnerId,
     name: string,
     suppliedFiles: unknown,
-    options?: { readonly retain?: false; readonly unanswered?: () => E },
+    options: {
+      readonly retain?: false;
+      readonly unanswered?: () => E;
+      readonly previous?: AppRequirements["accounts"];
+    } = {},
   ) =>
     Effect.gen(function* () {
       const files = yield* Schema.decodeUnknownEffect(SourceFiles)(suppliedFiles).pipe(
@@ -295,13 +370,13 @@ export const makeApps = (
         .build({
           files: codeFiles,
           public: split.public.map((file) => servedPath(file.path)),
-          ...(options?.retain === false ? { retain: false } : {}),
+          ...(options.retain === false ? { retain: false } : {}),
         })
         .pipe(
           Effect.mapError((error) =>
             Schema.is(BuildMemoryExceeded)(error)
               ? error
-              : options?.unanswered !== undefined &&
+              : options.unanswered !== undefined &&
                   Schema.is(RuntimeBuildFailed)(error) &&
                   error.unanswered === true
                 ? options.unanswered()
@@ -344,7 +419,7 @@ export const makeApps = (
           message: reason,
         });
       }
-      const entries = yield* Effect.forEach(declared, ([slot, scope, value]) =>
+      const identified = yield* Effect.forEach(declared, ([slot, scope, value]) =>
         identifyProvider(value.definition, crypto).pipe(
           Effect.map((provider) => ({
             slot,
@@ -357,7 +432,7 @@ export const makeApps = (
       );
       const helpProblems = yield* setupHelpProblems(
         markdown,
-        entries.flatMap(({ slot, provider }) =>
+        identified.flatMap(({ slot, provider }) =>
           setupHelp(provider.definition).map((help) => ({
             ...help,
             where: `Requirement "${slot}" (provider "${provider.definition.name}") ${help.where}`,
@@ -372,6 +447,7 @@ export const makeApps = (
           stage: "declaration",
           message: `App build failed: setup help must be Markdown with absolute https links and no HTML or images. ${helpProblems.map((problem) => `${problem}.`).join(" ")}`,
         });
+      const entries = yield* chooseProviderIds(db, crypto, identified, options.previous);
       const requirements: AppRequirements = {
         ...(built.requirements.capabilities === undefined
           ? {}
@@ -446,15 +522,14 @@ export const makeApps = (
         input.commit === undefined
           ? input.files
           : yield* sources.read({ code, commit: input.commit });
+      const previous = before === null ? undefined : (yield* project(db, before)).requirements;
       const { files, built, entries, requirements, codeFiles, split, invalidSource } =
-        yield* buildSource(
-          input.owner,
-          deployName,
-          suppliedFiles,
-          replacing === undefined
-            ? undefined
-            : { unanswered: () => replacing.unanswered(deployName) },
-        );
+        yield* buildSource(input.owner, deployName, suppliedFiles, {
+          ...(replacing === undefined
+            ? {}
+            : { unanswered: () => replacing.unanswered(deployName) }),
+          ...(previous === undefined ? {} : { previous: previous.accounts }),
+        });
       const appId = before?.id ?? reserved ?? AppId.make(`app_${yield* crypto.random.uuidV4()}`);
       const droppedMigrations = (target: Query, app: AppCodeId) =>
         requirements.sql === true
@@ -563,8 +638,8 @@ export const makeApps = (
             yield* query(() =>
               tx.upsert("providers", {
                 where: (b) => b("id", "=", provider.id),
-                create: { id: provider.id, definition },
-                update: { definition },
+                create: { id: provider.id, definition, identity: provider.identity },
+                update: { definition, identity: provider.identity },
               }),
             );
           }
