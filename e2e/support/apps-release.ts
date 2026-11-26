@@ -7,7 +7,7 @@ export const mcpSdkVersion: string = appsPackage.devDependencies["@modelcontextp
 
 export const appsManifest = {
   path: "package.json",
-  content: `${JSON.stringify({ dependencies: { apps: appsVersion } }, null, 2)}\n`,
+  content: `${JSON.stringify({ type: "module", dependencies: { apps: appsVersion } }, null, 2)}\n`,
 };
 
 export const firstMigration = {

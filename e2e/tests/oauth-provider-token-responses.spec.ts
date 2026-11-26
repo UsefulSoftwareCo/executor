@@ -57,6 +57,28 @@ const slackUser: TokenShape = (tokens) => ({
   enterprise: null,
   is_enterprise_install: false,
 });
+const slackDual: TokenShape = (tokens, refreshing) =>
+  refreshing
+    ? {
+        access_token: tokens.access_token,
+        token_type: "user",
+        scope: "search:read,chat:write",
+        ...(tokens.expires_in === undefined ? {} : { expires_in: tokens.expires_in }),
+        ...(tokens.refresh_token === undefined ? {} : { refresh_token: tokens.refresh_token }),
+      }
+    : {
+        ...slack(tokens, false),
+        access_token: "synthetic-bot-token",
+        refresh_token: "synthetic-bot-refresh-token",
+        authed_user: {
+          id: "U0SYNTHETIC",
+          scope: "search:read,chat:write",
+          access_token: tokens.access_token,
+          token_type: "user",
+          ...(tokens.expires_in === undefined ? {} : { expires_in: tokens.expires_in }),
+          ...(tokens.refresh_token === undefined ? {} : { refresh_token: tokens.refresh_token }),
+        },
+      };
 const shopify: TokenShape = (tokens) => ({
   access_token: tokens.access_token,
   scope: "read_products,write_orders",
@@ -115,8 +137,8 @@ const serviceApp = (
         : `oauth2(${JSON.stringify(oauth)})`;
     const echo =
       options.scope === true
-        ? "({ ...(await result.json()), scope: accounts.service.fields.scope })"
-        : "result.json()";
+        ? "({ ...(await decodeJson(result, Resource)), scope: accounts.service.fields.scope })"
+        : "decodeJson(result, Resource)";
 
     const name = `Token shapes ${randomUUID().slice(0, 8)}`;
     const imported = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
@@ -124,9 +146,11 @@ const serviceApp = (
       files: [
         {
           path: "index.ts",
-          content: `import { defineApp, defineProvider, oauth2, query, object, string, router } from "apps";
+          content: `import { boolean, decodeJson, defineApp, defineProvider, oauth2, query, object, string, router } from "apps";
+import { never } from "apps/operations/approval";
+const Resource = object({ refreshed: boolean(), authorization: string() });
 const service = defineProvider({ name: ${JSON.stringify(name)}, auth: { oauth: ${method} } });
-export default defineApp({ user: { accounts: { service } } }, async ({ user: { accounts } }) => ({ tools: router({ read: query({ input: object({}) }, async ({ fetch }) => {
+export default defineApp({ user: { accounts: { service } } }, async ({ user: { accounts } }) => ({ tools: router({ read: query({ input: object({}), approval: never() }, async ({ fetch }) => {
   const result = await fetch(${JSON.stringify(`${issuer.origin}/resource`)}, { headers: { authorization: "Bearer " + accounts.service.fields.access_token } });
   return ${echo};
 }) }) }));
@@ -408,6 +432,36 @@ const nestedTokenResponse = (context: TestContext) =>
       const refused = yield* standard.signIn("Slack user token without the option");
       expect(refused.completed.status, JSON.stringify(refused.failure)).toBe(400);
       expect(refused.failure._tag).toBe("OAuthCompletionFailed");
+
+      const strict = yield* serviceApp(issuer, {
+        scope: true,
+        oauth: {
+          tokenResponse: { path: "authed_user", requiredOnExchange: true },
+        },
+      });
+      yield* issuer.configure({ tokenShape: slackDual, refreshTokens: true, expiresIn: 3600 });
+      const dual = yield* strict.signIn("Strict nested user grant beside a bot grant");
+      expect(dual.completed.status, JSON.stringify(dual.failure)).toBe(200);
+      const initial = yield* strict.read(dual);
+      expect(initial.response.status, JSON.stringify(initial.response.body)).toBe(200);
+      expect(initial.refreshes).toBe(0);
+      const initialEcho = yield* body(ScopeEcho, initial.response);
+      expect(initialEcho.authorization).toBe("Bearer synthetic-access-token");
+      expect(initialEcho.scope).toBe("search:read chat:write");
+      yield* issuer.configure({ tokenShape: slackDual, refreshTokens: true, expiresIn: 10 });
+      const refresh = yield* strict.signIn("Strict nested exchange with top-level refresh");
+      expect(refresh.completed.status, JSON.stringify(refresh.failure)).toBe(200);
+      const renewed = yield* strict.read(refresh);
+      expect(renewed.response.status, JSON.stringify(renewed.response.body)).toBe(200);
+      expect(renewed.refreshes).toBe(1);
+      const renewedEcho = yield* body(ScopeEcho, renewed.response);
+      expect(renewedEcho.refreshed).toBe(true);
+      expect(renewedEcho.authorization).toMatch(/^Bearer synthetic-refreshed-token-\d+$/);
+      expect(renewedEcho.scope).toBe("search:read,chat:write");
+      yield* issuer.configure({ tokenShape: slack, refreshTokens: true, expiresIn: 3600 });
+      const missing = yield* strict.signIn("Strict nested exchange missing a user grant");
+      expect(missing.completed.status, JSON.stringify(missing.failure)).toBe(400);
+      expect(missing.failure._tag).toBe("OAuthCompletionFailed");
     }),
   );
 
