@@ -20,6 +20,7 @@ import {
   WorkflowFailure,
   WorkflowRpcResult,
   WorkflowValue,
+  WorkflowInput,
   type HostContext,
   type WorkflowExecution,
   type WorkflowRpc,
@@ -100,6 +101,7 @@ interface NativeStepPort {
   ): Promise<unknown>;
   sleep(name: string, duration: WorkflowDuration): Promise<void>;
   sleepUntil(name: string, timestamp: number): Promise<void>;
+  waitForEvent(name: string, options: { type: string; timeout: number }): Promise<unknown>;
 }
 const NativeStep = Schema.declare(
   (value): value is NativeStepPort =>
@@ -109,7 +111,9 @@ const NativeStep = Schema.declare(
     "sleep" in value &&
     typeof value.sleep === "function" &&
     "sleepUntil" in value &&
-    typeof value.sleepUntil === "function",
+    typeof value.sleepUntil === "function" &&
+    "waitForEvent" in value &&
+    typeof value.waitForEvent === "function",
 );
 interface HttpService {
   fetch(request: Request): Promise<Response>;
@@ -531,7 +535,23 @@ export class AppWorkflows extends WorkflowEntrypoint<Environment, { run: string 
           };
           const execution: WorkflowExecution = {
             runId: seed.runId,
+            input: (command) =>
+              hostRequest(this.env, { operation: "input", run: seed.runId, command }).pipe(
+                Effect.flatMap(Schema.decodeUnknownEffect(WorkflowInput)),
+                Effect.mapError(decodeWorkflowFailure),
+              ),
             driver: {
+              waitForInput: (name, id, expiresAt) => {
+                const remaining = expiresAt - Date.now();
+                if (remaining <= 0) return Effect.void;
+                return native(async () => {
+                  try {
+                    await nativeStep.waitForEvent(name, { type: id, timeout: remaining });
+                  } catch (error) {
+                    if (Date.now() < expiresAt) throw error;
+                  }
+                }).pipe(Effect.asVoid);
+              },
               do: (name, options, work) => {
                 const fault = engineFaultFor(faults, seed.runId, name);
                 if (fault?.when === "before")
@@ -699,14 +719,20 @@ export default {
     }
     const input = Schema.decodeUnknownSync(
       Schema.Struct({
-        operation: Schema.Literals(["start", "status", "terminate"]),
+        operation: Schema.Literals(["start", "status", "terminate", "input"]),
         run: Schema.NonEmptyString,
+        id: Schema.optional(Schema.NonEmptyString),
       }),
     )(await request.json());
     try {
       const handle = await env.RUNS.get(input.run);
       let state = await handle.status();
       const finished = () => ["complete", "errored", "terminated"].includes(state.status);
+      if (input.operation === "input" && !finished()) {
+        if (input.id === undefined) return new Response(null, { status: 400 });
+        await handle.sendEvent({ type: input.id, payload: null });
+        state = await handle.status();
+      }
       if (input.operation === "terminate" && !finished()) {
         try {
           await handle.terminate();

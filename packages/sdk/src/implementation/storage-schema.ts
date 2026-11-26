@@ -665,3 +665,26 @@ export const version4017Tables = {
 export const eventSelectionIndexes = [
   "CREATE INDEX IF NOT EXISTS executor_event_subscriptions_owner_selection ON executor_event_subscriptions (owner, status) WHERE app IS NULL",
 ] as const;
+
+export const version4018Tables = {
+  ...version4017Tables,
+  workflowInputs: table("executor_workflow_inputs", {
+    id: idColumn("id", Schema.String, { type: "varchar(80)" }),
+    app: column("app", AppId, { type: "varchar(255)" }),
+    run: column("run", WorkflowRunId, { type: "varchar(255)" }),
+    owner: column("owner", OwnerId, { type: "varchar(255)" }),
+    actor: column("actor", Schema.String, { type: "varchar(255)" }),
+    status: column("status", Schema.String, { type: "varchar(32)" }),
+    expiresAt: column("expires_at", Schema.Date),
+    wakePending: column("wake_pending", Schema.Boolean),
+    answeredBy: column("answered_by", Schema.NullOr(Schema.String), { type: "varchar(255)" }),
+    encrypted: column("encrypted", Schema.Uint8Array),
+    createdAt: column("created_at", Schema.Date),
+  }),
+};
+
+export const workflowInputIndexes = [
+  "CREATE INDEX IF NOT EXISTS executor_workflow_inputs_recipient ON executor_workflow_inputs (owner, actor, status, id)",
+  "CREATE INDEX IF NOT EXISTS executor_workflow_inputs_wake ON executor_workflow_inputs (wake_pending, id)",
+  "CREATE INDEX IF NOT EXISTS executor_workflow_inputs_run ON executor_workflow_inputs (run)",
+] as const;

@@ -43,8 +43,56 @@ and input, or check `list`, before starting a run without a key.
 The SDK namespace is `executor.apps.workflowRuns`, with discovery through
 `executor.apps.workflows.list`. Do not invent `executor.workflowRuns`.
 
-V1 has no webhook/event wait, durable human-input request, or restart helper.
-Background operations retain approval rules and fail if they require live input.
+## Waiting for a person
+
+A user workflow can persist a question, then park until its saved actor answers:
+
+```ts
+const question = await ctx.step.requestInput("pick an action", {
+  timeoutMs: 7 * 24 * 60 * 60 * 1000,
+  form: {
+    mode: "form",
+    message: "What should happen next?",
+    requestedSchema: {
+      type: "object",
+      properties: { action: { type: "string", enum: ["continue", "defer"] } },
+      required: ["action"],
+    },
+  },
+  links: [{ label: "Open Accounts", href: "/accounts" }],
+});
+// The question is committed before a separate step sends its reviewUrl through a connector.
+const answer = await ctx.step.waitForInput("wait for action", question);
+if (answer.status === "answered" && answer.response.action === "accept") {
+  // Recheck the resource and the chosen action's permission before acting.
+}
+```
+
+`requestInput` uses the standard flat form schema. `timeoutMs` is required and
+ranges from 1 millisecond to 30 days. The question retains its stable run/step
+identity across replay; changing a replayed request fails with `conflict`.
+`waitForInput` returns `answered` with an accept/decline/cancel response, or
+`expired` or `withdrawn`. A valid first answer wins, including across restarts.
+Invalid responses leave the question pending. Terminating the run withdraws it.
+
+Hosted and local Approvals routes require the initiating person's signed-in
+browser and current app/account access. The response never changes the run's
+execution actor. Questions cannot currently be assigned to another person or
+role, and app-scope workflows cannot request one. A review URL locates the
+question; it grants no access. Answering a form grants no downstream tool
+permission and does not establish that a repair succeeded.
+
+The SDK's `workflowInputs` operations list, read, answer and withdraw questions.
+Listings return `{ items, next? }`, at most 100 in ID order; pass `next` as `after`
+to continue, including when a page has no currently accessible items.
+Browser-only reads/answers are not exposed through the local bearer API.
+`workflowInputs.updateEvidence` replaces bounded display facts while the question
+is pending. It preserves the form, deadline, identity and any saved response.
+Use it for later observations of the same decision. Use withdrawal when recovery
+makes a pending decision obsolete; a changed
+decision needs a new question. A schedule pause alone does not cancel its runs.
+Background tools still cannot use live `elicit`; use a durable question in the
+workflow instead. General event waits and restart controls are not exposed.
 
 ## Scheduled mutations
 

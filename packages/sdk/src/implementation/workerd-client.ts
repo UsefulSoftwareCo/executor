@@ -94,6 +94,8 @@ export const workerdHostHandler = (options: {
         const executor = yield* options.executor,
           host = executor[WorkflowHost];
         switch (command.operation) {
+          case "input":
+            return yield* host.input(command.run, command.command);
           case "prepare": {
             const current = yield* host.get(command.run);
             if (current.status === "complete") return { state: "complete", output: current.output };
@@ -201,8 +203,9 @@ export interface WorkerdTransport {
     command: EvaluatedCommand,
   ) => Effect.Effect<unknown, RuntimeProtocolFailed>;
   readonly backend: (
-    operation: "start" | "status" | "terminate",
+    operation: "start" | "status" | "terminate" | "input",
     run: WorkflowRunId,
+    id?: string,
   ) => Effect.Effect<typeof WorkflowBackendState.Type, WorkflowFailure>;
 }
 
@@ -315,6 +318,8 @@ export const connectedWorkerdApps = (blobs: BlobStorage, transport: WorkerdTrans
       workflows: {
         start: (run: WorkflowRunId) => transport.backend("start", run).pipe(Effect.asVoid),
         status: (run: WorkflowRunId) => transport.backend("status", run),
+        signalInput: (run: WorkflowRunId, id: string) =>
+          transport.backend("input", run, id).pipe(Effect.asVoid),
         terminate: (run: WorkflowRunId) => transport.backend("terminate", run).pipe(Effect.asVoid),
       } satisfies WorkflowRuntime,
       declarations: evaluatedDeclarations(transport.evaluated),

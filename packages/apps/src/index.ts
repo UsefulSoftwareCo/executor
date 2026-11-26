@@ -386,3 +386,9 @@ export {
 } from "./implementation/schedules.ts";
 
 export type { AppSkillSource as Skill, SkillFile } from "./contracts/skills.ts";
+
+export type {
+  WorkflowInput,
+  WorkflowInputOutcome,
+  WorkflowInputRequest,
+} from "./contracts/workflow-input.ts";

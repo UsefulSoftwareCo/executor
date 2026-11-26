@@ -76,6 +76,19 @@ const runWorkflow = (
     const services = yield* Effect.context<never>();
     const executor = yield* Effect.flatten(HostedExecutor);
     const driver: WorkflowDriver = {
+      waitForInput: (name, id, expiresAt) =>
+        Effect.gen(function* () {
+          const remaining = expiresAt - (yield* Clock.currentTimeMillis);
+          if (remaining <= 0) return;
+          yield* safe(step.waitForEvent(name, { type: id, timeout: remaining })).pipe(
+            Effect.catch((error) =>
+              Effect.flatMap(Clock.currentTimeMillis, (now) =>
+                now >= expiresAt ? Effect.void : Effect.fail(error),
+              ),
+            ),
+            Effect.asVoid,
+          );
+        }),
       do: (name, options, work) => {
         const fault = engineFaultFor(faults, run, name);
         if (fault?.when === "before")

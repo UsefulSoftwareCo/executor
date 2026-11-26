@@ -114,6 +114,7 @@ export const createExecutor = (
       crypto,
       declarations,
       options.workflows,
+      options.workflowInputUrl,
     );
     const webhooks = makeWebhooks(
       options.database,
@@ -205,6 +206,7 @@ export const createExecutor = (
         );
     return {
       [WebhookSourceHost]: { tick: webhookSources.tick },
+      workflowInputs: workflows.inputs,
       [WorkflowHost]: workflows.host,
       [RepositoryHost]: {
         request: (input, request) =>

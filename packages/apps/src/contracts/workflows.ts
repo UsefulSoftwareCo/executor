@@ -1,4 +1,10 @@
 /** Portable workflow declarations, run views and durable execution capabilities. */
+import {
+  WorkflowInputCommand,
+  type WorkflowInput,
+  type WorkflowInputOutcome,
+  type WorkflowInputRequest,
+} from "./workflow-input.ts";
 import { withLegacyKeys } from "@executor-js/utils/legacy-keys";
 import { Schema, type Effect } from "effect";
 import { RecordedMessage } from "@executor-js/utils/recorded-message";
@@ -209,6 +215,13 @@ export interface WorkflowStep<
     input: NoInfer<Input>,
     options?: WorkflowStepOptions,
   ): Promise<Output>;
+  /** Commit a question before a separate notification step. No delivery happens in the host. */
+  readonly requestInput: (name: string, request: WorkflowInputRequest) => Promise<WorkflowInput>;
+  /** Park durably, then return the saved response or explicit expiry/withdrawal. */
+  readonly waitForInput: (
+    name: string,
+    input: Pick<WorkflowInput, "id">,
+  ) => Promise<WorkflowInputOutcome>;
   readonly sleep: (name: string, duration: WorkflowDuration) => Promise<void>;
   readonly sleepUntil: (name: string, timestamp: number | Date) => Promise<void>;
 }
@@ -229,6 +242,12 @@ export interface AppWorkflow<Input = unknown, Output = unknown> {
 }
 /** The backend supplies checkpoints and timers; app framework code supplies callbacks. */
 export interface WorkflowDriver {
+  /** Wait for a question wake or its deadline. Events contain no form or answer. */
+  readonly waitForInput?: (
+    name: string,
+    id: string,
+    expiresAt: number,
+  ) => Effect.Effect<void, WorkflowFailure>;
   readonly do: (
     name: string,
     options: WorkflowStepOptions,
@@ -244,6 +263,7 @@ export interface WorkflowDriver {
 export interface WorkflowExecution {
   readonly runId: WorkflowRunId;
   readonly driver: WorkflowDriver;
+  readonly input?: (command: WorkflowInputCommand) => Effect.Effect<WorkflowInput, WorkflowFailure>;
   readonly resolve: () => Effect.Effect<HostContext, WorkflowFailure>;
   readonly invoke: (input: {
     readonly kind: "query" | "mutation";
@@ -277,6 +297,13 @@ export type WorkflowCommand = typeof WorkflowCommand.Type;
 
 /** Private invocation RPC protocol shared by the host and isolated app bundle. */
 export const WorkflowRpcCommand = Schema.Union([
+  Schema.Struct({ operation: Schema.Literal("input"), command: WorkflowInputCommand }),
+  Schema.Struct({
+    operation: Schema.Literal("input-wait"),
+    name: WorkflowName,
+    id: Schema.String,
+    expiresAt: Schema.Finite,
+  }),
   Schema.Struct({
     operation: Schema.Literal("do"),
     name: WorkflowName,

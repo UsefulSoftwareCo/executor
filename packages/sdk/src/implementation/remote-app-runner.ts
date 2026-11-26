@@ -2,6 +2,8 @@ import { Cause, Data, Effect, Redacted, Schema } from "effect";
 import { withRemoteSpan } from "@executor-js/telemetry";
 import {
   HostAccounts,
+  WorkflowInput,
+  WorkflowInputCommand,
   WorkflowDuration,
   WorkflowFailure,
   WorkflowRpcResult,
@@ -36,6 +38,8 @@ type Callback = (input: unknown) => Promise<unknown>;
 
 export interface RemoteWorkflow {
   readonly runId: string;
+  input?(command: unknown): Promise<unknown>;
+  waitForInput?(name: string, id: string, expiresAt: number): Promise<unknown>;
   do(name: string, options: unknown, run: () => Promise<unknown>): Promise<unknown>;
   sleep(name: string, duration: unknown): Promise<unknown>;
   sleepUntil(name: string, timestamp: number): Promise<unknown>;
@@ -96,6 +100,8 @@ const releaseCapabilities = (remote: RemoteCapabilities) => {
       remote.workflow.sleepUntil,
       remote.workflow.context,
       remote.workflow.invoke,
+      remote.workflow.input,
+      remote.workflow.waitForInput,
     ])
       release(callback);
 };
@@ -147,6 +153,23 @@ export const remoteCapabilities = (capabilities: AppCapabilities, signal: AbortS
         ? null
         : {
             runId: execution.runId,
+            input: (command) =>
+              run(
+                Schema.decodeUnknownEffect(WorkflowInputCommand)(command).pipe(
+                  Effect.flatMap((command) =>
+                    execution.input === undefined
+                      ? Effect.fail(engine())
+                      : execution.input(command),
+                  ),
+                  Effect.flatMap(Schema.encodeEffect(WorkflowInput)),
+                ),
+              ),
+            waitForInput: (name, id, expiresAt) =>
+              run(
+                execution.driver.waitForInput === undefined
+                  ? Effect.fail(engine())
+                  : execution.driver.waitForInput(name, id, expiresAt).pipe(Effect.as(null)),
+              ),
             do: (name, options, body) =>
               run(
                 Schema.decodeUnknownEffect(WorkflowStepOptions)(options).pipe(
@@ -199,7 +222,18 @@ const localCapabilities = (remote: RemoteCapabilities, load: () => Promise<Loade
         ? undefined
         : {
             runId: yield* Schema.decodeUnknownEffect(WorkflowRunId)(workflow.runId),
+            input: (command) =>
+              workflow.input === undefined
+                ? Effect.fail(engine())
+                : settle(() => workflow.input!(command)).pipe(
+                    Effect.flatMap(Schema.decodeUnknownEffect(WorkflowInput)),
+                    Effect.mapError(engine),
+                  ),
             driver: {
+              waitForInput: (name, id, expiresAt) =>
+                workflow.waitForInput === undefined
+                  ? Effect.fail(engine())
+                  : settle(() => workflow.waitForInput!(name, id, expiresAt)).pipe(Effect.asVoid),
               do: (name, options, run) =>
                 settle(() =>
                   workflow.do(name, Schema.encodeSync(WorkflowStepOptions)(options), () =>

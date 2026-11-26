@@ -98,6 +98,9 @@ export const makeOwners = (
               where: (b) => b("owner", "=", owner),
             }),
           );
+          yield* query(() =>
+            tx.deleteMany("workflowInputs", { where: (b) => b("owner", "=", owner) }),
+          );
           if (runs.length > 0) {
             yield* query(() =>
               tx.deleteMany("workflowAccounts", {

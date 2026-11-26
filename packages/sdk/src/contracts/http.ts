@@ -1,4 +1,5 @@
 /** The single HTTP contract, composed from each area and projected into Executor. */
+import { WorkflowInputsGroup } from "./workflow-inputs.ts";
 import { HttpApi } from "effect/http-api";
 import { AccountConnectionsGroup } from "./account-connection.ts";
 import { OAuthClientsGroup } from "./oauth-clients.ts";
@@ -28,6 +29,7 @@ export const ExecutorApi = HttpApi.make("executor")
   .add(OwnersGroup)
   .add(AppWorkflowsGroup)
   .add(AppWorkflowRunsGroup)
+  .add(WorkflowInputsGroup)
   .add(PublicationsGroup)
   .add(RegistryGroup)
   .middleware(RequestRejection);

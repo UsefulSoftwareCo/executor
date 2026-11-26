@@ -1,3 +1,4 @@
+import { localWorkflowInputHandlers } from "./workflow-inputs.ts";
 import { localSourceFormatter } from "@executor-js/app-management/source-format";
 import { mcpWhoamiPath } from "@executor-js/mcp-auth";
 import {
@@ -207,6 +208,8 @@ export const localApi = (
         blobs,
         runtime,
         workflows,
+        workflowInputUrl: ({ app, id }) =>
+          `${config.browserOrigin ?? `http://localhost:${config.port}`}/approvals/workflow/${encodeURIComponent(app)}/${encodeURIComponent(id)}`,
         registry,
         cache: {
           memory: makeDeclarationCache(evaluation.limits),
@@ -303,7 +306,10 @@ export const localApi = (
           ).pipe(Effect.result);
           if (Result.isFailure(pathname)) return HttpServerResponse.empty({ status: 400 });
           const target = pathname.success.replace(/\/$/, "");
-          if (/^\/v1\/scheduled-runs\/[^/]+\/approval$/.test(target))
+          if (
+            /^\/v1\/scheduled-runs\/[^/]+\/approval$/.test(target) ||
+            /^\/v1\/apps\/[^/]+\/workflow-inputs\/[^/]+\/answer$/.test(target)
+          )
             return HttpServerResponse.empty({ status: 403 });
           if (request.method !== "GET" && request.method !== "HEAD") {
             if (
@@ -547,6 +553,7 @@ export const localApi = (
         HttpApiBuilder.layer(DashboardApi).pipe(
           Layer.provide(dashboardApi.handlers),
           Layer.provide(localScheduleHandlers(executor, sql, config, auth)),
+          Layer.provide(localWorkflowInputHandlers(executor, config, auth)),
           Layer.provide(localAppBrowserHandlers(executor, sql)),
           Layer.provide(localMcpConnectionHandlers(executor, sql, oauth)),
           Layer.provide(dashboardApi.access),
@@ -566,6 +573,7 @@ export const localApi = (
         HttpRouter.add("GET", "/connections/:connection", web.document),
         HttpRouter.add("GET", "/approvals", web.document),
         HttpRouter.add("GET", "/approvals/:run", web.document),
+        HttpRouter.add("GET", "/approvals/workflow/:app/:input", web.document),
         HttpRouter.add("GET", "/account-connect/:connection", web.document),
         HttpRouter.add("GET", "/accounts", web.document),
         HttpRouter.add("GET", "/accounts/:account", web.document),

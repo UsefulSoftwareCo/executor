@@ -18,6 +18,7 @@ export const LocalExecutorApi = HttpApi.make("executor").add(
   ExecutorApi.groups.webhooks,
   ExecutorApi.groups.appWorkflows,
   ExecutorApi.groups.appWorkflowRuns,
+  ExecutorApi.groups.workflowInputs,
   ExecutorApi.groups.publications,
   ExecutorApi.groups.registry,
 );
@@ -31,6 +32,13 @@ const api = HttpApi.make("local-management")
   .add(ExecutorApi.groups.webhooks)
   .add(ExecutorApi.groups.appWorkflows)
   .add(ExecutorApi.groups.appWorkflowRuns)
+  .add(
+    HttpApiGroup.make("workflowInputs").add(
+      ExecutorApi.groups.workflowInputs.endpoints.list,
+      ExecutorApi.groups.workflowInputs.endpoints.withdraw,
+      ExecutorApi.groups.workflowInputs.endpoints.updateEvidence,
+    ),
+  )
   .add(
     HttpApiGroup.make("schedules").add(
       DashboardApi.groups.schedules.endpoints.list,

@@ -45,6 +45,12 @@ const protocol14: AppProtocol = {
   accounts: (accounts) => accounts,
 };
 
+const protocol15: AppProtocol = {
+  ...protocol14,
+  version: 15,
+  nodeEntry: nodeAppEntry(15),
+};
+
 const underscored = (host: string) => host.includes("_");
 
 const withoutUnderscoredHosts = (account: ResolvedAccount): ResolvedAccount => {
@@ -217,6 +223,7 @@ const protocols: ReadonlyMap<number, AppProtocol> = new Map(
     protocol12,
     protocol13,
     protocol14,
+    protocol15,
   ].map((protocol) => [protocol.version, protocol]),
 );
 

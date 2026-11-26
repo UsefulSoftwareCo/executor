@@ -356,12 +356,18 @@ export const workerdApps = (options: {
           }),
         { bufferSize: 1, strategy: "sliding" },
       );
-    const backend = (operation: "start" | "status" | "terminate", run: WorkflowRunId) =>
+    const backend = (
+      operation: "start" | "status" | "terminate" | "input",
+      run: WorkflowRunId,
+      id?: string,
+    ) =>
       repeatingAtConnect(
         Effect.gen(function* () {
           const request = yield* HttpClientRequest.post(new URL("/workflow", origin), {
             headers: { ...headers, connection: "close" },
-          }).pipe(HttpClientRequest.bodyJson({ operation, run }));
+          }).pipe(
+            HttpClientRequest.bodyJson({ operation, run, ...(id === undefined ? {} : { id }) }),
+          );
           return yield* hops.http("/workflow", http.execute(request), (response) =>
             Effect.gen(function* () {
               if (response.status !== 200) return yield* engineFailure();
