@@ -8085,6 +8085,16 @@ export const scenarios = plan({
       cloud: na("Hosted desktop pages are checked by appDesktopPages."),
     },
   },
+  localExecutorAppDetails: {
+    file: "local-app-desktop-pages.spec.ts",
+    title:
+      "the local server's own Executor app page loads its details, without a page, menu-bar page or icon, and shows its overview",
+    targets: {
+      local: scheduled,
+      "self-host": na("Only local installs its own Executor app."),
+      cloud: na("Only local installs its own Executor app."),
+    },
+  },
   appDomainStatus: {
     fixtures: "actors",
     file: "app-domain-status.spec.ts",

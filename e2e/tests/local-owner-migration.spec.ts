@@ -48,6 +48,17 @@ const Deployed = Schema.Struct({ app: App });
 const Link = Schema.Struct({ connection: Schema.String, url: Schema.String });
 const Listed = Schema.Array(Schema.Struct({ id: Schema.String }));
 const Pending = Schema.Struct({ id: Schema.String, owner: Schema.String });
+const desktopPages = [
+  {
+    path: "ui/menubar.html",
+    content: "<!doctype html><html><head><title>Menu</title></head><body><p>Menu</p></body></html>",
+  },
+  {
+    path: "ui/icon.svg",
+    content:
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="#4ea1ff"/></svg>',
+  },
+];
 
 interface Statement {
   readonly sql: string;
@@ -239,14 +250,19 @@ const agentSession = Effect.gen(function* () {
   return { session, agent, headers, log: `${target.directory}/server.log` };
 });
 
-const appWithAccount = (agent: Session, name: string, label: string) =>
+const appWithAccount = (
+  agent: Session,
+  name: string,
+  label: string,
+  pages: ReadonlyArray<{ path: string; content: string }> = [],
+) =>
   Effect.gen(function* () {
     const { app } = yield* body(
       Deployed,
       yield* agent.send("POST", "/v1/apps/deploy", {
         owner: "local",
         name,
-        files: files(`Owner move fixture ${name}`),
+        files: [...files(`Owner move fixture ${name}`), ...pages],
       }),
     );
     const account = yield* connectLocalAccount(agent, {
@@ -419,7 +435,12 @@ layer(TestLive, { excludeTestServices: true })("Local owner migration", (it) => 
           const { session, agent, headers, log } = yield* agentSession;
           const suffix = randomUUID().slice(0, 8);
           const kept = yield* appWithAccount(agent, `Clash ${suffix}`, `Kept key ${suffix}`);
-          const stray = yield* appWithAccount(agent, `Stray ${suffix}`, `Stray key ${suffix}`);
+          const stray = yield* appWithAccount(
+            agent,
+            `Stray ${suffix}`,
+            `Stray key ${suffix}`,
+            desktopPages,
+          );
           yield* Effect.addFinalizer(() =>
             serverControl("start").pipe(
               Effect.andThen(
@@ -497,6 +518,14 @@ layer(TestLive, { excludeTestServices: true })("Local owner migration", (it) => 
               .send("GET", `/v1/apps/${id}`)
               .pipe(Effect.flatMap((response) => body(App, response)));
           expect((yield* app(stray.app.id)).owner).toBe("alice");
+          const detail = yield* agent.send("GET", `/dashboard/api/apps/${stray.app.id}`);
+          expect(detail.status).toBe(200);
+          expect(detail.body).toMatchObject({
+            app: { id: stray.app.id, owner: "alice" },
+            uiUrl: null,
+            uiIcon: true,
+            uiMenuBar: false,
+          });
           const listed = (owner: string) =>
             agent
               .send("GET", `/v1/accounts?owner=${owner}`)
@@ -521,6 +550,14 @@ layer(TestLive, { excludeTestServices: true })("Local owner migration", (it) => 
             outcomes: { moved: 1 },
           });
           expect((yield* app(stray.app.id)).owner).toBe("local");
+          const moved = yield* agent.send("GET", `/dashboard/api/apps/${stray.app.id}`);
+          expect(moved.status).toBe(200);
+          expect(moved.body).toMatchObject({
+            app: { id: stray.app.id, owner: "local" },
+            uiUrl: expect.any(String),
+            uiIcon: true,
+            uiMenuBar: true,
+          });
           expect((yield* listed("local")).map(({ id }) => id).toSorted()).toEqual(
             [kept.account.id, stray.account.id].toSorted(),
           );

@@ -40,6 +40,7 @@ const Detail = Schema.Struct({
   uiIcon: Schema.Boolean,
   uiMenuBar: Schema.Boolean,
 });
+const Listed = Schema.Array(Schema.Struct({ id: Schema.String }));
 
 layer(TestLive, { excludeTestServices: true })("Local app desktop pages", (it) => {
   it.effect(scenarios.localAppDesktopPages.title, (context) =>
@@ -110,6 +111,76 @@ layer(TestLive, { excludeTestServices: true })("Local app desktop pages", (it) =
         );
         expect(fetched).toMatchObject({ status: 200, type: "image/svg+xml", body: icon });
         expect(fetched.policy).toContain("default-src 'none'");
+      }),
+    ),
+  );
+
+  it.effect(scenarios.localExecutorAppDetails.title, (context) =>
+    withCase(
+      context,
+      Effect.gen(function* () {
+        const api = yield* Api,
+          browser = yield* Browser,
+          target = yield* Target,
+          session = yield* api.session();
+        const headers = { authorization: `Bearer ${Redacted.value(target.apiKey)}` };
+        const [executorApp, ...others] = yield* body(
+          Listed,
+          yield* session.send(
+            "GET",
+            "/v1/apps?owner=executor-local&name=Executor",
+            undefined,
+            headers,
+          ),
+        );
+        if (executorApp === undefined)
+          return yield* Effect.die(new Error("The local Executor app is missing"));
+        expect(others).toEqual([]);
+        const { url } = yield* body(
+          Schema.Struct({ url: Schema.String }),
+          yield* session.send("POST", "/auth/pair", undefined, headers),
+        );
+        yield* browser.omitNetworkTrace;
+        yield* browser.use("Pair the browser", (page) => page.goto(url));
+        yield* browser.use("Pairing finished", (page) =>
+          page.getByRole("heading", { name: /^Apps/ }).waitFor(),
+        );
+        const read = yield* browser.use("Read the Executor app's details and icon", (page) =>
+          page.evaluate(
+            (app) =>
+              Promise.all([
+                fetch(`/dashboard/api/apps/${app}`).then((response) =>
+                  response.json().then((body: unknown) => ({ status: response.status, body })),
+                ),
+                fetch(`/dashboard/api/apps/${app}/icon`).then((response) => response.status),
+              ]),
+            executorApp.id,
+          ),
+        );
+        expect(read).toMatchObject([
+          {
+            status: 200,
+            body: {
+              app: { id: executorApp.id, name: "Executor", owner: "executor-local" },
+              uiUrl: null,
+              uiIcon: false,
+              uiMenuBar: false,
+              canDelete: false,
+            },
+          },
+          404,
+        ]);
+        yield* browser.use("Open the Executor app's overview", (page) =>
+          page
+            .goto(`/apps/${executorApp.id}?view=overview`)
+            .then(() => page.getByRole("region", { name: "App accounts", exact: true }).waitFor()),
+        );
+        expect(
+          yield* browser.use("The overview shows no storage error", (page) =>
+            page.getByText("Executor storage unavailable").count(),
+          ),
+        ).toBe(0);
+        yield* browser.checkpoint("The Executor app's overview loads");
       }),
     ),
   );
