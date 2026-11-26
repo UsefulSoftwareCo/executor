@@ -1,4 +1,4 @@
-import { useState, type ComponentType } from "react";
+import { Children, useState, type ComponentType, type ReactNode } from "react";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { Exit } from "effect";
 import { AsyncResult, type Atom } from "effect/reactivity";
@@ -40,10 +40,12 @@ export function ConnectedAgents<E, EL extends E, ER extends E>({
   query,
   revoke,
   Failure,
+  children,
 }: {
   readonly query: Query<readonly ConnectedAgent[], EL>;
   readonly revoke: Atom.AtomResultFn<GrantId, void, ER>;
   readonly Failure: ComponentType<FailureProps<E>>;
+  readonly children?: ReactNode;
 }) {
   const [revoking, setRevoking] = useState<ConnectedAgent>();
   const submit = useAtomSet(revoke, { mode: "promiseExit" });
@@ -53,6 +55,7 @@ export function ConnectedAgents<E, EL extends E, ER extends E>({
       <div className="mb-2 flex h-6 items-center">
         <h2 className="text-xs font-medium text-muted-foreground">Connected agents</h2>
       </div>
+      {hasRows(children) && <ul className="divide-y border-t">{children}</ul>}
       <QueryView<readonly ConnectedAgent[], E>
         query={query}
         Failure={Failure}
@@ -60,9 +63,13 @@ export function ConnectedAgents<E, EL extends E, ER extends E>({
       >
         {(agents) =>
           agents.length === 0 ? (
-            <p className="text-[13px] text-muted-foreground">
-              No agent is connected. Agents that sign in with the MCP URL appear here.
-            </p>
+            hasRows(children) ? (
+              <div className="border-t" />
+            ) : (
+              <p className="text-[13px] text-muted-foreground">
+                No agent is connected. Agents that sign in with the MCP URL appear here.
+              </p>
+            )
           ) : (
             <ul className="divide-y border-y">
               {agents.map((agent) => (
@@ -146,6 +153,8 @@ function AgentRow({
     </li>
   );
 }
+
+const hasRows = (rows: ReactNode) => Children.toArray(rows).length > 0;
 
 function ConnectedAgentsSkeleton() {
   return (
