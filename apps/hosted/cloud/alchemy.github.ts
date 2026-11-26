@@ -115,6 +115,12 @@ export default Alchemy.Stack(
 
     const production = "production";
 
+    yield* GitHub.Environment("ProductionEnvironment", {
+      ...target,
+      name: production,
+      deploymentBranchPolicy: { customBranchPolicies: ["main"] },
+    }).pipe(retain());
+
     const deployToken = yield* Cloudflare.ApiToken.AccountApiToken("DeployToken", {
       name: `executor-next-ci-${name}`,
       accountId,
