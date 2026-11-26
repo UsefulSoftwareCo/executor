@@ -1,4 +1,3 @@
-/** E2E fixture for two operator OAuth registrations reporting the same external subject. */
 import { expect } from "@effect/vitest";
 import { Effect, Schedule, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
@@ -118,7 +117,7 @@ export const waitForReportingClientRequests = (
 export const waitForReportingClientRun = (since: number) =>
   Effect.gen(function* () {
     const telemetry = yield* Telemetry;
-    const found = yield* telemetry.search("sdk.personalDataReporting.run", {});
+    const found = yield* telemetry.searchWholeEnvironment("sdk.personalDataReporting.run", {});
     const run = found.data.find(
       ({ span }) =>
         Date.parse(span.startTime) >= since &&

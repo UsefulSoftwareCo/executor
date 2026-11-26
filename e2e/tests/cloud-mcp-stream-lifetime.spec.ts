@@ -1,10 +1,3 @@
-/**
- * An MCP response is either answered and closed, or held open by the session object
- * (`subscriptions/listen`). The gateway forwards both as streams, so its spans and the platform's
- * subrequest last as long as the client listens. The request spans say whether the response is
- * held, and each body's close records how long it stayed open, so latency reads can leave held
- * streams out and their lifetime is measured on its own.
- */
 import { expect, layer } from "@effect/vitest";
 import { Clock, Effect, Redacted, Schedule, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
@@ -19,14 +12,12 @@ import { Target } from "../support/platform.ts";
 
 type Span = (typeof SpanQuery.Type)["data"][number]["span"];
 
-/** How long the client keeps the subscription stream open. */
 const holdMs = 3000;
 const revision = "2026-07-28";
 const requestMeta = {
   "io.modelcontextprotocol/protocolVersion": revision,
   "io.modelcontextprotocol/clientCapabilities": {},
 };
-/** The object's marker for a held response, which a client must never see. */
 const internal = "x-executor-session-stream";
 
 layer(HostedLive, { excludeTestServices: true })("Cloud MCP stream lifetime", (it) => {
@@ -53,9 +44,7 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP stream lifetime", (i
               .request(actors.owner, "POST", "/api/auth/api-key/delete", { keyId: key.id })
               .pipe(Effect.orDie),
           );
-          // Closing a request's scope aborts its response, so a listening client really leaves.
           const client = HttpClient.withScope(http);
-          /** One stateless MCP request under its own trace. */
           const raw = (method: string, params: Readonly<Record<string, unknown>>) =>
             Effect.gen(function* () {
               const traceId = randomBytes(16).toString("hex");
@@ -85,7 +74,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP stream lifetime", (i
               return { traceId, response };
             }).pipe(Effect.provideService(HttpClient.TracerPropagationEnabled, false));
 
-          // The client listens, then leaves; the object notices at the stream's next write.
           const listened = yield* Effect.scoped(
             Effect.gen(function* () {
               const listen = yield* raw("subscriptions/listen", {
@@ -104,12 +92,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP stream lifetime", (i
           );
           const listed = yield* list;
 
-          /**
-           * A trace's request spans and stream closes, once the side named by `phase` has closed.
-           * The object notices the departed client at its stream's next write, and an isolate
-           * exports ended spans with its next request's flush (packages/telemetry/src/isolate.ts),
-           * so each attempt sends one more request on the same session object.
-           */
           const spans = (trace: string, phase: "gateway" | "session") =>
             list.pipe(
               Effect.andThen(telemetry.query(trace)),
@@ -130,7 +112,7 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP stream lifetime", (i
                 };
                 return found.forward && found.request && found[phase]
                   ? Effect.succeed(found)
-                  : Effect.fail(new Error("The request's spans have not reached Motel"));
+                  : Effect.fail(new Error("The request's spans have not reached the collector"));
               }),
               Effect.retry({ schedule: Schedule.spaced("1 second"), times: 75 }),
             );
@@ -139,7 +121,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP stream lifetime", (i
           const buffered = yield* spans(listed, "gateway");
           yield* evidence.json("spans.json", { listen, buffered });
 
-          // The held stream: both request spans say so, and its close records its lifetime.
           expect(tags(listen.forward)["executor.mcp.response.held"]).toBe("true");
           expect(tags(listen.request)["executor.mcp.response.held"]).toBe("true");
           expect(tags(listen.session)["executor.mcp.stream.held"]).toBe("true");
@@ -151,11 +132,8 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP stream lifetime", (i
             Date.parse(listen.forward?.startTime ?? "") + (listen.forward?.durationMs ?? Infinity),
             "The forward ends when the stream starts, while the client still listens",
           ).toBeLessThan(listened.leftAt);
-          // The gateway's close of the same stream can wait for a later export (C-033); when it
-          // has arrived it agrees.
           if (listen.gateway !== undefined)
             expect(tags(listen.gateway)["executor.mcp.stream.held"]).toBe("true");
-          // The buffered answer: not held, closed once its body is sent, with no object stream.
           expect(tags(buffered.forward)["executor.mcp.response.held"]).toBe("false");
           expect(tags(buffered.request)["executor.mcp.response.held"]).toBe("false");
           expect(tags(buffered.gateway)["executor.mcp.stream.held"]).toBe("false");

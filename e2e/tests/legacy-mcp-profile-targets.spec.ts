@@ -1,14 +1,3 @@
-/**
- * Local MCP connections and grants saved before profiles were removed may run as a profile. The
- * upgrade converts them once: a profile becomes the accounts that enabled profile selected, and a
- * disabled or removed profile, or one whose account is gone, permits nothing. A profile whose
- * account set became a copy of the app (SDK 4.0.13, data step `10_profile_app_copies`) runs on that
- * copy: its targets move to a clone of the entry for the copy, not to the app's own entry.
- *
- * The fixture rebuilds the database as an upgrade from 4.0.12 finds it: it undoes 4.0.14 and 4.0.13, labels
- * the database 4.0.12, makes local step `2_app_account_links` and data step 10 pending again, and
- * writes the profiles. The next start plans and creates the copies and converts the targets.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -41,7 +30,6 @@ const Apps = Schema.Array(
 const Grants = Schema.Array(
   Schema.Struct({ clientId: Schema.String, grant: Schema.Struct({ id: Schema.String }) }),
 );
-/** An `execute` result, keeping the failure so a refusal can be told apart from other errors. */
 const Execution = Schema.Struct({
   status: Schema.Literal("completed"),
   execution: Schema.Struct({
@@ -68,7 +56,6 @@ layer(TestLive, { excludeTestServices: true })("Legacy MCP profile targets", (it
           mcp = yield* McpClient;
         const operator = yield* pairLocalOperator;
         const headers = { authorization: `Bearer ${Redacted.value(target.apiKey)}` };
-        // Connection links are issued to agents: a request with a browser origin is refused.
         const agent: Session = {
           ...operator,
           send: (method, path, data, extra = {}) => {
@@ -101,8 +88,6 @@ layer(TestLive, { excludeTestServices: true })("Legacy MCP profile targets", (it
               yield* operator.send("DELETE", `/v1/accounts/${account}`, undefined, headers);
           }).pipe(Effect.orDie),
         );
-        // Connecting from the app links each account to the plain requirement in turn, replacing
-        // the one before; the profiles below decide the links again.
         const connect = (token: string) =>
           Effect.gen(function* () {
             const account = (yield* connectLocalAccount(agent, {
@@ -119,8 +104,6 @@ layer(TestLive, { excludeTestServices: true })("Legacy MCP profile targets", (it
         const second = yield* connect("synthetic-second");
         const third = yield* connect("synthetic-third");
 
-        // Connections and a grant created through the product, whose stored targets are rewritten
-        // below to the profile targets an older version saved. Each runs as the account linked now.
         const clients: string[] = [];
         yield* revokeClientGrants(operator, () => clients);
         const connection = (label: string) =>
@@ -151,9 +134,6 @@ layer(TestLive, { excludeTestServices: true })("Legacy MCP profile targets", (it
         )).find((item) => item.clientId === plain.clientId)?.grant.id;
         if (grant === undefined) return yield* Effect.die("The plain consent issued no grant");
 
-        // Profiles as an older version stored them: two enabled profiles selecting one account
-        // each, a disabled and a removed profile selecting the third, and an enabled profile whose
-        // account no longer exists.
         const profiles = {
           first: `legacy-profile-first-${randomUUID()}`,
           second: `legacy-profile-second-${randomUUID()}`,
@@ -216,7 +196,6 @@ layer(TestLive, { excludeTestServices: true })("Legacy MCP profile targets", (it
                 }),
               ],
             },
-            // Versions with profiles never recorded the conversion step.
             { sql: `DROP TABLE executor_local_steps` },
           ],
           "mcp-auth",
@@ -243,9 +222,6 @@ layer(TestLive, { excludeTestServices: true })("Legacy MCP profile targets", (it
           ...beforeProfileRemoval(),
           ...profileAppCopiesPending("private_local"),
           { sql: `UPDATE private_executor_settings SET value = '4.0.12' WHERE key = 'version'` },
-          // The oldest enabled profile's account set keeps the app. The second enabled profile's
-          // becomes "(Profile 2)", the disabled one's "(Profile 3)" and the one whose account no
-          // longer exists "(Profile 4)"; the removed profile counts for none.
           selected(profiles.first, true, "ready", first, "2000-01-01"),
           selected(profiles.second, true, "ready", second, "2000-01-02"),
           selected(profiles.disabled, false, "ready", third, "2000-01-03"),
@@ -268,9 +244,6 @@ layer(TestLive, { excludeTestServices: true })("Legacy MCP profile targets", (it
           disabledCopy = copyOf("Profile 3");
         copyOf("Profile 4");
 
-        // The connections now run as the accounts of the enabled profiles: on the app for the
-        // profile whose account set kept it, and on a clone of the entry for the copy the second
-        // profile's set became. One left without any account no longer includes the app.
         const listed = yield* body(
           Schema.Array(ConnectionView),
           yield* api.request(operator, "GET", "/dashboard/api/mcp/connections"),
@@ -322,7 +295,6 @@ layer(TestLive, { excludeTestServices: true })("Legacy MCP profile targets", (it
         expect(
           yield* run("Run on the copy as the second profile's account", whoami(secondCopy.slug)),
         ).toEqual({ ok: true, value: "synthetic-second" });
-        // The disabled profile permits nothing: its copy is not part of the connection.
         const disabled = yield* run(
           "The disabled profile's copy is refused",
           whoami(disabledCopy.slug),
@@ -336,7 +308,6 @@ layer(TestLive, { excludeTestServices: true })("Legacy MCP profile targets", (it
         );
         expect(refused.ok, JSON.stringify(refused)).toBe(false);
 
-        // The grant runs as the one account its enabled profile selected, on the app only.
         const granted = yield* execute(plainToken, "legacy-grant", undefined);
         expect(yield* granted("The grant runs as its profile's account", whoami(app.slug))).toEqual(
           { ok: true, value: "synthetic-first" },

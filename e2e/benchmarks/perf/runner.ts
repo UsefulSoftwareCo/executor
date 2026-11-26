@@ -1,4 +1,3 @@
-/** Run scenarios against one target, or interleave two targets for before/after comparisons. */
 import { Clock, Console, Effect, FileSystem, Path } from "effect";
 import type { PerfRequestFailed } from "./client.ts";
 import type { PerfTarget, Sample, Scenario } from "./scenarios.ts";
@@ -11,7 +10,6 @@ export interface Summary {
   readonly mean: number;
 }
 
-/** Nearest-rank percentiles over successful samples. */
 export const summarize = (values: readonly number[]): Summary | null => {
   if (values.length === 0) return null;
   const sorted = [...values].sort((a, b) => a - b);
@@ -39,11 +37,9 @@ export interface ScenarioResult {
   readonly errors: number;
   readonly samples: readonly (Sample & { readonly at: string })[];
   readonly warmupSamples: readonly (Sample & { readonly at: string })[];
-  /** Representative (closest to p50) and slowest successful trace IDs. */
   readonly traces: { readonly median?: string; readonly slowest?: string };
 }
 
-/** Slow scenario families take fewer samples: lifecycle writes 5, browser and cold paths 10. */
 export const sampleCount = (scenario: Scenario, requested: number) =>
   scenario.group === "lifecycle"
     ? Math.min(requested, 5)
@@ -118,7 +114,6 @@ export const result = (
 const line = (label: string, value: ScenarioResult) =>
   `${label.padEnd(40)} n=${String(value.client?.n ?? 0).padStart(3)} client p50=${String(value.client?.p50 ?? "-").padStart(7)} p95=${String(value.client?.p95 ?? "-").padStart(7)} server p50=${String(value.server?.p50 ?? "-").padStart(7)} p95=${String(value.server?.p95 ?? "-").padStart(7)}${value.errors ? ` errors=${value.errors}` : ""}`;
 
-/** Sequential single-target run. */
 export const runScenarios = (
   target: PerfTarget,
   selected: readonly Scenario[],
@@ -144,10 +139,6 @@ export const runScenarios = (
     return results;
   }).pipe(Effect.ensuring(target.close));
 
-/**
- * Interleaved comparison: warm both, then alternate A/B per round (ABAB, then BABA) so drift and
- * shared noise affect both targets equally.
- */
 export const compareScenarios = (
   a: PerfTarget,
   b: PerfTarget,
@@ -189,12 +180,6 @@ export const compareScenarios = (
     return output;
   }).pipe(Effect.ensuring(Effect.all([a.close, b.close])));
 
-/**
- * Spaced interleaved comparison for results kept for a bounded time: each round samples every
- * scenario once per target (alternating which goes first), then waits until `spacingMs` has
- * passed since the round began, so every sample finds its previous result expired. One discarded
- * round warms connections. Choose scenarios whose reads do not share a kept result.
- */
 export const compareSpaced = (
   a: PerfTarget,
   b: PerfTarget,
@@ -263,7 +248,6 @@ export const writeJson = (file: string, value: unknown) =>
     yield* Console.log(`Wrote ${file}`);
   });
 
-/** Filter by comma-separated regular expressions over scenario ids. */
 export const select = (all: readonly Scenario[], filter: string) => {
   if (filter.trim() === "") return all;
   const patterns = filter.split(",").map((part) => new RegExp(part.trim()));
@@ -273,7 +257,6 @@ export const select = (all: readonly Scenario[], filter: string) => {
 const cell = (summary: Summary | null | undefined, key: "p50" | "p95" | "max") =>
   summary === null || summary === undefined ? "-" : String(Math.round(summary[key]));
 
-/** Markdown table for a run or comparison result file. */
 export const markdown = (file: { readonly kind: string; readonly results: readonly unknown[] }) => {
   if (file.kind === "perf-run") {
     const rows = file.results as readonly ScenarioResult[];

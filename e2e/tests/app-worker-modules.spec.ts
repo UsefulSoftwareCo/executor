@@ -1,8 +1,3 @@
-/**
- * A cold app Worker runs whichever framework entries its app imports. Apps built on the MCP,
- * GraphQL and OpenAPI entries link and call their upstream from a cold start. An app that imports a
- * computed specifier can still load a framework entry it never names statically.
- */
 import { expect, layer } from "@effect/vitest";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Effect, Layer, Schema } from "effect";
@@ -30,7 +25,6 @@ const graphqlType = (kind: string, name: string, fields: Schema.Json = null) => 
   enumValues: null,
 });
 
-/** One synthetic upstream for each framework entry: an MCP server, an OpenAPI API and a GraphQL API. */
 const upstream = Effect.gen(function* () {
   const mcp = Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
@@ -100,7 +94,6 @@ const plain = `import { defineApp, query, object, string, router } from "apps";
 export const ping = query({ input: object({}), output: string() }, async () => "plain");
 export default defineApp({}, { tools: router({ ping }) });`;
 
-/** The specifier is computed, so no static scan can see that the app loads `apps/graphql`. */
 const computed = `import { defineApp, query, object, string, router } from "apps";
 const entry = ["apps", "graphql"].join("/");
 export const ping = query({ input: object({}), output: string() }, async () => {
@@ -109,7 +102,6 @@ export const ping = query({ input: object({}), output: string() }, async () => {
 });
 export default defineApp({}, { tools: router({ ping }) });`;
 
-/** An app whose only tools come from one framework entry's router over the upstream. */
 const entryApps = (origin: string) => [
   {
     entry: "mcp",
@@ -193,7 +185,6 @@ layer(HostedLive, { excludeTestServices: true })("App Worker modules", (it) => {
             );
             return path;
           });
-        /** Call one of the app's tools for the first time, so its Worker starts cold. */
         const coldCall = (path: string, tool: string) =>
           Effect.gen(function* () {
             const response = yield* api.request(actors.owner, "POST", `${path}/tools/call`, {

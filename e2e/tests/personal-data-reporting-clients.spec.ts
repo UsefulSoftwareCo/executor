@@ -1,4 +1,3 @@
-/** Two operator OAuth registrations keep their personal-data reporting state separate. */
 import { expect, layer } from "@effect/vitest";
 import { Clock, Effect } from "effect";
 import { HttpClient } from "effect/http";
@@ -196,9 +195,7 @@ layer(HostedLive, { excludeTestServices: true })(
           const telemetry = yield* Telemetry;
           const [trace, logs] = yield* Effect.all([
             telemetry.query(traceId),
-            Effect.forEach([accountId, identityProfile.name, identityProfile.email], (value) =>
-              telemetry.logs(traceId, value),
-            ),
+            telemetry.logs(traceId),
           ]);
           const serialized = JSON.stringify({ trace, logs });
           expect(serialized).not.toContain(accountId);

@@ -6,9 +6,6 @@ const install = () => {
     dropped = 0;
   const recent = new Map<string, number>();
   const extension = /^(?:chrome|moz|safari-web)-extension:/;
-  // The Resize Observer spec reports an observer loop as an ErrorEvent with these messages, a null
-  // error and no script position. Browsers dispatch it outside any script, so no app code failed.
-  // A null error alone does not identify it: a muted cross-origin "Script error." looks the same.
   const resizeLoop = new Set([
     "ResizeObserver loop completed with undelivered notifications.",
     "ResizeObserver loop limit exceeded",
@@ -55,7 +52,6 @@ const install = () => {
       reports = 0;
       recent.clear();
     }
-    // Deduplicate locally. Error text never leaves this document.
     const signature = `${kind}:${details.slice(0, 2000)}`;
     const previous = recent.get(signature);
     if ((previous !== undefined && now - previous < 1000) || reports >= 20) {
@@ -128,7 +124,6 @@ const install = () => {
     } else {
       show();
     }
-    // Error text can contain app data. Keep it in this browser; export only a fixed classification.
     void fetch("/_executor/api/telemetry/traces", {
       method: "POST",
       headers: { "content-type": "application/json" },

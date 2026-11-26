@@ -3,13 +3,8 @@ import { FetchHttpClient, HttpClient } from "effect/http";
 import { genericOAuth } from "better-auth/plugins";
 import { EmulatedServices } from "../contracts/emulators.ts";
 
-/** Same Better Auth social endpoints, with verified OAuth/OIDC exchanges at external emulators. */
 export const emulatedSocialProviders = (
   configuration: Redacted.Redacted<typeof EmulatedServices.Type>,
-  /**
-   * Each provider's return, as for the real providers: the social callback origin's, or none on
-   * a stage whose OAuth proxy names production's.
-   */
   redirectURI: (provider: "google" | "github") => { readonly redirectURI?: string },
 ) => {
   const { google, github } = Redacted.value(configuration);
@@ -22,8 +17,6 @@ export const emulatedSocialProviders = (
         clientId: google.clientId,
         clientSecret: google.clientSecret,
         discoveryUrl: `${google.baseUrl}/.well-known/openid-configuration`,
-        // The runner resolves this immutable instance metadata before deployment.
-        // Session reads must not contact the identity provider on every request.
         discoveryDocument: google.discovery,
         scopes: ["openid", "email", "profile"],
         pkce: true,

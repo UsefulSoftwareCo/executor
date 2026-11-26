@@ -1,7 +1,6 @@
 import { WorkflowRunId } from "../contracts/workflows.ts";
 import { AppSlug } from "../contracts/app-slug.ts";
 import { AccountScope } from "../contracts/apps.ts";
-/** Table layouts of each schema version. Versions and upgrades are registered in storage-migrations.ts. */
 import { SourceCommit } from "../contracts/source.ts";
 import {
   AccountId,
@@ -20,16 +19,8 @@ import { OAuthClientId, OAuthClientSource } from "../contracts/oauth.ts";
 import { column, idColumn, schema, table } from "fumadb-effect/schema";
 import { Effect, Schema } from "effect";
 
-/**
- * The retired profile identity, `ins_`. Version 4.0.13 converted the SDK rows that named a profile;
- * the product reads the profile table once to link accounts, and a later version drops it.
- */
 const ProfileId = Schema.String;
 
-/**
- * Tables of the 4.0.0 and 4.0.1 layouts. Table definitions carry no relations until a schema
- * version attaches them, so every version can share these objects.
- */
 export const version4Tables = {
   profiles: table("executor_installations", {
     id: idColumn("id", ProfileId, { type: "varchar(255)" }),
@@ -151,10 +142,6 @@ export const version4Tables = {
   })
     .unique("executor_apps_owner_name", ["owner", "name"])
     .unique("executor_apps_owner_slug", ["owner", "slug"]),
-  /**
-   * Saved clients of versions before 4.0.10, keyed by a digest of the sign-in settings. No longer
-   * read or written once `executor_stored_oauth_clients` replaces it; a later release drops it.
-   */
   oauthClients: table("executor_oauth_clients", {
     id: idColumn("id", Schema.String, { type: "varchar(255)" }),
     encrypted: column("encrypted", Schema.Uint8Array),
@@ -230,7 +217,6 @@ export const version4Tables = {
   }),
 };
 
-/** Version 4.0.2 counts credential generations so caches can key on accounts, not credentials. */
 const accounts = table("executor_accounts", {
   id: idColumn("id", AccountId, { type: "varchar(255)" }),
   owner: column("owner", OwnerId, { type: "varchar(255)" }),
@@ -238,22 +224,12 @@ const accounts = table("executor_accounts", {
   method: column("method", Schema.String),
   label: column("label", Schema.String),
   encryptedCredentials: column("encrypted_credentials", Schema.Uint8Array),
-  /**
-   * Counts connections, not tokens. Reconnecting or replacing credentials increments it; token
-   * renewal does not. Caches key on the account and this value, never on credentials.
-   */
   credentialGeneration: column("credential_generation", Schema.Int).default(0),
   createdAt: column("created_at", Schema.Date),
 });
 
-/** Tables of the 4.0.2 layout. */
 export const version402Tables = { ...version4Tables, accounts };
 
-/**
- * Version 4.0.3 records each app's latest check of an account, one row per account and app. A
- * result is current only for the credential generation and version it names. Display info is
- * kept from the last passing check, with its own time, when a later check fails.
- */
 const accountChecks = table("executor_account_checks", {
   id: idColumn("id", Schema.String, { type: "varchar(255)" }),
   account: column("account", AccountId, { type: "varchar(255)" }),
@@ -266,54 +242,29 @@ const accountChecks = table("executor_account_checks", {
   infoCheckedAt: column("info_checked_at", Schema.NullOr(Schema.Date)).default(null),
 }).unique("executor_account_checks_account_app", ["account", "app"]);
 
-/** Tables of the 4.0.3 layout. */
 export const version403Tables = { ...version402Tables, accountChecks };
 
-/**
- * Version 4.0.4 adds an account description: free text agents read with the account's label to
- * choose between accounts. Existing accounts have none.
- */
 const describedAccounts = table("executor_accounts", {
   ...accounts.columns,
   description: column("description", Schema.NullOr(Schema.String)).default(null),
 });
 
-/** Tables of the 4.0.4 layout. */
 export const version404Tables = { ...version403Tables, accounts: describedAccounts };
 
-/**
- * Version 4.0.5 records the hosts each account was connected for. Null for accounts connected
- * without declared hosts, which allow whatever an app declares.
- */
 const grantedAccounts = table("executor_accounts", {
   ...describedAccounts.columns,
-  /**
-   * The hosts the account's secret values may be sent to, as declared by the app it was connected
-   * for. An app sends them only to the hosts it declares as well. See credential-handles.ts.
-   */
   allowedHosts: column("allowed_hosts", Schema.NullOr(Schema.Json)).default(null),
 });
 
-/** Tables of the 4.0.5 layout. */
 export const version405Tables = { ...version404Tables, accounts: grantedAccounts };
 
-/**
- * Version 4.0.6 keeps why the latest check failed, as the app or host explained it, with account
- * secrets already replaced. Null for passing checks and for checks recorded before this version.
- */
 const explainedAccountChecks = table("executor_account_checks", {
   ...accountChecks.columns,
   message: column("message", Schema.NullOr(Schema.String)).default(null),
 });
 
-/** Tables of the 4.0.6 layout. */
 export const version406Tables = { ...version405Tables, accountChecks: explainedAccountChecks };
 
-/**
- * Version 4.0.7 adds app events. A subscription is keyed by a digest of its subscriber, callback,
- * event name and arguments; its signing secrets are encrypted. Each emitted event is saved once,
- * encrypted, with one delivery per matching subscription.
- */
 const eventSubscriptions = table("executor_event_subscriptions", {
   id: idColumn("id", Schema.String, { type: "varchar(64)" }),
   owner: column("owner", OwnerId, { type: "varchar(255)" }),
@@ -328,7 +279,6 @@ const eventSubscriptions = table("executor_event_subscriptions", {
   stopped: column("stopped", Schema.NullOr(Schema.String), { type: "varchar(32)" }),
   expiresAt: column("expires_at", Schema.Date),
   verifiedAt: column("verified_at", Schema.Date),
-  /** Changes on every write; a refresh writes only over the row it computed from. */
   revision: column("revision", Schema.String, { type: "varchar(64)" }),
   encrypted: column("encrypted", Schema.Uint8Array),
   createdAt: column("created_at", Schema.Date),
@@ -339,7 +289,6 @@ const events = table("executor_events", {
   name: column("name", Schema.String, { type: "varchar(64)" }),
   eventId: column("event_id", Schema.String, { type: "varchar(255)" }),
   account: column("account", Schema.NullOr(AccountId), { type: "varchar(255)" }),
-  /** Every account bound to the emitting invocation. */
   accounts: column("accounts", Schema.Json),
   occurredAt: column("occurred_at", Schema.Date),
   encrypted: column("encrypted", Schema.Uint8Array),
@@ -352,7 +301,6 @@ const eventDeliveries = table("executor_event_deliveries", {
   status: column("status", Schema.String, { type: "varchar(32)" }),
   attempts: column("attempts", Schema.Int),
   nextAt: column("next_at", Schema.Date),
-  /** The attempt that holds the delivery; completions must name it. */
   lease: column("lease", Schema.NullOr(Schema.String), { type: "varchar(64)" }),
   leaseUntil: column("lease_until", Schema.Date),
   lastError: column("last_error", Schema.NullOr(Schema.String), { type: "varchar(32)" }),
@@ -360,7 +308,6 @@ const eventDeliveries = table("executor_event_deliveries", {
   finishedAt: column("finished_at", Schema.NullOr(Schema.Date)),
 }).unique("executor_event_deliveries_subscription_event", ["subscription", "event"]);
 
-/** Tables of the 4.0.7 layout. */
 export const version407Tables = {
   ...version406Tables,
   eventSubscriptions,
@@ -368,7 +315,6 @@ export const version407Tables = {
   eventDeliveries,
 };
 
-/** Indexes added with app events in 4.0.7, created in the same step as their tables. */
 export const eventIndexes = [
   "CREATE INDEX IF NOT EXISTS executor_event_deliveries_due ON executor_event_deliveries (status, next_at)",
   "CREATE INDEX IF NOT EXISTS executor_event_subscriptions_app_event ON executor_event_subscriptions (app, event, status)",
@@ -378,25 +324,13 @@ export const eventIndexes = [
   "CREATE INDEX IF NOT EXISTS executor_events_created ON executor_events (created_at)",
 ] as const;
 
-/**
- * Version 4.0.8 requires every connection to name the app profile requirement it fills. Before it,
- * provider-only requests, account-level reconnects and 1.3.0-era requests stored no target.
- */
 const targetedConnections = table("executor_account_connections", {
   ...version4Tables.accountConnections.columns,
   target: column("target", Schema.Json),
 });
 
-/** Tables of the 4.0.8 layout. */
 export const version408Tables = { ...version407Tables, accountConnections: targetedConnections };
 
-/**
- * Removes the connections that have no target, and the pending sign-ins they point at, before the
- * column becomes required. A missing target is SQL null when a server wrote it and JSON null when
- * the column's old default filled it. Owner removal deletes a connection's sign-in the same way.
- * Nothing else references a connection: hosted access rows cascade with it, and accounts a
- * completed connection saved are kept. Servers since #2135 cannot create one.
- */
 const targetless = "target IS NULL OR json_typeof(target) = 'null'";
 export const targetlessConnectionCleanup = [
   `DELETE FROM executor_oauth_attempts WHERE id IN (
@@ -405,7 +339,6 @@ export const targetlessConnectionCleanup = [
   `DELETE FROM executor_account_connections WHERE ${targetless}`,
 ] as const;
 
-/** The 4.0.8 layout. Profiles own account selections; apps declare requirements. */
 export const version408Schema = schema({
   version: "4.0.8",
   tables: version408Tables,
@@ -426,55 +359,35 @@ export const version408Schema = schema({
   },
 });
 
-/**
- * Version 4.0.9 keeps evaluated tool listings as search rows: one row per listing, keyed by its
- * declaration key, one per tool with the words search ranks it by, and one per distinct `$defs`
- * entry the listing's schemas share, which tool rows name by position as the durable listing
- * text does. The rows are derived from listings and never read by an earlier server; losing them
- * costs only reading a listing again.
- */
 const toolSearchListings = table("executor_tool_search_listings", {
   listing: idColumn("listing", Schema.String, { type: "varchar(64)" }),
   owner: column("owner", OwnerId, { type: "varchar(255)" }),
   app: column("app", AppId, { type: "varchar(255)" }),
   deployment: column("deployment", VersionId, { type: "varchar(255)" }),
   profile: column("profile", Schema.NullOr(ProfileId), { type: "varchar(255)" }).default(null),
-  /** When the evaluation that produced the listing started, in epoch milliseconds. */
   at: column("at", Schema.BigInt),
-  /** Changes when any row derived from the listing would; an equal digest is not rewritten. */
   digest: column("digest", Schema.String, { type: "varchar(64)" }),
   routers: column("routers", Schema.Json),
-  /**
-   * When a newer listing of the same app and profile was written, in epoch milliseconds, or null
-   * while none was. Superseded rows are kept for as long as an execution may still search them.
-   */
   superseded: column("superseded", Schema.NullOr(Schema.BigInt)).default(null),
 });
 const toolSearch = table("executor_tool_search", {
-  /** The listing and the tool's position in it, which rewriting a listing replaces as a whole. */
   id: idColumn("id", Schema.String, { type: "varchar(80)" }),
   listing: column("listing", Schema.String, { type: "varchar(64)" }),
   name: column("name", ToolName),
   readOnly: column("read_only", Schema.Boolean),
-  /** Space-separated words, as the SDK's search tokenizer produces them. */
   terms: column("terms", Schema.String),
   length: column("length", Schema.Int),
-  /** What makes two targets' tools of one name the same search result. */
   signature: column("signature", Schema.String, { type: "varchar(64)" }),
-  /** The listed tool, each shared `$defs` entry replaced by its definition's position. */
   tool: column("tool", Schema.Json),
-  /** The positions of the definitions the tool's schemas name. */
   definitions: column("definitions", Schema.Json),
 });
 const toolSearchDefinitions = table("executor_tool_search_definitions", {
-  /** The listing and the definition's position in it. */
   id: idColumn("id", Schema.String, { type: "varchar(80)" }),
   listing: column("listing", Schema.String, { type: "varchar(64)" }),
   position: column("position", Schema.Int),
   definition: column("definition", Schema.Json),
 });
 
-/** Tables of the 4.0.9 layout. */
 export const version409Tables = {
   ...version408Tables,
   toolSearchListings,
@@ -482,10 +395,6 @@ export const version409Tables = {
   toolSearchDefinitions,
 };
 
-/**
- * Indexes added with tool search in 4.0.9, created in the same step as their tables. Terms are
- * text because FumaDB columns are portable; the GIN index is over their words.
- */
 export const toolSearchIndexes = [
   "CREATE INDEX IF NOT EXISTS executor_tool_search_listing ON executor_tool_search (listing)",
   "CREATE INDEX IF NOT EXISTS executor_tool_search_terms ON executor_tool_search USING gin ((string_to_array(terms, ' ')))",
@@ -493,7 +402,6 @@ export const toolSearchIndexes = [
   "CREATE INDEX IF NOT EXISTS executor_tool_search_definitions_listing ON executor_tool_search_definitions (listing)",
 ] as const;
 
-/** The 4.0.9 layout. Profiles own account selections; apps declare requirements. */
 export const version409Schema = schema({
   version: "4.0.9",
   tables: version409Tables,
@@ -514,15 +422,6 @@ export const version409Schema = schema({
   },
 });
 
-/**
- * Version 4.0.10 stores OAuth clients as resources of an owner, named by the connections that use
- * them. A registered client is found again by its owner and `automatic_key`, a digest of the
- * sign-in settings, callback included, it was registered for. A client entered by a person has
- * none, unless it was moved from an earlier version's saved clients, whose keys were the same
- * digest. The secret, and a registered client's full registration, are encrypted under the
- * client's ID.
- */
-/** Why a stored client no longer holds its credentials; see `executor_stored_oauth_client_credentials`. */
 export const CredentialsWithdrawal = Schema.Literals(["removed", "expired", "rejected"]);
 
 const storedOAuthClients = table("executor_stored_oauth_clients", {
@@ -535,27 +434,11 @@ const storedOAuthClients = table("executor_stored_oauth_clients", {
   automaticKey: column("automatic_key", Schema.NullOr(Schema.String), {
     type: "varchar(255)",
   }).default(null),
-  /** A sign-in has completed with this client, so a later rejection means it was revoked. */
   confirmed: column("confirmed", Schema.Boolean).default(false),
   encrypted: column("encrypted", Schema.Uint8Array),
   createdAt: column("created_at", Schema.Date),
 });
 
-/**
- * Every set of credentials a stored client holds or held, so credentials are one client wherever
- * they are read from: a grant's copy, an entry in a connect form, or an attempt. The ID is a keyed
- * digest (`Credentials.fingerprint`) of owner, provider, client ID and secret, so it is unique per
- * owner and provider and two clients can never hold the same credentials. Editing a client's
- * details adds a row and keeps the old one, so credentials it held before still resolve to it.
- * Removing a client keeps its rows: credentials of a removed client are withdrawn, never unowned.
- * Removing the owner removes them.
- *
- * `withdrawal` says why the client holding them is gone, and is null while one holds them. A
- * sign-in pending with a client that is gone fails closed without an exchange. When the service
- * itself refused that client (`rejected`) it reports that refusal, `registered_client_rejected`;
- * a person removing it (`removed`), Executor discarding an expired registration (`expired`), or a
- * row naming no reason, report `client_unavailable`.
- */
 const storedOAuthClientCredentials = table("executor_stored_oauth_client_credentials", {
   id: idColumn("id", Schema.String, { type: "varchar(255)" }),
   owner: column("owner", OwnerId, { type: "varchar(255)" }),
@@ -567,21 +450,18 @@ const storedOAuthClientCredentials = table("executor_stored_oauth_client_credent
   createdAt: column("created_at", Schema.Date),
 });
 
-/** Tables of the 4.0.10 layout. */
 export const version4010Tables = {
   ...version409Tables,
   storedOAuthClients,
   storedOAuthClientCredentials,
 };
 
-/** Indexes added with stored OAuth clients in 4.0.10, created in the same step as their tables. */
 export const storedOAuthClientIndexes = [
   "CREATE INDEX IF NOT EXISTS executor_stored_oauth_clients_owner_provider ON executor_stored_oauth_clients (owner, provider)",
   "CREATE INDEX IF NOT EXISTS executor_stored_oauth_clients_owner_key ON executor_stored_oauth_clients (owner, automatic_key)",
   "CREATE INDEX IF NOT EXISTS executor_stored_oauth_client_credentials_owner ON executor_stored_oauth_client_credentials (owner)",
 ] as const;
 
-/** The 4.0.10 layout: stored OAuth clients keyed by owner and provider. */
 export const version4010Schema = schema({
   version: "4.0.10",
   tables: version4010Tables,
@@ -602,27 +482,12 @@ export const version4010Schema = schema({
   },
 });
 
-/**
- * Indexes added in 4.0.11 for reads scoped to one owner or one app code, which scanned the whole
- * table before. In the order the account removal path writes these tables: accounts, then
- * profiles; deployments last.
- */
 export const boundedReadIndexes = [
   "CREATE INDEX IF NOT EXISTS executor_accounts_owner_id ON executor_accounts (owner, id)",
   "CREATE INDEX IF NOT EXISTS executor_installations_owner_app ON executor_installations (owner, app)",
   "CREATE INDEX IF NOT EXISTS executor_deployments_code_created ON executor_deployments (code, created_at)",
 ] as const;
 
-/**
- * Version 4.0.12 keys stored OAuth clients by owner and authorization server instead of owner and
- * provider, so one client serves every app that signs in at the same server. `issuer` is the
- * server's issuer as the sign-in discovered or declared it, or the token endpoint URL when the
- * provider declares endpoints without an issuer (`oauthClientIssuer`). It is null on a client
- * stored before 4.0.12 until data step `8_oauth_clients_by_issuer` records it; such a client is
- * offered to no sign-in, and its credentials resolve to it through their pre-4.0.12 identity.
- * `provider` is kept, now nullable, for those clients and for the running server during the
- * rollout; clients stored from 4.0.12 have none. A later release drops it.
- */
 const storedOAuthClientsByIssuer = table("executor_stored_oauth_clients", {
   id: idColumn("id", OAuthClientId, { type: "varchar(255)" }),
   owner: column("owner", OwnerId, { type: "varchar(255)" }),
@@ -639,11 +504,6 @@ const storedOAuthClientsByIssuer = table("executor_stored_oauth_clients", {
   createdAt: column("created_at", Schema.Date),
 });
 
-/**
- * From 4.0.12 a credentials row's ID digests owner, issuer, client ID and secret, so credentials
- * are one client per owner and authorization server. Rows written before keep their provider
- * digest and their provider; rows written from 4.0.12 have no provider.
- */
 const storedOAuthClientCredentialsByIssuer = table("executor_stored_oauth_client_credentials", {
   id: idColumn("id", Schema.String, { type: "varchar(255)" }),
   owner: column("owner", OwnerId, { type: "varchar(255)" }),
@@ -655,19 +515,16 @@ const storedOAuthClientCredentialsByIssuer = table("executor_stored_oauth_client
   createdAt: column("created_at", Schema.Date),
 });
 
-/** Tables of the 4.0.12 layout. */
 export const version4012Tables = {
   ...version409Tables,
   storedOAuthClients: storedOAuthClientsByIssuer,
   storedOAuthClientCredentials: storedOAuthClientCredentialsByIssuer,
 };
 
-/** The index 4.0.12 adds, created in the same step as its column. */
 export const storedOAuthClientIssuerIndexes = [
   "CREATE INDEX IF NOT EXISTS executor_stored_oauth_clients_owner_issuer ON executor_stored_oauth_clients (owner, issuer)",
 ] as const;
 
-/** The 4.0.12 layout: stored OAuth clients keyed by owner and authorization server. */
 export const version4012Schema = schema({
   version: "4.0.12",
   tables: version4012Tables,
@@ -688,34 +545,16 @@ export const version4012Schema = schema({
   },
 });
 
-/**
- * Version 4.0.13 replaces profiles. Background rows record the actor whose access each run checks;
- * webhook sources record the accounts linked to an app for managed webhooks. A schedule already
- * had an actor: each member has one copy of a declaration and runs it with their linked accounts.
- * Profile columns and `executor_installations` stay, unread by the SDK, until the product has
- * converted them and a later version drops them.
- */
 const actorWorkflowRuns = table("executor_workflow_runs", {
   ...version4Tables.workflowRuns.columns,
-  /** The subject the run started for; null when the starting operation had no actor. */
   actor: column("actor", Schema.NullOr(Schema.String), { type: "varchar(255)" }).default(null),
 });
 const actorWebhooks = table("executor_webhooks", {
   ...version4Tables.webhooks.columns,
-  /** The subject whose access each callback checks. Always set; nullable only for the upgrade. */
   actor: column("actor", Schema.NullOr(Schema.String), { type: "varchar(255)" }).default(null),
-  /**
-   * The actor the provider registration ran as, saved with its accounts before it reaches the
-   * provider. Removing the registration runs as this actor, also after the subscription moves to
-   * another. Null until registering.
-   */
   registeredActor: column("registered_actor", Schema.NullOr(Schema.String), {
     type: "varchar(255)",
   }).default(null),
-  /**
-   * Every account the provider registration ran with, saved before it reaches the provider.
-   * Removing the registration uses them, not the actor's current links. Null until registering.
-   */
   registeredAccounts: column("registered_accounts", Schema.NullOr(Schema.Json)).default(null),
 });
 const webhookSources = table("executor_webhook_sources", {
@@ -737,49 +576,25 @@ const webhookSources = table("executor_webhook_sources", {
   createdAt: column("created_at", Schema.Date),
 }).unique("executor_webhook_sources_app_account", ["app", "account"]);
 
-/**
- * The app copies 4.0.13 planned: a member whose profiles of one app used different accounts for a
- * plain requirement keeps the app for one account set and gets a copy for each other. `id` is the
- * copy's reserved app ID; the profile's schedules wait under it, paused, until data step
- * `10_profile_app_copies` creates the copy, links the profiles' accounts and resumes `enable`.
- */
 const profileAppCopies = table("executor_profile_app_copies", {
   id: idColumn("id", AppId, { type: "varchar(255)" }),
-  /** The app the copy is made from. */
   app: column("app", AppId, { type: "varchar(255)" }),
   owner: column("owner", OwnerId, { type: "varchar(255)" }),
-  /** The member whose profiles the copy replaces; only they get its accounts. */
   subject: column("subject", Schema.String, { type: "varchar(255)" }),
-  /** The profile the copy is named after, in the app's name: "App (Profile)". */
   label: column("label", Schema.String, { type: "varchar(128)" }),
-  /** The member's profiles with this account set, oldest first. */
   profiles: column("profiles", Schema.Json),
-  /** The accounts the copy links for the member, from its enabled profiles, oldest first. */
   accounts: column("accounts", Schema.Json),
-  /** The webhook configuration of the copy's sources, from its named profile. */
   webhookConfig: column("webhook_config", Schema.Json),
-  /**
-   * Schedule IDs, parked under `id`, that the copy resumes once it exists. The data step drops each
-   * once it is resumed or its resume is refused, so a later pass resumes only the rest.
-   */
   enable: column("enable", Schema.Json),
-  /** `pending`, then `copied`, or `cancelled` when the app was removed before the copy. */
   status: column("status", Schema.String, { type: "varchar(32)" }),
   createdAt: column("created_at", Schema.Date),
 });
 
-/**
- * Tool search listings are kept per app and account set: `target` is a digest of the accounts the
- * listing was evaluated with (see `toolSearchTarget`). Listings written before 4.0.13, or by the
- * previous server during its deploy, name a profile instead and have no target; the SDK neither
- * searches nor supersedes them as a target's own, and removes them as superseded.
- */
 const targetedToolSearchListings = table("executor_tool_search_listings", {
   ...toolSearchListings.columns,
   target: column("target", Schema.NullOr(Schema.String), { type: "varchar(64)" }).default(null),
 });
 
-/** Tables of the 4.0.13 layout. */
 export const version4013Tables = {
   ...version4012Tables,
   workflowRuns: actorWorkflowRuns,
@@ -789,37 +604,23 @@ export const version4013Tables = {
   profileAppCopies,
 };
 
-/** The index tool search finds a target's listings by from 4.0.13, created in that step. */
 export const toolSearchTargetIndex =
   "CREATE INDEX IF NOT EXISTS executor_tool_search_listings_accounts ON executor_tool_search_listings (app, target)";
 
-/**
- * Version 4.0.14 adds app accounts. App schedules and app-account webhook sources run without a
- * caller, so they have no actor: `executor_schedules.actor` and `executor_webhook_sources.actor`
- * become nullable. A declaration has one app schedule, kept unique by `appScheduleIndex`.
- * `executor_workflow_runs.scope` records whether a run started with a caller.
- */
 const appScopeSchedules = table("executor_schedules", {
   ...version4013Tables.schedules.columns,
-  /** The member whose copy this is; null for an app schedule, which runs without a caller. */
   actor: column("actor", Schema.NullOr(Schema.String), { type: "varchar(255)" }).default(null),
 });
 const appScopeWebhookSources = table("executor_webhook_sources", {
   ...webhookSources.columns,
-  /** The subject who linked the account; null for an app link. */
   actor: column("actor", Schema.NullOr(Schema.String), { type: "varchar(255)" }).default(null),
 }).unique("executor_webhook_sources_app_account", ["app", "account"]);
 
-/**
- * A workflow run records the scope it started in, so its steps bind `ctx.user` only when it
- * started with a caller. Runs saved before 4.0.14 started with one.
- */
 const scopedWorkflowRuns = table("executor_workflow_runs", {
   ...actorWorkflowRuns.columns,
   scope: column("scope", AccountScope, { type: "varchar(16)" }).default("user"),
 });
 
-/** Tables of the 4.0.14 layout. */
 export const version4014Tables = {
   ...version4013Tables,
   schedules: appScopeSchedules,
@@ -827,35 +628,51 @@ export const version4014Tables = {
   workflowRuns: scopedWorkflowRuns,
 };
 
-/**
- * Version 4.0.15 counts a webhook source's failed attempts since its intent last changed or it
- * last succeeded, so its retries back off instead of repeating its network work every tick.
- */
 const retriedWebhookSources = table("executor_webhook_sources", {
   ...appScopeWebhookSources.columns,
-  /** Failed attempts in a row on the source's current intent; zero once it succeeds or changes. */
   retries: column("retries", Schema.Int).default(0),
 }).unique("executor_webhook_sources_app_account", ["app", "account"]);
 
-/** Tables of the 4.0.15 layout; 4.0.16 only adds indexes. */
 export const version4015Tables = {
   ...version4014Tables,
   webhookSources: retriedWebhookSources,
 };
 
-/** Per-registration personal-data reporting state; the subject ID is encrypted at rest. */
+export const scopedRunKeyIndex =
+  "CREATE UNIQUE INDEX IF NOT EXISTS executor_workflow_runs_scope_key ON executor_workflow_runs (app, COALESCE(actor, ''), COALESCE(installation, ''), scope, start_key)";
+
+export const appScheduleIndex =
+  "CREATE UNIQUE INDEX IF NOT EXISTS executor_schedules_app ON executor_schedules (app, name) WHERE actor IS NULL";
+
+export const queueReadIndexes = [
+  "CREATE INDEX IF NOT EXISTS executor_webhook_sources_intent ON executor_webhook_sources (lease_until) WHERE status = 'pending' AND lease IS NULL",
+  "CREATE INDEX IF NOT EXISTS executor_webhook_sources_retry ON executor_webhook_sources (lease_until) WHERE status <> 'ready'",
+  "CREATE INDEX IF NOT EXISTS executor_account_checks_account_app ON executor_account_checks (account, app)",
+] as const;
+
+const selectingEventSubscriptions = table("executor_event_subscriptions", {
+  ...eventSubscriptions.columns,
+  app: column("app", Schema.NullOr(AppId), { type: "varchar(255)" }).default(null),
+  event: column("event", Schema.NullOr(Schema.String), { type: "varchar(64)" }).default(null),
+  selection: column("selection", Schema.NullOr(Schema.Json)).default(null),
+});
+
+export const version4017Tables = {
+  ...version4015Tables,
+  eventSubscriptions: selectingEventSubscriptions,
+};
+
+export const eventSelectionIndexes = [
+  "CREATE INDEX IF NOT EXISTS executor_event_subscriptions_owner_selection ON executor_event_subscriptions (owner, status) WHERE app IS NULL",
+] as const;
+
 const accountReports = table("executor_account_reports", {
-  /** This row follows one saved account connection, but deliberately survives upstream closure. */
   id: idColumn("id", AccountId, { type: "varchar(255)" }),
-  /** The owning organization or self-host user. Network batches never cross this boundary. */
   owner: column("owner", OwnerId, { type: "varchar(255)" }),
-  /** Fingerprint of the OAuth registration, not an access or client secret. */
   clientFingerprint: column("client_fingerprint", Schema.String, { type: "varchar(64)" }),
-  /** A reconnect invalidates every identity and schedule saved for the former grant. */
   credentialGeneration: column("credential_generation", Schema.Int),
   status: column("status", Schema.Literals(["active", "refresh_pending", "closed"])),
   encryptedExternalId: column("encrypted_external_id", Schema.NullOr(Schema.Uint8Array)),
-  /** Keyed digest coordinates duplicate subject copies without exposing the provider ID. */
   externalIdFingerprint: column("external_id_fingerprint", Schema.NullOr(Schema.String), {
     type: "varchar(64)",
   }),
@@ -869,42 +686,14 @@ const accountReports = table("executor_account_reports", {
   leaseUntil: column("lease_until", Schema.NullOr(Schema.Date)),
 });
 
-/** Tables of the 4.0.17 layout, adding reporting state without changing the account row. */
-export const version4017Tables = {
-  ...version4015Tables,
+export const version4018Tables = {
+  ...version4017Tables,
   accountReports,
 };
 
-/** Reporting state is read by owner, registration and due time. */
 export const accountReportIndexes = [
   "CREATE INDEX IF NOT EXISTS executor_account_reports_due ON executor_account_reports (owner, client_fingerprint, next_report_at) WHERE status <> 'closed'",
   "CREATE INDEX IF NOT EXISTS executor_account_reports_retry ON executor_account_reports (retry_at) WHERE status <> 'closed' AND retry_at IS NOT NULL",
   "CREATE INDEX IF NOT EXISTS executor_account_reports_subject ON executor_account_reports (client_fingerprint, external_id_fingerprint) WHERE external_id_fingerprint IS NOT NULL",
   "CREATE INDEX IF NOT EXISTS executor_account_reports_registration ON executor_account_reports (client_fingerprint, owner, id)",
-] as const;
-
-/**
- * Start keys are unique per app, actor and scope from 4.0.14, so a run started without a caller
- * and one started with a caller never share a key. It replaces `executor_workflow_runs_context_key`.
- */
-export const scopedRunKeyIndex =
-  "CREATE UNIQUE INDEX IF NOT EXISTS executor_workflow_runs_scope_key ON executor_workflow_runs (app, COALESCE(actor, ''), COALESCE(installation, ''), scope, start_key)";
-
-/** One app schedule per declaration; members' copies stay unique by `executor_schedules_copy`. */
-export const appScheduleIndex =
-  "CREATE UNIQUE INDEX IF NOT EXISTS executor_schedules_app ON executor_schedules (app, name) WHERE actor IS NULL";
-
-/**
- * Indexes added in 4.0.16 for reads that scanned the whole table before. Each webhook source tick
- * reads the sources waiting to run, saved intent first and then retries, and skips every `ready`
- * source, nearly all of them; each index holds only the sources one of those reads takes. Account
- * checks are read by account. The 4.0.3 layout declared them unique by account and app, but the
- * 4.0.6 layout declares the table again without it, and databases have no such index; a check's
- * ID, its account and app, still keeps one per pair. In the order the account and app removal
- * paths write: webhook sources, then account checks.
- */
-export const queueReadIndexes = [
-  "CREATE INDEX IF NOT EXISTS executor_webhook_sources_intent ON executor_webhook_sources (lease_until) WHERE status = 'pending' AND lease IS NULL",
-  "CREATE INDEX IF NOT EXISTS executor_webhook_sources_retry ON executor_webhook_sources (lease_until) WHERE status <> 'ready'",
-  "CREATE INDEX IF NOT EXISTS executor_account_checks_account_app ON executor_account_checks (account, app)",
 ] as const;

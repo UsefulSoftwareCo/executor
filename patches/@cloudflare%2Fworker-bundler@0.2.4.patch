@@ -21,7 +21,7 @@ index fa559109c179700e47dd94029abea7d76a00fb50..aa562a81a15e168b321e063ce668d85f
    list(prefix?: string): string[];
    flush(): Promise<void>;
 diff --git a/dist/index.d.ts b/dist/index.d.ts
-index 53dd55f4cd0292a11050505c4824afe0cac15d33..f2ef7c5e31a0561eedcd59d11abe74fb43b68fd8 100644
+index 53dd55f4cd0292a11050505c4824afe0cac15d33..6ccabb03b2982011b5ad2635f2f302a87d8c164f 100644
 --- a/dist/index.d.ts
 +++ b/dist/index.d.ts
 @@ -331,6 +331,8 @@ declare function handleAssetRequest(
@@ -33,12 +33,20 @@ index 53dd55f4cd0292a11050505c4824afe0cac15d33..f2ef7c5e31a0561eedcd59d11abe74fb
    /**
     * Input files — keys are paths relative to project root, values are file contents.
     * Accepts a plain object (which is wrapped in an InMemoryFileSystem automatically)
-@@ -499,6 +501,8 @@ interface InstallResult {
+@@ -499,6 +501,16 @@ interface InstallResult {
  //#endregion
  //#region src/installer.d.ts
  interface InstallOptions {
 +  /** Skip dependency traversal for a self-contained framework archive. Default: true. */
 +  transitive?: boolean;
++  /**
++   * Fetches every request, and every redirect hop, whose origin is not the
++   * registry's: tarball URL versions at any depth, and tarballs or redirects
++   * registry metadata sends elsewhere. Requests on the registry's origin use the
++   * global fetch. Reject with an error named `NetworkRefused` for a destination
++   * the host's network policy refuses. Default: the global fetch.
++   */
++  tarballFetch?: (input: string, init?: RequestInit) => Promise<Response>;
    /**
     * Include devDependencies (default: false)
     */
@@ -117,26 +125,101 @@ index 9ddcbac086bbd60fece6571299c86f92d33412a6..2f2667088015a158ebd9f1d324137199
  		installWarnings.push(...installResult.warnings);
  	}
 diff --git a/dist/installer-DDvaMqav.js b/dist/installer-DDvaMqav.js
-index 5ed55da1726ab87d1c11932262f972cf39c3dd45..1f0d34b1860380058a4f43092355267ac36b4045 100644
+index 5ed55da1726ab87d1c11932262f972cf39c3dd45..c50d0cf085a7dffd44af6558f56c5a627bc8e2ec 100644
 --- a/dist/installer-DDvaMqav.js
 +++ b/dist/installer-DDvaMqav.js
-@@ -381,7 +381,7 @@ const NPM_REGISTRY = "https://registry.npmjs.org";
+@@ -49,21 +49,63 @@ function isTextFile(path) {
+ * Fetch with a timeout.
+ * Throws an error if the request takes longer than the specified timeout.
+ */
+-async function fetchWithTimeout(url, options = {}, timeoutMs = DEFAULT_TIMEOUT_MS) {
++async function fetchWithTimeout(url, options = {}, timeoutMs = DEFAULT_TIMEOUT_MS, send = fetch) {
+ 	const controller = new AbortController();
+ 	const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+ 	try {
+-		return await fetch(url, {
++		return await send(url, {
+ 			...options,
+ 			signal: controller.signal
+ 		});
+ 	} catch (error) {
+-		if (error instanceof Error && error.name === "AbortError") throw new Error(`Request to ${url} timed out after ${timeoutMs}ms (npm registry slow or unreachable from this Worker)`);
+-		throw error;
++		if (error instanceof Error && error.name === "AbortError") throw new InstallFailure(`the request timed out after ${timeoutMs}ms`);
++		throw new InstallFailure(networkFailure(error));
+ 	} finally {
+ 		clearTimeout(timeoutId);
+ 	}
+ }
++/**
++* A failure the installer words itself. Its message names no URL a server
++* chose and repeats nothing a server or an archive sent; any other error is
++* reported as unexpected.
++*/
++var InstallFailure = class extends Error {};
++/**
++* Why a request failed to send. A fetch hook rejects with an error named
++* `NetworkRefused` for a destination its network policy refuses. workerd
++* reports DNS, TLS and address-policy failures alike as an internal error
++* whose reference names the cause in workerd's own log.
++*/
++function networkFailure(error) {
++	if (error instanceof Error && error.name === "NetworkRefused") return "the network policy refused its address";
++	const reference = error instanceof Error ? /^internal error; reference = ([0-9a-z]+)$/.exec(error.message)?.[1] : void 0;
++	if (reference !== void 0) return `the connection failed in a DNS lookup, a TLS handshake or the network's address policy (workerd error reference ${reference})`;
++	return "the connection failed";
++}
++const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
++const MAX_REDIRECTS = 10;
++/**
++* Fetch `url`, following each redirect here. Every hop on the registry's
++* origin uses the global fetch, the host's own network; every other hop,
++* where a redirect lands included, uses `network.elsewhere`.
++*/
++async function fetchFrom(url, options, timeoutMs, network) {
++	let current = url;
++	for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
++		const send = URL.parse(current)?.origin === network.registryOrigin ? fetch : network.elsewhere;
++		const response = await fetchWithTimeout(current, {
++			...options,
++			redirect: "manual"
++		}, timeoutMs, send);
++		const location = REDIRECT_STATUSES.has(response.status) ? response.headers.get("location") : null;
++		if (location === null) return response;
++		response.body?.cancel().catch(() => {});
++		const next = URL.parse(location, current);
++		if (next === null || next.protocol !== "https:" && next.protocol !== "http:") throw new InstallFailure("a redirect named an invalid URL");
++		current = next.href;
++	}
++	throw new InstallFailure("it was redirected too many times");
++}
+ //#endregion
+ //#region src/installer-python.ts
+ const PYODIDE_VERSION = "v0.27.5";
+@@ -381,7 +423,11 @@ const NPM_REGISTRY = "https://registry.npmjs.org";
  * @returns Metadata about the installation
  */
  async function installDependencies(fileSystem, options = {}) {
 -	const { dev = false, registry = NPM_REGISTRY } = options;
-+	const { dev = false, registry = NPM_REGISTRY, transitive = true } = options;
++	const { dev = false, registry = NPM_REGISTRY, transitive = true, tarballFetch = fetch } = options;
++	const network = {
++		registryOrigin: URL.parse(registry)?.origin,
++		elsewhere: tarballFetch
++	};
  	const result = {
  		installed: [],
  		warnings: []
-@@ -407,14 +407,16 @@ async function installDependencies(fileSystem, options = {}) {
+@@ -407,14 +453,19 @@ async function installDependencies(fileSystem, options = {}) {
  		if (Object.keys(depsToInstall).length === 0) return result;
  		const installedPackages = /* @__PURE__ */ new Set();
  		const inProgress = /* @__PURE__ */ new Map();
 -		await Promise.all(Object.entries(depsToInstall).map(([name, versionRange]) => installPackage(name, versionRange, result, fileSystem, installedPackages, inProgress, registry)));
 +		// Unpacked archives are the install's memory peak: unpack a few at a time.
-+		const extract = limitConcurrency(TARBALL_EXTRACT_CONCURRENCY, (name, metadata) => fetchPackageFiles(name, metadata, { buildInputsOnly: true }));
-+		await Promise.all(Object.entries(depsToInstall).map(([name, versionRange]) => installPackage(name, versionRange, result, fileSystem, installedPackages, inProgress, registry, transitive, extract)));
++		const extract = limitConcurrency(TARBALL_EXTRACT_CONCURRENCY, (tarballUrl) => fetchPackageFiles(void 0, { dist: { tarball: tarballUrl } }, {
++			buildInputsOnly: true,
++			network
++		}));
++		await Promise.all(Object.entries(depsToInstall).map(([name, versionRange]) => installPackage(name, versionRange, result, fileSystem, installedPackages, inProgress, registry, transitive, extract, network, void 0)));
  	} else if (pyprojectTomlContent) return await installDependenciesPython(fileSystem, pyprojectTomlContent);
  	return result;
  }
@@ -144,44 +227,110 @@ index 5ed55da1726ab87d1c11932262f972cf39c3dd45..1f0d34b1860380058a4f43092355267a
  * Install a single package and its dependencies recursively.
  */
 -async function installPackage(name, versionRange, result, fileSystem, installedPackages, inProgress, registry) {
-+async function installPackage(name, versionRange, result, fileSystem, installedPackages, inProgress, registry, transitive, extract) {
++async function installPackage(name, versionRange, result, fileSystem, installedPackages, inProgress, registry, transitive, extract, network, root) {
  	if (installedPackages.has(name)) return;
  	if (fileSystem.read(`node_modules/${name}/package.json`) !== null) {
  		installedPackages.add(name);
-@@ -424,6 +426,19 @@ async function installPackage(name, versionRange, result, fileSystem, installedP
+@@ -422,28 +473,43 @@ async function installPackage(name, versionRange, result, fileSystem, installedP
+ 	}
+ 	const existing = inProgress.get(name);
  	if (existing) return existing;
++	const installDependency = (depName, depVersion) => installPackage(depName, depVersion, result, fileSystem, installedPackages, inProgress, registry, transitive, extract, network, root ?? name);
  	const installPromise = (async () => {
  		try {
+-			const metadata = await fetchPackageMetadata(name, registry);
+-			const version = resolveVersion(versionRange, metadata);
+-			if (!version) {
+-				result.warnings.push(`Could not resolve version for ${name}@${versionRange}`);
 +			// npm permits HTTP tarballs, including pinned framework dependencies.
 +			// Read their manifest from the archive; do not execute package scripts.
 +			if (/^https?:\/\//.test(versionRange)) {
-+				const packageFiles = await extract(name, { dist: { tarball: versionRange } });
-+				const manifest = JSON.parse(packageFiles["package.json"]);
-+				if (manifest.name !== name || typeof manifest.version !== "string")
-+					throw new Error("Tarball package identity does not match its dependency");
++				const packageFiles = await extract(versionRange);
++				let manifest;
++				try {
++					manifest = JSON.parse(packageFiles["package.json"]);
++				} catch {
++					throw new InstallFailure("the tarball has no valid package.json");
++				}
++				if (typeof manifest !== "object" || manifest === null || manifest.name !== name || typeof manifest.version !== "string") throw new InstallFailure("the tarball's package.json names another package");
++				const deps = dependencyMap(manifest.dependencies, "the tarball's package.json lists invalid dependencies");
 +				installedPackages.add(name);
 +				for (const [filePath, content] of Object.entries(packageFiles)) fileSystem.write(`node_modules/${name}/${filePath}`, content);
 +				result.installed.push(`${name}@${manifest.version}`);
-+				if (transitive) await Promise.all(Object.entries(manifest.dependencies ?? {}).map(([depName, depVersion]) => installPackage(depName, depVersion, result, fileSystem, installedPackages, inProgress, registry, transitive, extract)));
-+				return;
-+			}
- 			const metadata = await fetchPackageMetadata(name, registry);
- 			const version = resolveVersion(versionRange, metadata);
- 			if (!version) {
-@@ -437,10 +452,10 @@ async function installPackage(name, versionRange, result, fileSystem, installedP
++				if (transitive) await Promise.all(Object.entries(deps).map(([depName, depVersion]) => installDependency(depName, depVersion)));
+ 				return;
  			}
++			const metadata = await fetchPackageMetadata(name, registry, network);
++			const version = resolveVersion(versionRange, metadata);
++			if (!version) throw new InstallFailure("no version in the registry matches its declared range");
+ 			const versionMetadata = metadata.versions[version];
+-			if (!versionMetadata) {
+-				result.warnings.push(`Version ${version} not found for ${name}`);
+-				return;
+-			}
++			if (typeof versionMetadata !== "object" || versionMetadata === null || typeof versionMetadata.dist?.tarball !== "string") throw new InstallFailure("the registry's metadata names no tarball for the version it resolved");
++			const deps = dependencyMap(versionMetadata.dependencies, "the registry's metadata lists invalid dependencies");
  			installedPackages.add(name);
  			result.installed.push(`${name}@${version}`);
 -			const packageFiles = await fetchPackageFiles(name, versionMetadata);
-+			const packageFiles = await extract(name, versionMetadata);
++			const packageFiles = await extract(versionMetadata.dist.tarball);
  			for (const [filePath, content] of Object.entries(packageFiles)) fileSystem.write(`node_modules/${name}/${filePath}`, content);
- 			const deps = versionMetadata.dependencies ?? {};
+-			const deps = versionMetadata.dependencies ?? {};
 -			await Promise.all(Object.entries(deps).map(([depName, depVersion]) => installPackage(depName, depVersion, result, fileSystem, installedPackages, inProgress, registry)));
-+			if (transitive) await Promise.all(Object.entries(deps).map(([depName, depVersion]) => installPackage(depName, depVersion, result, fileSystem, installedPackages, inProgress, registry, transitive, extract)));
++			if (transitive) await Promise.all(Object.entries(deps).map(([depName, depVersion]) => installDependency(depName, depVersion)));
  		} catch (error) {
- 			const message = error instanceof Error ? error.message : String(error);
- 			result.warnings.push(`Failed to install ${name}: ${message}`);
-@@ -475,82 +490,85 @@ function resolveVersion(range, metadata) {
+-			const message = error instanceof Error ? error.message : String(error);
+-			result.warnings.push(`Failed to install ${name}: ${message}`);
++			// A dependency's name and range came from a server or an archive: only
++			// the declared package is named.
++			const reason = error instanceof InstallFailure ? error.message : "it failed unexpectedly";
++			result.warnings.push(root === void 0 ? `Failed to install ${name}: ${reason}` : `Failed to install a dependency of ${root}: ${reason}`);
+ 		}
+ 	})();
+ 	inProgress.set(name, installPromise);
+@@ -453,104 +519,128 @@ async function installPackage(name, versionRange, result, fileSystem, installedP
+ 		inProgress.delete(name);
+ 	}
+ }
++/** A manifest's dependencies: absent, or package names mapped to version strings. */
++function dependencyMap(value, invalid) {
++	if (value === void 0) return {};
++	if (typeof value !== "object" || value === null || Object.values(value).some((range) => typeof range !== "string")) throw new InstallFailure(invalid);
++	return value;
++}
+ /**
+ * Fetch package metadata from npm registry.
+ */
+-async function fetchPackageMetadata(name, registry) {
++async function fetchPackageMetadata(name, registry, network) {
+ 	const url = `${registry}/${name.startsWith("@") ? `@${encodeURIComponent(name.slice(1))}` : name}`;
+-	const response = await fetchWithTimeout(url, { headers: { Accept: "application/vnd.npm.install-v1+json; q=1.0, application/json; q=0.8" } });
+-	if (!response.ok) {
+-		const hint = response.status === 404 ? " (package not found — check the name in package.json or set the `registry` option if it lives on a private registry)" : "";
+-		throw new Error(`Registry returned ${response.status} ${response.statusText} for "${name}" at ${url}${hint}`);
++	const response = await fetchFrom(url, { headers: { Accept: "application/vnd.npm.install-v1+json; q=1.0, application/json; q=0.8" } }, DEFAULT_TIMEOUT_MS, network);
++	if (response.status === 404) throw new InstallFailure(`the registry at ${registry} has no such package (HTTP 404)`);
++	if (!response.ok) throw new InstallFailure(`the registry at ${registry} answered HTTP ${response.status}`);
++	let metadata;
++	try {
++		metadata = await response.json();
++	} catch {
++		throw new InstallFailure("the registry's metadata is not valid JSON");
+ 	}
+-	return await response.json();
++	if (typeof metadata !== "object" || metadata === null || typeof metadata.versions !== "object" || metadata.versions === null) throw new InstallFailure("the registry's metadata has no versions");
++	return metadata;
+ }
+ /**
+ * Resolve a semver range to a specific version.
+ */
+ function resolveVersion(range, metadata) {
+-	if (range === "latest" || range === "*") return metadata["dist-tags"]["latest"];
++	const tags = typeof metadata["dist-tags"] === "object" && metadata["dist-tags"] !== null ? metadata["dist-tags"] : {};
++	if (range === "latest" || range === "*") return tags["latest"];
+ 	if (metadata.versions[range]) return range;
+-	if (metadata["dist-tags"][range]) return metadata["dist-tags"][range];
++	if (tags[range]) return tags[range];
  	const versions = Object.keys(metadata.versions);
  	return semver.maxSatisfying(versions, range) ?? void 0;
  }
@@ -206,18 +355,30 @@ index 5ed55da1726ab87d1c11932262f972cf39c3dd45..1f0d34b1860380058a4f43092355267a
  * Fetch and extract package files from npm tarball.
 +*
 +* `buildInputsOnly` keeps only files a bundle can read: no source maps, type
-+* declarations or package documentation.
++* declarations or package documentation. `network` chooses each hop's fetch
++* (see `fetchFrom`); without it every hop uses the global fetch.
  */
 -async function fetchPackageFiles(name, metadata) {
 +async function fetchPackageFiles(name, metadata, options = {}) {
  	const tarballUrl = metadata.dist?.tarball;
- 	if (!tarballUrl) throw new Error(`Registry metadata for ${name}@${metadata.version} is missing \`dist.tarball\` — the registry response is likely malformed or the version was unpublished.`);
- 	const response = await fetchWithTimeout(tarballUrl, {}, DEFAULT_TIMEOUT_MS * 2);
- 	if (!response.ok) throw new Error(`Failed to fetch tarball for ${name}@${metadata.version}: ${response.status} ${response.statusText} (${tarballUrl})`);
+-	if (!tarballUrl) throw new Error(`Registry metadata for ${name}@${metadata.version} is missing \`dist.tarball\` — the registry response is likely malformed or the version was unpublished.`);
+-	const response = await fetchWithTimeout(tarballUrl, {}, DEFAULT_TIMEOUT_MS * 2);
+-	if (!response.ok) throw new Error(`Failed to fetch tarball for ${name}@${metadata.version}: ${response.status} ${response.statusText} (${tarballUrl})`);
 -	const buffer = await response.arrayBuffer();
 -	return extractTarball(new Uint8Array(buffer));
-+	if (response.body === null) throw new Error(`Tarball for ${name}@${metadata.version} has no body (${tarballUrl})`);
-+	return extractTarball(response.body, options.buildInputsOnly === true ? isBuildInput : isTextFile);
++	if (typeof tarballUrl !== "string") throw new InstallFailure("the registry's metadata names no tarball");
++	const response = await fetchFrom(tarballUrl, {}, DEFAULT_TIMEOUT_MS * 2, options.network ?? {
++		registryOrigin: void 0,
++		elsewhere: fetch
++	});
++	if (!response.ok) throw new InstallFailure(`the tarball download answered HTTP ${response.status}`);
++	if (response.body === null) throw new InstallFailure("the tarball download has no body");
++	try {
++		return await extractTarball(response.body, options.buildInputsOnly === true ? isBuildInput : isTextFile);
++	} catch (error) {
++		if (error instanceof InstallFailure) throw error;
++		throw new InstallFailure("the tarball is not a valid gzip tar archive");
++	}
 +}
 +/** Files a bundler never reads: source maps, type declarations and package documentation. */
 +function isBuildInput(path) {
@@ -311,7 +472,7 @@ index 5ed55da1726ab87d1c11932262f972cf39c3dd45..1f0d34b1860380058a4f43092355267a
 +			const wasm = isRegularFile && size > 0 && filePath.endsWith(".wasm");
 +			const text = isRegularFile && size > 0 && !wasm && keep(filePath);
 +			if (wasm || text) {
-+				if (!await queue.fill(size)) throw new Error(`Tarball ends inside ${filePath}`);
++				if (!await queue.fill(size)) throw new InstallFailure("the tarball ends inside one of its files");
 +				const content = queue.take(size);
 +				if (wasm) textFiles.set(filePath, { data: content });
 +				else try {
@@ -326,7 +487,7 @@ index 5ed55da1726ab87d1c11932262f972cf39c3dd45..1f0d34b1860380058a4f43092355267a
  	}
  	const archiveRoot = findSharedTarRootDirectory(regularFilePaths);
  	const files = {};
-@@ -560,6 +578,70 @@ function parseTar(data) {
+@@ -560,6 +650,70 @@ function parseTar(data) {
  	}
  	return files;
  }

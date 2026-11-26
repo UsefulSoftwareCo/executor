@@ -1,9 +1,3 @@
-/**
- * An app with storage must answer calls while another of its calls waits: webhook registration
- * that, like Discord, completes only after the callback URL answers a verification request within
- * three seconds, and a mutation that waits before writing. The app verifies its own callback, so
- * the scenario needs no outside service and runs on deployed Cloudflare.
- */
 import { expect, layer } from "@effect/vitest";
 import { Clock, Effect, Fiber, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -104,7 +98,6 @@ layer(HostedLive, { excludeTestServices: true })("App calls during outside waits
         const app = (yield* body(App, deployed)).id;
         created.app = app;
         const path = `${prefix}/apps/${app}`;
-        // Connecting from the app links the account to it, so calls need no choice.
         const connection = yield* api.request(
           actors.owner,
           "POST",
@@ -122,7 +115,6 @@ layer(HostedLive, { excludeTestServices: true })("App calls during outside waits
         const account = (yield* body(Resource, saved)).id;
         created.account = account;
 
-        // Linking registers the webhook; the provider verifies the callback while register waits.
         yield* settleWebhookSources(
           actors.owner,
           path,
@@ -134,7 +126,6 @@ layer(HostedLive, { excludeTestServices: true })("App calls during outside waits
           (subscriptions) => subscriptions.length > 0,
         );
         expect(subscriptions.map((subscription) => subscription.status)).toEqual(["active"]);
-        // A new subscription registers on the canonical API origin (Cloud's `api.`).
         expect(
           subscriptions.map((subscription) => new URL(subscription.callbackUrl).origin),
         ).toEqual([targetHosts(target).api]);
@@ -144,8 +135,6 @@ layer(HostedLive, { excludeTestServices: true })("App calls during outside waits
 
         const call = (tool: "slow" | "events", kind: "mutation" | "query") =>
           api.request(actors.owner, "POST", `${path}/tools/call`, { tool, kind, input: {} });
-        // A call that waits for eight seconds must not hold the app's other calls. Each query
-        // returns well before the slow call finishes, and the first sees its committed write.
         const slow = yield* Effect.forkChild(call("slow", "mutation"));
         const waiting = (yield* Clock.currentTimeMillis) + 6_000;
         for (;;) {

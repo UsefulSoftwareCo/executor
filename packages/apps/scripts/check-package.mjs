@@ -1,4 +1,3 @@
-/** Exercise the actual npm tarball from a clean consumer outside the workspace. Never publishes. */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
@@ -19,7 +18,6 @@ const manifest = JSON.parse(await readFile(join(root, "dist/package.json"), "utf
 assert.equal(manifest.publishConfig.tag, "beta");
 assert.match(manifest.version, /^0\.0\.\d+-beta\.\d+$/);
 assert(!JSON.stringify(manifest).includes("workspace:"));
-// The MCP SDK this release is built with is the one quick add pins; the README example names it.
 const source = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
 assert(
   (await readFile(join(root, "README.md"), "utf8")).includes(
@@ -140,7 +138,6 @@ ${imports.map((specifier, i) => `import type * as Api${i} from ${JSON.stringify(
   console.log(
     `All ${imports.length} entry points import; strict NodeNext and Bundler consumers typecheck.`,
   );
-  // Test the publish guard directly. This does not contact npm or publish.
   execFileSync("node", ["check-publish.mjs"], {
     cwd: join(root, "dist"),
     env: { ...process.env, npm_config_tag: "beta" },

@@ -8,7 +8,6 @@ import { Effect, Equal, Layer, Option, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
 import { Atom } from "effect/reactivity";
 
-/** Keep this tab attached to the first verified ID even if its slug is renamed or reused. */
 export const organizationTargetAtom = Atom.family((reference: OrganizationReference) =>
   Atom.make<OrganizationId | undefined>(undefined).pipe(
     Atom.serializable({
@@ -18,11 +17,6 @@ export const organizationTargetAtom = Atom.family((reference: OrganizationRefere
     Atom.keepAlive,
   ),
 );
-/**
- * Display snapshot keyed by verified identity; API middleware remains the authority for every action.
- * Every access read writes a fresh object, so compare structurally: an unchanged role must not
- * restart dependent queries that are already refreshing.
- */
 export const organizationPresentationAtom = Atom.family((id: OrganizationId) =>
   Atom.make<OrganizationAccess | undefined>(undefined).pipe(
     Atom.withEquality(Equal.equals),
@@ -33,13 +27,11 @@ export const organizationPresentationAtom = Atom.family((id: OrganizationId) =>
     Atom.keepAlive,
   ),
 );
-/** Permission changes revalidate every reference observed by this tab. */
 export const organizationAccessVersionAtom = Atom.make(0).pipe(Atom.keepAlive);
 const decodeReference = (value: string) =>
   Option.liftThrowable(decodeURIComponent)(value).pipe(
     Option.flatMap(Schema.decodeUnknownOption(OrganizationReference)),
   );
-/** First reads use the URL reference immediately; subsequent requests use its verified stable ID. */
 export const organizationHttpClient = (get: Atom.AtomContext) =>
   Layer.effect(
     HttpClient.HttpClient,

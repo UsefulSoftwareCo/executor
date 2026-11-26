@@ -14,7 +14,6 @@ class HomepageUnavailable extends Schema.TaggedError<HomepageUnavailable>()(
   {},
 ) {}
 
-/** Read retained assets through this request’s native binding without opening the auth database. */
 export const staticDocument = (entry?: string) =>
   Effect.gen(function* () {
     const env = yield* WorkerEnvironment;
@@ -40,7 +39,6 @@ export const staticDocument = (entry?: string) =>
     ),
   );
 
-/** Same fast split as the old site: cookie presence chooses the product, never access authority. */
 export const homepage = <E, R>(
   cookiePrefix: string,
   dashboard: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,

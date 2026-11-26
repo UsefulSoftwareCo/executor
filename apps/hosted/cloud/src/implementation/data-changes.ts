@@ -1,11 +1,9 @@
-/** Internal notification transport. Sockets carry only app revisions; product routes authorize every delivered result. */
 import type { DurableObjectNamespace, MessageEvent } from "@cloudflare/workers-types";
 import { Cause, Effect, Queue, Schema, Stream } from "effect";
 import { RuntimeProtocolFailed } from "@executor-js/sdk/core";
 import { traceHeaders } from "@executor-js/telemetry";
 import { runtimeActor } from "./runtime-actor.ts";
 
-/** Notify after registration, conflate bursts, and close with the subscriber's scope. */
 export const dataChanges = (namespace: Pick<DurableObjectNamespace, "getByName">, app: string) =>
   Stream.callback<number, RuntimeProtocolFailed>(
     (queue) =>

@@ -1,5 +1,4 @@
 import { WorkflowStart, WorkflowTerminate } from "@executor-js/ui/dashboard/workflow-actions";
-/** Thin product bindings for workflow and webhook views. */
 import type { App } from "@executor-js/sdk";
 import { AppWorkflows } from "@executor-js/ui/dashboard/app-workflows";
 import { AppWebhooks, WebhookSourceConfigurations } from "@executor-js/ui/dashboard/webhooks";
@@ -7,7 +6,6 @@ import { Button } from "@executor-js/ui/components/button";
 import { workflowBindings, webhookBindings } from "../../contracts/resources.ts";
 import { HostedFailure } from "../components/dashboard-bindings.tsx";
 import { useOrganizationRoute } from "../components/organization.tsx";
-/** Workflow definitions and starts use the app's linked accounts; run history is the app's. */
 export function AppResources({
   app,
   view,

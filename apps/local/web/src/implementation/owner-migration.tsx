@@ -13,7 +13,6 @@ const quoted = (owners: ReadonlyArray<string>) => owners.map((owner) => `“${ow
 const owned = (record: { readonly id: string; readonly owner?: string | undefined }) =>
   record.owner === undefined ? record.id : `${record.id} (owner “${record.owner}”)`;
 
-/** What collides, and which records a person renames or removes so the rest can move. */
 const collision = (each: Collision) => {
   const records = each.records.map(owned).join(", ");
   switch (each.kind) {
@@ -34,7 +33,6 @@ const unreadable = {
   account_connection: "Account connection",
 } satisfies Record<Blocked["kind"], string>;
 
-/** A record the move cannot read, and how it stops being in the way. */
 const blocked = (record: Blocked) => {
   const { action, request } = blockedRecovery(record);
   return {
@@ -44,11 +42,6 @@ const blocked = (record: Blocked) => {
   };
 };
 
-/**
- * Records agents saved under other owners before local assigned them stay apart until data step
- * 7 moves them to `local`. Until then their apps are listed but cannot be connected, so this says
- * why and what a person does about it. Nothing shows once the step has moved them.
- */
 export function OwnerMigrationBanner() {
   const result = useAtomValue(ownerMigrationAtom);
   if (!AsyncResult.isSuccess(result) || result.value === null) return null;

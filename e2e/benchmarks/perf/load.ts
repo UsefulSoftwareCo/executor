@@ -1,13 +1,3 @@
-/**
- * Concurrent load windows: discovery-heavy MCP executes and tool calls run alongside dashboard
- * reads, so database pool contention and first-response waits show up in foreground routes.
- * Schedule loops start runs through the schedule coordinator, whose statements run from wherever
- * that Durable Object lives rather than from the placed Worker.
- *
- * `runLoad` drives one target for a fixed window. `compareLoad` alternates whole windows between
- * two targets (A B B A ...), because the load itself is the condition being compared and two
- * simultaneous windows would share this machine's network and CPU.
- */
 import { Clock, Console, Effect, Ref, Schedule, Schema } from "effect";
 import { appsManifest } from "../../support/apps-release.ts";
 import {
@@ -29,21 +19,10 @@ import type { OrgReceipt } from "./seed.ts";
 
 export interface LoadConfig {
   readonly seconds: number;
-  /** Concurrent MCP execute loops over the discovery-heavy organizations. */
   readonly executeWorkers: number;
-  /** Concurrent dashboard read loops as the dashboard organization owner. */
   readonly readWorkers: number;
-  /** Concurrent REST tool-call loops against the zero-latency MCP upstream. */
   readonly callWorkers: number;
-  /**
-   * Loops that each start a run of their own schedule and wait for it to finish. The run is
-   * dispatched by the schedule coordinator, so its time includes that object's database trips.
-   */
   readonly scheduleWorkers: number;
-  /**
-   * Loops requesting `/health`, which does no database or upstream I/O. If its client time rises
-   * with load, requests are waiting for the Worker itself rather than for the database.
-   */
   readonly probeWorkers: number;
 }
 
@@ -72,12 +51,10 @@ export interface LoadWindow {
   >;
 }
 
-/** Organizations whose executes fan out discovery across many apps and tools. */
 export const heavyOrgs = ["a24f", "a8f", "a24s", "a8s"] as const;
 
 const org = (o: OrgReceipt) => `/api/organizations/${o.organization.id}`;
 const app = (o: OrgReceipt) => `${org(o)}/apps/${primaryApp(o).id}`;
-/** Reads a dashboard page issues on navigation; auth routes exercise the Better Auth driver. */
 export const loadReads: readonly (readonly [string, (o: OrgReceipt) => string])[] = [
   ["api.inventory", (o) => `${org(o)}/inventory`],
   ["api.apps", (o) => `${org(o)}/apps`],
@@ -95,9 +72,7 @@ export const loadReads: readonly (readonly [string, (o: OrgReceipt) => string])[
   ],
 ];
 
-/** The `call` organization's app whose schedules the schedule loops start on demand. */
 const scheduledAppName = "Perf scheduled runs";
-/** Enough schedules for one per loop; their hourly interval keeps them from running on their own. */
 const scheduleNames = Array.from({ length: 16 }, (_, index) => `s${index + 1}`);
 const scheduledSource = `import { defineApp, mutation, userInterval, object, router } from "apps";
 const tick = mutation({ input: object({}) }, async () => ({ done: true }));
@@ -138,7 +113,6 @@ const decodeBody =
           }),
         );
 
-/** Find or deploy the scheduled app in `call`; returns its API path. */
 const scheduledApp = (target: PerfTarget, client: ProductClient) =>
   Effect.gen(function* () {
     const root = org(target.org("call"));
@@ -185,7 +159,6 @@ const summaries = (samples: readonly LoadSample[]) => {
   );
 };
 
-/** One load window against one target. Workers stop starting requests at the deadline. */
 export const runLoad = (target: PerfTarget, config: LoadConfig) =>
   Effect.gen(function* () {
     const samples = yield* Ref.make<readonly LoadSample[]>([]);
@@ -313,9 +286,6 @@ export const runLoad = (target: PerfTarget, config: LoadConfig) =>
         }
       });
 
-    // Each loop starts its own schedule and waits until that run finishes. Client time is the wait
-    // from `run now` to the finished run, including the coordinator's one-second alarm delay; server
-    // time is the run's own recorded duration, which carries the coordinator's database trips.
     const scheduler = (app: Effect.Success<ReturnType<typeof scheduledApp>>, name: string) =>
       Effect.gen(function* () {
         const client = yield* target.owner("call");
@@ -404,10 +374,8 @@ export const runLoad = (target: PerfTarget, config: LoadConfig) =>
         }
       });
 
-    // Sessions are minted before the window so fixture calls are not measured.
     yield* target.owner(dashboardOrg);
     const callOwner = yield* target.owner("call");
-    // Every schedule loop shares one app, found or deployed before the window.
     const scheduled =
       config.scheduleWorkers > 0 ? yield* scheduledApp(target, callOwner) : undefined;
     yield* Effect.all(
@@ -443,7 +411,6 @@ export const runLoad = (target: PerfTarget, config: LoadConfig) =>
     return window;
   });
 
-/** Alternate whole windows between two targets (ABBA order) with a pause for drain. */
 export const compareLoad = (
   a: PerfTarget,
   b: PerfTarget,
@@ -469,7 +436,6 @@ export const compareLoad = (
     return { windows, pooled: { [a.label]: pooled(a.label), [b.label]: pooled(b.label) } };
   }).pipe(Effect.ensuring(Effect.all([a.close, b.close])));
 
-/** Markdown rows for pooled load summaries. */
 export const loadTable = (pooled: Record<string, ReturnType<typeof summaries>>) => {
   const labels = Object.keys(pooled);
   const ids = [...new Set(labels.flatMap((label) => Object.keys(pooled[label]!)))].sort();

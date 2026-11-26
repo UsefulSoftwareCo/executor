@@ -1,5 +1,5 @@
-/** Host-owned polling and cleanup for OAuth personal-data reporting registrations. */
 import { Clock, Effect, Option, Redacted, Result, Schema } from "effect";
+import { Digest } from "effect/crypto";
 import { Hex } from "effect/encoding";
 import { HttpClient } from "effect/http";
 import type { UrlPolicy } from "@executor-js/utils/url-policy";
@@ -17,6 +17,7 @@ import type { makeOAuth } from "./oauth.ts";
 import { makeReportState, delayForCycle, type ReportRow } from "./personal-data-reporting-state.ts";
 import { makeCloseReportedSubject } from "./personal-data-reporting-close.ts";
 import { query, type Query } from "./database.ts";
+import type { HostCrypto } from "./host-crypto.ts";
 import {
   fetchIdentity,
   reportAccounts,
@@ -52,12 +53,12 @@ const canonicalUrl = (value: string | undefined) => {
   }
 };
 
-const clientFingerprint = (client: ReportingClient, crypto: import("effect").Crypto.Crypto) => {
+const clientFingerprint = (client: ReportingClient, crypto: HostCrypto) => {
   const authority =
     canonicalUrl(client.server.issuer) ??
     `${canonicalUrl(client.server.authorizationUrl) ?? ""}\0${canonicalUrl(client.server.tokenUrl) ?? ""}`;
-  return crypto
-    .digest("SHA-256", new TextEncoder().encode(`${authority}\0${client.clientId}`))
+  return crypto.digest
+    .digest(Digest.sha256, new TextEncoder().encode(`${authority}\0${client.clientId}`))
     .pipe(
       Effect.map(Hex.encode),
       Effect.mapError(() => new StorageError()),
@@ -96,7 +97,7 @@ const accountToken = (fields: Redacted.Redacted<unknown>) => {
 export const makePersonalDataReporting = (input: {
   readonly db: Query;
   readonly credentials: Credentials;
-  readonly crypto: import("effect").Crypto.Crypto;
+  readonly crypto: HostCrypto;
   readonly oauth: OAuth;
   readonly clients: ReadonlyArray<typeof FirstPartyOAuthClient.Type>;
   readonly httpClient: HttpClient.HttpClient | undefined;
@@ -199,7 +200,6 @@ export const makePersonalDataReporting = (input: {
     leaseUntil: null,
   });
 
-  /** Add new connections and invalidate state after a reconnect changed its credential generation. */
   const synchronize = () =>
     Effect.gen(function* () {
       if (clients.length === 0) return;
@@ -306,8 +306,6 @@ export const makePersonalDataReporting = (input: {
         const fingerprint = clientFingerprints.get(selectedClient.id);
         if (fingerprint === undefined) continue;
         const fresh = resetState(account, account.owner, fingerprint, now);
-        // A new grant does not restart the reporting cycle for the same registration and subject.
-        // Keep its fingerprint until /me establishes whether the subject actually changed.
         const reset =
           previous?.owner === account.owner && previous.clientFingerprint === fingerprint
             ? {
@@ -497,7 +495,6 @@ export const makePersonalDataReporting = (input: {
         }),
       )) as ReportRow[];
       const deadline = delayForCycle(cycle, fingerprint, now);
-      // Invalidate every copy before reading the subject again; a failed lookup cannot report stale data.
       yield* updateBySubject(
         clientFp,
         [fingerprint],

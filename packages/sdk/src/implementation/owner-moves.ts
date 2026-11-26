@@ -1,22 +1,3 @@
-/**
- * Give owners' records to another owner, as a host's one-off data step does, in one transaction.
- * Everything that names an owner moves: owner columns; the owner a stored connection names for its
- * target app and its completed account; the owners inside a live pending sign-in's and tool
- * approval's encrypted record; and the identity of stored OAuth client credentials, a keyed digest
- * over owner, authorization server (issuer), client ID and secret, or over owner, provider, client
- * ID and secret for rows written before SDK 4.0.12. Collisions are found before anything is
- * written, and a move that has one changes no record: app names and slugs are unique per owner,
- * and so are an authorization server's, or before 4.0.12 a provider's, client credentials. Neither does a move with a record it has to read and cannot, one
- * that does not decrypt or that the product would not read back: it would move the rest and strand
- * that one under its old owner. Each record is read with the schemas the product reads it with
- * when it resumes: a stored client's secret and registration, a grant, a sign-in, an approval and
- * a connection.
- *
- * Two things keep the owner they were derived from. Tool search rows are deleted: their listing
- * keys cover the owner, so the next search reads the listing again and writes them anew. A
- * registered client's `automatic_key` digests sign-in settings that are not stored, so it stays;
- * the client keeps serving the accounts signed in with it, and a new sign-in registers anew.
- */
 import { Clock, Effect, Option, Redacted, Schema } from "effect";
 import {
   isFirstPartyAttempt,
@@ -53,15 +34,10 @@ import {
 } from "./stored-oauth-client-credentials.ts";
 import { ApprovalPayload } from "./tool-approvals.ts";
 
-/** What the credentials digest reads from a stored client's, a grant's or a sign-in's client. */
 type ClientCopy = Pick<
   StoredClientSecret,
   "client_id" | "client_secret" | "token_endpoint_auth_method"
 >;
-/**
- * A copy of credentials with what its identities digest besides the owner: the authorization
- * server its source names, and the provider, which a stored client from 4.0.12 does not name.
- */
 interface CopySource {
   readonly owner: OwnerId;
   readonly issuer: string | null;
@@ -72,7 +48,6 @@ const Owned = Schema.Struct({ owner: OwnerId });
 const isObject = Schema.is(JsonObject);
 const decodeObject = Schema.decodeUnknownEffect(JsonObject);
 
-/** Tables with an owner column, other than stored client credentials, whose key moves too. */
 const ownerTables = [
   "apps",
   "accounts",
@@ -97,15 +72,10 @@ export const makeOwnerMoves = (db: Query, credentials: Credentials): OwnerMoves 
     credentials
       .encrypt(identity, Redacted.make(value))
       .pipe(Effect.mapError(() => new StorageError()));
-  /**
-   * The identities a copy of credentials has under an owner: by its authorization server, and by
-   * its provider for rows written before 4.0.12, each when the copy's source names it.
-   */
   const digestsOf = (owner: OwnerId, source: CopySource) => {
     const client = {
       owner,
       clientId: source.copy.client_id,
-      // A public client has no secret, whatever it was issued.
       secret:
         source.copy.token_endpoint_auth_method === "none" ? undefined : source.copy.client_secret,
     };
@@ -152,7 +122,6 @@ export const makeOwnerMoves = (db: Query, credentials: Credentials): OwnerMoves 
         const to = input.to;
         const from = [...new Set(input.from)].filter((owner) => owner !== to);
         const moving = (owner: OwnerId) => from.includes(owner);
-        /** The object with its owner moved, or undefined when it names no moving owner. */
         const moved = (value: unknown) => {
           if (!isObject(value)) return undefined;
           const owned = Schema.decodeUnknownOption(Owned)(value);
@@ -162,7 +131,6 @@ export const makeOwnerMoves = (db: Query, credentials: Credentials): OwnerMoves 
         };
         const collisions: OwnerMoveCollision[] = [];
         const blocked: OwnerMoveBlocked[] = [];
-        /** Read a record the move needs. One it cannot read is listed, and blocks the move. */
         const readable = <A, E>(record: OwnerMoveBlocked, read: Effect.Effect<A, E>) =>
           read.pipe(
             Effect.option,
@@ -172,11 +140,8 @@ export const makeOwnerMoves = (db: Query, credentials: Credentials): OwnerMoves 
               }),
             ),
           );
-        // Only a pending sign-in or approval that has not expired can still complete; a completed
-        // or consumed one keeps no record, and an expired one is refused whoever it names.
         const now = new Date(yield* Clock.currentTimeMillis);
 
-        // App names and slugs are unique per owner, so every moved app joins the target's.
         const apps = yield* query(() =>
           tx.findMany("apps", {
             select: ["id", "owner", "name", "slug"],
@@ -196,11 +161,6 @@ export const makeOwnerMoves = (db: Query, credentials: Credentials): OwnerMoves 
                 records: group.map((app) => ({ owner: app.owner, id: app.id })),
               });
 
-        // Credentials are one client per owner and authorization server, identified by a digest
-        // over both; rows written before 4.0.12 digest the provider instead. A moved row's identity
-        // is computed again, under each, from a copy of the credentials: its client's current
-        // ones, or those a grant or a pending sign-in holds. Credentials no copy holds any more,
-        // such as a client's before an edit, keep an identity no later sign-in matches.
         const copies: Array<CopySource> = [];
         for (const client of yield* query(() =>
           tx.findMany("storedOAuthClients", { where: (b) => b("owner", "in", from) }),
@@ -209,7 +169,6 @@ export const makeOwnerMoves = (db: Query, credentials: Credentials): OwnerMoves 
             { kind: "oauth_client", id: client.id, owner: client.owner },
             decrypt(OAuthClientId.make(client.id), client.encrypted).pipe(
               Effect.flatMap(Schema.decodeUnknownEffect(StoredClientSecret)),
-              // As a sign-in reads it, so a registration it cannot use blocks the move.
               Effect.tap(storedRegistration),
             ),
           );
@@ -249,7 +208,6 @@ export const makeOwnerMoves = (db: Query, credentials: Credentials): OwnerMoves 
               Effect.flatMap(Schema.decodeUnknownEffect(OAuthGrant)),
             ),
           );
-          // A grant to the operator's client holds no copy of it.
           if (Option.isSome(grant) && !isFirstPartyGrant(grant.value))
             copies.push({
               owner: account.owner,
@@ -258,8 +216,6 @@ export const makeOwnerMoves = (db: Query, credentials: Credentials): OwnerMoves 
               copy: grant.value.client,
             });
         }
-        // A pending sign-in completes for its own owner, so its record moves with it. Its owner is
-        // inside the record, so every live one is read.
         const attempts: Array<{ id: OAuthAttemptId; record: JsonObject }> = [];
         for (const row of yield* query(() =>
           tx.findMany("oauthAttempts", {
@@ -330,8 +286,6 @@ export const makeOwnerMoves = (db: Query, credentials: Credentials): OwnerMoves 
             });
           }
 
-        // A connection names its target app's owner and, once completed, its account's, whoever
-        // owns the connection itself. Its stored JSON is rewritten as written, once it reads.
         const connections: Array<{
           id: AccountConnectionId;
           target: JsonObject;
@@ -360,8 +314,6 @@ export const makeOwnerMoves = (db: Query, credentials: Credentials): OwnerMoves 
               state: account === undefined ? state : { ...state, account },
             });
         }
-        // An approved call runs as its invocation's owner with the accounts it names, compared
-        // with the current ones on resume. Its record is rewritten as written, once it reads.
         const approvals: Array<{ id: ApprovalRequestId; record: JsonObject }> = [];
         for (const row of yield* query(() =>
           tx.findMany("toolApprovals", {
@@ -383,7 +335,6 @@ export const makeOwnerMoves = (db: Query, credentials: Credentials): OwnerMoves 
           const invocation = record["invocation"];
           if (!isObject(invocation) || !isObject(invocation["accounts"])) continue;
           let changed = moved(invocation) !== undefined;
-          // The accounts are by scope (`app`, `user`), each requirement name -> identities.
           const accounts = Object.fromEntries(
             Object.entries(invocation["accounts"]).map(([scope, slots]) => [
               scope,
@@ -433,12 +384,10 @@ export const makeOwnerMoves = (db: Query, credentials: Credentials): OwnerMoves 
         if (!input.apply)
           return { status: "would_move", collisions, blocked, rows } satisfies OwnerMove;
 
-        // Apps before accounts, the order workflow starts and owner removal lock them in.
         for (const table of ownerTables)
           yield* query(() =>
             tx.updateMany(table, { where: (b) => b("owner", "in", from), set: { owner: to } }),
           );
-        // A credentials row's identity is its primary key, so a rekeyed row is written again.
         for (const row of movedCredentials) {
           const id = identity(row);
           if (id !== row.id)
@@ -498,7 +447,6 @@ export const makeOwnerMoves = (db: Query, credentials: Credentials): OwnerMoves 
   return { owners, move };
 };
 
-/** Group values by a key, keeping first-seen order. */
 const groupBy = <A, K>(values: ReadonlyArray<A>, key: (value: A) => K) => {
   const groups = new Map<K, A[]>();
   for (const value of values) {

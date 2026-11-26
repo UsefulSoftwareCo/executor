@@ -1,7 +1,3 @@
-/**
- * Keep OAuth callbacks for Executor desktop, one authorization at a time. Only states the desktop
- * said it expects are kept; both lists are bounded and expire, and live only in this process.
- */
 import { Clock, Duration, Effect, Option, Queue, Redacted, Ref } from "effect";
 import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import { HttpApiBuilder } from "effect/http-api";
@@ -22,7 +18,6 @@ interface Kept {
   readonly expiresAt: number;
 }
 
-/** What the system browser shows once its callback is kept for the desktop. */
 const returnPage = () =>
   HttpServerResponse.text(
     "<!doctype html><title>Executor</title><p>Return to Executor to finish connecting your account.</p>",
@@ -41,7 +36,6 @@ export const makeDesktopReturns = (
 ) =>
   Effect.gen(function* () {
     const origin = `http://127.0.0.1:${config.port}`;
-    /** Expected states and when each expires, oldest first. */
     const expected = yield* Ref.make<ReadonlyMap<string, number>>(new Map());
     const kept = yield* Queue.sliding<Kept>(desktopReturnLimit);
 
@@ -60,14 +54,12 @@ export const makeDesktopReturns = (
         yield* Ref.update(expected, (entries) => {
           const next = new Map([...entries].filter(([, expiresAt]) => expiresAt > now));
           next.delete(state);
-          // The oldest go to make room for this one; none while there is room.
           const excess = Math.max(0, next.size - desktopReturnLimit + 1);
           for (const oldest of [...next.keys()].slice(0, excess)) next.delete(oldest);
           return next.set(state, now + desktopReturnLifetimeMillis);
         });
       });
 
-    /** Whether `state` was expected; it is expected only once. */
     const claim = (state: string) =>
       Effect.gen(function* () {
         const now = yield* Clock.currentTimeMillis;
@@ -100,10 +92,6 @@ export const makeDesktopReturns = (
           .handle("expect", ({ payload }) => authorized.pipe(Effect.andThen(expect(payload.state))))
           .handle("next", () => authorized.pipe(Effect.andThen(next))),
       ),
-      /**
-       * Serve the provider callback route. A browser callback for an expected state is kept for
-       * the desktop; every other request, and the desktop's own load of a kept one, gets `page`.
-       */
       callback: <E, R>(page: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>) =>
         Effect.gen(function* () {
           const request = yield* HttpServerRequest.HttpServerRequest;

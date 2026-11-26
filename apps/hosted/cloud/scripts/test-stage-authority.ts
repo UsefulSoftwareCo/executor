@@ -1,17 +1,11 @@
-/**
- * Read a running test stage's fixture authority from the shared Alchemy state, without redeploying.
- * Only `test-` stages are addressable, and each must own a database branch named after the stage,
- * so production (stage `v2`, branch `main`) can never be selected.
- */
 import { layer } from "alchemy/Alchemist/Runtime";
 import { store } from "alchemy/Alchemist/routes/state";
 import { Config, Effect, Redacted, Schema } from "effect";
-import { TestStageSlug, testStagePrefix } from "../src/infrastructure/stage.ts";
+import { TestStageSlug } from "../src/contracts/test-stage-lifetime.ts";
+import { testStagePrefix } from "../src/infrastructure/stage.ts";
 
-/** The stack name declared in `alchemy.run.ts`. */
 const stack = "executor-next-hosted";
 
-/** Sanitized: state records and connection strings never appear in the failure. */
 export class TestStageUnavailable extends Schema.TaggedError<TestStageUnavailable>()(
   "TestStageUnavailable",
   { reason: Schema.String },
@@ -41,7 +35,6 @@ export interface TestStageAuthority {
   readonly stage: string;
   readonly origin: string;
   readonly secret: Redacted.Redacted<string>;
-  /** The schema owner's direct connection, as used by deploy-time migrations and fixtures. */
   readonly databaseUrl: Redacted.Redacted<string>;
   readonly databaseName: string;
 }
@@ -53,12 +46,10 @@ const ownerUrl = (origin: typeof Origin.Type, planetscale: boolean) => {
   url.username = origin.user;
   url.password = Redacted.value(origin.password);
   url.searchParams.set("sslmode", "verify-full");
-  // PlanetScale's migration login creates objects as the stable owner, as deployment does.
   if (planetscale) url.searchParams.set("options", "-c role=postgres");
   return Redacted.make(url.toString());
 };
 
-/** Requires the shared state store's Cloudflare credentials, as `test-stage` commands do. */
 export const testStageAuthority = (slug: string) =>
   Effect.gen(function* () {
     const valid = yield* Schema.decodeUnknownEffect(TestStageSlug)(slug).pipe(

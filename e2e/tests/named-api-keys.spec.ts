@@ -333,7 +333,6 @@ layer(HostedLive, { excludeTestServices: true })("Personal access tokens", (it) 
             );
             const recorded = list.apiKeys.find((key) => key.id === other.id)?.lastRequest;
             expect(recorded).toBeTypeOf("string");
-            // Use is recorded to the minute: another request at once leaves the record unchanged.
             expect(
               (yield* api.request(
                 anonymous,

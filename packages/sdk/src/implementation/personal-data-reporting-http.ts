@@ -1,4 +1,3 @@
-/** Bounded HTTP operations for the host-owned account reporting protocol. */
 import { Effect, Option, Result, Schema, Stream } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 import * as Headers from "effect/http/Headers";

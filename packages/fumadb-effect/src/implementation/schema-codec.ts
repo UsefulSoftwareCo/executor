@@ -1,46 +1,15 @@
-/**
- * The value codec: the one place that knows how each provider stores every
- * FumaDB column type and what JavaScript value each Effect SQL driver hands
- * back.
- *
- * Observed driver behaviour (Effect SQL rc.115, see docs/DESIGN.md):
- *
- * | type      | postgresql          | cockroachdb        | mysql (mysql2)    | mssql (tedious)     | sqlite (node:sqlite)   |
- * | --------- | ------------------- | ------------------ | ----------------- | ------------------- | ---------------------- |
- * | string    | string              | string             | string            | string              | string                 |
- * | varchar   | string              | string             | string            | string              | string (stored `text`) |
- * | bigint    | bigint              | bigint             | string or number  | string              | 8-byte blob (BE)       |
- * | integer   | number              | bigint             | number            | number              | number                 |
- * | decimal   | string              | string             | string            | number              | number                 |
- * | bool      | boolean             | boolean            | number 0/1        | boolean             | number 0/1             |
- * | json      | parsed value        | parsed value       | parsed value      | string              | string                 |
- * | binary    | Uint8Array          | Uint8Array         | Buffer            | Buffer              | Uint8Array             |
- * | date      | "YYYY-MM-DD"        | "YYYY-MM-DD"       | Date              | Date                | number (ms)            |
- * | timestamp | number (ms, UTC)    | number (ms, UTC)   | Date              | Date                | number (ms)            |
- * | uuid      | string              | string             | string            | string (upper case) | string                 |
- *
- * `deserialize` normalises all of those to the storage value the column
- * schema expects on its encoded side; the column schema then decodes it. `serialize`
- * produces a value every driver can bind: JSON is sent as text, SQLite gets
- * numbers for dates and booleans and an 8-byte blob for bigints.
- */
 import { Result, Schema } from "effect";
 import { QueryError } from "../contracts/errors.ts";
 import type { Provider } from "../contracts/provider.ts";
 import type { AnyColumn } from "../contracts/schema/column.ts";
 import type { StorageType } from "../contracts/schema/storage.ts";
 
-/** Length, precision, and scale reported by the database for a column. */
 export interface ColumnMetadata {
   readonly length?: number | undefined;
   readonly precision?: number | undefined;
   readonly scale?: number | undefined;
 }
 
-/**
- * The FumaDB column types a raw database type can map to, most specific
- * first. `"varchar(n)"` stands for a varchar whose length is not known.
- */
 export const dbToSchemaType = (
   rawType: string,
   provider: Provider,
@@ -55,7 +24,6 @@ export const dbToSchemaType = (
   switch (provider) {
     case "sqlite":
       switch (dbType) {
-        // Most likely first: an introspected column must be able to read its own data.
         case "integer":
         case "int":
           return ["integer", "bigint", "bool", "timestamp", "date"];
@@ -179,7 +147,6 @@ export const dbToSchemaType = (
           return ["date"];
         case "nvarchar":
         case "varchar":
-          // `max` is reported as -1 (nvarchar) or an absent length.
           if (metadata.length !== undefined && metadata.length > 0)
             return [`varchar(${metadata.length})`];
           return ["string", "json"];
@@ -195,7 +162,6 @@ export const dbToSchemaType = (
   }
 };
 
-/** The SQL type used when creating or altering a column on a provider. */
 export const schemaToDbType = (
   column: { readonly type: StorageType },
   provider: Provider,
@@ -219,7 +185,6 @@ export const schemaToDbType = (
         case "decimal":
           return "real";
         default:
-          // SQLite has no varchar; everything textual is `text`.
           return "text";
       }
     case "mssql":
@@ -228,22 +193,16 @@ export const schemaToDbType = (
           return "uniqueidentifier";
         case "bool":
           return "bit";
-        // `datetime` has a 3.33 ms tick and rounds; `datetime2(3)` is exact to the millisecond.
         case "timestamp":
           return "datetime2(3)";
         case "integer":
           return "int";
-        // `varchar` is a single-byte codepage type and turns non-Latin1 text into `?`.
         case "string":
           return "nvarchar(max)";
         case "binary":
           return "varbinary(max)";
-        // Only SQL Server 2025 has a native json type.
         case "json":
           return "nvarchar(max)";
-        // A bare `decimal` is `DECIMAL(18, 0)` on SQL Server, which rounds
-        // every fractional value away. 38 is the highest precision it accepts;
-        // 19 fractional digits hold every digit of a double.
         case "decimal":
           return "decimal(38,19)";
         default:
@@ -270,8 +229,6 @@ export const schemaToDbType = (
       switch (type) {
         case "uuid":
           return "char(36)";
-        // `timestamp` has second precision, a 1970-2038 range, and goes through
-        // the session time zone; `datetime(3)` stores the UTC text we send.
         case "timestamp":
           return "datetime(3)";
         case "bool":
@@ -280,11 +237,7 @@ export const schemaToDbType = (
           return "text";
         case "binary":
           return "longblob";
-        // A bare `decimal` is `DECIMAL(10, 0)` on MySQL, which rounds every
-        // fractional value away.
         case "decimal":
-          // A bare `decimal` is `DECIMAL(10, 0)` on MySQL. 65 is the highest
-          // precision it accepts; 30 fractional digits hold every digit of a double.
           return "decimal(65,30)";
         default:
           return type;
@@ -292,14 +245,6 @@ export const schemaToDbType = (
   }
 };
 
-/**
- * Whether the provider can store a literal `DEFAULT` for a column of this type.
- *
- * MySQL keeps `string`, `json`, and `binary` in a `text`, `json`, or `blob`
- * column and rejects a `DEFAULT` on all three. FumaDB generates the default on
- * insert there instead, so the DDL must leave it out and the schema diff must
- * not report it as a change; both read this one predicate.
- */
 export const supportsLiteralDefault = (
   column: { readonly type: StorageType },
   provider: Provider,
@@ -307,22 +252,15 @@ export const supportsLiteralDefault = (
   provider !== "mysql" ||
   (column.type !== "string" && column.type !== "json" && column.type !== "binary");
 
-/**
- * Providers whose driver already returns a parsed JavaScript value for a
- * `json` column. On the others the column is stored as text and the codec
- * parses it.
- */
 const parsesJson = (provider: Provider): boolean =>
   provider === "postgresql" || provider === "cockroachdb" || provider === "mysql";
 
-/** A date or timestamp string without a zone designator is UTC (that is how it was written). */
 const parseUtcTimestamp = (value: string): Date => {
   if (value.length === 10) return new Date(`${value}T00:00:00Z`);
   const normalized = value.includes("T") ? value : value.replace(" ", "T");
   return new Date(/[zZ]|[+-]\d{2}:?\d{2}$/.test(normalized) ? normalized : `${normalized}Z`);
 };
 
-/** The same wall-clock fields, taken as UTC instead of the process time zone. */
 const localComponentsAsUtc = (value: Date): Date =>
   new Date(
     Date.UTC(
@@ -338,7 +276,6 @@ const localComponentsAsUtc = (value: Date): Date =>
 
 const isBytes = (value: unknown): value is Uint8Array => value instanceof Uint8Array;
 
-/** A plain `Uint8Array` (not a `Buffer`) over the same bytes. */
 const toPlainBytes = (value: Uint8Array): Uint8Array =>
   value.constructor === Uint8Array
     ? value
@@ -356,16 +293,9 @@ const bytesToBigint = (value: Uint8Array): bigint =>
 const INT64_MIN = -(2n ** 63n);
 const INT64_MAX = 2n ** 63n - 1n;
 
-/** The UTC calendar day of a `Date`, at midnight. */
 const utcDay = (value: Date): Date =>
   new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth(), value.getUTCDate()));
 
-/**
- * Turn a driver value into the column's storage value (the encoded side of
- * its schema). Values already in the right shape pass through unchanged.
- * Fails with a `QueryError` of reason `"Decode"` when stored JSON text is
- * malformed.
- */
 export const fromDriver = (
   value: unknown,
   column: AnyColumn,
@@ -374,9 +304,6 @@ export const fromDriver = (
   if (value === null || value === undefined) return Result.succeed(null);
   switch (column.type) {
     case "json": {
-      // On postgresql, cockroachdb, and mysql the driver has already parsed
-      // the column, so a stored JSON *string* arrives as a JavaScript string
-      // and must not be parsed again.
       if (parsesJson(provider) || typeof value !== "string") return Result.succeed(value);
       try {
         return Result.succeed(JSON.parse(value) as unknown);
@@ -428,26 +355,18 @@ export const fromDriver = (
       if (typeof value === "number" || typeof value === "bigint")
         return Result.succeed(new Date(Number(value)));
       if (typeof value === "string") return Result.succeed(parseUtcTimestamp(value));
-      // mysql2 parses the stored UTC text with local-time components; read them back as UTC.
       if (value instanceof Date && provider === "mysql")
         return Result.succeed(localComponentsAsUtc(value));
       return Result.succeed(value);
     case "uuid":
-      // SQL Server reports `uniqueidentifier` in upper case; comparisons are case-insensitive.
       return Result.succeed(
         provider === "mssql" && typeof value === "string" ? value.toLowerCase() : value,
       );
     default:
-      // Every textual type is already a string on every provider.
       return Result.succeed(value);
   }
 };
 
-/**
- * Turn a storage value (the encoded side of the column schema) into something
- * the provider's driver can bind. `undefined` stays `undefined` so callers
- * can omit the column.
- */
 export const toDriver = (value: unknown, column: AnyColumn, provider: Provider): unknown => {
   if (value === undefined) return undefined;
   if (value === null) return null;
@@ -456,7 +375,6 @@ export const toDriver = (value: unknown, column: AnyColumn, provider: Provider):
       return JSON.stringify(value);
     case "date":
       if (!(value instanceof Date)) return value;
-      // A `date` keeps only the UTC calendar day on every provider.
       if (provider === "sqlite") return utcDay(value).getTime();
       return value.toISOString().slice(0, 10);
     case "timestamp":
@@ -466,7 +384,6 @@ export const toDriver = (value: unknown, column: AnyColumn, provider: Provider):
         return value.toISOString().slice(0, 23).replace("T", " ");
       return value;
     case "decimal":
-      // Sent as text so the database parses the exact digits instead of a float parameter.
       return typeof value === "number" &&
         (provider === "postgresql" || provider === "mysql" || provider === "mssql")
         ? String(value)
@@ -516,15 +433,6 @@ const encoderFor = (column: AnyColumn) => {
 const issueMessage = (error: Schema.SchemaError): string =>
   error.message.split("\n")[0] ?? error.message;
 
-/**
- * Driver value -> column value: `fromDriver`, then the column schema's decoder.
- *
- * A `NULL` in a nullable column is decoded through the schema, so
- * `Schema.NullOr(X)` yields `null` and `Schema.OptionFromNullOr(X)` yields
- * `Option.none()`. A `NULL` in a column whose schema does not accept it (a
- * column added after the rows were written) stays `null`. A value the schema
- * rejects fails with `QueryError` (`Decode`).
- */
 export const deserialize = (
   value: unknown,
   column: AnyColumn,
@@ -546,11 +454,6 @@ export const deserialize = (
       );
 };
 
-/**
- * Column value -> driver value: the column schema's encoder, then `toDriver`.
- * `undefined` and `null` pass through. A value the schema rejects fails with
- * `QueryError` (`InvalidInput`).
- */
 export const serialize = (
   value: unknown,
   column: AnyColumn,
@@ -564,7 +467,6 @@ export const serialize = (
     column.type === "bigint" &&
     typeof encoded.success === "bigint"
   ) {
-    // Every provider stores a signed 64-bit integer; SQLite's blob encoding would wrap silently.
     if (encoded.success < INT64_MIN || encoded.success > INT64_MAX) {
       return Result.fail(
         new QueryError({

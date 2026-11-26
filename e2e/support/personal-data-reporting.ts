@@ -1,4 +1,3 @@
-/** Reporting fixtures control only the external issuer and the runner-owned product. */
 import { expect } from "@effect/vitest";
 import { Clock, Effect, FileSystem, Schedule, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
@@ -20,10 +19,9 @@ import {
 const scopes = ["mail.read", "offline_access", "read:me"];
 const Redirect = Schema.Struct({ authorizationUrl: Schema.String, redirectUri: Schema.String });
 
-/** A completed delivered span, rather than a delay, closes each scheduled run's observation. */
 export const completedReportingRun = (since: number) =>
   Effect.flatMap(Telemetry, (telemetry) =>
-    telemetry.search("sdk.personalDataReporting.run", {}),
+    telemetry.searchWholeEnvironment("sdk.personalDataReporting.run", {}),
   ).pipe(
     Effect.filterOrFail(
       (result) =>

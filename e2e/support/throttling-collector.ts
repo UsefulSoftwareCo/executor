@@ -1,8 +1,3 @@
-/**
- * A scenario-owned OTLP destination: its own Motel behind a proxy that refuses chosen exports the
- * way a collector shedding load does. Exports carrying no planned marker, and a marked export once
- * its refusals run out, reach Motel unchanged. Nothing is shared with the target's collector.
- */
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Clock, Effect, FileSystem, Layer, Ref, Schema } from "effect";
 import {
@@ -18,19 +13,16 @@ import { SpanQuery } from "./contracts.ts";
 import { serveOtlpCollector } from "./otlp-collector.ts";
 import { Target } from "./platform.ts";
 
-/** One refused export: its status and the Retry-After it names, given the refusal time. */
 export interface Refusal {
   readonly status: number;
   readonly retryAfter?: (now: number) => string;
 }
 
-/** When a marked export reached the proxy, and the status the proxy answered. */
 export interface Arrival {
   readonly at: number;
   readonly status: number;
 }
 
-/** The parts of an OTLP JSON trace export that name its apps and traces. */
 const AppTraceExport = Schema.fromJsonString(
   Schema.Struct({
     resourceSpans: Schema.Array(
@@ -59,7 +51,6 @@ const AppTraceExport = Schema.fromJsonString(
   }),
 );
 
-/** Start both in the caller's scope, which stops them. */
 export const throttlingCollector = Effect.gen(function* () {
   const target = yield* Target,
     fs = yield* FileSystem.FileSystem,
@@ -68,11 +59,10 @@ export const throttlingCollector = Effect.gen(function* () {
     directory: target.directory,
     prefix: "collector",
   });
-  const motel = yield* serveOtlpCollector(directory);
+  const collector = yield* serveOtlpCollector(directory);
   const plans = yield* Ref.make<ReadonlyMap<string, ReadonlyArray<Refusal>>>(new Map());
   const arrivals = yield* Ref.make<ReadonlyMap<string, ReadonlyArray<Arrival>>>(new Map());
   const appTraces = yield* Ref.make<ReadonlyMap<string, ReadonlySet<string>>>(new Map());
-  /** Record the traces of app isolate spans that reached Motel, by the app they came from. */
   const recordAppTraces = (text: string) =>
     Ref.update(appTraces, (all) => {
       const decoded = Schema.decodeUnknownOption(AppTraceExport)(text);
@@ -93,7 +83,7 @@ export const throttlingCollector = Effect.gen(function* () {
   const forward = (path: string, bytes: Uint8Array, contentType: string | undefined) =>
     Effect.scoped(
       Effect.gen(function* () {
-        const response = yield* http.post(new URL(path, motel).href, {
+        const response = yield* http.post(new URL(path, collector).href, {
           body: HttpBody.uint8Array(bytes, contentType),
         });
         return HttpServerResponse.uint8Array(new Uint8Array(yield* response.arrayBuffer), {
@@ -142,23 +132,27 @@ export const throttlingCollector = Effect.gen(function* () {
   const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(services));
   if (!("port" in server.address)) return yield* Effect.die("Collector proxy must listen on TCP");
   return {
-    /** The OTLP base URL the product exports to. */
     endpoint: `http://127.0.0.1:${server.address.port}`,
-    /** Answer the next exports containing `marker` with these refusals, in order. */
     refuse: (marker: string, refusals: ReadonlyArray<Refusal>) =>
       Ref.update(plans, (all) => new Map(all).set(marker, refusals)),
-    /** Every export containing `marker` that reached the proxy. */
     arrivals: (marker: string) =>
       Ref.get(arrivals).pipe(Effect.map((all) => all.get(marker) ?? [])),
-    /** The traces whose app isolate spans for `app` reached Motel. */
     appTraces: (app: string) =>
       Ref.get(appTraces).pipe(Effect.map((all) => all.get(app) ?? new Set<string>())),
-    /** The spans of one trace that Motel stored. */
     query: (traceId: string) =>
       Effect.scoped(
-        http.get(new URL(`/api/traces/${traceId}/spans`, motel).href).pipe(
+        http.get(new URL(`/api/traces/${traceId}/spans`, collector).href).pipe(
           Effect.flatMap((response) => response.json),
           Effect.flatMap(Schema.decodeUnknownEffect(SpanQuery)),
+          Effect.tap((found) =>
+            found.meta?.truncated === true
+              ? Effect.die(
+                  new Error(
+                    `The collector answered trace ${traceId} in part (${found.meta.returned ?? "?"} of ${found.meta.spanCount ?? "?"} spans); a check cannot read it as the whole trace`,
+                  ),
+                )
+              : Effect.void,
+          ),
         ),
       ),
   };

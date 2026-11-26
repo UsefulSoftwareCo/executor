@@ -1,4 +1,3 @@
-/** Scheduled reporting uses the stored owner's OAuth grant and clears a closed subject. */
 import { expect, layer } from "@effect/vitest";
 import { Clock, Effect, FileSystem, Schedule, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
@@ -89,7 +88,6 @@ export default defineApp({ user: { accounts: { service } } }, {
   }) }),
 });`;
 
-/** Follow only the authorization server's redirect; the callback itself is completed through the API. */
 const consent = (http: HttpClient.HttpClient, authorizationUrl: string) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -118,7 +116,6 @@ const waitForReporting = (
     return yield* Schema.decodeUnknownEffect(ReportingMetrics)(metrics);
   }).pipe(Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 150 }));
 
-/** Run one scheduled job against Cloud's normal cron trigger. */
 const fireCloudReportingCron = Effect.gen(function* () {
   const target = yield* Target;
   const http = yield* HttpClient.HttpClient;
@@ -268,7 +265,6 @@ layer(HostedLive, { excludeTestServices: true })("Personal-data reporting", (it)
           yield* serverControl("restart");
           yield* completedReportingRun(firstRunStarted);
           yield* waitForReporting(issuer, 1, 2);
-          // A failed identity refresh remains pending for a later run, even with Retry-After: 0.
           const resumedRunStarted = yield* Clock.currentTimeMillis;
           yield* serverControl("restart");
           yield* completedReportingRun(resumedRunStarted);
@@ -276,7 +272,6 @@ layer(HostedLive, { excludeTestServices: true })("Personal-data reporting", (it)
           const firstUpdatedAt = first.reportingRequests[0]?.accounts[0]?.updatedAt;
           expect(firstUpdatedAt).toBeDefined();
           expect(first.reportingRequests[0]?.refreshed).toBe(true);
-          // The restart resumes the persisted refresh without repeating the successful report.
           expect(first.reportingIdentityRequests).toBe(3);
           expect(first.reportingRequests).toHaveLength(1);
 
@@ -302,7 +297,6 @@ layer(HostedLive, { excludeTestServices: true })("Personal-data reporting", (it)
           expect(Date.parse(secondUpdatedAt ?? "")).toBeGreaterThan(
             Date.parse(firstUpdatedAt ?? ""),
           );
-          // The due report keeps the last retrieval time; it does not claim the data was fetched today.
           expect(Date.parse(secondUpdatedAt ?? "")).toBeLessThan(Date.parse(beforeSecondReport));
 
           yield* issuer.configure({ reportingAction: "closed" });
@@ -326,7 +320,6 @@ layer(HostedLive, { excludeTestServices: true })("Personal-data reporting", (it)
               .flatMap((request) => request.accounts.map((account) => account.accountId)),
           ).toEqual([updatedAccountId]);
 
-          // Advancing beyond the reporting cycles expires the owner's browser session.
           const signedIn = yield* api.request(actors.owner, "POST", "/api/auth/sign-in/email", {
             email: "owner@example.test",
             password,

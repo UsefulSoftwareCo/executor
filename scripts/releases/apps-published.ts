@@ -1,33 +1,6 @@
-/**
- * Refuse to ship a host whose `apps` release is not on npm exactly as this checkout builds it.
- * New apps pin the version in `packages/apps/package.json`. A host shipping an unpublished version
- * cannot build them, and a host whose framework changed after that version was published pins
- * new apps to code other than its own.
- *
- * Run `bun run apps:build` first. The staged package is packed as npm would publish it, and every
- * file is compared byte for byte with the published archive.
- *
- * Modes:
- * - no flag: the version must be on npm with identical content (release publication).
- * - `--publish`: the deploy from `main` publishes an unpublished version with `NPM_TOKEN`, waits
- *   until the registry serves it with the local archive's integrity, then compares as above. A
- *   version already on npm is only compared, so rerunning a deploy is idempotent.
- * - `--allow-unpublished`: pull requests only warn about an unpublished bump, because merging to
- *   `main` publishes it. A published version whose content differs still fails.
- * - `--await`: the production deploy runs beside the job that publishes. It waits for the registry
- *   to serve the version, then compares as above. It never publishes.
- *
- * npm lists a new version a few seconds before it serves the version's archive, and its CDN keeps
- * serving the archive's 404 for up to five minutes (`cache-control: max-age=300`). Every mode
- * waits, for a bounded time, while the listed archive is missing. Any other status, or an archive
- * whose integrity differs from the registry's, fails at once.
- *
- * `APPS_REGISTRY` points the checks at another registry; e2e/tests/apps-published.spec.ts uses it
- * to replay npm's propagation. The production deploy's modes, `--publish` and `--await`, refuse it
- * before any request, so a stray override cannot let a deploy pass without npm.
- */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import { randomUUID } from "node:crypto";
 import { Config, Console, Effect, FileSystem, Path, Redacted, Schedule, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
@@ -53,10 +26,6 @@ const Published = Schema.Struct({
 });
 const Tags = Schema.Record(Schema.String, Schema.String);
 
-/**
- * Seven minutes of waits between attempts cover the CDN's five-minute 404 for an archive npm did
- * not yet store. Request time comes on top; this is not a deadline.
- */
 const archiveWait = Schedule.spaced(10_000);
 const archiveAttempts = 42;
 
@@ -83,6 +52,10 @@ NodeRuntime.runMain(
         message: `${staged} holds apps@${built}, not ${version}; run bun run apps:build again.`,
       });
 
+    const attempts =
+      registry === npm
+        ? archiveAttempts
+        : yield* Config.Int("APPS_ARCHIVE_ATTEMPTS").pipe(Config.withDefault(archiveAttempts));
     const directory = yield* fs.makeTempDirectoryScoped();
     const local = yield* pack(staged, path.join(directory, "local"));
     const lookup = Effect.gen(function* () {
@@ -122,11 +95,9 @@ NodeRuntime.runMain(
         const token = yield* Config.Redacted("NPM_TOKEN");
         const before = yield* tags;
         const npmrc = path.join(directory, "npmrc");
-        // npm substitutes the explicitly supplied environment variable. The file contains no secret.
         yield* fs.writeFileString(npmrc, "//registry.npmjs.org/:_authToken=${NPM_TOKEN}\n", {
           mode: 0o600,
         });
-        // Publishing the directory runs the staged package's own hook, which rejects non-beta releases.
         const code = yield* processes.exitCode(
           ChildProcess.make("npm", ["publish", staged, "--tag", "beta", "--access", "public"], {
             env: { NPM_CONFIG_USERCONFIG: npmrc, NPM_TOKEN: Redacted.value(token) },
@@ -165,18 +136,22 @@ NodeRuntime.runMain(
     const published =
       "published" in existing ? existing.published : yield* publishNew(existing.missing.status);
 
-    const download = Effect.gen(function* () {
-      const archive = yield* http.get(published.dist.tarball);
-      if (archive.status === 404) {
-        yield* archive.text;
-        return yield* new NotServed({ status: archive.status });
-      }
-      if (archive.status !== 200)
-        return yield* new AppsReleaseMismatch({
-          message: `npm answered ${published.dist.tarball} for apps@${version} with status ${archive.status}.`,
-        });
-      return new Uint8Array(yield* archive.arrayBuffer);
-    });
+    const fetchArchive = (url: string) =>
+      Effect.gen(function* () {
+        const archive = yield* http.get(url);
+        if (archive.status === 404) {
+          yield* archive.text;
+          return yield* new NotServed({ status: archive.status });
+        }
+        if (archive.status !== 200)
+          return yield* new AppsReleaseMismatch({
+            message: `npm answered ${url} for apps@${version} with status ${archive.status}.`,
+          });
+        return new Uint8Array(yield* archive.arrayBuffer);
+      });
+    const download = Effect.suspend(() =>
+      fetchArchive(`${published.dist.tarball}?served=${randomUUID()}`),
+    ).pipe(Effect.andThen(fetchArchive(published.dist.tarball)));
     const bytes = yield* download.pipe(
       Effect.tapError((error) =>
         error._tag === "NotServed"
@@ -186,7 +161,7 @@ NodeRuntime.runMain(
       Effect.retry({
         while: (error) => error._tag === "NotServed",
         schedule: archiveWait,
-        times: archiveAttempts,
+        times: attempts,
       }),
       Effect.catchTag("NotServed", () =>
         Effect.fail(

@@ -1,4 +1,3 @@
-/** Connect the shared Node development renderer to cloud's entry context. */
 import type { Server } from "node:http";
 import { developmentDashboard as sharedDevelopmentDashboard } from "@executor-js/dashboard-start/development";
 import type { CloudEntryPage } from "../contracts/entry.ts";

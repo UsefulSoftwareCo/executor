@@ -1,6 +1,5 @@
-/** Erase a closed registration's subject copies in one transaction, then revoke their grants. */
 import { Effect, Option, Schema } from "effect";
-import { OwnerId, StorageError, type AccountId } from "../contracts/shared.ts";
+import { OwnerId, StorageError } from "../contracts/shared.ts";
 import { StoredAccount, StoredConnectionState } from "../contracts/storage.ts";
 import type { makeOAuth } from "./oauth.ts";
 import { query, transaction, type Query } from "./database.ts";
@@ -25,7 +24,7 @@ export const makeCloseReportedSubject = (input: {
             ),
         }),
       )) as ReportRow[];
-      const removed: { account: AccountId; provider: string; encrypted: Uint8Array }[] = [];
+      const removed: Parameters<typeof input.oauth.revokeRemoved>[0][] = [];
       yield* transaction(input.db, (tx) =>
         Effect.gen(function* () {
           for (const row of rows) {
@@ -110,6 +109,7 @@ export const makeCloseReportedSubject = (input: {
             if (grant !== null)
               removed.push({
                 account: account.id,
+                owner: account.owner,
                 provider: account.provider,
                 encrypted: grant.encrypted,
               });

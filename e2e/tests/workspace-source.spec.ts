@@ -1,4 +1,3 @@
-/** Source snapshots and optimistic writes are verified through the real hosted API. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
@@ -51,7 +50,6 @@ layer(HostedLive, { excludeTestServices: true })("Workspace source", (it) => {
         const initial = yield* read(path);
         expect(initial.files).toEqual(files("initial"));
         expect(initial.revision.commit).toMatch(/^[a-f0-9]{40}$/);
-        // Preparation is asynchronous; later reads return the same snapshot.
         expect(yield* read(path)).toEqual(initial);
         expect(yield* read(path)).toEqual(initial);
 
@@ -116,7 +114,6 @@ layer(HostedLive, { excludeTestServices: true })("Workspace source", (it) => {
             }),
           );
 
-        // Exercise the native Git proxy's POST body and read its response after headers return.
         const want = `want ${winner.revision.commit}\n`;
         const upload = yield* http.execute(
           HttpClientRequest.post(`${target.metadata.origin}${git.path}/git-upload-pack`).pipe(
@@ -138,12 +135,59 @@ layer(HostedLive, { excludeTestServices: true })("Workspace source", (it) => {
         });
         expect(stale.status).toBe(409);
         expect(yield* read(path)).toEqual(winner);
+      }),
+    ),
+  );
 
-        const pending = yield* create("concurrent initialization");
-        const snapshots = yield* Effect.forEach([0, 1, 2], () => read(pending), { concurrency: 3 });
-        const current = yield* read(pending);
-        expect(current.files).toEqual(files("initial"));
-        for (const snapshot of snapshots) expect(snapshot).toEqual(current);
+  it.effect(scenarios.workspaceFirstReads.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const api = yield* Api,
+          actors = yield* Actors;
+        const prefix = `/api/organizations/${actors.organization.id}/apps`;
+        const create = (label: string) =>
+          Effect.gen(function* () {
+            const response = yield* api.request(actors.owner, "POST", prefix, {
+              name: `Source ${label} ${randomUUID().slice(0, 8)}`,
+              files: files("initial"),
+            });
+            expect(response.status).toBe(200);
+            const app = yield* body(App, response);
+            expect(app.repository).toBeNull();
+            yield* Effect.addFinalizer(() =>
+              api.request(actors.owner, "DELETE", `${prefix}/${app.id}`).pipe(Effect.orDie),
+            );
+            return `${prefix}/${app.id}`;
+          });
+        const read = (path: string) =>
+          Effect.gen(function* () {
+            const response = yield* api.request(actors.owner, "GET", `${path}/workspace`);
+            expect(response.status).toBe(200);
+            return yield* body(Workspace, response);
+          });
+        const apps = [0, 1, 2, 3, 4, 5];
+        for (const round of [0, 1]) {
+          const pending = yield* Effect.forEach(
+            apps,
+            (index) => create(`first read ${round}.${index}`),
+            { concurrency: apps.length },
+          );
+          yield* Effect.forEach(
+            pending,
+            (path) =>
+              Effect.gen(function* () {
+                const snapshots = yield* Effect.forEach(apps, () => read(path), {
+                  concurrency: apps.length,
+                });
+                const current = yield* read(path);
+                expect(current.files).toEqual(files("initial"));
+                expect(current.revision.commit).toMatch(/^[a-f0-9]{40}$/);
+                for (const snapshot of snapshots) expect(snapshot).toEqual(current);
+              }),
+            { concurrency: apps.length },
+          );
+        }
       }),
     ),
   );

@@ -1,0 +1,180 @@
+diff --git a/src/ai/base-links.ts b/src/ai/base-links.ts
+new file mode 100644
+index 0000000000..12d484b371
+--- /dev/null
++++ b/src/ai/base-links.ts
+@@ -0,0 +1,129 @@
++import { statSync } from "node:fs";
++import { join } from "node:path";
++
++import { escape } from "html-escaper";
++import type { Nodes } from "mdast";
++import { fromMarkdown, type Handle } from "mdast-util-from-markdown";
++import { gfmFromMarkdown } from "mdast-util-gfm";
++import { gfm } from "micromark-extension-gfm";
++import { parse } from "node-html-parser";
++
++import {
++  isInternalPath,
++  normalizeBasePath,
++  normalizePath,
++  withBasePath,
++  withComposedBasePath,
++} from "../core/base-path.ts";
++import matter from "../core/frontmatter.ts";
++import type { BlumeProject } from "../core/project-graph.ts";
++
++const referenceOrigin = "https://docs.invalid";
++
++export const markdownLinkRebaser = ({ config, context, manifest }: BlumeProject) => {
++  const base = normalizeBasePath(config.deployment.base);
++  const routes = new Set([
++    ...manifest.routes.map(({ path }) => path),
++    ...config.redirects.map(({ from }) => withBasePath(config.basePath, from)),
++  ]);
++
++  const docsPath = (pathname: string) => {
++    const path = normalizePath(decodeURI(pathname));
++    const page = path.replace(/\.mdx?$/u, "");
++    const route = page === "/index" && page !== path ? "/" : page;
++    if (routes.has(withBasePath(config.basePath, route))) {
++      return withComposedBasePath(base, config.basePath, pathname);
++    }
++    if (statSync(join(context.root, "public", path), { throwIfNoEntry: false })?.isFile()) {
++      return withBasePath(base, pathname);
++    }
++    return pathname;
++  };
++
++  return (source: string, fullTextRoute?: string): string => {
++    const pagePath = withBasePath(base, fullTextRoute ?? "/");
++    const relativeBase = new URL(
++      fullTextRoute === "/" && base ? pagePath + "/" : pagePath,
++      referenceOrigin
++    );
++    const destination = (href: string) => {
++      const trimmed = href.trim();
++      if (!trimmed || trimmed.startsWith("//") || /^[a-z][a-z0-9+.-]*:/iu.test(trimmed)) {
++        return href;
++      }
++      const rootRelative = isInternalPath(trimmed);
++      if (!rootRelative && fullTextRoute === undefined) {
++        return href;
++      }
++      const url = new URL(trimmed, relativeBase);
++      if (url.origin !== relativeBase.origin) return href;
++      const pathname = rootRelative
++        ? docsPath(url.pathname)
++        : /^[?#]/u.test(trimmed)
++          ? pagePath
++          : url.pathname;
++      return pathname + url.href.slice(url.origin.length + url.pathname.length);
++    };
++
++    const { content } = matter(source);
++    const bodyOffset = source.length - content.length;
++    const splices: Array<{ start: number; end: number; text: string }> = [];
++    const rewriteDestination: Handle = function ({ start, end }) {
++      const node = this.stack.at(-1);
++      if (!node || !("url" in node)) return;
++      const target = destination(node.url);
++      if (target === node.url) return;
++      const offset = start.offset;
++      const stop = end.offset;
++      if (offset === undefined || stop === undefined) return;
++      const angled = content[offset] === "<";
++      splices.push({
++        start: offset + Number(angled),
++        end: stop - Number(angled),
++        text: target.replace(/[&()<>]/gu, "\\$&"),
++      });
++    };
++    const visit = (node: Nodes): void => {
++      if ("children" in node) node.children.forEach(visit);
++      if (node.type !== "html") return;
++      const offset = node.position?.start.offset;
++      if (offset === undefined) return;
++      const html = content.slice(offset, node.position?.end.offset);
++      for (const element of parse(html).querySelectorAll("[href], [src]")) {
++        const rawAttrs = element.rawAttrs;
++        for (const attr of ["href", "src"]) {
++          const href = element.getAttribute(attr);
++          if (href === undefined) continue;
++          const target = destination(href);
++          if (target !== href) element.setAttribute(attr, escape(target));
++        }
++        if (rawAttrs === element.rawAttrs) continue;
++        const start = element.range[0] + 2 + element.rawTagName.length;
++        splices.push({
++          start: offset + start,
++          end: offset + start + rawAttrs.length,
++          text: element.rawAttrs,
++        });
++      }
++    };
++    visit(
++      fromMarkdown(content, {
++        extensions: [gfm()],
++        mdastExtensions: [
++          gfmFromMarkdown(),
++          {
++            exit: {
++              definitionDestination: rewriteDestination,
++              resourceDestination: rewriteDestination,
++            },
++          },
++        ],
++      })
++    );
++
++    for (const { start, end, text } of splices.toSorted((a, b) => b.start - a.start)) {
++      source = source.slice(0, bodyOffset + start) + text + source.slice(bodyOffset + end);
++    }
++    return source;
++  };
++};
+diff --git a/src/ai/llms.ts b/src/ai/llms.ts
+index 5b3e58c82f..8b45c421c1 100644
+--- a/src/ai/llms.ts
++++ b/src/ai/llms.ts
+@@ -11,2 +11,3 @@ import { API_CATALOG_PATH, hasApiCatalog } from "./api-catalog.ts";
+ import { API_PAGES_PATH, OPENAPI_PATH } from "./api/paths.ts";
++import { markdownLinkRebaser } from "./base-links.ts";
+ import { downlevelComponents } from "./component-markdown.ts";
+@@ -298,2 +299,3 @@ const buildFull = async (project: BlumeProject): Promise<string> => {
+   );
++  const rebaseMarkdownLinks = markdownLinkRebaser(project);
+   const components = projectComponentSerializers(project);
+@@ -317,6 +319,9 @@ const buildFull = async (project: BlumeProject): Promise<string> => {
+       const parsed = matter(raw);
+-      const body = downlevelComponents(
+-        applyAgentVisibility(parsed.content),
+-        components,
+-        parsed.data
++      const body = rebaseMarkdownLinks(
++        downlevelComponents(
++          applyAgentVisibility(parsed.content),
++          components,
++          parsed.data
++        ),
++        page.route
+       ).trim();
+diff --git a/src/ai/markdown.ts b/src/ai/markdown.ts
+index e2703edbb7..bd1fda6d01 100644
+--- a/src/ai/markdown.ts
++++ b/src/ai/markdown.ts
+@@ -7,2 +7,3 @@ import { readExpandedEntryText } from "../core/sources/read.ts";
+ import type { RouteManifestEntry } from "../core/types.ts";
++import { markdownLinkRebaser } from "./base-links.ts";
+ import { downlevelComponents } from "./component-markdown.ts";
+@@ -53,2 +54,3 @@ export const buildRawMarkdown = async (
+ ): Promise<Record<string, RawMarkdownEntry>> => {
++  const rebaseMarkdownLinks = markdownLinkRebaser(project);
+   const pageById = new Map(project.graph.pages.map((page) => [page.id, page]));
+@@ -79,3 +81,5 @@ export const buildRawMarkdown = async (
+       // data must also be in scope for `prop={frontmatter.*}` expressions.
+-      const md = downlevelComponents(source, components, matter(source).data);
++      const md = rebaseMarkdownLinks(
++        downlevelComponents(source, components, matter(source).data)
++      );
+       const entry: RawMarkdownEntry =

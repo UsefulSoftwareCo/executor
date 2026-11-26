@@ -1,4 +1,3 @@
-/** Cadence and retry rules are observed through real OAuth, health and scheduled HTTP traffic. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { body } from "../support/api.ts";

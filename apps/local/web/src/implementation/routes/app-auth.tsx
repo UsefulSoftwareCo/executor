@@ -4,7 +4,6 @@ import { Option, Schema } from "effect";
 import { AuthenticationGate } from "../app.tsx";
 import { AppSignInPage } from "../pages/app-sign-in.tsx";
 
-/** Sign-in is a standalone product page; it does not mount dashboard inventory. */
 export const Route = createFileRoute("/app-auth")({
   validateSearch: (search: Record<string, unknown>) => ({
     request: Option.getOrUndefined(Schema.decodeUnknownOption(AppSignInId)(search.request)),

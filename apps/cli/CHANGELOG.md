@@ -1,5 +1,193 @@
 # executor
 
+## 2.0.0-beta.80
+
+Beta of the Executor local runtime, CLI, desktop, and self-host Docker image.
+
+## 2.0.0-beta.79
+
+Beta of the Executor local runtime, CLI, desktop, and self-host Docker image.
+
+## 2.0.0-beta.78
+
+Beta of the Executor local runtime, CLI, desktop, and self-host Docker image.
+
+## 2.0.0-beta.77
+
+Beta of the Executor local runtime, CLI, desktop, and self-host Docker image.
+
+## 2.0.0-beta.76
+
+Beta of the Executor local runtime, CLI, desktop, and self-host Docker image.
+
+## 2.0.0-beta.75
+
+Beta of the Executor local runtime, CLI, desktop, and self-host Docker image.
+
+## 2.0.0-beta.74
+
+Beta of the Executor local runtime, CLI, desktop, and self-host Docker image.
+
+## 2.0.0-beta.73
+
+Beta of the Executor local runtime, CLI, desktop, and self-host Docker image.
+
+## 2.0.0-beta.72
+
+Beta of the Executor local runtime, CLI, desktop, and self-host Docker image.
+
+## 2.0.0-beta.71
+
+Beta of the Executor local runtime, CLI, desktop, and self-host Docker image.
+
+## 2.0.0-beta.70
+
+Beta of the Executor local runtime, CLI, desktop, and self-host Docker image.
+
+## 2.0.0-beta.69
+
+Beta of the Executor local runtime, CLI, desktop, and self-host Docker image.
+
+## 2.0.0-beta.68
+
+Beta of the Executor local runtime, CLI, desktop, and self-host Docker image.
+
+## 2.0.0-beta.67
+
+Beta of the Executor local runtime, CLI, desktop, and self-host Docker image.
+
+## 2.0.0-beta.66
+
+Beta of the Executor local runtime, CLI, desktop, and self-host Docker image.
+
+## 2.0.0-beta.65
+
+Beta of the Executor local runtime, CLI, desktop, and self-host Docker image.
+
+## 2.0.0-beta.64
+
+Beta of the Executor local runtime, CLI, desktop, and self-host Docker image.
+
+## 2.0.0-beta.63
+
+Beta of the Executor local runtime, CLI, desktop, and self-host Docker image.
+
+## 2.0.0-beta.62
+
+Beta of the Executor local runtime, CLI, desktop, and self-host Docker image.
+
+## 2.0.0-beta.61
+
+Beta of the Executor local runtime, CLI, desktop, and self-host Docker image.
+
+## 2.0.0-beta.60
+
+Beta of the Executor local runtime, CLI, desktop, and self-host Docker image.
+
+## 2.0.0-beta.59
+
+Beta of the Executor local runtime, CLI, desktop, and self-host Docker image.
+
+## 2.0.0-beta.58
+
+Beta of the Executor local runtime, CLI, desktop, and self-host Docker image.
+
+## 2.0.0-beta.57
+
+Beta of the Executor local runtime, CLI, desktop, and self-host Docker image.
+
+## 2.0.0-beta.56
+
+Beta of the Executor local runtime, CLI, desktop, and self-host Docker image.
+
+## 2.0.0-beta.55
+
+Beta of the Executor local runtime, CLI, desktop, and self-host Docker image.
+
+## 2.0.0-beta.54
+
+Beta of the Executor local runtime, CLI, desktop, and self-host Docker image.
+
+## 2.0.0-beta.53
+
+Beta of the Executor local runtime, CLI, desktop, and self-host Docker image.
+
+## 2.0.0-beta.52
+
+Beta of the Executor local runtime, CLI, desktop, and self-host Docker image.
+
+## 2.0.0-beta.51
+
+Beta of the Executor local runtime, CLI, desktop, and self-host Docker image.
+
+## 2.0.0-beta.50
+
+Beta of the Executor local runtime, CLI, desktop, and self-host Docker image.
+
+## 2.0.0-beta.49
+
+Beta of the Executor local runtime, CLI, desktop, and self-host Docker image.
+
+## 2.0.0-beta.48
+
+Beta of the Executor local runtime, CLI, desktop, and self-host Docker image.
+
+## 2.0.0-beta.47
+
+Beta of the Executor local runtime, CLI, desktop, and self-host Docker image.
+
+## 2.0.0-beta.46
+
+Beta of the Executor local runtime, CLI, desktop, and self-host Docker image.
+
+## 2.0.0-beta.45
+
+Beta of the Executor local runtime, CLI, desktop, and self-host Docker image.
+
+## 2.0.0-beta.44
+
+Beta of the Executor local runtime, CLI, desktop, and self-host Docker image.
+
+## 2.0.0-beta.43
+
+Beta of the Executor local runtime, CLI, desktop, and self-host Docker image.
+
+## 2.0.0-beta.42
+
+Beta of the Executor local runtime, CLI, desktop, and self-host Docker image.
+
+## 2.0.0-beta.41
+
+Nightly beta of the Executor local runtime, CLI, desktop, and self-host Docker image.
+
+## 2.0.0-beta.40
+
+Nightly beta of the Executor local runtime, CLI, desktop, and self-host Docker image.
+
+## 2.0.0-beta.39
+
+Nightly beta of the Executor local runtime, CLI, desktop, and self-host Docker image.
+
+## 2.0.0-beta.38
+
+Nightly beta of the Executor local runtime, CLI, desktop, and self-host Docker image.
+
+## 2.0.0-beta.37
+
+Nightly beta of the Executor local runtime, CLI, desktop, and self-host Docker image.
+
+## 2.0.0-beta.36
+
+Nightly beta of the Executor local runtime, CLI, desktop, and self-host Docker image.
+
+## 2.0.0-beta.35
+
+Nightly beta of the Executor local runtime, CLI, desktop, and self-host Docker image.
+
+## 2.0.0-beta.34
+
+Nightly beta of the Executor local runtime, CLI, desktop, and self-host Docker image.
+
 ## 2.0.0-beta.33
 
 Nightly beta of the Executor local runtime, CLI, desktop, and self-host Docker image.

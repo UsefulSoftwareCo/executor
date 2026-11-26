@@ -1,4 +1,3 @@
-/** GitHub-style REST requirements are exercised through an imported app in the real Worker. */
 import { expect, layer } from "@effect/vitest";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Effect, Layer, Schema } from "effect";
@@ -91,7 +90,6 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI User-Agent", (it) => {
               yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`);
           }).pipe(Effect.orDie),
         );
-        // Connecting from the app links the account; the account array uses it.
         const connection = yield* body(
           Resource,
           yield* api.request(actors.owner, "POST", connectionsPath(path, "user", "service"), {}),

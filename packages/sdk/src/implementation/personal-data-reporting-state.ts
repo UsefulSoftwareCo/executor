@@ -1,6 +1,6 @@
-/** Persisted subject leases, retry deadlines and successful reporting cadence. */
-import { Effect, type Crypto } from "effect";
-import { StorageError, type AccountId, type OwnerId as OwnerIdType } from "../contracts/shared.ts";
+import { Effect } from "effect";
+import type { HostCrypto } from "./host-crypto.ts";
+import { type AccountId, type OwnerId as OwnerIdType } from "../contracts/shared.ts";
 import { query, type Query } from "./database.ts";
 
 const leaseMillis = 5 * 60_000;
@@ -24,12 +24,11 @@ export type ReportRow = {
 };
 
 export const delayForCycle = (cycleDays: number, fingerprint: string, now: Date) => {
-  // Stable positive jitter spreads a registration's subjects over the cycle without reporting early.
   const jitterHours = Number.parseInt(fingerprint.slice(0, 8), 16) % 6;
   return new Date(now.getTime() + cycleDays * 86_400_000 + jitterHours * 3_600_000);
 };
 
-export const makeReportState = (input: { readonly db: Query; readonly crypto: Crypto.Crypto }) => {
+export const makeReportState = (input: { readonly db: Query; readonly crypto: HostCrypto }) => {
   const backoff = (
     row: ReportRow,
     retryAfterSeconds: number | undefined,
@@ -110,9 +109,7 @@ export const makeReportState = (input: { readonly db: Query; readonly crypto: Cr
 
   const claimAccount = (row: ReportRow, now: Date) =>
     Effect.gen(function* () {
-      const token = yield* input.crypto.randomUUIDv4.pipe(
-        Effect.mapError(() => new StorageError()),
-      );
+      const token = yield* input.crypto.random.uuidV4();
       const leaseUntil = new Date(now.getTime() + leaseMillis);
       yield* query(() =>
         input.db.updateMany("accountReports", {
@@ -136,9 +133,7 @@ export const makeReportState = (input: { readonly db: Query; readonly crypto: Cr
 
   const claimSubjects = (clientFingerprint: string, fingerprints: readonly string[], now: Date) =>
     Effect.gen(function* () {
-      const token = yield* input.crypto.randomUUIDv4.pipe(
-        Effect.mapError(() => new StorageError()),
-      );
+      const token = yield* input.crypto.random.uuidV4();
       const leaseUntil = new Date(now.getTime() + leaseMillis);
       const claimable: string[] = [];
       for (const fingerprint of fingerprints) {
