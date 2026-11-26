@@ -200,6 +200,8 @@ export const appCredentialOutbound = Effect.gen(function* () {
             ),
           );
         if (unsent !== undefined) yield* report(unsent);
+        // external: workerd needs the native Response to keep its WebSocket attached.
+        if (response.status === 101) return HttpServerResponse.raw(response, { status: 101 });
         return HttpServerResponse.fromWeb(response);
       }),
   };
