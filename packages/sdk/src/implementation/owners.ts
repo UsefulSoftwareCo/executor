@@ -90,7 +90,9 @@ export const makeOwners = (
             });
           const appIds = apps.map((app) => app.id);
           const accountIds = accounts.map((account) => account.id);
-          const grantIds = [...new Set(accounts.map((account) => account.oauthGrantId ?? account.id))];
+          const grantIds = [
+            ...new Set(accounts.map((account) => account.oauthGrantId ?? account.id)),
+          ];
           const accountByGrant = new Map(
             accounts.map((account) => [account.oauthGrantId ?? account.id, account]),
           );

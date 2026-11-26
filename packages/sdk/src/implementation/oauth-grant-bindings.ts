@@ -41,5 +41,10 @@ export const releaseAccountGrant = (
     yield* query(() => db.deleteMany("oauthGrants", { where: (b) => b("id", "=", id) }));
     return grant === null
       ? undefined
-      : { account: id, owner: account.owner, provider: account.provider, encrypted: grant.encrypted };
+      : {
+          account: id,
+          owner: account.owner,
+          provider: account.provider,
+          encrypted: grant.encrypted,
+        };
   });

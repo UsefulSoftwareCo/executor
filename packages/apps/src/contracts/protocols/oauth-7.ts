@@ -15,11 +15,8 @@ const declaredPkce = Schema.makeFilter(
       : undefined,
 );
 
-const {
-  discover,
-  authorizationServerMetadataUrl,
-  ...authorizationCodeFields
-} = PreviousOAuth2Config.members[1].fields;
+const { discover, authorizationServerMetadataUrl, ...authorizationCodeFields } =
+  PreviousOAuth2Config.members[1].fields;
 
 export const OAuth2Config = Schema.Union([
   Schema.Struct(PreviousOAuth2Config.members[0].fields),
