@@ -1,4 +1,3 @@
-/** Alchemy's opaque resource journal lives in the same durable object that serializes plans and applies. */
 import type { DurableObjectStorage } from "@cloudflare/workers-types";
 import { StateStoreError, type PersistedState, type StateService } from "alchemy/State/State";
 import { STATE_STORE_VERSION } from "alchemy/State/HttpStateApi";
@@ -12,10 +11,6 @@ const io = <A>(run: () => Promise<A>) =>
     catch: () => new StateStoreError({ message: "App domain resource state is unavailable" }),
   });
 
-/**
- * Every journal row, keyed by FQN, read with one storage list. Alchemy otherwise reads each row
- * once per plan phase, which is two storage calls per team on every pass.
- */
 export const appDomainJournal = (storage: DurableObjectStorage) =>
   io(() => storage.list<PersistedState>({ prefix })).pipe(
     Effect.map(
@@ -23,12 +18,6 @@ export const appDomainJournal = (storage: DurableObjectStorage) =>
     ),
   );
 
-/**
- * The rows `owns` selects, as one Alchemy stack. Reads come from the journal loaded by the caller,
- * which must hold the coordinator's lock while the view is in use: this object is the journal's
- * only writer. Persist every Alchemy transition, including interrupted creates and replacements,
- * before continuing.
- */
 export const appDomainState = (
   storage: DurableObjectStorage,
   journal: Map<string, PersistedState>,
@@ -43,7 +32,6 @@ export const appDomainState = (
     getVersion: () => Effect.succeed(STATE_STORE_VERSION),
     listStacks: () => Effect.succeed([stack]),
     listStages: () => Effect.succeed([stage]),
-    // Copies, like storage reads and writes, so Alchemy never shares an object with the journal.
     get: ({ fqn }) => {
       const row = owns(fqn) ? journal.get(fqn) : undefined;
       return Effect.succeed(row === undefined ? undefined : structuredClone(row));

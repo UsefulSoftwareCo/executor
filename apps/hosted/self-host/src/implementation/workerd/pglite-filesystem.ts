@@ -1,4 +1,3 @@
-/** PostgreSQL filesystem adapter backed by the actor's durable SQLite connection. */
 import { BaseFilesystem, ERRNO_CODES, type FsStats } from "@electric-sql/pglite/basefs";
 import type { DurableObjectStorage } from "@cloudflare/workers-types";
 import { Schema } from "effect";
@@ -23,7 +22,6 @@ const Block = Schema.Struct({
 });
 const decodeBlock = Schema.decodeUnknownSync(Block);
 
-/** Emscripten's filesystem boundary expects numeric errno in the code field. */
 class FilesystemError extends Error {
   constructor(readonly code: number) {
     super("PostgreSQL filesystem operation failed");
@@ -38,12 +36,6 @@ const checkInteger = (value: number) => {
   if (!Number.isSafeInteger(value) || value < 0) fail(ERRNO_CODES.EINVAL);
 };
 
-/**
- * Keep PostgreSQL's file bytes and WAL intact while SQLite owns atomic disk writes.
- * The caller must own the sole PGlite engine for this actor. Descriptors identify
- * inodes, so rename and unlink preserve already-open files. Acknowledged database
- * commits call syncToFs(), which awaits workerd's durable storage barrier.
- */
 export class PgliteFilesystem extends BaseFilesystem {
   readonly #storage: DurableObjectStorage;
   readonly #descriptors = new Map<number, number>();
@@ -70,8 +62,6 @@ export class PgliteFilesystem extends BaseFilesystem {
       );
     `);
     storage.transactionSync(() => {
-      // Open descriptors cannot survive actor replacement. Reclaim files unlinked
-      // by the previous engine, without touching named PostgreSQL files.
       storage.sql.exec(`DELETE FROM executor_pg_blocks WHERE inode IN
         (SELECT inode FROM executor_pg_files WHERE path IS NULL)`);
       storage.sql.exec("DELETE FROM executor_pg_files WHERE path IS NULL");
@@ -79,7 +69,6 @@ export class PgliteFilesystem extends BaseFilesystem {
     });
   }
 
-  /** Clear an unfinished bootstrap before retrying. Never call this on an opened engine. */
   resetBootstrap(): void {
     if (this.#descriptors.size !== 0) throw new Error("Cannot reset an open PostgreSQL filesystem");
     this.#storage.transactionSync(() => {
@@ -157,7 +146,6 @@ export class PgliteFilesystem extends BaseFilesystem {
     };
   }
 
-  /** Change permission bits without changing the file type. */
   override chmod(path: string, mode: number): void {
     const entry = this.#entry(path);
     this.#storage.sql.exec(
@@ -167,22 +155,18 @@ export class PgliteFilesystem extends BaseFilesystem {
       entry.inode,
     );
   }
-  /** Release a descriptor and reclaim an unlinked inode after its last close. */
   override close(descriptor: number): void {
     const entry = this.#descriptor(descriptor);
     this.#descriptors.delete(descriptor);
     if (entry.path === null) this.#storage.transactionSync(() => this.#remove(entry));
   }
-  /** Read metadata through a descriptor, including a renamed or unlinked file. */
   override fstat(descriptor: number): FsStats {
     return this.#stats(this.#descriptor(descriptor));
   }
-  /** Read metadata for a named entry. Symbolic links are deliberately unsupported. */
   override lstat(path: string): FsStats {
     return this.#stats(this.#entry(path));
   }
 
-  /** Create a directory; recursive creation accepts only existing directories. */
   override mkdir(path: string, options: { recursive?: boolean; mode?: number } = {}): void {
     const normalized = normalize(path);
     this.#storage.transactionSync(() => {
@@ -200,7 +184,6 @@ export class PgliteFilesystem extends BaseFilesystem {
     });
   }
 
-  /** Open an inode. Emscripten creates and truncates files before its default r+ open. */
   override open(path: string, flags = "r+", mode = 0o600): number {
     return this.#storage.transactionSync(() => {
       let entry = this.#find(path);
@@ -217,7 +200,6 @@ export class PgliteFilesystem extends BaseFilesystem {
     });
   }
 
-  /** Return direct children only; SQL glob syntax never interprets a file name. */
   override readdir(path: string): string[] {
     const normalized = normalize(path);
     if (!isDirectory(this.#entry(normalized))) return fail(ERRNO_CODES.ENOTDIR);
@@ -233,7 +215,6 @@ export class PgliteFilesystem extends BaseFilesystem {
       });
   }
 
-  /** Read sparse file blocks, returning zeroes for holes and stopping at EOF. */
   override read(
     descriptor: number,
     buffer: Uint8Array,
@@ -258,7 +239,6 @@ export class PgliteFilesystem extends BaseFilesystem {
     return count;
   }
 
-  /** Write a range atomically. PGlite's current bridge passes the backing ArrayBuffer. */
   override write(
     descriptor: number,
     input: Uint8Array | ArrayBuffer,
@@ -298,7 +278,6 @@ export class PgliteFilesystem extends BaseFilesystem {
     return length;
   }
 
-  /** Replace a complete file. The descriptor is closed even if a write fails. */
   override writeFile(
     path: string,
     data: string | Uint8Array,
@@ -323,7 +302,6 @@ export class PgliteFilesystem extends BaseFilesystem {
     });
   }
 
-  /** Resize a file, zeroing truncated bytes so later extension cannot reveal old data. */
   override truncate(path: string, length: number): void {
     checkInteger(length);
     const entry = this.#entry(path);
@@ -355,7 +333,6 @@ export class PgliteFilesystem extends BaseFilesystem {
     });
   }
 
-  /** Atomically rename a file or subtree while preserving open descriptors. */
   override rename(from: string, to: string): void {
     const source = normalize(from),
       destination = normalize(to);
@@ -389,20 +366,17 @@ export class PgliteFilesystem extends BaseFilesystem {
     });
   }
 
-  /** Remove an empty directory. */
   override rmdir(path: string): void {
     const entry = this.#entry(path);
     if (normalize(path) === "/") fail(ERRNO_CODES.EINVAL);
     if (this.readdir(path).length > 0) fail(ERRNO_CODES.ENOTEMPTY);
     this.#storage.transactionSync(() => this.#remove(entry));
   }
-  /** Unlink a file; existing descriptors remain usable until closed. */
   override unlink(path: string): void {
     const entry = this.#entry(path);
     if (isDirectory(entry)) fail(ERRNO_CODES.EISDIR);
     this.#storage.transactionSync(() => this.#remove(entry));
   }
-  /** Preserve timestamps supplied by PostgreSQL and imported files. */
   override utimes(path: string, atime: number, mtime: number): void {
     const entry = this.#entry(path);
     this.#storage.sql.exec(
@@ -413,7 +387,6 @@ export class PgliteFilesystem extends BaseFilesystem {
       entry.inode,
     );
   }
-  /** Wait until workerd has persisted all acknowledged PostgreSQL writes. */
   override async syncToFs(): Promise<void> {
     await this.#storage.sync();
   }

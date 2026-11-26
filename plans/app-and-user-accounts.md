@@ -193,7 +193,7 @@ Schedules show their scope.
   app's pin, so it now pins `0.0.1-beta.84`, a protocol 12 release,
   instead of the host's release, on which that source no longer builds.
 
-Follow-up: move v1's integration-wide fixed credentials (`notes/v1-import.md`)
+Follow-up: move v1's integration-wide fixed credentials (`notes/v1-import.md`, removed)
 to app links once this lands.
 
 ## Stack

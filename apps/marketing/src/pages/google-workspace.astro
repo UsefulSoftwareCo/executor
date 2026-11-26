@@ -1,5 +1,6 @@
 ---
 import "../styles/standalone.css";
+import { siteOrigin } from "../content/site-origin.ts";
 const services = [
   {
     name: "Google Calendar",
@@ -54,7 +55,7 @@ const services = [
       name="description"
       content="Executor connects AI agents to Google Workspace and related Google services with your permission."
     />
-    <link rel="canonical" href="https://executor.sh/google-workspace" />
+    <link rel="canonical" href={`${siteOrigin}/google-workspace`} />
     <title>Executor</title>
   </head>
   <body class="m-0 leading-[1.6]">

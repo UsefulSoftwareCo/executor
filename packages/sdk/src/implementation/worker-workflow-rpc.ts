@@ -1,14 +1,18 @@
-/** Invocation-owned RPC capabilities preserve the Effect context across Dynamic Worker calls. */
-import { Cause, Effect, Redacted, Schema } from "effect";
+import { Cause, Effect, Redacted, Schema, SchemaIssue } from "effect";
 import {
   WorkflowFailure,
   WorkflowRpcCommand,
   WorkflowRpcResult,
   WorkflowControlCommand,
+  WorkflowRun,
+  WorkflowRunPage,
+  workflowDurationMillis,
   type WorkflowExecution,
   type WorkflowHostControls,
   type WorkflowRpc,
 } from "apps/contracts";
+import { repeatedSleep } from "./workflow-engine-calls.ts";
+import { untilTime } from "./sleep-until.ts";
 
 const reply = <A>(effect: Effect.Effect<A, unknown>) =>
   effect.pipe(
@@ -26,7 +30,6 @@ const reply = <A>(effect: Effect.Effect<A, unknown>) =>
     }),
     Effect.flatMap(Schema.encodeUnknownEffect(WorkflowRpcResult)),
   );
-/** A run's step dispatcher cannot change its run or app identity. */
 export const invocationWorkflow = (
   execution: WorkflowExecution,
   signal: AbortSignal,
@@ -58,20 +61,29 @@ export const invocationWorkflow = (
                 );
               }
               case "sleep":
-                return yield* execution.driver
-                  .sleep(command.name, command.duration)
-                  .pipe(Effect.as(null));
+                return yield* repeatedSleep(
+                  execution.runId,
+                  "sleep",
+                  command.name,
+                  () => execution.driver.sleep(command.name, command.duration),
+                  workflowDurationMillis(command.duration),
+                );
               case "until":
-                return yield* execution.driver
-                  .sleepUntil(command.name, command.timestamp)
-                  .pipe(Effect.as(null));
+                return yield* repeatedSleep(
+                  execution.runId,
+                  "until",
+                  command.name,
+                  () =>
+                    untilTime(command.timestamp, () =>
+                      execution.driver.sleepUntil(command.name, command.timestamp),
+                    ),
+                  undefined,
+                );
               case "context": {
                 const context = yield* execution.resolve();
                 return Redacted.value(context.accounts);
               }
               case "invoke":
-                // RPC Promise cancellation cannot interrupt its remote callee. Apply
-                // the attempt deadline on the host that owns the storage transaction.
                 return yield* execution.invoke(command).pipe(
                   Effect.timeout(command.timeout),
                   Effect.catchTag("TimeoutError", () =>
@@ -84,26 +96,60 @@ export const invocationWorkflow = (
         { signal },
       );
   });
-/** App-scoped lifecycle management uses the same private callback transport as step execution. */
+const issues = SchemaIssue.makeFormatterStandardSchemaV1();
+const controlOperations = ["start", "get", "list", "terminate"] as const;
+const invalidControl = (input: unknown, error: Schema.SchemaError) => {
+  const operation =
+    typeof input === "object" && input !== null && "operation" in input
+      ? controlOperations.find((name) => name === input.operation)
+      : undefined;
+  const fields = issues(error.issue)
+    .issues.slice(0, 4)
+    .map(({ path, message }) => {
+      const field = (path ?? []).map(String).join(".");
+      return `${field === "" ? "input" : field}: ${message.slice(0, 200)}`;
+    });
+  return new WorkflowFailure({
+    reason: "input",
+    retryable: false,
+    message: `${operation === undefined ? "The workflow call" : `ctx.workflows.${operation}`} was refused before Executor started or changed any run. ${fields.join("; ")}.`,
+  });
+};
 export const invocationWorkflowControls = (controls: WorkflowHostControls, signal: AbortSignal) =>
   Effect.gen(function* () {
     const services = yield* Effect.context<never>();
+    const run = Schema.encodeEffect(WorkflowRun);
     return (input: unknown): Promise<unknown> =>
       Effect.runPromiseWith(services)(
         reply(
           Effect.gen(function* () {
-            const command = yield* Schema.decodeUnknownEffect(WorkflowControlCommand)(input);
+            const command = yield* Schema.decodeUnknownEffect(WorkflowControlCommand)(input).pipe(
+              Effect.mapError((error) => invalidControl(input, error)),
+            );
+            yield* Effect.annotateCurrentSpan("executor.workflow.operation", command.operation);
             switch (command.operation) {
               case "start":
-                return yield* controls.start(command);
+                return yield* controls.start(command).pipe(Effect.flatMap(run));
               case "get":
-                return yield* controls.get(command);
+                return yield* controls.get(command).pipe(Effect.flatMap(run));
               case "list":
-                return yield* controls.list(command);
+                return yield* controls
+                  .list(command)
+                  .pipe(Effect.flatMap(Schema.encodeEffect(WorkflowRunPage)));
               case "terminate":
-                return yield* controls.terminate(command);
+                return yield* controls.terminate(command).pipe(Effect.flatMap(run));
             }
-          }),
+          }).pipe(
+            Effect.tapError((error) =>
+              Schema.is(WorkflowFailure)(error)
+                ? Effect.annotateCurrentSpan({
+                    "executor.workflow.failure.reason": error.reason,
+                    "executor.workflow.failure.retryable": error.retryable,
+                  })
+                : Effect.void,
+            ),
+            Effect.withSpan("workflow.control"),
+          ),
         ),
         { signal },
       );

@@ -1,4 +1,3 @@
-/** Each member's app account links, through the actual hosted API and connection completion. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -24,14 +23,18 @@ import {
   appAccountsFixture,
   appAccountsMigration,
   appAccountsSource,
-  sharedAccountFixture,
+  secondAccountFixture,
 } from "../support/hosted-app-accounts.ts";
 import { scenarios } from "../test-plan.ts";
 import { McpClient } from "../support/mcp-client.ts";
+import { siteless } from "../support/failure-site.ts";
+
+const TextContent = Schema.Array(
+  Schema.Struct({ type: Schema.Literal("text"), text: Schema.String }),
+);
 
 const Failure = Schema.Struct({ _tag: Schema.String });
 const AccountDetail = Schema.Struct({ account: Resource });
-/** One requirement as `GET .../accounts/{scope}/:requirement` returns it. */
 const Requirement = Schema.Struct({
   requirement: Schema.String,
   scope: Schema.String,
@@ -42,10 +45,6 @@ const Requirement = Schema.Struct({
   ),
 });
 
-/**
- * AccountChoiceUnsupported as the MCP skills tool returns it for a read naming accounts: its code
- * and status lead, as in an uncaught `execute` refusal.
- */
 const accountChoiceUnsupported =
   "AccountChoiceUnsupported (HTTP 400): Accounts are not chosen per call. Each app uses the accounts you linked to it: one for each plain requirement, and every linked account for a many() requirement. Recovery: Call again without choosing accounts. Change the app's accounts in its Accounts tab. Retryable (unchanged call): no.";
 
@@ -58,8 +57,6 @@ layer(HostedLive, { excludeTestServices: true })("Hosted app accounts", (it) => 
           yield* appAccountsFixture;
         const browser = yield* Browser;
         const skillPath = `${path}/skills/selected-account`;
-        // Each member's links are their own: the inventory and the app's Accounts list show only
-        // the caller's links, and the owner, who linked nothing, has none.
         expect(yield* inventoryLinks(actors.member)).toEqual([mailA]);
         expect(yield* inventoryLinks(actors.admin)).toEqual([mailB]);
         expect(yield* inventoryLinks(actors.owner)).toEqual([]);
@@ -67,7 +64,6 @@ layer(HostedLive, { excludeTestServices: true })("Hosted app accounts", (it) => 
         expect(yield* linkedAccountIds(actors.admin, path)).toEqual([mailB]);
         expect(yield* linkedAccountIds(actors.owner, path)).toEqual([]);
 
-        // Skills read with the caller's own linked account.
         const memberSkill = yield* api.request(actors.member, "GET", skillPath);
         expect(memberSkill.status, JSON.stringify(memberSkill.body)).toBe(200);
         expect(memberSkill.body).toMatchObject({ content: expect.stringContaining(mailA) });
@@ -83,8 +79,6 @@ layer(HostedLive, { excludeTestServices: true })("Hosted app accounts", (it) => 
         );
         yield* browser.checkpoint("Skills use the member's linked account");
 
-        // Calls run with the caller's own linked accounts. Each connection linked its account to
-        // `service` only, so the many() `extra` requirement, which shares the provider, has none.
         expect(yield* accountLinks(actors.member, path)).toEqual([["service", mailA]]);
         expect(yield* who(yield* call(actors.member))).toEqual({
           context: { auth: false, profile: false },
@@ -117,7 +111,6 @@ layer(HostedLive, { excludeTestServices: true })("Hosted app accounts", (it) => 
         expect((yield* api.request(actors.member, "GET", path)).body).not.toHaveProperty(
           "accounts",
         );
-        // A member cannot link another member's personal account, so their calls never use it.
         yield* Effect.forEach(
           [
             [actors.member, mailB],
@@ -137,8 +130,6 @@ layer(HostedLive, { excludeTestServices: true })("Hosted app accounts", (it) => 
         expect(yield* who(yield* call(actors.admin))).toMatchObject({ account: mailB });
         expect((yield* call(actors.owner)).status).toBe(409);
 
-        // Unlinking keeps the saved account; calls need it linked again, and relinking restores
-        // them with the same account.
         yield* unlinkAccount(actors.member, path, "service", mailA);
         expect(yield* linkedAccountIds(actors.member, path)).toEqual([]);
         expect(yield* inventoryLinks(actors.member)).toEqual([]);
@@ -153,7 +144,6 @@ layer(HostedLive, { excludeTestServices: true })("Hosted app accounts", (it) => 
           account: mailA,
           extra: [],
         });
-        // Bob's link was never affected.
         expect(yield* who(yield* call(actors.admin))).toMatchObject({ account: mailB });
       }),
     ),
@@ -164,26 +154,21 @@ layer(HostedLive, { excludeTestServices: true })("Hosted app accounts", (it) => 
       Effect.gen(function* () {
         const { api, actors, prefix, path, mailA, mailB, connect, call } =
           yield* appAccountsFixture;
-        // Bob connects a shared account from the app for the many() `extra` requirement. The
-        // connection links it there only: his `service` link keeps his personal account.
-        const shared = yield* connect(actors.admin, "Shared mail", {
-          shared: true,
+        const second = yield* connect(actors.member, "Alice second mail", {
           requirement: "extra",
         });
-        expect(yield* accountLinks(actors.admin, path)).toEqual([
-          ["extra", shared],
-          ["service", mailB],
+        expect(yield* accountLinks(actors.member, path)).toEqual([
+          ["extra", second],
+          ["service", mailA],
         ]);
-        // Linking returns the link, and linking it again changes nothing.
         for (let attempt = 0; attempt < 2; attempt++) {
-          const linked = yield* linkAccountResponse(actors.member, path, "extra", shared);
+          const linked = yield* linkAccountResponse(actors.member, path, "extra", second);
           expect(linked.status, JSON.stringify(linked.body)).toBe(200);
           expect(yield* body(AccountLink, linked)).toMatchObject({
             requirement: "extra",
-            account: { id: shared, label: "Shared mail" },
+            account: { id: second, label: "Alice second mail" },
           });
         }
-        // The list names each link's requirement: by requirement, then oldest link first.
         const listed = yield* api.request(actors.member, "GET", `${path}/accounts/user`);
         expect(listed.status).toBe(200);
         expect(
@@ -193,53 +178,43 @@ layer(HostedLive, { excludeTestServices: true })("Hosted app accounts", (it) => 
             link.account.label,
           ]),
         ).toEqual([
-          ["extra", shared, "Shared mail"],
+          ["extra", second, "Alice second mail"],
           ["service", mailA, "Alice mail"],
         ]);
-        // Unlinking returns the link, and the account stays saved and usable for the organization.
-        const unlinked = yield* unlinkAccountResponse(actors.member, path, "extra", shared);
+        const unlinked = yield* unlinkAccountResponse(actors.member, path, "extra", second);
         expect(unlinked.status, JSON.stringify(unlinked.body)).toBe(200);
-        expect(unlinked.body).toEqual({ requirement: "extra", account: shared });
+        expect(unlinked.body).toEqual({ requirement: "extra", account: second });
         expect(yield* accountLinks(actors.member, path)).toEqual([["service", mailA]]);
-        const second = yield* unlinkAccountResponse(actors.member, path, "extra", shared);
-        expect(second.status, JSON.stringify(second.body)).toBe(404);
-        expect((yield* body(Failure, second))._tag).toBe("AccountNotFound");
-        const kept = yield* api.request(actors.member, "GET", `${prefix}/accounts/${shared}`);
+        const again = yield* unlinkAccountResponse(actors.member, path, "extra", second);
+        expect(again.status, JSON.stringify(again.body)).toBe(404);
+        expect((yield* body(Failure, again))._tag).toBe("AccountNotFound");
+        const kept = yield* api.request(actors.member, "GET", `${prefix}/accounts/${second}`);
         expect(kept.status, JSON.stringify(kept.body)).toBe(200);
-        expect((yield* body(AccountDetail, kept)).account.id).toBe(shared);
+        expect((yield* body(AccountDetail, kept)).account.id).toBe(second);
         expect(
           (yield* body(
             Inventory,
             yield* api.request(actors.member, "GET", `${prefix}/inventory`),
           )).accounts.map((account) => account.id),
-        ).toContain(shared);
-        // Bob's link to his shared account is unaffected by Alice unlinking it.
-        expect(yield* accountLinks(actors.admin, path)).toEqual([
-          ["extra", shared],
-          ["service", mailB],
-        ]);
-        // Links are keyed by requirement, even where two share a provider. Linking to many()
-        // adds; linking to the plain requirement replaces its account, which stays linked to
-        // `extra`.
+        ).toContain(second);
+        expect(yield* accountLinks(actors.admin, path)).toEqual([["service", mailB]]);
         yield* linkAccount(actors.member, path, "extra", mailA);
-        yield* linkAccount(actors.member, path, "extra", shared);
+        yield* linkAccount(actors.member, path, "extra", second);
         expect(yield* who(yield* call(actors.member))).toMatchObject({
           account: mailA,
-          extra: [mailA, shared],
+          extra: [mailA, second],
         });
-        yield* linkAccount(actors.member, path, "service", shared);
+        yield* linkAccount(actors.member, path, "service", second);
         expect(yield* accountLinks(actors.member, path)).toEqual([
           ["extra", mailA],
-          ["extra", shared],
-          ["service", shared],
+          ["extra", second],
+          ["service", second],
         ]);
         expect(yield* who(yield* call(actors.member))).toMatchObject({
-          account: shared,
-          extra: [mailA, shared],
+          account: second,
+          extra: [mailA, second],
         });
 
-        // One requirement lists its linked accounts first, marked, then the caller's other usable
-        // accounts of its provider. Alice never sees Bob's personal account, nor Bob hers.
         const requirement = (actor: typeof actors.member, name: string) =>
           Effect.gen(function* () {
             const response = yield* api.request(actor, "GET", requirementPath(path, "user", name));
@@ -261,7 +236,7 @@ layer(HostedLive, { excludeTestServices: true })("Hosted app accounts", (it) => 
           provider,
           cardinality: "one",
           accounts: [
-            [shared, true],
+            [second, true],
             [mailA, false],
           ],
         });
@@ -272,18 +247,14 @@ layer(HostedLive, { excludeTestServices: true })("Hosted app accounts", (it) => 
           cardinality: "many",
           accounts: [
             [mailA, true],
-            [shared, true],
+            [second, true],
           ],
         });
         expect(yield* requirement(actors.admin, "service")).toMatchObject({
           cardinality: "one",
-          accounts: [
-            [mailB, true],
-            [shared, false],
-          ],
+          accounts: [[mailB, true]],
         });
 
-        // A requirement the app does not declare in that scope cannot be read or linked.
         const unknownRequirement = (scope: "app" | "user", name: string) => ({
           _tag: "RequirementMismatch",
           requirement: name,
@@ -300,18 +271,12 @@ layer(HostedLive, { excludeTestServices: true })("Hosted app accounts", (it) => 
         const unknownLink = yield* linkAccountResponse(actors.member, path, "missing", mailA);
         expect(unknownLink.status, JSON.stringify(unknownLink.body)).toBe(422);
         expect(unknownLink.body).toMatchObject(unknownRequirement("user", "missing"));
-        // `service` is a user requirement: Bob, who can edit the app, cannot link it for everyone.
-        const wrongScope = yield* linkAccountResponse(actors.admin, path, "service", shared, "app");
+        const wrongScope = yield* linkAccountResponse(actors.admin, path, "service", mailB, "app");
         expect(wrongScope.status, JSON.stringify(wrongScope.body)).toBe(422);
         expect(wrongScope.body).toMatchObject(unknownRequirement("app", "service"));
         expect(yield* accountLinks(actors.admin, path, "app")).toEqual([]);
-        expect(yield* accountLinks(actors.member, path)).toEqual([
-          ["extra", mailA],
-          ["extra", shared],
-          ["service", shared],
-        ]);
+        expect(yield* accountLinks(actors.admin, path)).toEqual([["service", mailB]]);
 
-        // An account of another provider cannot be linked to the requirement.
         const other = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
           name: `Other provider ${randomUUID().slice(0, 8)}`,
           files: [
@@ -338,7 +303,7 @@ export default defineApp({ user: { accounts: { other } } }, {});`,
           actors.owner,
           "POST",
           connectionsPath(otherPath, "user", "other"),
-          { destination: { kind: "shared", audience: { kind: "everyone" } } },
+          {},
         );
         expect(pending.status, JSON.stringify(pending.body)).toBe(200);
         const submitted = yield* api.request(
@@ -350,7 +315,7 @@ export default defineApp({ user: { accounts: { other } } }, {});`,
         expect(submitted.status, JSON.stringify(submitted.body)).toBe(200);
         const otherAccount = (yield* body(Resource, submitted)).id;
         otherAccounts.push(otherAccount);
-        const mismatch = yield* linkAccountResponse(actors.member, path, "service", otherAccount);
+        const mismatch = yield* linkAccountResponse(actors.owner, path, "service", otherAccount);
         expect(mismatch.status, JSON.stringify(mismatch.body)).toBe(422);
         expect(mismatch.body).toMatchObject({
           _tag: "RequirementMismatch",
@@ -358,29 +323,16 @@ export default defineApp({ user: { accounts: { other } } }, {});`,
           scope: "user",
           reason: "provider",
         });
-        expect(yield* accountLinks(actors.member, path)).toEqual([
-          ["extra", mailA],
-          ["extra", shared],
-          ["service", shared],
-        ]);
+        expect(yield* accountLinks(actors.owner, path)).toEqual([]);
 
-        // A member cannot link an account they cannot use: Bob's personal account, or a shared
-        // account whose audience excludes them.
         const personal = yield* linkAccountResponse(actors.member, path, "service", mailB);
         expect(personal.status, JSON.stringify(personal.body)).toBe(403);
-        const sharedAccess = `${prefix}/accounts/${shared}/access`;
-        const current = yield* body(Access, yield* api.request(actors.admin, "GET", sharedAccess));
-        expect(
-          (yield* api.request(actors.admin, "PATCH", sharedAccess, {
-            revision: current.revision,
-            audience: { kind: "groups", groups: [] },
-          })).status,
-        ).toBe(200);
-        yield* unlinkAccount(actors.member, path, "extra", shared);
-        yield* unlinkAccount(actors.member, path, "service", shared);
-        const revoked = yield* linkAccountResponse(actors.member, path, "extra", shared);
-        expect(revoked.status, JSON.stringify(revoked.body)).toBe(403);
-        expect(yield* accountLinks(actors.member, path)).toEqual([["extra", mailA]]);
+        expect((yield* linkAccountResponse(actors.member, path, "extra", mailB)).status).toBe(403);
+        expect(yield* accountLinks(actors.member, path)).toEqual([
+          ["extra", mailA],
+          ["extra", second],
+          ["service", second],
+        ]);
       }),
     ),
   );
@@ -388,54 +340,45 @@ export default defineApp({ user: { accounts: { other } } }, {});`,
     withHostedCase(
       context,
       Effect.gen(function* () {
-        const { api, actors, prefix, path, mailA, mailB, shared, connect, call } =
-          yield* sharedAccountFixture;
+        const { api, actors, prefix, path, mailA, mailB, secondA, secondB, connect, call } =
+          yield* secondAccountFixture;
         const skill = (actor: typeof actors.member) =>
           api.request(actor, "GET", `${path}/skills/selected-account`);
-        // `service` and `extra: service.many()` share a provider, yet each has its own links:
-        // Alice links the shared account to `service`, and her personal and the shared one to
-        // `extra`.
         expect(yield* accountLinks(actors.member, path)).toEqual([
           ["extra", mailA],
-          ["extra", shared],
-          ["service", shared],
+          ["extra", secondA],
+          ["service", secondA],
         ]);
-        // many() receives every linked account in link order; the plain requirement its one link.
         expect(yield* who(yield* call(actors.member))).toEqual({
           context: { auth: false, profile: false },
-          account: shared,
-          extra: [mailA, shared],
+          account: secondA,
+          extra: [mailA, secondA],
         });
-        // Reads that evaluate app code with the caller's accounts use the same accounts.
         const read = yield* skill(actors.member);
         expect(read.status, JSON.stringify(read.body)).toBe(200);
-        expect(read.body).toMatchObject({ content: expect.stringContaining(shared) });
-        // A third account connected from the app for many() joins it, and only it.
+        expect(read.body).toMatchObject({ content: expect.stringContaining(secondA) });
         const third = yield* connect(actors.member, "Alice third mail", { requirement: "extra" });
         expect(yield* accountLinks(actors.member, path)).toEqual([
           ["extra", mailA],
-          ["extra", shared],
+          ["extra", secondA],
           ["extra", third],
-          ["service", shared],
+          ["service", secondA],
         ]);
         expect(yield* who(yield* call(actors.member))).toEqual({
           context: { auth: false, profile: false },
-          account: shared,
-          extra: [mailA, shared, third],
+          account: secondA,
+          extra: [mailA, secondA, third],
         });
-        // Linking it to the plain requirement replaces that requirement's account; many() keeps
-        // every link.
         yield* linkAccount(actors.member, path, "service", third);
         expect(yield* who(yield* call(actors.member))).toEqual({
           context: { auth: false, profile: false },
           account: third,
-          extra: [mailA, shared, third],
+          extra: [mailA, secondA, third],
         });
         const replaced = yield* skill(actors.member);
         expect(replaced.status, JSON.stringify(replaced.body)).toBe(200);
         expect(replaced.body).toMatchObject({ content: expect.stringContaining(third) });
-        // Unlinking one from many() leaves the rest for later calls, still in link order.
-        yield* unlinkAccount(actors.member, path, "extra", shared);
+        yield* unlinkAccount(actors.member, path, "extra", secondA);
         expect(yield* who(yield* call(actors.member))).toMatchObject({
           account: third,
           extra: [mailA, third],
@@ -445,38 +388,33 @@ export default defineApp({ user: { accounts: { other } } }, {});`,
           account: third,
           extra: [mailA],
         });
-        // Linking again makes an account many()'s newest link once more, and replaces the plain
-        // requirement's account again.
-        yield* linkAccount(actors.member, path, "extra", shared);
-        yield* linkAccount(actors.member, path, "service", shared);
+        yield* linkAccount(actors.member, path, "extra", secondA);
+        yield* linkAccount(actors.member, path, "service", secondA);
         expect(yield* accountLinks(actors.member, path)).toEqual([
           ["extra", mailA],
-          ["extra", shared],
-          ["service", shared],
+          ["extra", secondA],
+          ["service", secondA],
         ]);
         expect(yield* who(yield* call(actors.member))).toMatchObject({
-          account: shared,
-          extra: [mailA, shared],
+          account: secondA,
+          extra: [mailA, secondA],
         });
-        // The plain requirement uses only its own link: unlinked, nothing is taken from many()'s
-        // links of the same provider.
-        yield* unlinkAccount(actors.member, path, "service", shared);
+        yield* unlinkAccount(actors.member, path, "service", secondA);
         const missing = yield* call(actors.member);
         expect(missing.status, JSON.stringify(missing.body)).toBe(409);
         expect(missing.body).toMatchObject({ _tag: "AccountRequired", slot: "service" });
-        yield* linkAccount(actors.member, path, "service", shared);
-        // Accounts unlinked from the app stay saved, and Bob's own links were never affected.
+        yield* linkAccount(actors.member, path, "service", secondA);
         expect(
           (yield* api.request(actors.member, "GET", `${prefix}/accounts/${third}`)).status,
         ).toBe(200);
         expect(yield* accountLinks(actors.admin, path)).toEqual([
           ["extra", mailB],
-          ["extra", shared],
-          ["service", shared],
+          ["extra", secondB],
+          ["service", secondB],
         ]);
         expect(yield* who(yield* call(actors.admin))).toMatchObject({
-          account: shared,
-          extra: [mailB, shared],
+          account: secondB,
+          extra: [mailB, secondB],
         });
       }),
     ),
@@ -485,64 +423,49 @@ export default defineApp({ user: { accounts: { other } } }, {});`,
     withHostedCase(
       context,
       Effect.gen(function* () {
-        const { api, actors, prefix, path, mailA, mailB, call, inventoryLinks, shared } =
-          yield* sharedAccountFixture;
+        const { api, actors, prefix, path, mailA, mailB, secondA, secondB, call, inventoryLinks } =
+          yield* secondAccountFixture;
         expect(yield* who(yield* call(actors.member))).toMatchObject({
-          account: shared,
-          extra: [mailA, shared],
+          account: secondA,
+          extra: [mailA, secondA],
         });
-        // Deleting Alice's own account drops it from her links; nothing is substituted.
+        for (const admin of [actors.owner, actors.admin]) {
+          const refused = yield* api.request(admin, "DELETE", `${prefix}/accounts/${mailA}`);
+          expect(refused.status, JSON.stringify(refused.body)).toBe(403);
+        }
+        expect(yield* accountLinks(actors.member, path)).toEqual([
+          ["extra", mailA],
+          ["extra", secondA],
+          ["service", secondA],
+        ]);
         expect(
           (yield* api.request(actors.member, "DELETE", `${prefix}/accounts/${mailA}`)).status,
         ).toBe(200);
         expect(yield* accountLinks(actors.member, path)).toEqual([
-          ["extra", shared],
-          ["service", shared],
+          ["extra", secondA],
+          ["service", secondA],
         ]);
         expect(yield* who(yield* call(actors.member))).toMatchObject({
-          account: shared,
-          extra: [shared],
+          account: secondA,
+          extra: [secondA],
         });
-        expect(yield* linkedAccountIds(actors.admin, path)).toEqual([mailB, shared]);
-        // Revoking Alice's access to the shared account removes it from her calls at use time.
-        const sharedAccess = yield* body(
-          Access,
-          yield* api.request(actors.admin, "GET", `${prefix}/accounts/${shared}/access`),
-        );
+        expect(yield* linkedAccountIds(actors.admin, path)).toEqual([mailB, secondB]);
         expect(
-          (yield* api.request(actors.admin, "PATCH", `${prefix}/accounts/${shared}/access`, {
-            revision: sharedAccess.revision,
-            audience: { kind: "groups", groups: [] },
-          })).status,
+          (yield* api.request(actors.admin, "DELETE", `${prefix}/accounts/${secondB}`)).status,
         ).toBe(200);
-        expect(yield* linkedAccountIds(actors.member, path)).toEqual([]);
-        expect(yield* inventoryLinks(actors.member)).toEqual([]);
-        const revoked = yield* call(actors.member);
-        expect(revoked.status, JSON.stringify(revoked.body)).toBe(409);
-        expect((yield* body(Failure, revoked))._tag).toBe("AccountRequired");
-        const revokedSkill = yield* api.request(
-          actors.member,
-          "GET",
-          `${path}/skills/selected-account`,
-        );
-        expect(revokedSkill.status, JSON.stringify(revokedSkill.body)).toBe(409);
-        expect((yield* body(Failure, revokedSkill))._tag).toBe("AccountRequired");
-        expect((yield* linkAccountResponse(actors.member, path, "service", shared)).status).toBe(
-          403,
-        );
-        // No group remains in the audience, so the account drops out of Bob's links as well.
-        // Nothing is substituted for his plain requirement: his personal account, still linked to
-        // `extra`, serves `service` only once he links it there again.
         expect(yield* accountLinks(actors.admin, path)).toEqual([["extra", mailB]]);
-        const bobRevoked = yield* call(actors.admin);
-        expect(bobRevoked.status, JSON.stringify(bobRevoked.body)).toBe(409);
-        expect((yield* body(Failure, bobRevoked))._tag).toBe("AccountRequired");
+        const bobUnlinked = yield* call(actors.admin);
+        expect(bobUnlinked.status, JSON.stringify(bobUnlinked.body)).toBe(409);
+        expect((yield* body(Failure, bobUnlinked))._tag).toBe("AccountRequired");
+        const bobSkill = yield* api.request(actors.admin, "GET", `${path}/skills/selected-account`);
+        expect(bobSkill.status, JSON.stringify(bobSkill.body)).toBe(409);
+        expect((yield* body(Failure, bobSkill))._tag).toBe("AccountRequired");
         yield* linkAccount(actors.admin, path, "service", mailB);
         expect(yield* who(yield* call(actors.admin))).toMatchObject({
           account: mailB,
           extra: [mailB],
         });
-        // Making the app private stops Alice's calls and removes it from her inventory.
+        expect(yield* inventoryLinks(actors.member)).toEqual([secondA]);
         const appAccess = yield* body(
           Access,
           yield* api.request(actors.owner, "GET", `${path}/access`),
@@ -558,9 +481,8 @@ export default defineApp({ user: { accounts: { other } } }, {});`,
         expect(
           (yield* api.request(actors.member, "GET", `${path}/skills/selected-account`)).status,
         ).toBe(403);
-        // Alice can still clean up her own links after losing access.
-        yield* unlinkAccount(actors.member, path, "service", shared);
-        yield* unlinkAccount(actors.member, path, "extra", shared);
+        yield* unlinkAccount(actors.member, path, "service", secondA);
+        yield* unlinkAccount(actors.member, path, "extra", secondA);
       }),
     ),
   );
@@ -570,8 +492,6 @@ export default defineApp({ user: { accounts: { other } } }, {});`,
       Effect.gen(function* () {
         const { api, actors, app, path, mailA, connect } = yield* appAccountsFixture;
         const mcp = yield* McpClient;
-        // Alice connects a second account for the plain requirement the skill's text depends on,
-        // which replaces her first there.
         const second = yield* connect(actors.member, "Alice second mail");
         expect(yield* accountLinks(actors.member, path)).toEqual([["service", second]]);
         const issued = yield* api.request(actors.member, "POST", "/api/auth/api-key/create", {
@@ -595,14 +515,12 @@ export default defineApp({ user: { accounts: { other } } }, {});`,
             client.callTool({ name: "skills", arguments: input }, undefined, { signal }),
           );
         const named = { app: app.slug, name: "selected-account" };
-        // The read uses the plain requirement's link, as a tool call does.
         const read = yield* skills("Read with the linked accounts", named);
         expect(read.isError, JSON.stringify(read)).not.toBe(true);
         expect(read.structuredContent).toMatchObject({
           content: expect.stringContaining(second),
         });
         expect(JSON.stringify(read.structuredContent)).not.toContain(mailA);
-        // Reads never choose accounts: naming them is refused, for a document or a listing.
         for (const [step, input] of [
           ["Read a skill naming an account", { ...named, accounts: { service: mailA } }],
           [
@@ -612,15 +530,18 @@ export default defineApp({ user: { accounts: { other } } }, {});`,
         ] as const) {
           const refused = yield* skills(step, input);
           expect(refused.isError, JSON.stringify(refused)).toBe(true);
-          // The skills tool's error text names AccountChoiceUnsupported's code and status.
-          expect(refused.content).toEqual([{ type: "text", text: accountChoiceUnsupported }]);
+          expect(
+            Schema.decodeUnknownSync(TextContent)(refused.content).map((item) => ({
+              ...item,
+              text: siteless(item.text),
+            })),
+          ).toEqual([{ type: "text", text: accountChoiceUnsupported }]);
         }
         const listed = yield* skills("List the app's skills", { app: app.slug });
         expect(listed.isError, JSON.stringify(listed)).not.toBe(true);
         expect(listed.structuredContent).toMatchObject({
           skills: [expect.objectContaining({ name: "selected-account" })],
         });
-        // The full index reads the app with the same linked accounts.
         const index = yield* skills("List every app's skills", {});
         const result = Schema.decodeUnknownSync(
           Schema.Struct({
@@ -646,7 +567,6 @@ export default defineApp({ user: { accounts: { other } } }, {});`,
           api.request(actors.member, "GET", `${path}/skills/selected-account${query}`);
         const first = yield* body(SkillRead, yield* read(""));
         expect(first.content).toContain(mailA);
-        // A newer version renames the requirement the skill's text depends on.
         const renamed = appAccountsSource
           .replace("accounts: { service, extra:", "accounts: { mail: service, extra:")
           .replaceAll("accounts.service.", "accounts.mail.");
@@ -654,8 +574,6 @@ export default defineApp({ user: { accounts: { other } } }, {});`,
           files: [{ path: "index.ts", content: renamed }, appAccountsMigration, appsManifest],
         });
         expect(redeployed.status, JSON.stringify(redeployed.body)).toBe(200);
-        // Links name their requirement, so the renamed one has none until Alice links an account
-        // to it: the current skill needs one.
         const unlinked = yield* read("");
         expect(unlinked.status, JSON.stringify(unlinked.body)).toBe(409);
         expect(unlinked.body).toMatchObject({ _tag: "AccountRequired", slot: "mail" });
@@ -666,8 +584,6 @@ export default defineApp({ user: { accounts: { other } } }, {});`,
         expect(current.version).not.toBe(first.version);
         expect(current.content).toContain(renamedMail);
         expect(current.content).not.toContain(mailA);
-        // The earlier version's skill still reads with that version's own requirement, whose
-        // link to mailA remains.
         const pinned = yield* read(`?version=${first.version}`);
         expect(pinned.status, JSON.stringify(pinned.body)).toBe(200);
         expect(yield* body(SkillRead, pinned)).toMatchObject({
@@ -675,7 +591,6 @@ export default defineApp({ user: { accounts: { other } } }, {});`,
           content: expect.stringContaining(mailA),
         });
 
-        // MCP reads pinned to the earlier version resolve the same way.
         const issued = yield* api.request(actors.member, "POST", "/api/auth/api-key/create", {
           name: "Historical skill",
         });

@@ -20,6 +20,7 @@ const AppProvider = Schema.Struct({
 });
 const Setup = Schema.Struct({
   mode: Schema.Literals(["automatic", "client-required"]),
+  resource: Schema.Struct({ value: Schema.NullOr(Schema.String), source: Schema.String }),
   clients: Schema.Array(Schema.Unknown),
 });
 
@@ -57,19 +58,28 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
         const app = yield* deploy("Setup fixture");
         const setupPath = (provider: string) => `${prefix}/providers/${provider}/oauth/oauth/setup`;
         const provider = app.requirements.accounts.service.provider;
-        const inspect = (target: string) =>
+        const inspect = (target: string, registers: boolean) =>
           Effect.gen(function* () {
             const response = yield* api.request(actors.owner, "GET", setupPath(target));
             expect(response.status).toBe(200);
             expect(
               Object.keys(yield* body(Schema.Record(Schema.String, Schema.Unknown), response)),
-            ).toEqual(["mode", "scopes", "grant", "issuer", "tokenEndpointAuthMethod", "clients"]);
+            ).toEqual([
+              "mode",
+              "scopes",
+              "resource",
+              "grant",
+              "issuer",
+              "tokenEndpointAuthMethod",
+              ...(registers ? ["chooseAgain"] : []),
+              "clients",
+            ]);
             const setup = yield* body(Setup, response);
-            // No one registered a client for its server, so none is offered.
+            expect(setup.resource).toEqual({ value: `${issuer.origin}/mcp`, source: "metadata" });
             expect(setup.clients).toEqual([]);
             return setup;
           });
-        expect((yield* inspect(provider)).mode).toBe("automatic");
+        expect((yield* inspect(provider, true)).mode).toBe("automatic");
         expect((yield* issuer.metrics).registrations).toBe(0);
         expect((yield* api.request(actors.member, "GET", setupPath(provider))).status).toBe(403);
         const start = (target: typeof AppProvider.Type) =>
@@ -93,26 +103,21 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
         expect((yield* start(app)).status).toBe(200);
         expect((yield* issuer.metrics).registrations).toBe(1);
         yield* issuer.configure({ registration: false });
-        // The organization's automatic client still signs in without registering again.
-        expect((yield* inspect(provider)).mode).toBe("automatic");
+        expect((yield* inspect(provider, false)).mode).toBe("automatic");
         expect((yield* issuer.metrics).registrations).toBe(1);
         yield* issuer.configure({ scopes: ["write"] });
-        expect((yield* inspect(provider)).mode).toBe("client-required");
+        expect((yield* inspect(provider, false)).mode).toBe("client-required");
         yield* issuer.configure({ scopes: ["read"] });
         const expired = yield* deploy("Expired setup fixture");
-        // Another app that signs in at the same server with the same callback and scopes finds
-        // the organization's registered client: the provider is not part of what it was
-        // registered for.
-        expect((yield* inspect(expired.requirements.accounts.service.provider)).mode).toBe(
+        expect((yield* inspect(expired.requirements.accounts.service.provider, false)).mode).toBe(
           "automatic",
         );
         expect((yield* issuer.metrics).registrations).toBe(1);
-        // A client registered for other scopes whose secret has expired is never automatic.
         yield* issuer.configure({ scopes: ["write"], registration: true, expiresAt: 1 });
         expect((yield* start(expired)).status).toBe(200);
         expect((yield* issuer.metrics).registrations).toBe(2);
         yield* issuer.configure({ registration: false });
-        expect((yield* inspect(expired.requirements.accounts.service.provider)).mode).toBe(
+        expect((yield* inspect(expired.requirements.accounts.service.provider, false)).mode).toBe(
           "client-required",
         );
         yield* issuer.configure({ scopes: ["read"] });

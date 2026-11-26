@@ -44,7 +44,7 @@ layer(HostedLive, { excludeTestServices: true })("Dashboard loading", (it) => {
         ]) {
           for (const section of ["apps", "accounts"] as const) {
             yield* browser.use("Open a page that reads neither section", (page) =>
-              page.goto(`/org/${actors.organization.slug}/connect`),
+              page.goto(`/org/${actors.organization.slug}/organization`),
             );
             yield* Effect.scoped(
               Effect.gen(function* () {
@@ -52,7 +52,6 @@ layer(HostedLive, { excludeTestServices: true })("Dashboard loading", (it) => {
                 yield* browser.use(`${viewport.name}: set the viewport`, (page) =>
                   page.setViewportSize({ width: viewport.width, height: viewport.height }),
                 );
-                // The document arrives with its data; the browser reads when it navigates itself.
                 yield* openInApp(`Open ${section}`, `/org/${actors.organization.slug}/${section}`);
                 yield* probe.resourcesRequested;
                 yield* browser.use("The destination heading is visible", (page) =>
@@ -69,7 +68,6 @@ layer(HostedLive, { excludeTestServices: true })("Dashboard loading", (it) => {
                     .waitFor({ state: "visible" }),
                 );
                 const requests = probe.requests;
-                // The running page already verified the organization, so it reads by that ID.
                 expect(requests).toContain(
                   `/api/organizations/${actors.organization.id}/resources`,
                 );
@@ -112,7 +110,6 @@ layer(HostedLive, { excludeTestServices: true })("Dashboard loading", (it) => {
                 );
                 yield* probe.releaseMetadata;
                 yield* probe.releaseSession;
-                // Phones show the sidebar's organization switcher only in the Menu sheet.
                 if (viewport.width <= 740)
                   yield* browser.use("Open the phone menu", (page) =>
                     page.getByRole("button", { name: "Menu", exact: true }).click(),

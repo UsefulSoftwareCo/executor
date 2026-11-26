@@ -8,27 +8,22 @@ import { Dialog as DialogPrimitive } from "radix-ui";
 
 import { Button } from "./button.tsx";
 
-/** Dialog primitive; accepts native props and composes caller styles. */
 function Dialog({ ...props }: React.ComponentProps<typeof DialogPrimitive.Root>) {
   return <DialogPrimitive.Root data-slot="dialog" {...props} />;
 }
 
-/** Dialog Trigger primitive; accepts native props and composes caller styles. */
 function DialogTrigger({ ...props }: React.ComponentProps<typeof DialogPrimitive.Trigger>) {
   return <DialogPrimitive.Trigger data-slot="dialog-trigger" {...props} />;
 }
 
-/** Dialog Portal primitive; accepts native props and composes caller styles. */
 function DialogPortal({ ...props }: React.ComponentProps<typeof DialogPrimitive.Portal>) {
   return <DialogPrimitive.Portal data-slot="dialog-portal" {...props} />;
 }
 
-/** Dialog Close primitive; accepts native props and composes caller styles. */
 function DialogClose({ ...props }: React.ComponentProps<typeof DialogPrimitive.Close>) {
   return <DialogPrimitive.Close data-slot="dialog-close" {...props} />;
 }
 
-/** Dialog Overlay primitive; accepts native props and composes caller styles. */
 function DialogOverlay({
   className,
   ...props
@@ -45,14 +40,9 @@ function DialogOverlay({
   );
 }
 
-/** The first field a member can type into or choose from. */
 const firstField =
   "input:not([type='hidden']):not(:disabled), textarea:not(:disabled), select:not(:disabled), button[role='combobox']:not(:disabled)";
 
-/**
- * A dialog with a form opens on its first field, rather than the first focusable element, which
- * can be a hint beside a field's label. A dialog without one keeps Radix's default.
- */
 const focusFirstField = (event: Event) => {
   const field =
     event.target instanceof Element ? event.target.querySelector<HTMLElement>(firstField) : null;
@@ -61,11 +51,6 @@ const focusFirstField = (event: Event) => {
   field.focus();
 };
 
-/**
- * Dialog Content primitive; accepts native props and composes caller styles. Closing returns focus
- * to the element that had it when the dialog opened, without scrolling to it: a button in a list
- * that scrolls stays where the member left it.
- */
 function DialogContent({
   className,
   children,
@@ -78,7 +63,6 @@ function DialogContent({
   showCloseButton?: boolean;
   overlayClassName?: string;
 }) {
-  // Read as the dialog first renders, before any field inside it takes focus.
   const [opener] = React.useState(() =>
     typeof document === "undefined" ? null : document.activeElement,
   );
@@ -99,7 +83,7 @@ function DialogContent({
           opener.focus({ preventScroll: true });
         }}
         className={cn(
-          "fixed top-[50%] left-[50%] z-50 grid w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] gap-4 rounded-lg border bg-background p-6 shadow-lg duration-200 outline-none data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 sm:max-w-lg",
+          "fixed top-[50%] left-[50%] z-50 grid max-h-[calc(100dvh-2rem)] w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] gap-4 rounded-lg border bg-background p-6 shadow-lg duration-200 overflow-y-auto outline-none data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 sm:max-w-lg",
           className,
         )}
         {...props}
@@ -122,7 +106,6 @@ function DialogContent({
   );
 }
 
-/** Dialog Header primitive; accepts native props and composes caller styles. */
 function DialogHeader({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
@@ -133,7 +116,6 @@ function DialogHeader({ className, ...props }: React.ComponentProps<"div">) {
   );
 }
 
-/** Dialog Footer primitive; accepts native props and composes caller styles. */
 function DialogFooter({
   className,
   showCloseButton = false,
@@ -158,7 +140,6 @@ function DialogFooter({
   );
 }
 
-/** Dialog Title primitive; accepts native props and composes caller styles. */
 function DialogTitle({ className, ...props }: React.ComponentProps<typeof DialogPrimitive.Title>) {
   return (
     <DialogPrimitive.Title
@@ -169,7 +150,6 @@ function DialogTitle({ className, ...props }: React.ComponentProps<typeof Dialog
   );
 }
 
-/** Dialog Description primitive; accepts native props and composes caller styles. */
 function DialogDescription({
   className,
   ...props

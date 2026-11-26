@@ -1,4 +1,3 @@
-/** Cloudflare Worker entry for the perf emulator; bundled and uploaded by `run-perf.ts emulator deploy`. */
 import { HttpRouter } from "effect/http";
 import { emulatorRoutes } from "./emulator.ts";
 

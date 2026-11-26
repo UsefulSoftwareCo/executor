@@ -11,7 +11,6 @@ import {
   LocalAccountDialog,
   type AccountDialogKind,
 } from "./account-actions.tsx";
-/** Local product supplies its own action and typed route. */
 export function AccountsPage({ highlight }: { readonly highlight?: AccountId | undefined }) {
   const [dialog, setDialog] = useState<{ account: AccountId; kind: AccountDialogKind }>();
   return (

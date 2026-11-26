@@ -1,8 +1,3 @@
-/**
- * Pin existing apps to an explicit `apps` framework through ordinary source commits.
- * Nothing is redeployed: running versions keep serving, and the next deploy of the working
- * source resolves the declared framework instead of whichever one the host then provides.
- */
 import { Effect, Option, Schema } from "effect";
 import {
   JsonObject,
@@ -32,7 +27,6 @@ const Dependencies = Schema.Record(Schema.String, Schema.String);
 
 const manifestOf = (files: SourceFiles) => sourceText(files, "package.json");
 
-/** Add `dependencies.apps`, keeping every other field, its order and the file's indentation. */
 const pinManifest = (content: string | undefined, apps: string): Manifest => {
   if (content === undefined)
     return { kind: "pin", content: `${JSON.stringify({ dependencies: { apps } }, null, 2)}\n` };
@@ -53,18 +47,10 @@ const pinManifest = (content: string | undefined, apps: string): Manifest => {
   return { kind: "pin", content: content.endsWith("\n") ? `${pinned}\n` : pinned };
 };
 
-/** The host services the pin reads and writes through. */
 export interface FrameworkPinHost {
   readonly executor: Executor;
 }
 
-/**
- * Where a working branch whose files differ from the running version stands.
- * - `behind`: main holds exactly the source of an earlier version that the running one replaced.
- *   Direct file deploys never write Git, so this is how they leave main.
- * - `unpublished`: the running source is in main's recent history and main has moved on from it.
- * - `diverged`: neither; main has work the running source lacks and the reverse may also hold.
- */
 const workspacePosition = (
   host: FrameworkPinHost,
   app: App,
@@ -85,7 +71,6 @@ const workspacePosition = (
       return history.some((entry) => entry.commit === running.sourceCommit)
         ? ("unpublished" as const)
         : ("diverged" as const);
-    // A direct file deploy has no commit; main may still have saved the same files earlier.
     for (const entry of history) {
       const saved = yield* host.executor.apps.revision({ ...target, commit: entry.commit });
       if (sourceFilesEqual(saved, running.files)) return "unpublished" as const;
@@ -93,17 +78,12 @@ const workspacePosition = (
     return "diverged" as const;
   });
 
-/** Replace or add `package.json`, keeping every other file. */
 const withManifest = (files: SourceFiles, content: string) =>
   Schema.decodeUnknownEffect(SourceFiles)([
     ...files.filter((file) => file.path !== "package.json"),
     { path: "package.json", content },
   ]);
 
-/**
- * Whether `workspace` is `running` with only a framework pin committed on top. Pinning is a
- * system edit, so callers that leave user edits alone can still treat such a workspace as untouched.
- */
 export const pinnedOnly = (workspace: SourceFiles, running: SourceFiles): boolean => {
   if (sourceFilesEqual(workspace, running)) return true;
   const content = manifestOf(workspace);
@@ -118,7 +98,6 @@ export const pinnedOnly = (workspace: SourceFiles, running: SourceFiles): boolea
   );
 };
 
-/** A JSON value with object keys sorted, so equal documents compare equal whatever their key order. */
 const canonical = (value: unknown): unknown =>
   Array.isArray(value)
     ? value.map(canonical)
@@ -130,21 +109,9 @@ const canonical = (value: unknown): unknown =>
         )
       : value;
 
-/**
- * Whether `workspace` is a framework pin commit on `deployed`, a version's source, and nothing
- * else. Member setup upgrades an untouched Executor app by deploying the host's template, which
- * never writes Git, so `main` keeps the pin these steps committed on the source it replaced: the
- * running source's own files, or, when `main` was behind, an earlier version's. Every file but
- * `package.json` must match `deployed` byte for byte. The manifests must be equal JSON once
- * `dependencies.apps` is removed from both, where `main` declares exactly a release these steps
- * write, and once `name` is removed from `deployed` where `main` has none, as the template only
- * named its package later. A source with no `package.json` matches only when `main` holds exactly
- * the manifest these steps write from nothing. Any other difference is someone's work.
- */
 export const pinnedBeforeDeploy = (workspace: SourceFiles, deployed: SourceFiles): boolean => {
   const rest = (files: SourceFiles) => files.filter((file) => file.path !== "package.json");
   if (!sourceFilesEqual(rest(workspace), rest(deployed))) return false;
-  // A source without a manifest gets the one the pin writes from nothing, byte for byte.
   if (manifestOf(deployed) === undefined)
     return [frameworkPinRelease, frameworkPinCatchUpRelease].some((release) => {
       const created = pinManifest(undefined, release);
@@ -176,19 +143,12 @@ export const pinnedBeforeDeploy = (workspace: SourceFiles, deployed: SourceFiles
   );
 };
 
-/**
- * Classify one app and, when applying, commit its pin on top of the revision that was read.
- * A working branch behind the running version receives the running source with the pin, so
- * the next deploy from main keeps what runs today. Every other position pins main's own files:
- * all existing source is written for the protocol-1 framework, and a manifest rolls nothing back.
- */
 const pinApp = (host: FrameworkPinHost, release: string, listed: App, mode: DataStepMode) =>
   Effect.gen(function* () {
     const target = { owner: listed.owner, app: listed.id };
     const app = yield* host.executor.apps.get(target);
     const workspace = yield* host.executor.apps.workspace(target);
     const working = pinManifest(manifestOf(workspace.files), release);
-    // Declared first: an applied pin is not deployed yet, so a repeat run still reads it as declared.
     if (working.kind === "declared") return "declared" as const;
     const running =
       app.activeVersion === null ? undefined : yield* host.executor.apps.source(target);
@@ -201,7 +161,6 @@ const pinApp = (host: FrameworkPinHost, release: string, listed: App, mode: Data
     const behind = position === "behind" && running !== undefined ? running : undefined;
     const manifest =
       behind === undefined ? working : pinManifest(manifestOf(behind.files), release);
-    // The running source declares apps itself; main only needs that source, not a pin.
     if (manifest.kind === "declared") return "declared" as const;
     if (manifest.kind === "invalid") return "invalid-manifest" as const;
     if (mode === "report") return reported[position];
@@ -223,7 +182,6 @@ const pinApp = (host: FrameworkPinHost, release: string, listed: App, mode: Data
   }).pipe(
     Effect.catchTag("AppNotFound", () => Effect.succeed("removed" as const)),
     Effect.tap((outcome) => Effect.annotateCurrentSpan("apps.framework_pin.outcome", outcome)),
-    // One unavailable repository must not stop the rest; the step retries it on a later pass.
     Effect.catch((error) =>
       Effect.logWarning("App framework pin failed", listed.id, error).pipe(
         Effect.as("failed" as const),
@@ -250,12 +208,6 @@ const applied = {
   undeployed: "pinned-undeployed",
 } as const;
 
-/**
- * The data step that pins every app on this host, host-managed Executor apps included, to
- * `release`. Each app is safe to handle again: pinned apps read as declared,
- * and every commit names the revision it was based on, so a concurrent edit is a retried
- * conflict rather than an overwrite.
- */
 export const frameworkPinStep = (
   host: FrameworkPinHost,
   name: string,
@@ -263,6 +215,7 @@ export const frameworkPinStep = (
 ): DataStep<never> => ({
   name,
   retry: ["conflict", "failed"],
+  expected: ["conflict"],
   items: host.executor.apps.list({}).pipe(
     Effect.map((apps) =>
       apps.map((app) => ({

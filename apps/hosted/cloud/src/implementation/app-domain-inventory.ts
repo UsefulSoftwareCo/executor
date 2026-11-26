@@ -1,7 +1,6 @@
-/** Read complete provider inventories without requesting a page beyond the reported end. */
 import { listRecords } from "@distilled.cloud/cloudflare/dns";
 import { listCertificatePacks } from "@distilled.cloud/cloudflare/ssl";
-import { Stream } from "effect";
+import { Clock, Effect, Stream } from "effect";
 
 const lastPage = (response: {
   readonly resultInfo?: {
@@ -14,7 +13,6 @@ const lastPage = (response: {
   return typeof page === "number" && typeof total === "number" && page >= total;
 };
 
-/** A fresh, complete DNS scan scoped to this stage, including every returned page. */
 export const appDomainDnsRecords = (zoneId: string, suffix: string) =>
   listRecords.pages({ zoneId, type: "AAAA", name: { endswith: `.${suffix}` }, perPage: 5000 }).pipe(
     Stream.takeUntil(lastPage),
@@ -22,10 +20,57 @@ export const appDomainDnsRecords = (zoneId: string, suffix: string) =>
     Stream.runCollect,
   );
 
-/** Read all certificate states so callers can distinguish pending, active, and failed issuance. */
+const certificatePageSize = 500;
+
+const certificatePageConcurrency = 12;
+
+export interface HostCertificates {
+  readonly ready: boolean;
+  readonly failed: boolean;
+}
+
 export const appDomainCertificates = (zoneId: string) =>
-  listCertificatePacks.pages({ zoneId, status: "all", perPage: 1000 }).pipe(
-    Stream.takeUntil(lastPage),
-    Stream.flatMap((page) => Stream.fromIterable(page.result)),
-    Stream.runCollect,
-  );
+  Effect.gen(function* () {
+    const now = yield* Clock.currentTimeMillis;
+    const hosts = new Map<string, HostCertificates>();
+    const readPage = (page: number) =>
+      listCertificatePacks({ zoneId, status: "all", perPage: certificatePageSize, page }).pipe(
+        Effect.map((response) => {
+          for (const pack of response.result)
+            for (const host of pack.hosts) {
+              const known = hosts.get(host);
+              hosts.set(host, {
+                ready:
+                  (known?.ready ?? false) ||
+                  (pack.status === "active" &&
+                    pack.certificates.some(
+                      (certificate) =>
+                        certificate.status === "active" &&
+                        certificate.hosts.includes(host) &&
+                        certificate.expiresOn !== undefined &&
+                        certificate.expiresOn !== null &&
+                        Date.parse(certificate.expiresOn) > now,
+                    )),
+                failed: (known?.failed ?? false) || pack.status === "validation_timed_out",
+              });
+            }
+          return response.resultInfo?.totalPages ?? 0;
+        }),
+      );
+    const probe = yield* listCertificatePacks({ zoneId, status: "all", perPage: 5, page: 1 });
+    const count = probe.resultInfo?.totalCount;
+    if (typeof count !== "number")
+      return yield* Effect.die(new Error("Certificate pack list reported no total"));
+    let done = 0;
+    let pages = Math.ceil(count / certificatePageSize);
+    while (done < pages) {
+      const reported = yield* Effect.forEach(
+        Array.from({ length: pages - done }, (_, index) => done + index + 1),
+        readPage,
+        { concurrency: certificatePageConcurrency },
+      );
+      done = pages;
+      pages = Math.max(pages, ...reported);
+    }
+    return hosts as ReadonlyMap<string, HostCertificates>;
+  });

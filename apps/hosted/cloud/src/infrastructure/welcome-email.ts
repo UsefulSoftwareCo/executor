@@ -6,13 +6,12 @@ import { deliverWelcomeEmails } from "../implementation/welcome-emails.ts";
 import type { SendWelcomeEmail } from "../contracts/email.ts";
 import { cloudHosts } from "./stage.ts";
 import { cloudSecrets } from "./secrets.ts";
+import { jobFailed } from "../contracts/job-outcome.ts";
 import { unsubscribeHandler, unsubscribeLinks } from "../implementation/email-preferences.ts";
 
-/** The cron invocation owns its database connection and closes it after the batch. */
 export const cloudWelcomeEmails = (send: SendWelcomeEmail) =>
   Effect.gen(function* () {
     const connection = yield* cloudDatabaseConnection;
-    // Email links open the browser origin; the MCP endpoint is the canonical MCP resource.
     const hosts = yield* cloudHosts.pipe(Effect.orDie);
     const origin = hosts.browser;
     const resourceOrigin = hosts.resourceOrigins.mcp[0];
@@ -36,7 +35,11 @@ export const cloudWelcomeEmails = (send: SendWelcomeEmail) =>
       );
     return {
       deliver: deliverUser().pipe(
-        Effect.catch(() => Effect.logError("Welcome email queue processing failed")),
+        Effect.catch((error) =>
+          Effect.logError("Welcome email queue processing failed").pipe(
+            Effect.as(jobFailed(error)),
+          ),
+        ),
       ),
       deliverUser,
       unsubscribe: unsubscribeHandler(origin, secrets.authSecret).pipe(

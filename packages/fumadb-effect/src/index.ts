@@ -1,4 +1,3 @@
-/** Effect-native schema, query, and migration services. */
 export { fumadb } from "./implementation/database.ts";
 export type { FumaDB, FumaDBFactory, InferFumaDB, InferOrm } from "./contracts/database.ts";
 export type { Adapter, AdapterContext, LibraryConfig } from "./contracts/adapter.ts";

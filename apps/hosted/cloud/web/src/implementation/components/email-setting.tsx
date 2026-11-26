@@ -38,16 +38,11 @@ const errorMessage = (cause: Cause.Cause<AuthFailed>) => {
   return error instanceof AuthFailed ? error.message : "Unable to change your email. Try again.";
 };
 
-/**
- * Both addresses take part: the current one approves the change with a code, then the new one
- * proves it can receive mail. The account keeps its address until the second code is accepted.
- */
 type Step =
   | { readonly kind: "address" }
   | { readonly kind: "approve"; readonly newEmail: string }
   | { readonly kind: "confirm"; readonly newEmail: string };
 
-/** Cloud's email setting; email codes sign people in, so changing it needs both inboxes. */
 export function EmailSetting({ current }: { readonly current: string }) {
   const [open, setOpen] = useState(false);
   const [changed, setChanged] = useState(false);

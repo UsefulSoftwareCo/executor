@@ -28,7 +28,6 @@ layer(TestLive, { excludeTestServices: true })("Local resources", (it) => {
           target = yield* Target,
           session = yield* api.session();
         const headers = { authorization: `Bearer ${Redacted.value(target.apiKey)}` };
-        // Agent calls carry the API key and no browser origin.
         const agent: Session = {
           ...session,
           send: (method, path, data, extra = {}) => {
@@ -62,7 +61,6 @@ export default defineApp({user: { accounts:{service} }},{tools: router({ identit
           Effect.forEach(owned, (path) => send("DELETE", path)).pipe(Effect.orDie),
         );
         const ids: Record<string, string> = {};
-        // Connecting from the app links the account; the newest replaces the one before.
         for (const label of ["Personal", "Work"]) {
           const account = yield* connectLocalAccount(
             agent,
@@ -115,8 +113,6 @@ export default defineApp({user: { accounts:{service} }},{tools: router({ identit
             );
           });
         yield* runCapture("Work", 1);
-        // Linking Personal replaces Work; run history belongs to the app and each run keeps the
-        // account it started with.
         const personal = ids.Personal;
         if (personal === undefined) return yield* Effect.die("Personal was not connected");
         yield* linkLocal(agent, app.id, "service", personal);

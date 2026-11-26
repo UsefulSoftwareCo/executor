@@ -1,7 +1,7 @@
-/** Framework documentation served by the management API. It describes this server's `apps` build. */
 import { Context, Schema, type Effect } from "effect";
 import type { HttpApiMiddleware } from "effect/http-api";
 import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
+import { RequestRejection } from "@executor-js/sdk/core";
 
 const Entry = Schema.Struct({
   symbol: Schema.String,
@@ -26,7 +26,6 @@ const Example = Schema.Struct({
 });
 const Identity = Schema.Struct({ version: Schema.String, digest: Schema.String });
 
-/** The generated `framework-reference.json` shipped with the `apps` package. */
 export const FrameworkReference = Schema.Struct({
   ...Identity.fields,
   entries: Schema.Array(Entry),
@@ -34,16 +33,11 @@ export const FrameworkReference = Schema.Struct({
 });
 export type FrameworkReference = typeof FrameworkReference.Type;
 
-/**
- * The reference this server serves. Each host supplies it from its packaged assets, read on the
- * first lookup so a host can keep the large reference out of its startup.
- */
 export class FrameworkDocumentation extends Context.Service<
   FrameworkDocumentation,
   Effect.Effect<FrameworkReference>
 >()("app-management/FrameworkDocumentation") {}
 
-/** The caller asked for a different framework build than this server serves. */
 export class FrameworkVersionMismatch extends Schema.TaggedError<FrameworkVersionMismatch>()(
   "FrameworkVersionMismatch",
   { served: Identity, message: Schema.String },
@@ -78,20 +72,15 @@ export const FrameworkDescribeResult = Schema.Struct({
   ),
 });
 
-/** The exact `apps` release this server runs. Every app declares it as `dependencies.apps`. */
 export const FrameworkRelease = Schema.Struct({ version: Schema.NonEmptyString });
 
-/**
- * Management API group for framework lookups. Tools are `framework.release`, `framework.search`
- * and `framework.describe`.
- */
 export const frameworkApi = <I extends HttpApiMiddleware.AnyId, S>(
   prefix: "/api" | "/api/organizations/:organization",
   access: Context.Key<I, S>,
 ) => {
   const params =
     prefix === "/api" ? Schema.Struct({}) : Schema.Struct({ organization: Schema.NonEmptyString });
-  return HttpApi.make("framework").add(
+  const api = HttpApi.make("framework").add(
     HttpApiGroup.make("framework")
       .add(
         HttpApiEndpoint.get("release", "/framework/release", {
@@ -133,4 +122,5 @@ export const frameworkApi = <I extends HttpApiMiddleware.AnyId, S>(
       .prefix(prefix)
       .middleware(access),
   );
+  return api.middleware(RequestRejection);
 };

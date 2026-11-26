@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "blume build",
-    "dev": "blume dev --port 4322",
+    "build": "bun ./node_modules/blume/src/cli/index.ts build",
+    "dev": "bun ./node_modules/blume/src/cli/index.ts dev --port 4322",
     "preview": "blume preview --port 4322",
     "validate": "blume validate",
     "audit": "blume audit --skip BLUME_AUDIT_LINK_TO_BROKEN",

@@ -1,5 +1,5 @@
-/** Browser-safe public registry reads shared with server-side discovery. */
-import { Clock, Duration, Effect, Option, Schema, Stream } from "effect";
+import { Clock, Duration, Effect, Option, Result, Schema, Stream } from "effect";
+import { issueSummary } from "@executor-js/telemetry/schema-issue";
 import {
   FetchHttpClient,
   HttpClient,
@@ -13,16 +13,12 @@ import {
   RegistryError,
   type Registry,
 } from "../contracts/registry.ts";
+import { wireRevision, wireRevisionHeader } from "../contracts/wire-revision.ts";
 
 const maxResponseBytes = 32 * 1024 * 1024;
 
-/**
- * How long the complete public listing is reused before the registry is read again. Publishing
- * reaches other executors within this time. A failed read is never kept.
- */
 const publicListingFreshness = Duration.minutes(5);
 
-/** Read a bounded response body; a stream failure is a network failure. */
 const readBody = (response: HttpClientResponse.HttpClientResponse) =>
   response.stream.pipe(
     Stream.catch((error) =>
@@ -50,6 +46,36 @@ const readBody = (response: HttpClientResponse.HttpClientResponse) =>
     }),
   );
 
+const registryRequest = (url: URL) =>
+  HttpClientRequest.get(url).pipe(
+    HttpClientRequest.setHeader(wireRevisionHeader, String(wireRevision)),
+  );
+
+const listingLabel = (entry: unknown) =>
+  typeof entry === "object" && entry !== null && "name" in entry && typeof entry.name === "string"
+    ? JSON.stringify(entry.name.slice(0, 140))
+    : "without a name";
+
+const readableListings = (entries: ReadonlyArray<unknown>) =>
+  Effect.gen(function* () {
+    const listings: Array<Publication> = [];
+    for (const entry of entries) {
+      const decoded = Schema.decodeUnknownResult(Publication)(entry);
+      if (Result.isSuccess(decoded)) {
+        listings.push(decoded.success);
+        continue;
+      }
+      const issues = [...new Set(issueSummary(decoded.failure.issue))].slice(0, 10).join(", ");
+      yield* Effect.logWarning(
+        `Left out public registry listing ${listingLabel(entry)}, which this Executor release cannot read (${issues}). A newer release reads listings in formats added since this one, not malformed ones.`,
+      );
+    }
+    const unreadable = entries.length - listings.length;
+    if (unreadable > 0)
+      yield* Effect.annotateCurrentSpan("registry.listings_unreadable", unreadable);
+    return listings;
+  });
+
 const parseJson = (bytes: Uint8Array): Option.Option<unknown> => {
   try {
     return Option.some(JSON.parse(new TextDecoder().decode(bytes)));
@@ -58,21 +84,15 @@ const parseJson = (bytes: Uint8Array): Option.Option<unknown> => {
   }
 };
 
-/**
- * Read the public catalog through its configured HTTPS origin; installation validates the selected
- * revision. The complete listing is reused for {@link publicListingFreshness}.
- */
 export const remoteRegistry = (origin: string): Registry => {
   const read = <A>(operation: string, path: string, schema: Schema.Decoder<A>) => {
     const url = new URL(path, origin);
     return Effect.gen(function* () {
-      const response = yield* HttpClient.execute(HttpClientRequest.get(url)).pipe(
+      const response = yield* HttpClient.execute(registryRequest(url)).pipe(
         Effect.mapError(() => new RegistryError({ reason: "network" })),
       );
       yield* Effect.annotateCurrentSpan("http.response.status_code", response.status);
-      // Browsers expose a manual redirect as an opaque response with status 0.
       if (response.status === 0 || (response.status >= 300 && response.status < 400)) {
-        // Taking one chunk ends the stream early, which cancels the unread body.
         yield* Stream.runDrain(Stream.take(response.stream, 1)).pipe(Effect.ignore);
         return yield* new RegistryError({ reason: "status", status: response.status });
       }
@@ -91,9 +111,7 @@ export const remoteRegistry = (origin: string): Registry => {
         Effect.mapError(() => new RegistryError({ reason: "invalid-source" })),
       );
     }).pipe(
-      // Browsers, Node, Bun, and workerd all support "manual"; workerd rejects "error".
       Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
-      // Trace headers would make a browser's cross-origin read a preflighted request.
       Effect.provideService(HttpClient.TracerPropagationEnabled, false),
       Effect.provide(FetchHttpClient.layer),
       Effect.tapError((error) => Effect.annotateCurrentSpan("registry.error.reason", error.reason)),
@@ -112,7 +130,7 @@ export const remoteRegistry = (origin: string): Registry => {
       origin,
     );
     return Effect.gen(function* () {
-      const response = yield* HttpClient.execute(HttpClientRequest.get(url)).pipe(
+      const response = yield* HttpClient.execute(registryRequest(url)).pipe(
         Effect.mapError(() => new RegistryError({ reason: "network" })),
       );
       yield* Effect.annotateCurrentSpan("http.response.status_code", response.status);
@@ -137,10 +155,8 @@ export const remoteRegistry = (origin: string): Registry => {
     read(
       "list",
       `/api/registry/apps${name === undefined ? "" : `?name=${encodeURIComponent(name)}`}`,
-      Schema.Array(Publication),
-    );
-  // Only a settled listing is shared. Concurrent reads of an expired listing each fetch it, so no
-  // request ever waits on another's fetch; a Worker isolate cannot resume one request from another.
+      Schema.Array(Schema.Unknown),
+    ).pipe(Effect.flatMap(readableListings));
   let kept: { readonly listings: ReadonlyArray<Publication>; readonly until: number } | undefined;
   const listAll = Effect.gen(function* () {
     const now = yield* Clock.currentTimeMillis;
@@ -153,7 +169,6 @@ export const remoteRegistry = (origin: string): Registry => {
     origin,
     file,
     files: (name, commit) => Effect.succeed((path: string) => file(name, commit, path)),
-    // A name selects one listing to install, so it is always read from the registry.
     list: (name) => (name === undefined ? listAll : list(name)),
     snapshot: (name, commit) =>
       read(

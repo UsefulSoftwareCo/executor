@@ -137,6 +137,21 @@ hop is `mcp.session.forward` minus the object's `http.server` span, read from th
 when the gateway and object clocks disagree. The hop includes object activation, transit and
 object CPU after its last I/O, which Cloudflare's I/O clock does not advance through.
 
+### Many session objects
+
+```sh
+$P session-fanout --control $E/stage-control.json --keys $E/fanout-keys.json \
+  --output $E/results/fanout.json --objects 300 --seconds 240 --interval 20 --parallel 2
+```
+
+A session object belongs to one grant, so each API key addresses its own. The command creates
+`--objects` keys in a fixture organization (kept in the private `--keys` file, mode 0600, and
+reused by later runs; key creation waits out sign-in rate limits), opens one MCP session per key,
+and has each make `--parallel` concurrent `execute` calls every `--interval` seconds for
+`--seconds`. It prints failed calls by the text the product returned. Read the branch's
+PgBouncer clients from PlanetScale (`planetscale_pgbouncer_pools_client`, pool `active`) during
+the run: each object that connects directly holds its own (notes/database-pool.md).
+
 ## 5. Flamecharts
 
 ```sh

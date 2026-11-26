@@ -1,7 +1,3 @@
-/**
- * A program loads only the apps it uses: CodeMode's global `search()` ranks in the backend, and
- * dynamic access to `tools` loads an app when the program first reaches it.
- */
 import { expect, layer } from "@effect/vitest";
 import { Clock, Effect, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -14,11 +10,9 @@ import { HostedLive, withHostedCase } from "../support/case.ts";
 import { McpClient } from "../support/mcp-client.ts";
 import { appsManifest } from "../support/apps-release.ts";
 
-/** Catalog apps and their tools: enough that loading every listing would show in the trace. */
 const catalogApps = 6;
 const toolsPerApp = 120;
 
-/** Every tool names its app and itself in a marker, so a search can single one out. */
 const catalogAppSource = (
   index: number,
 ) => `import { defineApp, query, jsonSchema, router } from "apps";
@@ -43,13 +37,11 @@ export default defineApp({}, async () => ({ tools: router({
     async (_ctx, { text }) => ({ app: ${JSON.stringify(name)}, text })),
 }) }));`;
 
-// Discovery of this app always fails, so `unavailableApps` shows whether an execution touched it.
 const brokenAppSource = `import { defineApp } from "apps";
 export default defineApp({}, async () => {
   throw new Error("Synthetic evaluation failure");
 });`;
 
-// This app's listing never finishes within a scenario, so a program that reaches it waits on it.
 const stalledAppSource = `import { defineApp, query, object, router } from "apps";
 export default defineApp({}, async () => {
   await new Promise((resolve) => setTimeout(resolve, 120_000));
@@ -73,10 +65,6 @@ const SearchPage = Schema.Struct({
   next: Schema.NullOr(Schema.Struct({ offset: Schema.Number })),
 });
 
-/**
- * An organization's apps and an MCP client that runs programs. Each run returns the result and the
- * request's spans, by operation name, once the execute span is delivered.
- */
 const setup = (label: string, apps: ReadonlyArray<{ name: string; source: string }>) =>
   Effect.gen(function* () {
     const api = yield* Api,
@@ -136,7 +124,7 @@ const setup = (label: string, apps: ReadonlyArray<{ name: string; source: string
           ),
           Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 80 }),
         );
-        return { ...completed, spans };
+        return { ...completed, spans, trace: request.traceId };
       });
     return { apps: deployed, execute };
   });
@@ -157,8 +145,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP execute lazy catalog", (it
         const target = apps[3]!;
         const path = `tools[${JSON.stringify(target.slug)}].op7`;
 
-        // CodeMode's search() ranks in the backend and returns CodeMode's own item shape. It loads
-        // no app's tool listing and renders only the signatures on its page.
         const searched = yield* execute(
           "Global search",
           `return await search({ query: "zq3x7q" });`,
@@ -188,7 +174,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP execute lazy catalog", (it
           Number(searched.spans("mcp.execute")[0]?.["executor.codemode.signatures_rendered"]),
         ).toBe(page.items.length);
 
-        // A page of one continues at the next offset, as CodeMode's search() documents.
         const paged = yield* execute(
           "Global search page",
           `return await search({ query: "lazy catalog app", limit: 1 });`,
@@ -198,7 +183,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP execute lazy catalog", (it
         expect(first.remaining).toBeGreaterThan(0);
         expect(first.next).toEqual({ offset: 1 });
 
-        // Calling a result through the path it returns loads the result's app and no other.
         const called = yield* execute(
           "Call a search result",
           `const { items } = await search({ query: "zq3x7q", limit: 1 });
@@ -237,7 +221,6 @@ return await tools[slug][name]({ id: "rec_1" });`,
           result.unavailableApps.some((entry) => entry.app === broken.id);
         const a = JSON.stringify(alpha.slug);
 
-        // A computed member loads that app when the program calls into it, and no other.
         const computed = yield* execute(
           "Computed member access",
           `const name = [${a}][0];
@@ -255,7 +238,6 @@ return await tools[name].echo({ text: "computed" });`,
         expect(computed.spans("mcp.discovery.namespace")).toHaveLength(1);
         expect(computed.spans("mcp.discovery.tools")).toHaveLength(1);
 
-        // Listing the keys of `tools` lists apps and loads none of them.
         const listed = yield* execute("Enumerate tools", `return Object.keys(tools);`);
         expect(listed.execution.ok).toBe(true);
         expect(listed.execution.value).toEqual(
@@ -265,7 +247,6 @@ return await tools[name].echo({ text: "computed" });`,
         expect(listed.spans("mcp.discovery.namespace")).toEqual([]);
         expect(listed.spans("mcp.discovery.tools")).toEqual([]);
 
-        // Listing the keys of one app loads that app.
         const keys = yield* execute(
           "Enumerate one app",
           `const name = [${a}][0];
@@ -280,7 +261,6 @@ return { keys: Object.keys(tools[name]), found };`,
         expect(touched(keys)).toBe(false);
         expect(keys.spans("mcp.discovery.namespace")).toHaveLength(1);
 
-        // An unknown tool of a loaded app stays unknown.
         const unknown = yield* execute(
           "Unknown tool of a reached app",
           `const name = [${a}][0];
@@ -289,7 +269,6 @@ return await tools[name].missing({});`,
         expect(unknown.execution).toMatchObject({ ok: false, error: { kind: "UnknownTool" } });
         expect(touched(unknown)).toBe(false);
 
-        // An app that fails to load is reported as before, as a static call would report it.
         const staticBroken = yield* execute(
           "Static call into a broken app",
           `return await tools[${JSON.stringify(broken.slug)}].echo({ text: "x" });`,
@@ -300,7 +279,18 @@ return await tools[name].missing({});`,
 return await tools[name].echo({ text: "x" });`,
         );
         expect(staticBroken.execution).toMatchObject({ ok: false, error: { kind: "ToolFailure" } });
-        expect(dynamicBroken.execution).toEqual(staticBroken.execution);
+        const reference = (run: { trace: string }) => `Reference: ${run.trace}.`;
+        expect(staticBroken.execution.error?.message).toContain(reference(staticBroken));
+        expect(dynamicBroken.execution).toEqual({
+          ok: false,
+          error: {
+            kind: staticBroken.execution.error?.kind,
+            message: staticBroken.execution.error?.message.replace(
+              reference(staticBroken),
+              reference(dynamicBroken),
+            ),
+          },
+        });
         expect(touched(dynamicBroken)).toBe(true);
       }).pipe(Effect.provide(McpClient.layer)),
     ),
@@ -317,12 +307,9 @@ return await tools[name].echo({ text: "x" });`,
           ]);
           const stalled = apps[0]!;
 
-          // A program that only waits ends at the execution's budget.
           const waited = yield* execute("Program that outlives its budget", `while (true) {}`);
           expect(waited.execution).toMatchObject({ ok: false, error: { kind: "TimeoutExceeded" } });
 
-          // The program reaches the app only once it runs, so discovery waits for nothing and the
-          // load runs until the execution's own deadline, past discovery's 10 s wait.
           const began = yield* Clock.currentTimeMillis;
           const reached = yield* execute(
             "Computed call into a stalled app",

@@ -1,4 +1,3 @@
-/** An agent adding an MCP server learns safely when it must write the app itself. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Layer, Schema } from "effect";
 import { Actors } from "../support/actors.ts";
@@ -25,7 +24,6 @@ layer(HostedLive, { excludeTestServices: true })("Import diagnostics", (it) => {
         const api = yield* Api,
           actors = yield* Actors,
           issuer = yield* oauthSetupIssuer;
-        // The server rejects anonymous use and advertises no OAuth: an API key or other setup.
         yield* issuer.configure({ challenge: false, postChallenge: true, discovery: "missing" });
         const url = `${issuer.origin}/mcp`;
         const path = `/api/organizations/${actors.organization.id}/apps/import`;
@@ -37,7 +35,6 @@ layer(HostedLive, { excludeTestServices: true })("Import diagnostics", (it) => {
         const failure = yield* body(Failure, response);
         expect(failure.code).toBe("agent_setup_required");
         expect(failure.reason).toContain("add it with your agent");
-        // An API caller gets the steps the dashboard's prompt gives; they never repeat the URL.
         expect(failure.recovery.action).toContain("MCP server URL you supplied");
         expect(failure.recovery.instructions).toContain("app-authoring skill");
         expect(failure.recovery.instructions).toContain("mcpRouter");

@@ -1,18 +1,15 @@
-/**
- * Cloudflare Workers exporters: built once per isolate, flushed by each event.
- *
- * A Worker pins timers and fetches to the event that started them, so a batch
- * cannot wait for an isolate-wide timer. Building Effect's exporters for every
- * event costs more CPU than most requests' own spans, however. The span and log
- * exporters are therefore built once per isolate and only buffer. Each event
- * exports everything buffered so far from its own scope: every second while a
- * streamed response keeps it open, and when it closes. A span leaves with the
- * first flush after it ends, which may belong to a concurrent event.
- *
- * Metrics stay per event. Their delta histograms report each event's own
- * minimum and maximum, which an isolate-wide registry cannot reconstruct.
- */
-import { Context, Duration, Effect, Layer, Logger, Metric, Redacted, Scope } from "effect";
+import {
+  Clock,
+  Context,
+  Deferred,
+  Duration,
+  Effect,
+  Layer,
+  Logger,
+  Metric,
+  Redacted,
+  Scope,
+} from "effect";
 import { HttpBody, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 import {
   OtlpExporter,
@@ -29,19 +26,21 @@ type ResourceSpans = OtlpTracer.TraceData["resourceSpans"][number];
 type ResourceLogs = OtlpLogger.LogsData["resourceLogs"][number];
 type ResourceMetrics = OtlpMetrics.MetricsData["resourceMetrics"][number];
 
-/** Exported batches waiting for the next flush, in export order. */
 interface Pending {
   traces: Array<ResourceSpans>;
   logs: Array<ResourceLogs>;
   metrics: Array<ResourceMetrics>;
 }
 
-/**
- * Effect's exporters serialize each batch immediately before posting it. Here
- * serialization keeps the batch object and the post goes nowhere, so a flush
- * can merge every buffered batch into one encoded request per signal.
- */
-const buffering = (pending: Pending) =>
+const closeWait = Duration.seconds(1);
+
+const flushDelay = Duration.seconds(1);
+const staleAfter = Duration.seconds(5);
+
+const counted = { flushes: 0 };
+export const isolateTelemetryFlushes = () => counted.flushes;
+
+const buffering = (pending: Pending, onBuffered: () => void) =>
   Layer.mergeAll(
     Layer.succeed(OtlpSerialization.OtlpSerialization, {
       traces: (data) => {
@@ -54,6 +53,7 @@ const buffering = (pending: Pending) =>
       },
       metrics: (data) => {
         pending.metrics.push(...data.resourceMetrics);
+        if (data.resourceMetrics.some(measured)) onBuffered();
         return HttpBody.empty;
       },
     }),
@@ -65,27 +65,37 @@ const buffering = (pending: Pending) =>
     ),
   );
 
-/** The buffering exporters never post, so their URL only names the signal. */
+const measured = (batch: ResourceMetrics) =>
+  batch.scopeMetrics.some((scope) => scope.metrics.length > 0);
+
 const buffered = (signal: string) => `https://buffer.invalid/v1/${signal}`;
 
-/**
- * Build the isolate's span and log exporters and return the Layer each event
- * provides. Run it once, during Worker initialization.
- */
 export const isolateTelemetry = (
   config: TelemetryConfig,
+  keepAlive: (work: Promise<unknown>) => void,
   logger: Logger.Logger<unknown, void> = Logger.withConsoleError(Logger.formatJson),
 ) =>
   Effect.gen(function* () {
     const pending: Pending = { traces: [], logs: [], metrics: [] };
+    const clock = yield* Clock.Clock;
+    let dirty = false;
+    let armed: { readonly at: number } | undefined;
+    let arm = () => {};
+    const onBuffered = () => {
+      dirty = true;
+      if (
+        armed === undefined ||
+        clock.currentTimeMillisUnsafe() - armed.at > Duration.toMillis(staleAfter)
+      )
+        arm();
+    };
     const resource = {
       serviceName: config.service,
       serviceVersion: config.version,
       attributes: { "deployment.environment.name": config.environment },
     };
     const console = Logger.layer([logger]);
-    const buffers = buffering(pending);
-    // Export happens only when an event flushes, so no isolate timer ever runs.
+    const buffers = buffering(pending, onBuffered);
     const exporter = (signal: string) => ({
       url: buffered(signal),
       resource,
@@ -96,21 +106,23 @@ export const isolateTelemetry = (
         Layer.succeed(CurrentTelemetryConfig, config),
         config.traces === undefined
           ? Layer.empty
-          : // As in telemetryLayer: every span is recorded and HTTP attributes are allowlisted.
-            spanAttributes(config.clock, true).pipe(
+          : spanAttributes(config.clock, true, onBuffered).pipe(
               Layer.provideMerge(OtlpTracer.layer(exporter("traces"))),
             ),
         config.logs === undefined
           ? console
-          : OtlpLogger.layer({ ...exporter("logs"), mergeWithExisting: true }).pipe(
-              Layer.provideMerge(console),
+          : Logger.layer([Logger.make(onBuffered)], { mergeWithExisting: true }).pipe(
+              Layer.provideMerge(
+                OtlpLogger.layer({ ...exporter("logs"), mergeWithExisting: true }).pipe(
+                  Layer.provideMerge(console),
+                ),
+              ),
             ),
       ).pipe(
         Layer.provideMerge(OtlpExporter.layerFlusher),
         Layer.provide(buffers),
         Layer.provide(console),
       ),
-      // The isolate's exporters last as long as the isolate; nothing closes this scope.
       Scope.makeUnsafe(),
     );
     const flusher = Context.get(isolate, OtlpExporter.Flusher);
@@ -130,7 +142,6 @@ export const isolateTelemetry = (
       ),
       retryTelemetryExport,
     );
-    // The telemetry client records each failed attempt with its safe reason.
     const post = (label: string, target: TelemetryTarget, body: HttpBody.HttpBody) =>
       client
         .execute(
@@ -144,16 +155,14 @@ export const isolateTelemetry = (
         )
         .pipe(Effect.ignore);
 
-    // Uninterruptible: batches leave `pending` before the requests, so a flush must finish.
     const flush = Effect.uninterruptible(
       Effect.gen(function* () {
+        counted.flushes += 1;
+        dirty = false;
         yield* flusher.flush;
         const traces = pending.traces.splice(0);
         const logs = pending.logs.splice(0);
-        // An event that recorded no measurement exports an empty batch; it carries nothing.
-        const metrics = pending.metrics
-          .splice(0)
-          .filter((batch) => batch.scopeMetrics.some((scope) => scope.metrics.length > 0));
+        const metrics = pending.metrics.splice(0).filter(measured);
         yield* Effect.all(
           [
             config.traces === undefined || traces.length === 0
@@ -175,14 +184,33 @@ export const isolateTelemetry = (
       }),
     ).pipe(Effect.withTracerEnabled(false));
 
-    // Built before the metric exporter, so this final flush runs after its last snapshot.
+    arm = () => {
+      const timer = { at: clock.currentTimeMillisUnsafe() };
+      armed = timer;
+      keepAlive(
+        Effect.runPromise(
+          Effect.sleep(flushDelay).pipe(
+            Effect.andThen(
+              Effect.suspend(() => {
+                if (armed === timer) armed = undefined;
+                return dirty ? flush : Effect.void;
+              }),
+            ),
+          ),
+        ),
+      );
+    };
+
     const flushing = Layer.effectDiscard(
-      Effect.gen(function* () {
-        yield* Effect.addFinalizer(() => flush);
-        yield* Effect.forkScoped(
-          Effect.forever(Effect.sleep("1 second").pipe(Effect.andThen(flush))),
-        );
-      }),
+      Effect.addFinalizer(() =>
+        Effect.gen(function* () {
+          const flushed = yield* Deferred.make<void>();
+          keepAlive(
+            Effect.runPromise(flush.pipe(Effect.ensuring(Deferred.succeed(flushed, undefined)))),
+          );
+          yield* Deferred.await(flushed).pipe(Effect.timeoutOption(closeWait));
+        }),
+      ),
     );
     return Layer.mergeAll(
       Layer.succeedContext(isolate),
@@ -196,7 +224,6 @@ export const isolateTelemetry = (
           }).pipe(Layer.provide(buffers)),
     ).pipe(
       Layer.provideMerge(flushing),
-      // Each event exports only its own measurements.
       Layer.provideMerge(Layer.sync(Metric.MetricRegistry, () => new Map())),
     );
   });

@@ -1,14 +1,7 @@
-/**
- * Query conditions.
- *
- * `where` callbacks receive a {@link ConditionBuilder} and return a
- * {@link Condition} tree, or a boolean when the condition folds to a constant.
- */
 import { Data } from "effect";
 import { QueryError } from "./errors.ts";
 import type { AnyColumn } from "./schema/column.ts";
 
-/** Replacement for `LIKE` that every provider supports. */
 export const stringOperators = [
   "contains",
   "starts with",
@@ -18,15 +11,11 @@ export const stringOperators = [
   "not ends with",
 ] as const;
 
-/** Operators whose right-hand side is an array of values. */
 export const arrayOperators = ["in", "not in"] as const;
 
-/** Operators whose right-hand side is a single value. `is` / `is not` compare against `NULL`. */
 export const valueOperators = ["=", "!=", ">", ">=", "<", "<=", "is", "is not"] as const;
 
-/** Match an exact string among JSON object values or their immediate array elements. */
 export const jsonOperators = ["json contains"] as const;
-/** Every operator a condition may use. */
 export const operators = [
   ...valueOperators,
   ...arrayOperators,
@@ -34,19 +23,14 @@ export const operators = [
   ...jsonOperators,
 ] as const;
 
-/** Any comparison operator. */
 export type Operator = (typeof operators)[number];
-/** An operator that matches part of a string. */
 export type StringOperator = (typeof stringOperators)[number];
-/** An operator whose right-hand side is an array. */
 export type ArrayOperator = (typeof arrayOperators)[number];
-/** An operator whose right-hand side is a single value. */
 export type ValueOperator = (typeof valueOperators)[number];
 
 const isOperator = (value: string): value is Operator =>
   (operators as ReadonlyArray<string>).includes(value);
 
-/** A condition tree. `Compare` holds a resolved column, so adapters never look names up again. */
 export type Condition = Data.TaggedEnum<{
   Compare: { readonly column: AnyColumn; readonly operator: Operator; readonly value: unknown };
   And: { readonly items: ReadonlyArray<Condition> };
@@ -54,20 +38,16 @@ export type Condition = Data.TaggedEnum<{
   Not: { readonly item: Condition };
 }>;
 
-/** Constructors and matchers for {@link Condition}. */
 export const Condition = Data.taggedEnum<Condition>();
 
-/** A built condition: a tree, or `true` / `false` when it folds to a constant. */
 export type ConditionResult = Condition | boolean;
 
-/** The builder a `where` callback receives. Calling it compares one column; `and` / `or` / `not` combine results. */
 export type ConditionBuilder<Columns extends Record<string, AnyColumn>> = {
   <ColName extends keyof Columns>(
     column: ColName,
     operator: ValueOperator,
     value: Columns[ColName]["schema"]["Type"] | null,
   ): Condition;
-  /** A text fragment for `contains` / `starts with` / `ends with`; it need not be a whole legal value. */
   <ColName extends keyof Columns>(
     column: ColName,
     operator: StringOperator | (typeof jsonOperators)[number],
@@ -78,7 +58,6 @@ export type ConditionBuilder<Columns extends Record<string, AnyColumn>> = {
     operator: ArrayOperator,
     value: ReadonlyArray<Columns[ColName]["schema"]["Type"]>,
   ): Condition;
-  /** Boolean column is true. */
   <ColName extends keyof Columns>(column: ColName): Condition;
 
   readonly and: (...items: ReadonlyArray<ConditionResult>) => ConditionResult;
@@ -88,13 +67,6 @@ export type ConditionBuilder<Columns extends Record<string, AnyColumn>> = {
   readonly isNotNull: (column: keyof Columns) => Condition;
 };
 
-/**
- * Build the condition builder for a set of columns.
- *
- * Unknown columns and operators throw `QueryError` as defects: the `where`
- * callback is plain code and the names are statically typed, so a mismatch is
- * a programmer error the adapter reports through `Effect.try`.
- */
 export const createBuilder = <Columns extends Record<string, AnyColumn>>(
   columns: Columns,
 ): ConditionBuilder<Columns> => {
@@ -161,7 +133,6 @@ export const createBuilder = <Columns extends Record<string, AnyColumn>>(
   return builder;
 };
 
-/** Run a `where` callback against a set of columns. Throws `QueryError` for an unknown column or operator. */
 export const buildCondition = <T, Columns extends Record<string, AnyColumn>>(
   columns: Columns,
   input: (builder: ConditionBuilder<Columns>) => T,

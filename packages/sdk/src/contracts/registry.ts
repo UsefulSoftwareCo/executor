@@ -23,6 +23,8 @@ export type PackageName = typeof PackageName.Type;
 export const packageScope = (name: PackageName) => name.slice(1, name.indexOf("/"));
 /** The label of a package name: what stays when its owner's scope changes. */
 export const packageLabel = (name: PackageName) => name.slice(name.indexOf("/") + 1);
+/** Public packages are published under `<slug>.executor.community`, an organization's scope. */
+export const publishingDomain = "executor.community";
 /** Standard npm metadata remains source; only name and description identify a public listing. */
 export const PackageManifest = Schema.Struct({
   name: PackageName,

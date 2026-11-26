@@ -1,20 +1,8 @@
-/** The Autumn wire contract used by cloud billing, independent of its JavaScript SDK. */
 import { Context, Schema, type Effect, type Redacted } from "effect";
 
-/** Match the API version used by autumn-js 1.2.28. */
 export const autumnApiVersion = "2.3.0";
-/**
- * Bound a complete write, including response decoding. Writes are never retried; each consumer
- * chooses how its reads are bounded (`autumnReads` in `implementation/autumn-client.ts`).
- */
 export const autumnTimeout = "10 seconds";
 
-/**
- * The provider endpoint is a capability: it receives the Autumn bearer secret on every call.
- * Constrain the shape of the URL so the secret cannot ride along in userinfo, a query string or
- * a fragment. Which endpoint an operator may point it at is a key-safety question, answered
- * where the key is read.
- */
 export const AutumnServerUrl = Schema.String.check(
   Schema.makeFilter(
     (value) => {
@@ -62,32 +50,37 @@ const trial = Schema.Struct({
   }),
 );
 
-/** Only the inputs used by the product, encoded with Autumn's wire field names. */
+const attachRequest = Schema.Struct({
+  ...customer,
+  planId: Schema.String,
+  successUrl: Schema.optionalKey(Schema.String),
+}).pipe(
+  Schema.encodeKeys({
+    ...customerKeys,
+    planId: "plan_id",
+    successUrl: "success_url",
+  }),
+);
+
 export const AutumnRequests = {
   getOrCreateCustomer: Schema.Struct({
     ...customer,
     autoEnablePlanId: Schema.optionalKey(Schema.String),
   }).pipe(Schema.encodeKeys({ ...customerKeys, autoEnablePlanId: "auto_enable_plan_id" })),
-  /** Read only: unlike `getOrCreateCustomer`, an unknown customer is not created. */
-  getCustomer: Schema.Struct(customer).pipe(Schema.encodeKeys(customerKeys)),
   listPlans: Schema.Struct(customer).pipe(Schema.encodeKeys(customerKeys)),
   updateBalance: Schema.Struct({
     ...customer,
     featureId: Schema.String,
     usage: Schema.Number,
   }).pipe(Schema.encodeKeys(featureKeys)),
-  attach: Schema.Struct({ ...customer, planId: Schema.String, successUrl: Schema.String }).pipe(
-    Schema.encodeKeys({ ...customerKeys, planId: "plan_id", successUrl: "success_url" }),
-  ),
+  attach: attachRequest,
   openCustomerPortal: Schema.Struct({ ...customer, returnUrl: Schema.String }).pipe(
     Schema.encodeKeys({ ...customerKeys, returnUrl: "return_url" }),
   ),
-  // Autumn identifies a subscription by (customer, plan), so cancelling is an
-  // update carrying a cancel action rather than its own operation.
-  cancelSubscription: Schema.Struct({
+  updateSubscription: Schema.Struct({
     ...customer,
     planId: Schema.String,
-    cancelAction: Schema.Literal("cancel_immediately"),
+    cancelAction: Schema.Literals(["cancel_immediately", "cancel_end_of_cycle", "uncancel"]),
   }).pipe(Schema.encodeKeys({ ...customerKeys, planId: "plan_id", cancelAction: "cancel_action" })),
 };
 
@@ -97,14 +90,11 @@ const subscriptions = Schema.Array(
   ),
 );
 
-/** Decode provider responses into the fields billing reads; unrelated provider fields are ignored. */
 export const AutumnResponses = {
   getOrCreateCustomer: Schema.Struct({
     balances: Schema.Record(Schema.String, balance),
     subscriptions,
   }),
-  /** Null when Autumn has no customer with this id. */
-  getCustomer: Schema.NullOr(Schema.Struct({ subscriptions })),
   listPlans: Schema.Struct({
     list: Schema.Array(
       Schema.Struct({
@@ -114,32 +104,29 @@ export const AutumnResponses = {
         archived: Schema.Boolean,
         price: Schema.NullOr(price),
         items: Schema.Array(item),
-        // Autumn omits the key for a plan without a trial.
         freeTrial: Schema.optionalKey(trial),
       }).pipe(Schema.encodeKeys({ freeTrial: "free_trial" })),
     ),
   }),
   updateBalance: Schema.Struct({ success: Schema.Literal(true) }),
-  attach: Schema.Struct({ paymentUrl: Schema.NullOr(Schema.String) }).pipe(
-    Schema.encodeKeys({ paymentUrl: "payment_url" }),
-  ),
+  attach: Schema.Struct({
+    paymentUrl: Schema.NullOr(Schema.String),
+    invoice: Schema.optionalKey(Schema.NullOr(Schema.Struct({ total: Schema.Number }))),
+  }).pipe(Schema.encodeKeys({ paymentUrl: "payment_url" })),
   openCustomerPortal: Schema.Struct({ url: Schema.String }),
-  // Only the outcome matters here; the invoice and proration detail is Autumn's.
-  cancelSubscription: Schema.Struct({}),
+  updateSubscription: Schema.Struct({}),
 };
 
-/** Safe diagnostics for transport, provider and contract failures. Cancellation remains interruption. */
 export class AutumnRequestFailed extends Schema.TaggedError<AutumnRequestFailed>()(
   "AutumnRequestFailed",
   {
     operation: Schema.Literals([
       "getOrCreateCustomer",
-      "getCustomer",
       "listPlans",
       "updateBalance",
       "attach",
       "openCustomerPortal",
-      "cancelSubscription",
+      "updateSubscription",
     ]),
     reason: Schema.Literals(["request", "transport", "status", "response", "timeout"]),
     status: Schema.optionalKey(Schema.Int),
@@ -147,13 +134,11 @@ export class AutumnRequestFailed extends Schema.TaggedError<AutumnRequestFailed>
   },
 ) {}
 
-/** A private instance URL is a capability, so both settings remain redacted. */
 export interface AutumnOptions {
   readonly secretKey: Redacted.Redacted<string>;
   readonly serverUrl: Redacted.Redacted<string>;
 }
 
-/** Seven typed HTTP operations. Product policy and customer identity belong to Billing/BillingMeter. */
 export class AutumnClient extends Context.Service<
   AutumnClient,
   {

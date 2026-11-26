@@ -5,7 +5,6 @@ import { refreshAppLinks } from "./app-accounts.ts";
 import { discoveryTarget, refreshAppDiscovery } from "./app-discovery.ts";
 import { refreshResourceDirectory } from "./resource-access.ts";
 import { protectedQuery } from "./protected-query.ts";
-/** Organization-specific app queries and mutations use the shared hosted API. */
 import {
   AppId,
   VersionId,
@@ -44,7 +43,6 @@ import { accountAtom, acknowledgeAccount } from "./accounts.ts";
 import type { ToolCatalog } from "@executor-js/ui/contracts/dashboard";
 import { linkedAccountIds } from "@executor-js/ui/contracts/app-accounts";
 
-/** App data is never reused between organizations. */
 class AppKey extends Data.Class<{
   readonly organization: OrganizationReference;
   readonly app: AppId;
@@ -73,7 +71,6 @@ class OAuthSetupKey extends Data.Class<{
 const oauthSetupQuery = Atom.family((key: OAuthSetupKey) =>
   HostedClient.query("accounts", "oauthSetup", hydrated({ params: key })).pipe(revalidated),
 );
-/** Safe client capability hints are shared across forms for the same organization, provider, and method. */
 export const oauthSetupAtom = (key: {
   organization: OrganizationReference;
   provider: ProviderId;
@@ -107,20 +104,11 @@ const sourceFileQuery = Atom.family((key: SourceFileKey) =>
     }),
   ).pipe(Atom.setIdleTTL("5 minutes")),
 );
-/**
- * One page evaluates the current app catalog with the app's linked accounts, read again after the
- * caller links, unlinks or connects one.
- */
 class ToolKey extends Data.Class<{
   readonly organization: OrganizationReference;
   readonly app: AppId;
   readonly version?: VersionId | undefined;
 }> {}
-/**
- * Browsing reads the schema-free index; one tool's schemas load when it is selected. A refresh
- * shows the catalog loading rather than the previous one: the key does not name the linked
- * accounts, so a retained catalog may belong to accounts that are no longer linked.
- */
 const toolsQuery = Atom.family((key: ToolKey) =>
   HostedClient.query(
     "tools",
@@ -131,10 +119,6 @@ const toolsQuery = Atom.family((key: ToolKey) =>
     }),
   ).pipe(revalidated, currentQuery),
 );
-/**
- * Pending credentials are fetched without reading saved secrets. A request whose app changed can
- * never complete, so a read reporting that drops the old form instead of showing it beside the error.
- */
 const connectionQuery = Atom.family((key: ConnectionKey) =>
   acknowledgedQuery(
     HostedClient.query("accounts", "connection", hydrated({ params: key })),
@@ -142,10 +126,8 @@ const connectionQuery = Atom.family((key: ConnectionKey) =>
       !Option.exists(Cause.findErrorOption(cause), Schema.is(AccountConnectionTargetChanged)),
   ),
 );
-/** A write that reports a changed app reads the request again, so the change replaces its form. */
 const reloadConnection = (get: Atom.FnContext, key: ConnectionKey) =>
   Effect.sync(() => get.refresh(connectionQuery(key)));
-/** Catalog installation, selection, connection and execution actions. */
 const activateApp = Atom.family((key: AppKey) =>
   HostedClient.runtime.fn(
     (payload: { version: VersionId; expectedVersion: VersionId | null }, get) =>
@@ -178,9 +160,16 @@ const removeApp = Atom.family((key: AppKey) =>
             ...data,
             apps: data.apps.filter((app) => app.id !== key.app),
             links: data.links.filter((link) => link.app !== key.app),
+            appLinks: data.appLinks.filter((link) => link.app !== key.app),
           }));
+          const shared = Option.isSome(current)
+            ? current.value.appLinks.flatMap((link) => (link.app === key.app ? [link.account] : []))
+            : [];
           if (Option.isSome(current))
-            for (const account of linkedAccountIds(current.value.links, key.app))
+            for (const account of new Set([
+              ...linkedAccountIds(current.value.links, key.app),
+              ...shared,
+            ]))
               acknowledge(
                 get,
                 accountAtom({ organization: key.organization, account }),
@@ -193,27 +182,19 @@ const removeApp = Atom.family((key: AppKey) =>
     ),
   ),
 );
-/** Mutations are keyed by their target, so another app cannot cancel an in-flight write. */
 export const activateAppAtom = (key: { organization: OrganizationReference; app: AppId }) =>
   activateApp(new AppKey(key));
 export const renameAppAtom = (key: { organization: OrganizationReference; app: AppId }) =>
   renameApp(new AppKey(key));
 export const removeAppAtom = (key: { organization: OrganizationReference; app: AppId }) =>
   removeApp(new AppKey(key));
-/**
- * A dialog owns one submission attempt. Reopening it gets a fresh request; retries keep its
- * connection. Completing a connection started from the app saves the account and links it to the
- * requirement in the scope the dialog names.
- */
 export function appConnectionAtoms(key: {
   readonly organization: OrganizationReference;
   readonly app: AppId;
-  /** The version whose discovery the page shows, read again once the account is linked. */
   readonly version: VersionId | null;
   readonly scope: AccountScope;
   readonly requirement: string;
   readonly provider: ProviderId;
-  /** Replace this account's credentials instead of adding an account. */
   readonly account?: AccountId | undefined;
 }) {
   const request = Atom.make<AccountConnection | undefined>(undefined);
@@ -231,7 +212,6 @@ export function appConnectionAtoms(key: {
           ? client.appAccounts.appConnect(args)
           : client.appAccounts.userConnect(args));
       if (current === undefined) get.set(request, saved);
-      // Cached form definitions cannot send credentials to a different provider after an app edit.
       if (saved.provider.id !== key.provider) {
         get.refresh(appAtom({ organization: key.organization, app: key.app }));
         get.refresh(inventoryAtom(key.organization));
@@ -315,14 +295,12 @@ const completeOAuth = Atom.family((key: ConnectionKey) =>
     ),
   ),
 );
-/** The callback's OAuth state, not the browser tab, identifies the connection it completes. */
 export const resolveOAuthCallbackAtom = HostedClient.runtime.fn(
   (callbackUrl: Redacted.Redacted<string>) =>
     Effect.flatMap(HostedClient, (client) =>
       client.oauthCallback.resolve({ payload: { callbackUrl } }),
     ),
 );
-/** Completion reconciles account and target data before the view navigates. */
 export const submitConnectionAtom = (key: {
   organization: OrganizationReference;
   connection: AccountConnectionId;
@@ -337,6 +315,7 @@ const startOAuth = Atom.family((key: ConnectionKey) =>
       payload: {
         readonly method: string;
         readonly client?: OAuthClientSelection;
+        readonly chooseAgain?: true;
       },
       get,
     ) =>
@@ -360,7 +339,6 @@ const startOAuth = Atom.family((key: ConnectionKey) =>
       ),
   ),
 );
-/** Retry or manual setup belongs to one connection and cannot supersede another provider's sign-in. */
 export const startOAuthAtom = (key: {
   organization: OrganizationReference;
   connection: AccountConnectionId;
@@ -382,11 +360,9 @@ const calls = Atom.family(({ organization, app, ...target }: CallKey) =>
     ),
   ),
 );
-/** Each operation owns its invocation state. */
 export const callToolAtom = (key: ConstructorParameters<typeof CallKey>[0]) =>
   calls(new CallKey(key));
 const toolRunApprovals = Atom.family((endpoint: string) => toolRunApproval(BrowserAtoms, endpoint));
-/** One pending dashboard run's review; each request owns its answer state. */
 export const toolRunApprovalAtoms = (key: {
   readonly organization: OrganizationReference;
   readonly app: AppId;
@@ -396,38 +372,28 @@ export const toolRunApprovalAtoms = (key: {
     `/api/organizations/${encodeURIComponent(key.organization)}/apps/${encodeURIComponent(key.app)}/tools/approvals/${encodeURIComponent(key.requestId)}`,
   );
 
-/**
- * Pages other than the app's Accounts view that an account sign-in can return to: onboarding's
- * account step, with the assistant handoff its URL carried.
- */
 export const OAuthReturn = Schema.Struct({
   page: Schema.Literal("setup"),
   handoff: Schema.optionalKey(SetupHandoff),
 });
 export type OAuthReturn = typeof OAuthReturn.Type;
-/** Return context from the tab that started sign-in; the callback page resolves it from the server. */
 export const PendingOAuth = Schema.Struct({
   organization: OrganizationReference,
   organizationSlug: Schema.NonEmptyString,
   connection: AccountConnectionId,
   app: AppId,
   redirectUri: HttpUrl,
-  /** A reconnect keeps its account name, so completion does not ask for one. */
   reconnect: Schema.optionalKey(Schema.Boolean),
   manualClient: Schema.optionalKey(Schema.Boolean),
-  /** The client this attempt registered, which stays registered if sign-in fails. */
   registeredClient: Schema.optionalKey(OAuthClientId),
-  /** The page the sign-in started from when it is not the app's own: onboarding's account step. */
   returnTo: Schema.optionalKey(OAuthReturn),
 });
 export { appError } from "./errors.ts";
 
 const liveApps = Atom.family((key: AppKey) => pollingQuery(appQuery(key)));
-/** Open app pages follow activations from another tab or caller without evaluating app code. */
 export const liveAppAtom = (key: ConstructorParameters<typeof AppKey>[0]) =>
   liveApps(new AppKey(key));
 
-/** Structural keys keep each query stable across React renders. */
 export const appAtom = (key: {
   readonly organization: OrganizationReference;
   readonly app: AppId;
@@ -439,26 +405,22 @@ export const connectionAtom = (key: {
   readonly connection: AccountConnectionId;
 }) => connectionQuery(new ConnectionKey(key));
 
-/** Retained source is immutable; its atom includes both app and version identity. */
 export const sourceAtom = (key: {
   readonly organization: OrganizationReference;
   readonly app: AppId;
   readonly version: VersionId;
 }) => sourceQuery(new SourceKey(key));
-/** One display file of a retained version, read when the listing did not inline it. */
 export const sourceFileAtom = (key: {
   readonly organization: OrganizationReference;
   readonly app: AppId;
   readonly version: VersionId;
   readonly path: string;
 }) => sourceFileQuery(new SourceFileKey(key));
-/** History remains separate from the inexpensive app metadata query. */
 export const versionsAtom = (key: {
   readonly organization: OrganizationReference;
   readonly app: AppId;
 }) => versionsQuery(new AppKey(key));
 
-/** Apply a complete saved app to metadata readers; unknown tool results must be reloaded. */
 export function acknowledgeApp(
   get: Atom.FnContext,
   organization: OrganizationReference,
@@ -482,10 +444,6 @@ export function acknowledgeApp(
     }));
 }
 
-/**
- * A saved connection for an app requirement links its account to the requirement, so the app's
- * links, its requirements' choices and its discovery are read again.
- */
 function connectionSaved(
   get: Atom.FnContext,
   key: ConnectionKey,
@@ -504,7 +462,6 @@ function connectionSaved(
     get.refresh(toolsAtom(target));
     if (current !== undefined) refreshAppDiscovery(get, discoveryTarget(key.organization, current));
   }
-  // The inventory response contains linked accounts, which the account response does not.
   get.refresh(inventoryAtom(key.organization));
 }
 
@@ -514,7 +471,6 @@ const toolCatalogs = Atom.family((key: ToolKey) =>
     AsyncResult.map((page): ToolCatalog => ({ tools: page.items, routers: page.routers })),
   ),
 );
-/** Shared browser view for the page's accounts, with the routers that group its tools. */
 export const toolCatalogAtom = (key: ConstructorParameters<typeof ToolKey>[0]) =>
   toolCatalogs(new ToolKey(key));
 class ToolDetailKey extends Data.Class<
@@ -534,15 +490,12 @@ const toolDetails = Atom.family((key: ToolDetailKey) =>
   HostedClient.runtime.atom((get) =>
     get
       .result(toolDetailQueries(key))
-      // A tool that left the catalog since the list was read is not a failure.
       .pipe(Effect.catchTag("ToolNotFound", () => Effect.succeed(undefined))),
   ),
 );
-/** One tool's schemas for the same catalog identity as the list. */
 export const toolDetailAtom = (key: ConstructorParameters<typeof ToolDetailKey>[0]) =>
   toolDetails(new ToolDetailKey(key));
 
-/** Connection search reads the whole schema-free index, so it includes every tool. */
 const connectionToolLists = Atom.family((key: ToolKey) =>
   Atom.map(
     toolsQuery(key),

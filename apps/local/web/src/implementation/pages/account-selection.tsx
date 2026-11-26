@@ -2,7 +2,6 @@ import { useEffect, useRef } from "react";
 import type { AppId } from "@executor-js/sdk";
 import { useNavigate } from "@tanstack/react-router";
 
-/** Setup links land on the app's Accounts tab, where accounts are connected and linked. */
 export function AccountSelectionPage({ id }: { readonly id: AppId }) {
   const navigate = useNavigate();
   const done = useRef(false);

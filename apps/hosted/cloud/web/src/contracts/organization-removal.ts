@@ -1,7 +1,6 @@
 import { hydrated } from "@executor-js/ui/contracts/http";
 import { revalidated } from "@executor-js/ui/contracts/refresh";
 import { organizationsAtom } from "@executor-js/hosted-web/contracts/organization";
-/** Removal is a cloud capability; self-host keeps its single instance organization. */
 import { acknowledge } from "@executor-js/ui/contracts/mutations";
 import { Cause, Effect, Match, Option, type Schema } from "effect";
 import { Atom } from "effect/reactivity";
@@ -12,7 +11,6 @@ import { ExecutorCloudApi } from "../../../src/contracts/api.ts";
 import { CloudClient } from "./billing.ts";
 
 type Removal = HttpApiGroup.Endpoints<(typeof ExecutorCloudApi.groups)["organizationRemoval"]>;
-/** The precise failures this one destructive request can produce. */
 export type OrganizationRemovalError =
   | HttpApiEndpoint.Errors<Removal>
   | HttpClientError.HttpClientError
@@ -31,24 +29,18 @@ const message = Match.type<OrganizationRemovalError>().pipe(
   }),
   Match.orElse(() => "The organization could not be deleted. Try again."),
 );
-/** Safe copy for the delete dialog; defects never render their raw cause. */
 export const organizationRemovalError = (cause: Cause.Cause<OrganizationRemovalError>) =>
   Option.match(Cause.findErrorOption(cause), {
     onSome: message,
     onNone: () => "The organization could not be deleted. Try again.",
   });
 
-/** Removal counts include private resources that the normal inventory must omit. */
 export const organizationRemovalPreviewAtom = Atom.family((organization: OrganizationId) =>
   CloudClient.query("organizationRemoval", "preview", hydrated({ params: { organization } })).pipe(
     revalidated,
   ),
 );
 
-/**
- * Publish the removal to every organization reader before the dialog closes, so
- * the entry route cannot send this tab back into an organization that is gone.
- */
 export const deleteOrganizationAtom = Atom.family((organization: OrganizationId) =>
   CloudClient.runtime.fn((_: void, get) =>
     Effect.flatMap(CloudClient, (client) =>

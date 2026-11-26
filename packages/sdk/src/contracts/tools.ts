@@ -22,7 +22,10 @@ import {
   ApprovalElicitation,
   ApprovalResponse,
   ElicitationFailed,
+  HostAccountsInvalid,
+  HostDeclarationInvalid,
   HostEvaluationFailed,
+  HostRequestInvalid,
   HostedRouter,
   type HostRouterError,
   HostedTool,
@@ -30,6 +33,14 @@ import {
   type ElicitationHandler,
 } from "apps/contracts";
 import { StorageError, CredentialsError, RequestInvalid } from "./shared.ts";
+import { hostApiChangingCode } from "./host-api.ts";
+import {
+  RuntimeBuildUnavailable,
+  RuntimeFailure,
+  runtimeFailures,
+  RuntimeProtocolFailed,
+  RuntimeProtocolUnsupported,
+} from "./runtime.ts";
 import type { CatalogReadOptions } from "./declarations.ts";
 import type { Executor } from "./executor.ts";
 import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
@@ -97,6 +108,13 @@ export interface ToolListOptions extends CatalogReadOptions {
    * and one page reads it once. A caller that sends pages on, such as an HTTP route, omits it.
    */
   readonly unboundedPages?: true;
+  /**
+   * The apps one search reads together, this read's app among them. A host may read their state
+   * in shared statements, but never with an app outside the batch: a search waits only on the apps
+   * it reaches, so one app's slow or locked rows hold up no search that does not reach it. Without
+   * it the read takes its own state alone.
+   */
+  readonly searchBatch?: ReadonlyArray<AppId>;
 }
 export {
   ElicitationFailed,
@@ -123,6 +141,15 @@ export const InvocationSelection = Context.Reference<
   | undefined
 >("executor/InvocationSelection", { defaultValue: () => undefined });
 /**
+ * Host-only: told the kind `tools.call` dispatches the call with, once it is known: the caller's,
+ * or for a call that named none, the one the app's catalog gives the tool. A call that fails
+ * before then reports none. Never supplied by authored code.
+ */
+export const ToolCallKindObserved = Context.Reference<((kind: ToolKind) => void) | undefined>(
+  "executor/ToolCallKindObserved",
+  { defaultValue: () => undefined },
+);
+/**
  * Host-only: the reads `tools.call` would make for a selection, made by the host beside its own
  * checks in one batch (see {@link PrefetchHost}). `value` is opaque to the host. `tools.call` uses
  * it only for the app, owner and accounts of its {@link InvocationSelection}, and only once: a
@@ -138,9 +165,39 @@ export const InvocationPrefetch = Context.Reference<
     }
   | undefined
 >("executor/InvocationPrefetch", { defaultValue: () => undefined });
+/**
+ * Host-only: the reads `tools.searchable` would make for many targets of one owner, made ahead in
+ * a fixed number of statements ({@link PrefetchHost}'s `searchable`). `value` is opaque to the
+ * host. `tools.searchable` uses an entry only for the app, version and accounts it was made for,
+ * under the same actor, and only once; any other read, and a read made ahead that failed in
+ * storage, reads live. Never supplied by authored code.
+ */
+export const SearchablePrefetch = Context.Reference<SearchablePrefetched | undefined>(
+  "executor/SearchablePrefetch",
+  { defaultValue: () => undefined },
+);
+/** What {@link PrefetchHost}'s `searchable` read, for {@link SearchablePrefetch}. */
+export interface SearchablePrefetched {
+  readonly owner: OwnerId;
+  readonly value: unknown;
+}
 /** Host-only reads made ahead for a tool call, outside the public HTTP/Promise facade. */
 export const PrefetchHost = Symbol("executor.PrefetchHost");
 export interface PrefetchHost {
+  /**
+   * The reads `tools.searchable` makes for each target, after the host's own checks resolved its
+   * version and accounts: the apps and accounts, each target's kept search rows, the actor's app
+   * rechecks and the account grants, each kind in one statement for every target together. It
+   * never fails: a target whose reads did not answer is read live by `tools.searchable`.
+   */
+  readonly searchable: (input: {
+    readonly owner: OwnerId;
+    readonly targets: ReadonlyArray<{
+      readonly app: AppId;
+      readonly version: VersionId;
+      readonly accounts: AppAccounts;
+    }>;
+  }) => Effect.Effect<SearchablePrefetched>;
   /**
    * The reads `apps.get` and then `tools.call` make for one app, as effects of one statement each
    * that never fail, for the host to send in one batch beside its own checks. Without `known`,
@@ -256,8 +313,12 @@ export const mayHaveWrittenPresentation = (presented: ErrorPresentation): ErrorP
 export const mayHaveWritten = <A extends { readonly mayHaveWritten?: true | undefined }, I>(
   schema: Schema.Codec<A, I>,
   failure: A,
-): A =>
-  Schema.decodeUnknownSync(schema)({ ...Schema.encodeSync(schema)(failure), mayHaveWritten: true });
+): A => {
+  const { notSent: _, ...encoded } = Schema.encodeSync(schema)(failure) as I & {
+    readonly notSent?: unknown;
+  };
+  return Schema.decodeUnknownSync(schema)({ ...encoded, mayHaveWritten: true });
+};
 
 /** Why a running tool could not complete its user interaction. */
 const elicitationFailures = {
@@ -419,6 +480,14 @@ export interface SearchableTools {
   readonly accounts: AppAccounts;
   /** The listing's routers that could not list their tools. */
   readonly routers: ReadonlyArray<ToolRouter>;
+  /**
+   * The rows are an earlier listing's, evaluated at `listedAt`, kept because renewing them failed
+   * in the app or its upstream with `failure`.
+   */
+  readonly stale?: {
+    readonly listedAt: number;
+    readonly failure: AppEvaluationFailed | AppProviderFailed;
+  };
 }
 
 /**
@@ -547,6 +616,32 @@ export const appFailureText = ({ source, errorName, code, message, fields }: App
     : source === "service"
       ? `The app's API call failed: ${message}`
       : `The app threw ${errorName}${code === undefined ? "" : ` (${code})`}: ${message}${fieldsText(fields)}`;
+
+/** Whether the app reported Executor refusing it a host API document of another revision. */
+export const refusedHostApi = (failure: AppFailure | undefined) =>
+  failure?.source === "app" && failure.code === hostApiChangingCode;
+
+/**
+ * The app reported that Executor refused it Executor's own API document because the document is
+ * of another revision than the one its tools are kept for, as Executor's network does while a
+ * deploy changes the API (`hostApiChangingCode`, on a rejected `fetch` or on the `HttpClientError`
+ * `ctx.fetch` wraps it in). The report crosses from the app's isolate, so the copy says the app
+ * reported it. It clears when the deploy finishes.
+ */
+const hostApiChanging = (failure: AppFailure) =>
+  refusedHostApi(failure)
+    ? {
+        title: "Executor’s API is changing",
+        description:
+          "The app reported that Executor’s API is changing (a deploy is in progress), so it could not load its tools.",
+        recovery: {
+          action: "Retry shortly.",
+          instructions:
+            "The app reads Executor's own API. Executor refuses it a version of that API other than the one its tools are kept for, which happens for a few seconds while a deploy changes the API. Retry in a few seconds, at most a few times. If it continues for minutes, report it to whoever operates this Executor.",
+        },
+        retryable: true,
+      }
+    : undefined;
 
 /** The error a service stated, with its own message quoted after Executor's explanation. */
 const upstreamText = (upstream: UpstreamError | undefined, stated: string) =>
@@ -683,8 +778,6 @@ export const mcpFailurePresentation = ({
     "Use the reported phase and error to identify the failure. Check the server URL, transport or access settings only when relevant. Do not expose credentials.";
   switch (reason) {
     case "timeout":
-      // A server that did not answer one call may answer the next, so a read may be repeated
-      // once; a second timeout is investigated before repeating it again.
       if (phase === "call")
         return {
           title: "MCP server did not answer the tool call",
@@ -719,7 +812,6 @@ export const mcpFailurePresentation = ({
     case "invalid_response":
       return {
         title: "MCP server response not supported",
-        // Includes Executor refusing to follow the server to another origin.
         description: `The app’s MCP server returned a response Executor could not use while ${stage}, such as an unreadable message or an address on another origin.${answered}`,
         recovery: {
           action: "Check the response compatibility and the app’s MCP server configuration.",
@@ -728,7 +820,6 @@ export const mcpFailurePresentation = ({
         retryable: false,
       };
     case "invalid_input":
-      // The app reports this reason, so the copy does not claim the call was not sent.
       return phase === "call"
         ? {
             title: "Tool input could not be used",
@@ -748,7 +839,6 @@ export const mcpFailurePresentation = ({
             retryable: false,
           };
     case "request":
-      // Request Timeout and Too Early ask the client to retry the same request later.
       if (status === 408 || status === 425)
         return {
           title: "MCP server asked to retry",
@@ -760,10 +850,6 @@ export const mcpFailurePresentation = ({
           },
           retryable: true,
         };
-      // A server may answer a request carrying the session it issued with 404 when it no longer
-      // has that session, such as one run on several instances that do not share sessions. A new
-      // listing opens another. `session` comes from the app, so the copy only says the session
-      // may have expired. Without a session, a 404 is an ordinary refusal.
       if (status === 404 && phase === "discover" && session === true)
         return {
           title: "MCP session may have expired",
@@ -785,10 +871,6 @@ export const mcpFailurePresentation = ({
           },
           retryable: false,
         };
-      // A JSON-RPC error inside a successful response, such as arguments a tool rejects, states
-      // the server's error. Without one, a transport failure got no answer from the server: it
-      // may not be reachable, or Executor's own request failed. A tool call that failed without an
-      // answer, such as on a dropped connection, may have run.
       return upstream === undefined
         ? phase === "transport"
           ? {
@@ -833,6 +915,240 @@ export const mcpFailurePresentation = ({
   }
 };
 
+/** The errors an app's framework answers with when it cannot evaluate the app without details. */
+const FrameworkError = Schema.Literals([
+  "HostRequestInvalid",
+  "HostAccountsInvalid",
+  "HostDeclarationInvalid",
+  "HostEvaluationFailed",
+]);
+
+/**
+ * What failed when the app's definition could not be evaluated and neither the app's code nor a
+ * service it called stated an error: the app's Worker, the build Executor keeps for it, the host
+ * protocol the build speaks, or the app's framework, which answered without details.
+ */
+export const EvaluationRuntime = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("worker"),
+    /** The failure the runtime's error matched, absent when the runtime reported none. */
+    failure: Schema.optional(RuntimeFailure),
+    /**
+     * The host's connection to the runtime never formed, so nothing was sent to it (`failure` is
+     * then `disconnected`, as older readers expect; they drop this field).
+     */
+    notSent: Schema.optional(Schema.Literal(true)),
+  }),
+  Schema.Struct({ kind: Schema.Literal("build") }),
+  Schema.Struct({
+    kind: Schema.Literal("protocol"),
+    protocol: Schema.Int,
+    supported: Schema.Array(Schema.Int),
+  }),
+  Schema.Struct({ kind: Schema.Literal("framework"), error: FrameworkError }),
+]);
+export type EvaluationRuntime = typeof EvaluationRuntime.Type;
+
+/**
+ * The runtime failures only the host's own code sets: its read of the build, its protocol check,
+ * and its account handling. Every other kind is matched from the text a failed call rejected with,
+ * which the app's isolate can produce, the runtime's own messages included.
+ */
+const hostRuntimeFailures: ReadonlySet<RuntimeFailure> = new Set([
+  "build",
+  "unsupported",
+  "managed",
+  "unloading",
+]);
+const loadingInstructions =
+  "This happened while Executor loaded the app's definition, before any tool ran. Do not change the app's accounts to work around it.";
+const rebuild = {
+  action: "Rebuild the app on this host’s apps version and deploy it again.",
+  instructions: `${loadingInstructions} Read framework.release for the apps version this host runs, pin it in the app's package.json, deploy the app again, and verify that its tools load.`,
+};
+const retryOnce = (then: string, instructions: string) => ({
+  action: `Try again once. If it fails the same way, ${then}`,
+  instructions: `${loadingInstructions} Retry the unchanged request at most once. ${instructions} Verify that the app's tools load after the repair.`,
+});
+const reportReference =
+  "If it fails again, report the failure with the reference shown beside this error, if any, and check what the app's recent changes run while it lists its tools.";
+
+/** What a runtime that could not be reached says: nothing was sent to the app. */
+const unreachablePresentation = {
+  description: "Executor could not connect to the app runtime, so nothing was sent to the app.",
+  recovery: retryOnce(
+    "check that Executor's app runtime is running.",
+    "Executor could not open its connection to the app runtime, so nothing was sent to the app. Executor's log records when the app runtime stops or is replaced.",
+  ),
+  retryable: true,
+};
+
+/** What the app's Worker failure says and what to do about it. */
+const workerPresentation = (failure: RuntimeFailure | undefined) => {
+  const stopped = "The app’s Worker stopped without an answer from the app’s code";
+  const description =
+    failure === undefined
+      ? `${stopped}, and the runtime did not report why.`
+      : failure === "unrecognized"
+        ? `${stopped}, for a reason the runtime did not recognize.`
+        : hostRuntimeFailures.has(failure)
+          ? `${runtimeFailures[failure]}.`
+          : `${stopped}. Its error matches this cause, which Executor has not confirmed: ${runtimeFailures[failure]}.`;
+  switch (failure) {
+    case "memory":
+    case "cpu":
+    case "timeout":
+    case "too-large":
+      return {
+        description,
+        recovery: retryOnce(
+          "stop retrying it unchanged and investigate. If the app was built on an older apps version than this host’s, rebuild it on this host’s version and deploy it again; if it already runs this host’s version, or still fails, reduce the work the app does to list its tools.",
+          "A resource limit matches this failure. A first load can do work the next one reuses, such as compiling a large API definition into the app's cache, so one retry may succeed. If it fails the same way, stop retrying the unchanged request, even though a later attempt might succeed, and investigate what listing the app's tools costs. Compare the apps version in the app's package.json with framework.release, the version this host runs. If the app's version is older, for example a catalog app installed before a framework fix, pin this host's version and deploy the app again: an older apps version can spend far more work listing a large API. If the versions are the same, or the rebuilt app still fails, find what the app's factory and tool loaders do while listing, such as fetching or parsing a large API definition or building many tools, and reduce it: expose fewer tools, or keep a large definition in the app's cache.",
+        ),
+        retryable: true,
+      };
+    case "cold-start":
+      return {
+        description,
+        recovery: retryOnce(
+          "check that the app’s modules load without throwing.",
+          "A Worker that could not be loaded matches this failure, such as a module whose top-level code throws or an import that cannot be resolved. Check the app's modules and imports, then deploy it again.",
+        ),
+        retryable: true,
+      };
+    case "hung":
+      return {
+        description,
+        recovery: retryOnce(
+          "check that the app’s factory does not wait on something that never finishes.",
+          "A Worker that can never answer matches this failure, such as code that awaits a promise nothing settles.",
+        ),
+        retryable: true,
+      };
+    case "invalid-reply":
+      return {
+        description,
+        recovery: retryOnce(
+          "rebuild the app on this host’s apps version.",
+          "An answer that does not match the host protocol matches this failure, such as one from an app built on another apps version. Read framework.release for the apps version this host runs, pin it in the app's package.json and deploy the app again.",
+        ),
+        retryable: true,
+      };
+    case "build":
+      return {
+        description,
+        recovery: retryOnce(
+          "deploy the app again.",
+          "Executor could not read the build it keeps for the app's current deployment. Deploying the app's source again creates a new build.",
+        ),
+        retryable: true,
+      };
+    case "unsupported":
+    case "managed":
+      return { description, recovery: rebuild, retryable: false };
+    case "unloading":
+      return {
+        description: `${runtimeFailures.unloading}, so nothing was sent to the app.`,
+        recovery: retryOnce(
+          "report the failure with its reference.",
+          `Executor waited for the app's previous Worker to unload before loading it again, and it did not finish, so nothing was sent to the app. ${reportReference}`,
+        ),
+        retryable: true,
+      };
+    default:
+      return {
+        description,
+        recovery: retryOnce(
+          "report the failure with its reference.",
+          `This does not show whether the app's code or Executor's runtime caused it. ${reportReference}`,
+        ),
+        retryable: true,
+      };
+  }
+};
+
+/** What the framework's answer without details reports. */
+const frameworkFailures: Record<typeof FrameworkError.Type, string> = {
+  HostRequestInvalid: "it could not read Executor’s request",
+  HostAccountsInvalid: "the accounts Executor sent do not match the ones the app declares",
+  HostDeclarationInvalid: "the app’s tools or skills are declared in a way it cannot host",
+  HostEvaluationFailed:
+    "evaluating the app failed; builds on older apps versions report no further detail",
+};
+
+/** Present a failure of the app's runtime, build or framework while loading its definition. */
+const runtimePresentation = (runtime: EvaluationRuntime): CausePresentation => {
+  const loaded = (description: string) =>
+    `Executor could not load this app’s tool definitions. ${description}`;
+  switch (runtime.kind) {
+    case "worker":
+    case "build": {
+      const { description, ...rest } =
+        runtime.kind === "worker" && runtime.notSent === true
+          ? unreachablePresentation
+          : workerPresentation(runtime.kind === "build" ? "build" : runtime.failure);
+      return { title: "Tools could not be loaded", description: loaded(description), ...rest };
+    }
+    case "protocol":
+      return {
+        title: "App build is not supported",
+        description: loaded(
+          `This app’s apps framework uses host protocol ${runtime.protocol}; this host runs protocol ${runtime.supported.join(", ")}.`,
+        ),
+        recovery: rebuild,
+        retryable: false,
+      };
+    case "framework":
+      return {
+        title: "Tools could not be loaded",
+        description: loaded(
+          `The app’s framework answered ${runtime.error} without details: it reported that ${frameworkFailures[runtime.error]}.`,
+        ),
+        recovery: retryOnce(
+          "rebuild the app on this host’s apps version.",
+          `The app's framework reported this, so Executor has not confirmed its cause. An app built on an apps version far from this host's is a common one.${runtime.error === "HostDeclarationInvalid" ? " Check the app's tool and skill declarations too, such as duplicate tool names or invalid schemas." : ""} Read framework.release for the apps version this host runs, pin it in the app's package.json and deploy the app again.`,
+        ),
+        retryable: true,
+      };
+  }
+};
+
+/** What traces record for a runtime failure: closed literals only. */
+const recordedRuntime = (runtime: EvaluationRuntime) => {
+  switch (runtime.kind) {
+    case "worker":
+      return `the app's Worker failed (${runtime.failure ?? "unreported"})`;
+    case "build":
+      return "the app's build could not be read";
+    case "protocol":
+      return "the app's build uses a host protocol this host does not run";
+    case "framework":
+      return `the app's framework answered ${runtime.error}`;
+  }
+};
+
+/** The runtime failure an evaluation's error reports, if it is one. */
+const evaluationRuntime = (error: unknown): EvaluationRuntime | undefined => {
+  if (Schema.is(RuntimeProtocolFailed)(error))
+    return {
+      kind: "worker",
+      ...(error.reason === undefined ? {} : { failure: error.reason }),
+      ...(error.notSent === true ? { notSent: true as const } : {}),
+    };
+  if (Schema.is(RuntimeBuildUnavailable)(error)) return { kind: "build" };
+  if (Schema.is(RuntimeProtocolUnsupported)(error))
+    return { kind: "protocol", protocol: error.protocol, supported: error.supported };
+  if (Schema.is(HostRequestInvalid)(error))
+    return { kind: "framework", error: "HostRequestInvalid" };
+  if (Schema.is(HostAccountsInvalid)(error))
+    return { kind: "framework", error: "HostAccountsInvalid" };
+  if (Schema.is(HostDeclarationInvalid)(error))
+    return { kind: "framework", error: "HostDeclarationInvalid" };
+  if (Schema.is(HostEvaluationFailed)(error))
+    return { kind: "framework", error: "HostEvaluationFailed" };
+  return undefined;
+};
+
 /**
  * Evaluating the app's live definition failed before any tool ran. With `mayHaveWritten`, it
  * failed during a call that may write, after the host handed the call to the app's code, which
@@ -861,9 +1177,14 @@ export const AppEvaluationFailed = UserFacingError.define({
      * including the session a tool call opens, or while listing its tools.
      */
     mcp: Schema.optional(McpFailure),
+    /**
+     * Present when the app's Worker, its build or its framework failed without an error of the
+     * app's own: the runtime failure Executor observed or matched.
+     */
+    runtime: Schema.optional(EvaluationRuntime),
     mayHaveWritten: MayHaveWritten,
   },
-  recorded: ({ skills, mcp, failure }) =>
+  recorded: ({ skills, mcp, failure, runtime }) =>
     `Tools could not be loaded: ${
       mcp !== undefined
         ? recordedMcp(mcp)
@@ -871,36 +1192,53 @@ export const AppEvaluationFailed = UserFacingError.define({
           ? recordedApp(failure)
           : skills !== undefined
             ? `the app's skill source failed (${skills.reason})${recordedStatus(skills.status)}`
-            : "the app's definition could not be evaluated"
+            : runtime !== undefined
+              ? recordedRuntime(runtime)
+              : "the app's definition could not be evaluated"
     }`,
-  presentation: callPresentation(({ skills, mcp, failure }) =>
+  presentation: callPresentation(({ skills, mcp, failure, runtime }) =>
     mcp !== undefined
       ? mcpFailurePresentation(mcp)
-      : failure !== undefined
-        ? {
-            title: "Tools could not be loaded",
-            description: `Executor could not load this app’s tool definitions. ${appFailureText(failure)}`,
-            recovery: {
-              action: "Try again. If this continues, investigate this error and fix its cause.",
-              instructions: `The app's factory or dynamic tool loader failed with this error. It does not show whether the cause is the app's code, a service the app calls, or Executor, such as its storage or network. A transient cause, such as an unavailable upstream, may clear on retry. Otherwise find where the error is raised and what caused it, fix the cause, and verify that the app's tools load. Error: ${appFailureText(failure)}`,
-            },
-            retryable: true,
-          }
-        : skills === undefined
-          ? {
+      : runtime !== undefined && failure === undefined
+        ? runtimePresentation(runtime)
+        : failure !== undefined
+          ? (hostApiChanging(failure) ?? {
               title: "Tools could not be loaded",
-              description: "Executor could not load this app’s tool definitions.",
+              description: `Executor could not load this app’s tool definitions. ${appFailureText(failure)}`,
               recovery: {
-                action: "Try again. If this continues, copy the fix prompt to investigate the app.",
-                instructions: evaluationInstructions,
+                action: "Try again. If this continues, investigate this error and fix its cause.",
+                instructions: `The app's factory or dynamic tool loader failed with this error. It does not show whether the cause is the app's code, a service the app calls, or Executor, such as its storage or network. A transient cause, such as an unavailable upstream, may clear on retry. Otherwise find where the error is raised and what caused it, fix the cause, and verify that the app's tools load. Error: ${appFailureText(failure)}`,
               },
               retryable: true,
-            }
-          : skillPresentation(skills),
+            })
+          : skills === undefined
+            ? {
+                title: "Tools could not be loaded",
+                description: "Executor could not load this app’s tool definitions.",
+                recovery: {
+                  action:
+                    "Try again. If this continues, copy the fix prompt to investigate the app.",
+                  instructions: evaluationInstructions,
+                },
+                retryable: true,
+              }
+            : skillPresentation(skills),
   ),
 });
 /** Parsed evaluation failure; raw runtime diagnostics never enter its presentation. */
 export type AppEvaluationFailed = typeof AppEvaluationFailed.Type;
+/**
+ * Whether Executor's own code found that the app's definition could not load: it could not read
+ * the app's build, the build speaks a host protocol this host does not run, or the build cannot
+ * receive the accounts the host handles. Every other evaluation failure reaches the host through
+ * code the app controls, which can raise it while its tools are listed or called.
+ */
+export const hostObservedEvaluation = ({ runtime }: AppEvaluationFailed) =>
+  runtime?.kind === "build" ||
+  runtime?.kind === "protocol" ||
+  (runtime?.kind === "worker" &&
+    runtime.failure !== undefined &&
+    hostRuntimeFailures.has(runtime.failure));
 
 /**
  * A tool listing ran longer than a caller waits, or than its bound with nobody waiting, or was
@@ -976,6 +1314,34 @@ export const ToolSearchUnavailable = UserFacingError.define({
 });
 export type ToolSearchUnavailable = typeof ToolSearchUnavailable.Type;
 
+/**
+ * Search found an app's tools in rows kept from an earlier listing, because listing the app again
+ * failed in its code or its upstream. The tools are still searched; this says they may be out of
+ * date and why. `cause` is the failure's own curated description.
+ */
+export const ToolSearchStale = UserFacingError.define({
+  tag: "ToolSearchStale",
+  status: 503,
+  fields: {
+    app: AppId,
+    listedAt: Schema.Number,
+    cause: Schema.String,
+  },
+  recorded: () => "Search served an app's earlier tool listing because listing it again failed",
+  presentation: ({ listedAt, cause }) => ({
+    title: "App tools may be out of date",
+    description: `Search shows this app's tools as they were listed at ${new Date(listedAt).toISOString()}, because listing them again failed: ${cause}`,
+    retryable: true,
+    recovery: {
+      action:
+        "Use the tools shown. If a call fails, check that the app's upstream server responds.",
+      instructions:
+        "Tell the user this app's tools come from an earlier listing because listing them again failed. Its tools can still be called; a call may fail for the same reason. Other apps are current.",
+    },
+  }),
+});
+export type ToolSearchStale = typeof ToolSearchStale.Type;
+
 /** Why renewing an account's refused credentials failed, as resolving them reports it. */
 export const RenewalFailure = Schema.Union([
   OAuthReconnectRequired,
@@ -1045,9 +1411,10 @@ export const AppProviderFailed = UserFacingError.define({
       Schema.Struct({ id: AccountId, label: Schema.String, provider: Schema.String }),
     ),
     /**
-     * The service refused the account's credentials during a mutation, and Executor has since
-     * renewed them. The mutation was not repeated, because it may have made changes before the
-     * refusal; a later call uses the renewed credentials.
+     * The service refused the account's credentials during a call Executor does not repeat, and
+     * Executor has since renewed them. That is a call that may write, which may have made changes
+     * before the refusal, or a query only its tool declares reads, whose claim the app has not
+     * confirmed. A later call uses the renewed credentials.
      */
     credentialsRenewed: Schema.optional(Schema.Literal(true)),
     /**
@@ -1083,16 +1450,14 @@ export const AppProviderFailed = UserFacingError.define({
         case "unauthorized":
           if (credentialsRenewed === true)
             return {
-              title: "Access renewed; request not repeated",
-              description: `${service} rejected the credentials${target}${context}.${reported} Executor has renewed the account’s access, but did not repeat this call automatically.`,
+              title: "Access restored; call not repeated",
+              description: `${service} rejected the credentials${target}${context}.${reported} Access was restored. This call was not repeated; earlier steps may have changed data. Check the result and retry only if the user chooses.`,
               recovery: {
-                action: "The renewed access is used from now on.",
-                instructions: `Executor renewed the account’s access but did not repeat this call. Renewal does not establish whether an earlier part of the call changed data. ${instructions}`,
+                action: "Check the result and retry only if the user chooses.",
+                instructions: `Access was restored, but this call was not repeated, and earlier steps of it may have changed data. Check what it did before anything else, and retry only if the user chooses. ${instructions}`,
               },
               retryable: false,
             };
-          // The renewal's own error says what failed. Only a call that may write reports it, so
-          // its recovery is the one for such a call, never repeating it.
           if (renewalFailure !== undefined)
             return {
               title: renewalFailure.title,
@@ -1172,15 +1537,21 @@ export const appFailure = ({
       });
 
 /**
- * Keep a skill loader's or MCP server's safe fields, and the error the app's own factory or loader
- * raised; other evaluation failures stay generic.
+ * Keep a skill loader's or MCP server's safe fields, the error the app's own factory or loader
+ * raised, or the runtime failure that stopped the app's Worker, build or framework. Only an error
+ * none of them describes stays generic.
  */
 export const evaluationFailure = (
   identity: { app: AppId; version: VersionId },
   error: unknown,
   reason = "App evaluation failed",
-) =>
-  new AppEvaluationFailed({
+) => {
+  const failure =
+    Schema.is(HostEvaluationFailed)(error) || Schema.is(HostDeclarationInvalid)(error)
+      ? appFailure(error)
+      : Option.none<AppFailure>();
+  const runtime = Option.isNone(failure) ? evaluationRuntime(error) : undefined;
+  return new AppEvaluationFailed({
     app: identity.app,
     version: identity.version,
     reason,
@@ -1194,11 +1565,11 @@ export const evaluationFailure = (
           },
         }
       : {}),
-    ...(Schema.is(HostEvaluationFailed)(error)
-      ? Option.match(appFailure(error), { onNone: () => ({}), onSome: (failure) => ({ failure }) })
-      : {}),
+    ...Option.match(failure, { onNone: () => ({}), onSome: (failure) => ({ failure }) }),
+    ...(runtime === undefined ? {} : { runtime }),
     ...(Schema.is(McpError)(error) ? { mcp: mcpFailure(error) } : {}),
   });
+};
 
 /**
  * What a router that could not list its tools reports to a caller of the listing, such as MCP
@@ -1346,6 +1717,13 @@ const temporaryStorage = ({ errorName, code }: AppFailure) =>
   errorName === "CacheError" &&
   (code === "timeout" || code === "storage" || code === "unavailable");
 
+/**
+ * How to read a GraphQL failure's message: the errors the server stated are its own words, which
+ * Executor quotes but does not check.
+ */
+const graphqlServiceDetail =
+  " The message quotes the errors the GraphQL server stated in its response, with the response path and extensions, such as a code, it gave for each. They are the server's words, which Executor does not check. When they name an argument, a field or a limit, correct the input or selection they name.";
+
 /** The error name and code a failure reported, for copy. */
 const failureName = ({ errorName, code }: AppFailure) =>
   `${errorName}${code === undefined ? "" : `, ${code}`}`;
@@ -1380,22 +1758,41 @@ export const ToolCallFailed = UserFacingError.define({
      * Worker, which can produce it, so the match is a likely cause, never a confirmed one.
      */
     rpcLimitMatched: Schema.optional(Schema.Literal(true)),
+    /**
+     * Repeating this call is safe: the exchange that failed never left the host (its connection to
+     * the app runtime never formed), and either it was the call's only hand-off to the app's code,
+     * or the app confirms the call only reads. A confirmed read repeated after a credential renewal
+     * keeps it although its first run reached the app: that run only read. Never set together with
+     * `mayHaveWritten`.
+     */
+    notSent: Schema.optional(Schema.Literal(true)),
     mayHaveWritten: MayHaveWritten,
   },
-  recorded: ({ failure, mcp, response, rpcLimitMatched }) =>
-    rpcLimitMatched === true
-      ? "The tool's failure matched the Workers RPC size limit's message"
-      : mcp !== undefined
-        ? `The tool failed: ${recordedMcp(mcp)}`
-        : failure !== undefined
-          ? `The tool failed: ${recordedApp(failure)}`
-          : response !== undefined
-            ? "The tool failed after starting"
-            : "The tool failed without further detail",
-  presentation: callPresentation(({ reason, response, failure, mcp, rpcLimitMatched }) => {
+  recorded: ({ failure, mcp, response, rpcLimitMatched, notSent }) =>
+    notSent === true
+      ? "The tool call was not sent: the app runtime could not be reached"
+      : rpcLimitMatched === true
+        ? "The tool's failure matched the Workers RPC size limit's message"
+        : mcp !== undefined
+          ? `The tool failed: ${recordedMcp(mcp)}`
+          : failure !== undefined
+            ? `The tool failed: ${recordedApp(failure)}`
+            : response !== undefined
+              ? "The tool failed after starting"
+              : "The tool failed without further detail",
+  presentation: callPresentation(({ reason, response, failure, mcp, rpcLimitMatched, notSent }) => {
+    if (notSent === true)
+      return {
+        title: "Tool call was not sent",
+        description: reason,
+        recovery: {
+          action: "Try the call again.",
+          instructions:
+            "Executor could not open its connection to the app runtime, so it sent nothing of this call and the tool did not run. Repeating the call is safe. If it fails the same way again, the app runtime may have stopped; Executor's log records when it stops or is replaced.",
+        },
+        retryable: true,
+      };
     if (mcp !== undefined) return mcpFailurePresentation(mcp);
-    // App code can produce the runtime's text, so the match names a likely cause and keeps a read's
-    // bounded retry. Executor sets no size limit of its own on a result.
     if (rpcLimitMatched === true)
       return {
         title: "Tool result may have been too large to transfer",
@@ -1407,7 +1804,6 @@ export const ToolCallFailed = UserFacingError.define({
         },
         retryable: true,
       };
-    // The API's own recovery, when it stated one, is shown as the API wrote it.
     if (response !== undefined)
       return {
         title: "The app’s API returned an error",
@@ -1441,7 +1837,7 @@ export const ToolCallFailed = UserFacingError.define({
           description: reason,
           recovery: {
             action: "Read the reported error and check the corresponding request or configuration.",
-            instructions: `The app’s service integration failed (${failureName(failure)}). The reported details do not establish whether the cause is the request, the service or Executor.${failure.errorName !== "OpenapiError" ? "" : failure.code === "invalid_definition" ? " The API's OpenAPI document describes this operation in a way Executor cannot use. Check the operation's definition in that document." : " The message names the API operation when it is known and, when a response arrived, its status, media type and length; the response body is not shown. Check the operation's parameters, the API's status, and whether its OpenAPI document declares this error."}`,
+            instructions: `The app’s service integration failed (${failureName(failure)}). The reported details do not establish whether the cause is the request, the service or Executor.${failure.errorName !== "OpenapiError" ? "" : failure.code === "invalid_definition" ? " The API's OpenAPI document describes this operation in a way Executor cannot use. Check the operation's definition in that document." : " The message names the API operation when it is known and, when a response arrived, its status, media type and length; the response body is not shown. Check the operation's parameters, the API's status, and whether its OpenAPI document declares this error."}${failure.errorName === "GraphqlError" ? graphqlServiceDetail : ""}`,
           },
           retryable: false,
         };

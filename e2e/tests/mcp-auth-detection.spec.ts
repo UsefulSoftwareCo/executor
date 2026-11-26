@@ -1,7 +1,3 @@
-/**
- * Quick add decides how to connect each remote MCP server from what the server answers without
- * credentials, and says which signals decided it. Each server emulates a real service's pattern.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, FileSystem, Schema } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
@@ -59,7 +55,6 @@ const SetupFailed = Schema.Struct({
 });
 const SignIn = Schema.Struct({ authorizationUrl: Schema.String });
 
-/** Import one emulated server through the hosted MCP server import API. */
 const importer = Effect.gen(function* () {
   const api = yield* Api,
     actors = yield* Actors;
@@ -87,7 +82,6 @@ const importer = Effect.gen(function* () {
     Effect.gen(function* () {
       const { server, name, response } = yield* attempt(pattern);
       expect(response.status, `${pattern}: ${JSON.stringify(response.body)}`).toBe(422);
-      // Reasons and signals never repeat the server's address or its responses.
       expect(JSON.stringify(response.body)).not.toContain(server.origin);
       const inventory = yield* body(
         Inventory,
@@ -100,7 +94,6 @@ const importer = Effect.gen(function* () {
     api.request(actors.owner, "GET", `${prefix}/providers/${provider}/oauth/oauth/setup`);
   const setup = (provider: string) =>
     setupResponse(provider).pipe(Effect.flatMap((response) => body(Setup, response)));
-  /** Deploy an app whose provider discovers OAuth from `url`, as an author would write it. */
   const discovering = (url: string) =>
     Effect.gen(function* () {
       const response = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
@@ -132,9 +125,7 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
           actors.owner,
           "POST",
           connectionsPath(`${prefix}/apps/${appId}`, "user", "service"),
-          {
-            destination: { kind: "personal" },
-          },
+          {},
         ),
       );
       return yield* api.request(
@@ -162,7 +153,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP auth detection", (it) => {
           actors = yield* Actors,
           target = yield* Target;
         const { prefix, startOAuth } = yield* importer;
-        // Trust only this scenario's short-lived certificate, without disabling TLS verification.
         const directory = yield* fs.makeTempDirectoryScoped({ prefix: "executor-https-mcp-" });
         const certificate = `${directory}/cert.pem`;
         const key = `${directory}/key.pem`;
@@ -201,7 +191,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP auth detection", (it) => {
           });
 
         yield* serverControl("stop");
-        // Disabling the loopback shortcut also requires an explicit origin for the runner's callback.
         const callback = `http://account-picker.localhost:${new URL(target.metadata.origin).port}`;
         yield* serverControl("environment", 200, {
           NODE_EXTRA_CA_CERTS: certificate,
@@ -251,15 +240,12 @@ layer(HostedLive, { excludeTestServices: true })("MCP auth detection", (it) => {
             .request(actors.owner, "GET", `${prefix}/apps/${appId}/source`)
             .pipe(Effect.flatMap((response) => body(Source, response)));
 
-        // A server that works anonymously needs no account and gets no provider.
         const open = yield* imported("anonymous");
         expect(open.app.requirements.accounts).toEqual({});
         expect((yield* source(open.app.id)).files.map((file) => file.path)).not.toContain(
           "provider.ts",
         );
 
-        // Exa answers anonymously over SSE and also publishes OAuth metadata: it is added without
-        // an account, and its discovered OAuth provider is kept so accounts can be added later.
         const exa = yield* imported("anonymous-oauth");
         expect(exa.app.requirements.accounts).toEqual({});
         const files = (yield* source(exa.app.id)).files;
@@ -271,8 +257,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP auth detection", (it) => {
           "also offers OAuth sign-in",
         );
 
-        // The check releases the session it opened with the version the server negotiated. A
-        // server that predates 2025-11-25 refuses a DELETE naming that version and keeps it open.
         const older = yield* imported("older-protocol");
         expect(older.app.requirements.accounts).toEqual({});
         const sessions = yield* older.server.sessions;
@@ -288,7 +272,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP auth detection", (it) => {
       Effect.gen(function* () {
         const { imported, setup, startOAuth } = yield* importer;
 
-        // Dynamic registration: Executor registers its own client when the account connects.
         const dcr = yield* imported("oauth-dcr");
         const service = dcr.app.requirements.accounts.service;
         if (service === undefined) return yield* Effect.die("The OAuth app declares no account");
@@ -297,7 +280,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP auth detection", (it) => {
         expect(started.status, JSON.stringify(started.body)).toBe(200);
         expect(yield* dcr.server.registrations).toBe(1);
 
-        // GitHub's authorization server registers no clients: the user supplies one.
         const manual = yield* imported("oauth-manual");
         const manualService = manual.app.requirements.accounts.service;
         if (manualService === undefined)
@@ -309,25 +291,20 @@ layer(HostedLive, { excludeTestServices: true })("MCP auth detection", (it) => {
           new URL((yield* body(SignIn, supplied)).authorizationUrl).searchParams.get("client_id"),
         ).toBe("user-registered-client");
 
-        // The only metadata is the document the WWW-Authenticate challenge names.
         const challenged = yield* imported("challenge-only");
         expect(Object.keys(challenged.app.requirements.accounts)).toEqual(["service"]);
 
-        // Ahrefs lists its scopes as `scopes_provided`; sign-in requests them.
         const ahrefs = yield* imported("scopes-provided");
         const ahrefsService = ahrefs.app.requirements.accounts.service;
         if (ahrefsService === undefined)
           return yield* Effect.die("The OAuth app declares no account");
         expect((yield* setup(ahrefsService.provider)).scopes).toEqual(["apiv3-mcp"]);
 
-        // Fastmail's registration refuses Executor's callback: setup asks for a client instead.
         const fastmail = yield* imported("dcr-rejects-redirect");
         const refused = yield* startOAuth(fastmail.app.id);
         expect(refused.status, JSON.stringify(refused.body)).toBe(422);
         expect((yield* body(SetupFailed, refused)).reason).toBe("client_not_approved");
 
-        // Microsoft Entra ID lists no PKCE methods but accepts S256. The server is added, and
-        // sign-in still sends an S256 challenge.
         const entraLike = yield* imported("pkce-unadvertised");
         const entraLikeService = entraLike.app.requirements.accounts.service;
         if (entraLikeService === undefined)
@@ -350,7 +327,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP auth detection", (it) => {
           actors = yield* Actors;
         const { rejected, setupResponse, discovering } = yield* importer;
 
-        // A Bearer challenge with no OAuth anywhere means an API key.
         const keyed = yield* rejected("bearer-key");
         expect(keyed.code).toBe("agent_setup_required");
         expect(keyed.detection).toMatchObject({ _tag: "CredentialsRequired", scheme: "bearer" });
@@ -368,7 +344,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP auth detection", (it) => {
         expect(keyed.reason).toContain("HTTP 401 and a Bearer challenge");
         expect(keyed.reason).toContain("add it with your agent");
 
-        // A JSON-RPC error to initialize is reported as such, not as a sign-in requirement.
         const failing = yield* rejected("initialize-fails");
         expect(failing.code).toBe("agent_setup_required");
         expect(failing.detection).toMatchObject({
@@ -376,15 +351,12 @@ layer(HostedLive, { excludeTestServices: true })("MCP auth detection", (it) => {
           reason: "initialize_error",
         });
 
-        // A firewall's 403 page with no challenge or metadata is a refusal, not an API key.
         const blocked = yield* rejected("refused");
         expect(blocked.code).toBe("agent_setup_required");
         expect(blocked.detection).toMatchObject({ _tag: "Undetermined", reason: "refused" });
         expect(blocked.detection.signals[0]).toMatchObject({ status: 403, media: "html" });
         expect(blocked.reason).toContain("firewall");
 
-        // OAuth that account setup would refuse is not confirmed: this token endpoint accepts
-        // only private_key_jwt clients, which setup cannot register or accept.
         const keyOnly = yield* rejected("client-auth-unsupported");
         expect(keyOnly.detection).toMatchObject({ _tag: "Undetermined", reason: "oauth_unusable" });
         expect(keyOnly.detection.signals.at(-1)).toMatchObject({
@@ -393,9 +365,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP auth detection", (it) => {
         });
         expect(keyOnly.reason).toContain("cannot be used to prepare sign-in");
 
-        // An authorization server that lists its PKCE methods without S256 cannot take the S256
-        // challenge Executor sends. The check does not confirm it, and account setup for an app
-        // that discovers it refuses it too.
         const plain = yield* rejected("pkce-plain");
         expect(plain.detection).toMatchObject({ _tag: "Undetermined", reason: "oauth_unusable" });
         expect(plain.detection.signals.at(-1)).toMatchObject({
@@ -411,7 +380,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP auth detection", (it) => {
           cause: { stage: "discover", field: "code_challenge_methods_supported" },
         });
 
-        // The dashboard shows the reason with the signals that decided it.
         const server = yield* mcpAuthServer("bearer-key");
         yield* browser.login(actors.owner);
         yield* browser.use("Open the MCP server dialog", (page) =>

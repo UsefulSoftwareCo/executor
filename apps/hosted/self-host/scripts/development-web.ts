@@ -1,4 +1,9 @@
-import { createServer, request as createApiRequest } from "node:http";
+import {
+  createServer,
+  IncomingMessage,
+  request as createApiRequest,
+  ServerResponse,
+} from "node:http";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeHttpServerRequest from "@effect/platform-node/NodeHttpServerRequest";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
@@ -24,6 +29,8 @@ const apiProxy = (apiOrigin: string) =>
     const request = yield* HttpServerRequest.HttpServerRequest;
     const incoming = NodeHttpServerRequest.toIncomingMessage(request);
     const outgoing = NodeHttpServerRequest.toServerResponse(request);
+    if (!(incoming instanceof IncomingMessage) || !(outgoing instanceof ServerResponse))
+      return HttpServerResponse.empty({ status: 505 });
     return yield* Effect.callback<HttpServerResponse.HttpServerResponse>((resume) => {
       let finished = false;
       let upstream: ReturnType<typeof createApiRequest> | undefined;
@@ -82,7 +89,6 @@ const main = Effect.scoped(
     const path = yield* Path.Path;
     const port = yield* Config.Number("PORT");
     const apiOrigin = yield* Config.String("HOSTED_API_URL");
-    // The development origin serves the dashboard and the MCP and API resources alike.
     const origin = yield* Config.String("BETTER_AUTH_URL");
     const root = path.resolve(
       path.dirname(yield* path.fromFileUrl(new URL(import.meta.url))),

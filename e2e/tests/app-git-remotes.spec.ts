@@ -1,10 +1,3 @@
-/**
- * Clients take an app's Git remote from the host, never from the origin they called: on Cloud the
- * API is `api.executor.sh` and remotes are on the edge (`executor.sh/git/...`). Git clones and
- * pushes through the remote the CLI and the dashboard show, with the session
- * `executor apps login` saved at the API host, and earlier clones' remotes on the deployment origin
- * (`v2.executor.sh`) keep working. Self-host serves all of these on its one origin.
- */
 import { expect, layer } from "@effect/vitest";
 import { Duration, Effect, Schema } from "effect";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -54,22 +47,6 @@ layer(HostedLive, { excludeTestServices: true })("App Git remotes", (it) => {
           expect(printed.code, printed.stderr).toBe(0);
           expect(printed.stdout.trim()).toBe(remote);
 
-          // The dashboard shows the same remote, not one on its own origin.
-          yield* browser.login(actors.owner);
-          yield* browser.use("Open the app's source", (page) =>
-            page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=source`),
-          );
-          yield* browser.use("Open the clone details", (page) =>
-            page.getByRole("button", { name: "Clone", exact: true }).click(),
-          );
-          expect(
-            yield* browser.use("Read the dashboard's clone URL", (page) =>
-              page.getByLabel("Git clone URL").inputValue(),
-            ),
-          ).toBe(remote);
-          yield* browser.checkpoint("The dashboard shows the host's remote");
-
-          // Git clones and pushes through it with the CLI's session.
           const cloned = yield* tools.git(["clone", "--quiet", remote, "."]);
           expect(cloned.code, cloned.stderr).toBe(0);
           const pushed = { path: "pushed.txt", content: `Pushed ${randomUUID()}\n` };
@@ -89,8 +66,6 @@ layer(HostedLive, { excludeTestServices: true })("App Git remotes", (it) => {
           );
           expect(workspace.files).toContainEqual(pushed);
 
-          // A pack over Git's 1 MiB http.postBuffer is sent after a probe request whose body is
-          // only a flush packet, then streamed in chunks. Both must reach the repository.
           const large = { path: "large.txt", content: randomBytes(1536 * 1024).toString("base64") };
           yield* tools.fs.writeFileString(
             tools.path.join(tools.checkout, large.path),
@@ -109,7 +84,6 @@ layer(HostedLive, { excludeTestServices: true })("App Git remotes", (it) => {
             large.content.length,
           );
 
-          // A remote on the deployment origin, as earlier clones have, serves the same history.
           const earlier = yield* tools.git([
             "fetch",
             "--quiet",
@@ -125,9 +99,6 @@ layer(HostedLive, { excludeTestServices: true })("App Git remotes", (it) => {
             tools.git(["ls-remote", "origin", "refs/heads/main"]),
             (listed) => listed.stdout.split("\t")[0],
           );
-          // A push far larger than one Worker could hold streams through to the repository. Each
-          // file stays under Artifacts' 32 MB blob limit and the pack under the 64 MiB that
-          // Artifacts accepts in one push today; random bytes keep the pack that large.
           const hugeFiles = ["huge-1.bin", "huge-2.bin", "huge-3.bin"];
           const beforeHuge = (yield* tools.git(["rev-parse", "HEAD"])).stdout.trim();
           for (const file of hugeFiles)
@@ -141,8 +112,6 @@ layer(HostedLive, { excludeTestServices: true })("App Git remotes", (it) => {
           expect(hugePush.code, hugePush.stderr).toBe(0);
           expect(yield* remoteMain).toBe((yield* tools.git(["rev-parse", "HEAD"])).stdout.trim());
 
-          // Pushes that would move a protected ref are refused the way Git reports them, and
-          // nothing changes: main cannot be deleted, and __executor/ branches are Executor's.
           const deleted = yield* tools.git(["push", "origin", ":main"]);
           expect(deleted.code).not.toBe(0);
           expect(deleted.stderr).toContain("the app's main branch cannot be deleted");
@@ -151,9 +120,6 @@ layer(HostedLive, { excludeTestServices: true })("App Git remotes", (it) => {
           expect(retained.stderr).toContain("Executor keeps this ref for retained versions");
           expect(yield* remoteMain).toBe((yield* tools.git(["rev-parse", "HEAD"])).stdout.trim());
 
-          // With the large files removed, the history holds more than a Worker reads in one Git
-          // response, but the current tree is small. A source read fetches only the commit it
-          // reads, an older one by its SHA included, and the history lists commits without files.
           const hugeCommit = (yield* tools.git(["rev-parse", "HEAD"])).stdout.trim();
           expect((yield* tools.git(["rm", "--quiet", ...hugeFiles])).code).toBe(0);
           expect((yield* tools.git(["commit", "--quiet", "-m", "Remove 42 MiB"])).code).toBe(0);
@@ -182,7 +148,6 @@ layer(HostedLive, { excludeTestServices: true })("App Git remotes", (it) => {
           expect((yield* body(Schema.Struct({ content: Schema.String }), older)).content).toBe(
             pushed.content,
           );
-          // One commit whose own files are over the limit is refused as such.
           const oversized = yield* api.request(
             actors.owner,
             "GET",
@@ -193,7 +158,6 @@ layer(HostedLive, { excludeTestServices: true })("App Git remotes", (it) => {
             reason: "limit",
           });
 
-          // A shallow clone's push starts with its shallow boundary, and is accepted.
           const shallow = tools.path.join(tools.checkout, "..", "shallow");
           const shallowClone = yield* tools.git([
             "clone",
@@ -221,16 +185,25 @@ layer(HostedLive, { excludeTestServices: true })("App Git remotes", (it) => {
           expect((yield* tools.git(["pull", "--quiet", "--ff-only", "origin", "main"])).code).toBe(
             0,
           );
+
+          yield* browser.login(actors.owner);
+          yield* browser.use("Open the app's source", (page) =>
+            page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=source`),
+          );
+          yield* browser.use("Open the clone details", (page) =>
+            page.getByRole("button", { name: "Clone", exact: true }).click(),
+          );
+          expect(
+            yield* browser.use("Read the dashboard's clone URL", (page) =>
+              page.getByLabel("Git clone URL").inputValue(),
+            ),
+          ).toBe(remote);
+          yield* browser.checkpoint("The dashboard shows the host's remote");
         }),
       ),
-    // Signs in through the browser, runs the CLI several times, and clones and pushes over HTTP,
-    // including a 42 MiB push.
     { timeout: 240_000 },
   );
 
-  // Git sends a stored credential from every helper before asking the next one, and stores what
-  // the CLI's helper returns in all of them, as Git's default macOS configuration does with the
-  // keychain. A copy kept past the access token's expiry is refused as a failed sign-in.
   it.effect(
     scenarios.appGitKeptCredentials.title,
     (context) =>
@@ -255,9 +228,6 @@ layer(HostedLive, { excludeTestServices: true })("App Git remotes", (it) => {
           );
           const remote = `${hosts.edge}/git/${actors.organization.id}/${app.slug}.git`;
 
-          // A helper that keeps whatever Git stores, every attribute included, as the keychain
-          // does. Repository configuration comes before the CLI's helper, as system configuration
-          // does for a user's own.
           const kept = tools.path.join(tools.home, "..", "kept-credential");
           const keeper = tools.path.join(tools.home, "..", "keeping-helper");
           yield* tools.fs.writeFileString(
@@ -277,10 +247,8 @@ layer(HostedLive, { excludeTestServices: true })("App Git remotes", (it) => {
           expect((yield* tools.git(["init", "--quiet"])).code).toBe(0);
           expect((yield* tools.git(["config", "credential.helper", keeper])).code).toBe(0);
 
-          // The CLI's saved session nears the point where it refreshes: twenty seconds remain
-          // before its last minute.
           const store = tools.path.join(tools.home, "..", "store.json");
-          const sessionKey = `Executor Registry\n${hosts.api}`;
+          const sessionKey = `Executor Tools\n${hosts.api}`;
           const Store = Schema.Record(Schema.String, Schema.String);
           const Session = Schema.Struct({ accessToken: Schema.String, expiresAt: Schema.Number });
           const readStore = Effect.flatMap(
@@ -303,16 +271,12 @@ layer(HostedLive, { excludeTestServices: true })("App Git remotes", (it) => {
 
           const first = yield* tools.git(["ls-remote", remote]);
           expect(first.code, first.stderr).toBe(0);
-          // The keeping helper now holds the CLI's token. Compared as booleans so a failure never
-          // prints a token.
           const keeps = (token: string) =>
             Effect.map(tools.fs.readFileString(kept), (text) =>
               text.split("\n").includes(`password=${token}`),
             );
           expect(yield* keeps(before.accessToken), "the kept copy is the CLI's token").toBe(true);
 
-          // Past the CLI's refresh point Git must not send the kept copy, which the host would
-          // refuse once the token expires; the CLI's helper refreshes the session instead.
           yield* Effect.sleep(Duration.millis(before.expiresAt - 60_000 + 2000 - Date.now()));
           const second = yield* tools.git(["ls-remote", remote]);
           expect(second.code, second.stderr).toBe(0);
@@ -322,7 +286,6 @@ layer(HostedLive, { excludeTestServices: true })("App Git remotes", (it) => {
           expect(yield* keeps(after.accessToken), "Git kept the refreshed token").toBe(true);
         }),
       ),
-    // Signs in, waits about twenty seconds for the CLI's refresh point, and runs Git twice.
     { timeout: 120_000 },
   );
 });

@@ -1,4 +1,3 @@
-/** A full Free plan refuses invitations on the server and offers an upgrade in the members UI. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import type { Page } from "playwright";
@@ -29,7 +28,6 @@ layer(HostedLive, { excludeTestServices: true })("Member limit", (it) => {
             resend,
           });
 
-        // Owner, admin and member fill the Free plan's three seats.
         const limit = yield* api.request(actors.owner, "GET", limitPath);
         expect(limit.status).toBe(200);
         expect(limit.body).toEqual({ limit: 3 });
@@ -40,12 +38,10 @@ layer(HostedLive, { excludeTestServices: true })("Member limit", (it) => {
           expect(refused.status).toBe(403);
           yield* body(Refusal, refused);
         }
-        // A member still gets the ordinary permission refusal, not the plan's limit.
         const denied = yield* invite(actors.member, "over-limit@example.test");
         expect(denied.status).toBe(403);
         expect(denied.body).not.toMatchObject({ code: "ORGANIZATION_MEMBERSHIP_LIMIT_REACHED" });
 
-        // Pending invitations are not seats, but a resend at the limit is refused too.
         const pendingEmail = "pending-at-limit@example.test";
         const seat = yield* freeSeat;
         expect((yield* invite(actors.owner, pendingEmail)).status).toBe(200);
@@ -111,7 +107,6 @@ layer(HostedLive, { excludeTestServices: true })("Member limit", (it) => {
         );
         yield* browser.checkpoint("Upgrade prompt opened billing");
 
-        // Removing a member frees a seat; the same dialog returns to the invitation form.
         yield* browser.use("Return to organization settings", (page) =>
           page.goto(`/org/${actors.organization.slug}/organization`),
         );

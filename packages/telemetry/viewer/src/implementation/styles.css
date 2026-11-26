@@ -1,0 +1,43 @@
+@import "tailwindcss";
+
+@theme {
+  --color-accent: oklch(0.795 0.16 70);
+  --color-accent-dim: oklch(0.65 0.12 70);
+  --font-mono:
+    "Berkeley Mono", "IBM Plex Mono", "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  font-family: var(--font-mono);
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-white)/0.1;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-white)/0.2;
+}
+
+@keyframes pulse-bar {
+  0%,
+  100% {
+    opacity: 0.5;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+.animate-bar-pulse {
+  animation: pulse-bar 1.5s ease-in-out infinite;
+}

@@ -33,9 +33,6 @@ const githubRelease = (
 const v2Installers = (version: string) =>
   suffixes.map((suffix) => `executor-desktop-${version}${suffix}`);
 
-// GitHub's public list never includes drafts. Executor 1 releases share the
-// repository and the version-free installer names, and the update feed is a
-// newer v2 prerelease without installers, so neither may be chosen.
 const releases = [
   githubRelease(
     "v1.6.11",
@@ -114,7 +111,6 @@ layer(HostedLive, { excludeTestServices: true })("Desktop downloads", (it) => {
           ),
         );
         const resolved = yield* readDownloads("Read the resolved downloads");
-        // Beta builds offer the newest v2 release; stable builds skip prereleases.
         const [tag, version] =
           resolved.stableOnly === "true"
             ? ["executor@2.0.0", "2.0.0"]

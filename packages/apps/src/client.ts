@@ -13,3 +13,22 @@ export type {
   OptimisticLocalStore,
   OptimisticUpdate,
 } from "./contracts/optimistic.ts";
+export { desktop } from "./implementation/desktop.ts";
+export {
+  DesktopUnavailable,
+  DesktopPermissionDenied,
+  ShortcutTaken,
+  DesktopInvalidInput,
+  SystemAudioBlocked,
+  type DesktopError,
+} from "./contracts/desktop-errors.ts";
+export {
+  desktopBadgeMaximum,
+  desktopMaximumWindows,
+  desktopMenuBarTitleMaxLength,
+  desktopPermissions,
+  desktopWindowSize,
+  type DesktopPermission,
+  type DesktopPermissionState,
+  type DesktopWindowOptions,
+} from "./contracts/desktop.ts";

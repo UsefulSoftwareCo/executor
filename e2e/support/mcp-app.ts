@@ -1,6 +1,6 @@
-/** Synthetic app fixture deployed and removed through the running product's public API. */
 import { expect } from "@effect/vitest";
-import { Effect, Redacted, Schema } from "effect";
+import { Effect, Schema } from "effect";
+import { reveal } from "./failure-text.ts";
 import { randomUUID } from "node:crypto";
 import { Actors } from "./actors.ts";
 import { Api, body } from "./api.ts";
@@ -9,7 +9,6 @@ import { Evidence } from "./evidence.ts";
 import { Target } from "./platform.ts";
 import { appsManifest } from "./apps-release.ts";
 
-/** The receipt is absent from client prompts and tool schemas, so only a real invocation reveals it. */
 const mcpAppFiles = (name: string, receipt: string) => [
   {
     path: "skills/echo/SKILL.md",
@@ -33,7 +32,6 @@ export default defineApp({}, async () => ({  tools: router({
   appsManifest,
 ];
 
-/** Hosted apps belong to the synthetic organization. */
 export const deployMcpApp = Effect.gen(function* () {
   const api = yield* Api,
     actors = yield* Actors,
@@ -58,13 +56,12 @@ export const deployMcpApp = Effect.gen(function* () {
   return { app, name, receipt };
 });
 
-/** Local has one operator, so the same app is deployed with the target's API key. */
 export const deployLocalMcpApp = Effect.gen(function* () {
   const api = yield* Api,
     target = yield* Target,
     evidence = yield* Evidence,
     session = yield* api.session();
-  const headers = { authorization: `Bearer ${Redacted.value(target.apiKey)}` };
+  const headers = { authorization: `Bearer ${reveal(target.apiKey)}` };
   const name = `MCP evidence ${randomUUID().slice(0, 8)}`,
     receipt = randomUUID();
   const response = yield* session.send(

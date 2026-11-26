@@ -5,7 +5,6 @@ import { Browser } from "../support/browser.ts";
 import { Onboarding } from "../support/onboarding.ts";
 import { scenarios } from "../test-plan.ts";
 
-/** A synthetic provider photo host; the browser request is answered at the network boundary. */
 const picture = "https://photos.example.test/provider-photo.png";
 const pixel =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
@@ -54,7 +53,6 @@ layer(TestLive, { excludeTestServices: true })("Provider photos", (it) => {
           page.waitForURL(`**/org/${team.slug}/apps`),
         );
         const after = yield* session;
-        // Linking Google adds its photo; the account's own name and email stay unchanged.
         expect(after.user).toEqual({ email, name: before.user.name, image: picture });
 
         const menuPhoto = yield* browser.use(

@@ -3,6 +3,7 @@ import type { NetworkRefused } from "./network.ts";
 /** GraphQL discovery contracts. Catalogs are evaluated with the selected account. */
 import { Schema, type Effect } from "effect";
 import { AccountId, HttpUrl, JsonObject, type JsonValue } from "./schema.ts";
+import { FailureFieldName, maxUpstreamMessageLength } from "./failure.ts";
 
 /** Provider timeout policy, independent of any enclosing operation deadline. */
 export const GraphqlClientLimits = Schema.Struct({
@@ -30,7 +31,48 @@ export const GraphqlToolsOptions = Schema.Struct({
 });
 export type GraphqlToolsOptions = typeof GraphqlToolsOptions.Type;
 
-/** Safe failures omit upstream bodies. Execution means a valid GraphQL error response, not malformed data. */
+/** Most errors of one GraphQL response that a failure carries. */
+export const maxGraphqlStatedErrors = 5;
+/** Most `extensions` entries carried for one stated error. */
+export const maxGraphqlStatedExtensions = 4;
+/** Longest path, path segment or `extensions` value carried for one stated error. */
+export const maxGraphqlStatedFieldLength = 256;
+
+/**
+ * One error a GraphQL server stated in its response's `errors` list, in the format the GraphQL
+ * specification documents: its message, the response path it names, and the scalar entries of its
+ * `extensions`, such as `code`. Text is bounded where it is read. The path keeps the server's
+ * segments, so account secrets are replaced in them before they are written as a path when the
+ * failure leaves the app.
+ */
+export const GraphqlStatedError = Schema.Struct({
+  message: Schema.String.check(Schema.isMaxLength(maxUpstreamMessageLength)),
+  /** The first segments of the path, as many as a path of the longest carried length shows. */
+  path: Schema.optional(
+    Schema.Array(
+      Schema.Union([
+        Schema.String.check(Schema.isMaxLength(maxGraphqlStatedFieldLength)),
+        Schema.Int,
+      ]),
+    ).check(Schema.isMaxLength(maxGraphqlStatedFieldLength + 1)),
+  ),
+  extensions: Schema.optional(
+    Schema.Record(
+      FailureFieldName,
+      Schema.Union([
+        Schema.String.check(Schema.isMaxLength(maxGraphqlStatedFieldLength)),
+        Schema.Finite,
+        Schema.Boolean,
+      ]),
+    ).check(Schema.isMaxProperties(maxGraphqlStatedExtensions)),
+  ),
+});
+export type GraphqlStatedError = typeof GraphqlStatedError.Type;
+
+/**
+ * Safe failures omit upstream bodies other than the errors a GraphQL server stated in its
+ * documented `errors` list. Execution means a valid GraphQL error response, not malformed data.
+ */
 export class GraphqlError extends Schema.TaggedError<GraphqlError>()("GraphqlError", {
   phase: Schema.Literals(["discover", "call"]),
   reason: Schema.Literals([
@@ -42,6 +84,17 @@ export class GraphqlError extends Schema.TaggedError<GraphqlError>()("GraphqlErr
     "execution",
   ]),
   status: Schema.optional(Schema.Number),
+  /** The first errors the server stated, in its order. */
+  errors: Schema.optional(
+    Schema.Array(GraphqlStatedError).check(Schema.isMaxLength(maxGraphqlStatedErrors)),
+  ),
+  /** How many errors the server stated in all, when it stated more than `errors` carries. */
+  stated: Schema.optional(Schema.Int),
+  /**
+   * Why Executor did not read the JSON body of a refused request: it was larger than error bodies
+   * may be, or it did not arrive in time. The status is still the server's answer.
+   */
+  unreadBody: Schema.optional(Schema.Literals(["too_large", "incomplete"])),
 }) {}
 
 const Name = Schema.String.check(Schema.isPattern(/^[_A-Za-z][_0-9A-Za-z]*$/u));

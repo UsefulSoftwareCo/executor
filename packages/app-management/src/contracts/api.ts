@@ -5,7 +5,7 @@ import {
   SourceDisplayFileQuery,
 } from "./source-display.ts";
 import { ApiError } from "@executor-js/utils/api-error";
-/** Shared app wire contracts; browser imports never load HTTP route or Git adapters. */
+import { UserFacingError } from "@executor-js/utils/user-facing-error";
 import { Context, Schema } from "effect";
 import {
   AppNameTaken,
@@ -18,16 +18,17 @@ import {
   AccountSelectionInvalid,
   VersionBuildFailed,
   BuildMemoryExceeded,
+  MarkdownUnavailable,
   CommittedSource,
   sourceErrors,
   SourceSnapshot,
   StorageError,
   PublicationReadiness,
   RegistryError,
+  RequestRejection,
 } from "@executor-js/sdk/core";
 export * from "./framework.ts";
 
-/** Authentication failures never expose whether another owner's app exists. */
 export const AppAccessDenied = ApiError.define({
   tag: "AppAccessDenied",
   status: 403,
@@ -42,7 +43,22 @@ export const AppAccessDenied = ApiError.define({
       : "This caller may not perform this app operation, or cannot access this app.",
 });
 export type AppAccessDenied = typeof AppAccessDenied.Type;
-/** Expected operation failures are shared unchanged across the product transports. */
+export const FullListingNameRequired = UserFacingError.define({
+  tag: "FullListingNameRequired",
+  status: 400,
+  fields: { name: PackageName, fullName: PackageName },
+  recorded: () =>
+    "A client without a wire revision asked to remove a public listing by its short name.",
+  presentation: ({ name, fullName }) => ({
+    title: "Remove this listing by its full name",
+    description: `${name} is the short form of a public listing's name. It selects whichever listing holds that name when the request arrives, which may not be the one that was listed, so nothing was removed.`,
+    recovery: {
+      action: `Remove ${fullName} instead. Releases up to 2.0.0-beta.15 cannot send that name: install the current release first with npm i -g executor@beta --include=optional.`,
+      instructions: `The request stated no executor-wire-revision header, so the host lists public packages to this client by short names such as ${name} and removes none by them. Run executor apps unpublish --package ${fullName}. If the CLI rejects that name, update it first with npm i -g executor@beta --include=optional. API callers send executor-wire-revision: 1.`,
+    },
+  }),
+});
+export type FullListingNameRequired = typeof FullListingNameRequired.Type;
 export const appOperationErrors = [
   StorageError,
   ...sourceErrors,
@@ -58,30 +74,24 @@ export const appOperationErrors = [
   AccountSelectionInvalid,
   VersionBuildFailed,
   BuildMemoryExceeded,
+  MarkdownUnavailable,
 ] as const;
-/** Wire errors remain typed in browser, CLI, and agent clients. */
 export const AppOperationError = Schema.Union(appOperationErrors);
-/** Authoring controls need product permissions and clone metadata, without reading Git contents. */
 const authoringFields = {
   namespace: Schema.NullOr(Schema.String),
-  /** The remote's path. Clients released before `gitUrl` add it to the host they called. */
   gitPath: Schema.String,
-  /** The absolute clone URL, on the origin where the host serves Git. */
   gitUrl: Schema.String,
   canEdit: Schema.Boolean,
 };
-/** Permissions and clone location for controls that do not need a source snapshot. */
 export const AppAuthoringMetadata = Schema.Struct({
   ...authoringFields,
   canPublish: Schema.Boolean,
 });
-/** Working source and authoring metadata, with exact stored file contents for editing. */
 export const AppSourceView = Schema.Struct({
   ...SourceSnapshot.fields,
   ...authoringFields,
   publication: Schema.NullOr(PublicationReadiness),
 });
-/** Working source for read-only inspection. Large files are listed without contents. */
 export const AppSourceDisplay = Schema.Struct({
   ...AppSourceView.fields,
   files: SourceDisplayEntries,
@@ -108,39 +118,32 @@ import {
   PackageName,
   PublicationReference,
 } from "@executor-js/sdk/core";
-/** Both public and owned copies use this one request and result contract. */
 export const CopyApp = Schema.Struct({
   from: Schema.Union([Schema.Struct({ app: AppId }), PublicationReference]),
   name: AppName,
 });
-/** Hosts choose owners from verified credentials and membership, never caller payloads. */
 export class AppIdentity extends Context.Service<
   AppIdentity,
   {
     readonly owner: OwnerId;
-    /** null is the explicitly authorized local root scope; hosted callers always supply an owner. */
     readonly readOwner: OwnerId | null;
     readonly scope: string;
     readonly namespace: string | null;
     readonly canWrite: boolean;
     readonly appIds?: ReadonlyArray<AppId> | undefined;
     readonly protectedApps: ReadonlyArray<AppId>;
-    /** Hosted principals are individual users; local pairing may omit an actor. */
     readonly actor?: string | undefined;
   }
 >()("apps/Identity") {}
-/** Product policy separates discovery, source management, execution-sensitive edits, and credential metadata. */
 export interface AppCapabilities {
   readonly visible: boolean;
   readonly manage: boolean;
   readonly edit: boolean;
 }
-/** App UI and API access reuse the host's current pairing or organization boundary. */
 export class AppAccess extends HttpApiMiddleware.Service<AppAccess, { provides: AppIdentity }>()(
   "apps/Access",
   { error: AppAccessDenied },
 ) {}
-/** Shared app IDs and operation contracts across native and hosted products. */
 export const appManagementApi = <I extends HttpApiMiddleware.AnyId, S>(
   prefix: "/api" | "/api/organizations/:organization",
   access: Context.Key<I, S>,
@@ -148,7 +151,7 @@ export const appManagementApi = <I extends HttpApiMiddleware.AnyId, S>(
   const tenant =
     prefix === "/api" ? Schema.Struct({}) : Schema.Struct({ organization: Schema.NonEmptyString });
   const app = Schema.Struct({ ...tenant.fields, app: AppId });
-  return HttpApi.make("app-management").add(
+  const api = HttpApi.make("app-management").add(
     HttpApiGroup.make("appManagement")
       .add(
         HttpApiEndpoint.get("list", "/apps", {
@@ -242,7 +245,6 @@ export const appManagementApi = <I extends HttpApiMiddleware.AnyId, S>(
         ),
         HttpApiEndpoint.get("git", "/apps/:app/git", {
           params: app,
-          // `path` stays for clients released before `url`, which add it to the host they called.
           success: Schema.Struct({ path: Schema.String, url: Schema.String }),
           error: appOperationErrors,
         }).annotate(
@@ -281,7 +283,7 @@ export const appManagementApi = <I extends HttpApiMiddleware.AnyId, S>(
           params: tenant,
           payload: Schema.Struct({ package: PackageName }),
           success: Schema.Struct({ name: PackageName }),
-          error: appOperationErrors,
+          error: [...appOperationErrors, FullListingNameRequired],
         }).annotate(
           OpenApi.Description,
           "Remove a public listing. Existing installed copies remain independent and usable.",
@@ -290,4 +292,5 @@ export const appManagementApi = <I extends HttpApiMiddleware.AnyId, S>(
       .prefix(prefix)
       .middleware(access),
   );
+  return api.middleware(RequestRejection);
 };

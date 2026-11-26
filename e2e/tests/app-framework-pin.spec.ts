@@ -1,15 +1,3 @@
-/**
- * The `1_app_framework_pin` data step commits `dependencies.apps` to every existing app without
- * redeploying it. Local and self-host run it at startup; this scenario starts its product with the
- * step held in report mode and gives apps every position whose `main` lacks a declaration. This
- * host builds only declared source, so the running versions declare the published beta.0.
- * Positions whose running build has no declaration need a host that built undeclared source, and
- * are not reproduced here. It then applies the step and checks the report, the pins, a conflict
- * retried at the next start, the catch-up step pinning an app created meanwhile to beta.5, a later
- * start that changes nothing, and that pinned apps, the Executor app included, rebuild on their
- * pinned release from before routers. Cloud runs the step from the
- * Worker's cron after deploy and reports until told to apply.
- */
 import { expect, layer } from "@effect/vitest";
 import { Duration, Effect, FileSystem, Redacted, Schedule, Schema } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
@@ -32,18 +20,10 @@ import { Telemetry } from "../support/evidence.ts";
 import { appsVersion, declaredApps } from "../support/apps-release.ts";
 
 const step = "1_app_framework_pin";
-/** The protocol-1 release the step pins, resolved from npm like every published release. */
 const release = "0.0.1-beta.2";
 const catchUpStep = "2_app_framework_pin_catch_up";
-/** The last release before routers, which the catch-up step pins. */
 const catchUpRelease = "0.0.1-beta.5";
 
-// app-user-accounts: keep, as source of an earlier `apps` release.
-/**
- * Source written for the protocol-1 framework every app ran before routers. It reports which
- * framework its build runs: beta.1 added `dynamicTools` to beta.0, and routers replaced both. Later
- * releases before routers, including both pinned ones, report `dynamicTools`.
- */
 const index = (revision: string) => ({
   path: "index.ts",
   content: `import * as apps from "apps";
@@ -55,7 +35,6 @@ export default defineApp({ accounts: {} }, {
 });
 const manifest = { name: "pin-fixture", private: true, type: "module", dependencies: {} };
 const pinnedManifest = `${JSON.stringify({ dependencies: { apps: release } }, null, 2)}\n`;
-/** Files a running version builds: the source, declaring the published protocol-1 beta.0. */
 const deployedFiles = (revision: string) => [
   index(revision),
   {
@@ -78,12 +57,9 @@ const RunningSource = Schema.Struct({
   files: Schema.Array(Schema.Struct({ path: Schema.String, content: Schema.String })),
 });
 
-/** The same app operations through each product's own API. */
 interface Surface {
-  /** The owner ID the step reports for this scenario's apps. */
   readonly owner: string;
   readonly deploy: (name: string, files: Files) => Effect.Effect<App, unknown, Api>;
-  /** A direct file deploy of an existing app, which never writes Git. */
   readonly redeploy: (app: App, files: Files) => Effect.Effect<App, unknown, Api>;
   readonly deployCommit: (app: App, commit: string) => Effect.Effect<App, unknown, Api>;
   readonly create: (name: string, files: Files) => Effect.Effect<App, unknown, Api>;
@@ -92,7 +68,6 @@ interface Surface {
   readonly commit: (app: App, files: Files, message: string) => Effect.Effect<void, unknown, Api>;
   readonly framework: (app: App) => Effect.Effect<string, unknown, Api>;
   readonly executorApp: Effect.Effect<App, unknown, Api>;
-  /** The files of the running version. */
   readonly running: (app: App) => Effect.Effect<Files, unknown, Api>;
   readonly cleanup: (app: App) => Effect.Effect<unknown, unknown, Api>;
 }
@@ -152,7 +127,6 @@ const hostedSurface = (actor: Session, organization: string): Surface => {
   return surface;
 };
 
-/** Local's agent API takes the host-issued key and refuses browser-origin requests. */
 const localSurface = (session: Session, apiKey: string): Surface => {
   const agent: Session = {
     ...session,
@@ -223,7 +197,6 @@ const localSurface = (session: Session, apiKey: string): Surface => {
   return surface;
 };
 
-/** The pin on a product whose startup runs data steps: local or self-host. */
 const startupPin = (surface: Surface) =>
   Effect.gen(function* () {
     const target = yield* Target;
@@ -237,7 +210,6 @@ const startupPin = (surface: Surface) =>
     const unique = (name: string) => `${name} ${randomUUID().slice(0, 8)}`;
     const track = <E, R>(effect: Effect.Effect<App, E, R>) =>
       effect.pipe(Effect.tap((app) => Effect.sync(() => created.push(app))));
-    /** The last two commits on main, read from the app's repository as any Git client would. */
     const history = (app: App) =>
       processes
         .string(
@@ -263,34 +235,27 @@ const startupPin = (surface: Surface) =>
           ),
         );
     const summaries = dataStepSummaries(log, step).pipe(Effect.map((all) => all.length));
-    /** Restart and return the summary the new start logged for the step. */
     const restart = Effect.gen(function* () {
       const seen = yield* summaries;
       yield* serverControl("restart");
       return yield* nextDataStepSummary(log, step, seen);
     });
 
-    // The product started with the step held, so it reported before this scenario had apps.
     expect(yield* nextDataStepSummary(log, step, 0)).toMatchObject({
       mode: "report",
       status: "complete",
     });
 
-    // Apps in every position against their running version whose main declares no framework.
-    // A manifest that dropped its declaration after the running build.
     const packaged = yield* track(surface.deploy(unique("Packaged"), deployedFiles("first")));
     yield* surface.commit(
       packaged,
       [index("first"), { path: "package.json", content: `${JSON.stringify(manifest, null, 2)}\n` }],
       "Drop the declaration",
     );
-    // A single-file main; another writer holds it when the pin is applied.
     const contended = yield* track(surface.deploy(unique("Contended"), deployedFiles("first")));
     yield* surface.commit(contended, [index("first")], "Single file");
-    // Main moved on from the running source without deploying.
     const unpublished = yield* track(surface.deploy(unique("Unpublished"), deployedFiles("first")));
     yield* surface.commit(unpublished, [index("unpublished")], "Unpublished edit");
-    // Main has an undeployed edit and the running source came from other files.
     const diverged = yield* track(surface.deploy(unique("Diverged"), deployedFiles("first")));
     yield* surface.commit(diverged, [index("saved")], "Saved edit");
     yield* surface.redeploy(diverged, deployedFiles("deployed instead"));
@@ -310,8 +275,6 @@ const startupPin = (surface: Surface) =>
         { path: "package.json", content: "[]" },
       ]),
     );
-    // The host-managed Executor app with protocol-1 source and no declaration on main, like every
-    // copy made before templates declared one. Its running version is the template's.
     const executorApp = yield* surface.executorApp;
     const executorFiles = [index("executor")];
     yield* surface.commit(executorApp, executorFiles, "Edit the Executor app");
@@ -324,7 +287,6 @@ const startupPin = (surface: Surface) =>
     const before = yield* revisions;
     const running = yield* Effect.forEach(apps, surface.get);
 
-    // Report: counts per outcome and owner, and nothing written.
     const report = yield* restart;
     expect(report).toMatchObject({ mode: "report", status: "complete", pass: 1 });
     expect(report.owners[surface.owner]).toEqual({
@@ -337,10 +299,8 @@ const startupPin = (surface: Surface) =>
     if (local) expect(report.owners["executor-local"]).toEqual({ "pin-unpublished": 1 });
     expect(yield* revisions).toEqual(before);
 
-    // Apply while another writer holds one app's main: that app conflicts and is retried.
     const lock = `${repositories}/${contended.code}.git/refs/heads/main.lock`;
     yield* fs.writeFileString(lock, "");
-    // This release requires a declaration to build; the step runs at start, before anything builds.
     yield* serverControl("stop");
     yield* serverControl("data-steps", 200, { mode: "apply" });
     const seen = yield* summaries;
@@ -356,16 +316,12 @@ const startupPin = (surface: Surface) =>
     expect(applied).toMatchObject({ mode: "apply", run: "apply", status: "retrying", pass: 1 });
     expect(applied.owners[surface.owner]).toEqual({ ...appliedCounts, conflict: 1 });
     if (local) expect(applied.owners["executor-local"]).toEqual({ "pinned-unpublished": 1 });
-    // The catch-up step waits while the first retries. An app created now, without a declaration,
-    // is outside the first step's retry pass; only the catch-up step pins it.
     const catchUpApplied = dataStepSummaries(log, catchUpStep).pipe(
       Effect.map((all) => all.filter((summary) => summary.mode === "apply")),
     );
     expect(yield* catchUpApplied).toEqual([]);
     const late = yield* track(surface.create(unique("Late"), [index("late")]));
 
-    // Every position is pinned on top of main, as an Executor commit on the revision it read.
-    // Git returns files in path order.
     const pinnedFiles = (files: Files) =>
       [
         ...files.filter((file) => file.path !== "package.json"),
@@ -386,23 +342,19 @@ const startupPin = (surface: Surface) =>
       });
       expect(parent?.commit, app.name).toBe(before[apps.indexOf(app)]);
     }
-    // An existing manifest keeps every field, its order and its formatting.
     const packagedFiles = (yield* surface.workspace(packaged)).files;
     expect(packagedFiles.find((file) => file.path === "package.json")?.content).toBe(
       `${JSON.stringify({ ...manifest, dependencies: { apps: release } }, null, 2)}\n`,
     );
     expect((yield* surface.workspace(executorApp)).files).toEqual(pinnedFiles(executorFiles));
-    // Declared, invalid and contended apps are unchanged.
     for (const app of [declared, invalid, contended])
       expect((yield* surface.workspace(app)).revision.commit, app.name).toBe(
         before[apps.indexOf(app)],
       );
 
-    // Nothing was redeployed: running versions keep serving the framework they were built with.
     expect(yield* Effect.forEach(apps, surface.get)).toEqual(running);
     expect(yield* surface.framework(diverged)).toBe("beta.0");
 
-    // The next start retries only the conflicted app, then records the step as applied.
     yield* fs.remove(lock);
     const retried = yield* restart;
     expect(retried).toMatchObject({ mode: "apply", run: "apply", status: "complete", pass: 2 });
@@ -412,8 +364,6 @@ const startupPin = (surface: Surface) =>
     });
     expect((yield* surface.workspace(contended)).files).toEqual(pinnedFiles([index("first")]));
     expect((yield* history(contended))[1]?.commit).toBe(before[apps.indexOf(contended)]);
-    // The catch-up step runs once the first completes. Everything the first pinned reads as
-    // declared; the late app is pinned to the last release before routers.
     const catchUp = (yield* catchUpApplied).at(-1);
     expect(catchUp).toMatchObject({ mode: "apply", run: "apply", status: "complete", pass: 1 });
     expect(catchUp?.owners[surface.owner]).toEqual({
@@ -436,37 +386,19 @@ const startupPin = (surface: Surface) =>
       message: expect.stringContaining(`Pin the apps framework to ${catchUpRelease}`),
     });
 
-    // A later start runs nothing and changes nothing.
     const settled = yield* revisions;
     const quiet = yield* summaries;
     yield* serverControl("restart");
     expect(yield* summaries).toBe(quiet);
     expect(yield* revisions).toEqual(settled);
 
-    // Local regenerated its Executor app from the router template, which declares this host's
-    // release; main keeps the pinned source.
     if (local) expect(declaredApps(yield* surface.running(executorApp))).toBe(appsVersion);
-    // The next deploy of a pinned app, the Executor app included, resolves the declared
-    // release from before routers, so its source keeps building and running on the router host.
     for (const app of [contended, diverged, executorApp, late]) {
       yield* surface.deployCommit(app, (yield* surface.workspace(app)).revision.commit);
       expect(yield* surface.framework(app), app.name).toBe("dynamicTools");
     }
   });
 
-/**
- * Cloud runs the step from the Worker's minute cron after deploy, and reports until told to apply.
- * The local Worker's own cron advances it too, and the scenario ticks it through the scheduled-event
- * route. Every deploy resumes one report run, `report:cloud`, rather than starting one per build:
- * production deploys more often than a pass over every app takes. A run's first pass visits every
- * app and later passes revisit only the apps it left to retry, so the managed Cloud's run, started
- * before this scenario, never visits this scenario's apps. The scenario restarts the run once its
- * app exists, as a deploy that sets a new report label would. The local Worker cannot reach
- * Cloudflare Artifacts, so this organization's apps report `failed` and keep the run retrying while
- * the scenario observes it. Each retrying pass records its next start, 30 seconds after the first
- * pass and doubling; no pass starts before the previous one's time, and a tick before it starts
- * none. Nothing is ever applied.
- */
 const cloudReport = (surface: Surface) =>
   Effect.gen(function* () {
     const target = yield* Target;
@@ -481,10 +413,17 @@ const cloudReport = (surface: Surface) =>
     );
     yield* Effect.addFinalizer(() => surface.cleanup(app).pipe(Effect.ignore));
     const passes = dataStepPasses(log, step);
-    // Delivered `data_step.advance` spans of ticks that found the step waiting out its backoff.
     const waiting = telemetry
-      .spans("data_step.advance", { "data_step.name": step, "data_step.status": "waiting" })
-      .pipe(Effect.map((spans) => spans.length));
+      .searchWholeEnvironment("data_step.advance", {
+        "data_step.name": step,
+        "data_step.status": "waiting",
+      })
+      .pipe(Effect.map((found) => new Set(found.data.map(({ traceId }) => traceId))));
+    const dispatches = (attributes: Readonly<Record<string, string>>) =>
+      telemetry.searchWholeEnvironment("job.dispatch", {
+        "executor.job": "data-steps",
+        ...attributes,
+      });
     const tick = Effect.scoped(
       http
         .get(
@@ -493,11 +432,6 @@ const cloudReport = (surface: Surface) =>
         .pipe(Effect.flatMap((response) => response.text)),
     );
     const retryAt = (pass: DataStepPass) => Date.parse(pass.summary.retryAt ?? "");
-    /**
-     * Tick until the log holds the pass `find` picks. A tick's invocation ends with its job, and
-     * a pass that outlasts one tick's budget resumes at the next tick, so ticks never overlap and
-     * each advances the pass. A tick that finds the run held by the Worker's own cron starts nothing.
-     */
     const advanceUntil = <A>(find: (all: ReadonlyArray<DataStepPass>) => A | undefined) =>
       tick.pipe(
         Effect.andThen(passes),
@@ -510,8 +444,8 @@ const cloudReport = (surface: Surface) =>
         Effect.retry({ schedule: Schedule.spaced("1 second"), times: 20 }),
       );
 
-    // Restart the run now that this scenario's app exists, once no pass holds it.
     const logged = (yield* passes).length;
+    const dispatched = new Set((yield* dispatches({})).data.map(({ traceId }) => traceId));
     const restart = yield* processes
       .string(
         ChildProcess.make(
@@ -544,9 +478,6 @@ const cloudReport = (surface: Surface) =>
       );
     expect(restart.held, "A pass still holds the report run").toBe(false);
 
-    // The restarted run's first pass visits every app, this organization's among them. A pass of
-    // the previous run can log its summary just after releasing the run, so the first pass is found
-    // by its owners.
     const first = yield* advanceUntil((all) => {
       const index = all
         .slice(logged)
@@ -565,10 +496,21 @@ const cloudReport = (surface: Surface) =>
     expect(started.summary.run, "The report is not labelled with the build").not.toContain(
       target.metadata.commit,
     );
-    // This app and the organization's Executor app.
     expect(started.summary.owners[surface.owner]).toEqual({ failed: 2 });
+    const failedTicks = yield* dispatches({ "executor.job.failure": "DataStepItemFailed" }).pipe(
+      Effect.flatMap((found) => {
+        const fresh = found.data.filter(({ traceId }) => !dispatched.has(traceId));
+        return fresh.length === 0
+          ? Effect.fail(new Error("No dispatch with failed items has reached the collector"))
+          : Effect.succeed(fresh);
+      }),
+      Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 60 }),
+    );
+    for (const { span } of failedTicks) {
+      expect(["partial", "failed"]).toContain(span.tags["executor.outcome"]);
+      expect(span.tags["http.response.status_code"]).toBe("204");
+    }
 
-    // A tick before the first pass's retry time finds the step waiting and starts no pass.
     expect(
       retryAt(started) - Date.now(),
       "The first pass's backoff has already passed",
@@ -576,15 +518,35 @@ const cloudReport = (surface: Surface) =>
     const waited = yield* waiting;
     const before = (yield* ofRun).length;
     yield* tick;
-    yield* waiting.pipe(
-      Effect.flatMap((count) =>
-        count > waited ? Effect.void : Effect.fail(new Error("No waiting tick delivered yet")),
-      ),
+    const waitingTrace = yield* waiting.pipe(
+      Effect.flatMap((traces) => {
+        const fresh = [...traces].find((trace) => !waited.has(trace));
+        return fresh === undefined
+          ? Effect.fail(new Error("No waiting tick delivered yet"))
+          : Effect.succeed(fresh);
+      }),
       Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 120 }),
     );
     expect((yield* ofRun).length).toBe(before);
+    const waitingDispatch = yield* telemetry.query(waitingTrace).pipe(
+      Effect.flatMap((trace) => {
+        const dispatch = trace.data.find(
+          ({ span }) =>
+            span.operationName === "job.dispatch" && span.tags["executor.job"] === "data-steps",
+        );
+        return dispatch === undefined
+          ? Effect.fail(new Error("The waiting tick's dispatch has not arrived"))
+          : Effect.succeed(dispatch.span);
+      }),
+      Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 120 }),
+    );
+    expect(waitingDispatch.status).not.toBe("error");
+    expect(waitingDispatch.tags).toMatchObject({
+      "http.response.status_code": "204",
+      "executor.outcome": "completed",
+    });
+    expect(waitingDispatch.tags).not.toHaveProperty("executor.job.failure");
 
-    // Once it passes, the next tick starts the next pass. The Worker's own cron may start it first.
     yield* Effect.sleep(Duration.millis(Math.max(0, retryAt(started) - Date.now())));
     const next = yield* advanceUntil((all) =>
       all.slice(first).find((pass) => pass.summary.run === run && pass.summary.pass === 2),
@@ -592,8 +554,6 @@ const cloudReport = (surface: Surface) =>
     expect(next.summary).toMatchObject({ run, pass: 2, status: "retrying" });
     expect(next.summary.owners[surface.owner]).toEqual({ failed: 2 });
 
-    // Every retrying pass backs off 30 seconds doubled for each earlier pass, and the next pass
-    // never started before that time. Log and database clocks agree to within a second here.
     const history = yield* ofRun;
     expect(history.length).toBeGreaterThanOrEqual(2);
     for (const [index, pass] of history.entries()) {
@@ -623,7 +583,6 @@ layer(HostedLive, { excludeTestServices: true })("Framework pin data step", (it)
           return yield* startupPin(hostedSurface(actors.owner, actors.organization.id));
         }),
       ),
-    // The product starts five times: held, a report, the apply, the retry and a quiet start.
     { timeout: 120_000 },
   );
   it.effect(
@@ -639,7 +598,6 @@ layer(HostedLive, { excludeTestServices: true })("Framework pin data step", (it)
           );
         }),
       ),
-    // The product starts five times: held, a report, the apply, the retry and a quiet start.
     { timeout: 120_000 },
   );
   it.effect(
@@ -652,7 +610,6 @@ layer(HostedLive, { excludeTestServices: true })("Framework pin data step", (it)
           return yield* cloudReport(hostedSurface(actors.owner, actors.organization.id));
         }),
       ),
-    // The next pass can wait out up to a minute of backoff.
     { timeout: 180_000 },
   );
 });

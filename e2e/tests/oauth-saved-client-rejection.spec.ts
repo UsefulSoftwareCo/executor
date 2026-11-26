@@ -1,7 +1,3 @@
-/**
- * A token endpoint's invalid_client discards only a client Executor registered, and only the
- * saved version the failed sign-in used. Clients an administrator registered are never discarded.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
@@ -56,7 +52,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth saved client rejection",
           );
           return app;
         });
-        /** Open a connection and start its sign-in, optionally with a registered client. */
         const start = (
           app: string,
           client?: {
@@ -76,7 +71,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth saved client rejection",
               ),
             )).id;
             if (client !== undefined) {
-              // The service knows the registered client before the user reaches it.
               const setup = yield* api.request(
                 actors.owner,
                 "POST",
@@ -114,7 +108,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth saved client rejection",
               return location;
             }),
           ).pipe(Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }));
-        /** Complete a started sign-in and return its failure reason, or "connected". */
+        const connected: Array<string> = [];
         const complete = (started: { readonly connection: string; readonly callback: string }) =>
           Effect.gen(function* () {
             const response = yield* api.request(
@@ -123,7 +117,10 @@ layer(HostedLive, { excludeTestServices: true })("OAuth saved client rejection",
               `${prefix}/connections/${started.connection}/oauth/complete`,
               { callbackUrl: started.callback },
             );
-            if (response.status === 200) return "connected";
+            if (response.status === 200) {
+              connected.push((yield* body(Resource, response)).id);
+              return "connected";
+            }
             expect(response.status, JSON.stringify(response.body)).toBe(400);
             return (yield* body(Failure, response)).reason;
           });
@@ -136,30 +133,27 @@ layer(HostedLive, { excludeTestServices: true })("OAuth saved client rejection",
 
         yield* issuer.configure({ registration: true, tokenError: null });
         const app = (yield* deploy).id;
-        // The first sign-in registers a client and saves it.
         expect(yield* complete(yield* signIn(app))).toBe("connected");
         const registered = yield* registrations;
+        for (const account of connected.splice(0))
+          expect(
+            (yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`)).status,
+          ).toBe(200);
 
-        // Two sign-ins reuse that saved client.
         const older = yield* signIn(app);
         const newer = yield* signIn(app);
         expect(yield* registrations).toBe(registered);
         yield* issuer.configure({ tokenError: rejected });
         expect(yield* complete(newer)).toBe("registered_client_rejected");
-        // The rejected client was discarded, so the next sign-in registers a replacement.
         yield* issuer.configure({ tokenError: null });
         yield* signIn(app);
         expect(yield* registrations).toBe(registered + 1);
-        // The older sign-in used the discarded version. The service already refused it, so the
-        // sign-in reports that without exchanging its code, even though the service would accept
-        // it now, and the replacement stays.
         const exchanges = (yield* issuer.metrics).tokenExchanges;
         expect(yield* complete(older)).toBe("registered_client_rejected");
         expect((yield* issuer.metrics).tokenExchanges).toBe(exchanges);
         expect(yield* complete(yield* signIn(app))).toBe("connected");
         expect(yield* registrations).toBe(registered + 1);
 
-        // A client an administrator registered is never discarded when the service rejects it.
         yield* issuer.configure({ registration: false });
         const manualApp = yield* deploy;
         const entered = { clientId: "entered-client", clientSecret: "synthetic-entered-secret" };

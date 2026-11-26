@@ -3,6 +3,7 @@ import type { AuthContext, BetterAuthPlugin, GenericEndpointContext } from "bett
 import { getCurrentAdapter } from "better-auth";
 import { APIError, createAuthMiddleware, getSessionFromCtx } from "better-auth/api";
 import { symmetricDecrypt, symmetricEncrypt } from "better-auth/crypto";
+import { inviterMayInvite } from "@executor-js/hosted-server";
 import { Option, Schema } from "effect";
 import type { CloudBillingHooks } from "./auth-options.ts";
 
@@ -34,7 +35,6 @@ const callbackProvider = (context: GenericEndpointContext | null) => {
   return typeof context.params?.providerId === "string" ? context.params.providerId : undefined;
 };
 
-/** Only a validated SSO callback for a DNS-verified email domain can verify an email. */
 export const ssoVerifiedEmail = async (
   email: string,
   context: GenericEndpointContext | null,
@@ -47,8 +47,6 @@ export const ssoVerifiedEmail = async (
     where: [{ field: "providerId", value: providerId }],
   });
   const provider = parse(Provider, row);
-  // A provider may assert only the exact domain its administrator proved. A
-  // contractor signs in through their own verified identity and an invitation.
   if (!provider.domainVerified || email.toLowerCase().split("@")[1] !== provider.domain)
     throw new APIError("FORBIDDEN", {
       message: "Your email does not belong to this SSO connection's verified domain.",
@@ -56,11 +54,6 @@ export const ssoVerifiedEmail = async (
   return true;
 };
 
-/**
- * Native SAML/OIDC protocol handling, with cloud-owned tenancy and encrypted
- * configuration. Each auth instance owns its key; nothing survives its scope.
- * Domain verification is a prerequisite for sign-in and account linking.
- */
 export const cloudSso = (billing?: CloudBillingHooks) => {
   let secret: AuthContext["secretConfig"] | undefined;
   let auth: AuthContext | undefined;
@@ -78,7 +71,6 @@ export const cloudSso = (billing?: CloudBillingHooks) => {
   };
   const native = sso({
     domainVerification: { enabled: true },
-    // The native JIT insert bypasses billing and concurrent membership checks.
     organizationProvisioning: { disabled: true },
     resolveUser: async (input, { database }) => {
       const provider = parse(
@@ -110,8 +102,6 @@ export const cloudSso = (billing?: CloudBillingHooks) => {
                 ],
               }),
             );
-      // An old account link cannot cross the verified domain after a connection
-      // changes domain or its former team is deleted and its ID is reused.
       return provider.domainVerified &&
         input.providerUser.email.toLowerCase().split("@")[1] === provider.domain &&
         (linkedUser === null || linkedUser.email.toLowerCase().split("@")[1] === provider.domain)
@@ -126,12 +116,9 @@ export const cloudSso = (billing?: CloudBillingHooks) => {
     provisionUser: async ({ user, provider: row }) => {
       if (auth === undefined) throw invalid();
       const provider = parse(Provider, row);
-      // Resolve the external allowance before opening the membership transaction.
       const limit =
         billing === undefined ? undefined : await billing.memberLimit(provider.organizationId);
       await auth.adapter.transaction(async (database) => {
-        // All SSO connections for this team share a lock. Updating the primary
-        // key to itself changes no team data and serializes JIT retries.
         const team = await database.update({
           model: "organization",
           where: [{ field: "id", value: provider.organizationId }],
@@ -148,19 +135,17 @@ export const cloudSso = (billing?: CloudBillingHooks) => {
           })
         )
           return;
-        // An explicit invitation owns its role and must still be accepted.
-        if (
-          await database.findOne({
-            model: "invitation",
-            where: [
-              { field: "organizationId", value: provider.organizationId },
-              { field: "email", value: user.email.toLowerCase() },
-              { field: "status", value: "pending" },
-              { field: "expiresAt", value: new Date(), operator: "gt" },
-            ],
-          })
-        )
-          return;
+        const invitations = await database.findMany<{ organizationId: string; inviterId: string }>({
+          model: "invitation",
+          where: [
+            { field: "organizationId", value: provider.organizationId },
+            { field: "email", value: user.email.toLowerCase() },
+            { field: "status", value: "pending" },
+            { field: "expiresAt", value: new Date(), operator: "gt" },
+          ],
+        });
+        for (const invitation of invitations)
+          if (await inviterMayInvite(database, invitation)) return;
         const count = await database.count({
           model: "member",
           where: [{ field: "organizationId", value: provider.organizationId }],
@@ -187,8 +172,6 @@ export const cloudSso = (billing?: CloudBillingHooks) => {
       algorithms: { onDeprecated: "reject" },
     },
   });
-  // The package's declaration omits the standard lifecycle members from its
-  // inferred return type. Read them through Better Auth's public plugin contract.
   const lifecycle: BetterAuthPlugin = native;
   return {
     ...native,
@@ -219,8 +202,6 @@ export const cloudSso = (billing?: CloudBillingHooks) => {
             unique: true,
             references: { model: "organization", field: "id", onDelete: "cascade" as const },
           },
-          // The team owns the connection after creation. Removing its original
-          // administrator must not remove SSO for the remaining members.
           userId: {
             type: "string" as const,
             required: false,
@@ -233,8 +214,6 @@ export const cloudSso = (billing?: CloudBillingHooks) => {
       before: [
         ...(lifecycle.hooks?.before ?? []),
         {
-          // The identity provider owns an SSO user's address, and SSO refuses a linked user
-          // whose email has left the connection's domain.
           matcher: (context: { path?: string }) =>
             context.path === "/email-otp/request-email-change" ||
             context.path === "/email-otp/change-email",
@@ -260,7 +239,6 @@ export const cloudSso = (billing?: CloudBillingHooks) => {
               context.body,
             );
             if (input.providerId !== undefined || input.email === undefined) return;
-            // The same check runs before an email code is sent, so name the bad address.
             const email = Option.getOrThrowWith(
               Schema.decodeUnknownOption(
                 Schema.String.check(Schema.isPattern(/^[^\s@]+@[^\s@]+$/u)),
@@ -271,8 +249,6 @@ export const cloudSso = (billing?: CloudBillingHooks) => {
               Schema.decodeUnknownOption(Domain)(email.split("@")[1]),
               invalidEmail,
             );
-            // Native discovery chooses the first matching row, including pending
-            // connections. Only one verified exact-domain match is unambiguous.
             const providers = parse(
               Schema.Array(Schema.Struct({ providerId: ProviderId })),
               await context.context.adapter.findMany({
@@ -302,9 +278,6 @@ export const cloudSso = (billing?: CloudBillingHooks) => {
           matcher: (context: { path?: string }) =>
             context.path?.startsWith("/sso/saml2/sp/acs/") === true,
           handler: createAuthMiddleware(async (context) => {
-            // Native SAML skips this check to accommodate Lax cookies. Cloud
-            // uses a dedicated Secure/SameSite=None cookie so another browser
-            // cannot submit a valid assertion and sign the victim into its user.
             const { RelayState } = parse(
               Schema.Struct({ RelayState: Schema.NonEmptyString }),
               context.body,
@@ -320,7 +293,6 @@ export const cloudSso = (billing?: CloudBillingHooks) => {
           handler: createAuthMiddleware(async (context) => {
             if (context.path === "/sso/register") {
               parse(Registration, context.body);
-              // Native registration checks current owner/admin membership too.
               const body = parse(
                 Schema.Struct({
                   oidcConfig: Schema.optionalKey(Schema.Unknown),
@@ -340,8 +312,6 @@ export const cloudSso = (billing?: CloudBillingHooks) => {
           }),
         },
       ],
-      // Native SSO also assigns membership after ordinary social sign-in by
-      // domain. Cloud only grants it after the bound SSO provider authenticated.
       after: [
         {
           matcher: (context: { path?: string }) => context.path === "/sso/register",
@@ -360,8 +330,6 @@ export const cloudSso = (billing?: CloudBillingHooks) => {
               }),
               context.context.returned,
             );
-            // Library errors retain their status. Successful registration never
-            // echoes the submitted client secret or SAML private keys.
             const { samlConfig, ...publicFields } = response;
             return context.json({ ...publicFields, type: samlConfig === null ? "oidc" : "saml" });
           }),

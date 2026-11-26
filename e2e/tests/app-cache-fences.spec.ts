@@ -21,7 +21,6 @@ layer(HostedLive, { excludeTestServices: true })("App caching", (it) => {
         expect((yield* Fiber.join(held).pipe(Effect.timeout("10 seconds"))).status).toBe(502);
         expect(yield* call("replacement")).toBe("replacement");
         expect(yield* call("seed")).toBe("seed");
-        // The stale response must finish before releasing the held refresh.
         expect(yield* call("stale").pipe(Effect.timeout("10 seconds"))).toBe("seed");
         yield* call("started").pipe(
           Effect.repeat({ until: (value) => value === true }),

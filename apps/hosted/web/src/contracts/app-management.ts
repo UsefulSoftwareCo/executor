@@ -1,6 +1,5 @@
 import { retainProtectedFailure } from "./protected-query.ts";
 import type { HostedError } from "./errors.ts";
-/** Organization keys isolate app reads and independent copy operations. */
 import { makeAppManagementAtoms } from "@executor-js/ui/contracts/app-management";
 import type { OrganizationReference } from "@executor-js/hosted-server/organization";
 import { Effect } from "effect";

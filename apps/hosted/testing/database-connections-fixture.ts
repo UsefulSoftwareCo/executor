@@ -1,17 +1,3 @@
-/**
- * Local-only probe of one object's database connections, by the name the Cloud Worker gives
- * them. Counts them, or terminates them to stand in for a connection the server drops. It can
- * also stall the next connection the object opens inside PostgreSQL's login, before the server
- * reports it ready, to stand in for a connection attempt that hangs. And it can make one statement
- * of the object wait on a lock: it holds an advisory lock named after the object, and arms the
- * object's next update of a personal access token (the per-call token recheck) to wait for that
- * lock, standing in for a statement that waits on a migration's or a long transaction's lock.
- * Last, it can make reads of one app's row wait on a lock while reads of every other app's row go
- * on: the app's row gets a value large enough to be stored out of line (TOAST), and a holder
- * rebuilds the index of `executor_apps`'s TOAST table inside a transaction it keeps open, so a read
- * that fetches an out-of-line value waits and one that does not, does not. Never installed in the
- * HTTP server.
- */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { createHash } from "node:crypto";
@@ -20,11 +6,6 @@ import { Config, Console, Effect, FileSystem, Option, Redacted, Schema } from "e
 import { Command, Flag } from "effect/cli";
 import { LocalDatabaseUrl } from "../cloud/src/contracts/database.ts";
 
-/**
- * A PostgreSQL 17 login trigger. The first login under an armed name claims the row and sleeps;
- * logins meanwhile skip the locked row, and later ones find it disarmed. Every other login
- * only reads the table.
- */
 const installStall = `
 CREATE SCHEMA IF NOT EXISTS e2e_connect_stall;
 CREATE TABLE IF NOT EXISTS e2e_connect_stall.armed (
@@ -50,13 +31,6 @@ DO $$ BEGIN
   END IF;
 END $$;`;
 
-/**
- * A PostgreSQL statement trigger on `apikey`, which fires before the update locks any row, so the
- * waiting statement holds no token row that the object's other requests (a cancellation, another
- * call) must update. An update made by an armed object counts on a sequence of its own, which no
- * rollback undoes, so the update it was armed for waits on the object's advisory lock even when it
- * is then cancelled, and none after it does. Other updates only read the table.
- */
 const installStatementStall = `
 CREATE SCHEMA IF NOT EXISTS e2e_statement_stall;
 CREATE TABLE IF NOT EXISTS e2e_statement_stall.armed (
@@ -88,13 +62,9 @@ const command = Command.make("database-connections-fixture", {
   terminate: Flag.Boolean("terminate").pipe(Flag.withDefault(false)),
   stallNextConnect: Flag.Int("stall-next-connect").pipe(Flag.optional),
   releaseStalls: Flag.Boolean("release-stalls").pipe(Flag.withDefault(false)),
-  // Hold the object's advisory lock for this many seconds, then exit.
   holdLock: Flag.Int("hold-lock").pipe(Flag.optional),
-  // Make the object's token update after this many more wait on its advisory lock.
   stallTokenUpdateAfter: Flag.Int("stall-token-update-after").pipe(Flag.optional),
-  // Give this app's row a value stored out of line, so reading the row reads the TOAST table.
   largeAppRow: Flag.String("large-app-row").pipe(Flag.optional),
-  // Hold the lock that reads of out-of-line app values wait on for this many seconds, then exit.
   holdLargeAppRows: Flag.Int("hold-large-app-rows").pipe(Flag.optional),
 }).pipe(
   Command.withHandler((args) =>
@@ -103,7 +73,6 @@ const command = Command.make("database-connections-fixture", {
         yield* Config.String("NODE_ENV").pipe(
           Effect.flatMap(Schema.decodeUnknownEffect(Schema.Literal("test"))),
         );
-        // Only one object's connections, so parallel scenarios on the shared database are untouched.
         if (!/^mcp [0-9a-f]{40,64}$/.test(args.owner))
           return yield* Effect.die("Expected an MCP session object's owner name");
         const fs = yield* FileSystem.FileSystem;
@@ -124,7 +93,6 @@ const command = Command.make("database-connections-fixture", {
           (pool) => Effect.promise(() => pool.end()),
         );
         const name = `executor ${args.owner}`.slice(0, 63);
-        // The holder's own connection, named so a later run can tell the lock is held.
         const holder = `e2e lock ${args.owner}`.slice(0, 63);
         if (Option.isSome(args.holdLock)) {
           const holding = yield* Effect.acquireRelease(
@@ -154,8 +122,6 @@ const command = Command.make("database-connections-fixture", {
         }
         const largeAppRow = args.largeAppRow;
         if (Option.isSome(largeAppRow)) {
-          // A copy origin (the column's shape) whose reference is 64 kB of hex digits; compressed,
-          // it is still far above the 2 kB TOAST threshold.
           yield* Effect.promise(() =>
             pool.query(
               `UPDATE executor_apps SET copied_from = json_build_object(
@@ -196,7 +162,6 @@ const command = Command.make("database-connections-fixture", {
           const [toastIndex] = yield* Schema.decodeUnknownEffect(
             Schema.Tuple([Schema.Struct({ name: Schema.String })]),
           )(index.rows);
-          // REINDEX holds an ACCESS EXCLUSIVE lock on the index until the transaction ends.
           yield* Effect.promise(() => client.query("BEGIN"));
           yield* Effect.promise(() => client.query(`REINDEX INDEX ${toastIndex.name}`));
           yield* Console.log(JSON.stringify({ locked: true }));
@@ -231,7 +196,6 @@ const command = Command.make("database-connections-fixture", {
           );
         }
         if (args.releaseStalls) {
-          // A login still sleeping holds its claimed row; it is already disarmed, so skip it.
           yield* Effect.promise(() =>
             pool.query(
               `UPDATE e2e_connect_stall.armed SET seconds = 0 WHERE application_name IN (

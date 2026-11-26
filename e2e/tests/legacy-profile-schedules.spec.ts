@@ -1,20 +1,3 @@
-/**
- * Upgrading a hosted instance whose members scheduled work through profiles. Each profile had its
- * own schedule of a declaration and its own accounts. SDK 4.0.13 keeps the app for the account set
- * of each member's oldest enabled profile and plans a copy of the app for each other set; hosted
- * step `9_app_account_links` links the member's accounts of the kept set, each to the requirement
- * its profile selected it for; data step `10_profile_app_copies` creates each copy, links its set
- * for that member only and resumes its planned schedules. A member has one schedule of a
- * declaration per app.
- *
- * One scenario covers account sets that become copies, the other schedules that merge or pause.
- * The fixture rebuilds the database as an upgrade from 4.0.12 finds it: it undoes 4.0.14 and 4.0.13
- * (see `beforeAppAccounts` and `beforeProfileRemoval`), labels the database 4.0.12, removes step
- * 9's ledger row and table and makes data step 10 pending again. It then writes the profiles and
- * their schedules as the last profile version left them. The next start runs 4.0.13, 4.0.14 and
- * step 9 in one transaction, as a deploy does, then the data steps. Apps, accounts, members and the app's data are created through the
- * product first.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -34,11 +17,6 @@ import {
 } from "../support/profile-removal-rollback.ts";
 import { serverControl } from "../support/server-control.ts";
 
-/**
- * Each run records the plain account and the many() accounts it ran with. With `secondary`, the
- * app has a second plain requirement of the same provider, and each run records its account
- * between the two. With `tock`, the app declares a second, hourly schedule of the same tool.
- */
 const sourceOf = (
   secondary: boolean,
   tock: boolean,
@@ -82,7 +60,6 @@ const ListedApp = Schema.Struct({ ...App.fields, owner: Schema.String });
 const Definitions = Schema.Array(Schema.Struct({ name: Schema.String, tool: Schema.String }));
 const Failure = Schema.Struct({ _tag: Schema.String });
 
-/** A profile row as the last profile version wrote it. */
 const profile = (row: {
   readonly id: string;
   readonly app: string;
@@ -111,10 +88,6 @@ const profile = (row: {
     row.createdAt,
   ],
 });
-/**
- * A profile's schedule of the app's `tick` declaration, or of `name`, as the profile version wrote
- * it.
- */
 const schedule = (row: {
   readonly id: string;
   readonly app: string;
@@ -130,7 +103,6 @@ const schedule = (row: {
       'automatic', CASE WHEN $6 THEN TIMESTAMP '2099-01-01' ELSE NULL END, NULL, 'legacy')`,
   params: [row.id, row.app, row.profile, row.owner, row.actor, row.enabled, row.name ?? "tick"],
 });
-/** A finished run of a profile's schedule. */
 const run = (row: {
   readonly id: string;
   readonly schedule: string;
@@ -148,30 +120,23 @@ const run = (row: {
 });
 
 type Role = "owner" | "admin" | "member";
-/** A profile as the fixture writes it: its member, accounts and whether it was enabled. */
 interface ProfileSpec {
   readonly id: string;
   readonly subject: string;
   readonly name?: string;
   readonly primary: string;
-  /** For an app with the second plain requirement: its account, the primary one by default. */
   readonly secondary?: string;
   readonly extras: ReadonlyArray<string>;
   readonly enabled?: boolean;
 }
 interface ScheduleSpec {
   readonly id: string;
-  /** The declaration, `tick` by default. */
   readonly name?: string;
   readonly profile: string;
   readonly actor: string;
   readonly enabled: boolean;
 }
 
-/**
- * The scenario's app, everyone may use, with each member's accounts and one row of app data, all
- * created through the product. `upgrade` then writes the profile-era rows and starts the product.
- */
 const upgradeFixture = (
   accounts: ReadonlyArray<readonly [Role, string]>,
   options: { readonly secondary?: boolean; readonly tock?: boolean } = {},
@@ -257,7 +222,7 @@ const upgradeFixture = (
               actor,
               "POST",
               connectionsPath(appPath, "user", "primary"),
-              { destination: { kind: "personal" } },
+              {},
             );
             expect(connection.status, JSON.stringify(connection.body)).toBe(200);
             const saved = yield* api.request(
@@ -283,7 +248,6 @@ const upgradeFixture = (
     );
     yield* evidence.json("fixture.json", fixture);
     const id = (name: string) => `${name}_${suffix}`;
-    /** Delete an account, as its member did before the upgrade. */
     const deleteAccount = (role: Role, label: string) =>
       Effect.gen(function* () {
         const account = fixture.accounts[label]!;
@@ -292,17 +256,12 @@ const upgradeFixture = (
         ).toBe(200);
         created.accounts = created.accounts.filter((item) => item.id !== account);
       });
-    /** Write one row of app data as `actor`, before the upgrade. */
     const writeTick = (actor: Session) =>
       Effect.gen(function* () {
         const wrote = yield* call(actor, fixture.app, "tick");
         expect(wrote.status, JSON.stringify(wrote.body)).toBe(200);
         return yield* ticks(actor, fixture.app);
       });
-    /**
-     * The database as an upgrade from 4.0.12 finds it: profiles, each with its own schedule, and
-     * some schedules' history as `[run, schedule]`. The first statement reads the hosted ledger.
-     */
     const upgradeStatements = (input: {
       readonly profiles: ReadonlyArray<ProfileSpec>;
       readonly schedules: ReadonlyArray<ScheduleSpec>;
@@ -311,8 +270,9 @@ const upgradeFixture = (
       const profileOf = new Map(input.schedules.map((row) => [row.id, row.profile]));
       return [
         { sql: "SELECT migration_id, name FROM private_hosted_migrations ORDER BY migration_id" },
+        { sql: "SELECT value FROM private_executor_settings WHERE key = 'version'" },
         ...beforeAppAccounts(),
-        { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 9" },
+        { sql: "DELETE FROM private_hosted_migrations WHERE migration_id >= 9" },
         { sql: "DROP TABLE hosted_app_account_links" },
         ...beforeProfileRemoval(),
         ...profileAppCopiesPending("private_hosted"),
@@ -356,7 +316,6 @@ const upgradeFixture = (
       ),
       Effect.flatMap((response) => body(Schema.Array(ListedApp), response)),
     );
-    /** The copies of the app, by the label in their name; each is removed with the scenario. */
     const copiesOf = (labels: ReadonlyArray<string>) =>
       Effect.gen(function* () {
         const apps = yield* listed;
@@ -396,10 +355,6 @@ const upgradeFixture = (
     const runs = api
       .request(actors.owner, "GET", `${prefix}/scheduled-runs`)
       .pipe(Effect.flatMap((response) => body(Runs, response)));
-    /**
-     * Run one schedule now as `actor` and wait until `target`'s data, read with the actor's own
-     * links, has `count` rows.
-     */
     const runAndWait = (actor: Session, target: string, copy: string, count: number) =>
       Effect.gen(function* () {
         const response = yield* api.request(
@@ -441,7 +396,6 @@ const upgradeFixture = (
       resume,
     };
   });
-/** A schedule's expected state: paused ones have no next occurrence, enabled ones keep theirs. */
 const expectSchedules = (
   rows: ReadonlyArray<{ id: string; actor: string; enabled: boolean; nextAt: string | null }>,
   expected: ReadonlyArray<{ id: string; actor: string; enabled: boolean }>,
@@ -453,8 +407,6 @@ const expectSchedules = (
 };
 
 layer(HostedLive, { excludeTestServices: true })("Legacy profile schedules", (it) => {
-  // A member's profiles with different plain accounts: the oldest enabled one keeps the app, each
-  // other account set becomes a copy of the app for that member.
   it.effect(scenarios.legacyProfileSchedules.title, (context) =>
     withHostedCase(
       context,
@@ -473,13 +425,11 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile schedules", (it
           "bob-one": bobOne,
           "bob-two": bobTwo,
         } = fixture.accounts as Record<string, string>;
-        // The app's data before the upgrade: one row in its `ticks` table.
         const before = yield* setup.writeTick(actors.member);
         expect(before).toHaveLength(1);
-        const [recorded] = yield* legacyStorage(
+        const [recorded, current] = yield* legacyStorage(
           setup.upgradeStatements({
             profiles: [
-              // Alice's oldest enabled profile keeps the app; her Work profile used another account.
               { id: "ins_alice_main", subject: alice!, primary: aliceOne!, extras: [aliceOne!] },
               {
                 id: "ins_alice_work",
@@ -488,7 +438,6 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile schedules", (it
                 primary: aliceTwo!,
                 extras: [aliceTwo!],
               },
-              // Bob's first profile, unnamed and disabled, used another account than his enabled one.
               {
                 id: "ins_bob_old",
                 subject: bob!,
@@ -499,7 +448,6 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile schedules", (it
               { id: "ins_bob_main", subject: bob!, primary: bobOne!, extras: [bobOne!] },
             ],
             schedules: [
-              // Alice's schedule of the app was paused, her Work schedule enabled.
               { id: "sch_alice_main", profile: "ins_alice_main", actor: alice!, enabled: false },
               { id: "sch_alice_work", profile: "ins_alice_work", actor: alice!, enabled: true },
               { id: "sch_bob_old", profile: "ins_bob_old", actor: bob!, enabled: true },
@@ -518,7 +466,6 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile schedules", (it
           Effect.gen(function* () {
             const found = yield* setup.copiesOf(["Work", "Default"]);
             const work = found.Work!;
-            // The same source: the copy declares the same schedule of the same tool.
             const definitions = yield* api.request(
               actors.member,
               "GET",
@@ -528,7 +475,6 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile schedules", (it
             expect(
               (yield* body(Definitions, definitions)).map((row) => [row.name, row.tool]),
             ).toEqual([["tick", "tick"]]);
-            // The same access: everyone may use the app, so every member may use the copy.
             for (const actor of [actors.member, actors.admin, actors.owner])
               expect((yield* api.request(actor, "GET", `${prefix}/apps/${work}`)).status).toBe(200);
             return { work, bobOld: found.Default! };
@@ -570,11 +516,9 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile schedules", (it
               { id: id("sch_alice_main"), actor: alice!, enabled: false },
               { id: id("sch_bob_main"), actor: bob!, enabled: true },
             ]);
-            // The copy resumed the Work schedule, which was enabled.
             expectSchedules(yield* setup.schedulesOf(copies.work), [
               { id: id("sch_alice_work"), actor: alice!, enabled: true },
             ]);
-            // A disabled profile's schedule did not run: paused.
             expectSchedules(yield* setup.schedulesOf(copies.bobOld), [
               { id: id("sch_bob_old"), actor: bob!, enabled: false },
             ]);
@@ -592,7 +536,6 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile schedules", (it
         yield* evidence.step(
           "Each schedule runs as its member with the account linked to its app",
           Effect.gen(function* () {
-            // Alice resumes her paused schedule of the app; it runs with the app's account.
             const resumed = yield* setup.resume(actors.member, app, id("sch_alice_main"));
             expect(resumed.status, JSON.stringify(resumed.body)).toBe(200);
             yield* setup.runAndWait(actors.member, app, id("sch_alice_main"), 2);
@@ -601,12 +544,10 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile schedules", (it
               `${aliceOne}|${aliceOne}`,
               `${bobOne}|${bobOne}`,
             ]);
-            // The copy's schedule runs with the copy's account, into the copy's own data.
             expect(
               yield* setup.runAndWait(actors.member, copies.work, id("sch_alice_work"), 1),
             ).toEqual([`${aliceTwo}|${aliceTwo}`]);
             expect(yield* setup.ticks(actors.member, app)).toHaveLength(3);
-            // Configuring by name finds Alice's converted schedule of the copy.
             const configured = yield* api.request(
               actors.member,
               "PATCH",
@@ -618,7 +559,6 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile schedules", (it
           }),
         );
 
-        // The upgrade is recorded once. A restart makes no other copy.
         yield* serverControl("restart");
         const [ledger, version, plans] = yield* legacyStorage([
           {
@@ -628,7 +568,7 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile schedules", (it
           { sql: "SELECT id, status FROM executor_profile_app_copies ORDER BY id" },
         ]);
         expect(ledger).toEqual([{ name: "app_account_links" }]);
-        expect(version).toEqual([{ value: "4.0.15" }]);
+        expect(version, "every step from 4.0.12 ran to the current version").toEqual(current);
         expect(plans).toEqual(
           [copies.work, copies.bobOld].toSorted().map((copy) => ({ id: copy, status: "copied" })),
         );
@@ -636,12 +576,10 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile schedules", (it
     ),
   );
 
-  // Profiles of one member with the same plain accounts: their schedules merge into one.
   it.effect(scenarios.legacyProfileScheduleMerge.title, (context) =>
     withHostedCase(
       context,
       Effect.gen(function* () {
-        // The app has two plain requirements of one provider, `primary` and `secondary`.
         const setup = yield* upgradeFixture(
           [
             ["member", "alice-gone"],
@@ -670,8 +608,6 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile schedules", (it
         const [recorded] = yield* legacyStorage(
           setup.upgradeStatements({
             profiles: [
-              // Bob's two profiles with the same accounts: a different one for each plain
-              // requirement of the one provider.
               {
                 id: "ins_bob_one",
                 subject: bob!,
@@ -686,14 +622,9 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile schedules", (it
                 secondary: bobTwo!,
                 extras: [bobOne!],
               },
-              // The owner's two profiles chose the same accounts: one for the plain requirements,
-              // another for the many() one, which shares the plain ones' provider.
               { id: "ins_owner_one", subject: ownerUser!, primary: ownerOne!, extras: [ownerTwo!] },
               { id: "ins_owner_two", subject: ownerUser!, primary: ownerOne!, extras: [ownerTwo!] },
-              // Alice's profile whose plain account was deleted.
               { id: "ins_alice_gone", subject: alice!, primary: gone!, extras: [] },
-              // Alice's two profiles with one plain account, each with another many() account:
-              // her schedule of their copy would run with both, which neither profile did.
               {
                 id: "ins_alice_one",
                 subject: alice!,
@@ -702,8 +633,6 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile schedules", (it
                 extras: [aliceB!],
               },
               { id: "ins_alice_two", subject: alice!, primary: aliceA!, extras: [aliceA!] },
-              // Her disabled profile of the same plain account selected both; its paused schedule
-              // never ran with them, so it shows no profile ran with both.
               {
                 id: "ins_alice_both",
                 subject: alice!,
@@ -711,7 +640,6 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile schedules", (it
                 extras: [aliceA!, aliceB!],
                 enabled: false,
               },
-              // A member who has since left, with two account sets: the second becomes a copy.
               { id: "ins_departed_one", subject: departed, primary: ownerOne!, extras: [] },
               { id: "ins_departed_two", subject: departed, primary: ownerTwo!, extras: [] },
             ],
@@ -755,25 +683,14 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile schedules", (it
           "Schedules of one account set merge; ones that cannot run as they did are paused",
           Effect.gen(function* () {
             expectSchedules(yield* setup.schedulesOf(app), [
-              // Bob's merge keeps the enabled schedule, enabled: its accounts are what each of
-              // his profiles had. Each plain requirement keeps its own account, though both are
-              // of one provider.
               { id: id("sch_bob_two"), actor: bob!, enabled: true },
-              // The owner's merge keeps the enabled schedule, enabled: the many() requirement is
-              // linked only the account the profiles selected for it, not the plain ones' account
-              // of the same provider, so it runs as each profile did.
               { id: id("sch_owner_one"), actor: ownerUser!, enabled: true },
-              // No plain account: paused.
               { id: id("sch_alice_gone"), actor: alice!, enabled: false },
-              // The member left: paused.
               { id: id("sch_departed_one"), actor: departed, enabled: false },
             ]);
-            // The member who left stays paused in the copy too.
             expectSchedules(yield* setup.schedulesOf(copies["Profile 2"]!), [
               { id: id("sch_departed_two"), actor: departed, enabled: false },
             ]);
-            // Alice's merge in her copy would widen the many() requirement: paused, and the copy
-            // does not resume it. Her disabled profile that selected both accounts does not count.
             expectSchedules(yield* setup.schedulesOf(copies.Wide!), [
               { id: id("sch_alice_one"), actor: alice!, enabled: false },
             ]);
@@ -783,15 +700,12 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile schedules", (it
               ["primary", aliceA],
               ["secondary", aliceA],
             ]);
-            // The merged schedule keeps both schedules' history.
             const history = (yield* setup.runs).filter(
               (row) => row.scheduleId === id("sch_bob_two"),
             );
             expect(history.map((row) => row.id).toSorted()).toEqual(
               [id("run_bob_one_a"), id("run_bob_one_b"), id("run_bob_two")].toSorted(),
             );
-            // The owner's profiles' union, each account linked to the requirement it was
-            // selected for.
             expect(yield* accountLinks(actors.owner, appPath)).toEqual([
               ["extras", ownerTwo],
               ["primary", ownerOne],
@@ -809,21 +723,17 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile schedules", (it
         yield* evidence.step(
           "A paused schedule never runs with an account its profile did not have",
           Effect.gen(function* () {
-            // Alice has no account for the plain requirement: her schedule cannot resume.
             const blocked = yield* setup.resume(actors.member, app, id("sch_alice_gone"));
             expect(blocked.status, JSON.stringify(blocked.body)).toBe(409);
             expect((yield* body(Failure, blocked))._tag).toBe("AccountRequired");
-            // Nobody resumes the schedule of a member who left.
             const departedResume = yield* setup.resume(actors.owner, app, id("sch_departed_one"));
             expect(departedResume.status, JSON.stringify(departedResume.body)).toBe(403);
-            // Bob's merged schedule runs with each plain requirement's own account.
             expect(yield* setup.runAndWait(actors.admin, app, id("sch_bob_two"), 1)).toEqual([
               `${bobOne}|${bobTwo}|${bobOne}`,
             ]);
             expect(
               (yield* setup.runs).filter((row) => row.scheduleId === id("sch_bob_two")),
             ).toHaveLength(4);
-            // The owner's merged schedule runs with the accounts each of its profiles had.
             expect(yield* setup.runAndWait(actors.owner, app, id("sch_owner_one"), 2)).toEqual([
               `${bobOne}|${bobTwo}|${bobOne}`,
               `${ownerOne}|${ownerOne}|${ownerTwo}`,
@@ -834,9 +744,6 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile schedules", (it
     ),
   );
 
-  // A copy's schedule resume that fails for storage says nothing about the schedule: the copy is
-  // made and linked, but its plan stays pending, and the next start's pass resumes it. A schedule
-  // the failed pass already resumed is not resumed again: its member's pause since then stays.
   it.effect(scenarios.legacyProfileCopyResumeRetry.title, (context) =>
     withHostedCase(
       context,
@@ -855,10 +762,7 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile schedules", (it
           string
         >;
         const work = id("sch_alice_work");
-        // Work's schedule of `tock`, which the copy resumes first: its plan lists schedules by ID.
         const early = id("sch_alice_early");
-        // The first update that resumes Work's schedule fails, as a dropped connection would; a
-        // sequence counts attempts outside the transaction it rolls back.
         const fault = [
           { sql: "CREATE SEQUENCE executor_test_resume_fault" },
           {
@@ -913,7 +817,6 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile schedules", (it
               },
               { sql: "SELECT last_value::int AS attempts FROM executor_test_resume_fault" },
             ]);
-            // Only the schedule left to resume stays in the plan.
             expect(plans).toEqual([
               { status: expected, enable: expected === "pending" ? [work] : [] },
             ]);
@@ -928,12 +831,10 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile schedules", (it
               ["extras", aliceTwo],
               ["primary", aliceTwo],
             ]);
-            // The schedule resumed before the failure stays resumed.
             expectSchedules(yield* setup.schedulesOf(copy), [
               { id: early, actor: alice!, enabled: true },
               { id: work, actor: alice!, enabled: false },
             ]);
-            // Alice pauses it before the next start.
             const paused = yield* api.request(
               actors.member,
               "PATCH",

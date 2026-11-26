@@ -1,7 +1,7 @@
 import { owned } from "@executor-js/telemetry";
 import { loadSwaggerClient } from "./swagger-client.ts";
 import { httpProviderError, accountProviderError, providerErrorDetail } from "./provider-error.ts";
-import { bodyUpstreamError } from "./upstream-error.ts";
+import { bodyUpstreamError, statedUpstream } from "./upstream-error.ts";
 import { NetworkRefused } from "../contracts/network.ts";
 import { failOnNetworkRefusal } from "./network.ts";
 import { ProviderError } from "../contracts/provider-error.ts";
@@ -26,7 +26,7 @@ import {
   OpenapiMediaType,
   defaultOpenapiResponseLimits,
   isOpenapiFileSchema,
-  isOpenapiJsonSequence,
+  isOpenapiJsonMedia,
   isOpenapiTextMedia,
   openapiMediaKind,
   type CredentialBinding,
@@ -52,10 +52,8 @@ const responseShape = (response: HttpClientResponse.HttpClientResponse) => {
   };
 };
 
-// Recovery is optional for arbitrary APIs: a missing or malformed value keeps the declared error.
 const bodyRecovery = Schema.decodeUnknownOption(Schema.Struct({ recovery: ApiErrorRecovery }));
 
-// Read a JSON error body once with byte/time bounds. Anything else reads as no body.
 function errorBody(response: HttpClientResponse.HttpClientResponse) {
   return Effect.gen(function* () {
     if (
@@ -79,7 +77,6 @@ function errorBody(response: HttpClientResponse.HttpClientResponse) {
   }).pipe(Effect.catch(() => Effect.succeed(undefined)));
 }
 
-// Unsupported or invalid responses retain the generic failure.
 function responseError(status: number, json: Schema.Json, errors: readonly DeclaredError[]) {
   return Effect.gen(function* () {
     const candidates = errors.filter((error) => error.status === status);
@@ -177,7 +174,6 @@ function declaredPath(path: string) {
 
 function operationPath(op: OpenapiOperation): RegExp {
   const template = op.baseUrl.replace(/\/$/, "") + declaredPath(op.path).route;
-  // Keep real template parameters distinct from literal percent-encoded braces.
   let marker = "executorPathParameter";
   while (template.includes(marker)) marker += "_";
   const expansions: { token: string; pattern: string }[] = [];
@@ -278,7 +274,6 @@ export function createRequest(config: {
     account: OpenapiAccount | undefined,
     errors: readonly DeclaredError[],
   ) => {
-    // Failures name the operation by its template, never by the parameter values it received.
     const operation = { method: op.method, path: op.path };
     return Effect.scoped(
       Effect.gen(function* () {
@@ -291,12 +286,9 @@ export function createRequest(config: {
             if (authorized === undefined)
               throw new Error("The selected account cannot call this tool");
             const parameters: Record<string, unknown> = {};
-            // Reserved path values are expanded before Swagger sees the operation's route.
             const declared = declaredPath(op.path);
             let path = declared.route;
-            // A path parameter the fixed query names is filled in there too, as Executor v1 did.
             let fixedQuery = declared.query;
-            // Swagger has no `querystring` serializer, so the whole query string is added here.
             const querystrings: string[] = [];
             const swaggerParameters = op.request.parameters.filter((p) => {
               const group = args[p.in === "header" ? "headers" : p.in];
@@ -365,10 +357,6 @@ export function createRequest(config: {
                 ...(body === undefined ? {} : { requestBody: body }),
               }),
             );
-            // The account is authorized for the pinned API origin only. Redirects
-            // stay manual so a provider cannot forward credentials to another host.
-            // Parameter values also cannot add dot segments, which Swagger leaves unescaped,
-            // or remove an item segment to reach a collection endpoint.
             const pathname = prepared.url.replace(/^[^:]+:\/\/[^/]*/, "").split(/[?#]/)[0] ?? "";
             if (pathname.split("/").some((segment) => /^(?:\.|%2e){1,2}$/i.test(segment)))
               throw new Error("This path value would change the request path");
@@ -386,7 +374,6 @@ export function createRequest(config: {
             )
               throw new Error("The request escaped its API operation");
             const headers = new Headers(prepared.headers);
-            // GitHub requires this header; Workers do not supply one by default.
             if (!headers.has("user-agent")) headers.set("user-agent", "Executor");
             if (prepared.body instanceof FormData) headers.delete("content-type");
             return { ...prepared, url, headers };
@@ -406,20 +393,25 @@ export function createRequest(config: {
           catch: () => new OpenapiError({ reason: "invalid_input", operation }),
         });
         const response = yield* HttpClient.withScope(client).execute(request);
-        // Executor's network refused the request; its reason names the host or credential at fault.
         yield* failOnNetworkRefusal(response);
         if (response.status < 200 || response.status >= 300) {
-          // Status and header evidence (401, 429, 5xx, rate-limit or scope headers) keeps its
-          // account recovery. A bare 403 proves nothing: a declared error body explains it, or
-          // the error the service stated in its body goes with the rejection.
           const provider = httpProviderError(response.status, response.headers);
-          if (provider !== undefined && provider.reason !== "rejected") return yield* provider;
-          const json =
-            provider !== undefined || errors.some((error) => error.status === response.status)
-              ? yield* errorBody(response)
-              : undefined;
+          const declares = errors.some((error) => error.status === response.status);
+          if (
+            provider !== undefined &&
+            provider.reason !== "rejected" &&
+            (!declares || provider.upstream !== undefined)
+          )
+            return yield* provider;
+          const json = provider !== undefined || declares ? yield* errorBody(response) : undefined;
           const declared =
             json === undefined ? undefined : yield* responseError(response.status, json, errors);
+          if (provider !== undefined && provider.reason !== "rejected")
+            return yield* declared === undefined
+              ? provider
+              : providerErrorDetail(provider, {
+                  upstream: statedUpstream(declared.code, declared.message),
+                });
           const upstream = json === undefined ? undefined : bodyUpstreamError(json);
           return yield* (
             declared ??
@@ -430,7 +422,6 @@ export function createRequest(config: {
           );
         }
         if (response.status === 204 || prepared.method === "HEAD") return null;
-        // A success whose body cannot be read within the limits names that response.
         const unreadable = new OpenapiError({
           reason: "request",
           operation,
@@ -455,13 +446,12 @@ export function createRequest(config: {
           data.set(chunk, offset);
           offset += chunk.length;
         }
+        if (isOpenapiJsonMedia(contentType))
+          return yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Json))(
+            new TextDecoder().decode(data),
+          ).pipe(Effect.mapError(() => unreadable));
         if (!isOpenapiTextMedia(contentType)) return { base64: Base64.encode(data), contentType };
-        const text = new TextDecoder().decode(data);
-        return contentType.includes("json") && !isOpenapiJsonSequence(contentType)
-          ? yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Json))(text).pipe(
-              Effect.mapError(() => unreadable),
-            )
-          : text;
+        return new TextDecoder().decode(data);
       }),
     ).pipe(
       owned("upstream", "provider.openapi.call", {

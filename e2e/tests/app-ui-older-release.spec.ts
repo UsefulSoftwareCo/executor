@@ -1,7 +1,3 @@
-/**
- * An app page built with an `apps` release from before versions were named still loads its data.
- * Such pages read the injected page context with a schema that requires `deployment`.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect } from "effect";
 import { randomUUID } from "node:crypto";
@@ -13,7 +9,6 @@ import { waitForAppUrl } from "../support/app-pages.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
 
-/** The last `apps` release of protocol 12, whose page client requires `deployment` in its context. */
 const beforeVersions = "0.0.1-beta.84";
 
 const files = [
@@ -80,7 +75,6 @@ layer(HostedLive, { excludeTestServices: true })("App UI from an older release",
             .waitFor()
             .then(() => status.textContent());
         });
-        // Without `deployment` in the page context, every query fails before it is sent.
         expect(status).toBe("Loaded from the host");
         yield* browser.checkpoint("Older page with its data");
       }),

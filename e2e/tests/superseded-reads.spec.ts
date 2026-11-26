@@ -1,4 +1,3 @@
-/** A dashboard read that a refresh supersedes while it is in flight cancels its request. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schedule } from "effect";
 import type { Page, Request, Route } from "playwright";
@@ -8,12 +7,12 @@ import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Evidence } from "../support/evidence.ts";
 import { scenarios } from "../test-plan.ts";
 
-/** Billing's overview is the page's only polled read, so each poll sends it on its own. */
 const overview = "**/api/organizations/*/billing";
-/** Long enough that the next poll starts while the previous read is still in flight. */
 const held = 1_500;
 const pollInterval = 30_000;
 const polls = 3;
+const overviewRead = (request: Request) =>
+  request.method() === "GET" && /\/api\/organizations\/[^/]+\/billing$/.test(request.url());
 
 interface Read {
   readonly request: Request;
@@ -33,11 +32,7 @@ layer(HostedLive, { excludeTestServices: true })("Superseded reads", (it) => {
         const observe = (page: Page) => {
           const find = (request: Request) => reads.find((read) => read.request === request);
           page.on("request", (request) => {
-            if (
-              request.method() === "GET" &&
-              /\/api\/organizations\/[^/]+\/billing$/.test(request.url())
-            )
-              reads.push({ request, responded: false, ended: undefined });
+            if (overviewRead(request)) reads.push({ request, responded: false, ended: undefined });
           });
           page.on("response", (response) => {
             const read = find(response.request());
@@ -52,7 +47,6 @@ layer(HostedLive, { excludeTestServices: true })("Superseded reads", (it) => {
             if (read !== undefined) read.ended = "failed";
           });
         };
-        // A cancelled read is never continued; the route then reports it is already handled.
         const hold = (route: Route) =>
           new Promise((resolve) => setTimeout(resolve, held)).then(() =>
             route.continue().catch(() => undefined),
@@ -74,7 +68,7 @@ layer(HostedLive, { excludeTestServices: true })("Superseded reads", (it) => {
         const before = reads.length;
         for (let poll = 1; poll <= polls; poll += 1)
           yield* browser.use(`Poll ${poll} while the previous read is held`, (page) =>
-            page.clock.runFor(pollInterval),
+            Promise.all([page.waitForRequest(overviewRead), page.clock.runFor(pollInterval)]),
           );
         const polled = reads.slice(before);
         const latest = polled.at(-1);

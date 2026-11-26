@@ -117,7 +117,22 @@
     },
     {
       "name": "apps",
+      "range": "0.0.1-beta.88",
+      "transitive": false
+    },
+    {
+      "name": "apps",
       "range": "0.0.1-beta.95",
+      "transitive": false
+    },
+    {
+      "name": "apps",
+      "range": "0.0.1-beta.100",
+      "transitive": false
+    },
+    {
+      "name": "apps",
+      "range": "0.0.1-beta.140",
       "transitive": false
     }
   ],
@@ -262,12 +277,28 @@
             "@cloudflare/workers-types": "5.20260729.1"
           }
         },
+        "0.0.1-beta.100": {
+          "tarball": "https://registry.npmjs.org/apps/-/apps-0.0.1-beta.100.tgz",
+          "integrity": "sha512-d7Gb2310EALNN9QEtSLm4Gq4oH2Iv4FXUowdItWmfLO3l5HHOqlGLq6PXp5SRTzotWcOILNck4mFn/E162g9Xw==",
+          "dependencies": {
+            "effect": "4.0.1",
+            "@cloudflare/workers-types": "5.20260729.1"
+          }
+        },
         "0.0.1-beta.14": {
           "tarball": "https://registry.npmjs.org/apps/-/apps-0.0.1-beta.14.tgz",
           "integrity": "sha512-JuNza1zRwpcDAJ8B0jeREmVNWqLsiggQHO6sqhO5WdYjovu+/d4RKBxccJUmvHs/Yy5t46DLAKn9B/Awobn2nw==",
           "dependencies": {
             "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
             "@effect/sql-sqlite-do": "https://pkg.pr.new/Effect-TS/effect/@effect/sql-sqlite-do@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+            "@cloudflare/workers-types": "5.20260729.1"
+          }
+        },
+        "0.0.1-beta.140": {
+          "tarball": "https://registry.npmjs.org/apps/-/apps-0.0.1-beta.140.tgz",
+          "integrity": "sha512-qBpZnqwdxFYDxlVVHGxtHYADftrfn4aYiUkpvUXcvyvUPtBruttNqGD8zNWedY6/3LbUq5PMxks0Uq5bknmKVw==",
+          "dependencies": {
+            "effect": "4.1.4",
             "@cloudflare/workers-types": "5.20260729.1"
           }
         },
@@ -327,6 +358,14 @@
         "0.0.1-beta.84": {
           "tarball": "https://registry.npmjs.org/apps/-/apps-0.0.1-beta.84.tgz",
           "integrity": "sha512-Fv7eRMHOaQ1qVUoZeL1MDqwir6VCpHoIv1PVJZVxqnJMuZwlpDNtREmRXFGPOzOqLbHijxvCu2IFzbkotacslQ==",
+          "dependencies": {
+            "effect": "4.0.1",
+            "@cloudflare/workers-types": "5.20260729.1"
+          }
+        },
+        "0.0.1-beta.88": {
+          "tarball": "https://registry.npmjs.org/apps/-/apps-0.0.1-beta.88.tgz",
+          "integrity": "sha512-XtgWhq0zPrz3VQkE7ox3aoqPyqp+zWOkqwUVHOPDoNQSOkM3uiEHhsfweWdOBLOYEJcts/ntovEzYIcufQHeeQ==",
           "dependencies": {
             "effect": "4.0.1",
             "@cloudflare/workers-types": "5.20260729.1"

@@ -1,5 +1,4 @@
-/** Network adapter for the official app feed: an index of vetted apps and each app's source. */
-import { Effect, Option, Schema } from "effect";
+import { Effect, Exit, Option, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
 import { isTextFile } from "@executor-js/sdk";
 import {
@@ -14,7 +13,6 @@ import {
 } from "../contracts/catalog.ts";
 import { unknownEntryRecovery } from "../contracts/setup.ts";
 
-// An agent may pass a server URL; the reply says what install takes, without repeating it.
 const entryMissing = (id: string) =>
   new CatalogImportFailed({
     code: "entry_missing",
@@ -28,7 +26,6 @@ const decodeManifest = Schema.decodeUnknownOption(
   Schema.fromJsonString(Schema.Struct({ name: Schema.String })),
 );
 
-/** Icons load in the user's browser, so only web and inline image addresses are kept. */
 const iconUrl = (src: string, base: string) => {
   if (!URL.canParse(src, base)) return undefined;
   const url = new URL(src, base);
@@ -43,15 +40,12 @@ const resolveIcons = (icons: readonly CatalogIcon[], base: string) =>
     return src === undefined ? [] : [{ ...icon, src }];
   });
 
-/**
- * Read the feed at `feedUrl`, its `index.json`. Redirects are not followed. Listing reads only the
- * index. Preparing reads only the chosen app's source document, `apps/<id>.json` beside the index:
- * the publisher writes every listed app there and deletes the documents of apps it delists, so the
- * document exists exactly when the entry is listed. Reading the whole index to find one entry cost
- * seconds on every install.
- */
+interface KeptIndex {
+  readonly etag: string;
+  readonly entries: readonly CatalogEntry[];
+}
+
 export const catalogSource = (client: HttpClient.HttpClient, feedUrl: string): CatalogSource => {
-  /** A missing document reads as `None`; any other failure is `CatalogUnavailable`. */
   const read = <A>(url: string, schema: Schema.Decoder<A>) =>
     Effect.gen(function* () {
       const response = yield* client.get(url);
@@ -65,24 +59,63 @@ export const catalogSource = (client: HttpClient.HttpClient, feedUrl: string): C
       Effect.timeout("30 seconds"),
       Effect.mapError(() => new CatalogUnavailable()),
     );
-  return {
-    list: read(feedUrl, CatalogFeed).pipe(
-      Effect.flatMap(Effect.fromOption),
-      Effect.mapError(() => new CatalogUnavailable()),
-      Effect.map((feed) =>
-        feed.apps.map(({ source: _source, ...entry }) =>
-          CatalogEntry.make({ ...entry, icons: resolveIcons(entry.icons, feedUrl) }),
-        ),
+  let kept: KeptIndex | undefined;
+  const readIndex = Effect.gen(function* () {
+    const previous = kept;
+    const response = yield* client
+      .get(
+        feedUrl,
+        previous === undefined ? undefined : { headers: { "if-none-match": previous.etag } },
+      )
+      .pipe(Effect.timeout("10 seconds"));
+    if (response.status === 304 && previous !== undefined) return previous.entries;
+    if (response.status !== 200) return yield* new CatalogUnavailable();
+    const feed = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(CatalogFeed))(
+      yield* response.text,
+    );
+    const entries = feed.apps.map(({ source: _source, ...entry }) =>
+      CatalogEntry.make({ ...entry, icons: resolveIcons(entry.icons, feedUrl) }),
+    );
+    const etag = response.headers["etag"];
+    kept = etag === undefined ? undefined : { etag, entries };
+    return entries;
+  }).pipe(
+    Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
+    Effect.timeout("30 seconds"),
+    Effect.mapError(() => new CatalogUnavailable()),
+  );
+  let reading:
+    | Promise<Exit.Exit<readonly CatalogEntry[], CatalogUnavailable> | undefined>
+    | undefined;
+  const list: Effect.Effect<readonly CatalogEntry[], CatalogUnavailable> = Effect.suspend(() => {
+    const shared = reading;
+    if (shared !== undefined)
+      return Effect.promise(() => shared).pipe(
+        Effect.flatMap((exit) => (exit === undefined ? list : exit)),
+      );
+    let settle: (
+      exit: Exit.Exit<readonly CatalogEntry[], CatalogUnavailable> | undefined,
+    ) => void = () => undefined;
+    reading = new Promise((resolve) => {
+      settle = resolve;
+    });
+    return readIndex.pipe(
+      Effect.onExit((exit) =>
+        Effect.sync(() => {
+          reading = undefined;
+          settle(Exit.hasInterrupts(exit) ? undefined : exit);
+        }),
       ),
-    ),
+    );
+  });
+  return {
+    list,
     prepare: (id) =>
       Effect.gen(function* () {
-        // Feed entry ids are never URLs, so one is refused without reading the feed.
         if (URL.canParse(id)) return yield* entryMissing(id);
         const reference = new URL(`apps/${encodeURIComponent(id)}.json`, feedUrl).href;
         const found = yield* read(reference, CatalogFeedSource);
         if (Option.isNone(found)) return yield* entryMissing(id);
-        // Only a listed catalog identifier is recorded, never an arbitrary lookup input.
         yield* Effect.annotateCurrentSpan({ "catalog.entry.id": id });
         const source = found.value;
         const manifest = Option.fromNullishOr(
@@ -104,8 +137,4 @@ export const catalogSource = (client: HttpClient.HttpClient, feedUrl: string): C
   };
 };
 
-/** A host without a feed lists no feed apps. */
-export const emptySource: CatalogSource = {
-  list: Effect.succeed([]),
-  prepare: (id) => Effect.fail(entryMissing(id)),
-};
+export const turnedOffPrepare = (id: string) => Effect.fail(entryMissing(id));

@@ -17,8 +17,10 @@ import {
   App,
   AppId,
   OwnerId,
+  ProviderId,
   HttpUrl,
   StorageError,
+  publishingDomain,
 } from "@executor-js/sdk/core";
 import {
   OrganizationIconUrl,
@@ -26,20 +28,21 @@ import {
   UploadedOrganizationIcon,
   type OrganizationIconContentType,
 } from "./organization-icon.ts";
-import { AuthenticationUnavailable, Forbidden, Unauthorized, RequireUser } from "./auth.ts";
+import {
+  AuthenticationUnavailable,
+  Forbidden,
+  Unauthorized,
+  RequireBrowserSession,
+} from "./auth.ts";
 
-/** Better Auth organization identity; never a caller-selected SDK owner. */
 export const OrganizationId = Schema.NonEmptyString.pipe(Schema.brand("OrganizationId"));
 export type OrganizationId = typeof OrganizationId.Type;
-/** Canonical URL handle, unique across all organizations in this hosted installation. */
 export const organizationSlugMaxLength = 45;
-/** Team handles leave room for a production wildcard certificate name. */
 export const OrganizationSlug = Schema.String.check(
   Schema.isMaxLength(organizationSlugMaxLength),
   Schema.isPattern(/^[a-z0-9]+(?:-[a-z0-9]+)*$/u),
 ).pipe(Schema.brand("OrganizationSlug"));
 export type OrganizationSlug = typeof OrganizationSlug.Type;
-/** Suggested handle for a display name; empty when the name has no usable characters. */
 export const organizationHandle = (name: string, maxLength = organizationSlugMaxLength) =>
   name
     .normalize("NFKD")
@@ -49,10 +52,8 @@ export const organizationHandle = (name: string, maxLength = organizationSlugMax
     .replace(/^-+|-+$/g, "")
     .slice(0, maxLength)
     .replace(/-+$/g, "");
-/** Explicit API target. Resolution rejects collisions between the ID and slug namespaces. */
 export const OrganizationReference = Schema.Union([OrganizationId, OrganizationSlug]);
 export type OrganizationReference = typeof OrganizationReference.Type;
-/** An icon is an HTTPS image, a private uploaded-image path, or null. */
 export const OrganizationLogo = Schema.NullOr(
   Schema.String.check(
     Schema.makeFilter((value) => {
@@ -66,7 +67,6 @@ export const OrganizationLogo = Schema.NullOr(
     }),
   ),
 );
-/** Only public display and URL fields can be changed through organization settings. */
 export const OrganizationDetailsUpdate = Schema.Struct({
   name: Schema.optionalKey(
     Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(120), Schema.isPattern(/\S/u)),
@@ -78,16 +78,13 @@ export const OrganizationDetailsUpdate = Schema.Struct({
     (data) => data.name !== undefined || data.slug !== undefined || data.logo !== undefined,
   ),
 );
-/** Roles enabled by this hosted product's Better Auth organization plugin. */
 export const OrganizationRole = Schema.Literals(["owner", "admin", "member"]);
-/** Membership checked against the requested organization on this request. */
 export const OrganizationAccess = Schema.Struct({
   organization: OrganizationId,
   role: OrganizationRole,
   owner: OwnerId,
 });
 export type OrganizationAccess = typeof OrganizationAccess.Type;
-/** No membership exists, or the caller does not have the required role. */
 export const OrganizationForbidden = UserFacingError.define({
   tag: "OrganizationForbidden",
   status: 403,
@@ -100,30 +97,19 @@ export const OrganizationForbidden = UserFacingError.define({
       "Check the signed-in identity, organization, and permission required for the failed operation. Identify a wrong context or a missing access grant and the supported way to resolve it. Do not bypass authorization or assume changing integration code can grant access.",
   },
 });
-/** Parsed OrganizationForbidden failure. */
 export type OrganizationForbidden = typeof OrganizationForbidden.Type;
-/** Request-local authority, provided by RequireOrganization. */
 export class CurrentOrganization extends Context.Service<CurrentOrganization, OrganizationAccess>()(
   "hosted/CurrentOrganization",
 ) {}
-/** Public packages are published under the organization's current slug on this domain. */
-export const publishingDomain = "executor.community";
-/** An organization's publishing scope. It follows renames; the slug it had is free to reuse. */
 export const publishingScope = (slug: string) => `${slug}.${publishingDomain}`;
-/** The slug a publishing scope names, or undefined for a scope on another domain. */
 export const publishingSlug = (scope: string) =>
   scope.endsWith(`.${publishingDomain}`) ? scope.slice(0, -publishingDomain.length - 1) : undefined;
 
-/**
- * Lazy, authenticated publishing scope, `<slug>.executor.community`; routes that do not need it
- * make no slug lookup.
- */
 export class CurrentOrganizationNamespace extends Context.Service<
   CurrentOrganizationNamespace,
   Effect.Effect<string, AuthenticationUnavailable | OrganizationForbidden>
 >()("hosted/CurrentOrganizationNamespace") {}
 
-/** Checks login and current membership for the :organization route parameter. */
 export class RequireOrganization extends HttpApiMiddleware.Service<
   RequireOrganization,
   { provides: CurrentOrganization | CurrentOrganizationNamespace }
@@ -131,32 +117,27 @@ export class RequireOrganization extends HttpApiMiddleware.Service<
   error: [Unauthorized, Forbidden, AuthenticationUnavailable, OrganizationForbidden],
 }) {}
 
-/** Product-owned mapping; the core SDK treats the result as an opaque owner. */
 export const organizationOwner = (organization: OrganizationId) =>
   OwnerId.make(`organization:${organization}`);
 
-/** Invalid or oversized image input. */
 export const OrganizationIconInvalid = ApiError.define({
   tag: "OrganizationIconInvalid",
   status: 400,
   message: "The organization icon upload is not a supported image within the size limit.",
 });
 export type OrganizationIconInvalid = typeof OrganizationIconInvalid.Type;
-/** The image store could not complete this request. */
 export const OrganizationIconUnavailable = ApiError.define({
   tag: "OrganizationIconUnavailable",
   status: 503,
   message: "Executor's image storage could not complete this request. Try again.",
 });
 export type OrganizationIconUnavailable = typeof OrganizationIconUnavailable.Type;
-/** Missing uploaded image; membership is checked independently before reading. */
 export const OrganizationIconNotFound = ApiError.define({
   tag: "OrganizationIconNotFound",
   status: 404,
   message: "This organization has no uploaded icon.",
 });
 export type OrganizationIconNotFound = typeof OrganizationIconNotFound.Type;
-/** Each host supplies its own durable binary store; route middleware owns authorization. */
 export class OrganizationIcons extends Context.Service<
   OrganizationIcons,
   {
@@ -171,7 +152,6 @@ export class OrganizationIcons extends Context.Service<
       { readonly bytes: Uint8Array; readonly contentType: OrganizationIconContentType },
       OrganizationIconUnavailable | OrganizationIconNotFound
     >;
-    /** Release one stored image. Only the saved icon is addressable; replaced uploads are not indexed. */
     readonly remove: (
       organization: OrganizationId,
       key: string,
@@ -179,19 +159,24 @@ export class OrganizationIcons extends Context.Service<
   }
 >()("hosted/OrganizationIcons") {}
 
-/** Organization-owned inventory. Saved credentials never appear in these records. */
 export const Inventory = Schema.Struct({
-  /** The accounts the caller linked to each listed app and may use. */
   links: Schema.Array(Schema.Struct({ app: AppId, account: AccountId })),
+  appLinks: Schema.Array(
+    Schema.Struct({
+      app: AppId,
+      requirement: Schema.String,
+      account: AccountId,
+      provider: ProviderId,
+      label: Schema.String,
+    }),
+  ),
   apps: Schema.Array(App),
-  /** Each account's checks by the apps listed here; reading them never runs a check. */
   accounts: Schema.Array(
     Schema.Struct({ ...Account.fields, health: Schema.optionalKey(AccountHealth) }),
   ),
   accountSetup: Schema.Struct({ redirectUri: HttpUrl }),
 });
 export type Inventory = typeof Inventory.Type;
-/** Membership and inventory for the explicitly requested organization. */
 export const HostedOrganization = HttpApiGroup.make("organization")
   .add(
     HttpApiEndpoint.post("uploadIcon", "/api/organizations/:organization/icon", {
@@ -199,14 +184,14 @@ export const HostedOrganization = HttpApiGroup.make("organization")
       payload: UploadedOrganizationIcon,
       success: Schema.Struct({ logo: OrganizationIconUrl }),
       error: [OrganizationIconInvalid, OrganizationIconUnavailable, OrganizationForbidden],
-    }).middleware(RequireUser),
+    }).middleware(RequireBrowserSession),
   )
   .add(
     HttpApiEndpoint.get("icon", "/api/organizations/:organization/icons/:key", {
       params: { organization: OrganizationReference, key: OrganizationIconKey },
       success: Schema.Uint8Array.pipe(HttpApiSchema.asUint8Array()),
       error: [OrganizationIconUnavailable, OrganizationIconNotFound],
-    }).middleware(RequireUser),
+    }).middleware(RequireBrowserSession),
   )
   .add(
     HttpApiEndpoint.get("catalog", "/api/organizations/:organization/catalog", {
@@ -218,7 +203,7 @@ export const HostedOrganization = HttpApiGroup.make("organization")
       .annotate(RequiredAction, "read")
       .annotate(
         OpenApi.Description,
-        "List the app catalog: Executor's official apps, each installed directly with apps.install, which then asks for an account through the app's own providers. The whole catalog has over a thousand entries, so pass search, and limit, to keep the result small. To add a remote MCP server the catalog does not list, use apps.importCustom; for any other service, write an app with the Executor app's app-authoring skill.",
+        "List the app catalog: Executor's official apps, each installed with apps.install. On a self-hosted instance, an unfiltered result holding only the Executor app can mean the catalog is turned off. apps.install then asks for an account through the app's own providers. The whole catalog has over a thousand entries, so pass search, and limit, to keep the result small. To add a remote MCP server the catalog does not list, use apps.importCustom; for any other service, write an app with the Executor app's app-authoring skill.",
       ),
   )
   .add(
