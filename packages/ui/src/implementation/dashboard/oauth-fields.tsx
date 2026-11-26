@@ -134,6 +134,7 @@ export function OAuthFields<A, E>({
   readonly registerClient?: boolean;
   readonly editClient?: OAuthClientId | undefined;
 }) {
+  const googleProvider = /^(?:Google(?:\s|$)|Gmail$)/i.test(providerName);
   const choices = clientChoices(options, account !== undefined);
   const editing =
     editClient === undefined || options === "unresolved"
@@ -223,7 +224,11 @@ export function OAuthFields<A, E>({
       case "automatic":
         return "Automatic";
       case "manual":
-        return machine ? "New client credentials" : "Enter client details";
+        return machine
+          ? "New client credentials"
+          : googleProvider
+            ? "Your own Google app (OAuth)"
+            : "Enter client details";
     }
   };
   const connect = () => {
@@ -263,8 +268,14 @@ export function OAuthFields<A, E>({
       onPendingChange?.(false);
     });
   };
+  const googleOwnClientChoice =
+    googleProvider &&
+    !machine &&
+    choices.some((offered) => offered.kind === "manual") &&
+    choices.some((offered) => offered.kind !== "manual");
   const prominent =
-    account === undefined && choices.filter((offered) => offered.kind !== "manual").length > 1;
+    googleOwnClientChoice ||
+    (account === undefined && choices.filter((offered) => offered.kind !== "manual").length > 1);
   const clientSelect =
     choice === undefined || choices.length < 2 ? undefined : (
       <label className="field-label flex flex-col gap-2.25 text-[13px] font-medium [&_[data-slot='select-trigger']]:w-full">
