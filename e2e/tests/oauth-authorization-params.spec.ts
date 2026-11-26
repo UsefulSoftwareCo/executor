@@ -1,7 +1,3 @@
-/**
- * Declared authorization parameters and a declared URL's own query reach the sign-in URL;
- * protocol parameters stay host-owned. A declared scope separator joins the requested scopes.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
@@ -68,7 +64,6 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
             expect(started.status, JSON.stringify(started.body)).toBe(200);
             const signIn = yield* body(SignIn, started);
             const url = new URL(signIn.authorizationUrl);
-            // Declared extras arrive once, beside every protocol parameter Executor owns.
             for (const [key, value] of Object.entries(extras))
               expect(url.searchParams.getAll(key)).toEqual([value]);
             expect(url.searchParams.get("response_type")).toBe("code");
@@ -105,7 +100,6 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
         expect(declared.url.searchParams.getAll("tenant")).toEqual(["fixture"]);
         expect(declared.url.searchParams.get("client_id")).toBe("synthetic-declared-client");
 
-        // Complete the discovered sign-in: the extras change nothing after authorization.
         const callbackUrl = yield* Effect.scoped(
           Effect.gen(function* () {
             const consent = yield* HttpClient.withScope(http).get(discovered.url.href);
@@ -158,9 +152,6 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
         expect(consent.status).toBe(302);
         expect((yield* issuer.metrics).authorizationScope).toBe("read,write");
 
-        // A declaration cannot replace a host-owned protocol parameter, in `authorizationParams`
-        // or in a declared URL's query, and names each parameter once. Each rejected
-        // declaration has an accepted twin that differs only in the offending parameter.
         const endpoints = (query: string) => ({
           authorizationUrl: `${issuer.origin}/authorize${query}`,
           tokenUrl: `${issuer.origin}/token`,

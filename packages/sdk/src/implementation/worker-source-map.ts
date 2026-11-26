@@ -1,7 +1,3 @@
-/**
- * Place a failure in a freshly compiled server bundle at the authored source that caused it. The
- * map lives only for the build that produced it: it is not retained, and it holds no source text.
- */
 import { originalPositionFor, TraceMap } from "@jridgewell/trace-mapping";
 import type { Plugin } from "esbuild";
 import { Schema } from "effect";
@@ -9,18 +5,11 @@ import { DatabaseFieldReserved } from "apps/contracts";
 import type { SourceFiles, SourceLocation } from "../contracts/version.ts";
 import { boundBuildMessage, describeBuildCause, RuntimeBuildFailed } from "../contracts/runtime.ts";
 
-/** The bundler reads source from its `virtual:` namespace; report the authored path. */
 const sourcePath = (file: string) => file.replace(/^virtual:/, "");
 
 const utf8 = new TextEncoder();
-/** Keeps a leading byte order mark, so every code unit before the column is counted. */
 const utf16 = new TextDecoder("utf-8", { ignoreBOM: true });
 
-/**
- * Enter an esbuild message's location into Executor's `SourceLocation`, which counts columns from
- * 1 in UTF-16 code units. esbuild counts them from 0 in UTF-8 bytes of `lineText`, so text before
- * the column that is not ASCII would otherwise move it right.
- */
 export const sourceLocation = (location: {
   readonly file: string;
   readonly line: number;
@@ -33,7 +22,6 @@ export const sourceLocation = (location: {
     column: utf16.decode(utf8.encode(location.lineText).subarray(0, location.column)).length + 1,
   }) satisfies SourceLocation;
 
-/** Enter a source-map position. Source maps count columns from 0 in UTF-16 code units, as V8 does. */
 const mappedLocation = (position: {
   readonly source: string;
   readonly line: number;
@@ -45,10 +33,6 @@ const mappedLocation = (position: {
     column: position.column + 1,
   }) satisfies SourceLocation;
 
-/**
- * Map the server entry's bundle. esbuild returns the map as an output file before the bundle, and
- * worker-bundler keeps only the first output, so the map is taken out of the result.
- */
 export const serverSourceMap = (entry: string) => {
   let map: string | undefined;
   const plugin: Plugin = {
@@ -69,17 +53,12 @@ export const serverSourceMap = (entry: string) => {
   return { plugin, map: () => map };
 };
 
-/** A V8 stack position, `module:line:column`, with a 1-based column. */
 const stackPosition = /([\w./@-]+):(\d+):(\d+)/g;
 
-/**
- * The declaration failure of a build compiled with `sourceMap`. A Worker that fails while its
- * modules load reports stack positions in the bundle; each becomes the authored file and position
- * it came from, and the first in a deployed source file is the location.
- */
 export const declarationFailed = (
   cause: unknown,
   build: { readonly mainModule: string; readonly sourceMap: string; readonly files: SourceFiles },
+  unanswered?: true,
 ) => {
   const described = describeBuildCause(cause);
   let map: TraceMap | undefined;
@@ -103,5 +82,6 @@ export const declarationFailed = (
     message: boundBuildMessage(message),
     ...(location === undefined ? {} : { location }),
     ...(Schema.is(DatabaseFieldReserved)(cause) ? { declaration: cause } : {}),
+    ...(unanswered === undefined ? {} : { unanswered }),
   });
 };

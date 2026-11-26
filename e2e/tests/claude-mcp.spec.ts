@@ -1,4 +1,3 @@
-/** The real client opens OAuth from /mcp and invokes a tool in that same authenticated session. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Layer } from "effect";
 import { scenarios } from "../test-plan.ts";

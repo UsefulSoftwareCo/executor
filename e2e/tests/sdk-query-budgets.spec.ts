@@ -1,4 +1,3 @@
-/** Invocations read many linked accounts in link order, and workflow history lists finished runs. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -57,7 +56,6 @@ layer(HostedLive, { excludeTestServices: true })("SDK query budgets", (it) => {
           }).pipe(Effect.orDie),
         );
 
-        // Connecting from the app links each account to it.
         for (let index = 0; index < 10; index++) {
           const pending = yield* api.request(
             actors.owner,
@@ -80,8 +78,6 @@ layer(HostedLive, { excludeTestServices: true })("SDK query budgets", (it) => {
           expect(saved.status).toBe(200);
           accounts.push((yield* body(Resource, saved)).id);
         }
-        // many() uses every linked account, oldest link first. Link them again in reverse
-        // creation order: the batch read must retain the link order.
         const selected = [...accounts].reverse();
         for (const account of accounts)
           yield* unlinkAccount(actors.owner, path, "workspaces", account);
@@ -97,8 +93,6 @@ layer(HostedLive, { excludeTestServices: true })("SDK query budgets", (it) => {
         expect(called.body).toEqual(
           Array.from({ length: 10 }, (_, index) => `synthetic-${9 - index}`),
         );
-        // With no linked account, many() is empty, which lets the workflow fixture run without
-        // accounts.
         for (const account of accounts)
           yield* unlinkAccount(actors.owner, path, "workspaces", account);
         const empty = yield* api.request(actors.owner, "POST", `${path}/tools/call`, {

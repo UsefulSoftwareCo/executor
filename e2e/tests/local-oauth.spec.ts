@@ -26,7 +26,6 @@ const Setup = Schema.Struct({
   grant: Schema.Literal("client_credentials"),
   tokenEndpointAuthMethod: Schema.Literal("client_secret_basic"),
   scopes: Schema.Array(Schema.String),
-  // Client credentials are each account's own, so no stored client is offered.
   clients: Schema.Tuple([]),
 });
 const Completed = Schema.Struct({
@@ -35,7 +34,6 @@ const Completed = Schema.Struct({
     account: Schema.Struct({ id: Schema.String, label: Schema.String }),
   }),
 });
-/** A pending request whose latest sign-in failed, as an agent reads it. */
 const Failed = Schema.Struct({
   state: Schema.Struct({
     status: Schema.Literal("pending"),
@@ -185,9 +183,7 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
         );
         saved = completed.state.account.id;
         expect(completed.state.account.label).toBe("Default");
-        // Connecting for the app links the new account to it.
         expect(yield* linkedAccountIds(agent, `/dashboard/api/apps/${app.id}`)).toEqual([saved]);
-        // The limited connection page sits outside the dashboard, so nothing asks for a name.
         expect(
           yield* browser.use("The connection link does not ask for a name", (page) =>
             nameAccountDialog(page).count(),
@@ -195,10 +191,6 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
         ).toBe(0);
         expect((yield* issuer.metrics).generation).toBe(1);
         yield* browser.checkpoint("Local client-credentials connection completed");
-        // Client credentials are the account's own and never stored, so a reconnect keeps the
-        // client its grant holds. One the service no longer accepts, as after a rotated secret,
-        // opens client entry with that error's own explanation. No registration was attempted
-        // and the method has no redirect URL, so neither is mentioned.
         yield* issuer.configure({ rejected: true });
         const rotated = yield* body(
           Link,
@@ -332,7 +324,6 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
         expect(fixPrompt).toContain("Verify the failed operation");
         expect(fixPrompt).not.toContain(discoveryLink.url);
 
-        // The service publishes its settings but refuses to register Executor's callback URL.
         const refusal = "Redirect URIs must be on a host this service has approved";
         yield* discovery.configure({
           discovery: "available",
@@ -360,8 +351,6 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
             .getByRole("alert", { name: "Callback URL refused during registration", exact: true })
             .innerText(),
         );
-        // Local says once what happened and what to do, in the reason's own words, as the
-        // hosted dialog does.
         expect(refused).toContain(
           "This service doesn’t accept Executor’s callback URL. Create an OAuth app there with this redirect URL and enter its client ID and secret, or ask the service to allow it.",
         );
@@ -384,7 +373,6 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
             accessBeforeConnect(page.locator("main")),
             page.getByText("Create an OAuth app", { exact: false }).count(),
             page.getByText("enter its client ID", { exact: false }).count(),
-            // The failure's recovery replaces the form's helper line.
             page.getByText("Use an OAuth app in", { exact: false }).count(),
           ]),
         );
@@ -396,7 +384,6 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
           0,
         ]);
         yield* browser.checkpoint("Local-OAuth-registration-refused-card");
-        // The agent that issued the link reads the same failure from the request.
         const failed = yield* body(
           Failed,
           yield* session.send(
@@ -414,7 +401,6 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
         });
         expect(failed.state.failure.error.message).not.toContain(refusal);
 
-        // Without registration, the link asks for a client and nothing has failed.
         yield* discovery.configure({ registration: false, registrationStatus: 201 });
         yield* browser.use("Reload the link for a service without registration", (page) =>
           page.reload().then(() => page.getByLabel("Client secret", { exact: true }).waitFor()),
@@ -444,9 +430,6 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
         ]);
         yield* browser.checkpoint("Local-OAuth-client-required");
 
-        // A sign-in that fails after the service's page: its token endpoint answers with a long
-        // HTML rate-limit page and no Retry-After. The page returns to the link and says so under
-        // the heading.
         const limited = "Service rate limit reached";
         yield* discovery.configure({
           registration: true,
@@ -490,7 +473,6 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
           "Service response: 429 Too Many Requests Too many requests Slow down and try again later.",
         );
         expect(completion[0]).not.toContain("OAuthCompletionFailed");
-        // A long response stops after four lines until shown in full; Copy keeps the whole text.
         expect(completion[1]).toBeLessThanOrEqual(84);
         expect(completion[2]).toEqual(["heading", "notice", "access", "connect"]);
         yield* browser.checkpoint("Local-OAuth-completion-failed");

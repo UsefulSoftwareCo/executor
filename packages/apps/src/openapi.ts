@@ -59,7 +59,6 @@ export const openapiOperationNames = (
   Effect.runPromise(
     Effect.suspend(() =>
       compiledOperationNames(
-        // A copy the reader can own, as a tree.
         Schema.decodeUnknownSync(JsonObject)(JSON.parse(JSON.stringify(document))),
       ),
     ),

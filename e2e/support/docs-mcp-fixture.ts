@@ -23,9 +23,7 @@ const Message = Schema.Struct({
   ),
 });
 
-/** The fixture's search tool. */
 export const docsSearchTool = "search_documentation";
-/** Where the fixture's search results point. */
 export const docsOrigin = "https://docs.fixture.test";
 
 const event = (message: object) =>
@@ -33,7 +31,6 @@ const event = (message: object) =>
     `event: message\ndata: ${JSON.stringify({ jsonrpc: "2.0", ...message })}\n\n`,
   );
 
-/** Return the server's MCP URL and the searches it received; the scope owns its listener. */
 export const docsMcpFixture = Effect.gen(function* () {
   const sessions = new Set<string>();
   const queries = yield* Ref.make<ReadonlyArray<string>>([]);
@@ -57,7 +54,6 @@ export const docsMcpFixture = Effect.gen(function* () {
         { "mcp-session-id": session },
       );
     }
-    // Every later message names the session `initialize` issued, as Streamable HTTP requires.
     const session = request.headers["mcp-session-id"];
     if (session === undefined) return HttpServerResponse.text("Missing session", { status: 400 });
     if (!sessions.has(session)) return HttpServerResponse.text("Unknown session", { status: 404 });
@@ -115,7 +111,6 @@ export const docsMcpFixture = Effect.gen(function* () {
     HttpRouter.serve(
       Layer.mergeAll(
         HttpRouter.add("POST", "/mcp", handler),
-        // No standalone stream: every answer rides on its request's own.
         HttpRouter.add("GET", "/mcp", Effect.succeed(HttpServerResponse.empty({ status: 405 }))),
         HttpRouter.add("DELETE", "/mcp", Effect.succeed(HttpServerResponse.empty({ status: 204 }))),
       ),

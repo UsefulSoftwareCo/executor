@@ -1,4 +1,3 @@
-/** Development composition edge: Vite assets and product APIs share one origin. */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Console, Effect, Redacted } from "effect";
@@ -19,7 +18,6 @@ const development = Effect.gen(function* () {
   yield* Console.log(
     `Executor dev: ${settings.browserOrigin ?? server.url}\nUI hot reload is enabled.\nConnect (one use, expires in 5 minutes):\n${Redacted.value(link.url)}`,
   );
-  // It stops, as every server does, once another server has taken its data directory's lock.
   const reason = yield* server.stopped;
   yield* Console.error(`Executor dev stopped: ${reason}.`);
 });

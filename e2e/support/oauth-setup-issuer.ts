@@ -1,4 +1,3 @@
-/** A scoped external OAuth issuer for setup checks; Executor still uses its real HTTP and storage paths. */
 import { createServer } from "node:http";
 import { Socket } from "node:net";
 import {
@@ -17,7 +16,6 @@ import { tokenRequestParameters } from "./client-credentials-issuer.ts";
 type TokenAuth = "client_secret_basic" | "client_secret_post" | "none";
 type SecretAuth = Exclude<TokenAuth, "none">;
 
-/** The members a standard token response carries; absent members were not issued. */
 export type IssuedTokens = {
   readonly access_token: string;
   readonly token_type: string;
@@ -26,25 +24,18 @@ export type IssuedTokens = {
   readonly id_token?: string;
 };
 export type TokenShape = (tokens: IssuedTokens, refreshing: boolean) => object;
-/** A token request as the service received it, for an error page that repeats it. */
 export type ReceivedTokenRequest = {
   readonly body: string;
   readonly authorization: string | undefined;
 };
 
-/** A JSON-RPC request or notification to the served MCP server. */
 const McpMessage = Schema.Struct({
   id: Schema.optional(Schema.Union([Schema.Number, Schema.String])),
   method: Schema.String,
 });
 
-/**
- * The port the next issuer listens on. Zero, the default, lets the system assign one; a Cloud
- * scenario binds the port its local Cloud's operator settings name. See `oauthSetupIssuerOn`.
- */
 export const IssuerPort = Context.Reference<number>("e2e/IssuerPort", { defaultValue: () => 0 });
 
-/** Start a loopback issuer with controllable discovery and registration metadata. */
 export const oauthSetupIssuer = Effect.gen(function* () {
   const port = yield* IssuerPort;
   const address = yield* Deferred.make<string>();
@@ -53,15 +44,12 @@ export const oauthSetupIssuer = Effect.gen(function* () {
   let challenge = true;
   let probes = 0;
   let mcpStatus: 520 | undefined;
-  /** Answer MCP on `/mcp` for an access token this issuer issued and still accepts. */
   let serveMcp = false;
   let expiresAt = 0;
   // 401 models RFC 7591 registration that requires an initial access token Executor lacks.
   // 429 answers with a rate limiter's HTML page.
   let registrationStatus: 200 | 201 | 400 | 401 | 429 = 201;
-  /** The Retry-After header of rate-limited discovery and registration answers; unset omits it. */
   let retryAfter: string | undefined;
-  /** A rate limiter's page, as an edge proxy in front of the service sends it. */
   const rateLimited = () =>
     HttpServerResponse.text(
       "<html><head><title>429 Too Many Requests</title></head><body><center><h1>429 Too Many Requests</h1></center><hr><center>synthetic-edge</center></body></html>",
@@ -74,43 +62,21 @@ export const oauthSetupIssuer = Effect.gen(function* () {
   let malformedRegistration = false;
   let registrationError: "invalid_client_metadata" | "invalid_redirect_uri" | "invalid_request" =
     "invalid_client_metadata";
-  /** The `error_description` a refused registration sends; undefined omits it. */
   let registrationErrorDescription: string | undefined = "PRIVATE_PROVIDER_ERROR";
-  /**
-   * The only redirect URIs registration accepts; undefined accepts any. A registration naming
-   * another is refused with `invalid_redirect_uri`, as Vercel's MCP authorization server refuses
-   * callbacks it has not approved.
-   */
   let registrationRedirects: readonly string[] | undefined;
   let omitSecretExpiry = false;
   /** Vercel registers a public client whatever method the request names, as RFC 7591 allows. */
   let issuePublicClients = false;
   let nonceRequested: boolean | undefined;
   let idTokenAlgorithms: readonly string[] | undefined;
-  /**
-   * OpenID Connect Discovery's ID token algorithms, served beside OAuth metadata that omits them,
-   * as Miro does. Its client authentication methods disagree with the OAuth metadata's.
-   */
   let openidAlgorithms: readonly string[] | undefined;
   let includeIdToken = false;
   let invalidNonce = false;
-  /** The ID token `iss`; Google names its sign-in host rather than the token endpoint origin. */
   let idTokenIssuer: string | undefined;
-  /**
-   * Google signs RS256; a declared server advertises no algorithms, so RS256 is the only default.
-   * HS256 signs with the client secret, as Miro does.
-   */
   let idTokenAlgorithm: "ES256" | "RS256" | "HS256" | "none" = "ES256";
   let refreshTokens = false;
-  /** Replace the refresh token on every refresh, as rotating services do. */
   let rotateRefreshTokens = false;
-  /** Whether a replaced refresh token is still accepted, as services with a reuse window allow. */
   let replacedRefreshTokens: "refused" | "accepted" = "refused";
-  /**
-   * Hold refresh requests before the service processes them, or after it has issued and saved
-   * their tokens but before it answers; or hold resource reads. A held request waits for
-   * `release`. One held before processing is then dropped unprocessed.
-   */
   let hold: "refresh-unprocessed" | "refresh-issued" | "resource" | undefined;
   let held = 0;
   let releases: Array<Deferred.Deferred<void>> = [];
@@ -120,16 +86,12 @@ export const oauthSetupIssuer = Effect.gen(function* () {
     held++;
     yield* Deferred.await(released);
   });
-  /** Refresh requests that issued tokens. */
   let refreshesIssued = 0;
-  /** The `expires_in` of issued tokens; undefined omits it. */
   let expiresIn: number | undefined = 3600;
-  /** The token request encoding the service reads; Notion and Atlassian read only JSON. */
   let tokenRequestFormat: "form" | "json" = "form";
-  /** Media type of each token request, in order. */
   const tokenContentTypes: Array<string | undefined> = [];
-  /** The `scope` parameter of the latest authorization request. */
   let authorizationScope: string | null | undefined;
+  let authorizationChallenged: boolean | undefined;
   /**
    * The RFC 8707 `resource` parameter of the latest authorization request, code exchange and
    * refresh; null when it named none.
@@ -141,16 +103,12 @@ export const oauthSetupIssuer = Effect.gen(function* () {
   let tokenChecks: Readonly<Record<string, boolean>> = {};
   let refreshes = 0;
   let refreshChecks: Readonly<Record<string, boolean>> = {};
-  /** Client authentication on the latest code exchange; background refreshes do not overwrite it. */
+  let requiredRefreshRedirectUri: string | undefined;
+  let refreshRedirectUri: string | null | undefined;
   let lastExchangeAuth: TokenAuth | undefined;
   /** Appended to the authorization redirect as RFC 9207 `iss`, as Google does. */
   let callbackIssuer: string | undefined;
-  /** Origin of the browser page that relays a callback to the advertised redirect URI. */
   let browserReturn: string | undefined;
-  // Opt-in error and token variants. Defaults keep the standard behaviour above.
-  // "reset" drops the connection without a response, as a failing proxy or network would.
-  // An HTML `page` is built from the request, as error pages that repeat it are. Either answer
-  // can carry a Retry-After header.
   let tokenError:
     | {
         readonly status: number;
@@ -165,56 +123,35 @@ export const oauthSetupIssuer = Effect.gen(function* () {
       }
     | "reset"
     | undefined;
-  /**
-   * Reshape each token response as a real service does, for example Slack's `token_type: "bot"`
-   * or Mailchimp's `scope: null`. It receives the standard members and whether this is a refresh.
-   */
   let tokenShape: TokenShape | undefined;
-  let authorizeError: string | undefined;
-  /** The ID-token subject issued on refresh. */
+  /** An RFC 6749 error code the callback returns instead of a code, and its `error_description`. */
+  let authorizeError: string | { readonly error: string; readonly description: string } | undefined;
   let refreshSubject = "synthetic-subject";
-  /** Lifetime of renewed tokens; unset, they last `expiresIn` like the first ones. */
   let refreshedExpiresIn: number | undefined;
-  /** An RFC 7009 endpoint that records calls, or one that always fails. */
-  let revocation: "none" | "recorded" | "failing" = "none";
+  /**
+   * An RFC 7009 endpoint that records calls, one that always fails, or one that records each call
+   * and never answers it until the issuer closes.
+   */
+  let revocation: "none" | "recorded" | "failing" | "stalled" = "none";
   const revocations: Array<{
     readonly token: "refresh" | "access" | "unknown";
     readonly hint: string | null;
     readonly clientAuthenticated: boolean;
   }> = [];
+  let revocationArrivals = 0;
+  const arrivalWaits = new Set<() => void>();
   const keyPair = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
   let rsaKey: KeyObject | undefined;
-  /** Refresh tokens issued for each client; unless rotation is configured, refreshes keep them. */
   const refreshGrants = new Map<string, string>();
-  /** Whether each refresh token was issued at a sign-in or by a rotating refresh. */
   const refreshOrigins = new Map<string, "sign-in" | "refresh">();
-  /** The issuance of each refresh token revocation named, in order: a current or replaced one. */
   const revokedRefreshTokens: Array<"sign-in" | "refresh"> = [];
-  /** Refresh tokens a rotation replaced, with their client. */
   const replacedRefreshGrants = new Map<string, string>();
   const refreshedAccessTokens = new Set<string>();
-  /** Every access token issued so far. */
   const issuedAccessTokens = new Set<string>();
-  /**
-   * Access tokens the resource no longer accepts, as a service ends a session whose lifetime its
-   * token response never stated. Salesforce answers such a token with 401 INVALID_SESSION_ID.
-   */
   const expiredAccessTokens = new Set<string>();
-  /** Resource requests by method, including refused ones. */
   const resourceRequests = { GET: 0, POST: 0 };
-  /** The `authorization` header of each resource request, in order. */
   const resourceAuthorizations: Array<string | null> = [];
-  /**
-   * Which tokens the resource accepts: any, or only access tokens this issuer issued, as a real
-   * service does. An unissued token is refused with 401.
-   */
   let resourceTokens: "any" | "issued" = "any";
-  /**
-   * The `scope` member of token responses; undefined omits it. A grant is given the scope its
-   * authorization request asked for, or `defaults` when it asked for none, as services that
-   * grant a default set do. `exchange` and `refresh` add scopes beyond that to each response.
-   * `separator` joins the reported scopes, a space by default; GitHub reports `repo,gist`.
-   */
   let scopeGrant:
     | {
         readonly defaults: readonly string[];
@@ -223,7 +160,6 @@ export const oauthSetupIssuer = Effect.gen(function* () {
         readonly separator?: string;
       }
     | undefined;
-  /** The scope granted with each refresh token, which its renewals repeat. */
   const refreshScopes = new Map<string, string>();
   const clients = new Map<
     string,
@@ -238,7 +174,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
     {
       clientId: string;
       redirect: string;
-      challenge: string;
+      challenge: string | null;
       nonce: string | null;
       scope: string | null;
     }
@@ -252,23 +188,13 @@ export const oauthSetupIssuer = Effect.gen(function* () {
     | "invalid-json"
     | "invalid-metadata"
     | "blocked" = "available";
-  // Metadata for the path-based `/v1/mcp` endpoint, which publishes no protected-resource
-  // metadata. "atlassian" misses the path-inserted URL and refuses the appended OpenID path.
   let pathDiscovery: "atlassian" | "issuer-mismatch" | "invalid-metadata" = "atlassian";
   const discoveryRequests: string[] = [];
-  /**
-   * Refuse requests without a User-Agent with an HTML 403 page, as some firewalls in front of
-   * authorization servers do.
-   */
   let requireUserAgent = false;
-  /** The path and User-Agent of each request, in order. */
   const userAgents: Array<{ readonly path: string; readonly userAgent: string | undefined }> = [];
   let scopes = ["read"];
-  /** A narrower scope requirement advertised by the resource's Bearer challenge. */
   let challengeScopes: readonly string[] | undefined;
-  /** Scopes the issuer grants separately but refuses together, as `invalid_scope`. */
   let exclusiveScopes: readonly string[] | undefined;
-  /** An exact metadata override models OIDC published away from its declared issuer. */
   let metadataOverrideIssuer: string | undefined;
   let metadataOverrideStatus = 200;
   const scopeChallenge = () =>
@@ -276,18 +202,17 @@ export const oauthSetupIssuer = Effect.gen(function* () {
   let registrations = 0;
   let discoveries = 0;
   let authMethods = ["client_secret_basic"];
-  /** The latest registration request, with the OpenID Connect `application_type` it named. */
   let lastRegistration:
     | { scope: string; method: string; applicationType: string | undefined }
     | undefined;
-  /** The redirect URIs each registration request named, in order, including refused ones. */
   const registeredRedirects: Array<readonly string[]> = [];
   /**
    * How the service reads HTTP Basic client credentials. "form-decoded" follows RFC 6749
    * section 2.3.1. "literal" compares them as sent, as Google and PlanetScale (Doorkeeper) do.
    */
   let basicCredentials: "form-decoded" | "literal" = "form-decoded";
-  /** Credentials issued by the next registrations; unset issues numbered synthetic clients. */
+  let pkce: "required" | "refused" = "required";
+  let refusedClientAuthentications = 0;
   let registeredClient: { readonly clientId: string; readonly clientSecret: string } | undefined;
   /** RFC 6749 section 2.3.1 client authentication presented at the token or revocation endpoint. */
   const presentedClient = (authorization: string | undefined, input: URLSearchParams) => {
@@ -322,15 +247,10 @@ export const oauthSetupIssuer = Effect.gen(function* () {
       scopes_supported: scopes,
     });
   });
-  /** Whether a request presents an access token this issuer issued and has not ended. */
   const acceptedToken = (authorization: string | undefined) => {
     const token = authorization?.replace(/^Bearer /, "");
     return token !== undefined && issuedAccessTokens.has(token) && !expiredAccessTokens.has(token);
   };
-  /**
-   * An OAuth-protected MCP server's answer to an accepted token: initialization, notifications and
-   * an empty tool list over plain JSON responses, with no session.
-   */
   const mcpAnswer = Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
     const message = yield* request.json.pipe(
@@ -353,7 +273,6 @@ export const oauthSetupIssuer = Effect.gen(function* () {
           : { error: { code: -32601, message: "Method not found" } }),
     });
   }).pipe(Effect.orDie);
-  /** OpenID Connect Discovery for `issuer`, whose client authentication differs from OAuth's. */
   const openidDocument = (issuer: string, algorithms: readonly string[]) =>
     Effect.gen(function* () {
       const origin = yield* Deferred.await(address);
@@ -395,13 +314,14 @@ export const oauthSetupIssuer = Effect.gen(function* () {
         if (
           clientId === null ||
           redirect === null ||
-          challenge === null ||
-          params.get("code_challenge_method") !== "S256" ||
+          (pkce === "required" &&
+            (challenge === null || params.get("code_challenge_method") !== "S256")) ||
           !clients.get(clientId)?.redirects.includes(redirect)
         )
           return HttpServerResponse.empty({ status: 400 });
         const code = randomUUID();
         nonceRequested = params.get("nonce") !== null;
+        authorizationChallenged = challenge !== null;
         authorizationScope = params.get("scope");
         authorizationResource = params.get("resource");
         const requested = authorizationScope?.split(" ") ?? [];
@@ -420,10 +340,13 @@ export const oauthSetupIssuer = Effect.gen(function* () {
             scope: params.get("scope"),
           });
           callback.searchParams.set("code", code);
-        } else callback.searchParams.set("error", refusal);
+        } else if (typeof refusal === "string") callback.searchParams.set("error", refusal);
+        else {
+          callback.searchParams.set("error", refusal.error);
+          callback.searchParams.set("error_description", refusal.description);
+        }
         callback.searchParams.set("state", params.get("state") ?? "");
         if (callbackIssuer !== undefined) callback.searchParams.set("iss", callbackIssuer);
-        // The managed host advertises a separate callback relay; model its browser return.
         const location =
           browserReturn === undefined
             ? callback
@@ -441,14 +364,15 @@ export const oauthSetupIssuer = Effect.gen(function* () {
         const input = tokenRequestParameters(contentType, text);
         const refreshing = input.get("grant_type") === "refresh_token";
         if (refreshing && hold === "refresh-unprocessed") {
-          // The service never processes this request; its caller is gone once it is released.
           yield* heldRequest;
           return HttpServerResponse.empty({ status: 503 });
         }
         if (refreshing) refreshes++;
         else tokenExchanges++;
-        if (refreshing) refreshResource = input.get("resource");
-        else exchangeResource = input.get("resource");
+        if (refreshing) {
+          refreshResource = input.get("resource");
+          refreshRedirectUri = input.get("redirect_uri");
+        } else exchangeResource = input.get("resource");
         tokenContentTypes.push(contentType);
         if (tokenError === "reset") {
           const source = request.source;
@@ -509,7 +433,14 @@ export const oauthSetupIssuer = Effect.gen(function* () {
             client !== undefined &&
             (client.secret === null ? method === "none" : presented.secret === client.secret),
         };
-        if (refreshing) refreshChecks = { issued: refreshClient !== undefined, ...authChecks };
+        if (refreshing)
+          refreshChecks = {
+            issued: refreshClient !== undefined,
+            ...authChecks,
+            redirect:
+              requiredRefreshRedirectUri === undefined ||
+              refreshRedirectUri === requiredRefreshRedirectUri,
+          };
         else
           tokenChecks = {
             issued: issued !== undefined,
@@ -517,10 +448,19 @@ export const oauthSetupIssuer = Effect.gen(function* () {
             redirect: issued !== undefined && input.get("redirect_uri") === issued.redirect,
             pkce:
               issued !== undefined &&
-              verifier !== null &&
-              createHash("sha256").update(verifier).digest("base64url") === issued.challenge,
+              (pkce === "refused"
+                ? verifier === null && issued.challenge === null
+                : verifier !== null &&
+                  createHash("sha256").update(verifier).digest("base64url") === issued.challenge),
             ...authChecks,
           };
+        if (!refreshing && pkce === "refused" && verifier !== null) {
+          refusedClientAuthentications++;
+          return yield* HttpServerResponse.json(
+            { error: "invalid_client", error_description: "Client authentication failed" },
+            { status: 401 },
+          );
+        }
         if (
           clientId === undefined ||
           client === undefined ||
@@ -530,8 +470,6 @@ export const oauthSetupIssuer = Effect.gen(function* () {
         if (code !== null) codes.delete(code);
         const origin = yield* Deferred.await(address);
         const now = Math.floor(Date.now() / 1000);
-        // A refreshed ID token carries no nonce (OpenID Connect Core 12.2). `invalidNonce`
-        // names one the client never sent, on every ID token.
         const nonce = invalidNonce ? "wrong-nonce" : (issued?.nonce ?? null);
         const jwt = [
           { alg: idTokenAlgorithm, kid: "synthetic-key", typ: "JWT" },
@@ -550,8 +488,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
           idTokenAlgorithm === "none"
             ? ""
             : idTokenAlgorithm === "HS256"
-              ? // A public client shares no secret to sign with.
-                client.secret === null
+              ? client.secret === null
                 ? ""
                 : createHmac("sha256", client.secret).update(jwt).digest("base64url")
               : idTokenAlgorithm === "ES256"
@@ -569,7 +506,6 @@ export const oauthSetupIssuer = Effect.gen(function* () {
           : "synthetic-access-token";
         if (refreshing) refreshedAccessTokens.add(accessToken);
         issuedAccessTokens.add(accessToken);
-        // Every sign-in issues the same first token; a new sign-in makes it valid again.
         expiredAccessTokens.delete(accessToken);
         const refreshToken =
           refreshTokens && (!refreshing || rotateRefreshTokens)
@@ -580,14 +516,11 @@ export const oauthSetupIssuer = Effect.gen(function* () {
           refreshOrigins.set(refreshToken, refreshing ? "refresh" : "sign-in");
         }
         if (refreshing && rotateRefreshTokens && presentedRefresh !== null) {
-          // The presented token is consumed by this rotation, whether or not its answer arrives.
           if (refreshGrants.delete(presentedRefresh))
             replacedRefreshGrants.set(presentedRefresh, clientId);
         }
         if (refreshing) refreshesIssued++;
         const lifetime = refreshing ? (refreshedExpiresIn ?? expiresIn) : expiresIn;
-        // The grant's scope: as authorized, or the defaults when the request named none, then
-        // anything this response adds beyond it.
         const granted =
           scopeGrant === undefined
             ? undefined
@@ -642,7 +575,6 @@ export const oauthSetupIssuer = Effect.gen(function* () {
                 headers: { "www-authenticate": 'Bearer error="invalid_token"' },
               },
             );
-          // Report whether a renewed token was presented, and echo the credential itself.
           return yield* HttpServerResponse.json({
             refreshed: refreshedAccessTokens.has(token),
             authorization,
@@ -657,7 +589,6 @@ export const oauthSetupIssuer = Effect.gen(function* () {
         probes++;
         if (mcpStatus !== undefined) return HttpServerResponse.empty({ status: mcpStatus });
         const request = yield* HttpServerRequest.HttpServerRequest;
-        // The served MCP server offers no standalone SSE stream.
         if (postChallenge || (serveMcp && acceptedToken(request.headers.authorization)))
           return HttpServerResponse.empty({ status: 405 });
         if (discovery === "no-oauth") return HttpServerResponse.empty({ status: 200 });
@@ -690,7 +621,6 @@ export const oauthSetupIssuer = Effect.gen(function* () {
       }),
     ),
     HttpRouter.add("GET", "/challenge-resource", resource),
-    // Like Atlassian's MCP endpoint, `/v1/mcp` challenges without naming resource metadata.
     HttpRouter.add(
       "*",
       "/v1/mcp",
@@ -831,6 +761,11 @@ export const oauthSetupIssuer = Effect.gen(function* () {
             client.secret !== null &&
             presented.secret === client.secret,
         });
+        if (revocation === "stalled") {
+          const released = yield* Deferred.make<void>();
+          releases.push(released);
+          yield* Deferred.await(released);
+        }
         return revocation === "failing"
           ? HttpServerResponse.empty({ status: 503 })
           : HttpServerResponse.empty({ status: 200 });
@@ -933,13 +868,16 @@ export const oauthSetupIssuer = Effect.gen(function* () {
     ),
   );
   const listener = yield* Effect.sync(() => createServer());
+  listener.prependListener("request", (request) => {
+    if (request.method !== "POST" || request.url?.split("?")[0] !== "/revoke") return;
+    revocationArrivals++;
+    for (const wait of arrivalWaits) wait();
+  });
   const services = yield* Layer.build(
     HttpRouter.serve(routes, { disableLogger: true, disableListenLog: true }).pipe(
       Layer.provideMerge(NodeHttpServer.layer(() => listener, { host: "127.0.0.1", port })),
     ),
   );
-  // Scenario work has ended. Release unfinished provider requests before the
-  // HTTP adapter waits for its listener to close.
   yield* Effect.addFinalizer(() =>
     Effect.forEach(releases, (released) => Deferred.succeed(released, undefined), {
       discard: true,
@@ -957,77 +895,54 @@ export const oauthSetupIssuer = Effect.gen(function* () {
       readonly registrationStatus?: typeof registrationStatus;
       readonly malformedRegistration?: boolean;
       readonly registrationError?: typeof registrationError;
-      /** The `error_description` of a refused registration; null omits it. */
       readonly registrationErrorDescription?: string | null;
-      /** Refuse registrations naming a redirect URI outside these; null accepts any. */
       readonly registrationRedirects?: readonly string[] | null;
-      /** The Retry-After header of rate-limited discovery and registration; null omits it. */
       readonly retryAfter?: string | null;
       readonly omitSecretExpiry?: boolean;
-      /** Register every client as public, replacing the requested token endpoint method. */
       readonly issuePublicClients?: boolean;
-      /** Advertised ID token algorithms; null omits them from OAuth metadata. */
       readonly idTokenAlgorithms?: readonly string[] | null;
-      /** Serve OpenID Connect Discovery with these ID token algorithms; null serves none. */
       readonly openidAlgorithms?: readonly string[] | null;
       readonly includeIdToken?: boolean;
       readonly idTokenIssuer?: string | null;
       readonly idTokenAlgorithm?: typeof idTokenAlgorithm;
       readonly refreshTokens?: boolean;
-      /** Replace the refresh token on every refresh. */
       readonly rotateRefreshTokens?: boolean;
-      /** Whether a replaced refresh token is still accepted. */
+      readonly requireRefreshRedirectUri?: string | null;
       readonly replacedRefreshTokens?: typeof replacedRefreshTokens;
-      /** Hold matching requests until `release`; null stops holding new ones. */
       readonly hold?: typeof hold | null;
-      /** The `expires_in` of issued tokens; null omits it. */
       readonly expiresIn?: number | null;
       readonly invalidNonce?: boolean;
       readonly postChallenge?: boolean;
       readonly challenge?: boolean;
       readonly mcpStatus?: 520 | null;
-      /**
-       * Answer MCP on `/mcp` for an access token this issuer issued and has not ended, as an
-       * OAuth-protected MCP server does. Requests without one keep the challenge.
-       */
       readonly serveMcp?: boolean;
       readonly expiresAt?: number;
       readonly discovery?: typeof discovery;
       readonly pathDiscovery?: typeof pathDiscovery;
       readonly scopes?: readonly string[];
       readonly challengeScopes?: readonly string[] | null;
-      /** Refuse an authorization request naming more than one of these; null accepts any. */
       readonly exclusiveScopes?: readonly string[] | null;
       readonly metadataOverrideIssuer?: string | null;
       readonly metadataOverrideStatus?: number;
       readonly authMethods?: readonly string[];
       readonly callbackIssuer?: string | null;
       readonly browserReturn?: string | null;
-      /**
-       * Answer every token request with this JSON body, status and optional challenge, or an HTML
-       * page built from the request, either with an optional Retry-After, or drop the connection
-       * with "reset"; null restores tokens.
-       */
       readonly tokenError?: typeof tokenError | null;
-      /** Reshape token responses like a real service; null restores the standard shape. */
       readonly tokenShape?: TokenShape | null;
-      /** Return this RFC 6749 error code to the callback instead of a code; null restores codes. */
-      readonly authorizeError?: string | null;
-      /** The ID-token subject issued on refresh. */
+      /**
+       * Return this RFC 6749 error code, alone or with an `error_description`, to the callback
+       * instead of a code; null restores codes.
+       */
+      readonly authorizeError?: typeof authorizeError | null;
       readonly refreshSubject?: string;
-      /** Lifetime of renewed tokens; null makes them last `expiresIn`. */
       readonly refreshedExpiresIn?: number | null;
-      /** Advertise an RFC 7009 endpoint that records calls, or one that always fails. */
+      /** Advertise an RFC 7009 endpoint that records calls, always fails, or never answers. */
       readonly revocation?: typeof revocation;
-      /** How the token and revocation endpoints read HTTP Basic client credentials. */
       readonly basicCredentials?: typeof basicCredentials;
-      /** Credentials issued by the next registrations; null restores numbered synthetic clients. */
+      readonly pkce?: typeof pkce;
       readonly registeredClient?: typeof registeredClient | null;
-      /** The token request encoding the service accepts; it refuses the other one. */
       readonly tokenRequestFormat?: typeof tokenRequestFormat;
-      /** Grant scopes in token responses; null omits `scope`. See `scopeGrant`. */
       readonly scopeGrant?: typeof scopeGrant | null;
-      /** Which access tokens the resource accepts. */
       readonly resourceTokens?: typeof resourceTokens;
     }) =>
       Effect.sync(() => {
@@ -1053,6 +968,9 @@ export const oauthSetupIssuer = Effect.gen(function* () {
         if (input.refreshTokens !== undefined) refreshTokens = input.refreshTokens;
         if (input.rotateRefreshTokens !== undefined)
           rotateRefreshTokens = input.rotateRefreshTokens;
+        if (input.requireRefreshRedirectUri !== undefined)
+          requiredRefreshRedirectUri =
+            input.requireRefreshRedirectUri === null ? undefined : input.requireRefreshRedirectUri;
         if (input.replacedRefreshTokens !== undefined)
           replacedRefreshTokens = input.replacedRefreshTokens;
         if (input.hold !== undefined) hold = input.hold === null ? undefined : input.hold;
@@ -1106,6 +1024,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
             input.refreshedExpiresIn === null ? undefined : input.refreshedExpiresIn;
         if (input.revocation !== undefined) revocation = input.revocation;
         if (input.basicCredentials !== undefined) basicCredentials = input.basicCredentials;
+        if (input.pkce !== undefined) pkce = input.pkce;
         if (input.registeredClient !== undefined)
           registeredClient = input.registeredClient === null ? undefined : input.registeredClient;
       }),
@@ -1131,11 +1050,27 @@ export const oauthSetupIssuer = Effect.gen(function* () {
               : [...(input.methods ?? ["client_secret_basic"])],
         });
       }),
-    /** End every access token issued so far; the resource refuses them with 401 from now on. */
+    issueRefreshToken: (clientId: string) =>
+      Effect.sync(() => {
+        const token = `synthetic-refresh-${randomUUID()}`;
+        refreshGrants.set(token, clientId);
+        refreshOrigins.set(token, "sign-in");
+        return token;
+      }),
     expireAccessTokens: Effect.sync(() => {
       for (const token of issuedAccessTokens) expiredAccessTokens.add(token);
     }),
-    /** Answer every held request; one held before processing stays unprocessed. */
+    revocationArrivals: (count: number) =>
+      Effect.callback<void>((resume) => {
+        const wait = () => {
+          if (revocationArrivals < count) return;
+          arrivalWaits.delete(wait);
+          resume(Effect.void);
+        };
+        arrivalWaits.add(wait);
+        wait();
+        return Effect.sync(() => arrivalWaits.delete(wait));
+      }),
     release: Effect.suspend(() => {
       const pending = releases;
       releases = [];
@@ -1157,14 +1092,18 @@ export const oauthSetupIssuer = Effect.gen(function* () {
       tokenChecks,
       tokenContentTypes: [...tokenContentTypes],
       authorizationScope,
+      authorizationChallenged,
       authorizationResource,
       exchangeResource,
       refreshResource,
+      refreshRedirectUri,
       refreshes,
       refreshChecks,
       lastExchangeAuth,
+      refusedClientAuthentications,
       nonceRequested,
       revocations: [...revocations],
+      revocationArrivals,
       revokedRefreshTokens: [...revokedRefreshTokens],
       resourceRequests: { ...resourceRequests },
       resourceAuthorizations: [...resourceAuthorizations],
@@ -1172,6 +1111,5 @@ export const oauthSetupIssuer = Effect.gen(function* () {
   };
 });
 
-/** Start an issuer on `port`, such as one an operator's settings already name. */
 export const oauthSetupIssuerOn = (port: number) =>
   oauthSetupIssuer.pipe(Effect.provideService(IssuerPort, port));

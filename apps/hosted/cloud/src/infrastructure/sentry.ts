@@ -1,4 +1,3 @@
-/** Bind public Sentry configuration and private build-only upload credentials. */
 import { AlchemyContext } from "alchemy/AlchemyContext";
 import * as Output from "alchemy/Output";
 import * as Command from "alchemy/Command";
@@ -8,7 +7,6 @@ import type { SentryOutput } from "./sentry-output.ts";
 import { productionSiteTelemetry } from "../contracts/edge-paths.ts";
 import { pinnedInProduction } from "./site-telemetry.ts";
 
-/** Disabled stages do not read Sentry state or require management credentials. */
 export const sentryBindings = Effect.gen(function* () {
   const dev = (yield* AlchemyContext).dev;
   const localPort = dev
@@ -48,7 +46,6 @@ export const sentryBindings = Effect.gen(function* () {
   const environment = yield* Stage;
   const release = yield* Config.NonEmptyString("EXECUTOR_BUILD_VERSION");
   const output = yield* Output.stackRef<SentryOutput>("executor-next-sentry");
-  // Command children inherit the op-run environment; never persist the management token in resource props.
   yield* Config.Redacted("SENTRY_AUTH_TOKEN");
   const url = yield* Config.NonEmptyString("SENTRY_URL");
   const tunnel = output.pipe(
@@ -96,7 +93,6 @@ const sourceMapUploads = {
   "mcp-server": "SentryMcpServerSourceMaps",
 } as const;
 
-/** Upload the exact Rolldown artifacts deployed by Alchemy, matched by release and module path. */
 export const uploadCloudSourceMaps = (
   worker: keyof typeof sourceMapUploads,
   bundle: Output.Output<unknown>,

@@ -1,4 +1,3 @@
-/** Cloudflare owns the sending domain and the Worker's native email binding. */
 import * as Cloudflare from "alchemy/Cloudflare";
 import { AlchemyContext } from "alchemy/AlchemyContext";
 import { retain } from "alchemy/RemovalPolicy";
@@ -30,10 +29,8 @@ const emailDomain = Config.String("AUTH_EMAIL_DOMAIN").pipe(
   ),
 );
 
-/** Deploy-only provisioning; local cloud development never changes email DNS. */
 export const authEmailInfrastructure = Effect.gen(function* () {
   if ((yield* AlchemyContext).dev || Option.isSome(yield* testStage)) return;
-  // Existing sender domains are onboarded separately after reviewing shared DNS.
   if (!(yield* Config.Boolean("AUTH_EMAIL_PROVISION_SUBDOMAIN").pipe(Config.withDefault(false))))
     return;
   const domain = yield* emailDomain;
@@ -43,15 +40,9 @@ export const authEmailInfrastructure = Effect.gen(function* () {
   );
 });
 
-/**
- * Test stages capture every message in a private emulator, including queued welcome mail.
- * Never acquire a native sending binding for a test stage. Local Alchemy dev also captures
- * its native binding; production keeps Cloudflare delivery.
- */
 export const cloudEmail = Effect.gen(function* () {
   const from = `no-reply@${yield* emailDomain}`;
   const founder = "rhys@executor.sh";
-  // Better Auth starts new Effect fibers. Preserve the environment that owns resource outputs.
   const runtime = yield* Cloudflare.Worker;
   const environment = yield* Cloudflare.WorkerEnvironment;
   const emulators = yield* cloudEmulators;
@@ -60,8 +51,6 @@ export const cloudEmail = Effect.gen(function* () {
     ? Effect.succeed(Redacted.make(Redacted.value(emulators.value).mail))
     : Option.isSome(stage)
       ? yield* Effect.gen(function* () {
-          // Like the billing emulator, a private instance is created lazily. Its random path
-          // is a capability: retain it in Alchemy state and never put it in logs or outputs.
           const instance = yield* Random("MailInstance", { bytes: 12 });
           const secret = yield* Random("MailSecret");
           return Effect.all([yield* instance.text, yield* secret.text]).pipe(
@@ -112,8 +101,6 @@ export const cloudEmail = Effect.gen(function* () {
     allowedSenderAddresses: [from, founder],
   });
   const client = yield* Cloudflare.Email.Send(binding);
-  // The native binding is environment-owned, not a request-owned socket. Capture
-  // its runtime context so Better Auth's Promise callbacks can execute the Effect.
   const send: SendAuthEmail = (email) =>
     Effect.suspend(() =>
       client.send({

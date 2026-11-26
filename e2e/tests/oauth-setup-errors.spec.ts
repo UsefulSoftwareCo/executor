@@ -21,7 +21,6 @@ const Failure = Schema.Struct({
   reason: Schema.String,
   retryAfter: Schema.optional(Schema.String),
 });
-/** A rate limiter's Retry-After as an HTTP date, and how the form words it. */
 const retryAfter = "Wed, 21 Oct 2099 07:28:00 GMT";
 const retryAt = "Try again after 07:28 UTC on 21 Oct 2099.";
 
@@ -94,7 +93,6 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
             "Review the app’s server URL and this instance’s network policy.",
             false,
           ],
-          // Executor reached the service, which is limiting requests: not an outage.
           ["rate-limited", "rate_limited", "Service rate limit reached", retryAt, true],
           [
             "unavailable",
@@ -116,7 +114,6 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
           expect(failure.retryAfter).toBe(
             reason === "rate_limited" ? "2099-10-21T07:28:00.000Z" : undefined,
           );
-          // The page responds to input once hydrated; the harness waits between steps.
           yield* browser.use(`Open account setup with ${discovery} metadata`, (page) =>
             page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=accounts`),
           );
@@ -215,10 +212,6 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
         );
         expect((yield* issuer.metrics).registrations).toBe(0);
         yield* browser.checkpoint("OAuth-setup-recovered");
-        // Registration failures are split by who can act. Services that refuse Executor
-        // open manual client entry; an unusable 2xx response is Executor's problem. A refusal
-        // says once, in the reason's own words, what happened and what to do, with the
-        // service's own error inline.
         const refusal = "Redirect URIs must be on a host this service has approved";
         for (const [name, registration, title, explanation, clientEntry, response] of [
           [
@@ -273,7 +266,6 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
             false,
             undefined,
           ],
-          // A rate limiter's HTML page: Executor reached the service, which says when to retry.
           [
             "rate-limited",
             { registrationStatus: 429 },
@@ -288,7 +280,6 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
             registrationErrorDescription: refusal,
             ...registration,
           });
-          // The page responds to input once hydrated; the harness waits between steps.
           yield* browser.use(`Start sign-in when registration is ${name}`, (page) =>
             page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=accounts`),
           );
@@ -306,21 +297,17 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
           );
           for (const sentence of explanation) expect(text).toContain(sentence);
           expect(text).not.toContain("PRIVATE_UPSTREAM_DIAGNOSTIC");
-          // The error code is for agents: the fix prompt keeps it, the form does not show it.
           expect(text).not.toContain("OAuthSetupFailed");
           if (response === undefined) expect(text).not.toContain("Service response");
           else {
             expect(text).toContain(`Service response: ${response}`);
-            // A short response is shown whole, with nothing to expand.
             expect(
               yield* browser.use("The service response is not cut short", (page) =>
                 page.getByRole("button", { name: "Show full service response" }).count(),
               ),
             ).toBe(0);
           }
-          // Client entry shows the callback URL once, in its own form field.
           expect(text).not.toContain("/api/oauth/callback");
-          // The failure's recovery is the form's one next step: its helper line is not shown.
           expect(
             yield* browser.use("The steps are given once, with what happened", (page) => {
               const dialog = page.getByRole("dialog");
@@ -371,7 +358,6 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
           ).toBe(0);
           if (name === "rate-limited") {
             expect(text).not.toContain("couldn’t reach");
-            // Nothing in the app or its client needs fixing, so there is no fix prompt.
             expect(
               yield* browser.use("A rate limit offers no fix prompt", (page) =>
                 page
@@ -398,9 +384,6 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
           }
           yield* browser.checkpoint(`OAuth-registration-${name}-desktop`);
         }
-        // Without registration, client entry is the only way to connect, and nothing failed. An
-        // administrator is offered registering a client first; entering one for this account is
-        // under Advanced.
         const steps =
           "Create an OAuth app there with this redirect URL, then enter its client ID and secret.";
         yield* issuer.configure({ registration: false, registrationStatus: 201 });

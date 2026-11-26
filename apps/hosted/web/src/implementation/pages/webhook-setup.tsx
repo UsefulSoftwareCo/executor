@@ -4,7 +4,6 @@ import type { AppId, WebhookId } from "@executor-js/sdk";
 import { hostedWebhookSetupAtoms } from "../../contracts/webhook-setup.ts";
 import { HostedFailure } from "../components/dashboard-bindings.tsx";
 import { useOrganizationRoute } from "../components/organization.tsx";
-/** Cloud and self-host render the same page through their own TanStack route trees. */
 export function WebhookSetupPage({
   appId,
   subscriptionId,

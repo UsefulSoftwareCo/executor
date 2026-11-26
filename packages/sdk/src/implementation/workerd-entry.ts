@@ -1,4 +1,3 @@
-/** Trusted workerd host. App modules get isolated Workers/facets, never this environment. */
 import { DurableObject, WorkerEntrypoint, WorkflowEntrypoint } from "cloudflare:workers";
 import { NonRetryableError } from "cloudflare:workflows";
 import type {
@@ -42,6 +41,8 @@ import {
   makeAppWorkerResidency,
   type AppWorkerResidency,
 } from "./app-worker-residency.ts";
+import { isPrivateHostname } from "@executor-js/utils/url-policy";
+import { defaultNpmRegistry } from "@executor-js/utils/release-version";
 import { compileWorkerApp } from "../workerd-build.ts";
 import { assembleWorkerBundle } from "./worker-build-storage.ts";
 import { declarationFailed } from "./worker-source-map.ts";
@@ -66,6 +67,14 @@ import {
   workflowFailureDetail,
   workflowFailureMessage,
 } from "../contracts/workflow-errors.ts";
+import {
+  engineFaultCall,
+  engineFaultError,
+  engineFaultFor,
+  engineLateFor,
+  type EngineFaultList,
+} from "../contracts/engine-faults.ts";
+import { nativeEngineFailure } from "./native-engine-failure.ts";
 
 declare const WebSocketPair: { new (): { 0: NativeWebSocket; 1: NativeWebSocket } };
 
@@ -107,26 +116,14 @@ interface HttpService {
 }
 interface Environment {
   readonly AUTH: string;
-  /**
-   * The secret credential handles are sealed with, derived from the instance's encryption key so
-   * it is the same after a restart and never a value anyone else knows. Only this host's runner
-   * and outbound read it; app code never does.
-   */
   readonly CREDENTIAL_SECRET: string;
-  /** Host decision, not an app capability: apps never see or change this binding. */
   readonly APPS_PRIVATE_FETCH: boolean;
-  /** workerd network service that refuses private, loopback and link-local destinations. */
   readonly PUBLIC_FETCH: HttpService;
-  /** This instance's own dashboard origin, or empty when the host serves none. */
   readonly SELF_ORIGIN: string;
-  /** Reaches the product that serves `SELF_ORIGIN` without the network. */
   readonly SELF?: HttpService;
-  /** The npm registry builds resolve packages from, or empty for the public registry. */
   readonly NPM_REGISTRY: string;
   readonly LOADER: WorkerLoader;
-  /** Most app Workers this process keeps loaded, or null for the default. */
   readonly APP_WORKERS?: number | null;
-  /** Seconds an idle app Worker stays loaded, zero for no idle unloading, or null for the default. */
   readonly APP_WORKER_IDLE_SECONDS?: number | null;
   readonly DATA: {
     getByName(name: string): DataEntrypoint;
@@ -134,30 +131,60 @@ interface Environment {
   };
   readonly RUNS: Workflow<{ run: string }>;
   readonly HOST: Fetcher;
+  readonly SUPERVISOR_FAULTS?: {
+    readonly resetDelayMs?: number;
+    readonly resetHoldMs?: number;
+    readonly replyDelayMs?: number;
+  } | null;
+  readonly WORKFLOW_ENGINE_FAULTS?: EngineFaultList | null;
 }
+
+const sleep = (ms: number | undefined) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+// oxlint-disable-next-line executor/no-module-level-mutable-state -- one token per isolate; it carries no request data
+let resetToken: string | undefined;
+const supervisorReset = () => (resetToken ??= `Data supervisor reset ${crypto.randomUUID()}`);
+const toSupervisor = async <A>(
+  env: Environment,
+  app: string,
+  call: (supervisor: DataEntrypoint) => Promise<A>,
+  resent: () => void = () => undefined,
+): Promise<A> => {
+  try {
+    return await call(env.DATA.getByName(app));
+  } catch (cause) {
+    if (!(cause instanceof Error) || cause.message !== supervisorReset()) throw cause;
+    resent();
+    return call(env.DATA.getByName(app));
+  }
+};
+const supervisorCall = <A>(
+  env: Environment,
+  app: string,
+  call: (supervisor: DataEntrypoint) => Promise<A>,
+) =>
+  Effect.suspend(() => {
+    let resent = false;
+    return Effect.tryPromise({
+      try: () =>
+        toSupervisor(env, app, call, () => {
+          resent = true;
+        }),
+      catch: (cause) => cause,
+    }).pipe(Effect.map((value) => ({ value, resent })));
+  });
+
+const nativeSleep = (work: () => Promise<unknown>) =>
+  Effect.tryPromise({ try: work, catch: nativeEngineFailure }).pipe(Effect.asVoid);
 const failure = () => new WorkflowFailure({ reason: "engine", retryable: true });
-/** The deployer sees the underlying failure; builds bind no accounts. */
 const buildFailed = (stage: RuntimeBuildFailed["stage"], cause: unknown) =>
   new RuntimeBuildFailed({ stage, message: describeBuildCause(cause) });
-/** What the runner binds to one app's outbound network. App code cannot set it. */
 const OutboundProps = Schema.Struct({
   app: Schema.NonEmptyString,
   hostApi: Schema.optionalKey(HostApiCheck),
 });
 type OutboundProps = typeof OutboundProps.Type;
-/** Handles are sealed with a key derived from the secret only this host and its runner share. */
 const credentials = (env: Environment) => credentialKey(env.CREDENTIAL_SECRET);
-/**
- * Every app isolate's global `fetch`, bound to its app. It substitutes the credential handles the
- * request carries when its target is allowed; see credential-handles.ts.
- *
- * `global_fetch_strictly_public` cannot do this here: it routes global fetch through workerd's
- * `internet` service, which this runtime configures to allow private addresses. Requests for this
- * instance's own dashboard origin go to the product through a service binding, so the bundled
- * Executor app works when that origin resolves to a private address. Everything else uses the
- * public-only network service unless the operator allows private fetch. Redirects return to the
- * isolate, which sends each hop back here.
- */
 export class AppOutbound extends WorkerEntrypoint<Environment> {
   async fetch(request: Request): Promise<Response> {
     const self = this.env.SELF === undefined ? undefined : URL.parse(this.env.SELF_ORIGIN)?.origin;
@@ -166,8 +193,6 @@ export class AppOutbound extends WorkerEntrypoint<Environment> {
       app: props.app,
       ...(props.hostApi === undefined ? {} : { hostApi: props.hostApi }),
       key: await Effect.runPromise(credentials(this.env)),
-      // Refuse a private destination by name, before the public-only network refuses its
-      // address with an error app code cannot tell apart from any other connection failure.
       egress: { refusePrivateAddresses: !this.env.APPS_PRIVATE_FETCH, selfOrigin: self },
       send: (request) => {
         if (this.env.SELF !== undefined && new URL(request.url).origin === self)
@@ -177,11 +202,21 @@ export class AppOutbound extends WorkerEntrypoint<Environment> {
     });
   }
 }
+class TarballDestinationRefused extends Error {
+  override readonly name = "NetworkRefused";
+}
+const publicTarballFetch =
+  (network: HttpService) =>
+  (input: string, init?: RequestInit): Promise<Response> => {
+    const url = URL.parse(input);
+    if (url === null || isPrivateHostname(url.hostname))
+      return Promise.reject(new TarballDestinationRefused());
+    return network.fetch(new Request(url, init));
+  };
 type OutboundLoopback = (options: { readonly props: OutboundProps }) => Fetcher;
 const OutboundExports = Schema.Struct({
   AppOutbound: Schema.declare((value): value is OutboundLoopback => typeof value === "function"),
 });
-/** The loopback binding to `AppOutbound` that workerd supplies on every context's exports. */
 const appOutbound =
   (context: { readonly exports: unknown }) =>
   (app: string, hostApi: HostApiCheck | undefined): Fetcher =>
@@ -206,13 +241,8 @@ const hostRequest = (env: Environment, command: WorkflowHostCommand) =>
     Effect.flatMap((reply) => (reply.ok ? Effect.succeed(reply.value) : Effect.fail(reply.error))),
   );
 
-/**
- * workerd keeps this isolate, and every app Worker it loads, for the life of the process. One
- * residency, shared by every request, bounds how many app Workers stay loaded.
- */
 // oxlint-disable-next-line executor/no-module-level-mutable-state -- one process-wide residency bounds loaded app Workers across requests
 let residency: AppWorkerResidency | undefined;
-/** The shared runner over this Worker's loader, data supervisors and outbound network. */
 const runner = (env: Environment, context: Pick<ExecutionContext, "waitUntil" | "exports">) =>
   makeAppRunner({
     loader: env.LOADER,
@@ -220,7 +250,6 @@ const runner = (env: Environment, context: Pick<ExecutionContext, "waitUntil" | 
       limit: env.APP_WORKERS ?? defaultAppWorkerLimit,
       idleSeconds: env.APP_WORKER_IDLE_SECONDS ?? defaultAppWorkerIdleSeconds,
     })),
-    // A later call's trim runs this, so the stub is made then, in that call's request.
     unloadFacet: (app, identity) =>
       Effect.tryPromise({
         try: () => env.DATA.getByName(app).unload(identity),
@@ -228,29 +257,33 @@ const runner = (env: Environment, context: Pick<ExecutionContext, "waitUntil" | 
       }),
     outbound: appOutbound(context),
     credentialKey: credentials(env),
-    data: (app) => {
-      const target = env.DATA.getByName(app);
-      return {
-        invoke: (input, load, elicit, controls) =>
-          Effect.tryPromise({
-            try: () => target.invoke(input, load, elicit, controls),
-            catch: (cause) => cause,
-          }),
-        cancel: (id) =>
-          Effect.tryPromise({ try: () => target.cancel(id), catch: (cause) => cause }),
-        cache: (namespace, command) =>
-          Effect.tryPromise({
-            try: () => target.cache(namespace, command),
-            catch: (cause) => cause,
-          }),
-      };
-    },
+    data: (app) => ({
+      invoke: (input, load, elicit, controls) =>
+        Effect.map(
+          supervisorCall(env, app, (supervisor) =>
+            supervisor.invoke(input, load, elicit, controls),
+          ),
+          ({ value, resent }) =>
+            resent && typeof value === "object" && value !== null
+              ? { ...value, resent: true }
+              : value,
+        ),
+      cancel: (id) =>
+        Effect.tryPromise({
+          try: () => env.DATA.getByName(app).cancel(id),
+          catch: (cause) => cause,
+        }),
+      cache: (namespace, command) =>
+        Effect.map(
+          supervisorCall(env, app, (supervisor) => supervisor.cache(namespace, command)),
+          ({ value }) => value,
+        ),
+    }),
     waitUntil: (task) => context.waitUntil(task.then(ignore, ignore)),
   });
 const ignore = () => undefined;
 const encodedJson = Schema.fromJsonString(Schema.Json);
 
-/** Each WebSocket session owns its invocation lifetime and host capabilities. */
 class AppApi extends RpcTarget {
   readonly #env: Environment;
   readonly #lifetime = new AbortController();
@@ -266,7 +299,6 @@ class AppApi extends RpcTarget {
       return Promise.reject(new Error("This app session already has an invocation"));
     const active = Effect.runPromise(work, { signal: this.#lifetime.signal });
     this.#active = active;
-    // Keep cleanup I/O alive if the RPC socket disappears mid-transaction.
     this.#context.waitUntil(
       active.then(
         () => undefined,
@@ -279,12 +311,13 @@ class AppApi extends RpcTarget {
     this.#lifetime.abort();
     try {
       await this.#active;
-    } catch {
-      /* The invocation reports its own failure. */
-    }
+    } catch {}
   }
   [Symbol.dispose]() {
     this.#lifetime.abort();
+  }
+  readRegistry(path: string): Promise<{ readonly status: number; readonly body: string }> {
+    return readRegistry(this.#env, path);
   }
   async compile(input: string): Promise<string> {
     return this.#run(
@@ -294,7 +327,12 @@ class AppApi extends RpcTarget {
         ).pipe(Effect.mapError((cause) => buildFailed("source", cause)));
         const compiled = yield* compileWorkerApp(
           request.files,
-          this.#env.NPM_REGISTRY === "" ? {} : { registry: this.#env.NPM_REGISTRY },
+          {
+            ...(this.#env.NPM_REGISTRY === "" ? {} : { registry: this.#env.NPM_REGISTRY }),
+            ...(this.#env.APPS_PRIVATE_FETCH
+              ? {}
+              : { tarballFetch: publicTarballFetch(this.#env.PUBLIC_FETCH) }),
+          },
           request.public ?? [],
         );
         const { bundle, framework, ui, sourceMap } = compiled;
@@ -374,9 +412,22 @@ class AppApi extends RpcTarget {
   }
 }
 
-/** Native app data stays in isolated facets and retains its database across code updates. */
 export class AppDataSupervisor extends DurableObject<Environment> {
   readonly #supervisor: Promise<Effect.Success<ReturnType<typeof makeFacetSupervisor>>>;
+  #received = 0;
+  #resetWhenIdle(seen: number) {
+    const faults = this.env.SUPERVISOR_FAULTS;
+    setTimeout(async () => {
+      if (faults?.resetDelayMs !== undefined) await sleep(faults.resetDelayMs);
+      if (this.#received !== seen) return;
+      if (this.ctx.getWebSockets().length > 0) return;
+      if (faults?.resetHoldMs !== undefined)
+        await this.ctx.blockConcurrencyWhile(() => sleep(faults.resetHoldMs));
+      try {
+        this.ctx.abort(supervisorReset());
+      } catch {}
+    }, 0);
+  }
   constructor(ctx: DurableObjectState, env: Environment) {
     super(ctx, env);
     this.#supervisor = Effect.runPromise(
@@ -395,34 +446,46 @@ export class AppDataSupervisor extends DurableObject<Environment> {
     elicit: Callback | null,
     controls: Callback | null,
   ) {
+    this.#received += 1;
     const result = Effect.runPromise(
       (await this.#supervisor).invoke(input, load, elicit, controls),
     );
-    // The supervisor owns rollback even if the original RPC caller disconnects.
     this.ctx.waitUntil(
       result.then(
         () => undefined,
         () => undefined,
       ),
     );
-    return result;
+    const delay = this.env.SUPERVISOR_FAULTS?.replyDelayMs;
+    if (delay === undefined) return result;
+    const value = await result;
+    await sleep(delay);
+    return value;
   }
   async cache(namespace: string, command: unknown) {
+    this.#received += 1;
     return Effect.runPromise((await this.#supervisor).cache(namespace, command));
   }
   async evaluated(command: unknown) {
+    this.#received += 1;
     return Effect.runPromise((await this.#supervisor).evaluated(command));
   }
   async cancel(id: string) {
+    this.#received += 1;
     return Effect.runPromise((await this.#supervisor).cancel(id));
   }
   async unload(identity: string) {
-    return Effect.runPromise((await this.#supervisor).unload(identity));
+    const seen = this.#received;
+    const unloaded = await Effect.runPromise((await this.#supervisor).unload(identity));
+    if (unloaded) this.#resetWhenIdle(seen);
+    return unloaded;
   }
   async alarm() {
+    this.#received += 1;
     return Effect.runPromise((await this.#supervisor).recover);
   }
   async fetch(): Promise<Response> {
+    this.#received += 1;
     const pair = new WebSocketPair();
     this.ctx.acceptWebSocket(pair[1]);
     await Effect.runPromise((await this.#supervisor).initial(pair[1]));
@@ -441,7 +504,6 @@ export class AppDataSupervisor extends DurableObject<Environment> {
   }
 }
 
-/** The workflow body and every durable step execute in workerd; Node supplies only host data. */
 export class AppWorkflows extends WorkflowEntrypoint<Environment, { run: string }> {
   async run(event: Readonly<{ payload: { run: string } }>, step: unknown): Promise<Schema.Json> {
     const lifetime = new AbortController();
@@ -457,11 +519,24 @@ export class AppWorkflows extends WorkflowEntrypoint<Environment, { run: string 
           const { seed, accounts } = prepared;
           const native = <A>(work: () => Promise<A>) =>
             Effect.tryPromise({ try: work, catch: decodeWorkflowFailure });
+          const faults = this.env.WORKFLOW_ENGINE_FAULTS;
+          const sleepCall = (name: string, call: () => Promise<unknown>) => {
+            const late = engineLateFor(faults, seed.runId, name);
+            const work =
+              late === undefined
+                ? call
+                : () => new Promise((settle) => setTimeout(settle, late)).then(call);
+            const fault = engineFaultFor(faults, seed.runId, name);
+            return nativeSleep(fault === undefined ? work : () => engineFaultCall(fault, work));
+          };
           const execution: WorkflowExecution = {
             runId: seed.runId,
             driver: {
-              do: (name, options, work) =>
-                native(() =>
+              do: (name, options, work) => {
+                const fault = engineFaultFor(faults, seed.runId, name);
+                if (fault?.when === "before")
+                  return Effect.fail(nativeEngineFailure(engineFaultError(fault)));
+                const call = native(() =>
                   nativeStep.do(name, options, () =>
                     Effect.runPromise(
                       work().pipe(
@@ -478,9 +553,18 @@ export class AppWorkflows extends WorkflowEntrypoint<Environment, { run: string 
                 ).pipe(
                   Effect.flatMap(Schema.decodeUnknownEffect(WorkflowValue)),
                   Effect.mapError(decodeWorkflowFailure),
-                ),
-              sleep: (name, duration) => native(() => nativeStep.sleep(name, duration)),
-              sleepUntil: (name, timestamp) => native(() => nativeStep.sleepUntil(name, timestamp)),
+                );
+                return fault === undefined
+                  ? call
+                  : call.pipe(
+                      Effect.flatMap(() =>
+                        Effect.fail(nativeEngineFailure(engineFaultError(fault))),
+                      ),
+                    );
+              },
+              sleep: (name, duration) => sleepCall(name, () => nativeStep.sleep(name, duration)),
+              sleepUntil: (name, timestamp) =>
+                sleepCall(name, () => nativeStep.sleepUntil(name, timestamp)),
             },
             resolve: () =>
               hostRequest(this.env, { operation: "context", run: seed.runId }).pipe(
@@ -513,7 +597,6 @@ export class AppWorkflows extends WorkflowEntrypoint<Environment, { run: string 
                 headers: {},
               },
               {
-                // Only a cold start of the run's Worker reads its build from the product.
                 load: () =>
                   Effect.runPromise(
                     hostRequest(this.env, { operation: "load", run: seed.runId }).pipe(
@@ -544,7 +627,17 @@ export class AppWorkflows extends WorkflowEntrypoint<Environment, { run: string 
             );
           if (!result.ok) {
             const detail = workflowFailureDetail(result.error);
-            if (result.error.reason !== "engine" || !result.error.retryable)
+            const recorded =
+              result.error.reason !== "engine" ||
+              !result.error.retryable ||
+              (detail !== undefined &&
+                (yield* Effect.tryPromise(async () =>
+                  (await this.env.RUNS.get(seed.runId)).status(),
+                ).pipe(
+                  Effect.map((state) => state.status === "running" || state.status === "waiting"),
+                  Effect.orElseSucceed(() => false),
+                )));
+            if (recorded)
               yield* hostRequest(this.env, {
                 operation: "finish",
                 run: seed.runId,
@@ -566,7 +659,23 @@ export class AppWorkflows extends WorkflowEntrypoint<Environment, { run: string 
   }
 }
 
-/** Only the authenticated Node host can reach administration or create an RPC session. */
+const readRegistry = async (
+  env: Environment,
+  path: string,
+): Promise<{ readonly status: number; readonly body: string }> => {
+  if (!path.startsWith("/") || path.startsWith("//")) return { status: 400, body: "" };
+  const registry = (env.NPM_REGISTRY === "" ? defaultNpmRegistry : env.NPM_REGISTRY).replace(
+    /\/+$/u,
+    "",
+  );
+  try {
+    const answer = await fetch(`${registry}${path}`, { redirect: "manual" });
+    return { status: answer.status, body: await answer.text() };
+  } catch {
+    return { status: 502, body: "" };
+  }
+};
+
 export default {
   async fetch(request: Request, env: Environment, context: ExecutionContext): Promise<Response> {
     if (request.headers.get("authorization") !== `Bearer ${env.AUTH}`)
@@ -575,8 +684,9 @@ export default {
     if (url.pathname === "/rpc")
       return newWorkersRpcResponse(request, new AppApi(env, context), rpcOptions);
     if (url.pathname === "/changes")
-      return env.DATA.getByName(url.searchParams.get("app") ?? "").fetch(request);
-    // Evaluated results the host keeps in the app's supervisor, beside its app cache.
+      return toSupervisor(env, url.searchParams.get("app") ?? "", (supervisor) =>
+        supervisor.fetch(request),
+      );
     if (url.pathname === "/evaluated") {
       const command = Schema.decodeUnknownOption(EvaluatedCommandJson)(await request.text());
       if (command._tag === "None") return new Response(null, { status: 400 });
@@ -601,7 +711,6 @@ export default {
         try {
           await handle.terminate();
         } catch (error) {
-          // The run can finish after the status read; terminating a finished instance fails.
           state = await handle.status();
           if (!finished()) throw error;
         }
@@ -615,7 +724,6 @@ export default {
         try {
           await env.RUNS.create({ id: input.run, params: { run: input.run } });
         } catch {
-          // Another request may have created this same retained run meanwhile.
           const retained = await (await env.RUNS.get(input.run)).status();
           if (retained.status === "unknown")
             return Response.json({ error: "engine" }, { status: 503 });

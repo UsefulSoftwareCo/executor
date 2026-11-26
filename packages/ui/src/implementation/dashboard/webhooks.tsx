@@ -1,4 +1,3 @@
-/** Saved webhook lifecycle stays visible independently of account-dependent app evaluation. */
 import {
   WebhookSourceConfig,
   type AccountId,
@@ -18,10 +17,6 @@ import { Button } from "../components/button.tsx";
 import { Textarea } from "../components/textarea.tsx";
 
 type SourceUpdate<E> = Atom.AtomResultFn<typeof ConfigureWebhookSource.Type, WebhookSource, E>;
-/**
- * Managed subscriptions follow linked accounts: unlinking an account's last link stops them, so
- * there is no per-hook stop button.
- */
 export function AppWebhooks<E>({
   query,
   retry,
@@ -106,10 +101,6 @@ function WebhookRow<E>({
     </div>
   );
 }
-/**
- * Each linked source account keeps one configuration per webhook name for its subscriptions. The
- * app's other requirements use its actor's linked accounts.
- */
 export function WebhookSourceConfigurations<E>({
   query,
   configure,
@@ -149,8 +140,6 @@ function WebhookConfiguration<E>({
 }) {
   const [config, setConfig] = useState(() => JSON.stringify(source.config, null, 2));
   const [invalid, setInvalid] = useState(false);
-  // Opens for a source that needs its configuration, and stays as the user leaves it once a save
-  // clears the failure.
   const [open, setOpen] = useState(() => source.failure === "configuration");
   const save = useAtomSet(update, { mode: "promiseExit" }),
     result = useAtomValue(update);

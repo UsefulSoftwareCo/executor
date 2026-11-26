@@ -1,6 +1,3 @@
-/**
- * Table definitions.
- */
 import { Schema } from "effect";
 import { SchemaDefinitionError } from "../errors.ts";
 import {
@@ -13,13 +10,11 @@ import {
 import type { NameVariants } from "./names.ts";
 import type { AnyRelation, ForeignKey } from "./relation.ts";
 
-/** A named unique constraint over one or more columns of a table. */
 export interface UniqueConstraint {
   readonly name: string;
   readonly columns: ReadonlyArray<AnyColumn>;
 }
 
-/** A table: columns keyed by ORM name, its relations, and its foreign keys. Construct with {@link table}. */
 export interface Table<
   Columns extends Record<string, AnyColumn> = Record<string, AnyColumn>,
   Relations extends Record<string, AnyRelation> = Record<string, AnyRelation>,
@@ -30,39 +25,22 @@ export interface Table<
   readonly relations: Relations;
   readonly foreignKeys: Array<ForeignKey>;
 
-  /** @param level defaults to `"all"` */
   readonly getUniqueConstraints: (
     level?: "table" | "column" | "all",
   ) => ReadonlyArray<UniqueConstraint>;
-  /** Look a column up by its SQL name. */
   readonly getColumnBySqlName: (name: string) => AnyColumn | undefined;
   readonly getIdColumn: () => AnyColumn;
-  /**
-   * Add a composite unique constraint. Duplicate `NULL` values stay allowed on every provider.
-   * Every column must be indexable on every provider (no unbounded text, json, or binary).
-   * (A method signature, so a concrete table stays assignable to `AnyTable`.)
-   */
   unique(name: string, columns: ReadonlyArray<keyof Columns>): Table<Columns, Relations>;
-  /**
-   * Add a unique constraint without the indexability check. For constraints
-   * that already exist in a database (introspection) and for cloning; a new
-   * schema should use `unique`.
-   */
   uniqueUnchecked(name: string, columns: ReadonlyArray<keyof Columns>): Table<Columns, Relations>;
   clone(): Table<Columns, Relations>;
 
-  /** A selected row: every column's schema. */
   readonly row: Schema.Struct<RowFields<Columns>>;
-  /** An insert: columns with a default or accepting `null` are optional. */
   readonly insert: Schema.Struct<InsertFields<Columns>>;
-  /** An update: every column optional, the id column omitted. */
   readonly update: Schema.Struct<UpdateFields<Columns>>;
 }
 
-/** `true` when `Columns` is an index-signature record (the `AnyTable` case) rather than a concrete column map. */
 type IsOpen<Columns> = string extends keyof Columns ? true : false;
 
-/** The schema fields of a selected row. */
 export type RowFields<Columns extends Record<string, AnyColumn>> =
   IsOpen<Columns> extends true
     ? Schema.Struct.Fields
@@ -70,12 +48,6 @@ export type RowFields<Columns extends Record<string, AnyColumn>> =
         readonly [K in keyof Columns]: Columns[K]["schema"];
       };
 
-/**
- * Whether the stored (encoded) side of a column schema accepts `NULL`. The
- * check is on the encoded side because that is what `inferStorageType` and
- * the runtime insert struct use; `unknown` is guarded so a `Schema.Unknown`
- * json column stays required.
- */
 type HasNullishMember<Members extends ReadonlyArray<Schema.Constraint>> = true extends {
   [K in keyof Members]: Members[K] extends Schema.Null | Schema.Undefined ? true : false;
 }[number]
@@ -103,7 +75,6 @@ type OptionalOnInsert<Columns extends Record<string, AnyColumn>> = {
     : never;
 }[keyof Columns];
 
-/** The schema fields of an insert. */
 export type InsertFields<Columns extends Record<string, AnyColumn>> =
   IsOpen<Columns> extends true
     ? Schema.Struct.Fields
@@ -115,7 +86,6 @@ type NonIdKeys<Columns extends Record<string, AnyColumn>> = {
   [K in keyof Columns]: Columns[K] extends IdColumn<Schema.Top, boolean> ? never : K;
 }[keyof Columns];
 
-/** The schema fields of an update. */
 export type UpdateFields<Columns extends Record<string, AnyColumn>> =
   IsOpen<Columns> extends true
     ? Schema.Struct.Fields
@@ -123,10 +93,8 @@ export type UpdateFields<Columns extends Record<string, AnyColumn>> =
         readonly [K in NonIdKeys<Columns>]: Schema.optionalKey<Columns[K]["schema"]>;
       };
 
-/** Any table, regardless of its column and relation types. */
 export type AnyTable = Table;
 
-/** Look a column up by ORM name, raising a defect when it is missing. Use only for names the schema validated. */
 export const getColumn = (table: AnyTable, ormName: string): AnyColumn => {
   const column = table.columns[ormName];
   if (column === undefined) {
@@ -135,12 +103,6 @@ export const getColumn = (table: AnyTable, ormName: string): AnyColumn => {
   return column;
 };
 
-/**
- * Define a table.
- *
- * @param name the SQL name, or `{ sql }` overrides (defaults to the ORM name).
- * @param columns columns keyed by ORM name; exactly one must be an `idColumn`.
- */
 export const table = <Columns extends Record<string, AnyColumn>>(
   name: string | Partial<NameVariants>,
   columns: Columns,

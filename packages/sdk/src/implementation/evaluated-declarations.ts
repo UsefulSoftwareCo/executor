@@ -1,10 +1,6 @@
-/**
- * Evaluated declarations and tool listings kept in each app's data supervisor, beside the app
- * cache that already holds its account-scoped upstream metadata, so they outlive the process or
- * isolate that evaluated them.
- */
 import { Clock, Effect, Schema } from "effect";
 import {
+  EvaluatedChanged,
   EvaluatedEntry,
   EvaluatedWritten,
   evaluatedLimits,
@@ -15,10 +11,6 @@ import type { DurableDeclarations } from "../contracts/declarations.ts";
 
 class CompressionFailed extends Schema.TaggedError<CompressionFailed>()("CompressionFailed", {}) {}
 
-/**
- * A waking supervisor answers most reads in tens of milliseconds, and some in seconds. A read
- * slower than this costs about what the evaluation it would spare does, so it counts as a miss.
- */
 const readMillis = 2_000;
 
 const transform = (body: BodyInit, stream: CompressionStream | DecompressionStream) =>
@@ -27,11 +19,6 @@ const transform = (body: BodyInit, stream: CompressionStream | DecompressionStre
     catch: () => new CompressionFailed(),
   });
 
-/**
- * Milliseconds `effect` took on this isolate's clock, which only advances on I/O. It measures the
- * supervisor round trip; CPU-bound work such as gzip would read near 0 on deployed Workers, so
- * that is reported by its sizes (`bytes`, `chars`) instead of a duration.
- */
 const timed = <A, E, R>(attribute: string, effect: Effect.Effect<A, E, R>) =>
   Effect.gen(function* () {
     const from = yield* Clock.currentTimeMillis;
@@ -40,7 +27,6 @@ const timed = <A, E, R>(attribute: string, effect: Effect.Effect<A, E, R>) =>
     return value;
   });
 
-/** Whether the command woke the supervisor and how long it and its isolate had been running. */
 const annotateSupervisor = (supervisor: EvaluatedSupervisor | undefined) =>
   supervisor === undefined
     ? Effect.void
@@ -50,10 +36,6 @@ const annotateSupervisor = (supervisor: EvaluatedSupervisor | undefined) =>
         "storage.evaluated.supervisor.isolate_ms": supervisor.isolateMs,
       });
 
-/**
- * `send` delivers one command to the app's supervisor and answers with its reply. Bodies are
- * compressed here, so every host's supervisor keeps the same entries.
- */
 export const evaluatedDeclarations = <E>(
   send: (app: string, command: EvaluatedCommand) => Effect.Effect<unknown, E>,
 ): DurableDeclarations => ({
@@ -73,11 +55,25 @@ export const evaluatedDeclarations = <E>(
       return { at: entry.at, json: text };
     }).pipe(
       Effect.timeout(readMillis),
-      // A store failure or a slow read is a miss; defects and interruption still propagate.
       Effect.catch((error) =>
         Effect.logWarning("Evaluated result read failed", error).pipe(Effect.as(undefined)),
       ),
       Effect.withSpan("storage.evaluated.read", { attributes: { "executor.app.id": app } }),
+    ),
+  changed: (app) =>
+    Effect.gen(function* () {
+      const reply = yield* timed("storage.evaluated.rpc_ms", send(app, { operation: "changed" }));
+      const found = Schema.decodeUnknownOption(EvaluatedChanged)(reply);
+      if (found._tag === "None") return undefined;
+      yield* annotateSupervisor(found.value.supervisor);
+      yield* Effect.annotateCurrentSpan("storage.evaluated.changed", found.value.changed ?? 0);
+      return found.value.changed ?? undefined;
+    }).pipe(
+      Effect.timeout(readMillis),
+      Effect.catch((error) =>
+        Effect.logWarning("App cache change read failed", error).pipe(Effect.as(undefined)),
+      ),
+      Effect.withSpan("storage.evaluated.changed", { attributes: { "executor.app.id": app } }),
     ),
   set: (app, key, entry) =>
     Effect.gen(function* () {
@@ -88,7 +84,6 @@ export const evaluatedDeclarations = <E>(
         "storage.evaluated.rpc_ms",
         send(app, { operation: "write", key, at: entry.at, until: entry.until, body }),
       );
-      // Supervisors from before replies carried their state answer a bare boolean.
       const written = Schema.decodeUnknownOption(EvaluatedWritten)(reply);
       if (written._tag === "Some") {
         yield* Effect.annotateCurrentSpan("storage.evaluated.kept", written.value.kept);

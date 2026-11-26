@@ -1,4 +1,3 @@
-/** Publish a chosen Git snapshot; installation creates an ordinary, independently owned app. */
 import { Clock, Effect, Option, Result, Schema } from "effect";
 import type { Executor } from "../contracts/executor.ts";
 import {
@@ -35,11 +34,8 @@ import type { BlobStorage } from "../contracts/blobs.ts";
 const invalid = (reason: typeof PublicationIssue.Type.reason, name: string | null = null) =>
   new PublicationIssue({ reason, name });
 
-/** Parse the exact saved source that will be published without evaluating any app code. */
 const publicationSource = (files: SourceFiles) =>
   Effect.gen(function* () {
-    // Public files under ui/public/ are bounded by the source's own public limits; a listing
-    // reads them only when it is installed.
     const code = files.filter((file) => !isPublicSourcePath(file.path));
     if (
       code.length > 512 ||
@@ -70,7 +66,6 @@ const publicationSource = (files: SourceFiles) =>
     );
   });
 
-/** Keep the established write error contract while previews expose the precise repair. */
 const publicationFailure = (issue: PublicationIssue): RegistryError => {
   switch (issue.reason) {
     case "forbidden-scope":
@@ -90,20 +85,17 @@ const publicationFailure = (issue: PublicationIssue): RegistryError => {
   }
 };
 
-/** A catalog entry reads its pinned Git snapshot, independent of the editable default branch. */
 const storedRegistry = (
   storage: RegistryStorage,
   sources: AppSourceStorage,
   origin: string,
 ): Registry => {
-  /** The listing's retained source, only while it still selects this commit. */
   const selected = (name: string, commit: string) =>
     Effect.gen(function* () {
       const row = yield* storage.get(name);
       if (row.publication.commit !== commit) return yield* new RegistryError({ reason: "changed" });
       return row;
     });
-  // The retained snapshot's tree is the published commit's, so a path names only its files.
   const read = (source: StoredPublication["source"]) => (path: string) =>
     sources
       .file(source, path)
@@ -131,7 +123,6 @@ const storedRegistry = (
   };
 };
 
-/** Resolve reviewed public source for the shared copy operation. No app is created here. */
 export const resolvePublication = (
   registry: Registry,
   input: PublicationReference,
@@ -143,7 +134,6 @@ export const resolvePublication = (
     const manifest = yield* publicationSource(snapshot.files).pipe(
       Effect.mapError(publicationFailure),
     );
-    // The source keeps the name it was published under; its owner may have changed scope since.
     if (packageLabel(manifest.name) !== packageLabel(input.package))
       return yield* new RegistryError({ reason: "invalid-source" });
     return {
@@ -162,7 +152,6 @@ export const resolvePublication = (
 
 const unsupported = () => new RegistryError({ reason: "unsupported" });
 
-/** Catalog reads for every executor; publication writes only where the catalog is stored here. */
 export const makeRegistry = (
   options: RegistryOptions,
   origin: string,
@@ -203,8 +192,6 @@ export const makeRegistry = (
   }) =>
     Effect.gen(function* () {
       const manifest = yield* publicationSource(input.files);
-      // An owner publishes only under its current scope. Scopes are never claimed, so one the
-      // owner used before is free for its next holder.
       if (packageScope(manifest.name) !== input.namespace)
         return yield* new PublicationIssue({ reason: "forbidden-scope", name: manifest.name });
       const existing = yield* storage.get(manifest.name).pipe(
@@ -240,7 +227,6 @@ export const makeRegistry = (
             return PublicationReadiness.make({ status: "ready", manifest: checked.success });
           if (!Schema.is(PublicationIssue)(checked.failure))
             return yield* Effect.fail(checked.failure);
-          // A name under another scope keeps its label in the current one.
           const initial = publicPackageName(
             input.namespace,
             checked.failure.reason === "forbidden-scope" && checked.failure.name !== null

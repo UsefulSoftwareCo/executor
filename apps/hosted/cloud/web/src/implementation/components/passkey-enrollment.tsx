@@ -12,7 +12,6 @@ import {
   passkeyEnrollmentAtom,
 } from "../../contracts/passkey-enrollment.ts";
 
-/** Optional enrollment after sign-in. Dashboard routes never mount or query this flow. */
 export function PasskeyEnrollment({
   userId,
   children,

@@ -2,7 +2,6 @@ import * as React from "react";
 import { Slot } from "radix-ui";
 import { cn } from "../lib/utils.ts";
 
-/** Card primitive; accepts native props and composes caller styles. */
 function Card({
   className,
   asChild = false,
@@ -21,7 +20,6 @@ function Card({
   );
 }
 
-/** Card Header primitive; accepts native props and composes caller styles. */
 function CardHeader({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
@@ -35,7 +33,6 @@ function CardHeader({ className, ...props }: React.ComponentProps<"div">) {
   );
 }
 
-/** Card Title primitive; accepts native props and composes caller styles. */
 function CardTitle({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
@@ -46,7 +43,6 @@ function CardTitle({ className, ...props }: React.ComponentProps<"div">) {
   );
 }
 
-/** Card Description primitive; accepts native props and composes caller styles. */
 function CardDescription({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
@@ -57,7 +53,6 @@ function CardDescription({ className, ...props }: React.ComponentProps<"div">) {
   );
 }
 
-/** Card Action primitive; accepts native props and composes caller styles. */
 function CardAction({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
@@ -68,12 +63,10 @@ function CardAction({ className, ...props }: React.ComponentProps<"div">) {
   );
 }
 
-/** Card Content primitive; accepts native props and composes caller styles. */
 function CardContent({ className, ...props }: React.ComponentProps<"div">) {
   return <div data-slot="card-content" className={cn("px-6", className)} {...props} />;
 }
 
-/** Card Footer primitive; accepts native props and composes caller styles. */
 function CardFooter({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div

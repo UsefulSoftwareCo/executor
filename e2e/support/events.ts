@@ -1,23 +1,18 @@
-/**
- * Fixtures for MCP event scenarios: an app that emits `issue.opened`, and a receiver app whose
- * webhook checks Standard Webhooks signatures, echoes verification challenges and records what
- * arrived. The receiver gives a callback URL on the product's own origin, so deployed Cloudflare
- * needs no outside service.
- */
 import { expect } from "@effect/vitest";
 import { Clock, Effect, Redacted, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
 import { randomBytes, randomUUID } from "node:crypto";
-import { Api, body } from "./api.ts";
+import { Api, body, RequestFailed } from "./api.ts";
 import { Actors } from "./actors.ts";
 import { connectionsPath, requirementPath } from "./app-accounts.ts";
 import { App, Resource } from "./contracts.ts";
-import { Target } from "./platform.ts";
+import { Target, withCause } from "./platform.ts";
+import { CallFailed, parseJson, readResponse } from "./request-failure.ts";
 import { removeAppWhenStopped, settleWebhookSubscriptions } from "./webhook-sources.ts";
 import { appsManifest } from "./apps-release.ts";
+import { heldValue, reveal } from "./failure-text.ts";
 
 const whsec = () => `whsec_${randomBytes(32).toString("base64")}`;
-/** The receiver accepts a signature from either secret; the second is the rotated one. */
 export const secrets = [whsec(), whsec()] as const;
 
 export const receiverFiles = [
@@ -160,6 +155,20 @@ export const Occurrence = Schema.fromJsonString(
     cursor: Schema.Null,
   }),
 );
+export const appEvent = "executor.app_event";
+export const Selected = Schema.fromJsonString(
+  Schema.Struct({
+    eventId: Schema.String,
+    name: Schema.Literal(appEvent),
+    timestamp: Schema.String,
+    data: Schema.Struct({
+      app: Schema.String,
+      event: Schema.String,
+      data: Schema.Struct({ title: Schema.String, number: Schema.Number }),
+    }),
+    cursor: Schema.Null,
+  }),
+);
 export const RpcResult = Schema.Struct({ result: Schema.Record(Schema.String, Schema.Unknown) });
 export const RpcError = Schema.Struct({
   error: Schema.Struct({
@@ -194,7 +203,6 @@ export const meta = {
   "io.modelcontextprotocol/clientCapabilities": {},
 };
 
-/** Deploy both apps and register the receiver's webhook. Created resources are removed at scope end. */
 export const eventFixtures = Effect.gen(function* () {
   const api = yield* Api,
     actors = yield* Actors,
@@ -215,7 +223,6 @@ export const eventFixtures = Effect.gen(function* () {
         yield* api.request(actors.owner, "POST", "/api/auth/api-key/delete", {
           keyId: created.key,
         });
-      // Unlinking the receiver's account removes its webhook; the app is removable once it stops.
       if (created.account && created.apps[0])
         yield* api.request(
           actors.owner,
@@ -240,8 +247,6 @@ export const eventFixtures = Effect.gen(function* () {
       return app;
     });
 
-  // The receiver's webhook is registered when an account is linked to it, and gives a public
-  // callback URL. Connecting the account from the app links it.
   const receiver = yield* deploy(`Event receiver ${suffix}`, receiverFiles);
   const receiverPath = `${prefix}/apps/${receiver.id}`;
   const connection = yield* api.request(
@@ -282,7 +287,6 @@ export const eventFixtures = Effect.gen(function* () {
   const deliveries = callReceiver("deliveries", "query", {}).pipe(
     Effect.flatMap((response) => body(Schema.Array(Delivery), response)),
   );
-  /** Wait until the receiver holds what `ready` asks for; deliveries are asynchronous. */
   const awaitDeliveries = (
     ready: (all: ReadonlyArray<typeof Delivery.Type>) => boolean,
     seconds = 30,
@@ -300,9 +304,14 @@ export const eventFixtures = Effect.gen(function* () {
     all.filter((delivery) => delivery.kind === "event");
 
   const emitter = yield* deploy(`Issue events ${suffix}`, emitterFiles);
-  const emit = (repo: string, number: number, id = randomUUID()) =>
+  const emitFrom = (
+    app: { readonly id: string },
+    repo: string,
+    number: number,
+    id = randomUUID(),
+  ) =>
     api
-      .request(actors.owner, "POST", `${prefix}/apps/${emitter.id}/tools/call`, {
+      .request(actors.owner, "POST", `${prefix}/apps/${app.id}/tools/call`, {
         tool: "open",
         kind: "mutation",
         input: { repo, title: `Issue ${number}`, number, id },
@@ -313,6 +322,8 @@ export const eventFixtures = Effect.gen(function* () {
         ),
         Effect.as(id),
       );
+  const emit = (repo: string, number: number, id = randomUUID()) =>
+    emitFrom(emitter, repo, number, id);
 
   const rpcAs = (
     credential: Redacted.Redacted<string>,
@@ -321,7 +332,7 @@ export const eventFixtures = Effect.gen(function* () {
   ) =>
     Effect.gen(function* () {
       const request = HttpClientRequest.post(`${target.metadata.origin}/mcp`).pipe(
-        HttpClientRequest.bearerToken(Redacted.value(credential)),
+        HttpClientRequest.bearerToken(reveal(credential)),
         HttpClientRequest.setHeaders({
           accept: "application/json, text/event-stream",
           "content-type": "application/json",
@@ -333,16 +344,33 @@ export const eventFixtures = Effect.gen(function* () {
           "x-executor-organization": actors.organization.id,
         }),
       );
-      const response = yield* http.execute(
-        yield* HttpClientRequest.bodyJson(request, {
-          jsonrpc: "2.0",
-          id: 1,
-          method,
-          params: { ...params, _meta: meta },
-        }),
+      const { response, text, started } = yield* readResponse(
+        http.execute(
+          yield* HttpClientRequest.bodyJson(request, {
+            jsonrpc: "2.0",
+            id: 1,
+            method,
+            params: { ...params, _meta: meta },
+          }),
+        ),
       );
-      return yield* response.json;
-    }).pipe(Effect.scoped);
+      return yield* parseJson(text, response.status, started, response.headers);
+    }).pipe(
+      Effect.scoped,
+      Effect.mapError((error) =>
+        error instanceof CallFailed
+          ? withCause(
+              new RequestFailed({
+                method: "POST",
+                path: "/mcp",
+                reason: "request",
+                failure: error.failure,
+                cause: error.cause,
+              }),
+            )
+          : error,
+      ),
+    );
   const ok = <A>(schema: Schema.Decoder<A>, value: unknown) =>
     Schema.decodeUnknownEffect(RpcResult)(value).pipe(
       Effect.flatMap(({ result }) => Schema.decodeUnknownEffect(schema)(result)),
@@ -353,11 +381,13 @@ export const eventFixtures = Effect.gen(function* () {
       Effect.map(({ error }) => error),
       Effect.tapError(() => Effect.sync(() => expect.fail(JSON.stringify(value)))),
     );
-  /** A personal access token, deleted at scope end unless the scenario deletes it first. */
   const createKey = (name: string) =>
     Effect.gen(function* () {
       const key = yield* body(
-        Schema.Struct({ id: Schema.String, key: Schema.RedactedFromValue(Schema.String) }),
+        Schema.Struct({
+          id: Schema.String,
+          key: heldValue(Schema.RedactedFromValue(Schema.String)),
+        }),
         yield* api.request(actors.owner, "POST", "/api/auth/api-key/create", { name }),
       );
       yield* Effect.addFinalizer(() =>
@@ -378,6 +408,8 @@ export const eventFixtures = Effect.gen(function* () {
     awaitDeliveries,
     events,
     emit,
+    emitFrom,
+    deploy,
     rpcAs,
     ok,
     refused,

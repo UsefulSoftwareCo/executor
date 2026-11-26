@@ -23,8 +23,6 @@ import {
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
 
-// Each fixture's `service` requirement is plain, so the caller links one account and a new link
-// replaces it.
 const provider = `const service=defineProvider({name:"Resources fixture",auth:{key:secrets({label:"Key",fields:object({token:string()})})}});`;
 const identity = `tools: router({
   identity:query({input:object({})},async ctx=>ctx.user.accounts.service.id),
@@ -45,13 +43,6 @@ const Run = Schema.Struct({
   output: Schema.optional(Schema.Unknown),
 });
 
-/**
- * Deploy `fixture` as a new app and connect accounts to its `service` requirement. Cleanup unlinks
- * them, removes the app once its webhooks have stopped and deletes the accounts. Workflows and
- * webhook sources are separate cases, each with its own app. On a deployed Cloud stage, each
- * workflow run waits seconds for its instance to start, and each webhook source change waits for
- * background registration; together they took up to 56 of the 60 seconds.
- */
 const linkedApp = (fixture: string) =>
   Effect.gen(function* () {
     const api = yield* Api,
@@ -199,19 +190,15 @@ layer(HostedLive, { excludeTestServices: true })("Grouped resources", (it) => {
         yield* browser.checkpoint(
           "Workflow starts, results and termination with the linked account",
         );
-        // Connecting Work replaces Personal in the app, and Personal stays saved.
         const work = yield* connect("Work");
         expect(yield* linkedAccountIds(actors.owner, path)).toEqual([work]);
         expect(yield* accountStatus(personal)).toBe(200);
-        // Starts run with the linked account. An `accounts` field chooses nothing: the start still
-        // runs as Work, never as the unlinked Personal account.
         const workCapture = yield* startCapture("work", { accounts: { service: [personal] } });
         expect(workCapture.status, JSON.stringify(workCapture.body)).toBe(200);
         expect(yield* waitForRun((yield* body(Run, workCapture)).id)).toMatchObject({
           status: "complete",
           output: { account: work, body: "work" },
         });
-        // Runs started with the replaced Personal account stay in the history.
         yield* browser.use("Open workflow history after replacing", (page) => page.goto(workflows));
         yield* browser.use("Terminated history survives replacing", (page) =>
           page.getByRole("button", { name: "View hold run: Terminated", exact: true }).waitFor(),
@@ -236,14 +223,12 @@ layer(HostedLive, { excludeTestServices: true })("Grouped resources", (it) => {
             ["hold", "terminated"],
           ].sort(),
         );
-        // Unlinking keeps the account and its history; starts then need an account linked again.
         yield* unlinkAccount(actors.owner, path, "service", work);
         expect(yield* accountStatus(work)).toBe(200);
         const unlinkedStart = yield* startCapture("unlinked");
         expect(unlinkedStart.status, JSON.stringify(unlinkedStart.body)).toBe(409);
         expect(unlinkedStart.body).toMatchObject({ _tag: "AccountRequired", slot: "service" });
         expect((yield* runs).map((run) => [run.workflow, run.status]).sort()).toEqual(history);
-        // The unlink happened through the API, so the open page reloads to read the links again.
         yield* browser.use("Open workflows after unlinking", (page) => page.goto(workflows));
         yield* browser.use("Workflows ask for an account to be linked", (page) =>
           page
@@ -267,7 +252,6 @@ layer(HostedLive, { excludeTestServices: true })("Grouped resources", (it) => {
         const settle = (expected: Parameters<typeof sourcesAre>[0]) =>
           settleWebhookSources(actors.owner, path, sourcesAre(expected));
         const subscriptions = webhookSubscriptions(actors.owner, path);
-        // The linked account becomes the app's webhook source; registration waits for configuration.
         const needsConfiguration = { status: "needs-setup", failure: "configuration" };
         const ready = { status: "ready", failure: null };
         yield* settle({ [personal]: needsConfiguration });
@@ -309,8 +293,6 @@ layer(HostedLive, { excludeTestServices: true })("Grouped resources", (it) => {
             .map((hook) => [hook.name, hook.sourceAccount]),
         ).toEqual([["incoming", personal]]);
         yield* browser.checkpoint("The linked account configures its own webhook");
-        // Connecting Work replaces Personal in the app. Personal stays saved; its webhook source
-        // stops and Work's waits for configuration.
         const work = yield* connect("Work");
         expect(yield* linkedAccountIds(actors.owner, path)).toEqual([work]);
         expect(yield* accountStatus(personal)).toBe(200);
@@ -333,7 +315,6 @@ layer(HostedLive, { excludeTestServices: true })("Grouped resources", (it) => {
           ),
         ).toBe(0);
         yield* browser.checkpoint("The replacing account configures its own webhook");
-        // Unlinking keeps the account but stops its webhook source.
         yield* unlinkAccount(actors.owner, path, "service", work);
         yield* settle({});
         const after = yield* settleWebhookSubscriptions(actors.owner, path, (hooks) =>

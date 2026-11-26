@@ -5,7 +5,6 @@ import { SetupActions, SetupLede, SetupPage, SetupTitle } from "@executor-js/hos
 import {
   SetupRedirect,
   SetupSequenceProvider,
-  firstSetupStep,
   useSetupSequence,
 } from "@executor-js/hosted-web/setup-sequence";
 import { useOrganizationRoute } from "@executor-js/hosted-web/organization";
@@ -34,16 +33,13 @@ import {
   OnboardingDraft,
   OnboardingInvitation,
   OnboardingTeamCreated,
-  OnboardingV1Workspace,
   type TeamDetails,
 } from "../../../../src/contracts/onboarding.ts";
 import { prepareTeamAtom, createTeamAtom, setupSequenceAtom } from "../../contracts/onboarding.ts";
 
-/** Confirm first-team details at entry; exact invitation and organization links remain intact. */
 export function TeamSetupBoundary({ children }: { readonly children: ReactNode }) {
   const session = Option.getOrUndefined(AsyncResult.value(useAtomValue(sessionAtom)));
   const { pathname } = useLocation();
-  // Approving a client, by consent or by a device's code, can create the first team on the way.
   const approval = pathname === "/mcp/authorize" || pathname === "/device";
   if (session === undefined || session === null || (pathname !== "/" && !approval)) return children;
   return (
@@ -57,10 +53,6 @@ export function TeamSetupBoundary({ children }: { readonly children: ReactNode }
   );
 }
 
-/**
- * What the entry gate shows while it reads memberships. On the server that read suspends the root,
- * so the root shows this too; no other page waits there, so any other page stays blank.
- */
 export function TeamSetupPending() {
   const { pathname } = useLocation();
   if (pathname === "/mcp/authorize") return <McpConsentLoading />;
@@ -68,9 +60,7 @@ export function TeamSetupPending() {
   return <UnknownPagePending fullScreen />;
 }
 
-/** The dedicated setup route owns its membership check, form, and completion navigation. */
 export function CreateTeamPage() {
-  // Keep the supplied membership snapshot available for the confirmed-write handoff.
   useAtomMount(organizationsAtom);
   const session = Option.getOrUndefined(AsyncResult.value(useAtomValue(sessionAtom)));
   if (session === undefined || session === null) return <HostedEntryLoading />;
@@ -134,9 +124,7 @@ function TeamEntry({
         ? "invitation"
         : Schema.is(OnboardingDraft)(prepared.value)
           ? "team_details"
-          : Schema.is(OnboardingV1Workspace)(prepared.value)
-            ? "v1_workspace"
-            : "ready";
+          : "ready";
   useEffect(() => {
     reportBrowserUsage({ area: "onboarding", action: step, outcome: "viewed" });
   }, [step]);
@@ -163,7 +151,6 @@ function TeamEntry({
       </SetupPage>
     );
   const entry = AsyncResult.isSuccess(created) ? created.value : prepared.value;
-  if (Schema.is(OnboardingV1Workspace)(entry)) return <V1Workspace />;
   if (Schema.is(OnboardingInvitation)(entry)) {
     if (mcp)
       return (
@@ -185,21 +172,15 @@ function TeamEntry({
   }
   if (Schema.is(OnboardingDraft)(entry))
     return <TeamForm userId={userId} suggestion={entry.suggestion} />;
-  // The confirmed entry can publish before the mutation settles; both states open the new team's
-  // setup. A confirmation that found other memberships instead leaves the choice to the entry.
   const team = entry.organizations.length === 1 ? entry.organizations[0] : undefined;
   if (!mcp && team !== undefined && (created.waiting || AsyncResult.isSuccess(created))) {
-    // A confirmation that carried the team's setup order opens its first step directly.
     const setup = Schema.is(OnboardingTeamCreated)(entry) ? entry.setup : undefined;
-    const first = setup === undefined ? undefined : firstSetupStep(setup);
     return (
       <Navigate
         to={
-          first === "accounts"
-            ? "/org/$organizationSlug/setup/accounts"
-            : first === "assistant"
-              ? "/org/$organizationSlug/setup/assistant"
-              : "/org/$organizationSlug/setup"
+          setup === undefined
+            ? "/org/$organizationSlug/setup"
+            : "/org/$organizationSlug/setup/assistant"
         }
         params={{ organizationSlug: team.slug }}
         replace
@@ -207,25 +188,6 @@ function TeamEntry({
     );
   }
   return children;
-}
-
-/**
- * People in an Executor v1 organization keep using v1; v2 creates no team for them. Their
- * workspace moves to v2 on the server, with nothing for them to do (`notes/v1-import.md`).
- */
-function V1Workspace() {
-  return (
-    <HostedEntry
-      title="Your workspace is on Executor v1"
-      description="We're getting Executor v2 ready for you. Only new users can use it for now. Use the button below to sign in to Executor v1 and keep using it."
-    >
-      <div className="flex flex-wrap gap-3">
-        <Button asChild>
-          <a href="https://executor.sh/login">Sign in to Executor v1</a>
-        </Button>
-      </div>
-    </HostedEntry>
-  );
 }
 
 function TeamForm({
@@ -332,10 +294,6 @@ function TeamForm({
   );
 }
 
-/**
- * The team's setup steps in the order its setup sequence names. They render only once the order
- * is known, which the setup document reads with the page, so no step shows in the wrong place.
- */
 export function CloudSetupSequence({ children }: { readonly children: ReactNode }) {
   const { organization } = useOrganizationRoute();
   const sequence = useAtomValue(setupSequenceAtom(organization));
@@ -356,7 +314,6 @@ export function CloudSetupSequence({ children }: { readonly children: ReactNode 
     .exhaustive();
 }
 
-/** A new team's setup starts at the first step of its sequence, replacing this entry. */
 export function SetupStart() {
   return (
     <>

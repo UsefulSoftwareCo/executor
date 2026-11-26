@@ -36,18 +36,11 @@ import {
 import type { HostedError } from "../../contracts/errors.ts";
 import { HostedAccountDialog } from "./account-actions.tsx";
 
-/** A requirement's sign-in methods, OAuth first: connecting a new account starts with the first. */
 export const methodsOf = (requirement: AccountRequirement) =>
   Object.entries(requirement.definition.auth).sort(
     ([, a], [, b]) => Number(b.type === "oauth2") - Number(a.type === "oauth2"),
   );
 
-/**
- * The app's accounts in two sections. App accounts are linked for everyone: people who can edit
- * the app choose them, link another account they can use, or connect a new one; everyone else sees
- * them greyed out, without their upstream identity. Your accounts are the caller's own links. The
- * host still authorizes every link and connection.
- */
 export function AppAccounts({
   app,
   appLinks,
@@ -57,13 +50,9 @@ export function AppAccounts({
   redirectUri,
 }: {
   readonly app: App;
-  /** The app links, oldest first per requirement. */
   readonly appLinks: readonly RequirementLink<AccountSummary>[];
-  /** The caller's user links, oldest first per requirement. */
   readonly userLinks: readonly RequirementLink<AccountSummary>[];
-  /** Whether the caller can edit the app, and so change its app links. */
   readonly canManage: boolean;
-  /** Every account the caller can use in this organization. */
   readonly accounts: readonly AccountSummary[];
   readonly redirectUri: string;
 }) {
@@ -89,13 +78,10 @@ export function AppAccounts({
     readonly slot: string;
     readonly requirement: AccountRequirement;
     readonly method: string;
-    /** Set when replacing this account's credentials rather than adding an account. */
     readonly account?: AccountSummary | undefined;
   }>();
   const [renaming, setRenaming] = useState<AccountSummary["id"]>();
   const [connecting, setConnecting] = useState(false);
-  // Reconnecting through the app shows the hosts this app's declaration grants. Replacing an
-  // account's credentials needs use of the account.
   const usable = (account: AccountSummary) => accounts.some((item) => item.id === account.id);
   const reconnect = (scope: AccountScope, slot: string, account: AccountSummary) => {
     const requirement = app.requirements.accounts[slot];
@@ -193,6 +179,7 @@ export function AppAccounts({
       <SharedAccounts
         app={app}
         accounts={accounts}
+        canEdit={canManage}
         Failure={HostedFailure}
         appAccounts={scopeAccounts(
           "app",
@@ -247,7 +234,6 @@ type ConnectionDialog = {
   readonly method: string;
 };
 
-/** Keep one provider snapshot and draft from the first dialog through submission. */
 export function AppConnectionDialogContent({
   app,
   scope,
@@ -260,7 +246,6 @@ export function AppConnectionDialogContent({
   onSaved,
 }: {
   readonly app: App;
-  /** Set when replacing this account's credentials rather than adding an account. */
   readonly account?: AccountSummary | undefined;
   readonly scope: AccountScope;
   readonly slot: string;
@@ -296,7 +281,6 @@ export function AppConnectionDialogContent({
   );
 }
 
-/** This form renders the page's cached provider and host metadata without a connection read. */
 function AppConnectionFields({
   app: current,
   scope,
@@ -307,9 +291,7 @@ function AppConnectionFields({
   checks,
   account,
 }: {
-  /** Set when replacing this account's credentials rather than adding an account. */
   readonly account?: AccountSummary | undefined;
-  /** The slot's provider defines a check, so entered credentials can be validated. */
   readonly checks: boolean;
   readonly app: App;
   readonly scope: AccountScope;

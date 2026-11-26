@@ -1,13 +1,10 @@
-/** Shared atom lifecycle; products inject their typed, authorized API effects. */
 import { Effect } from "effect";
 import { Atom } from "effect/reactivity";
 import type { CompleteWebhookSetup, WebhookSetupView, WebhookSubscription } from "@executor-js/sdk";
 import { acknowledge, acknowledgedQuery, invalidate } from "./mutations.ts";
 import { browserOnly } from "./http.ts";
 
-/** Browser form inputs omit product-owned resource identities. */
 export type WebhookSetupSubmission = Omit<typeof CompleteWebhookSetup.Type, "app" | "subscription">;
-/** Confirmed transitions clear displayed secrets before resolving the mutation. Atoms are not kept alive after unmount. */
 export const webhookSetupAtoms = <R, RE, E>(
   runtime: Atom.AtomRuntime<R, RE>,
   operations: {
@@ -17,8 +14,6 @@ export const webhookSetupAtoms = <R, RE, E>(
     readonly confirmRemoval: Effect.Effect<WebhookSubscription, E, R>;
   },
 ) => {
-  // The view can hold a generated signing secret, which the page masks. The server renders the
-  // loading state instead of sending the secret with the page, and the browser reads it once.
   const details = acknowledgedQuery(browserOnly(runtime.atom(operations.read)));
   const complete = runtime.fn((input: WebhookSetupSubmission, get) =>
     operations

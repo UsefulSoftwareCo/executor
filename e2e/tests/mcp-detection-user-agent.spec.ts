@@ -1,4 +1,3 @@
-/** Quick add detection and OAuth discovery identify Executor to the MCP server they probe. */
 import { expect, layer } from "@effect/vitest";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Deferred, Effect, Layer, Ref, Schema } from "effect";
@@ -18,14 +17,8 @@ const Imported = Schema.Struct({
 });
 const Setup = Schema.Struct({ mode: Schema.String });
 
-/**
- * An OAuth-protected MCP server that, like some Cloudflare-hosted servers, answers requests
- * without a User-Agent with a 403 page. Its challenge is the only way to find its metadata, and its
- * authorization server is not at its origin, so a refused probe cannot fall back to either.
- */
 const userAgentOAuthServer = Effect.gen(function* () {
   const address = yield* Deferred.make<string>();
-  /** The User-Agent of each request to the MCP endpoint, which detection and setup probe. */
   const seen = yield* Ref.make<ReadonlyArray<string | undefined>>([]);
   const handler = Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
@@ -86,7 +79,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP detection User-Agent", (it
         const server = yield* userAgentOAuthServer;
         const prefix = `/api/organizations/${actors.organization.id}`;
 
-        // Quick add detects the server's OAuth from the challenge to its initialize request.
         const imported = yield* api.request(actors.owner, "POST", `${prefix}/apps/import`, {
           source: { kind: "mcp", name: `User-Agent ${randomUUID().slice(0, 8)}`, url: server.url },
         });
@@ -98,7 +90,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP detection User-Agent", (it
         const service = app.requirements.accounts.service;
         if (service === undefined) return yield* Effect.die("The OAuth app declares no account");
 
-        // Account setup probes the server again for its challenge and finds dynamic registration.
         const setup = yield* api.request(
           actors.owner,
           "GET",
@@ -107,7 +98,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP detection User-Agent", (it
         expect(setup.status, JSON.stringify(setup.body)).toBe(200);
         expect((yield* body(Setup, setup)).mode).toBe("automatic");
 
-        // Detection's initialize and setup's probe identify Executor, not the runtime's default.
         const seen = yield* server.seen;
         expect(seen.length).toBeGreaterThanOrEqual(2);
         expect(new Set(seen)).toEqual(new Set(["Executor"]));

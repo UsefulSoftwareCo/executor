@@ -1,42 +1,15 @@
-/** Wait until a deployed stage answers only from its real API Worker, on each of its hosts. */
 import { Console, Effect, Schema } from "effect";
 import { HttpClient } from "effect/http";
 import { TestStageFailed } from "../contracts/test-stage-lifetime.ts";
 
 const Health = Schema.Struct({ status: Schema.Literal("ok") });
 
-/**
- * Consecutive real answers, one second apart, that end the rollout wait.
- * In a measured fresh deployment, about a third of requests reached the
- * placeholder for 20 seconds after Alchemy finished, interleaved with real answers.
- */
 const requiredAnswers = 20;
 
-/**
- * The role hosts that answer `/health` (`infrastructure/role-hosts.ts`): `app.` serves the
- * dashboard and sign-in, `api.` the API. `mcp.` serves only MCP, under the same certificate.
- */
 const healthRoles = ["app", "api"] as const;
 
-/**
- * A test stage's role hosts use its custom-domain certificate for `*.<slug>.<test domain>`, which
- * Cloudflare issues after Alchemy finishes: 1.5 to 4 minutes later in measured PR previews. Until
- * then their TLS handshake fails, while the deployment origin, under the zone's certificate,
- * already answers.
- */
 const certificateWait = "10 minutes";
 
-/**
- * Alchemy first uploads a placeholder API Worker, which answers every path with
- * HTTP 200 plain text, and then uploads the real one. Cloudflare rolls the new
- * version out gradually, so for a while after the upload requests reach either
- * version. A session object started on the placeholder is reset when the real code
- * arrives, which ends its streams. Only an unbroken run of real `/health` answers
- * shows that the rollout has finished.
- *
- * The role hosts beside the deployment origin, `<role>.<deployment host>` (`stage.ts`), reach the
- * same Worker, so one real answer from each shows that its certificate and route serve it.
- */
 export const awaitStageRollout = (origin: string) =>
   Effect.gen(function* () {
     const client = yield* HttpClient.HttpClient;

@@ -31,10 +31,6 @@ export {
   securityTitle,
 } from "./account-pending.tsx";
 
-/**
- * Account pages live outside every organization. The organization a visitor arrived from, named
- * in the URL or remembered from their last visit, only preselects choices and the way back.
- */
 export function useAccountOrganization(reference?: string) {
   const organizations = useAtomValue(organizationsAtom);
   const session = Option.getOrUndefined(AsyncResult.value(useAtomValue(sessionAtom)));
@@ -52,7 +48,6 @@ export function useAccountOrganization(reference?: string) {
   return { organizations, memberships, selected };
 }
 
-/** The sidebar slot the organization switcher occupies in the dashboard: a way back. */
 function OrganizationReturn({ reference }: { readonly reference: string | undefined }) {
   const { organizations, selected } = useAccountOrganization(reference);
   const retry = useAtomRefresh(organizationsAtom);
@@ -95,7 +90,6 @@ function OrganizationReturn({ reference }: { readonly reference: string | undefi
   );
 }
 
-/** The dashboard frame for personal settings: account navigation and no organization boundary. */
 export function AccountShell({
   banner,
   support,
@@ -120,11 +114,6 @@ export function AccountShell({
   );
 }
 
-/**
- * The same frame while the account bundle or its data loads, with the pending page the address
- * names. It reads no data: on the server a pending read here would suspend the fallback itself,
- * and the document would show the router's root fallback instead. The way back waits with it.
- */
 export function AccountPending({
   banner,
   support,
@@ -132,7 +121,6 @@ export function AccountPending({
 }: {
   readonly banner?: ReactNode;
   readonly support?: ReactNode;
-  /** The host's sign-in sections, so the security page keeps its layout while loading. */
   readonly security?: ReactNode;
 }) {
   const { pathname } = useLocation();

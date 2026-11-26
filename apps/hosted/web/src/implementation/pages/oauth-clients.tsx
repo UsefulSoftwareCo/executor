@@ -1,4 +1,3 @@
-/** Administrators register the OAuth clients members connect accounts with, and choose who may. */
 import { useAtomSet } from "@effect/atom-react";
 import { Cause, Exit, Option, Redacted } from "effect";
 import { useState, type ReactNode } from "react";
@@ -50,7 +49,6 @@ import { HostedFailure } from "../components/dashboard-bindings.tsx";
 import { useOrganization } from "../components/organization.tsx";
 import { AudienceInput, audienceError } from "../components/sharing.tsx";
 
-/** Administrators manage these from the account list; members never see the manager. */
 export function OAuthClientsDialog({
   open,
   onOpenChange,
@@ -81,12 +79,10 @@ export function OAuthClientsDialog({
   );
 }
 
-/** One form is open at a time: registering a client, or editing one. */
 type OpenForm =
   | { readonly kind: "register" }
   | { readonly kind: "edit"; readonly client: OAuthClientId };
 
-/** The apps that sign in at a server, by name, as one label. */
 const serviceName = (service: OAuthClientService) =>
   service.providers.map((provider) => provider.name).join(", ");
 
@@ -161,9 +157,7 @@ function OAuthClientRow({
   onEdit,
 }: {
   readonly entry: HostedOAuthClient;
-  /** Every listed client, to tell apart clients with the same client ID. */
   readonly clients: ReadonlyArray<HostedOAuthClient["client"]>;
-  /** The organization's apps that sign in at the client's server, when any still do. */
   readonly service: OAuthClientService | undefined;
   readonly redirectUri: string;
   readonly editing: boolean;
@@ -175,8 +169,6 @@ function OAuthClientRow({
   const [removing, setRemoving] = useState(false);
   const [error, setError] = useState<string>();
   const { client, access } = entry;
-  // Clients have no names: the server, by the apps that sign in there, and the public client ID
-  // identify one. A client stored before its server was recorded is offered to no sign-in.
   const server = client.issuer === null ? undefined : issuerLabel(client.issuer);
   const service =
     known !== undefined ? serviceName(known) : (server ?? "Sign-in service not recorded");
@@ -256,7 +248,6 @@ function OAuthClientRow({
   );
 }
 
-/** The service is fixed; the saved secret is kept unless a new one is typed over it. */
 function EditOAuthClient({
   entry,
   service,
@@ -274,7 +265,6 @@ function EditOAuthClient({
     updateOAuthClientAtom({ organization: organization.organization, client: client.id }),
     { mode: "promiseExit" },
   );
-  // The revision belongs to the draft, so a refresh cannot silently permit an overwrite.
   const [revision] = useState(access.revision);
   return (
     <OAuthClientForm
@@ -307,10 +297,6 @@ function EditOAuthClient({
   );
 }
 
-/**
- * Every edit is checked against the revision the form opened with, and nothing is saved when it
- * changed. The list reloads on failure, so editing again starts from the client as it is now.
- */
 const editConflict = (cause: Cause.Cause<HostedError>) =>
   Option.match(Cause.findErrorOption(cause), {
     onSome: (error) =>
@@ -392,7 +378,6 @@ type OAuthClientValues = {
   readonly audience: typeof AppAudience.Type;
 };
 
-/** Registering and editing share the client's details and audience; each supplies its service field. */
 function OAuthClientForm({
   label,
   className,
@@ -413,23 +398,19 @@ function OAuthClientForm({
   readonly service: (pending: boolean) => ReactNode;
   readonly redirectUri: string;
   readonly initial: { readonly clientId: string; readonly audience: typeof AppAudience.Type };
-  /** A secret is saved: the field shows it as filled, and sends nothing unless replaced. */
   readonly savedSecret?: boolean | undefined;
   readonly allowPrivate: boolean;
   readonly privateLabel: string;
   readonly hint?: string | undefined;
   readonly submitLabel: string;
-  /** Absent until the form has everything its parent needs, such as a chosen service. */
   readonly save:
     | ((values: OAuthClientValues) => Promise<Exit.Exit<unknown, HostedError>>)
     | undefined;
-  /** A message for a failure this form explains better than the shared one. */
   readonly describeFailure?: ((cause: Cause.Cause<HostedError>) => string | undefined) | undefined;
   readonly onDone: () => void;
 }) {
   const organization = useOrganization();
   const [clientId, setClientId] = useState(initial.clientId);
-  // A stand-in the password field masks, so a saved secret never looks blank. It is never sent.
   const [clientSecret, setClientSecret] = useState(savedSecret ? savedSecretMask : "");
   const [secretReplaced, setSecretReplaced] = useState(!savedSecret);
   const [audience, setAudience] = useState(initial.audience);
@@ -509,7 +490,6 @@ function OAuthClientForm({
       >
         {(data) => (
           <AudienceInput
-            mode="app"
             subject="this client"
             allowPrivate={allowPrivate}
             privateLabel={privateLabel}

@@ -6,7 +6,6 @@ import { MakeYourOwn } from "../components/add-app.tsx";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowLeft02Icon } from "@hugeicons/core-free-icons";
 
-/** Discovery and installation use the existing local app and account setup routes; Open leads there. */
 export function CatalogPage() {
   return (
     <Catalog

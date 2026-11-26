@@ -1,11 +1,3 @@
-/**
- * The SQL adapter: FumaDB over Effect SQL's `SqlClient`.
- *
- * ```ts
- * const client = ChatDB.client(sqlAdapter({ provider: "postgresql" }))
- * // provide PgClient.layer(...) (or any SqlClient layer) to run its effects
- * ```
- */
 import type { SqlClient } from "effect/sql/SqlClient";
 import type { Adapter } from "../../contracts/adapter.ts";
 import { defaultRelationMode } from "../../contracts/provider.ts";
@@ -17,16 +9,13 @@ import { makeSqlOrmAdapter } from "./query.ts";
 import { getSettingsVersion, settingsTableName } from "./settings.ts";
 
 export type { SqlAdapterConfig } from "../../contracts/sql.ts";
-/** Render migration operations as SQL text for one provider. */
 export { renderScript, renderStatements } from "./ddl.ts";
 export {
   generateMigrationFromDatabase,
   introspectSchema,
   type IntrospectOptions,
 } from "./introspect.ts";
-/** The SQL name of the private settings table for a library namespace. */
 export { settingsTableName } from "./settings.ts";
-/** The transformer that rewrites unsupported SQLite operations into table recreates. */
 export { sqliteTransformer } from "./sqlite-transformer.ts";
 
 const resolveConfig = (config: SqlAdapterConfig): ResolvedSqlAdapterConfig => ({
@@ -34,7 +23,6 @@ const resolveConfig = (config: SqlAdapterConfig): ResolvedSqlAdapterConfig => ({
   relationMode: config.relationMode ?? defaultRelationMode(config.provider),
 });
 
-/** Create the SQL adapter. Its operations need `SqlClient.SqlClient` in the environment. */
 export const sqlAdapter = (config: SqlAdapterConfig): Adapter<SqlClient> => {
   const resolved = resolveConfig(config);
   return {

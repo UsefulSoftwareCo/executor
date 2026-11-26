@@ -1,4 +1,3 @@
-/** Controlled product benchmark; all population writes use public hosted APIs. */
 import { Clock, Console, Effect, Schema } from "effect";
 import { Api, body } from "../support/api.ts";
 import { Actors } from "../support/actors.ts";
@@ -8,7 +7,6 @@ import { McpClient } from "../support/mcp-client.ts";
 import { Evidence } from "../support/evidence.ts";
 import { appsManifest } from "../support/apps-release.ts";
 
-/** Count the synthetic tools across every page of an empty search. */
 const searchAllCode = `let matches = 0;
 for (let page = await tools.search({ limit: 2000 }); ; page = await tools.search(page.next)) {
   matches += page.items.filter((item) => item.description.includes("Synthetic discovery tool")).length;
@@ -28,7 +26,6 @@ const Completed = Schema.Struct({
   unavailableApps: Schema.Array(Schema.Struct({ reason: Schema.String })),
 });
 
-/** Seed 24 apps, 16 accounts, one linked account per app and 1000 records; sample 1/8/24 apps. */
 export const discoveryBenchmark = Effect.gen(function* () {
   const api = yield* Api,
     actors = yield* Actors,
@@ -134,13 +131,10 @@ export const discoveryBenchmark = Effect.gen(function* () {
     const app = yield* body(App, response);
     const appPath = `${root}/apps/${app.id}`;
     if (index === 0) {
-      // Connecting from the first app links each new account in turn, replacing the one before.
       for (let account = 0; account < 16; account++) {
         const connection = yield* body(
           Resource,
-          yield* api.request(actors.owner, "POST", connectionsPath(appPath, "user", "service"), {
-            destination: { kind: "shared", audience: { kind: "everyone" } },
-          }),
+          yield* api.request(actors.owner, "POST", connectionsPath(appPath, "user", "service"), {}),
         );
         const saved = yield* body(
           Resource,
@@ -155,7 +149,6 @@ export const discoveryBenchmark = Effect.gen(function* () {
     }
     const selected = accounts[index % accounts.length];
     if (selected === undefined) return yield* Effect.fail(new Error("Benchmark account missing"));
-    // Every app, the first included, links its selected account; a link replaces the one before.
     yield* linkAccount(actors.owner, appPath, "service", selected);
     apps.push({ id: app.id, slug: app.slug, account: selected });
     if (index === 0) {
@@ -192,7 +185,6 @@ export const discoveryBenchmark = Effect.gen(function* () {
         yield* measure(apps.length, trial === 0 ? "first" : `warm-${trial}`);
     }
   }
-  // Two independent protocol clients model concurrent users without sharing their response stream.
   yield* Effect.forEach(
     [1, 2],
     (trial) =>

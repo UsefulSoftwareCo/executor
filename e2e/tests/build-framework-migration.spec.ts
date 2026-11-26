@@ -1,14 +1,3 @@
-/**
- * The `3_build_framework_once` data step splits builds retained with their `apps` framework
- * inlined in `<build>.json` into `<build>/worker.json` and a framework stored once. Self-host and
- * local run it at startup. The scenario starts its product with data steps held in report mode,
- * deploys apps, then stops the product and rewrites their builds on disk in the inlined shape every
- * host wrote before the split: one active, one replaced by a later deploy, one on an older release
- * whose framework object is removed, and one whose `<build>.json` is corrupt. A report start writes
- * nothing; an apply start splits every readable build, records the corrupt one as `invalid`, and
- * keeps every `<build>.json`; the apps keep working; and a later report finds everything split.
- * Cloud runs the same step from the Worker's cron; its report and apply are reviewed in production.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, FileSystem, Path, Redacted, Schema } from "effect";
 import { createHash, randomUUID } from "node:crypto";
@@ -22,7 +11,6 @@ import { dataStepSummaries, nextDataStepSummary } from "../support/data-steps.ts
 import { appsManifest, appsVersion } from "../support/apps-release.ts";
 
 const step = "3_build_framework_once";
-/** A published release before routers, whose framework the step labels from the release table. */
 const olderRelease = "0.0.1-beta.5";
 
 type Files = readonly { readonly path: string; readonly content: string }[];
@@ -35,7 +23,6 @@ export default defineApp({}, { tools: router({ ping }) });`,
   },
   appsManifest,
 ];
-// app-user-accounts: keep, as source of an earlier `apps` release.
 const older = (marker: string): Files => [
   {
     path: "index.ts",
@@ -52,7 +39,6 @@ const Deployed = Schema.Struct({ app: App });
 const Source = Schema.Struct({ build: Schema.String });
 const Identity = Schema.Struct({ version: Schema.String, sha256: Schema.String });
 type Identity = typeof Identity.Type;
-/** The split record, decoded only as far as the scenario reads it. */
 const SplitRecord = Schema.fromJsonString(
   Schema.Struct({
     format: Schema.Literal(2),
@@ -67,15 +53,12 @@ const StoredFramework = Schema.fromJsonString(
     modules: Schema.Record(Schema.String, Schema.String),
   }),
 );
-/** Encoded JSON objects, rewritten without decoding module contents. */
 const JsonObject = Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown));
 const Modules = Schema.Record(Schema.String, Schema.Unknown);
 
-/** The same app operations through each product's own API. */
 interface Surface {
   readonly deploy: (name: string, files: Files) => Effect.Effect<App, unknown, Api>;
   readonly redeploy: (app: App, files: Files) => Effect.Effect<void, unknown, Api>;
-  /** The running version's build. */
   readonly build: (app: App) => Effect.Effect<string, unknown, Api>;
   readonly call: (app: App, tool: string) => Effect.Effect<unknown, unknown, Api>;
   readonly cleanup: (app: App) => Effect.Effect<unknown, unknown, Api>;
@@ -113,7 +96,6 @@ const hostedSurface = (actor: Session, organization: string): Surface => {
   };
 };
 
-/** Local's agent API takes the host-issued key and refuses browser-origin requests. */
 const localSurface = (session: Session, apiKey: string): Surface => {
   const agent: Session = {
     ...session,
@@ -155,7 +137,6 @@ const localSurface = (session: Session, apiKey: string): Surface => {
   };
 };
 
-/** The SHA-256 a framework is stored under: its server modules, sorted by name. */
 const frameworkHash = (modules: Readonly<Record<string, string>>) =>
   createHash("sha256")
     .update(
@@ -181,7 +162,6 @@ const migrate = (surface: Surface) =>
         .deploy(`${name} ${randomUUID().slice(0, 8)}`, files)
         .pipe(Effect.tap((app) => Effect.sync(() => created.push(app))));
     const summaries = dataStepSummaries(log, step).pipe(Effect.map((all) => all.length));
-    /** Start the stopped product in `mode` and return the summary it logged for the step. */
     const startIn = (mode: "report" | "apply") =>
       Effect.gen(function* () {
         yield* serverControl("data-steps", 200, { mode });
@@ -190,7 +170,6 @@ const migrate = (surface: Surface) =>
         return yield* nextDataStepSummary(log, step, seen);
       });
 
-    // The product started with the steps held, so the step reported before these apps existed.
     expect(yield* nextDataStepSummary(log, step, 0)).toMatchObject({
       mode: "report",
       status: "complete",
@@ -224,8 +203,6 @@ const migrate = (surface: Surface) =>
     const olderFramework = (yield* record(builds.old)).framework;
     expect(olderFramework.version).toBe(olderRelease);
 
-    // Rewrite the builds as hosts stored them before the split: the framework's modules inlined
-    // beside the app's, with no format or framework fields, and no record.
     yield* serverControl("stop");
     for (const build of readable) {
       const stored = yield* fs
@@ -246,27 +223,23 @@ const migrate = (surface: Surface) =>
       yield* fs.writeFileString(inlinedFile(build), JSON.stringify(inlined));
       yield* fs.remove(recordFile(build));
     }
-    // Only the older app links this release, so the step must store its framework again.
     yield* fs.remove(frameworkFile(olderFramework));
     yield* fs.writeFileString(inlinedFile(builds.corrupt), "{ not a build");
     yield* fs.remove(recordFile(builds.corrupt));
     const inlinedBefore = yield* Effect.forEach([...readable, builds.corrupt], (build) =>
       fs.readFileString(inlinedFile(build)),
     );
-    /** Every `<build>.json` is kept byte for byte; the step never rewrites or deletes one. */
     const inlinedKept = Effect.gen(function* () {
       const now = yield* Effect.forEach([...readable, builds.corrupt], (build) =>
         fs.readFileString(inlinedFile(build)),
       );
       expect(now).toEqual(inlinedBefore);
     });
-    /** Other builds on the host were stored split already; the scenario's own five were not. */
     const unexpected = (outcomes: Readonly<Record<string, number>>) =>
       Object.keys(outcomes).filter(
         (outcome) => !["split", "invalid", "already-split"].includes(outcome),
       );
 
-    // Report: every readable build would split, the corrupt one is invalid, and nothing is written.
     const report = yield* startIn("report");
     expect(report).toMatchObject({ mode: "report", status: "complete" });
     expect(report.outcomes.split).toBe(readable.length);
@@ -277,7 +250,6 @@ const migrate = (surface: Surface) =>
     expect(yield* fs.exists(frameworkFile(olderFramework))).toBe(false);
     yield* inlinedKept;
 
-    // Apply: the same outcomes, now written. The corrupt build is not retried.
     yield* serverControl("stop");
     const applied = yield* startIn("apply");
     expect(applied).toMatchObject({ mode: "apply", run: "apply", status: "complete", pass: 1 });
@@ -298,18 +270,15 @@ const migrate = (surface: Surface) =>
         split.framework.sha256,
       );
     }
-    // Labels come from the published release table, the same names new deploys store.
     expect((yield* record(builds.active)).framework.version).toBe(appsVersion);
     expect((yield* record(builds.old)).framework).toEqual(olderFramework);
     expect(yield* fs.exists(recordFile(builds.corrupt))).toBe(false);
     yield* inlinedKept;
 
-    // The apps keep working from their split builds after a cold start.
     expect(yield* surface.call(active, "ping")).toBe("active");
     expect(yield* surface.call(replaced, "ping")).toBe("replaced second");
     expect(yield* surface.call(old, "queries.ping")).toBe("older");
 
-    // A later report checks the applied result: every readable build is already split.
     yield* serverControl("stop");
     const rerun = yield* startIn("report");
     expect(rerun).toMatchObject({ mode: "report", status: "complete" });
@@ -331,7 +300,6 @@ layer(HostedLive, { excludeTestServices: true })("Build framework migration", (i
           return yield* migrate(hostedSurface(actors.owner, actors.organization.id));
         }),
       ),
-    // The product starts four times: held, a report, the apply and a checking report.
     { timeout: 180_000 },
   );
   it.effect(

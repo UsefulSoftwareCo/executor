@@ -1,4 +1,3 @@
-/** Validate account selections against a version's requirements. */
 import { Effect, Result, Schema } from "effect";
 import {
   AccountRequired,
@@ -13,20 +12,17 @@ import { AccountNotFound } from "../contracts/account.ts";
 import { StoredAccount, type StoredVersion } from "../contracts/storage.ts";
 import { query, type Query } from "./database.ts";
 
-/** The distinct accounts a selection names, in selection order. */
 export const selectionAccountIds = (selected: SelectedAccounts): readonly AccountId[] => [
   ...new Set(
     Object.values(selected).flatMap((value) => (typeof value === "string" ? [value] : value)),
   ),
 ];
 
-/** The stored rows of the named accounts, in one statement; none when it names none. */
 export const readSelectionAccounts = (db: Query, ids: readonly AccountId[]) =>
   ids.length === 0
     ? Effect.succeed([])
     : query(() => db.findMany("accounts", { where: (b) => b("id", "in", ids) }));
 
-/** Rows {@link readSelectionAccounts} returned for these IDs, read before the selection was known. */
 export interface SelectionAccountsRead {
   readonly ids: readonly AccountId[];
   readonly rows: Result.Result<
@@ -35,11 +31,6 @@ export interface SelectionAccountsRead {
   >;
 }
 
-/**
- * Whether a read made ahead answered: it stands in for the read it was made for unless it failed
- * for storage. Reads made at once share a connection, so one dropped after an earlier reply fails
- * the rest; read in order, the same read could reach a fresh connection.
- */
 export const answered = <A, E extends { readonly _tag: string }>(read: Result.Result<A, E>) =>
   Result.isSuccess(read) || read.failure._tag !== "StorageError";
 
@@ -48,11 +39,6 @@ const sameIds = (left: readonly AccountId[], right: readonly AccountId[]) => {
   return ids.size === right.length && right.every((id) => ids.has(id));
 };
 
-/**
- * Batch-load and resolve supplied slots; callers decide whether missing slots are allowed. `read`
- * is a read of the accounts made ahead of the selection; it stands in for this read only when it
- * named the same accounts and {@link answered}.
- */
 export const validateSelection = (
   db: Query,
   app: AppId,
@@ -101,18 +87,9 @@ export const validateSelection = (
     return new Map(selections.map((selection) => [selection.slot, selection]));
   });
 
-/** The scope accounts named by scope run in: without `user`, the app's, with no caller. */
 export const invocationScope = (chosen: AppAccounts | undefined): AccountScope =>
   chosen !== undefined && chosen.user === undefined ? "app" : "user";
 
-/**
- * Validate the accounts an operation names against a version's requirements. Each scope names
- * only its own requirements. Every requirement of the invocation's scope is named: app requirements
- * always, and user requirements unless the invocation has no `user`, which runs without a caller.
- * A plain requirement names exactly one account and many() any number. Returns the scope, the
- * cardinality-shaped selection and the resolved accounts in requirement order. `read` is the
- * accounts' read made ahead; see {@link validateSelection}.
- */
 export const chooseAccounts = (
   db: Query,
   app: AppId,
@@ -155,7 +132,6 @@ export const chooseAccounts = (
     return { scope, accounts: selected, selections };
   });
 
-/** A selection as the accounts it names, by scope; without a caller it names no `user`. */
 export const scopedSelection = (
   requirements: AppRequirements["accounts"],
   selected: SelectedAccounts,
@@ -165,18 +141,11 @@ export const scopedSelection = (
   const user: Record<string, ReadonlyArray<AccountId>> = {};
   for (const [slot, value] of Object.entries(selected)) {
     const required = Object.hasOwn(requirements, slot) ? requirements[slot] : undefined;
-    // An unknown requirement stays named, so validating the selection refuses it.
     (required?.scope === "app" ? app : user)[slot] = typeof value === "string" ? [value] : value;
   }
   return scope === "app" ? { app } : { app, user };
 };
 
-/**
- * The accounts an evaluation runs with, by how the product authorizes them: each distinct account
- * a user requirement uses by the actor's use (`user`), and each app requirement's account by the
- * app link for that requirement (`app`). An account used by both scopes is in both and
- * must pass both checks.
- */
 export const accountAuthority = <A extends { readonly id: AccountId }>(
   selections: ReadonlyArray<{
     readonly slot: string;

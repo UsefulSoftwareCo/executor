@@ -1,8 +1,14 @@
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import type { App } from "@executor-js/sdk";
 import { Button } from "@executor-js/ui/components/button";
-import { AsyncResult } from "effect/reactivity";
+import { AsyncResult, type Atom } from "effect/reactivity";
 import { useEffect } from "react";
+import {
+  DesktopAppActions,
+  DesktopAppSection,
+  useDesktopHost,
+  type DesktopAppUi,
+} from "@executor-js/ui/dashboard/desktop-app";
 import {
   appSignInFailureMessage,
   appUiError,
@@ -12,10 +18,6 @@ import {
 } from "../../contracts/app-ui.ts";
 import { useOrganizationRoute } from "../components/organization.tsx";
 
-/**
- * The server answers `/app-auth` with a redirect whenever it has an attempt to resolve, so this page
- * renders only for a failure, a missing attempt, or a client-side navigation that must reach it.
- */
 export function AppSignInPage({
   request,
   failure,
@@ -38,15 +40,78 @@ export function AppSignInPage({
   );
 }
 
-/**
- * Optional action slot: products with app hosting render a normal link. The app runs with the
- * accounts the caller linked to it.
- */
 export function OpenAppAction({ app }: { readonly app: App }) {
-  return app.activeVersion === null ? null : (
+  return app.activeVersion === null ? (
+    <DesktopAppActions
+      app={app.id}
+      handoff={undefined}
+      ui={{ status: "unavailable", reason: "Deploy this app before opening its page." }}
+    />
+  ) : (
     <DeployedOpenAppAction app={app} version={app.activeVersion} />
   );
 }
+
+const unavailableReason = "The app page is unavailable.";
+
+const checkAgain = (message: string, refresh: () => void) => (
+  <div className="flex items-center gap-2">
+    <span className="max-w-sm text-sm text-muted-foreground" role="status">
+      {message}
+    </span>
+    <Button variant="outline" onClick={refresh}>
+      Check again
+    </Button>
+  </div>
+);
+
+const appUi = (
+  result: Atom.Type<ReturnType<typeof appUiLocationAtom>>,
+  refresh: () => void,
+): DesktopAppUi => {
+  if (AsyncResult.isFailure(result))
+    return {
+      status: "unavailable",
+      reason: unavailableReason,
+      notice: checkAgain(appUiError(result.cause), refresh),
+    };
+  if (!AsyncResult.isSuccess(result)) return { status: "checking" };
+  const location = result.value;
+  if (location.status === "ready")
+    return {
+      status: "ready",
+      browserOpen: (
+        <Button variant="outline" asChild>
+          <a href={location.url} target="_blank" rel="noopener noreferrer">
+            Open app
+          </a>
+        </Button>
+      ),
+    };
+  if (location.status === "pending")
+    return {
+      status: "unavailable",
+      reason: "The app domain is still being prepared.",
+      notice: (
+        <span className="text-sm text-muted-foreground" role="status">
+          Preparing app domain…
+        </span>
+      ),
+    };
+  if (location.status === "unavailable")
+    return {
+      status: "unavailable",
+      reason:
+        location.reason === "no_ui"
+          ? "This app's active version has no page."
+          : "This server has no app domain, so app pages have no address.",
+    };
+  return {
+    status: "unavailable",
+    reason: unavailableReason,
+    notice: checkAgain("App domain setup needs attention.", refresh),
+  };
+};
 
 function DeployedOpenAppAction({
   app,
@@ -55,7 +120,7 @@ function DeployedOpenAppAction({
   readonly app: App;
   readonly version: NonNullable<App["activeVersion"]>;
 }) {
-  const { organization, slug } = useOrganizationRoute();
+  const { organization, slug, id, name } = useOrganizationRoute();
   const location = appUiLocationAtom({
     organization,
     slug,
@@ -65,41 +130,44 @@ function DeployedOpenAppAction({
   });
   const result = useAtomValue(location);
   const refresh = useAtomRefresh(location);
-  if (AsyncResult.isFailure(result))
-    return (
-      <div className="flex items-center gap-2">
-        <span className="max-w-sm text-sm text-muted-foreground" role="status">
-          {appUiError(result.cause)}
-        </span>
-        <Button variant="outline" onClick={refresh}>
-          Check again
-        </Button>
-      </div>
-    );
-  if (!AsyncResult.isSuccess(result)) return null;
-  if (result.value.status === "pending")
-    return (
-      <span className="text-sm text-muted-foreground" role="status">
-        Preparing app domain…
-      </span>
-    );
-  if (result.value.status === "failed")
-    return (
-      <div className="flex items-center gap-2">
-        <span className="text-sm text-muted-foreground" role="status">
-          App domain setup needs attention.
-        </span>
-        <Button variant="outline" onClick={refresh}>
-          Check again
-        </Button>
-      </div>
-    );
-  if (result.value.status !== "ready") return null;
   return (
-    <Button variant="outline" asChild>
-      <a href={result.value.url} target="_blank" rel="noopener noreferrer">
-        Open app
-      </a>
-    </Button>
+    <DesktopAppActions
+      app={app.id}
+      handoff={
+        id === undefined
+          ? undefined
+          : { name: app.name, organization: id, ...(name === undefined ? {} : { team: name }) }
+      }
+      ui={appUi(result, refresh)}
+    />
+  );
+}
+
+export function AppDesktopSettings({ app }: { readonly app: App }) {
+  const host = useDesktopHost();
+  if (host === undefined) return null;
+  return app.activeVersion === null ? (
+    <DesktopAppSection app={app.id} uiReady={false} />
+  ) : (
+    <DeployedDesktopSettings app={app} version={app.activeVersion} />
+  );
+}
+
+function DeployedDesktopSettings({
+  app,
+  version,
+}: {
+  readonly app: App;
+  readonly version: NonNullable<App["activeVersion"]>;
+}) {
+  const { organization, slug } = useOrganizationRoute();
+  const result = useAtomValue(
+    appUiLocationAtom({ organization, slug, app: app.id, appSlug: app.slug, version }),
+  );
+  return (
+    <DesktopAppSection
+      app={app.id}
+      uiReady={AsyncResult.isSuccess(result) && result.value.status === "ready"}
+    />
   );
 }

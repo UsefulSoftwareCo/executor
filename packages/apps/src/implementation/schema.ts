@@ -157,19 +157,44 @@ export function wrap<T, Optional extends boolean>(
   };
 }
 
-/** A string, optionally with a minimum length. No coercion. */
-export function string(options: { readonly minLength?: number } = {}): Schema<string> {
+/**
+ * A value's name and explanation in its JSON Schema, such as a tool input or an account field. In
+ * an account field, `title` replaces the field's name as its connect form label, and `description`
+ * says where to find the value: Markdown of at most 1,000 characters whose links are absolute
+ * https URLs, with no HTML or images. Indentation common to its lines is removed, so a template
+ * literal can be indented. Neither changes the provider.
+ */
+export interface FieldHelp {
+  readonly title?: string;
+  readonly description?: string;
+}
+
+const annotated = <S extends EffectSchema.Top>(schema: S, { title, description }: FieldHelp) =>
+  title === undefined && description === undefined
+    ? schema
+    : schema.annotate({
+        ...(title === undefined ? {} : { title }),
+        ...(description === undefined ? {} : { description }),
+      });
+
+/** A string, optionally with a minimum length, title and description. No coercion. */
+export function string(options: FieldHelp & { readonly minLength?: number } = {}): Schema<string> {
   return wrap(
-    options.minLength === undefined
-      ? EffectSchema.String
-      : EffectSchema.String.check(EffectSchema.isMinLength(options.minLength)),
+    annotated(
+      options.minLength === undefined
+        ? EffectSchema.String
+        : EffectSchema.String.check(EffectSchema.isMinLength(options.minLength)),
+      options,
+    ),
     false,
   );
 }
-/** A finite JSON number. No coercion. */
-export const number = (): Schema<number> => wrap(EffectSchema.Finite, false);
-/** A boolean. No coercion. */
-export const boolean = (): Schema<boolean> => wrap(EffectSchema.Boolean, false);
+/** A finite JSON number, optionally with a title and description. No coercion. */
+export const number = (options: FieldHelp = {}): Schema<number> =>
+  wrap(annotated(EffectSchema.Finite, options), false);
+/** A boolean, optionally with a title and description. No coercion. */
+export const boolean = (options: FieldHelp = {}): Schema<boolean> =>
+  wrap(annotated(EffectSchema.Boolean, options), false);
 /** Any JSON value. Values still cross the native JSON decoder. */
 export const json = (): Schema<EffectSchema.Json> => wrap(EffectSchema.Json, false);
 /** Named values with a common schema. */
@@ -204,12 +229,9 @@ export function object<const F extends Fields>(fields: F): ObjectSchema<F> {
       decoderOf(schemaArgument(field, `The object() field ${JSON.stringify(key)}`)),
     ],
   );
-  // SAFETY: each key retains its own decoder and optional/default metadata.
-  // Object.fromEntries erases the mapped key association represented by ObjectValue.
   const decoder = (
     entries.length === 0
       ? withJsonSchemaDocument(
-          // Native Struct({}) accepts every non-null value and retains undeclared fields.
           EffectSchema.Record(EffectSchema.String, EffectSchema.Unknown).pipe(
             EffectSchema.decodeTo(EffectSchema.Record(EffectSchema.String, EffectSchema.Never), {
               decode: SchemaGetter.transform(() => ({})),
@@ -238,7 +260,6 @@ const expose = <S extends Schema<unknown, boolean>, E extends FieldExposure>(
   schema: S,
   exposure: E,
 ): Exposed<S, E> =>
-  // SAFETY: the copy keeps every member of S, and `optional` and `default` keep the marking.
   ({
     ...schema,
     [Exposure]: exposure,
@@ -389,13 +410,11 @@ const ownDefinition = (reference: unknown) => {
   return segments.length === 2 ? segments[1] : undefined;
 };
 /**
- * The root `$defs` of a schema whose every reference names one of them, so the schema reads the
- * same beside them at any root. A schema referring to its root, a nested pointer or an identifier
- * has none. Only schema positions are read, as the validator evaluates them.
+ * The `$defs` names a schema's references name, read at schema positions only, as the validator
+ * evaluates them; undefined when one refers to anything else or the schema uses an identifier.
  */
-const rootDefinitions = (schema: JsonObject): JsonObject | undefined => {
-  const definitions = schema.$defs ?? {};
-  if (!isJsonRecord(definitions)) return undefined;
+const definitionReferences = (schema: unknown): ReadonlySet<string> | undefined => {
+  const names = new Set<string>();
   const pending: unknown[] = [schema];
   for (let value = pending.pop(); value !== undefined; value = pending.pop()) {
     if (!isSchemaObject(value)) continue;
@@ -403,7 +422,8 @@ const rootDefinitions = (schema: JsonObject): JsonObject | undefined => {
       if (identifiers.has(key)) return undefined;
       if (key === "$ref") {
         const name = ownDefinition(item);
-        if (name === undefined || !Object.hasOwn(definitions, name)) return undefined;
+        if (name === undefined) return undefined;
+        names.add(name);
       } else if (Array.isArray(item)) {
         if (schemaArrays.has(key) || key === "items") pending.push(...item);
       } else if (schemaMaps.has(key) || key === "dependencies") {
@@ -411,35 +431,113 @@ const rootDefinitions = (schema: JsonObject): JsonObject | undefined => {
       } else if (schemaNodes.has(key)) pending.push(item);
     }
   }
+  return names;
+};
+
+/**
+ * What one listing learns about the definitions its tools' schemas hold. Routers such as the
+ * OpenAPI importer give every tool that reaches a definition the same object, and a densely
+ * connected API reaches most of its definitions from every tool: Stripe's 610 tools name about
+ * 330,000 `$defs` entries but only a few thousand distinct definitions. Combining schemas reads
+ * each definition object once per listing, rather than once for every tool that reaches it, so a
+ * listing's cost follows its distinct definitions instead of its tools times its definitions.
+ * Values are only read, never changed: the memo is valid while the listing's objects are, so
+ * make one for each listing or description and drop it with them.
+ */
+export interface SchemaMemo {
+  /** Equal numbers for definitions whose JSON text is equal. */
+  readonly textId: (definition: JsonValue) => number;
+  /** The `$defs` names the definition refers to, or undefined, as `definitionReferences`. */
+  readonly references: (definition: JsonValue) => ReadonlySet<string> | undefined;
+}
+export const schemaMemo = (): SchemaMemo => {
+  const ids = new Map<string, number>();
+  const objectIds = new WeakMap<object, number>();
+  const textId = (definition: JsonValue) => {
+    const known =
+      typeof definition === "object" && definition !== null ? objectIds.get(definition) : undefined;
+    if (known !== undefined) return known;
+    const text = JSON.stringify(definition);
+    let id = ids.get(text);
+    if (id === undefined) ids.set(text, (id = ids.size));
+    if (typeof definition === "object" && definition !== null) objectIds.set(definition, id);
+    return id;
+  };
+  const referenced = new WeakMap<object, ReadonlySet<string> | undefined>();
+  const references = (definition: JsonValue) => {
+    if (typeof definition !== "object" || definition === null)
+      return definitionReferences(definition);
+    if (referenced.has(definition)) return referenced.get(definition);
+    const names = definitionReferences(definition);
+    referenced.set(definition, names);
+    return names;
+  };
+  return { textId, references };
+};
+
+/**
+ * The root `$defs` of a schema whose every reference names one of them, so the schema reads the
+ * same beside them at any root. A schema referring to its root, a nested pointer or an identifier
+ * has none. Each definition's references come from the memo, so a definition many tools share is
+ * walked once.
+ */
+const rootDefinitions = (schema: JsonObject, memo: SchemaMemo): JsonObject | undefined => {
+  const definitions = schema.$defs ?? {};
+  if (!isJsonRecord(definitions)) return undefined;
+  const { $defs: _, ...root } = schema;
+  for (const names of [
+    definitionReferences(root),
+    ...Object.values(definitions).map(memo.references),
+  ]) {
+    if (names === undefined) return undefined;
+    for (const name of names) if (!Object.hasOwn(definitions, name)) return undefined;
+  }
   return definitions;
 };
+
+/**
+ * A key equal for schemas whose JSON text is equal, without writing the definitions in their
+ * `$defs`: each definition stands for its memo number.
+ */
+export const schemaIdentity = (schema: JsonObject, memo: SchemaMemo) =>
+  JSON.stringify(
+    Object.entries(schema).map(([key, value]) =>
+      key === "$defs" && isJsonRecord(value)
+        ? [key, Object.entries(value).map(([name, definition]) => [name, memo.textId(definition)])]
+        : [key, value],
+    ),
+  );
 
 /**
  * Self-contained schemas placed side by side in one document, such as the branches of a union.
  * A schema whose references all name its root `$defs` gives those entries to the document's root
  * `$defs` when no entry of the same name differs, so definitions stay where listings share them
  * among tools. Any other schema is relocated with `nestJsonSchema` under `pointer(index)`.
+ * Definitions are compared by object first and by text only when two objects share a name.
  */
 export const combineJsonSchemas = (
   schemas: readonly JsonObject[],
   pointer: (index: number) => string,
+  memo: SchemaMemo = schemaMemo(),
 ): { readonly $defs?: JsonObject; readonly schemas: readonly JsonObject[] } => {
   const shared: Record<string, EffectSchema.Json> = {};
-  const texts = new Map<string, string>();
+  const kept = new Map<string, JsonValue>();
+  const differs = (name: string, definition: JsonValue) => {
+    if (!kept.has(name)) return false;
+    const first = kept.get(name) ?? null;
+    return first !== definition && memo.textId(first) !== memo.textId(definition);
+  };
   const combined = schemas.map((schema, index) => {
-    const definitions = rootDefinitions(schema);
-    const entries = Object.entries(definitions ?? {}).map(
-      ([name, definition]) => [name, definition, JSON.stringify(definition)] as const,
-    );
+    const definitions = rootDefinitions(schema, memo);
+    const entries = Object.entries(definitions ?? {});
     if (
       definitions === undefined ||
-      entries.some(([name, , text]) => texts.has(name) && texts.get(name) !== text)
+      entries.some(([name, definition]) => differs(name, definition))
     )
       return nestJsonSchema(schema, pointer(index));
-    for (const [name, definition, text] of entries) {
-      if (texts.has(name)) continue;
-      texts.set(name, text);
-      // Defined as an own entry: assignment would set the prototype of an entry named `__proto__`.
+    for (const [name, definition] of entries) {
+      if (kept.has(name)) continue;
+      kept.set(name, definition);
       Object.defineProperty(shared, name, {
         value: definition,
         enumerable: true,
@@ -450,10 +548,9 @@ export const combineJsonSchemas = (
     const { $defs: _, ...rest } = schema;
     return rest;
   });
-  return texts.size === 0 ? { schemas: combined } : { $defs: shared, schemas: combined };
+  return kept.size === 0 ? { schemas: combined } : { $defs: shared, schemas: combined };
 };
 
-// Walk schema positions only. A property named "format" or "default" is still ordinary user data.
 const schemaMaps = new Set([
   "$defs",
   "definitions",
@@ -513,9 +610,7 @@ function interpretedDocument(value: EffectSchema.Json): EffectSchema.Json {
     throw new ValidationError();
   const entries: Array<readonly [string, EffectSchema.Json]> = [];
   for (const [key, item] of Object.entries(value)) {
-    // These keywords are not implemented by this interpreter. Reject, never silently ignore a constraint.
     if (key === "$dynamicRef" || key === "$dynamicAnchor") throw new ValidationError();
-    // Existing imports treat formats as annotations, not assertions.
     if (key === "format") continue;
     if (schemaMaps.has(key) && item !== null && typeof item === "object" && !Array.isArray(item)) {
       entries.push([
@@ -547,7 +642,6 @@ function interpretedDocument(value: EffectSchema.Json): EffectSchema.Json {
   return Object.fromEntries(entries);
 }
 
-// Keywords that only wrap a nested failure; the nested error carries the useful location.
 const containerKeywords = new Set([
   "$ref",
   "$recursiveRef",
@@ -696,7 +790,6 @@ const schemaAt = (
   lookup: Readonly<Record<string, unknown>>,
   segments: readonly string[],
 ): unknown => {
-  // The validator's recursive anchor; null while none is in scope.
   const anchoredAt = (node: unknown, anchor: unknown) =>
     anchor === null && isJsonRecord(node) && node.$recursiveAnchor === true ? node : anchor;
   const pending = [...segments];
@@ -718,7 +811,6 @@ const schemaAt = (
       const value = Object.hasOwn(node, keyword) ? node[keyword] : undefined;
       if (memberKeywords.has(keyword) || (keyword === "items" && Array.isArray(value))) {
         const member = pending.shift();
-        // The location names the keyword itself, such as a union's list of alternatives.
         if (member === undefined) return value;
         if (combinators.has(keyword) && node.$recursiveAnchor !== true) anchor = null;
         node = Array.isArray(value)
@@ -943,8 +1035,6 @@ const constraintProblem = (keyword: string, node: unknown): string | undefined =
   if (keyword === "uniqueItems") return "Expected an array without repeated items";
   if (typeof value !== "number") return undefined;
   switch (keyword) {
-    // Draft 4's boolean `exclusiveMinimum` is not applied: imported schemas validate as draft 7
-    // or 2020-12, where `minimum` and `maximum` always include their bound.
     case "minimum":
       return `Expected a number of at least ${value}`;
     case "maximum":
@@ -1071,10 +1161,6 @@ const selectorOf = (holder: unknown, alternatives: readonly Outline[], inspectio
 const alternativeErrors = (errors: readonly ValidatorError[], head: number, schemas: unknown) => {
   const prefix = `${errors[head]?.keywordLocation}/`;
   const alternatives = new Map<number, ValidatorError[]>();
-  // The validator reports a `false` schema at its instance location, not its keyword location.
-  // A nested one follows the error of the keyword that applied it, so it stays in that
-  // alternative. A `false` alternative reports exactly one, directly after the errors of the
-  // alternatives before it; those are removed from the alternative they were collected into.
   const settle = (current: number, next: number) => {
     const collected = alternatives.get(current);
     const rejected = Array.isArray(schemas)
@@ -1092,7 +1178,6 @@ const alternativeErrors = (errors: readonly ValidatorError[], head: number, sche
       if (alternative !== current) settle(current, alternative);
       current = alternative;
     } else if (error.keyword !== "false") break;
-    // Before any alternative reports, a `false` error can only be a `false` alternative's.
     if (current >= 0) alternatives.set(current, [...(alternatives.get(current) ?? []), error]);
   }
   settle(current, Array.isArray(schemas) ? schemas.length : current);
@@ -1120,13 +1205,10 @@ const unionProblems = (
   const location = pointerSegments(union.instanceLocation);
   const path = pathOf(location);
   if (!Array.isArray(schemas))
-    // The union's alternatives could not be located, so they are neither described nor compared.
-    // State the failed keyword, as the validator does, with every alternative's problems.
     return [
       { path, issue: `Failed the "${union.keyword}" constraint` },
       ...[...errorsByAlternative.values()].flatMap((errors) => problemsOf(errors, inspection)),
     ];
-  // A `false` alternative accepts nothing, so it is neither described nor closest.
   const alternatives = schemas.flatMap((schema, index) =>
     schema === false
       ? []
@@ -1142,7 +1224,6 @@ const unionProblems = (
   if (only === undefined) return [{ path, issue: "No value is allowed here" }];
   if (alternatives.length === 1) return only.problems();
   const holder = inspection.schemaAt(pointerSegments(union.keywordLocation).slice(0, -1));
-  // Alternatives refine the object that holds the union, such as OpenAPI request body variants.
   const shared = outlineOf(holder, inspection);
   const own = alternatives.map(({ schema }) => outlineOf(schema, inspection));
   const outlines = own.map((outline) => mergeOutlines(shared, outline));
@@ -1151,8 +1232,6 @@ const unionProblems = (
   const matched = alternatives.filter((alternative) => alternative.matched).length;
   if (union.keyword === "oneOf" && matched > 1)
     return [{ path, issue: `${expected}. Exactly one may match, but ${matched} do` }];
-  // With no alternative matching, every value any `anyOf` alternative fixes is one the input could
-  // use. A `oneOf` rejects a value its alternatives share, so its alternatives stay apart.
   const fixed = outlines.flatMap(({ values }) => (values === undefined ? [] : [values]));
   if (fixed.length === outlines.length)
     return [
@@ -1214,8 +1293,6 @@ const unionProblems = (
  * `enum` allows, or a union's alternatives.
  */
 const problemsOf = (errors: readonly ValidatorError[], inspection: Inspection): Problem[] => {
-  // The validator reports a key that `additionalProperties: false` rejects as this keyword at
-  // the object, followed by a `false` schema at the key. Keep each object's schema for the key.
   const closed = new Map<string, unknown>();
   const problems: Problem[] = [];
   for (let index = 0; index < errors.length; index++) {
@@ -1232,7 +1309,6 @@ const problemsOf = (errors: readonly ValidatorError[], inspection: Inspection): 
     const location = pointerSegments(instanceLocation);
     const path = pathOf(location);
     const problem = (issue: string, at = path) => problems.push({ path: at, issue });
-    // The keyword's own schema node: its location without the keyword segment.
     const node = () => inspection.schemaAt(pointerSegments(keywordLocation).slice(0, -1));
     if (keyword === "additionalProperties" || keyword === "unevaluatedProperties") {
       closed.set(locationKey(location), node());
@@ -1280,7 +1356,6 @@ const problemsOf = (errors: readonly ValidatorError[], inspection: Inspection): 
           : Array.isArray(schema.enum)
             ? schema.enum
             : undefined;
-      // A keyword whose schema node cannot be located states the constraint without its values.
       problem(
         values === undefined
           ? "Expected one of the allowed values"
@@ -1361,13 +1436,9 @@ export const compileJsonSchemaDecoder = (document: JsonObject) =>
         if (normalized === null || typeof normalized !== "object" || Array.isArray(normalized))
           throw new ValidationError();
         const lookup = dereference(normalized);
-        // Resolve the whole selected schema before any tool side effect, including
-        // references in output schemas and branches not reached by a sample input.
         for (const schema of evaluatedSchemas(normalized, lookup)) {
           for (const pattern of [schema.pattern, ...Object.keys(schema.patternProperties ?? {})]) {
             if (pattern === undefined) continue;
-            // Match the interpreter's Unicode-first compatibility patch, but do
-            // this before an upstream call rather than waiting for output data.
             try {
               new RegExp(pattern, "u");
             } catch (error) {
@@ -1424,14 +1495,11 @@ export const compileJsonSchemaDecoder = (document: JsonObject) =>
  */
 const lazyCompiledDecoder = (document: () => JsonObject) => {
   const read = once(document);
-  // Reuse only this tool's compiled decoder. Every app evaluation still obtains
-  // fresh account-specific metadata; no catalog or credentials are cached here.
   let compiled: Exit.Exit<EffectSchema.Decoder<EffectSchema.Json>, ValidationError> | undefined;
   const compile = Effect.suspend(
     () =>
       compiled ??
       compileJsonSchemaDecoder(read()).pipe(
-        // An interrupted compilation is not a result; the next decode compiles again.
         Effect.onExit((exit) =>
           Effect.sync(() => {
             if (Exit.isSuccess(exit) || !Cause.hasInterrupts(exit.cause)) compiled = exit;

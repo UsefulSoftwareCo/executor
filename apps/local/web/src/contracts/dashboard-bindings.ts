@@ -1,4 +1,3 @@
-/** Adapt the local API once. Live streams remain live; no hosted concepts enter these contracts. */
 import { Effect } from "effect";
 import { AsyncResult, Atom } from "effect/reactivity";
 import type { CustomAppInput } from "@executor-js/catalog/contracts";
@@ -8,7 +7,6 @@ import { DashboardClient, overviewAtom, toolsAtom } from "./api.ts";
 import { acknowledgeApp } from "./apps.ts";
 import { catalogAtom } from "./onboarding.ts";
 
-/** Local streams and commands fulfill the common display contract. */
 export const dashboardAtoms = {
   inventory: overviewAtom,
   catalog: catalogAtom,
@@ -18,7 +16,6 @@ export const dashboardAtoms = {
       AsyncResult.map((value) => value.tools),
     ),
   ),
-  /** One install per catalog entry, so rows add independently and each gets its own result. */
   install: Atom.family((_entry: string) =>
     DashboardClient.runtime.fn((input: InstallApp, get) =>
       Effect.flatMap(DashboardClient, (client) =>
