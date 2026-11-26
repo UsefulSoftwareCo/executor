@@ -412,14 +412,14 @@
               {
                 "name": "app",
                 "type": {
-                  "$shared": "fa10a18585e99273"
+                  "$shared": "86e5a4257f991332"
                 },
                 "isOptional": false
               },
               {
                 "name": "user",
                 "type": {
-                  "$shared": "fa10a18585e99273"
+                  "$shared": "86e5a4257f991332"
                 },
                 "isOptional": false
               }
@@ -650,14 +650,14 @@
         {
           "name": "app",
           "type": {
-            "$shared": "2c3d9239495bdaed"
+            "$shared": "811e670c085fed24"
           },
           "isOptional": false
         },
         {
           "name": "user",
           "type": {
-            "$shared": "2c3d9239495bdaed"
+            "$shared": "811e670c085fed24"
           },
           "isOptional": true
         }
@@ -683,19 +683,50 @@
   ],
   "references": {},
   "shared": {
-    "24303971fc45ad9c": {
+    "03599fe8eb8af8c8": {
+      "_tag": "Objects",
+      "propertySignatures": [],
+      "indexSignatures": [
+        {
+          "$shared": "84d751e2b8647789"
+        }
+      ]
+    },
+    "0905d5058f59d59c": {
       "_tag": "Objects",
       "propertySignatures": [
         {
-          "name": "type",
+          "name": "id",
           "type": {
-            "_tag": "Literal",
-            "literal": "oauth2"
+            "_tag": "String",
+            "checks": [
+              {
+                "_tag": "Filter",
+                "representation": {
+                  "id": "effect/schema/isStartingWith",
+                  "payload": {
+                    "startsWith": "acc_"
+                  }
+                }
+              },
+              {
+                "_tag": "Filter",
+                "representation": {
+                  "id": "effect/schema/isMinLength",
+                  "payload": {
+                    "minLength": 5
+                  }
+                }
+              }
+            ]
           },
           "isOptional": false
         },
         {
-          "name": "scopeSeparator",
+          "$shared": "cb1adddf4b26d5fb"
+        },
+        {
+          "name": "method",
           "type": {
             "_tag": "String",
             "checks": [
@@ -710,198 +741,26 @@
               }
             ]
           },
-          "isOptional": true
-        },
-        {
-          "name": "tokenRequestFormat",
-          "type": {
-            "_tag": "Union",
-            "types": [
-              {
-                "_tag": "Literal",
-                "literal": "form"
-              },
-              {
-                "_tag": "Literal",
-                "literal": "json"
-              }
-            ]
-          },
-          "isOptional": true
-        },
-        {
-          "name": "tokenResponse",
-          "type": {
-            "_tag": "Objects",
-            "propertySignatures": [
-              {
-                "name": "path",
-                "type": {
-                  "_tag": "String",
-                  "checks": [
-                    {
-                      "_tag": "Filter",
-                      "representation": {
-                        "id": "effect/schema/isPattern",
-                        "payload": {
-                          "source": "^[^.]+(\\.[^.]+)*$",
-                          "flags": ""
-                        }
-                      }
-                    }
-                  ]
-                },
-                "isOptional": false
-              }
-            ]
-          },
-          "isOptional": true
-        },
-        {
-          "name": "grant",
-          "type": {
-            "_tag": "Literal",
-            "literal": "authorization_code"
-          },
-          "isOptional": true
-        },
-        {
-          "name": "authorizationParams",
-          "type": {
-            "_tag": "Objects",
-            "propertySignatures": [],
-            "indexSignatures": [
-              {
-                "parameter": {
-                  "_tag": "String"
-                },
-                "type": {
-                  "_tag": "String"
-                }
-              }
-            ],
-            "checks": [
-              {
-                "_tag": "Filter",
-                "annotations": {
-                  "message": "Authorization parameters cannot replace protocol parameters such as state or scope."
-                }
-              }
-            ]
-          },
-          "isOptional": true
-        },
-        {
-          "name": "tokenEndpointAuthMethod",
-          "type": {
-            "_tag": "Union",
-            "types": [
-              {
-                "_tag": "Literal",
-                "literal": "none"
-              },
-              {
-                "_tag": "Literal",
-                "literal": "client_secret_post"
-              },
-              {
-                "_tag": "Literal",
-                "literal": "client_secret_basic"
-              },
-              {
-                "_tag": "Literal",
-                "literal": "client_secret_basic_raw"
-              }
-            ]
-          },
-          "isOptional": true
-        },
-        {
-          "name": "resource",
-          "type": {
-            "_tag": "Union",
-            "types": [
-              {
-                "_tag": "String",
-                "checks": [
-                  {
-                    "_tag": "Filter"
-                  }
-                ]
-              },
-              {
-                "_tag": "Null"
-              }
-            ]
-          },
-          "isOptional": true
-        },
-        {
-          "name": "discover",
-          "type": {
-            "_tag": "String",
-            "checks": [
-              {
-                "_tag": "Filter"
-              }
-            ]
-          },
           "isOptional": false
         },
         {
-          "name": "authorizationServerMetadataUrl",
+          "name": "generation",
           "type": {
-            "_tag": "String",
+            "_tag": "Number",
             "checks": [
               {
-                "_tag": "Filter"
+                "_tag": "Filter",
+                "representation": {
+                  "id": "effect/schema/isInt",
+                  "payload": null
+                }
               }
             ]
           },
           "isOptional": true
         },
         {
-          "name": "authorizationUrl",
-          "type": {
-            "_tag": "Never"
-          },
-          "isOptional": true
-        },
-        {
-          "name": "tokenUrl",
-          "type": {
-            "_tag": "Never"
-          },
-          "isOptional": true
-        },
-        {
-          "name": "revocationUrl",
-          "type": {
-            "_tag": "Never"
-          },
-          "isOptional": true
-        },
-        {
-          "name": "scopes",
-          "type": {
-            "_tag": "Arrays",
-            "rest": [
-              {
-                "_tag": "String"
-              }
-            ]
-          },
-          "isOptional": true
-        },
-        {
-          "name": "clientGuide",
-          "type": {
-            "_tag": "String"
-          },
-          "isOptional": true
-        },
-        {
-          "name": "response",
+          "name": "fields",
           "type": {
             "_tag": "Objects",
             "propertySignatures": [],
@@ -921,64 +780,57 @@
             ]
           },
           "isOptional": false
-        },
-        {
-          "name": "plain",
-          "type": {
-            "_tag": "Arrays",
-            "rest": [
-              {
-                "_tag": "String",
-                "checks": [
-                  {
-                    "_tag": "Filter",
-                    "representation": {
-                      "id": "effect/schema/isMinLength",
-                      "payload": {
-                        "minLength": 1
-                      }
-                    }
-                  }
-                ]
-              }
-            ]
-          },
-          "isOptional": true
-        },
-        {
-          "name": "raw",
-          "type": {
-            "_tag": "Arrays",
-            "rest": [
-              {
-                "_tag": "String",
-                "checks": [
-                  {
-                    "_tag": "Filter",
-                    "representation": {
-                      "id": "effect/schema/isMinLength",
-                      "payload": {
-                        "minLength": 1
-                      }
-                    }
-                  }
-                ]
-              }
-            ]
-          },
-          "isOptional": true
-        },
-        {
-          "$shared": "7fa3e0fa96a362fd"
         }
       ]
     },
-    "2c3d9239495bdaed": {
+    "0de4a039b5c99015": {
+      "name": "auth",
+      "type": {
+        "$shared": "03599fe8eb8af8c8"
+      },
+      "isOptional": false
+    },
+    "0e358d66b88c11a2": {
       "_tag": "Objects",
-      "propertySignatures": [],
-      "indexSignatures": [
+      "propertySignatures": [
         {
-          "$shared": "d57482dfc9bd7bc2"
+          "$shared": "a9be9e8f4a1c9ec3"
+        },
+        {
+          "name": "cardinality",
+          "type": {
+            "_tag": "Union",
+            "types": [
+              {
+                "_tag": "Literal",
+                "literal": "one"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "many"
+              }
+            ]
+          },
+          "isOptional": false
+        },
+        {
+          "name": "health",
+          "type": {
+            "_tag": "Literal",
+            "literal": true
+          },
+          "isOptional": true
+        }
+      ]
+    },
+    "2c3178e6088d6c8f": {
+      "_tag": "Union",
+      "types": [
+        {
+          "$shared": "0905d5058f59d59c"
+        },
+        {
+          "$shared": "bf80621d81fa9c57"
         }
       ]
     },
@@ -1128,76 +980,6 @@
         }
       ]
     },
-    "4dabb4c5075f39ee": {
-      "_tag": "Objects",
-      "propertySignatures": [
-        {
-          "name": "name",
-          "type": {
-            "_tag": "String",
-            "checks": [
-              {
-                "_tag": "Filter",
-                "representation": {
-                  "id": "effect/schema/isMinLength",
-                  "payload": {
-                    "minLength": 1
-                  }
-                }
-              }
-            ]
-          },
-          "isOptional": false
-        },
-        {
-          "$shared": "e755f69e762ed5d5"
-        },
-        {
-          "name": "hosts",
-          "type": {
-            "_tag": "Arrays",
-            "rest": [
-              {
-                "_tag": "Union",
-                "types": [
-                  {
-                    "_tag": "String",
-                    "checks": [
-                      {
-                        "_tag": "Filter",
-                        "representation": {
-                          "id": "effect/schema/isPattern",
-                          "payload": {
-                            "source": "^(\\*\\.)?[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*(?::[0-9]{1,5})?$",
-                            "flags": ""
-                          }
-                        }
-                      }
-                    ]
-                  },
-                  {
-                    "_tag": "String",
-                    "checks": [
-                      {
-                        "_tag": "Filter",
-                        "representation": {
-                          "id": "effect/schema/isPattern",
-                          "payload": {
-                            "source": "^(\\*\\.)?[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?(?:\\.[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?)*(?::[0-9]{1,5})?$",
-                            "flags": ""
-                          }
-                        }
-                      }
-                    ]
-                  }
-                ]
-              }
-            ]
-          },
-          "isOptional": true
-        }
-      ]
-    },
     "4ded759dcdba2403": {
       "_tag": "Arrays",
       "rest": [
@@ -1206,7 +988,7 @@
         }
       ]
     },
-    "4e7495d26fdf46fa": {
+    "54478fb2dab3dd0c": {
       "parameter": {
         "_tag": "String",
         "checks": [
@@ -1222,16 +1004,8 @@
         ]
       },
       "type": {
-        "$shared": "f032123577c19525"
+        "$shared": "2c3178e6088d6c8f"
       }
-    },
-    "59be27bc36aa674c": {
-      "_tag": "Arrays",
-      "rest": [
-        {
-          "$shared": "d977ddb8aed7458d"
-        }
-      ]
     },
     "6fe43caea1192cbc": {
       "_tag": "Objects",
@@ -1611,18 +1385,505 @@
       },
       "isOptional": true
     },
-    "835dd8be1d88f376": {
-      "_tag": "Union",
-      "types": [
+    "811e670c085fed24": {
+      "_tag": "Objects",
+      "propertySignatures": [],
+      "indexSignatures": [
         {
-          "$shared": "d977ddb8aed7458d"
-        },
-        {
-          "$shared": "59be27bc36aa674c"
+          "$shared": "54478fb2dab3dd0c"
         }
       ]
     },
-    "a2cfd530d9a633b5": {
+    "84d751e2b8647789": {
+      "parameter": {
+        "_tag": "String",
+        "checks": [
+          {
+            "_tag": "Filter",
+            "representation": {
+              "id": "effect/schema/isMinLength",
+              "payload": {
+                "minLength": 1
+              }
+            }
+          }
+        ]
+      },
+      "type": {
+        "$shared": "e767d75ff9c5934a"
+      }
+    },
+    "86e5a4257f991332": {
+      "_tag": "Objects",
+      "propertySignatures": [],
+      "indexSignatures": [
+        {
+          "$shared": "d66c2cc224bf37f1"
+        }
+      ]
+    },
+    "a9be9e8f4a1c9ec3": {
+      "name": "definition",
+      "type": {
+        "$shared": "d921827e3023e32c"
+      },
+      "isOptional": false
+    },
+    "bdb650b73e07a5e1": {
+      "_tag": "Objects",
+      "propertySignatures": [
+        {
+          "name": "type",
+          "type": {
+            "_tag": "Literal",
+            "literal": "oauth2"
+          },
+          "isOptional": false
+        },
+        {
+          "name": "grant",
+          "type": {
+            "_tag": "Literal",
+            "literal": "client_credentials"
+          },
+          "isOptional": false
+        },
+        {
+          "name": "discover",
+          "type": {
+            "_tag": "String",
+            "checks": [
+              {
+                "_tag": "Filter"
+              }
+            ]
+          },
+          "isOptional": false
+        },
+        {
+          "name": "authorizationServerMetadataUrl",
+          "type": {
+            "_tag": "String",
+            "checks": [
+              {
+                "_tag": "Filter"
+              }
+            ]
+          },
+          "isOptional": true
+        },
+        {
+          "name": "authorizationUrl",
+          "type": {
+            "_tag": "Never"
+          },
+          "isOptional": true
+        },
+        {
+          "name": "tokenUrl",
+          "type": {
+            "_tag": "Never"
+          },
+          "isOptional": true
+        },
+        {
+          "name": "revocationUrl",
+          "type": {
+            "_tag": "Never"
+          },
+          "isOptional": true
+        },
+        {
+          "name": "scopes",
+          "type": {
+            "_tag": "Arrays",
+            "rest": [
+              {
+                "_tag": "String"
+              }
+            ]
+          },
+          "isOptional": true
+        },
+        {
+          "name": "scopeSeparator",
+          "type": {
+            "_tag": "String",
+            "checks": [
+              {
+                "_tag": "Filter",
+                "representation": {
+                  "id": "effect/schema/isMinLength",
+                  "payload": {
+                    "minLength": 1
+                  }
+                }
+              }
+            ]
+          },
+          "isOptional": true
+        },
+        {
+          "name": "tokenRequestFormat",
+          "type": {
+            "_tag": "Union",
+            "types": [
+              {
+                "_tag": "Literal",
+                "literal": "form"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "json"
+              }
+            ]
+          },
+          "isOptional": true
+        },
+        {
+          "name": "tokenEndpointAuthMethod",
+          "type": {
+            "_tag": "Union",
+            "types": [
+              {
+                "_tag": "Literal",
+                "literal": "client_secret_post"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "client_secret_basic"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "client_secret_basic_raw"
+              }
+            ]
+          },
+          "isOptional": false
+        },
+        {
+          "name": "resource",
+          "type": {
+            "_tag": "Union",
+            "types": [
+              {
+                "_tag": "String",
+                "checks": [
+                  {
+                    "_tag": "Filter"
+                  }
+                ]
+              },
+              {
+                "_tag": "Null"
+              }
+            ]
+          },
+          "isOptional": true
+        },
+        {
+          "name": "clientGuide",
+          "type": {
+            "_tag": "String"
+          },
+          "isOptional": true
+        },
+        {
+          "name": "response",
+          "type": {
+            "_tag": "Objects",
+            "propertySignatures": [],
+            "indexSignatures": [
+              {
+                "parameter": {
+                  "_tag": "String"
+                },
+                "type": {
+                  "_tag": "Declaration",
+                  "representation": {
+                    "id": "effect/schema/Json",
+                    "payload": null
+                  }
+                }
+              }
+            ]
+          },
+          "isOptional": false
+        },
+        {
+          "name": "plain",
+          "type": {
+            "_tag": "Arrays",
+            "rest": [
+              {
+                "_tag": "String",
+                "checks": [
+                  {
+                    "_tag": "Filter",
+                    "representation": {
+                      "id": "effect/schema/isMinLength",
+                      "payload": {
+                        "minLength": 1
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          "isOptional": true
+        },
+        {
+          "name": "raw",
+          "type": {
+            "_tag": "Arrays",
+            "rest": [
+              {
+                "_tag": "String",
+                "checks": [
+                  {
+                    "_tag": "Filter",
+                    "representation": {
+                      "id": "effect/schema/isMinLength",
+                      "payload": {
+                        "minLength": 1
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          "isOptional": true
+        },
+        {
+          "$shared": "7fa3e0fa96a362fd"
+        }
+      ]
+    },
+    "bf80621d81fa9c57": {
+      "_tag": "Arrays",
+      "rest": [
+        {
+          "$shared": "0905d5058f59d59c"
+        }
+      ]
+    },
+    "cb1adddf4b26d5fb": {
+      "name": "provider",
+      "type": {
+        "$shared": "d921827e3023e32c"
+      },
+      "isOptional": false
+    },
+    "d66c2cc224bf37f1": {
+      "parameter": {
+        "_tag": "String",
+        "checks": [
+          {
+            "_tag": "Filter",
+            "representation": {
+              "id": "effect/schema/isMinLength",
+              "payload": {
+                "minLength": 1
+              }
+            }
+          }
+        ]
+      },
+      "type": {
+        "$shared": "0e358d66b88c11a2"
+      }
+    },
+    "d921827e3023e32c": {
+      "_tag": "Objects",
+      "propertySignatures": [
+        {
+          "name": "name",
+          "type": {
+            "_tag": "String",
+            "checks": [
+              {
+                "_tag": "Filter",
+                "representation": {
+                  "id": "effect/schema/isMinLength",
+                  "payload": {
+                    "minLength": 1
+                  }
+                }
+              }
+            ]
+          },
+          "isOptional": false
+        },
+        {
+          "$shared": "0de4a039b5c99015"
+        },
+        {
+          "name": "hosts",
+          "type": {
+            "_tag": "Arrays",
+            "rest": [
+              {
+                "_tag": "Union",
+                "types": [
+                  {
+                    "_tag": "String",
+                    "checks": [
+                      {
+                        "_tag": "Filter",
+                        "representation": {
+                          "id": "effect/schema/isPattern",
+                          "payload": {
+                            "source": "^(\\*\\.)?[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*(?::[0-9]{1,5})?$",
+                            "flags": ""
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "_tag": "String",
+                    "checks": [
+                      {
+                        "_tag": "Filter",
+                        "representation": {
+                          "id": "effect/schema/isPattern",
+                          "payload": {
+                            "source": "^(\\*\\.)?[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?(?:\\.[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?)*(?::[0-9]{1,5})?$",
+                            "flags": ""
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "isOptional": true
+        }
+      ]
+    },
+    "e767d75ff9c5934a": {
+      "_tag": "Union",
+      "types": [
+        {
+          "$shared": "e8644c38bd7a5d31"
+        },
+        {
+          "$shared": "f1877050e568b627"
+        },
+        {
+          "$shared": "eb746ec01ee9c849"
+        },
+        {
+          "$shared": "bdb650b73e07a5e1"
+        },
+        {
+          "$shared": "7ed8e66c05334e80"
+        }
+      ]
+    },
+    "e8644c38bd7a5d31": {
+      "_tag": "Objects",
+      "propertySignatures": [
+        {
+          "name": "type",
+          "type": {
+            "_tag": "Literal",
+            "literal": "secrets"
+          },
+          "isOptional": false
+        },
+        {
+          "name": "label",
+          "type": {
+            "_tag": "String"
+          },
+          "isOptional": false
+        },
+        {
+          "name": "guide",
+          "type": {
+            "_tag": "String"
+          },
+          "isOptional": true
+        },
+        {
+          "name": "fields",
+          "type": {
+            "_tag": "Objects",
+            "propertySignatures": [],
+            "indexSignatures": [
+              {
+                "parameter": {
+                  "_tag": "String"
+                },
+                "type": {
+                  "_tag": "Declaration",
+                  "representation": {
+                    "id": "effect/schema/Json",
+                    "payload": null
+                  }
+                }
+              }
+            ]
+          },
+          "isOptional": false
+        },
+        {
+          "name": "plain",
+          "type": {
+            "_tag": "Arrays",
+            "rest": [
+              {
+                "_tag": "String",
+                "checks": [
+                  {
+                    "_tag": "Filter",
+                    "representation": {
+                      "id": "effect/schema/isMinLength",
+                      "payload": {
+                        "minLength": 1
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          "isOptional": true
+        },
+        {
+          "name": "raw",
+          "type": {
+            "_tag": "Arrays",
+            "rest": [
+              {
+                "_tag": "String",
+                "checks": [
+                  {
+                    "_tag": "Filter",
+                    "representation": {
+                      "id": "effect/schema/isMinLength",
+                      "payload": {
+                        "minLength": 1
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          "isOptional": true
+        },
+        {
+          "$shared": "7fa3e0fa96a362fd"
+        }
+      ]
+    },
+    "eb746ec01ee9c849": {
       "_tag": "Objects",
       "propertySignatures": [
         {
@@ -1691,6 +1952,13 @@
                   ]
                 },
                 "isOptional": false
+              },
+              {
+                "name": "requiredOnExchange",
+                "type": {
+                  "_tag": "Boolean"
+                },
+                "isOptional": true
               }
             ]
           },
@@ -1937,40 +2205,7 @@
         }
       ]
     },
-    "b10d246bc4dc9b25": {
-      "_tag": "Objects",
-      "propertySignatures": [
-        {
-          "$shared": "e4c9fad4e3fe588b"
-        },
-        {
-          "name": "cardinality",
-          "type": {
-            "_tag": "Union",
-            "types": [
-              {
-                "_tag": "Literal",
-                "literal": "one"
-              },
-              {
-                "_tag": "Literal",
-                "literal": "many"
-              }
-            ]
-          },
-          "isOptional": false
-        },
-        {
-          "name": "health",
-          "type": {
-            "_tag": "Literal",
-            "literal": true
-          },
-          "isOptional": true
-        }
-      ]
-    },
-    "bdb650b73e07a5e1": {
+    "f1877050e568b627": {
       "_tag": "Objects",
       "propertySignatures": [
         {
@@ -1982,12 +2217,153 @@
           "isOptional": false
         },
         {
+          "name": "scopeSeparator",
+          "type": {
+            "_tag": "String",
+            "checks": [
+              {
+                "_tag": "Filter",
+                "representation": {
+                  "id": "effect/schema/isMinLength",
+                  "payload": {
+                    "minLength": 1
+                  }
+                }
+              }
+            ]
+          },
+          "isOptional": true
+        },
+        {
+          "name": "tokenRequestFormat",
+          "type": {
+            "_tag": "Union",
+            "types": [
+              {
+                "_tag": "Literal",
+                "literal": "form"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "json"
+              }
+            ]
+          },
+          "isOptional": true
+        },
+        {
+          "name": "tokenResponse",
+          "type": {
+            "_tag": "Objects",
+            "propertySignatures": [
+              {
+                "name": "path",
+                "type": {
+                  "_tag": "String",
+                  "checks": [
+                    {
+                      "_tag": "Filter",
+                      "representation": {
+                        "id": "effect/schema/isPattern",
+                        "payload": {
+                          "source": "^[^.]+(\\.[^.]+)*$",
+                          "flags": ""
+                        }
+                      }
+                    }
+                  ]
+                },
+                "isOptional": false
+              },
+              {
+                "name": "requiredOnExchange",
+                "type": {
+                  "_tag": "Boolean"
+                },
+                "isOptional": true
+              }
+            ]
+          },
+          "isOptional": true
+        },
+        {
           "name": "grant",
           "type": {
             "_tag": "Literal",
-            "literal": "client_credentials"
+            "literal": "authorization_code"
           },
-          "isOptional": false
+          "isOptional": true
+        },
+        {
+          "name": "authorizationParams",
+          "type": {
+            "_tag": "Objects",
+            "propertySignatures": [],
+            "indexSignatures": [
+              {
+                "parameter": {
+                  "_tag": "String"
+                },
+                "type": {
+                  "_tag": "String"
+                }
+              }
+            ],
+            "checks": [
+              {
+                "_tag": "Filter",
+                "annotations": {
+                  "message": "Authorization parameters cannot replace protocol parameters such as state or scope."
+                }
+              }
+            ]
+          },
+          "isOptional": true
+        },
+        {
+          "name": "tokenEndpointAuthMethod",
+          "type": {
+            "_tag": "Union",
+            "types": [
+              {
+                "_tag": "Literal",
+                "literal": "none"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "client_secret_post"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "client_secret_basic"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "client_secret_basic_raw"
+              }
+            ]
+          },
+          "isOptional": true
+        },
+        {
+          "name": "resource",
+          "type": {
+            "_tag": "Union",
+            "types": [
+              {
+                "_tag": "String",
+                "checks": [
+                  {
+                    "_tag": "Filter"
+                  }
+                ]
+              },
+              {
+                "_tag": "Null"
+              }
+            ]
+          },
+          "isOptional": true
         },
         {
           "name": "discover",
@@ -2041,82 +2417,6 @@
             "rest": [
               {
                 "_tag": "String"
-              }
-            ]
-          },
-          "isOptional": true
-        },
-        {
-          "name": "scopeSeparator",
-          "type": {
-            "_tag": "String",
-            "checks": [
-              {
-                "_tag": "Filter",
-                "representation": {
-                  "id": "effect/schema/isMinLength",
-                  "payload": {
-                    "minLength": 1
-                  }
-                }
-              }
-            ]
-          },
-          "isOptional": true
-        },
-        {
-          "name": "tokenRequestFormat",
-          "type": {
-            "_tag": "Union",
-            "types": [
-              {
-                "_tag": "Literal",
-                "literal": "form"
-              },
-              {
-                "_tag": "Literal",
-                "literal": "json"
-              }
-            ]
-          },
-          "isOptional": true
-        },
-        {
-          "name": "tokenEndpointAuthMethod",
-          "type": {
-            "_tag": "Union",
-            "types": [
-              {
-                "_tag": "Literal",
-                "literal": "client_secret_post"
-              },
-              {
-                "_tag": "Literal",
-                "literal": "client_secret_basic"
-              },
-              {
-                "_tag": "Literal",
-                "literal": "client_secret_basic_raw"
-              }
-            ]
-          },
-          "isOptional": false
-        },
-        {
-          "name": "resource",
-          "type": {
-            "_tag": "Union",
-            "types": [
-              {
-                "_tag": "String",
-                "checks": [
-                  {
-                    "_tag": "Filter"
-                  }
-                ]
-              },
-              {
-                "_tag": "Null"
               }
             ]
           },
@@ -2199,292 +2499,6 @@
         },
         {
           "$shared": "7fa3e0fa96a362fd"
-        }
-      ]
-    },
-    "c6afd70b53c5f872": {
-      "name": "provider",
-      "type": {
-        "$shared": "4dabb4c5075f39ee"
-      },
-      "isOptional": false
-    },
-    "d57482dfc9bd7bc2": {
-      "parameter": {
-        "_tag": "String",
-        "checks": [
-          {
-            "_tag": "Filter",
-            "representation": {
-              "id": "effect/schema/isMinLength",
-              "payload": {
-                "minLength": 1
-              }
-            }
-          }
-        ]
-      },
-      "type": {
-        "$shared": "835dd8be1d88f376"
-      }
-    },
-    "d9139edb619b7be9": {
-      "_tag": "Objects",
-      "propertySignatures": [],
-      "indexSignatures": [
-        {
-          "$shared": "4e7495d26fdf46fa"
-        }
-      ]
-    },
-    "d977ddb8aed7458d": {
-      "_tag": "Objects",
-      "propertySignatures": [
-        {
-          "name": "id",
-          "type": {
-            "_tag": "String",
-            "checks": [
-              {
-                "_tag": "Filter",
-                "representation": {
-                  "id": "effect/schema/isStartingWith",
-                  "payload": {
-                    "startsWith": "acc_"
-                  }
-                }
-              },
-              {
-                "_tag": "Filter",
-                "representation": {
-                  "id": "effect/schema/isMinLength",
-                  "payload": {
-                    "minLength": 5
-                  }
-                }
-              }
-            ]
-          },
-          "isOptional": false
-        },
-        {
-          "$shared": "c6afd70b53c5f872"
-        },
-        {
-          "name": "method",
-          "type": {
-            "_tag": "String",
-            "checks": [
-              {
-                "_tag": "Filter",
-                "representation": {
-                  "id": "effect/schema/isMinLength",
-                  "payload": {
-                    "minLength": 1
-                  }
-                }
-              }
-            ]
-          },
-          "isOptional": false
-        },
-        {
-          "name": "generation",
-          "type": {
-            "_tag": "Number",
-            "checks": [
-              {
-                "_tag": "Filter",
-                "representation": {
-                  "id": "effect/schema/isInt",
-                  "payload": null
-                }
-              }
-            ]
-          },
-          "isOptional": true
-        },
-        {
-          "name": "fields",
-          "type": {
-            "_tag": "Objects",
-            "propertySignatures": [],
-            "indexSignatures": [
-              {
-                "parameter": {
-                  "_tag": "String"
-                },
-                "type": {
-                  "_tag": "Declaration",
-                  "representation": {
-                    "id": "effect/schema/Json",
-                    "payload": null
-                  }
-                }
-              }
-            ]
-          },
-          "isOptional": false
-        }
-      ]
-    },
-    "dfe4b13c46818e91": {
-      "parameter": {
-        "_tag": "String",
-        "checks": [
-          {
-            "_tag": "Filter",
-            "representation": {
-              "id": "effect/schema/isMinLength",
-              "payload": {
-                "minLength": 1
-              }
-            }
-          }
-        ]
-      },
-      "type": {
-        "$shared": "b10d246bc4dc9b25"
-      }
-    },
-    "e4c9fad4e3fe588b": {
-      "name": "definition",
-      "type": {
-        "$shared": "4dabb4c5075f39ee"
-      },
-      "isOptional": false
-    },
-    "e755f69e762ed5d5": {
-      "name": "auth",
-      "type": {
-        "$shared": "d9139edb619b7be9"
-      },
-      "isOptional": false
-    },
-    "e8644c38bd7a5d31": {
-      "_tag": "Objects",
-      "propertySignatures": [
-        {
-          "name": "type",
-          "type": {
-            "_tag": "Literal",
-            "literal": "secrets"
-          },
-          "isOptional": false
-        },
-        {
-          "name": "label",
-          "type": {
-            "_tag": "String"
-          },
-          "isOptional": false
-        },
-        {
-          "name": "guide",
-          "type": {
-            "_tag": "String"
-          },
-          "isOptional": true
-        },
-        {
-          "name": "fields",
-          "type": {
-            "_tag": "Objects",
-            "propertySignatures": [],
-            "indexSignatures": [
-              {
-                "parameter": {
-                  "_tag": "String"
-                },
-                "type": {
-                  "_tag": "Declaration",
-                  "representation": {
-                    "id": "effect/schema/Json",
-                    "payload": null
-                  }
-                }
-              }
-            ]
-          },
-          "isOptional": false
-        },
-        {
-          "name": "plain",
-          "type": {
-            "_tag": "Arrays",
-            "rest": [
-              {
-                "_tag": "String",
-                "checks": [
-                  {
-                    "_tag": "Filter",
-                    "representation": {
-                      "id": "effect/schema/isMinLength",
-                      "payload": {
-                        "minLength": 1
-                      }
-                    }
-                  }
-                ]
-              }
-            ]
-          },
-          "isOptional": true
-        },
-        {
-          "name": "raw",
-          "type": {
-            "_tag": "Arrays",
-            "rest": [
-              {
-                "_tag": "String",
-                "checks": [
-                  {
-                    "_tag": "Filter",
-                    "representation": {
-                      "id": "effect/schema/isMinLength",
-                      "payload": {
-                        "minLength": 1
-                      }
-                    }
-                  }
-                ]
-              }
-            ]
-          },
-          "isOptional": true
-        },
-        {
-          "$shared": "7fa3e0fa96a362fd"
-        }
-      ]
-    },
-    "f032123577c19525": {
-      "_tag": "Union",
-      "types": [
-        {
-          "$shared": "e8644c38bd7a5d31"
-        },
-        {
-          "$shared": "24303971fc45ad9c"
-        },
-        {
-          "$shared": "a2cfd530d9a633b5"
-        },
-        {
-          "$shared": "bdb650b73e07a5e1"
-        },
-        {
-          "$shared": "7ed8e66c05334e80"
-        }
-      ]
-    },
-    "fa10a18585e99273": {
-      "_tag": "Objects",
-      "propertySignatures": [],
-      "indexSignatures": [
-        {
-          "$shared": "dfe4b13c46818e91"
         }
       ]
     }
