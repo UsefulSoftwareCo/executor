@@ -41,7 +41,7 @@
     },
     "apps/cli": {
       "name": "executor",
-      "version": "2.0.0-beta.79",
+      "version": "2.0.0-beta.80",
     },
     "apps/docs": {
       "name": "@executor-js/docs",

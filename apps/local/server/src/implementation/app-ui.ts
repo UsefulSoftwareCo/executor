@@ -75,7 +75,7 @@ export const appUi = (
       if (id === null) return yield* failed();
       const metadata = yield* executor.apps.version({
         app: app.id,
-        owner: localOwner,
+        owner: app.owner,
         version: id,
       });
       return UiBuild.make({ id: metadata.id, build: metadata.build });

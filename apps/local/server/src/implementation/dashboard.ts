@@ -282,11 +282,12 @@ export const dashboard = (
       const app = yield* executor.apps.get({ app: appId });
       const versions = yield* executor.apps.versions({ app: appId });
       const pages = yield* uiPages(app).pipe(Effect.mapError(() => new StorageError()));
+      const served = app.owner === owner;
       return {
         app,
-        uiUrl: pages.main ? HttpUrl.make(appOrigin(app.id, config.port)) : null,
+        uiUrl: served && pages.main ? HttpUrl.make(appOrigin(app.id, config.port)) : null,
         uiIcon: pages.icon,
-        uiMenuBar: pages.menuBar,
+        uiMenuBar: served && pages.menuBar,
         canDelete: app.id !== managedApp,
         versions,
       };
