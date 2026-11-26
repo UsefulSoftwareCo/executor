@@ -1,14 +1,3 @@
-/**
- * Copy one stage's Alchemy state from the local store into the shared Cloudflare state store.
- * Run once per stack when a stage moves from a laptop to shared ownership, then delete the local
- * records so nothing applies against stale state.
- *
- *   agent-vault run --env-file .env.v2.op -- node apps/hosted/cloud/scripts/migrate-state.ts \
- *     --stack executor-next-hosted --stage v2 [--delete-local]
- *
- * Cloudflare credentials come from CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID. The script
- * refuses to overwrite a stage that already has records in the shared store.
- */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import { layer } from "alchemy/Alchemist/Runtime";
 import { store } from "alchemy/Alchemist/routes/state";

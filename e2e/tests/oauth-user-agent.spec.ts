@@ -1,8 +1,3 @@
-/**
- * OAuth sign-in completes against an authorization server that, like some behind a firewall,
- * refuses requests without a User-Agent. Discovery names Executor; Workers send no User-Agent of
- * their own.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
@@ -58,7 +53,6 @@ export default defineApp({user:{accounts:{service}}},async()=>({tools: router({}
           api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
         );
 
-        // Discovery reads the server's metadata and finds dynamic registration.
         const setup = yield* api.request(
           actors.owner,
           "GET",
@@ -67,7 +61,6 @@ export default defineApp({user:{accounts:{service}}},async()=>({tools: router({}
         expect(setup.status, JSON.stringify(setup.body)).toBe(200);
         expect((yield* body(Setup, setup)).mode).toBe("automatic");
 
-        // Sign-in registers a client, and the callback exchanges its code for tokens.
         const connection = yield* body(
           Resource,
           yield* api.request(
@@ -87,7 +80,6 @@ export default defineApp({user:{accounts:{service}}},async()=>({tools: router({}
         const signIn = yield* body(SignIn, started);
         const callbackUrl = yield* Effect.scoped(
           Effect.gen(function* () {
-            // The user's browser names itself.
             const consent = yield* HttpClient.withScope(http).get(signIn.authorizationUrl, {
               headers: { "user-agent": "Synthetic browser" },
             });
@@ -112,8 +104,6 @@ export default defineApp({user:{accounts:{service}}},async()=>({tools: router({}
             .pipe(Effect.orDie),
         );
 
-        // Every request reached the server with a User-Agent, so none was refused. Executor names
-        // itself on the metadata it fetches; the OAuth library names itself on what it sends.
         const metrics = yield* issuer.metrics;
         expect(metrics.registrations).toBe(1);
         expect(metrics.tokenExchanges).toBe(1);

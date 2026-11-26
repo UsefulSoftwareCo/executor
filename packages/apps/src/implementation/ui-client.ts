@@ -56,7 +56,6 @@ const visibleResult = <E>(
 ): AsyncResult.AsyncResult<ObservedQueryValue<unknown>, E | UiFailed> => {
   const current = AsyncResult.value(result);
   if (Option.isNone(current) || !(current.value instanceof Retrying)) {
-    // SAFETY: without a Retrying value, every present value is a snapshot.
     return result as AsyncResult.AsyncResult<ObservedQueryValue<unknown>, E>;
   }
   const previous = Option.map(
@@ -84,16 +83,12 @@ export const createAppClient = () => {
     event.preventDefault();
     event.returnValue = "";
   };
-  // Protect queued writes as well as the request currently awaiting its response.
-  // Reconciliation reads can outlive acknowledgement and do not need this guard.
   const awaitWrite = <A>(effect: Effect.Effect<A, unknown>): Promise<A> => {
     if (pendingWrites++ === 0) window.addEventListener("beforeunload", beforeUnload);
     return runtime.runPromise(effect).finally(() => {
       if (--pendingWrites === 0) window.removeEventListener("beforeunload", beforeUnload);
     });
   };
-  // A host that embeds this page keeps it mounted behind its other tabs, where the browser still
-  // reports it visible. The host says when it shows or hides the page; a page it never told is shown.
   let shown = true;
   const isActive = () => shown && document.visibilityState === "visible";
   let active = isActive();
@@ -116,7 +111,6 @@ export const createAppClient = () => {
   };
   window.addEventListener("message", onHostMessage);
   document.addEventListener("visibilitychange", activeChanged);
-  // The host answers with whether it shows this page; the request itself carries nothing.
   if (window.parent !== window) window.parent.postMessage({ type: "executor:app-client" }, "*");
   const onHide = (event: PageTransitionEvent) => {
     if (!event.persisted) void dispose().catch((error) => console.error(error));
@@ -231,7 +225,6 @@ export const createAppClient = () => {
                     if (frame.type === "failure") return Effect.fail(frame.error);
                     const server = externalTrace(frame.trace);
                     return Effect.gen(function* () {
-                      // This page's own schema rejects its version's snapshot; retrying cannot help.
                       const value = yield* EffectSchema.decodeUnknownEffect(decoderOf(output))(
                         frame.value,
                       ).pipe(Effect.mapError(() => new AppQueryFailed()));
@@ -281,8 +274,6 @@ export const createAppClient = () => {
               );
             }),
           ).pipe(
-            // Keep the last snapshot while the watcher replaces the document.
-            // Unmount or client disposal interrupts the version-change wait.
             Stream.catch((error) =>
               EffectSchema.is(UiVersionChanged)(error)
                 ? Stream.unwrap(versionChanged.pipe(Effect.as(Stream.never)))
@@ -313,7 +304,6 @@ export const createAppClient = () => {
                     ),
                   ),
                 ),
-                // Shown outside the retried stream, so they do not reset its delay.
                 Stream.fromQueue(retrying),
                 { haltStrategy: "left" },
               );

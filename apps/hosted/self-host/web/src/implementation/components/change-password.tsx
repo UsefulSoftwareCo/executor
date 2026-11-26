@@ -23,7 +23,6 @@ const minLength = 8;
 const inputClass =
   "w-[min(100%,_520px)] h-9 rounded-[6px] bg-transparent shadow-none max-[640px]:h-10 max-[640px]:text-[16px]";
 
-/** The security card while the self-host bundle loads. */
 export function ChangePasswordPending() {
   return (
     <AccountSettingPending
@@ -35,7 +34,6 @@ export function ChangePasswordPending() {
   );
 }
 
-/** Self-host accounts sign in with a password; the server checks the current one. */
 export function ChangePassword() {
   const change = useAtomSet(changePasswordAtom, { mode: "promiseExit" });
   const state = useAtomValue(changePasswordAtom);

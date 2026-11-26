@@ -1,11 +1,3 @@
-/**
- * Stored OAuth clients belong to the organization and the authorization server they sign in at,
- * not to one app's provider definition. Two apps whose providers describe the same server, one by
- * discovery and one by declared endpoints and issuer, are offered and sign in with one client an
- * administrator registered once. An app whose provider declares endpoints without an issuer signs
- * in at its token endpoint's server, which is another one: it is not offered that client and
- * cannot name it.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
@@ -61,13 +53,11 @@ const Redirect = Schema.Struct({
 });
 const Tagged = Schema.Struct({ _tag: Schema.String });
 
-/** Synthetic client details the loopback service accepts once allowed. */
 const sharedClient = {
   clientId: "synthetic-shared-issuer-client",
   clientSecret: "synthetic-shared-issuer-secret",
 };
 
-/** An app whose provider declares the service's endpoints, and its issuer when given. */
 const declaredAppFiles = (name: string, origin: string, issuer: string | undefined) => [
   {
     path: "index.ts",
@@ -110,7 +100,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients by issuer", (it)
           http = yield* HttpClient.HttpClient;
         const issuer = yield* oauthSetupIssuer;
         const prefix = `/api/organizations/${actors.organization.id}`;
-        // Only registered clients can sign in: the service offers no registration.
         yield* issuer.configure({ registration: false, tokenError: null });
         const suffix = randomUUID().slice(0, 8);
 
@@ -127,7 +116,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients by issuer", (it)
             );
             return { id: app.id, name, provider: app.requirements.accounts.service.provider };
           });
-        // Two definitions of one server: discovered, and declared with the issuer it publishes.
         const discovered = yield* deploy(
           `Discovered ${suffix}`,
           oauthMcpAppFiles(`Discovered ${suffix}`, `${issuer.origin}/mcp`),
@@ -136,14 +124,12 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients by issuer", (it)
           `Declared ${suffix}`,
           declaredAppFiles(`Declared ${suffix}`, issuer.origin, issuer.origin),
         );
-        // Endpoints without an issuer: the server is named by its token endpoint.
         const elsewhere = yield* deploy(
           `Elsewhere ${suffix}`,
           declaredAppFiles(`Elsewhere ${suffix}`, issuer.origin, undefined),
         );
         expect(new Set([discovered.provider, declared.provider, elsewhere.provider]).size).toBe(3);
 
-        // The client manager lists servers, each with the apps that sign in there.
         const directory = yield* body(
           Directory,
           yield* api.request(actors.admin, "GET", `${prefix}/oauth-clients`),
@@ -156,7 +142,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients by issuer", (it)
         expect(service(issuer.origin)).toEqual([discovered.provider, declared.provider].toSorted());
         expect(service(`${issuer.origin}/token`)).toEqual([elsewhere.provider]);
 
-        // One client, registered once for the server.
         const registered = yield* api.request(actors.admin, "POST", `${prefix}/oauth-clients`, {
           issuer: issuer.origin,
           ...sharedClient,
@@ -164,7 +149,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients by issuer", (it)
         expect(registered.status, JSON.stringify(registered.body)).toBe(200);
         const client = (yield* body(Registered, registered)).client;
         expect(client.issuer).toBe(issuer.origin);
-        // The same details for the same server are one client.
         const again = yield* api.request(actors.admin, "POST", `${prefix}/oauth-clients`, {
           issuer: issuer.origin,
           ...sharedClient,
@@ -185,7 +169,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients by issuer", (it)
           issuer: issuer.origin,
           clients: offered,
         });
-        // Another server's sign-in is not offered the client.
         expect(yield* options(elsewhere.provider)).toMatchObject({
           issuer: `${issuer.origin}/token`,
           clients: [],
@@ -220,12 +203,10 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients by issuer", (it)
             }),
           ).pipe(Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }));
 
-        // Naming the client for the other server's app is refused as not found.
         const refused = yield* start(yield* connection(elsewhere.id));
         expect(refused.status, JSON.stringify(refused.body)).toBe(404);
         expect((yield* body(Tagged, refused))._tag).toBe("OAuthClientNotFound");
 
-        // Both apps of the server sign in with the one client.
         for (const app of [discovered, declared]) {
           const id = yield* connection(app.id);
           const redirect = yield* body(Redirect, yield* start(id));
@@ -238,7 +219,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients by issuer", (it)
           );
           expect(completed.status, `${app.name}: ${JSON.stringify(completed.body)}`).toBe(200);
         }
-        // Still one stored client.
         const after = yield* body(
           Directory,
           yield* api.request(actors.admin, "GET", `${prefix}/oauth-clients`),
@@ -249,8 +229,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients by issuer", (it)
           { client: { id: client.id, clientId: sharedClient.clientId, issuer: issuer.origin } },
         ]);
 
-        // The client manager names the client by the apps that sign in at its server, and
-        // registering picks a server, each listed with its apps.
         const browser = yield* Browser;
         const host = new URL(issuer.origin).host;
         const sharedName = [declared.name, discovered.name].toSorted().join(", ");

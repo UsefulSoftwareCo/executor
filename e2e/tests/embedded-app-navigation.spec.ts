@@ -1,4 +1,3 @@
-/** How the App tab appears, which tab opens, and what a prewarmed screen does behind other tabs. */
 import { expect, layer } from "@effect/vitest";
 import { Effect } from "effect";
 import type { Page, Request, Route } from "playwright";
@@ -24,7 +23,6 @@ const screenFiles = [
   appsManifest,
 ];
 
-/** Polls one query every second through the app client, and shows whether its host shows it. */
 const pollingFiles = [
   {
     path: "index.ts",
@@ -60,7 +58,6 @@ const selected = (page: Page) =>
     .allTextContents()
     .then((names) => names.map((name) => name.trim()));
 
-/** Hold every read whose URL matches until released, whether batched or sent on its own. */
 const hold = (page: Page, matches: (url: URL) => boolean) => {
   let release!: () => void;
   let requested!: () => void;
@@ -75,7 +72,6 @@ const hold = (page: Page, matches: (url: URL) => boolean) => {
   };
   return page.route(matches, route).then(() => ({
     requested: seen,
-    // Held reads continue before the route is removed.
     release: () => {
       release();
       return Promise.all(held).then(() => page.unroute(matches, route));
@@ -118,8 +114,6 @@ layer(HostedLive, { excludeTestServices: true })("Embedded app navigation", (it)
           screenFiles.filter((file) => !file.path.startsWith("ui/")),
         );
         yield* browser.login(actors.owner);
-        // A document load renders the app's access on the server, so the page is opened in the
-        // browser from a page that never read the Apps list.
         const access = yield* browser.use("Hold the app's access", (page) =>
           hold(page, readOf(screen.app.id, "/access")),
         );
@@ -128,7 +122,6 @@ layer(HostedLive, { excludeTestServices: true })("Embedded app navigation", (it)
         );
         yield* openThroughBrowser("Open the app without the Apps list", screen.detail);
         yield* browser.use("Wait for the app's access read", () => access.requested);
-        // Until access answers, the tab keeps its place, nothing is selected and no frame loads.
         expect(
           yield* browser.use("The App tab holds its place", (page) =>
             Promise.all([
@@ -164,7 +157,6 @@ layer(HostedLive, { excludeTestServices: true })("Embedded app navigation", (it)
             .goto(`${screen.detail}?view=overview`)
             .then(() => tab(page, "App").waitFor())
             .then(() =>
-              // Roles skip a hidden frame's content, so the prewarmed heading is found by text.
               page
                 .frameLocator("iframe")
                 .locator("h1", { hasText: "Screen fixture" })
@@ -175,8 +167,6 @@ layer(HostedLive, { excludeTestServices: true })("Embedded app navigation", (it)
           yield* browser.use("An explicit view stays selected once the screen loads", selected),
         ).toEqual(["Overview"]);
 
-        // A tool-only app opens on Overview while its access is still unknown: its record alone
-        // says it has no screen, so its tab never holds a place.
         const toolAccess = yield* browser.use("Hold the tool-only app's access", (page) =>
           hold(page, readOf(toolOnly.app.id, "/access")),
         );
@@ -220,12 +210,10 @@ layer(HostedLive, { excludeTestServices: true })("Embedded app navigation", (it)
         const frame = (page: Page) => page.frameLocator(`iframe[title="${polling.app.name} app"]`);
         const shown = (page: Page, active: boolean) =>
           frame(page).locator(`body[data-active="${active}"]`).waitFor({ state: "attached" });
-        // The frame loads behind Overview and hears that its host does not show it.
         yield* browser.use("Prewarm the screen behind Overview", (page) => {
           page.on("request", count);
           return page.goto(`${polling.detail}?view=overview`).then(() => shown(page, false));
         });
-        // A poll that ignored its host would query three times in this window.
         const sent = (window: Parameters<typeof Effect.sleep>[0]) =>
           Effect.gen(function* () {
             const before = queries.length;

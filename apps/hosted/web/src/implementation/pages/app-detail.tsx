@@ -70,8 +70,8 @@ import {
 import { type OrganizationPageReads, useOrganizationRoute } from "../components/organization.tsx";
 import { AppTools } from "./app-tools.tsx";
 import { AppSource, AppVersions } from "./app-source.tsx";
+import { AppDesktopSettings } from "./app-sign-in.tsx";
 
-/** The organization's inventory and the app, its linked accounts and its access, keyed by the URL. */
 export const appDetailPageReads: OrganizationPageReads = (organization, params) =>
   Option.match(Schema.decodeUnknownOption(AppId)(params.appId), {
     onNone: () => [],
@@ -84,13 +84,8 @@ export const appDetailPageReads: OrganizationPageReads = (organization, params) 
     ],
   });
 
-/** Views that read only the app. The others also read the inventory and the app's links. */
 const appWideViews: ReadonlySet<AppView> = new Set(["settings", "versions", "source", "history"]);
 
-/**
- * Links with their sign-in state and checks by this app. Accounts the caller can use show the
- * inventory's details, which renames keep current; others only the link's.
- */
 const withSummaries = (
   links: readonly AppAccountLink[],
   summaries: readonly AccountSummary[],
@@ -105,7 +100,6 @@ const withSummaries = (
     },
   }));
 
-/** Views that run app code use the accounts linked to the app. */
 export function AppDetailPage({
   appId,
   view,
@@ -145,10 +139,7 @@ export function AppDetailPage({
     app: AsyncResult.isFailure(query.result),
     access: AsyncResult.isFailure(authority.result),
   });
-  // Only callers who can use the app get its tab and its prewarmed frame.
   const screenApp = screenTab === "present" ? app : undefined;
-  // Without a view in the URL, an app with a screen opens on it. The choice waits for that answer
-  // instead of showing Overview and switching once the screen turns up.
   const selectedView: AppView | undefined =
     view ??
     (tool !== undefined
@@ -193,7 +184,14 @@ export function AppDetailPage({
       </Button>
     </div>
   );
-  const pending = <AppDetailLoading view={selectedView} app={app} selectedTool={tool} />;
+  const pending = (
+    <AppDetailLoading
+      view={selectedView}
+      app={app}
+      selectedTool={tool}
+      canEdit={access === undefined ? undefined : canManage}
+    />
+  );
   return (
     <AppDetailLayout
       key={appId}
@@ -325,6 +323,7 @@ export function AppDetailPage({
                   <section className="rounded-lg border p-5">
                     <AppAccessSettings app={current.id} />
                   </section>
+                  {canUse && <AppDesktopSettings app={current} />}
                 </AppSettings>
               );
             if (
@@ -567,7 +566,6 @@ function DeleteApp({ app }: { readonly app: App }) {
   );
 }
 
-/** The mutation acknowledges shared metadata before the dialog closes. */
 function AppRename({ app }: { readonly app: App }) {
   const { organization } = useOrganizationRoute();
   const rename = useAtomSet(renameAppAtom({ organization, app: app.id }), { mode: "promiseExit" });

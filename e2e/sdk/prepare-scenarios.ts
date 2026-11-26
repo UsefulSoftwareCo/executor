@@ -1,11 +1,9 @@
-/** Provision selected Cloud organizations together before measuring their independent scenarios. */
 import {
   Clock,
   Console,
   Effect,
   FileSystem,
   Layer,
-  Option,
   Ref,
   Result,
   Schedule,
@@ -16,57 +14,144 @@ import {
 import { HttpClient, HttpClientError } from "effect/http";
 import { randomBytes } from "node:crypto";
 import { Actors } from "../support/actors.ts";
-import { SessionClients } from "../support/api.ts";
+import { RequestFailed, SessionClients } from "../support/api.ts";
+import { errorCode, keptCauseParts } from "../support/failure-text.ts";
 import { Target } from "../support/platform.ts";
-import { PreparedScenarios } from "./contracts.ts";
+import { OriginUnreachable, PreparedScenarios, ProvisioningFailure } from "./contracts.ts";
 import { startScenario } from "./scenario.ts";
 import { awaitCompiler } from "./compiler-readiness.ts";
+import { FixtureFailed, fixtureRequest, type FixtureControl } from "./fixtures.ts";
+import { saveLostRequests } from "../lost-requests.ts";
+import { configureLostConnections, takeAllLostRequests } from "../support/lost-connections.ts";
+import { targetHosts } from "../support/role-hosts.ts";
+import { drainWebhookQueue, fixtureQueueCount } from "./webhook-queue.ts";
+import type { SpanQuery } from "../support/contracts.ts";
 
 class DomainNotReady extends Schema.TaggedError<DomainNotReady>()("DomainNotReady", {
   reason: Schema.Literals(["http", "transport", "timeout"]),
   status: Schema.optional(Schema.Number),
   code: Schema.optional(Schema.String),
 }) {}
-const TransportDiagnostic = Schema.Struct({
-  code: Schema.optional(
-    Schema.Literals([
-      "ENOTFOUND",
-      "EAI_AGAIN",
-      "ECONNRESET",
-      "ECONNREFUSED",
-      "ETIMEDOUT",
-      "ERR_TLS_CERT_ALTNAME_INVALID",
-      "CERT_HAS_EXPIRED",
-      "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
-      "ERR_SSL_SSLV3_ALERT_HANDSHAKE_FAILURE",
-      "ERR_SSL_SSL/TLS_ALERT_HANDSHAKE_FAILURE",
-      "ERR_SSL_TLSV1_ALERT_INTERNAL_ERROR",
-    ]),
-  ),
-  cause: Schema.optional(Schema.Unknown),
-});
-const transportCode = (cause: unknown, depth = 0): string | undefined => {
-  if (depth > 3) return undefined;
-  const parsed = Schema.decodeUnknownOption(TransportDiagnostic)(cause);
-  return Option.isNone(parsed)
-    ? undefined
-    : (parsed.value.code ?? transportCode(parsed.value.cause, depth + 1));
+export const preparationFailure = (error: unknown) =>
+  Schema.is(RequestFailed)(error)
+    ? {
+        method: error.method,
+        path: error.path,
+        status: error.status,
+        reason: error.reason,
+        response: error.response,
+        failure: error.failure,
+        causes: keptCauseParts(error),
+      }
+    : Schema.is(FixtureFailed)(error)
+      ? { operation: error.operation, status: error.status, reason: error.reason }
+      : undefined;
+const transportClass = (causes: ReadonlyArray<string>, code: string | undefined) => {
+  const text = causes.join(" ").toLowerCase();
+  if (text.includes("handshake failure") || text.includes("ssl routines"))
+    return "TLS handshake failure";
+  if (code === "ECONNRESET" || text.includes("econnreset") || text.includes("other side closed"))
+    return "connection reset";
+  if (code === "ECONNREFUSED" || text.includes("econnrefused")) return "connection refused";
+  if (code === "ENOTFOUND" || code === "EAI_AGAIN" || text.includes("enotfound"))
+    return "DNS lookup failed";
+  if (code === "ETIMEDOUT" || code === "UND_ERR_CONNECT_TIMEOUT") return "connection timed out";
+  return code;
 };
+export const provisioningFailure = (
+  organization: UnavailableOrganization,
+): typeof ProvisioningFailure.Type => {
+  const detail = organization.detail;
+  if (detail === undefined || !("path" in detail)) return { failure: organization.failure };
+  const transport = transportClass(detail.causes ?? [], detail.failure?.code);
+  return {
+    failure: organization.failure,
+    request: `${detail.method} ${detail.path}`,
+    ...(detail.failure === undefined
+      ? {}
+      : { stage: detail.failure.stage, elapsedMs: detail.failure.elapsedMs }),
+    ...(transport === undefined ? {} : { transport }),
+  };
+};
+export interface UnavailableOrganization {
+  readonly title: string;
+  readonly id: string;
+  readonly failure: string;
+  readonly detail: ReturnType<typeof preparationFailure>;
+}
+export const reportUnavailable = (unavailable: ReadonlyArray<UnavailableOrganization>) =>
+  Effect.forEach(
+    unavailable,
+    ({ title, failure, detail }) =>
+      Console.log(
+        `Cloud organization not ready for "${title}": ${failure}${detail === undefined ? "" : ` ${JSON.stringify(detail)}`}`,
+      ),
+    { discard: true },
+  );
+export const writePreparation = (
+  directory: string,
+  record: { readonly unavailableOrganizations: ReadonlyArray<UnavailableOrganization> } & Readonly<
+    Record<string, unknown>
+  >,
+) =>
+  Effect.flatMap(FileSystem.FileSystem, (fs) =>
+    fs.writeFileString(`${directory}/preparation.json`, JSON.stringify(record, null, 2)),
+  );
 interface DomainObservation {
   readonly attempts: number;
   readonly ready: boolean;
   readonly elapsedMs: number;
+  readonly httpsMs?: number;
+  readonly reported?: DomainReport["status"];
   readonly lastFailure?: {
     readonly reason: DomainNotReady["reason"];
     readonly status?: number | undefined;
     readonly code?: string | undefined;
   };
+  readonly coordinator?: DomainReport;
 }
 
-/** A real HTTPS response proves DNS and the edge certificate are usable. No TLS checks are disabled. */
+export const originUnreachable = (
+  observation: DomainObservation | undefined,
+  run: { readonly origins: number; readonly readyElapsedMs: ReadonlyArray<number> },
+): typeof OriginUnreachable.Type | undefined => {
+  if (
+    observation === undefined ||
+    observation.ready ||
+    observation.reported !== undefined ||
+    observation.httpsMs !== undefined ||
+    observation.lastFailure?.reason !== "transport"
+  )
+    return undefined;
+  return {
+    attempts: observation.attempts,
+    waitedMs: observation.elapsedMs,
+    readyOrigins: run.readyElapsedMs.length,
+    origins: run.origins,
+    slowestReadyMs: run.readyElapsedMs.length === 0 ? null : Math.max(...run.readyElapsedMs),
+    ...(observation.coordinator?.certificate === undefined
+      ? {}
+      : { certificate: observation.coordinator.certificate }),
+    ...(observation.coordinator?.since === undefined
+      ? {}
+      : { since: observation.coordinator.since }),
+  };
+};
+const DomainReport = Schema.Struct({
+  status: Schema.Literals(["absent", "pending", "ready", "failed"]),
+  certificate: Schema.optional(Schema.String),
+  since: Schema.optional(Schema.String),
+});
+type DomainReport = typeof DomainReport.Type;
+class DomainNotReported extends Schema.TaggedError<DomainNotReported>()("DomainNotReported", {
+  status: Schema.optional(DomainReport.fields.status),
+}) {}
+
 const waitForDomain = (
   baseUrl: string,
   organizationSlug: string,
+  scenario: string,
+  fixtures: typeof FixtureControl.Type,
   observe: (value: DomainObservation) => Effect.Effect<void>,
 ) =>
   Effect.gen(function* () {
@@ -99,7 +184,7 @@ const waitForDomain = (
           : HttpClientError.isHttpClientError(error)
             ? new DomainNotReady({
                 reason: "transport",
-                code: transportCode(error.reason.cause),
+                code: errorCode(error.reason.cause),
               })
             : new DomainNotReady({ reason: "timeout" }),
       ),
@@ -116,37 +201,50 @@ const waitForDomain = (
         ),
       ),
       Effect.retry({ schedule: Schedule.spaced("2 seconds") }),
-      Effect.andThen(
+    );
+    const httpsMs = (yield* Clock.currentTimeMillis) - started;
+    yield* fixtureRequest(fixtures, "/domain", { id: scenario }).pipe(
+      Effect.flatMap(Schema.decodeUnknownEffect(DomainReport)),
+      Effect.mapError(() => new DomainNotReported({})),
+      Effect.flatMap((report) =>
         Clock.currentTimeMillis.pipe(
           Effect.flatMap((now) =>
             observe({
               attempts,
-              ready: true,
+              ready: report.status === "ready",
               elapsedMs: now - started,
+              httpsMs,
+              reported: report.status,
             }),
+          ),
+          Effect.andThen(
+            report.status === "ready"
+              ? Effect.void
+              : Effect.fail(new DomainNotReported({ status: report.status })),
           ),
         ),
       ),
+      Effect.retry({ schedule: Schedule.spaced("2 seconds") }),
     );
   });
 
-/** Certificate issuance and a cold compiler Worker share this deadline, outside every scenario's. */
 const infrastructureDeadline = "5 minutes";
 
-/** The suite owns provisioned actors until individual cleanup or environment teardown, including failed preparation. */
-export const prepareCloudScenarios = (input: {
+const prepareCloudScenariosUnrecorded = (input: {
   readonly target: typeof Target.Service;
   readonly scenarios: readonly { readonly title: string; readonly appOrigin?: true }[];
   readonly appUiBaseUrl: string;
+  readonly fixtures: typeof FixtureControl.Type;
   readonly workers: number;
+  readonly sweepPasses: (
+    since: number,
+  ) => Effect.Effect<typeof SpanQuery.Type, unknown, HttpClient.HttpClient>;
 }) =>
   Effect.gen(function* () {
     const started = yield* Clock.currentTimeMillis;
     const cleanupScope = yield* Scope.fork(yield* Scope.Scope, "parallel");
     const cleanup = yield* Semaphore.make(input.workers);
     yield* Console.log(`Preparing ${input.scenarios.length} isolated Cloud organizations.`);
-    // Every scenario that deploys an app needs the compiler. It is proven once, beside
-    // organization provisioning, and its failure fails the whole preparation.
     const [compiler, provisioned] = yield* Effect.all(
       [
         awaitCompiler(input.target, infrastructureDeadline),
@@ -155,8 +253,6 @@ export const prepareCloudScenarios = (input: {
           ({ title, appOrigin }) => {
             const id = randomBytes(16).toString("hex");
             return Effect.gen(function* () {
-              // Organizations are independent. Bound their release fan-out while
-              // retaining reverse-order finalization inside each actor layer.
               const scope = yield* Effect.acquireRelease(Scope.make(), (owned, exit) =>
                 Scope.close(owned, exit).pipe(cleanup.withPermits(1)),
               ).pipe(Scope.provide(cleanupScope));
@@ -172,10 +268,12 @@ export const prepareCloudScenarios = (input: {
               return { title, id, slug: actors.organization.slug, appOrigin };
             }).pipe(
               Effect.timeout("60 seconds"),
-              // One organization that is not ready within its deadline is a native setup failure
-              // for its own scenario; the others still run. The suite scope still releases whatever
-              // it created.
-              Effect.mapError((error) => ({ title, id, failure: error._tag })),
+              Effect.mapError((error): UnavailableOrganization => ({
+                title,
+                id,
+                failure: error._tag,
+                detail: preparationFailure(error),
+              })),
               Effect.result,
             );
           },
@@ -187,23 +285,19 @@ export const prepareCloudScenarios = (input: {
     const prepared = provisioned.filter(Result.isSuccess).map((result) => result.success);
     const unavailable = provisioned.filter(Result.isFailure).map((result) => result.failure);
     const actorsReadyAt = yield* Clock.currentTimeMillis;
-    // All domain requests must begin before waiting on the certificate authority.
-    // Waiting inside the provisioning loop would serialize issuance in worker-sized batches.
+    yield* reportUnavailable(unavailable);
     const domains = prepared.filter((scenario) => scenario.appOrigin);
     const ready = yield* Ref.make<ReadonlySet<string>>(new Set());
     const observations = yield* Ref.make<ReadonlyMap<string, DomainObservation>>(new Map());
-    const fs = yield* FileSystem.FileSystem;
     yield* Console.log(
-      `Cloud actors ready: ${Math.round((actorsReadyAt - started) / 1000)}s (${prepared.length}/${input.scenarios.length} organizations); waiting for ${domains.length} HTTPS domains.`,
+      `Cloud actors ready: ${Math.round((actorsReadyAt - started) / 1000)}s (${prepared.length}/${input.scenarios.length} organizations); waiting for ${domains.length} HTTPS domains to answer and be reported ready.`,
     );
     yield* Effect.forEach(
       domains,
       ({ slug, id }) =>
-        waitForDomain(input.appUiBaseUrl, slug, (observation) =>
+        waitForDomain(input.appUiBaseUrl, slug, id, input.fixtures, (observation) =>
           Ref.update(observations, (values) => new Map([...values, [id, observation]])),
         ).pipe(Effect.tap(() => Ref.update(ready, (ids) => new Set([...ids, id])))),
-      // Readiness probes do not occupy scenario workers. Start every origin now;
-      // a slow certificate must not consume the next origin's preparation budget.
       { concurrency: "unbounded", discard: true },
     ).pipe(
       Effect.timeout(infrastructureDeadline),
@@ -211,50 +305,125 @@ export const prepareCloudScenarios = (input: {
         Effect.gen(function* () {
           const finished = yield* Clock.currentTimeMillis;
           const readyDomains = (yield* Ref.get(ready)).size;
-          const domainObservations = yield* Ref.get(observations);
-          yield* fs.writeFileString(
-            `${input.target.directory}/preparation.json`,
-            JSON.stringify(
-              {
-                organizations: prepared.length,
-                unavailableOrganizations: unavailable,
-                domains: domains.length,
-                readyDomains,
-                origins: domains.map(({ id, title, slug }) => ({
-                  id,
-                  title,
-                  slug,
-                  ...domainObservations.get(id),
-                })),
-                compilerAttempts: compiler.attempts,
-                compilerMs: compiler.elapsedMs,
-                actorsMs: actorsReadyAt - started,
-                httpsMs: finished - actorsReadyAt,
-                totalMs: finished - started,
-              },
-              null,
-              2,
+          yield* Effect.forEach(
+            [...(yield* Ref.get(observations))].filter(
+              ([, observation]) =>
+                originUnreachable(observation, { origins: 0, readyElapsedMs: [] }) !== undefined,
             ),
+            ([id, observation]) =>
+              fixtureRequest(input.fixtures, "/domain", { id }).pipe(
+                Effect.flatMap(Schema.decodeUnknownEffect(DomainReport)),
+                Effect.timeout("5 seconds"),
+                Effect.flatMap((coordinator) =>
+                  Ref.update(
+                    observations,
+                    (values) => new Map([...values, [id, { ...observation, coordinator }]]),
+                  ),
+                ),
+                Effect.ignore,
+              ),
+            { concurrency: "unbounded", discard: true },
           );
-          yield* Console.log(`HTTPS domains ready: ${readyDomains}/${domains.length}.`);
+          const domainObservations = yield* Ref.get(observations);
+          yield* writePreparation(input.target.directory, {
+            organizations: prepared.length,
+            unavailableOrganizations: unavailable,
+            domains: domains.length,
+            readyDomains,
+            origins: domains.map(({ id, title, slug }) => ({
+              id,
+              title,
+              slug,
+              ...domainObservations.get(id),
+            })),
+            compilerAttempts: compiler.attempts,
+            compilerMs: compiler.elapsedMs,
+            actorsMs: actorsReadyAt - started,
+            httpsMs: finished - actorsReadyAt,
+            totalMs: finished - started,
+          });
+          yield* Console.log(
+            `HTTPS domains ready and reported ready: ${readyDomains}/${domains.length}.`,
+          );
         }).pipe(Effect.orDie),
       ),
-      // Keep independent cases runnable. Each unavailable origin is a native
-      // setup failure; it never becomes a skip or a passing scenario.
       Effect.catchTag("TimeoutError", () => Effect.void),
     );
+    const drain = yield* drainWebhookQueue({
+      count: fixtureQueueCount(input.fixtures),
+      passes: input.sweepPasses,
+      record: (figures) =>
+        Effect.flatMap(FileSystem.FileSystem, (fs) =>
+          fs.writeFileString(
+            `${input.target.directory}/webhook-queue.json`,
+            JSON.stringify(figures, null, 2),
+          ),
+        ).pipe(
+          Effect.andThen(
+            Console.log(
+              `Webhook source queue: provisioning finished in ${Math.round(figures.provisioningMs / 1000)}s${figures.provisioningOutstanding === undefined ? "" : ` (${figures.provisioningOutstanding} jobs still running at its bound)`}, ${figures.queued} queued, ${figures.drainMs === undefined ? `not drained within ${Math.round(figures.boundMs / 1000)}s` : `drained in ${Math.round(figures.drainMs / 1000)}s`} (bound ${Math.round(figures.boundMs / 1000)}s, ${figures.passes} passes, ${figures.passesWithRoom} with room${figures.failedReads === undefined ? "" : `, ${figures.failedReads} failed reads`}).`,
+            ),
+          ),
+          Effect.orDie,
+        ),
+    });
     const finished = yield* Clock.currentTimeMillis;
     yield* Console.log(
-      `Scenario infrastructure: ${Math.round((finished - started) / 1000)}s (${prepared.length} organizations, ${(yield* Ref.get(ready)).size}/${domains.length} HTTPS domains verified).`,
+      `Scenario infrastructure: ${Math.round((finished - started) / 1000)}s (${prepared.length} organizations, ${(yield* Ref.get(ready)).size}/${domains.length} HTTPS domains verified, ${drain.queued} webhook sources drained in ${Math.round((drain.drainMs ?? 0) / 1000)}s${drain.provisioningOutstanding === undefined ? "" : `; ${drain.provisioningOutstanding} provisioning jobs were still running when the queue was counted, so their sources may join after it and a webhook scenario may wait behind them`}).`,
     );
     const readyIds = yield* Ref.get(ready);
+    const finalObservations = yield* Ref.get(observations);
+    const run = {
+      origins: domains.length,
+      readyElapsedMs: domains
+        .filter(({ id }) => readyIds.has(id))
+        .map(({ id }) => finalObservations.get(id)?.elapsedMs)
+        .filter((elapsed) => elapsed !== undefined),
+    };
     return PreparedScenarios.make(
       Object.fromEntries([
-        ...prepared.map(({ title, id, appOrigin }) => [
-          title,
-          { id, status: !appOrigin || readyIds.has(id) ? "ready" : "domain_unavailable" },
+        ...prepared.map(({ title, id, appOrigin }) => {
+          if (!appOrigin || readyIds.has(id)) return [title, { id, status: "ready" }];
+          const unreachable = originUnreachable(finalObservations.get(id), run);
+          return [
+            title,
+            {
+              id,
+              status: "domain_unavailable",
+              ...(unreachable === undefined ? {} : { unreachable }),
+            },
+          ];
+        }),
+        ...unavailable.map((organization) => [
+          organization.title,
+          {
+            id: organization.id,
+            status: "organization_unavailable",
+            provisioning: provisioningFailure(organization),
+          },
         ]),
-        ...unavailable.map(({ title, id }) => [title, { id, status: "organization_unavailable" }]),
       ]),
     );
   });
+
+export const prepareCloudScenarios = (
+  input: Parameters<typeof prepareCloudScenariosUnrecorded>[0],
+) =>
+  Effect.suspend(() => {
+    configureLostConnections({
+      origins: Object.values(targetHosts(input.target)),
+      scenario: () => undefined,
+      file: () => "preparation",
+    });
+    return prepareCloudScenariosUnrecorded(input);
+  }).pipe(
+    Effect.ensuring(
+      Effect.suspend(() =>
+        saveLostRequests(
+          input.target.directory,
+          `preparation-${Date.now()}`,
+          takeAllLostRequests(),
+        ),
+      ).pipe(Effect.ignore),
+    ),
+  );

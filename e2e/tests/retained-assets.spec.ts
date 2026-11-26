@@ -1,14 +1,3 @@
-/**
- * Cloud keeps every deploy's content-hashed browser files in R2, so a page still running a replaced
- * build can load the files it has not loaded yet. The Worker's minute job copies the live build's
- * listed files; a later run finds them all stored. A file no build kept still gets the ordinary
- * 404 through the Worker's retained-file routes: empty for a module, the 404 page for a navigation.
- * A name the job could not have stored is refused without an R2 lookup.
- *
- * Serving an earlier build's file needs a real deploy: the local Worker's static assets list their
- * files once at startup, so a file removed from disk is a server error there, not a miss. That
- * journey was verified on a test stage (see the pull request that added this scenario).
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
@@ -54,7 +43,6 @@ layer(HostedLive, { excludeTestServices: true })("Retained build assets", (it) =
               ),
           );
 
-        // The site build lists the dashboard, marketing and documentation files every deploy keeps.
         const list = yield* get("/retained-assets.json").pipe(
           Effect.flatMap(({ body }) => Schema.decodeUnknownEffect(RetainedList)(body)),
         );
@@ -64,8 +52,6 @@ layer(HostedLive, { excludeTestServices: true })("Retained build assets", (it) =
             folder,
           ).toBe(true);
 
-        // Every listed name is content-hashed, so the static assets serve each folder's files for a
-        // browser to keep without revalidating.
         for (const folder of ["assets/", "_astro/", "docs/_astro/"]) {
           const file = list.files.find((listed) => listed.startsWith(folder));
           expect(file, folder).toBeDefined();
@@ -88,7 +74,6 @@ layer(HostedLive, { excludeTestServices: true })("Retained build assets", (it) =
           });
         }
 
-        // A file no build kept gets the ordinary 404.
         const module = yield* get("/assets/groups-00000000.js");
         const docs = yield* get("/docs/_astro/missing.00000000.js");
         const navigation = yield* get("/_astro/missing.00000000.js", "text/html");
@@ -97,7 +82,6 @@ layer(HostedLive, { excludeTestServices: true })("Retained build assets", (it) =
         expect(docs).toEqual({ status: 404, type: "", body: "" });
         expect(navigation.status).toBe(404);
         expect(navigation.type).toContain("text/html");
-        // A name without a content hash, or one that leaves its folder, is refused.
         const unhashed = yield* get("/assets/groups.js");
         const escaping = yield* get("/assets/%2E%2E%2Fretained-assets.json");
         expect(unhashed).toEqual({ status: 404, type: "", body: "" });

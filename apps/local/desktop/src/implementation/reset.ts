@@ -1,8 +1,3 @@
-/**
- * Reset with backup: move the whole data directory aside and start fresh. Nothing is deleted.
- * The backup keeps `installation.json`, so it stays paired with its untouched OS credential entry,
- * and keeps its `keys.json` when the keys are in a file.
- */
 import { dialog, shell, type BaseWindow } from "electron";
 import { lock } from "proper-lockfile";
 import {
@@ -21,6 +16,7 @@ import { ServiceFailed, serviceLockFile } from "../../../server/src/contracts/se
 import { lockDataDirectory } from "../../../server/src/implementation/service-files.ts";
 import { BackupManifest, ResetFailed } from "../contracts/desktop.ts";
 import type { Connection } from "./connection.ts";
+import { recoveryTitle } from "./recovery.ts";
 import { whileHeld } from "./runtime.ts";
 
 const Collector = Schema.Struct({
@@ -37,10 +33,6 @@ const running = (pid: number) => {
   }
 };
 
-/**
- * The background server stops its telemetry collector before it exits. Wait for the collector too,
- * so its database handle does not follow the rename, or on Windows block it.
- */
 const collectorStopped = (directory: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -67,16 +59,11 @@ const stamp = (now: DateTime.Utc) =>
     byte.toString(16).padStart(2, "0"),
   ).join("")}`;
 
-/**
- * Move `directory` to `backups/data-<stamp>-<random>` and describe it in a manifest. The background
- * server must already be stopped. Any failure before the rename leaves the data in place.
- */
 export const backupData = (options: {
   readonly directory: string;
   readonly backups: string;
   readonly appVersion: string;
   readonly platform: NodeJS.Platform;
-  /** Runs the rename while the desktop's own log holds its writes, so earlier lines move too. */
   readonly whileMoving: <A, E, R>(move: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>;
 }) =>
   Effect.gen(function* () {
@@ -89,13 +76,6 @@ export const backupData = (options: {
     yield* fs
       .makeDirectory(backups, { recursive: true, mode: 0o700 })
       .pipe(Effect.mapError(() => new ResetFailed({ stage: "move" })));
-    // The server lock proves no server holds this directory, and keeps another client from starting
-    // one while it moves. It is taken by the rule servers use, so a lock a crashed or killed server
-    // left is taken over, and records this process as its owner, so servers treat it as held while
-    // this process runs. The bootstrap lock proves no other process is setting up its keys. Both
-    // locks move with the directory, so their refresh timers must not throw afterward.
-    // proper-lockfile keeps one lock per key in a process, so each lock has its own key, as the
-    // server's own locks do.
     const take = (key: string, lockfilePath: string, stale: number) =>
       Effect.acquireRelease(
         Effect.tryPromise({
@@ -117,7 +97,6 @@ export const backupData = (options: {
           Effect.mapError(() => new ResetFailed({ stage: "lock" })),
         );
         yield* take(directory, path.join(directory, ".bootstrap.lock"), 10_000);
-        // A server that was just stopped or killed can keep files in it open for a moment.
         yield* options
           .whileMoving(whileHeld(fs.rename(directory, backup)))
           .pipe(Effect.mapError(() => new ResetFailed({ stage: "move" })));
@@ -127,7 +106,6 @@ export const backupData = (options: {
       yield* fs.remove(path.join(backup, held), { recursive: true }).pipe(Effect.ignore);
     yield* Effect.logInfo("Moved Executor data to a backup").pipe(Effect.annotateLogs({ backup }));
 
-    // The data is safe from here. A manifest or sync failure is logged but does not undo the move.
     yield* Effect.gen(function* () {
       const installation = yield* fs
         .readFileString(path.join(backup, "installation.json"))
@@ -166,7 +144,6 @@ export const backupData = (options: {
           yield* file.sync;
         }),
       );
-      // Windows does not allow opening directories as ordinary file handles.
       if (options.platform !== "win32")
         yield* Effect.forEach([backup, backups, path.dirname(directory)], (parent) =>
           Effect.scoped(Effect.flatMap(fs.open(parent), (handle) => handle.sync)),
@@ -176,12 +153,13 @@ export const backupData = (options: {
         Effect.logWarning("Could not complete the backup manifest", cause),
       ),
     );
-    // The parent's own diagnostics keep writing to the fresh directory.
     yield* fs
       .makeDirectory(path.join(directory, "diagnostics"), { recursive: true, mode: 0o700 })
       .pipe(Effect.ignore);
     return backup;
   });
+
+const startBound = "3 minutes";
 
 const failureDetail: Record<(typeof ResetFailed.Type)["stage"], string> = {
   stop: "Executor's background server or its telemetry collector did not stop in time.",
@@ -189,7 +167,6 @@ const failureDetail: Record<(typeof ResetFailed.Type)["stage"], string> = {
   move: "The data directory could not be moved. Close any program using files in it and try again.",
 };
 
-/** Confirm, stop the server, back up the data, start it again and announce the backup. Serialized. */
 export const makeResetAction = (options: {
   readonly connection: Connection;
   readonly directory: string;
@@ -234,8 +211,7 @@ export const makeResetAction = (options: {
           Effect.mapError((error) =>
             Schema.is(ResetFailed)(error)
               ? error
-              : // A process the desktop cannot stop, such as an earlier Executor, uses the data.
-                Schema.is(ServiceFailed)(error) && error.reason === "directory-in-use"
+              : Schema.is(ServiceFailed)(error) && error.reason === "directory-in-use"
                 ? new ResetFailed({ stage: "lock" })
                 : new ResetFailed({ stage: "stop" }),
           ),
@@ -252,11 +228,31 @@ export const makeResetAction = (options: {
         return;
       }
       const backup = result.success;
+      const started = yield* options.connection.started.pipe(Effect.timeoutOption(startBound));
+      const kept = `If you need anything from before the reset, it is here:\n\n${backup}`;
+      const outcome = Option.match(started, {
+        onNone: () => ({
+          type: "info" as const,
+          message: "Your previous data has been backed up.",
+          detail: `${kept}\n\nExecutor is still starting with fresh data.`,
+        }),
+        onSome: (settled) =>
+          settled.kind === "ready"
+            ? {
+                type: "info" as const,
+                message: "Your previous data has been backed up.",
+                detail: `${kept}\n\nExecutor is now running with fresh data.`,
+              }
+            : {
+                type: "warning" as const,
+                message:
+                  "Your previous data has been backed up, but Executor could not start with fresh data.",
+                detail: `${kept}\n\n${recoveryTitle(settled.recovery)}${"detail" in settled.recovery ? `: ${settled.recovery.detail}` : "."}`,
+              },
+      });
       const announced = yield* messageBox({
-        type: "info",
+        ...outcome,
         title: "Executor data reset",
-        message: "Your previous data has been backed up.",
-        detail: `If you need anything from before the reset, it is here:\n\n${backup}\n\nExecutor is now running with fresh data.`,
         buttons: ["Show in folder", "OK"],
         defaultId: 1,
         cancelId: 1,

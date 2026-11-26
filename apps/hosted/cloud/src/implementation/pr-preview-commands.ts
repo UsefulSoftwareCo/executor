@@ -1,76 +1,13 @@
-/** GitHub lifecycle discovery and live verification; Alchemy owns provisioning and comments. */
 import { Config, Console, Effect, FileSystem, Schema } from "effect";
 import { Argument, Command } from "effect/cli";
-import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { HttpClient, HttpClientRequest } from "effect/http";
-import {
-  PreviewCommit,
-  PreviewNumber,
-  previewBrowserOrigin,
-  previewOrigin,
-  previewOwner,
-  previewRepository,
-  previewSlug,
-} from "../contracts/pr-preview.ts";
+import { PreviewNumber, previewBrowserOrigin, previewRepository } from "../contracts/pr-preview.ts";
+import { previewOrigin, previewOwner, previewSlug } from "../contracts/pr-preview-selection.ts";
+import { previewAction } from "./pr-preview-decision.ts";
 import { TestStageFailed } from "../contracts/test-stage-lifetime.ts";
 import { withStageAdmin } from "./test-stage-inventory.ts";
 
 const number = Argument.Int("number").pipe(Argument.withSchema(PreviewNumber));
-const PullRequest = Schema.Struct({
-  state: Schema.Literals(["open", "closed"]),
-  head: Schema.Struct({
-    sha: PreviewCommit,
-    ref: Schema.String,
-    repo: Schema.NullOr(Schema.Struct({ full_name: Schema.String })),
-  }),
-});
-const StackedAbove = Schema.Array(
-  Schema.Struct({
-    number: PreviewNumber,
-    head: Schema.Struct({ repo: Schema.NullOr(Schema.Struct({ full_name: Schema.String })) }),
-  }),
-);
-const pullRequest = (repository: string, number: number) =>
-  Effect.gen(function* () {
-    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-    const json = yield* spawner.string(
-      ChildProcess.make("gh", ["api", `repos/${repository}/pulls/${number}`]),
-    );
-    return yield* Schema.decodeUnknownEffect(Schema.fromJsonString(PullRequest))(json);
-  });
-/** Only the top layer of a stack is previewed; it contains every lower layer's change. */
-const isStackedUnder = (repository: string, ref: string) =>
-  Effect.gen(function* () {
-    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-    const json = yield* spawner.string(
-      ChildProcess.make("gh", [
-        "api",
-        "--method",
-        "GET",
-        `repos/${repository}/pulls`,
-        "-f",
-        "state=open",
-        "-f",
-        `base=${ref}`,
-        "-f",
-        "per_page=100",
-      ]),
-    );
-    const above = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(StackedAbove))(json);
-    // Fork PRs never get a preview, so they cannot stand in for this one.
-    return above.some((pr) => pr.head.repo?.full_name === repository);
-  });
-const previewAction = (repository: string, number: number) =>
-  Effect.gen(function* () {
-    const pr = yield* pullRequest(repository, number);
-    if (pr.state === "closed") return { pr, action: "destroy" as const };
-    return {
-      pr,
-      action: (yield* isStackedUnder(repository, pr.head.ref))
-        ? ("retire" as const)
-        : ("deploy" as const),
-    };
-  });
 const output = (values: Record<string, string>) =>
   Effect.gen(function* () {
     const path = yield* Config.String("GITHUB_OUTPUT");
@@ -83,21 +20,6 @@ const output = (values: Record<string, string>) =>
       { flag: "a" },
     );
   });
-const prepare = Command.make("prepare", { number }, ({ number }) =>
-  Effect.gen(function* () {
-    const repository = yield* previewRepository;
-    const { pr, action } = yield* previewAction(repository, number);
-    if (pr.head.repo?.full_name !== repository)
-      return yield* new TestStageFailed({ message: "Fork PRs cannot access preview credentials." });
-    yield* output({
-      action,
-      sha: pr.head.sha,
-      slug: previewSlug(number),
-      owner: previewOwner(repository, number),
-      url: previewOrigin(number),
-    });
-  }),
-);
 const guard = Command.make("guard", { number }, ({ number }) =>
   Effect.gen(function* () {
     const repository = yield* previewRepository;
@@ -109,7 +31,6 @@ const guard = Command.make("guard", { number }, ({ number }) =>
     yield* output({ exists: lease === undefined ? "false" : "true" });
   }),
 );
-/** Retained previews whose PR closed or now has another layer stacked above it. */
 const stale = Command.make("stale", {}, () =>
   Effect.gen(function* () {
     const repository = yield* previewRepository;
@@ -120,7 +41,12 @@ const stale = Command.make("stale", {}, () =>
       if (match === null) continue;
       const number = yield* Schema.decodeUnknownEffect(PreviewNumber)(Number(match[1]));
       if (stage.owner !== previewOwner(repository, number)) continue;
-      if ((yield* previewAction(repository, number)).action !== "deploy") numbers.push(number);
+      const { action } = yield* Effect.tryPromise({
+        try: () => previewAction(repository, number),
+        catch: () =>
+          new TestStageFailed({ message: `Could not read PR #${number}'s preview state.` }),
+      });
+      if (action !== "deploy") numbers.push(number);
     }
     yield* output({ numbers: JSON.stringify(numbers) });
     yield* Console.log(`Found ${numbers.length} stale PR preview(s) to clean up.`);
@@ -130,7 +56,6 @@ const verify = Command.make("verify", { number }, ({ number }) =>
   Effect.gen(function* () {
     const client = yield* HttpClient.HttpClient;
     const deployment = previewOrigin(number);
-    // Health is the deployment's; sign-in, its pages and its session are on the browser origin.
     const origin = previewBrowserOrigin(number);
     for (const path of ["/health", "/login", "/api/auth/get-session"]) {
       const response = yield* client.get(`${path === "/health" ? deployment : origin}${path}`);
@@ -175,8 +100,6 @@ const verify = Command.make("verify", { number }, ({ number }) =>
         }
       }
     }
-    // Starting both real social flows catches missing proxy/client settings. This does not claim
-    // the identity provider's callback was completed, and sends no email or login credentials.
     const proxy = yield* Config.NonEmptyString("OAUTH_PROXY_PRODUCTION_URL");
     for (const provider of ["google", "github"]) {
       const request = yield* HttpClientRequest.post(`${origin}/api/auth/sign-in/social`, {
@@ -210,8 +133,6 @@ const verify = Command.make("verify", { number }, ({ number }) =>
       `Verified preview health, login, assets, session and social sign-in redirects: ${deployment}`,
     );
   }).pipe(
-    // The message names the request's method and public preview URL, such as a TLS handshake
-    // that failed on a role host.
     Effect.catchTag("HttpClientError", (error) =>
       Effect.fail(new TestStageFailed({ message: `Preview request failed: ${error.message}` })),
     ),
@@ -219,7 +140,6 @@ const verify = Command.make("verify", { number }, ({ number }) =>
   ),
 );
 
-/** Called from workflows with step-scoped GitHub and staging credentials. */
 export const prPreviewCommand = Command.make("pr-preview").pipe(
-  Command.withSubcommands([prepare, guard, stale, verify]),
+  Command.withSubcommands([guard, stale, verify]),
 );

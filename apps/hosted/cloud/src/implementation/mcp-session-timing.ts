@@ -1,47 +1,21 @@
-/**
- * How long an MCP request waits on its session object beyond what the object's own clock observed.
- * A Durable Object's clock only advances on I/O: CPU after the request's last I/O, and time the
- * request waits while the isolate runs other work, are invisible to its spans, and on a busy object
- * even its start and end times lag. The object reports the duration it observed and how many
- * requests it was already answering; the gateway compares that duration with its own wait.
- */
 import { Clock, Effect } from "effect";
 import { HttpServerResponse } from "effect/http";
 
-/** Carries the object's own handling time to the gateway, which removes it from the response. */
 const handledHeader = "x-executor-session-handled-ms";
 
-/** Requests being answered by one object, or by every session object in one isolate. */
 interface Answering {
   count: number;
 }
 
-/** Every session object in one isolate, which all count against its one memory limit. */
 interface Isolate extends Answering {
-  /** Chosen at its first request: an isolate may not generate random values before one. */
   id: string | undefined;
   first: number | undefined;
   requests: number;
   objects: number;
 }
 
-/**
- * Module state lives as long as the isolate, so every session object in it shares this count.
- * Alchemy runs a Durable Object's constructor effect once per object, so the session factory
- * cannot hold it.
- */
 const isolate: Isolate = { count: 0, id: undefined, first: undefined, requests: 0, objects: 0 };
 
-/**
- * Answer one object's requests. Each request's span records its isolate and how many other
- * requests this object and its isolate were answering when it started; a request counts until its
- * response is ready, so an open stream does not. The response carries the time the object observed
- * until then.
- *
- * An isolate that exceeds its memory limit ends every request in it, and their spans are never
- * exported. So each request also records `mcp.session.admitted`, which ends at once, with what the
- * isolate held when the request started: `held` adds the host's own measures to it.
- */
 export const makeAnswer = (held: () => Record<string, number>) => {
   const object: Answering = { count: 0 };
   isolate.objects += 1;
@@ -87,19 +61,6 @@ export const makeAnswer = (held: () => Record<string, number>) => {
     );
 };
 
-/**
- * Forward one request to its session object. The forward span records the gateway's wait until
- * the response headers arrived and the duration the object's clock observed, each on its own
- * clock. `unseen_ms` is their difference: the hop both ways, time before the object's clock first
- * advanced, and CPU after its last advance. CPU between two of the object's I/O waits is already
- * inside `handled_ms`, so the residual is not the object's CPU. A request that starts on a lagging
- * clock observes more than really passed; when that exceeds the gateway's wait, `clocks_disagree`
- * marks it and no residual is recorded. A shorter lag cannot be told apart from the durations, and
- * comparing the two machines' timestamps is no better: they differ by milliseconds on quiet calls.
- * A response without the header (from a request the object failed or that was interrupted before
- * its response was ready, or from an older object version during a deploy) records none of these.
- * A cancelled MCP call is answered: the object ends its POST with an empty stream.
- */
 export const timedForward = <E, R>(
   forward: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
 ): Effect.Effect<HttpServerResponse.HttpServerResponse, E, R> =>

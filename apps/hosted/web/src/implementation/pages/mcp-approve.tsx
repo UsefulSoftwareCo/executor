@@ -8,7 +8,6 @@ import { Option, Schema } from "effect";
 import { BrowserAtoms } from "../../contracts/telemetry.ts";
 const approvals = browserApprovalAtoms(BrowserAtoms);
 const Address = Schema.Struct({ requestId: InteractionId, ...HostedApprovalQuery.fields });
-/** Both hosted products use their existing AuthBoundary and the same browser review page. */
 export function McpApprovePage() {
   const page = usePageUrl();
   const location = useLocation();

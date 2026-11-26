@@ -1,4 +1,3 @@
-/** Resolve a hosted page's session before rendering, with the same request the browser would make. */
 import type { DocumentApi } from "@executor-js/dashboard-start/document-api";
 import { Config, Effect, Schema } from "effect";
 import { AuthenticationUnavailable } from "../contracts/auth.ts";
@@ -11,10 +10,6 @@ import {
 import { Cookies, HttpServerRequest } from "effect/http";
 import type { ResourceOrigins } from "@executor-js/mcp-auth";
 
-/**
- * A missing session produces `null`; a failed lookup fails, so the page reports that it is
- * unavailable instead of redirecting a signed-in person to sign-in.
- */
 export const hostedDocumentContext = (resourceOrigins: ResourceOrigins) => (api: DocumentApi) =>
   Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;

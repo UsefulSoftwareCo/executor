@@ -1,9 +1,3 @@
-/**
- * Skill trees executor-intro.ts must publish (`published` lists every document it returns) or
- * refuse (`refused` is part of the reason). `files` maps a path under the fixture directory to its
- * text, a byte count of filler, or a symbolic link to another fixture path; the skills are its
- * `skills` directory, so anything outside it is outside every skill.
- */
 export type FixtureFile = string | { readonly bytes: number } | { readonly link: string };
 
 export type Fixture = {
@@ -13,7 +7,6 @@ export type Fixture = {
 
 const skill = (body: string) => `---\nname: guide\ndescription: A fixture skill.\n---\n\n${body}\n`;
 
-/** An `app-authoring` skill whose SKILL.md says `body`, beside a nested guide and storage.md. */
 const linking = (name: string, body: string, outcome: { readonly refused: string } | "published") =>
   ({
     name,

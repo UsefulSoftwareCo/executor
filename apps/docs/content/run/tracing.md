@@ -10,36 +10,41 @@ they go.
 
 ## The bundled collector
 
-Local, desktop and self-host builds package [Motel](https://github.com/kitlangton/motel),
-a small OTLP store and viewer over a SQLite file. It is the default destination,
-so traces are being recorded already.
+Local, desktop and self-host builds package Executor's telemetry collector, a small OTLP store over
+one SQLite file. It is the default destination, so traces are being recorded already. Local and
+desktop builds also serve a trace viewer from it.
 
 Where it writes depends on where you run:
 
 | Deployment | Diagnostics directory                                                       |
 | ---------- | --------------------------------------------------------------------------- |
 | Local      | `<EXECUTOR_DATA_DIR>/diagnostics`, by default `~/.executor/v2/cli/diagnostics` |
-| Self-host Docker | `EXECUTOR_MOTEL_DATA_DIR`, by default `/app/motel-data`              |
+| Self-host Docker | `EXECUTOR_MOTEL_DATA_DIR`, by default `/app/motel-data` (the name is historical) |
 
 The local diagnostics directory holds:
 
-- `collector.json` — the collector's state, process ID, query URL and database
-  path.
-- `motel/` — the stored traces and logs, as Motel's SQLite files.
+- `collector.json` — the collector's state, process ID, URL and data directory.
+  Open the URL in a browser for the trace viewer.
+- `collector/` — the stored traces and logs, in `telemetry.sqlite`.
+- `motel/` — only after an upgrade from a version that ran Motel, the collector
+  Executor bundled before: its traces and logs, up to about 1 GiB. Executor neither
+  reads nor removes it. To reclaim the space, stop Executor and delete it, for the
+  default local directory with `rm -rf ~/.executor/v2/cli/diagnostics/motel`.
 - `executor-local.jsonl` or `executor-selfhost.jsonl` — Effect logs, written
   independently of the collector. The background Executor writes its logs only
   here.
 
-Motel keeps seven days and targets 1 GiB. Each log file keeps four rotated
-archives at about 10 MiB each.
+The collector keeps seven days and at most 1 GiB, evicting the oldest first. Each log file keeps
+four rotated archives at about 10 MiB each.
 
-Motel runs in workerd. In self-host Docker it runs as its own workerd process
-beside the product and keeps its SQLite files in the `motel` folder of
-`EXECUTOR_MOTEL_DATA_DIR`. This directory must be separate from `/app/data`. Replacing the container discards telemetry by
-default. Mount a separate volume at the Motel directory to retain it. The
-container does not include Node or Bun.
+In self-host Docker the collector runs as its own process beside the product and keeps its files in
+`EXECUTOR_MOTEL_DATA_DIR`. This directory must be separate from `/app/data`. Replacing the
+container discards telemetry by default. Mount a separate volume there to retain it. An image that
+ran Motel left its store, up to about 1 GiB, in a `motel` folder of that directory, which the
+collector neither reads nor removes. Without a volume there it went with the old container; with
+one, delete it by hand: `docker exec executor-v2 rm -rf /app/motel-data/motel`. The container does not include Node or Bun, and does not serve the trace viewer.
 
-Motel also stores the log records that Executor writes. A record written
+The collector also stores the log records that Executor writes. A record written
 during a request has the trace ID of that request. Executor does not write a
 log record for each request, so most requests produce only a trace. Warnings,
 errors, and app page requests produce log records. An empty `/api/logs/search`
@@ -63,8 +68,9 @@ That port is gone. Scripts that read `http://127.0.0.1:4318` must use
 at `127.0.0.1:4318` now sends to a port nothing listens on: remove it to use the
 bundled collector, or point it at your own collector.
 
-The collector serves `/api/health`, `/api/traces`,
-`/api/traces/<trace-id>/spans`, `/api/logs/search` and `/openapi.json`.
+The collector serves `/api/health`, `/api/ingest` (what it stored, refused and evicted),
+`/api/services`, `/api/traces`, `/api/traces/<trace-id>`, `/api/traces/<trace-id>/spans`,
+`/api/traces/<trace-id>/logs`, `/api/spans/search`, `/api/logs` and `/api/logs/search`.
 
 ## Exporting to your own collector
 
@@ -102,7 +108,7 @@ stays absent, which keeps the bundled collector as the destination.
 
 ## Turning off the bundled collector
 
-Set a traces or logs endpoint. Executor then sends nothing to Motel: no
+Set a traces or logs endpoint. Executor then sends nothing to the bundled collector: no
 traces and no logs. One variable is enough:
 
 ```bash
@@ -117,18 +123,16 @@ kept anywhere. Set `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` too if your collector
 should receive logs, including the browser's. With only the logs endpoint set,
 traces are not recorded anywhere.
 
-With either endpoint set, local and desktop builds do not start Motel at all.
-In self-host Docker, the Motel workerd process still starts, because the host
+With either endpoint set, local and desktop builds do not start the collector at all.
+In self-host Docker, the collector process still starts, because the host
 always supervises it. It receives no new records and stays idle. Records it
-stored before the switch remain until its retention removes them. A busy
-server can spend more memory and CPU in Motel than in the product itself, so
-an external collector also frees those resources. There is no setting that
-skips the Docker Motel process.
+stored before the switch remain until its retention removes them. There is no setting that
+skips the Docker collector process.
 
 To see that the change took effect, check that new traces reach your
-collector and that Motel records none. Switching does not delete what Motel
-already stored, so a retained Motel volume still lists its earlier traces. A
-few minutes after the restart, use Executor, then list the traces Motel
+collector and that the bundled one records none. Switching does not delete what it
+already stored, so a retained volume still lists its earlier traces. A
+few minutes after the restart, use Executor, then list the traces the bundled collector
 received in the last two minutes. The result stays empty:
 
 ```bash
@@ -137,7 +141,8 @@ docker exec executor-v2 executor-host telemetry '/api/traces?lookback=2m&limit=2
 
 ## Using Motel on your own machine
 
-Motel runs standalone too. It needs [Bun](https://bun.sh/) and listens on port
+[Motel](https://github.com/kitlangton/motel), the collector Executor bundled before, runs
+standalone and makes a convenient destination for a server you run yourself. It needs [Bun](https://bun.sh/) and listens on port
 `27686`.
 
 ```bash

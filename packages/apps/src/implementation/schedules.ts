@@ -31,10 +31,8 @@ const declaration = <Input, Output, Context, Scope extends AccountScope>(
   const native = nativeOperation(operation);
   if (native === undefined || native.kind !== "mutation")
     throw new Error("A schedule must reference a mutation");
-  // App schedules have no person to approve a call; the types refuse an approved mutation too.
   if (scope === "app" && native.approval !== undefined)
     throw new Error("An app schedule must reference a mutation without an approval");
-  // Validate author arguments now, but retain the original JSON for the normal invocation decoder.
   Schema.decodeUnknownSync(native.input)(input);
   return { scope, operation, timing, input: Schema.decodeUnknownSync(JsonValue)(input) };
 };

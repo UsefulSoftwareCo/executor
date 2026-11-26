@@ -1,14 +1,7 @@
-/** Activating a version wakes webhook source reconciliation at the shared hosted Executor boundary. */
 import type { Executor } from "@executor-js/sdk/core";
 import { Effect, Option } from "effect";
 import { ScheduleWakeup } from "../contracts/schedules.ts";
 
-/**
- * Executor operations require no services, so this reads the wake its caller supplies when the
- * deploy commits. Hosted routes and background jobs that deploy through this executor (the
- * dashboard, app management, MCP and Cloud data steps) each supply one. A deploy without a wake is
- * a wiring fault: it is reported, and setup waits for polling.
- */
 const wake = Effect.serviceOption(ScheduleWakeup).pipe(
   Effect.flatMap(
     Option.match({
@@ -18,13 +11,6 @@ const wake = Effect.serviceOption(ScheduleWakeup).pipe(
   ),
 );
 
-/**
- * A version activated over an existing app leaves every webhook source of the app pending until
- * reconciliation re-registers its subscriptions on the new version, so each deploy and
- * activation through this executor wakes it as linking an account does; polling stays the recovery
- * path. A new app has no sources yet, and a deploy that a newer one overtook activates nothing.
- * Member setup deploys the default Executor app through its own executor and wakes it itself.
- */
 export const withDeploySetupWake = (executor: Executor): Executor => ({
   ...executor,
   apps: {

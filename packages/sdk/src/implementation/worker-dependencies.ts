@@ -1,4 +1,3 @@
-/** Install declared npm packages only when the authored import graph reaches them. */
 import { installDependencies, type InMemoryFileSystem } from "@cloudflare/worker-bundler";
 import { captureTelemetry } from "@executor-js/telemetry";
 import { Effect, Schema, Semaphore } from "effect";
@@ -6,18 +5,15 @@ import type { WorkerHost } from "./worker-build.ts";
 import type { Plugin } from "esbuild";
 import { boundBuildMessage, describeBuildCause, RuntimeBuildFailed } from "../contracts/runtime.ts";
 import tailwind from "tailwindcss/package.json" with { type: "json" };
+import { withoutUrlSecrets } from "@executor-js/utils/url-policy";
 
 const Package = Schema.Struct({
   dependencies: Schema.optional(Schema.Record(Schema.String, Schema.String)),
 });
 
-/**
- * Framework archives are loaded alone; direct npm imports retain their authored declarations and
- * dependency graphs. `registry` replaces the public npm registry when the host configures one.
- */
 export const workerDependencies = (filesystem: InMemoryFileSystem, host: WorkerHost) =>
   Effect.gen(function* () {
-    const { registry } = host;
+    const { registry, tarballFetch } = host;
     const manifest = filesystem.read("package.json");
     const dependencies =
       manifest === null
@@ -34,7 +30,6 @@ export const workerDependencies = (filesystem: InMemoryFileSystem, host: WorkerH
             try: () =>
               installDependencies(
                 {
-                  // The installer sees one declaration; bundling still sees the unmodified manifest.
                   read: (path) =>
                     path === "package.json"
                       ? JSON.stringify({ dependencies: { [name]: version } })
@@ -44,14 +39,20 @@ export const workerDependencies = (filesystem: InMemoryFileSystem, host: WorkerH
                   list: (prefix) => filesystem.list(prefix),
                   flush: () => filesystem.flush(),
                 },
-                { transitive, ...(registry === undefined ? {} : { registry }) },
+                {
+                  transitive,
+                  ...(registry === undefined ? {} : { registry }),
+                  ...(tarballFetch === undefined ? {} : { tarballFetch }),
+                },
               ),
             catch: (cause) =>
               new RuntimeBuildFailed({
                 stage: "dependencies",
                 dependency: name,
                 message: boundBuildMessage(
-                  `Installing ${name}@${version} failed: ${describeBuildCause(cause)}`,
+                  withoutUrlSecrets(
+                    `Installing ${name}@${version} failed: ${describeBuildCause(cause)}`,
+                  ),
                 ),
               }),
           });
@@ -63,9 +64,11 @@ export const workerDependencies = (filesystem: InMemoryFileSystem, host: WorkerH
               stage: "dependencies",
               dependency: name,
               message: boundBuildMessage(
-                result.warnings.length > 0
-                  ? `Installing ${name}@${version} failed: ${result.warnings.join("; ")}`
-                  : `Installing ${name}@${version} did not produce node_modules/${name}/package.json.`,
+                withoutUrlSecrets(
+                  result.warnings.length > 0
+                    ? `Installing ${name}@${version} failed: ${result.warnings.join("; ")}`
+                    : `Installing ${name}@${version} did not produce node_modules/${name}/package.json.`,
+                ),
               ),
             });
           yield* Effect.annotateCurrentSpan({
@@ -91,7 +94,6 @@ export const workerDependencies = (filesystem: InMemoryFileSystem, host: WorkerH
           const version = dependencies[name];
           if (version === undefined) return undefined;
           await Effect.runPromiseWith(context)(install(name, version));
-          // Let the existing resolver apply package exports, conditions, and asset handling.
           return undefined;
         });
       },

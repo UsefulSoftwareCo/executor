@@ -1,13 +1,7 @@
-/**
- * The site's browser telemetry paths on the edge (`contracts/edge-paths.ts`). Production's are
- * pinned in the contract v1 implements, so a `v2` deploy whose telemetry outputs name other paths
- * fails instead of leaving v1 forwarding the old ones.
- */
 import * as Output from "alchemy/Output";
 import { Effect } from "effect";
 import { productionStage } from "./stage.ts";
 
-/** Fail a production deploy whose telemetry output differs from the path v1's edge forwards. */
 export const pinnedInProduction =
   (stage: string, output: string, pinned: string) => (value: string) =>
     stage === productionStage && value !== pinned
@@ -20,7 +14,6 @@ export const pinnedInProduction =
         )
       : Effect.succeed(value);
 
-/** The JSON a test stage's edge reads to forward its telemetry paths, as v1 forwards production's. */
 export const siteTelemetryBinding = (
   analyticsProxy: Output.Output<string | null>,
   errorTunnel: Output.Output<string | null>,

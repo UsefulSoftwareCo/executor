@@ -1,22 +1,21 @@
-/** Preview policy is persisted before provisioning; CI leases are bounded and development may be retained. */
 import { Schema } from "effect";
-import { TestStageSlug } from "../infrastructure/stage.ts";
 
-/** Disposable CI environments have a fixed deadline, including failed deployment attempts. */
+export const TestStageSlug = Schema.String.check(
+  Schema.makeFilter((value) => /^[a-z0-9](?:[a-z0-9-]{0,40}[a-z0-9])?$/.test(value), {
+    message: "A test stage slug is 1-42 lowercase letters, digits and hyphens",
+  }),
+);
+
 export const testStageLifetimeMilliseconds = 3 * 60 * 60 * 1000;
-/** Start cleanup early enough to leave time for scheduled-run delays and retries. */
 export const testStageCleanupLeadMilliseconds = 15 * 60 * 1000;
-/** A deploy is bounded and must finish before the cleanup window opens. */
 export const testStageDeployMilliseconds = 30 * 60 * 1000;
 
-/** Public lease data contains no credentials or customer data. */
 const identity = {
   slug: TestStageSlug,
   owner: Schema.NonEmptyString,
   createdAt: Schema.Number,
   database: Schema.Literals(["neon", "planetscale"]),
 };
-/** A retained environment can pause background work; temporary test runs always run it. */
 export const TestStageLease = Schema.Union([
   Schema.Struct({
     ...identity,
@@ -31,31 +30,24 @@ export const TestStageLease = Schema.Union([
     expiresAt: Schema.Null,
   }),
 ]);
-/** Persisted control metadata, written before cloud resources are created. */
 export type TestStageLease = typeof TestStageLease.Type;
-/** The time when a preview must begin disposal. */
 export const testStageCleanupAt = (lease: TestStageLease) =>
   lease.expiresAt === null ? null : lease.expiresAt - testStageCleanupLeadMilliseconds;
-/** Retained stages are never selected by scheduled expiry cleanup. */
 export const isTestStageDue = (lease: TestStageLease, now: number) => {
   const deadline = testStageCleanupAt(lease);
   return deadline !== null && now >= deadline;
 };
-/** A redeploy must leave the full cleanup window. */
 export const canDeployTestStage = (lease: TestStageLease, now: number) => {
   const deadline = testStageCleanupAt(lease);
   return deadline === null || now + testStageDeployMilliseconds <= deadline;
 };
-/** All test stages share account quotas, so their number is fixed. */
 export const testStageLimit = 80;
-/** The oldest stages to remove so a new one stays within the limit. */
 export const stagesToEvict = (leases: readonly TestStageLease[], slug: string) => {
   const others = leases
     .filter((lease) => lease.slug !== slug)
     .toSorted((a, b) => a.createdAt - b.createdAt);
   return others.slice(0, Math.max(0, others.length - testStageLimit + 1));
 };
-/** Administration failures expose a safe explanation, never credentials. */
 export class TestStageFailed extends Schema.TaggedError<TestStageFailed>()("TestStageFailed", {
   message: Schema.String,
 }) {}

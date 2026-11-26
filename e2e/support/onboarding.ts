@@ -1,6 +1,7 @@
-import { Context, Deferred, Effect, Layer, Option, Redacted, Schema } from "effect";
+import { Context, Deferred, Effect, Layer, Option, Schema } from "effect";
+import { reveal } from "./failure-text.ts";
 import { expect } from "@effect/vitest";
-import { randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { Locator, Page } from "playwright";
 import { Browser } from "./browser.ts";
 import { holdOrganizationEntry } from "./organization-entry.ts";
@@ -14,14 +15,14 @@ import { observeLayoutShifts } from "./layout-shifts.ts";
 import { appsManifest } from "./apps-release.ts";
 import { connectionsPath } from "./app-accounts.ts";
 import { nameConnectedAccount } from "./name-account.ts";
-import type { OnboardingOrder } from "./onboarding-experiment.ts";
 
 const Organizations = Schema.Array(
   Schema.Struct({ id: Schema.String, name: Schema.String, slug: Schema.String }),
 );
-/** React reports a server/browser markup difference with one of these messages or codes. */
 const hydrationFailure = /hydrat|Minified React error #(418|419|423|425)/i;
 const ListedAgents = Schema.Array(Schema.Struct({ name: Schema.NullOr(Schema.String) }));
+const shownStatus = (page: Page, title: string) =>
+  page.getByText(title, { exact: true }).filter({ visible: true });
 const AuthFailure = Schema.Struct({
   code: Schema.String.check(Schema.isPattern(/^[A-Z][A-Z_]{0,79}$/u)),
 });
@@ -89,7 +90,6 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       const flow = mode === "signup" ? "Sign up" : "Sign in";
       if (mode === "signup") {
-        // New visitors start from the site's primary call to action, which opens sign-up.
         yield* browser.omitNetworkTrace;
         yield* browser.use("Open the homepage", (page) => page.goto("/home"));
         yield* browser.use("Choose Get started", (page) =>
@@ -99,7 +99,6 @@ const make = Effect.gen(function* () {
           page.getByRole("heading", { name: "Sign up", exact: true }).waitFor(),
         );
         yield* browser.checkpoint("Sign up with email or a social account");
-        // The address has an @ but no domain the server accepts; the error names the address.
         yield* browser.use("Enter an email without a domain", (page) =>
           page.getByLabel("Email", { exact: true }).fill("new-user@example"),
         );
@@ -124,12 +123,11 @@ const make = Effect.gen(function* () {
         "Read the delivered code from the mail emulator",
         emulators.mail(email, received),
       );
-      // A first code creates the account, so its email says sign-up whichever view sent it.
       if (mode === "signup") expect(delivered.subject).toBe("Your Executor sign-up code");
       yield* browser.use("Enter the delivered code", (page) =>
         page
           .getByLabel(mode === "signup" ? "Sign-up code" : "Sign-in code", { exact: true })
-          .fill(Redacted.value(delivered.code)),
+          .fill(reveal(delivered.code)),
       );
       yield* browser.use("Verify the code", (page) =>
         page.getByRole("button", { name: flow, exact: true }).click(),
@@ -150,23 +148,16 @@ const make = Effect.gen(function* () {
   const script = (url: URL) => url.pathname.endsWith(".js");
   const phone = { width: 390, height: 844 },
     desktop = { width: 1440, height: 960 };
-  /** A small phone, where Claude's guide is taller than the screen. */
   const smallPhone = { width: 375, height: 667 };
-  /**
-   * A step's one forward button, by the label it shows: "Skip for now" until the step is done, then
-   * its primary label. The label it hides keeps its width, so only the shown one names it.
-   */
   const forward = (page: Page, name: string) => page.getByRole("link", { name, exact: true });
   const skipStep = (page: Page) => forward(page, "Skip for now");
-  const nextStep = (page: Page) => forward(page, "Next: first prompt");
-  /** Where the forward button sits; it keeps this box when its label changes. */
+  const nextStep = (page: Page) => forward(page, "Next: connect accounts");
   const forwardBox = (label: string, button: (page: Page) => Locator) =>
     browser.use(`Measure ${label}`, (page) =>
       button(page)
         .boundingBox()
         .then((box) => box && { x: box.x, width: box.width, height: box.height }),
     );
-  /** The forward button offers only to skip, as a quiet button, while nothing is connected. */
   const offersSkip = (reason: string) =>
     Effect.gen(function* () {
       expect(
@@ -183,12 +174,10 @@ const make = Effect.gen(function* () {
     Promise.resolve(new URL(page.url()).search),
   );
   type Shifts = Effect.Success<typeof observeLayoutShifts>;
-  /** No element moved in this document, except while the viewport itself changed size. */
   const noLayoutShifts = (shifts: Shifts, name: string) =>
     Effect.gen(function* () {
       expect(yield* shifts.unstable(name)).toEqual([]);
     });
-  /** Check the current step fits a phone and capture it, then return to the desktop layout. */
   const onPhone = (name: string, shifts: Shifts, scrollTo?: (page: Page) => Locator) =>
     Effect.gen(function* () {
       yield* shifts.resize(phone, `${name} on a phone`);
@@ -223,11 +212,6 @@ const make = Effect.gen(function* () {
   const allowClipboard = browser.use("Allow clipboard access in the isolated browser", (page) =>
     page.context().grantPermissions(["clipboard-read", "clipboard-write"]),
   );
-  /**
-   * Claude's guide is static, so it is shown and usable whatever the connection check is doing:
-   * its steps, its link and the exact MCP URL, which copies as shown. No placeholder stands in for
-   * any of it, and the forward button offers to skip until Claude connects.
-   */
   const guideReady = (reason: string) =>
     Effect.gen(function* () {
       expect(
@@ -253,10 +237,6 @@ const make = Effect.gen(function* () {
       ).toBe(endpoint);
       yield* offersSkip(reason);
     });
-  /**
-   * The page as the server sends it, before any script runs, without the empty comments React
-   * places between adjacent pieces of text or the line-break opportunities inside a URL.
-   */
   const serverDocument = (path: string) =>
     browser.use(`Read the server's document for ${path}`, (page) =>
       page.request
@@ -264,10 +244,6 @@ const make = Effect.gen(function* () {
         .then((response) => response.text())
         .then((html) => html.replaceAll("<!-- -->", "").replaceAll("<wbr/>", "")),
     );
-  /**
-   * Choose Claude while the agents already connected are held. The guide is shown and usable at
-   * once; the baseline read only decides when the connection check starts.
-   */
   const chooseClaude = (shifts: Shifts) =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -296,18 +272,12 @@ const make = Effect.gen(function* () {
         yield* shifts.phase("The baseline read returns");
         yield* baseline.release;
         yield* browser.use("Setup waits for Claude", (page) =>
-          page.getByText("Waiting for Claude to connect…", { exact: true }).waitFor(),
+          shownStatus(page, "Waiting for Claude to connect…").waitFor(),
         );
-        // Waiting for the baseline is not a step of its own: Back returns to the assistants.
         expect(yield* setupSearch).toBe("?assistant=claude");
         yield* shifts.phase("Waiting for Claude");
       }),
     );
-  /**
-   * The assistant signs in from its own tab, as a real assistant's browser window would, so agent
-   * setup keeps its state. The client registers, the member approves it, and it exchanges its code
-   * for tokens through the public OAuth endpoints.
-   */
   const authorizeAssistant = (client: string, access: "mcp" | "api" = "mcp") =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -334,11 +304,6 @@ const make = Effect.gen(function* () {
         yield* browser.use("Return to agent setup", (page) => page.bringToFront());
       }),
     );
-  /**
-   * The next successful connection check that lists every agent in `listing`, read as the page
-   * received it. A check the page sent before an agent connected does not list it yet, and one the
-   * page cancelled before its body arrived was never received.
-   */
   const nextCheck = (label: string, listing: ReadonlyArray<string> = []) =>
     browser
       .use(label, (page) =>
@@ -362,7 +327,6 @@ const make = Effect.gen(function* () {
         Effect.flatMap(Schema.decodeUnknownEffect(ListedAgents)),
         Effect.map((agents) => agents.map((agent) => agent.name)),
       );
-  /** Checked after one more read, so the listed agent has certainly been rendered. */
   const stillWaiting = (reason: string) =>
     Effect.gen(function* () {
       yield* nextCheck(`Another connection check after ${reason}`);
@@ -378,10 +342,6 @@ const make = Effect.gen(function* () {
       ).toBe(0);
       yield* offersSkip(`while waiting: ${reason}`);
     });
-  /**
-   * The shown status naming `agent`. A status the server renders streams into a hidden segment
-   * until React reveals it, so only the visible copy counts.
-   */
   const approvedFor = (page: Page, agent: string) =>
     page.getByText(`Approved for ${agent}`, { exact: true }).filter({ visible: true });
   const connected = (agent: string, reason: string) =>
@@ -399,7 +359,6 @@ const make = Effect.gen(function* () {
         ),
       ).toEqual([true, "default", 0]);
     });
-  /** The first prompt names the agent that connected, and the page confirms it holds a grant. */
   const promptShown = (agent: string, reason: string) =>
     Effect.gen(function* () {
       yield* browser.use(`The first prompt is shown ${reason}`, (page) =>
@@ -410,7 +369,32 @@ const make = Effect.gen(function* () {
       );
       expect(yield* setupSearch).toMatch(/^\?assistant=claude&step=prompt&agent=[^&]+$/u);
     });
-  /** Browser Back and Forward move between the screens the member chose, never the waits. */
+  const accountsWithAgent = (assistant: string, reason: string) =>
+    Effect.gen(function* () {
+      yield* browser.use(`The account step is shown ${reason}`, (page) =>
+        page.getByRole("heading", { name: "Connect your accounts", exact: true }).waitFor(),
+      );
+      expect(yield* setupSearch).toMatch(
+        new RegExp(`^\\?assistant=${assistant}&agent=[^&]+$`, "u"),
+      );
+      yield* browser.use(`The catalog has loaded ${reason}`, (page) =>
+        page.locator("[aria-label='Loading apps']").waitFor({ state: "detached" }),
+      );
+      yield* offersSkip(`on the account step ${reason}`);
+      return yield* setupSearch;
+    });
+  const skipAccountsToApps = (reason: string) =>
+    Effect.gen(function* () {
+      yield* browser.use(`The account step is shown ${reason}`, (page) =>
+        page.getByRole("heading", { name: "Connect your accounts", exact: true }).waitFor(),
+      );
+      expect(yield* setupSearch).toBe("");
+      yield* browser.use(`The catalog has loaded ${reason}`, (page) =>
+        page.locator("[aria-label='Loading apps']").waitFor({ state: "detached" }),
+      );
+      yield* offersSkip(`on the account step ${reason}`);
+      yield* browser.use(`Skip the account step ${reason}`, (page) => skipStep(page).click());
+    });
   const goBack = (shifts: Shifts, name: string) =>
     Effect.gen(function* () {
       yield* shifts.phase(name);
@@ -421,13 +405,6 @@ const make = Effect.gen(function* () {
       yield* shifts.phase(name);
       yield* browser.use(name, (page) => page.goForward());
     });
-  /**
-   * The assistants also offer the MCP URL for any client, and notice one that connects by it.
-   * Choosing an assistant replaces the choices with its guide at once, while the agents already
-   * connected are read. A guide calls connected only an assistant that connects over MCP after
-   * that read; one connected earlier or an Executor API client does not count. Each chosen screen
-   * is a history entry, and no element moves while the page updates by itself.
-   */
   const connectFirstAgent = Effect.gen(function* () {
     yield* allowClipboard;
     const shifts = yield* observeLayoutShifts;
@@ -449,22 +426,19 @@ const make = Effect.gen(function* () {
       ),
     ).toBe(endpoint);
     yield* browser.use("The assistants wait for any client to connect", (page) =>
-      page.getByText("Waiting for your assistant to connect…", { exact: true }).waitFor(),
+      shownStatus(page, "Waiting for your assistant to connect…").waitFor(),
     );
     yield* offersSkip("on the assistants before a connection");
     const skipOnAssistants = yield* forwardBox("Skip for now on the assistants", skipStep);
     yield* shifts.phase("Any MCP client connects");
-    yield* authorizeAssistant("Earlier agent");
+    yield* grantByApi("Earlier agent");
     yield* connected("Earlier agent", "on the assistants");
     expect(yield* forwardBox("Next on the assistants", nextStep)).toEqual(skipOnAssistants);
     yield* browser.checkpoint("Any MCP client connected from the assistants");
     yield* onPhone("Any MCP client connected from the assistants", shifts, nextStep);
     yield* chooseClaude(shifts);
-    // The earlier agent connected before the guide read its baseline, and an Executor HTTP API
-    // client authorized now is a new grant but not an assistant connection. A later check that
-    // lists both must not call Claude connected.
     yield* shifts.phase("An API client connects");
-    yield* authorizeAssistant("Executor API client", "api");
+    yield* grantByApi("Executor API client", "api");
     yield* nextCheck("A connection check lists the earlier agent and the API client", [
       "Earlier agent",
       "Executor API client",
@@ -486,20 +460,18 @@ const make = Effect.gen(function* () {
       page.getByRole("button", { name: "Claude", exact: true }).click(),
     );
     yield* browser.use("Setup waits for the new choice", (page) =>
-      page.getByText("Waiting for Claude to connect…", { exact: true }).waitFor(),
+      shownStatus(page, "Waiting for Claude to connect…").waitFor(),
     );
     yield* offersSkip("on Claude's guide before it connects");
     const skipOnGuide = yield* forwardBox("Skip for now on Claude's guide", skipStep);
 
-    // The assistant connects while checks fail: a failed check never calls it connected, and
-    // retrying keeps this attempt's baseline.
     yield* shifts.phase("Connection checks fail");
     yield* browser.use("Fail the connection checks", (page) =>
       page.route(agentsRead, (route) => route.abort("failed")),
     );
     yield* authorizeAssistant("Onboarding assistant");
     yield* browser.use("A failed check is reported", (page) =>
-      page.getByText("Couldn’t check the connection", { exact: true }).waitFor(),
+      shownStatus(page, "Couldn’t check the connection").waitFor(),
     );
     expect(
       yield* browser.use("A failed check never calls the assistant connected", (page) =>
@@ -517,7 +489,6 @@ const make = Effect.gen(function* () {
       page.getByText("Executor is connected", { exact: true }).waitFor(),
     );
     yield* connected("Onboarding assistant", "after the retry");
-    // The button changes its label and style in place, beside the back button.
     expect(yield* forwardBox("Next on Claude's guide", nextStep)).toEqual(skipOnGuide);
     yield* browser.use("Let the page finish its transitions", (page) =>
       page.evaluate(() =>
@@ -529,16 +500,21 @@ const make = Effect.gen(function* () {
     yield* browser.checkpoint("Claude connected with Next");
     yield* onPhone("Claude connected with Next", shifts, nextStep);
 
-    yield* shifts.phase("Next: first prompt");
-    yield* browser.use("Continue to the first prompt", (page) => nextStep(page).click());
-    yield* browser.use("The first prompt replaces the guide", (page) =>
+    yield* shifts.phase("Next: connect accounts");
+    yield* browser.use("Continue to the account step", (page) => nextStep(page).click());
+    const accounts = yield* accountsWithAgent("claude", "after Next");
+    yield* browser.checkpoint("Connect your accounts after connecting");
+    yield* shifts.phase("Skip to the first prompt");
+    yield* browser.use("Skip to the first prompt", (page) => skipStep(page).click());
+    yield* browser.use("The first prompt replaces the account step", (page) =>
       page.getByRole("heading", { name: "Send your first prompt", exact: true }).waitFor(),
     );
-    yield* promptShown("Onboarding assistant", "after Next");
+    yield* promptShown("Onboarding assistant", "after the account step");
     yield* browser.checkpoint("Send your first prompt after connecting");
     yield* onPhone("Send your first prompt after connecting", shifts);
 
-    // Back returns to the connected guide, then to the assistants; Forward retraces both.
+    yield* goBack(shifts, "Back to the account step");
+    expect(yield* accountsWithAgent("claude", "after Back")).toBe(accounts);
     yield* goBack(shifts, "Back to Claude's guide");
     expect(yield* setupSearch).toBe("?assistant=claude");
     yield* connected("Onboarding assistant", "after Back");
@@ -549,6 +525,8 @@ const make = Effect.gen(function* () {
     expect(yield* setupSearch).toBe("");
     yield* goForward(shifts, "Forward to Claude's guide");
     yield* connected("Onboarding assistant", "after Forward");
+    yield* goForward(shifts, "Forward to the account step");
+    expect(yield* accountsWithAgent("claude", "after Forward")).toBe(accounts);
     yield* goForward(shifts, "Forward to the first prompt");
     yield* promptShown("Onboarding assistant", "after Forward");
     yield* noLayoutShifts(shifts, "layout-shifts-desktop.json");
@@ -571,11 +549,6 @@ const make = Effect.gen(function* () {
       page.getByRole("link", { name: "Open dashboard", exact: false }).click(),
     );
   });
-  /**
-   * On a phone: reloads return to the same screen and connection check, the server sends the
-   * static guide and prompt, and a link to the first prompt never claims a connection. Back
-   * restores the guide's scroll position, and no element moves while the page updates by itself.
-   */
   const revisitAgentSetup = (setup: string) =>
     Effect.gen(function* () {
       const hydrationErrors: string[] = [];
@@ -593,7 +566,6 @@ const make = Effect.gen(function* () {
       yield* authorizeAssistant("Phone assistant");
       yield* first.phase("Phone assistant connects");
       yield* connected("Phone assistant", "on a phone");
-      // Next stays on the action bar, so scroll to the end of the guide, past its status.
       yield* browser.use("Scroll to the end of the guide", (page) =>
         page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight)),
       );
@@ -601,8 +573,11 @@ const make = Effect.gen(function* () {
         page.evaluate(() => window.scrollY),
       );
       expect(scrolled).toBeGreaterThan(0);
-      yield* first.phase("Next: first prompt");
-      yield* browser.use("Continue to the first prompt", (page) => nextStep(page).click());
+      yield* first.phase("Next: connect accounts");
+      yield* browser.use("Continue to the account step", (page) => nextStep(page).click());
+      const accounts = yield* accountsWithAgent("claude", "on a phone");
+      yield* first.phase("Skip to the first prompt");
+      yield* browser.use("Skip to the first prompt", (page) => skipStep(page).click());
       yield* promptShown("Phone assistant", "on a phone");
       expect(
         yield* browser.use("The prompt opens at its top with its heading focused", (page) =>
@@ -612,17 +587,19 @@ const make = Effect.gen(function* () {
           })),
         ),
       ).toEqual({ scrollY: 0, focused: "Send your first prompt" });
+      yield* goBack(first, "Back to the account step");
+      expect(yield* accountsWithAgent("claude", "after Back on a phone")).toBe(accounts);
       yield* goBack(first, "Back to Claude's guide");
       yield* connected("Phone assistant", "after Back on a phone");
       yield* browser.use("Back restores the guide's scroll position", (page) =>
         page.waitForFunction((y) => Math.abs(window.scrollY - y) <= 1, scrolled),
       );
+      yield* goForward(first, "Forward to the account step");
+      expect(yield* accountsWithAgent("claude", "after Forward on a phone")).toBe(accounts);
       yield* goForward(first, "Forward to the first prompt");
       yield* promptShown("Phone assistant", "after Forward on a phone");
       yield* noLayoutShifts(first, "layout-shifts-phone.json");
 
-      // The prompt's URL names its agent, so the server renders the prompt and confirms the
-      // member's grant for it before any script runs, and a reload shows the same screen.
       const promptUrl = yield* browser.use("Read the first prompt's URL", (page) =>
         Promise.resolve(page.url()),
       );
@@ -639,11 +616,13 @@ const make = Effect.gen(function* () {
       yield* promptShown("Phone assistant", "after a reload");
       yield* browser.checkpoint("Send your first prompt after a reload on a phone");
       yield* noLayoutShifts(reloaded, "layout-shifts-prompt-reload.json");
+      yield* browser.use("Back to the account step after the reload", (page) => page.goBack());
+      expect(yield* accountsWithAgent("claude", "after Back from the reloaded prompt")).toBe(
+        accounts,
+      );
       yield* browser.use("Back to Claude's guide after the reload", (page) => page.goBack());
       yield* connected("Phone assistant", "after Back from the reloaded prompt");
 
-      // The guide is in the server's document with its exact MCP URL, and the server read the
-      // agents already connected before sending it: the phone assistant is one of them.
       const guideDocument = yield* serverDocument(`${setup}?assistant=claude`);
       expect(
         [
@@ -653,11 +632,6 @@ const make = Effect.gen(function* () {
           `data-slot="skeleton"`,
         ].map((text) => guideDocument.includes(text)),
       ).toEqual([true, true, true, false]);
-      // The entry keeps the baseline it read when the guide was first shown, so a reload still
-      // counts the phone assistant as new. Its scripts wait for the whole document, so the guide
-      // hydrates with the server's read, which already lists the phone assistant, as on a slow phone.
-      // The step lets them go itself: every step ends by waiting for the page to respond to input,
-      // which it cannot do while its scripts are held.
       expect(
         yield* browser.use(
           "Reload Claude's guide; its scripts wait for its whole document",
@@ -686,8 +660,6 @@ const make = Effect.gen(function* () {
       expect(yield* setupSearch).toBe("?assistant=claude");
       yield* noLayoutShifts(guide, "layout-shifts-guide-reload.json");
 
-      // A link to the first prompt for an agent the member does not hold never calls it connected.
-      // It opens the guide, which reads the agents already connected again.
       const forged = `${setup}?assistant=claude&step=prompt&agent=not-a-connected-agent`;
       expect((yield* serverDocument(forged)).includes("Executor is connected")).toBe(false);
       yield* Effect.scoped(
@@ -717,13 +689,11 @@ const make = Effect.gen(function* () {
           yield* noLayoutShifts(linked, "layout-shifts-prompt-link.json");
         }),
       );
-      // A first prompt needs a connected agent, so a link to one without an agent opens the guide,
-      // which offers to skip until Claude connects.
       yield* browser.use("Open a link to the first prompt without an agent", (page) =>
         page.goto(`${setup}?assistant=claude&step=prompt`),
       );
       yield* browser.use("A link without an agent shows Claude's guide", (page) =>
-        page.getByText("Waiting for Claude to connect…", { exact: true }).waitFor(),
+        shownStatus(page, "Waiting for Claude to connect…").waitFor(),
       );
       expect(
         yield* browser.use("A link without an agent shows no prompt", (page) =>
@@ -731,7 +701,6 @@ const make = Effect.gen(function* () {
         ),
       ).toBe(0);
       yield* offersSkip("on a phone");
-      // On a phone the button fills the row beside the back button's icon.
       expect(
         yield* browser.use("Skip for now fills the row on a phone", (page) =>
           Promise.all([
@@ -758,16 +727,16 @@ const make = Effect.gen(function* () {
         page.getByRole("group", { name: "Choose your assistant", exact: true }).waitFor(),
       );
       expect(hydrationErrors).toEqual([]);
-      // Skipping from a guide that still waits leaves setup, as from the assistants.
       yield* browser.use("Return to the desktop layout", (page) => page.setViewportSize(desktop));
       yield* browser.use("Open Claude's guide again", (page) =>
         page.goto(`${setup}?assistant=claude`),
       );
       yield* browser.use("The guide waits for Claude", (page) =>
-        page.getByText("Waiting for Claude to connect…", { exact: true }).waitFor(),
+        shownStatus(page, "Waiting for Claude to connect…").waitFor(),
       );
       yield* offersSkip("on a guide opened again");
       yield* browser.use("Skip agent setup from the guide", (page) => skipStep(page).click());
+      yield* skipAccountsToApps("after skipping Claude's guide");
     });
   const SessionUser = Schema.Struct({ user: Schema.Struct({ id: Schema.String }) });
   const sessionUserId = browser
@@ -783,7 +752,6 @@ const make = Effect.gen(function* () {
       Effect.flatMap(Schema.decodeUnknownEffect(SessionUser)),
       Effect.map((session) => session.user.id),
     );
-  /** A same-origin POST as the signed-in member, as the dashboard sends it. */
   const memberPost = (label: string, path: string, data: unknown) =>
     browser
       .use(label, (page) =>
@@ -801,10 +769,6 @@ const make = Effect.gen(function* () {
         ),
       )
       .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.Struct({ id: Schema.String }))));
-  /**
-   * Deploy an app that takes a pasted key and connect one account to it, as the member, through
-   * the hosted API. Managed Cloud lists no catalog apps, so its account step has none to connect.
-   */
   const connectTracker = (organization: string) =>
     Effect.gen(function* () {
       const prefix = `/api/organizations/${organization}`;
@@ -835,7 +799,6 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
         fields: { token: "synthetic-onboarding-token" },
       });
     });
-  /** The current setup screen at the desktop and phone sizes, then back to desktop. */
   const bothSizes = (name: string) =>
     Effect.gen(function* () {
       yield* browser.use("Use the desktop layout", (page) => page.setViewportSize(desktop));
@@ -851,7 +814,6 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
   const setupPath = browser.use("Read the setup path", (page) =>
     Promise.resolve(new URL(page.url()).pathname + new URL(page.url()).search),
   );
-  /** The forward button reads `label` as the primary action, and no longer offers to skip. */
   const primaryForward = (label: string, reason: string) =>
     Effect.gen(function* () {
       expect(
@@ -864,20 +826,15 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
         ),
       ).toEqual([true, "default", 0]);
     });
-  /** Choose Claude; its guide waits for it and offers to skip meanwhile. */
   const chooseWaitingClaude = Effect.gen(function* () {
     yield* browser.use("Choose Claude", (page) =>
       page.getByRole("button", { name: "Claude", exact: true }).click(),
     );
     yield* browser.use("Setup waits for Claude", (page) =>
-      page.getByText("Waiting for Claude to connect…", { exact: true }).waitFor(),
+      shownStatus(page, "Waiting for Claude to connect…").waitFor(),
     );
     yield* offersSkip("while Claude's guide waits");
   });
-  /**
-   * Connect Claude over MCP OAuth from its waiting guide, wait for the guide to call it connected,
-   * and follow the forward button, which now reads `next`.
-   */
   const connectClaude = (next: string) =>
     Effect.gen(function* () {
       yield* authorizeAssistant("Onboarding assistant");
@@ -887,7 +844,6 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
       yield* primaryForward(next, "once Claude connects");
       yield* browser.use(`Continue with ${next}`, (page) => forward(page, next).click());
     });
-  /** The first prompt for the connected agent, naming the account connected over the API. */
   const firstPromptNamesTracker = (reason: string) =>
     Effect.gen(function* () {
       yield* promptShown("Onboarding assistant", reason);
@@ -897,13 +853,8 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
         ),
       ).toBe(1);
     });
-  /**
-   * A required step's forward button: disabled, reading only `hint`, which names what to do. Its
-   * primary `label` is not shown yet, and there is no way to skip, not even behind another control.
-   */
   const waitsFor = (label: string, hint: string, reason: string) =>
     Effect.gen(function* () {
-      // Counted rather than awaited, so a skippable step fails here with what it shows instead.
       expect(
         yield* browser.use(`${hint} waits, disabled, ${reason}`, (page) => {
           const button = page.getByRole("button", { name: hint, exact: true });
@@ -920,7 +871,6 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
         }),
       ).toEqual({ skip: 0, labels: 0, hints: 1, buttons: 1, disabled: true });
     });
-  /** Once done, the button is the primary link reading `label`, and its hint is hidden in place. */
   const opensWith = (label: string, hint: string, reason: string) =>
     Effect.gen(function* () {
       yield* browser.use(`${label} opens ${reason}`, (page) =>
@@ -937,7 +887,6 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
         ),
       ).toEqual(["default", false, 0, 0]);
     });
-  /** Where the forward control sits, whichever element it is and whichever label it shows. */
   const forwardControlBox = (label: string) =>
     browser.use(`Measure ${label}`, (page) =>
       page
@@ -946,10 +895,6 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
         .boundingBox()
         .then((box) => box && { x: box.x, y: box.y, width: box.width, height: box.height }),
     );
-  /**
-   * The team's Apps sends this member to `step` instead. The server answers the address with a
-   * redirect before any HTML, so no dashboard is ever rendered; the browser lands on the step.
-   */
   const appsSendsTo = (slug: string, step: RegExp, reason: string) =>
     Effect.gen(function* () {
       const apps = `/org/${slug}/apps`;
@@ -972,12 +917,6 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
       ).toBe(0);
       return (yield* setupPath) as string;
     });
-  /**
-   * Leaving setup for account settings in the session menu, then following its way back to the
-   * team, returns to `step` within the page. The router asks before showing the dashboard, so the
-   * account page stays until the step replaces it: no dashboard page or frame appears, and the
-   * Apps address, which the router enters as it starts, is replaced rather than kept in history.
-   */
   const accountSettingsReturnTo = (name: string, step: RegExp) =>
     Effect.gen(function* () {
       yield* browser.use("Open the session menu on setup", (page) =>
@@ -1029,7 +968,6 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
         page.waitForURL((url) => step.test(url.pathname)),
       );
     });
-  /** The required step at the desktop and phone sizes: it fits a phone with its hint shown. */
   const atBothSizes = (name: string, section: string) =>
     Effect.gen(function* () {
       yield* browser.use("Use the desktop layout", (page) => page.setViewportSize(desktop));
@@ -1039,7 +977,7 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
       yield* browser.checkpoint(`${name} 390x844`);
       yield* browser.use("Return to the desktop layout", (page) => page.setViewportSize(desktop));
     });
-  /** Connect one Synthetic Mail account from the account step's catalog and name it. */
+  const geistSans = /\/geist-sans[^/]*\.woff2$/u;
   const connectMail = (label: string) =>
     Effect.gen(function* () {
       yield* browser.use("The catalog has loaded", (page) =>
@@ -1066,26 +1004,224 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
           .then(() => nameConnectedAccount(page, label)),
       );
     });
+  const memberRequest = (
+    label: string,
+    method: "GET" | "POST",
+    path: string,
+    data?: unknown,
+    headers: Record<string, string> = {},
+    expected = 200,
+  ) =>
+    browser
+      .use(label, (page) =>
+        page.request
+          .fetch(`${targetHosts(target).browser}${path}`, {
+            method,
+            data,
+            maxRedirects: 0,
+            headers: { origin: targetHosts(target).browser, ...headers },
+          })
+          .then((response) =>
+            response.text().then((text) => ({ status: response.status(), text })),
+          ),
+      )
+      .pipe(
+        Effect.flatMap((response) =>
+          response.status === expected
+            ? Effect.succeed(response.text)
+            : Effect.fail(new OnboardingFailed({ operation: `${label}: HTTP ${response.status}` })),
+        ),
+      );
+  const Url = Schema.fromJsonString(Schema.Struct({ url: Schema.String }));
+  const freshMember = Effect.gen(function* () {
+    yield* browser.omitNetworkTrace;
+    const email = `onboarding-${randomUUID()}@example.test`;
+    const received = yield* emulators.received(email);
+    yield* memberRequest(
+      "Request a sign-in code through the API",
+      "POST",
+      "/api/auth/email-otp/send-verification-otp",
+      {
+        email,
+        type: "sign-in",
+      },
+    );
+    const delivered = yield* evidence.step(
+      "Read the delivered code from the mail emulator",
+      emulators.mail(email, received),
+    );
+    yield* memberRequest(
+      "Sign in with the code through the API",
+      "POST",
+      "/api/auth/sign-in/email-otp",
+      {
+        email,
+        otp: reveal(delivered.code),
+      },
+    );
+    return email;
+  });
+  const readyTeam = Effect.gen(function* () {
+    yield* freshMember;
+    yield* memberRequest("Prepare the member's entry", "POST", "/api/onboarding/prepare");
+    const name = `Onboarding ${randomUUID().slice(0, 8)}`;
+    yield* memberRequest("Create the team through the API", "POST", "/api/onboarding/create", {
+      name,
+      logo: null,
+      next: "setup",
+    });
+    const teams = yield* memberRequest(
+      "Read the member's teams",
+      "GET",
+      "/api/auth/organization/list",
+    ).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Organizations))));
+    const team = teams[0];
+    if (teams.length !== 1 || team === undefined || team.name !== name)
+      return yield* new OnboardingFailed({ operation: "The API must create exactly one team" });
+    return { team, setup: `/org/${team.slug}/setup` };
+  });
+  const grantByApi = (client: string, access: "mcp" | "api" = "mcp") =>
+    Effect.gen(function* () {
+      const origin = targetHosts(target).browser;
+      const resource = access === "mcp" ? endpoint : `${targetHosts(target).api}/api`;
+      const scope = access === "mcp" ? "mcp offline_access" : "executor offline_access";
+      const redirect = "http://127.0.0.1:9/callback";
+      const { client_id: clientId } = yield* driver(`Register ${client}`, () =>
+        fetch(`${origin}/api/auth/oauth2/register`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            client_name: client,
+            redirect_uris: [redirect],
+            token_endpoint_auth_method: "none",
+            grant_types: ["authorization_code", "refresh_token"],
+            response_types: ["code"],
+          }),
+        }).then((response) => {
+          if (response.status !== 201)
+            throw new Error(`Registering ${client} returned HTTP ${response.status}`);
+          return response.json();
+        }),
+      ).pipe(
+        Effect.flatMap(Schema.decodeUnknownEffect(Schema.Struct({ client_id: Schema.String }))),
+      );
+      const verifier = randomBytes(32).toString("base64url");
+      const query = new URLSearchParams({
+        response_type: "code",
+        client_id: clientId,
+        redirect_uri: redirect,
+        code_challenge: createHash("sha256").update(verifier).digest("base64url"),
+        code_challenge_method: "S256",
+        scope,
+        resource,
+        state: randomBytes(16).toString("hex"),
+      });
+      const consentPage = new URL(
+        (yield* memberRequest(
+          `Open ${client}'s authorization`,
+          "GET",
+          `/api/auth/oauth2/authorize?${query}`,
+          undefined,
+          {
+            accept: "application/json",
+          },
+        ).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Url)))).url,
+        origin,
+      );
+      const [team] = yield* organizations;
+      if (team === undefined)
+        return yield* new OnboardingFailed({ operation: `${client} needs the member's team` });
+      const approved = yield* memberRequest(
+        `Approve ${client}`,
+        "POST",
+        "/api/auth/oauth2/consent",
+        { accept: true, oauth_query: consentPage.search.slice(1) },
+        { "x-executor-organization": team.id },
+      ).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Url)));
+      const code = new URL(approved.url).searchParams.get("code");
+      if (code === null)
+        return yield* new OnboardingFailed({ operation: `${client}'s consent returned no code` });
+      const exchanged = yield* driver(`${client} exchanges its code`, () =>
+        fetch(`${origin}/api/auth/oauth2/token`, {
+          method: "POST",
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({
+            grant_type: "authorization_code",
+            client_id: clientId,
+            code,
+            code_verifier: verifier,
+            redirect_uri: redirect,
+            resource,
+          }),
+        }).then((response) => response.status),
+      );
+      if (exchanged !== 200)
+        return yield* new OnboardingFailed({
+          operation: `${client}'s token exchange returned HTTP ${exchanged}`,
+        });
+    });
+  const backgroundInstall = Effect.gen(function* () {
+    yield* browser.use("The background Executor app appears without a reload", (page) =>
+      page
+        .getByRole("link", { name: "Open Executor", exact: true })
+        .waitFor({ state: "visible", timeout: 90000 }),
+    );
+    yield* browser.checkpoint("Executor appears after background provisioning");
+    yield* browser.use("Reload the provisioned team", (page) => page.reload());
+    yield* browser.use("The installed app remains available", (page) =>
+      page.getByRole("link", { name: "Open Executor", exact: true }).waitFor(),
+    );
+  });
+  const appsOpen = (slug: string) =>
+    Effect.gen(function* () {
+      yield* browser.use("The new team opens Apps", (page) =>
+        page.waitForURL(`${targetHosts(target).browser}/org/${slug}/apps`),
+      );
+      yield* browser.use("The confirmed team stays open", (page) =>
+        page
+          .getByRole("button", { name: "Add app", exact: true })
+          .first()
+          .waitFor({ state: "visible" }),
+      );
+    });
   return {
     sessionUserId,
-    /**
-     * Create the team as a member whose setup is required, then complete it in `order`. Neither
-     * step offers to skip: each forward button waits, disabled and reading its hint, until its step is
-     * done, and becomes the primary action in the same box without moving anything. Until both are
-     * done the team's Apps sends the member to their current step, as a document request and from
-     * within the page; finishing opens the dashboard for good.
-     */
-    requiredSetup: (name: string, order: OnboardingOrder) =>
+    signInByApi: Effect.gen(function* () {
+      const email = yield* freshMember;
+      yield* browser.use("Open team setup", (page) => page.goto("/create"));
+      return email;
+    }),
+    readyTeam,
+    connectAssistant: (team: { readonly slug: string }, setup: string) =>
+      Effect.gen(function* () {
+        yield* allowClipboard;
+        yield* browser.use("Open the team's assistant step", (page) =>
+          page.goto(`${setup}/assistant`),
+        );
+        yield* heading("Connect your assistant");
+        yield* connectFirstAgent;
+        yield* appsOpen(team.slug);
+      }),
+    revisitAssistant: (team: { readonly slug: string }, setup: string) =>
+      Effect.gen(function* () {
+        yield* browser.use("Open the team's assistant step", (page) =>
+          page.goto(`${setup}/assistant`),
+        );
+        yield* heading("Connect your assistant");
+        yield* revisitAgentSetup(`${setup}/assistant`);
+        yield* appsOpen(team.slug);
+      }),
+    requiredSetup: (name: string) =>
       Effect.gen(function* () {
         yield* allowClipboard;
         yield* browser.use("Confirm team creation", (page) =>
           page.getByRole("button", { name: "Continue", exact: true }).click(),
         );
-        yield* browser.use("Team creation opens a setup step", (page) =>
+        yield* browser.use("Team creation opens the assistant step", (page) =>
           page.waitForURL(
             (url) =>
               url.origin === targetHosts(target).browser &&
-              /^\/org\/[^/]+\/setup\/(accounts|assistant)$/u.test(url.pathname),
+              /^\/org\/[^/]+\/setup\/assistant$/u.test(url.pathname),
           ),
         );
         const teams = yield* organizations;
@@ -1100,8 +1236,7 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
         const accountsHint = "Connect an account to continue";
         const assistantHint = "Connect your assistant to continue";
         const continueAccounts = "Continue with 1 account";
-        const label = order === "assistant_first" ? "Assistant first" : "Accounts first";
-        /** Connect one account on the account step: the button opens in place, nothing moves. */
+        const next = "Next: connect accounts";
         const completeAccounts = Effect.gen(function* () {
           const catalogLoaded = browser.use("The catalog has loaded", (page) =>
             page.locator("[aria-label='Loading apps']").waitFor({ state: "detached" }),
@@ -1109,131 +1244,128 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
           yield* heading("Connect your accounts");
           yield* catalogLoaded;
           yield* waitsFor(continueAccounts, accountsHint, "before an account connects");
-          yield* atBothSizes(`Required ${label}: Connect your accounts`, "accounts-setup-title");
-          // A fresh document, so the shifts observed are this step's own, not the resizes'.
-          yield* browser.use("Reload the account step", (page) => page.reload());
+          yield* atBothSizes(`Required: Connect your accounts`, "accounts-setup-title");
+          yield* browser.use("Reload the account step without its font", (page) =>
+            page
+              .context()
+              .newCDPSession(page)
+              .then((session) =>
+                session
+                  .send("Network.setCacheDisabled", { cacheDisabled: true })
+                  .then(() => page.route(geistSans, (route) => route.abort("failed")))
+                  .then(() => page.reload())
+                  .finally(() =>
+                    page
+                      .unroute(geistSans)
+                      .then(() =>
+                        session.send("Network.setCacheDisabled", { cacheDisabled: false }),
+                      )
+                      .then(() => session.detach()),
+                  ),
+              ),
+          );
           yield* heading("Connect your accounts");
           yield* catalogLoaded;
           const shifts = yield* observeLayoutShifts;
           yield* shifts.phase("Connect an account");
           yield* waitsFor(continueAccounts, accountsHint, "after a reload");
           const waiting = yield* forwardControlBox(accountsHint);
+          const mailButton = browser.use("Measure Synthetic Mail's button", (page) =>
+            page
+              .getByRole("group", { name: "Synthetic Mail", exact: true })
+              .getByRole("button")
+              .boundingBox(),
+          );
+          const before = yield* mailButton;
           yield* connectMail("Work mail");
           yield* opensWith(continueAccounts, accountsHint, "once an account connects");
           expect(yield* forwardControlBox(continueAccounts)).toEqual(waiting);
+          expect(yield* mailButton).toEqual(before);
           yield* noLayoutShifts(shifts, "required-account-step-shifts.json");
-          yield* browser.checkpoint(`Required ${label}: Continue opens once an account connects`);
+          yield* browser.checkpoint(`Required: Continue opens once an account connects`);
           yield* browser.use("Continue from the account step", (page) =>
             page.getByRole("link", { name: continueAccounts, exact: true }).click(),
           );
         });
-        /**
-         * Choose Claude and come back with "Different assistant", then connect Claude: the button
-         * waits on the assistants and the guide alike and opens in place once Claude connects.
-         */
-        const completeAssistant = (next: string) =>
-          Effect.gen(function* () {
-            yield* heading("Connect your assistant");
-            yield* waitsFor(next, assistantHint, "on the assistants");
-            yield* atBothSizes(`Required ${label}: Connect your assistant`, "agent-setup-title");
-            yield* browser.use("Choose Claude", (page) =>
-              page.getByRole("button", { name: "Claude", exact: true }).click(),
-            );
-            yield* browser.use("Setup waits for Claude", (page) =>
-              page.getByText("Waiting for Claude to connect…", { exact: true }).waitFor(),
-            );
-            yield* waitsFor(next, assistantHint, "on Claude's guide");
-            yield* browser.use("Go back to a different assistant", (page) =>
-              page.getByRole("link", { name: "Different assistant", exact: true }).click(),
-            );
-            yield* browser.use("The assistants are offered again", (page) =>
-              page.getByRole("group", { name: "Choose your assistant", exact: true }).waitFor(),
-            );
-            yield* waitsFor(next, assistantHint, "back on the assistants");
-            yield* browser.use("Choose Claude again", (page) =>
-              page.getByRole("button", { name: "Claude", exact: true }).click(),
-            );
-            yield* browser.use("Setup waits for Claude again", (page) =>
-              page.getByText("Waiting for Claude to connect…", { exact: true }).waitFor(),
-            );
-            yield* atBothSizes(`Required ${label}: Claude's guide waits`, "agent-setup-title");
-            // The guide keeps its baseline through a reload, in the entry's history state.
-            yield* browser.use("Reload Claude's guide", (page) => page.reload());
-            yield* browser.use("Claude's guide waits after a reload", (page) =>
-              page.getByText("Waiting for Claude to connect…", { exact: true }).waitFor(),
-            );
-            const shifts = yield* observeLayoutShifts;
-            yield* shifts.phase("Connect Claude");
-            yield* waitsFor(next, assistantHint, "while Claude's guide waits");
-            const waiting = yield* forwardControlBox(assistantHint);
-            yield* authorizeAssistant("Onboarding assistant");
-            yield* browser.use("Claude is connected", (page) =>
-              approvedFor(page, "Onboarding assistant").waitFor(),
-            );
-            yield* opensWith(next, assistantHint, "once Claude connects");
-            expect(yield* forwardControlBox(next)).toEqual(waiting);
-            yield* noLayoutShifts(shifts, "required-guide-shifts.json");
-            yield* browser.checkpoint(`Required ${label}: Next opens once Claude connects`);
-            yield* browser.use(`Continue with ${next}`, (page) =>
-              page.getByRole("link", { name: next, exact: true }).click(),
-            );
-          });
-
-        if (order === "accounts_first") {
-          expect(yield* setupPath).toBe(`${setup}/accounts`);
-          yield* heading("Connect your accounts");
-          yield* appsSendsTo(team.slug, accountsStep, "before any step is done");
-          yield* browser.checkpoint(`Required ${label}: Apps returns to the account step`);
-          yield* accountSettingsReturnTo(name, accountsStep);
-          yield* completeAccounts;
-          yield* browser.use("Continue opens the assistants", (page) =>
-            page.waitForURL((url) => assistantStep.test(url.pathname) && url.search === ""),
-          );
+        const completeAssistant = Effect.gen(function* () {
           yield* heading("Connect your assistant");
-          yield* appsSendsTo(team.slug, assistantStep, "with an account and no assistant");
-          yield* browser.checkpoint(`Required ${label}: Apps returns to the assistant step`);
-          yield* completeAssistant("Next: first prompt");
-          yield* promptShown("Onboarding assistant", "after a required setup");
-        } else {
-          expect(yield* setupPath).toBe(`${setup}/assistant`);
-          yield* heading("Connect your assistant");
-          yield* appsSendsTo(team.slug, assistantStep, "before any step is done");
-          yield* browser.checkpoint(`Required ${label}: Apps returns to the assistant step`);
-          yield* accountSettingsReturnTo(name, assistantStep);
-          yield* completeAssistant("Next: connect accounts");
-          yield* browser.use("Next opens the account step with the agent", (page) =>
-            page.waitForURL((url) => accountsStep.test(url.pathname) && url.search !== ""),
+          yield* waitsFor(next, assistantHint, "on the assistants");
+          yield* atBothSizes(`Required: Connect your assistant`, "agent-setup-title");
+          yield* browser.use("Choose Claude", (page) =>
+            page.getByRole("button", { name: "Claude", exact: true }).click(),
           );
-          yield* heading("Connect your accounts");
-          // The server names the agent connected, so the first prompt can still confirm it.
-          const returned = yield* appsSendsTo(
-            team.slug,
-            accountsStep,
-            "with an assistant and no account",
+          yield* browser.use("Setup waits for Claude", (page) =>
+            shownStatus(page, "Waiting for Claude to connect…").waitFor(),
           );
-          expect(returned).toMatch(
-            new RegExp(`^${setup}/accounts\\?assistant=other&agent=[^&]+$`, "u"),
+          yield* waitsFor(next, assistantHint, "on Claude's guide");
+          yield* browser.use("Go back to a different assistant", (page) =>
+            page.getByRole("link", { name: "Different assistant", exact: true }).click(),
           );
-          yield* browser.checkpoint(`Required ${label}: Apps returns to the account step`);
-          // A new visit to the assistant step, as in a new tab, finds Claude done and moves on.
-          yield* browser.use("Open the assistant step in a new visit", (page) =>
-            page.goto(`${setup}/assistant`),
+          yield* browser.use("The assistants are offered again", (page) =>
+            page.getByRole("group", { name: "Choose your assistant", exact: true }).waitFor(),
           );
-          yield* heading("Connect your assistant");
-          yield* opensWith(
-            "Next: connect accounts",
-            assistantHint,
-            "in a new visit once Claude is connected",
+          yield* waitsFor(next, assistantHint, "back on the assistants");
+          yield* browser.use("Choose Claude again", (page) =>
+            page.getByRole("button", { name: "Claude", exact: true }).click(),
           );
-          yield* browser.use("Return to the account step", (page) => page.goto(returned));
-          yield* completeAccounts;
-          yield* browser.use("The first prompt is shown", (page) =>
-            page.getByRole("button", { name: "Copy starter prompt", exact: true }).waitFor(),
+          yield* browser.use("Setup waits for Claude again", (page) =>
+            shownStatus(page, "Waiting for Claude to connect…").waitFor(),
           );
-          yield* browser.use("The first prompt confirms the agent", (page) =>
+          yield* atBothSizes(`Required: Claude's guide waits`, "agent-setup-title");
+          yield* browser.use("Reload Claude's guide", (page) => page.reload());
+          yield* browser.use("Claude's guide waits after a reload", (page) =>
+            shownStatus(page, "Waiting for Claude to connect…").waitFor(),
+          );
+          const shifts = yield* observeLayoutShifts;
+          yield* shifts.phase("Connect Claude");
+          yield* waitsFor(next, assistantHint, "while Claude's guide waits");
+          const waiting = yield* forwardControlBox(assistantHint);
+          yield* authorizeAssistant("Onboarding assistant");
+          yield* browser.use("Claude is connected", (page) =>
             approvedFor(page, "Onboarding assistant").waitFor(),
           );
-        }
+          yield* opensWith(next, assistantHint, "once Claude connects");
+          expect(yield* forwardControlBox(next)).toEqual(waiting);
+          yield* noLayoutShifts(shifts, "required-guide-shifts.json");
+          yield* browser.checkpoint(`Required: Next opens once Claude connects`);
+          yield* browser.use(`Continue with ${next}`, (page) =>
+            page.getByRole("link", { name: next, exact: true }).click(),
+          );
+        });
+
+        expect(yield* setupPath).toBe(`${setup}/assistant`);
+        yield* heading("Connect your assistant");
+        yield* appsSendsTo(team.slug, assistantStep, "before any step is done");
+        yield* browser.checkpoint(`Required: Apps returns to the assistant step`);
+        yield* accountSettingsReturnTo(name, assistantStep);
+        yield* completeAssistant;
+        yield* browser.use("Next opens the account step with the agent", (page) =>
+          page.waitForURL((url) => accountsStep.test(url.pathname) && url.search !== ""),
+        );
+        expect(yield* setupSearch).toMatch(/^\?assistant=claude&agent=[^&]+$/u);
+        yield* heading("Connect your accounts");
+        const returned = yield* appsSendsTo(
+          team.slug,
+          accountsStep,
+          "with an assistant and no account",
+        );
+        expect(returned).toMatch(
+          new RegExp(`^${setup}/accounts\\?assistant=other&agent=[^&]+$`, "u"),
+        );
+        yield* browser.checkpoint(`Required: Apps returns to the account step`);
+        yield* browser.use("Open the assistant step in a new visit", (page) =>
+          page.goto(`${setup}/assistant`),
+        );
+        yield* heading("Connect your assistant");
+        yield* opensWith(next, assistantHint, "in a new visit once Claude is connected");
+        yield* browser.use("Return to the account step", (page) => page.goto(returned));
+        yield* completeAccounts;
+        yield* browser.use("The first prompt is shown", (page) =>
+          page.getByRole("button", { name: "Copy starter prompt", exact: true }).waitFor(),
+        );
+        yield* browser.use("The first prompt confirms the agent", (page) =>
+          approvedFor(page, "Onboarding assistant").waitFor(),
+        );
         expect(
           yield* browser.use("The first prompt names the connected account", (page) =>
             page.getByText(/I've connected Synthetic Mail \(Work mail\)\./u).count(),
@@ -1248,7 +1380,6 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
         yield* browser.use("The dashboard is open", (page) =>
           page.getByRole("button", { name: "Add app", exact: true }).first().waitFor(),
         );
-        // Finished for good: the server serves Apps itself, and a reload keeps it.
         expect(
           yield* browser.use("Request the team's Apps after setup", (page) =>
             page.request
@@ -1261,19 +1392,12 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
           page.getByRole("button", { name: "Add app", exact: true }).first().waitFor(),
         );
         expect(yield* setupPath).toBe(`/org/${team.slug}/apps`);
-        yield* browser.checkpoint(`Required ${label}: the dashboard opens after setup`);
+        yield* browser.checkpoint(`Required: the dashboard opens after setup`);
         return team;
       }),
-    /**
-     * Create the team, then complete setup in the order the onboarding experiment assigned: the
-     * first step renders straight after creation, reloads keep the order, the assistant's agent
-     * is carried through the account step, and both orders end at the first prompt, then Apps.
-     */
-    setupInOrder: (name: string, order: OnboardingOrder) =>
+    completeSetup: (name: string) =>
       Effect.gen(function* () {
         yield* allowClipboard;
-        // Creation returns the team's setup order, so its first step opens without reading it
-        // again: the read is held throughout, and no screen without a step shows meanwhile.
         const opened = yield* Effect.scoped(
           Effect.gen(function* () {
             const sequence = yield* holdQuery(/^\/api\/organizations\/[^/]+\/setup$/u, "continue", {
@@ -1295,15 +1419,15 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
             yield* browser.use("Confirm team creation", (page) =>
               page.getByRole("button", { name: "Continue", exact: true }).click(),
             );
-            yield* browser.use("Team creation opens a setup step", (page) =>
+            yield* browser.use("Team creation opens the assistant step", (page) =>
               page.waitForURL(
                 (url) =>
                   url.origin === targetHosts(target).browser &&
-                  /^\/org\/[^/]+\/setup\/(accounts|assistant)$/u.test(url.pathname),
+                  /^\/org\/[^/]+\/setup\/assistant$/u.test(url.pathname),
               ),
             );
-            yield* browser.use("The first step is shown while its order's read is held", (page) =>
-              page.locator("h1", { hasText: /^Connect your (accounts|assistant)$/u }).waitFor(),
+            yield* browser.use("The assistant step is shown while the setup read is held", (page) =>
+              page.locator("h1", { hasText: /^Connect your assistant$/u }).waitFor(),
             );
             return yield* browser
               .use("Read what showed on the way to the first step", (page) =>
@@ -1332,81 +1456,50 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
             operation: "Confirmation must create exactly the chosen team",
           });
         const setup = `/org/${team.slug}/setup`;
-        const [first, second] =
-          order === "assistant_first"
-            ? (["assistant", "accounts"] as const)
-            : (["accounts", "assistant"] as const);
-        expect(yield* setupPath).toBe(`${setup}/${first}`);
-        const title = { accounts: "Connect your accounts", assistant: "Connect your assistant" };
-        yield* heading(title[first]);
+        expect(yield* setupPath).toBe(`${setup}/assistant`);
+        yield* heading("Connect your assistant");
         expect(
-          yield* browser.use("Only the assigned first step is shown", (page) =>
-            page.getByRole("heading", { name: title[second], exact: true }).count(),
+          yield* browser.use("Only the assistant step is shown", (page) =>
+            page.getByRole("heading", { name: "Connect your accounts", exact: true }).count(),
           ),
         ).toBe(0);
-        const label = order === "assistant_first" ? "Assistant first" : "Accounts first";
-        yield* bothSizes(`${label}: ${title[first]}`);
-        // The server renders the same first step for this team, so a reload keeps its order.
+        yield* bothSizes("Setup: Connect your assistant");
         yield* browser.use("Reload the first step", (page) => page.reload());
-        yield* heading(title[first]);
+        yield* heading("Connect your assistant");
+        expect(yield* setupPath).toBe(`${setup}/assistant`);
 
-        // Each step first offers to skip. Managed Cloud lists no catalog apps, so the account step
-        // counts no account and stays at Skip for now even after one is linked over the API.
-        if (order === "assistant_first") {
-          // Skipping the guide moves on without an agent, and Back returns to it.
-          yield* chooseWaitingClaude;
-          yield* browser.use("Skip Claude's waiting guide", (page) => skipStep(page).click());
-          yield* browser.use("Skipping opens the account step without an agent", (page) =>
-            page.waitForURL((url) => url.pathname === `${setup}/accounts` && url.search === ""),
-          );
-          yield* heading("Connect your accounts");
-          yield* browser.use("Back to Claude's guide", (page) => page.goBack());
-          yield* heading("Add Executor to Claude");
-          yield* offersSkip("on Claude's guide after Back");
-          yield* connectClaude("Next: connect accounts");
-          yield* browser.use("Next opens the account step with the agent", (page) =>
-            page.waitForURL((url) => url.pathname === `${setup}/accounts` && url.search !== ""),
-          );
-          const accounts = yield* setupPath;
-          expect(accounts).toMatch(
-            new RegExp(`^${setup}/accounts\\?assistant=claude&agent=[^&]+$`, "u"),
-          );
-          yield* heading("Connect your accounts");
-          yield* offersSkip("on the account step before an account connects");
-          yield* connectTracker(team.id);
-          // The account was saved outside this page; a reload reads it and keeps the agent.
-          yield* browser.use("Reload the account step", (page) => page.reload());
-          yield* heading("Connect your accounts");
-          expect(yield* setupPath).toBe(accounts);
-          yield* bothSizes(`${label}: Connect your accounts`);
-          yield* browser.use("Skip to the first prompt", (page) => skipStep(page).click());
-          yield* firstPromptNamesTracker("after the account step");
-          yield* bothSizes(`${label}: Send your first prompt`);
-          // Back returns to the account step with its agent; Forward to the prompt.
-          yield* browser.use("Back to the account step", (page) => page.goBack());
-          yield* heading("Connect your accounts");
-          expect(yield* setupPath).toBe(accounts);
-          yield* browser.use("Forward to the first prompt", (page) => page.goForward());
-          yield* firstPromptNamesTracker("after Forward");
-        } else {
-          expect(yield* setupSearch).toBe("");
-          yield* offersSkip("on the account step before an account connects");
-          yield* connectTracker(team.id);
-          // The account was saved outside this page, so its list reads it again on reload.
-          yield* browser.use("Reload the account step", (page) => page.reload());
-          yield* heading("Connect your accounts");
-          yield* browser.use("Skip to the assistant step", (page) => skipStep(page).click());
-          yield* browser.use("Skipping opens the assistant choices", (page) =>
-            page.waitForURL((url) => url.pathname === `${setup}/assistant` && url.search === ""),
-          );
-          yield* heading("Connect your assistant");
-          yield* offersSkip("on the assistants before a connection");
-          yield* bothSizes(`${label}: Connect your assistant`);
-          yield* chooseWaitingClaude;
-          yield* connectClaude("Next: first prompt");
-          yield* firstPromptNamesTracker("after the assistant step");
-          yield* bothSizes(`${label}: Send your first prompt`);
-        }
+        yield* chooseWaitingClaude;
+        yield* browser.use("Skip Claude's waiting guide", (page) => skipStep(page).click());
+        yield* browser.use("Skipping opens the account step without an agent", (page) =>
+          page.waitForURL((url) => url.pathname === `${setup}/accounts` && url.search === ""),
+        );
+        yield* heading("Connect your accounts");
+        yield* browser.use("Back to Claude's guide", (page) => page.goBack());
+        yield* heading("Add Executor to Claude");
+        yield* offersSkip("on Claude's guide after Back");
+        yield* connectClaude("Next: connect accounts");
+        yield* browser.use("Next opens the account step with the agent", (page) =>
+          page.waitForURL((url) => url.pathname === `${setup}/accounts` && url.search !== ""),
+        );
+        const accounts = yield* setupPath;
+        expect(accounts).toMatch(
+          new RegExp(`^${setup}/accounts\\?assistant=claude&agent=[^&]+$`, "u"),
+        );
+        yield* heading("Connect your accounts");
+        yield* offersSkip("on the account step before an account connects");
+        yield* connectTracker(team.id);
+        yield* browser.use("Reload the account step", (page) => page.reload());
+        yield* heading("Connect your accounts");
+        expect(yield* setupPath).toBe(accounts);
+        yield* bothSizes("Setup: Connect your accounts");
+        yield* browser.use("Skip to the first prompt", (page) => skipStep(page).click());
+        yield* firstPromptNamesTracker("after the account step");
+        yield* bothSizes("Setup: Send your first prompt");
+        yield* browser.use("Back to the account step", (page) => page.goBack());
+        yield* heading("Connect your accounts");
+        expect(yield* setupPath).toBe(accounts);
+        yield* browser.use("Forward to the first prompt", (page) => page.goForward());
+        yield* firstPromptNamesTracker("after Forward");
         yield* browser.use("Open the dashboard", (page) =>
           page.getByRole("link", { name: "Open dashboard", exact: true }).click(),
         );
@@ -1432,7 +1525,6 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
           `Choose the identity on the ${provider} emulator`,
           (page) =>
             Promise.all([
-              // The Worker resolves sign-in and opens team setup directly, rendered on the server.
               page.waitForResponse((response) => {
                 const url = new URL(response.url());
                 return (
@@ -1475,7 +1567,6 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
         });
         return identity;
       }),
-    /** Sign in with Google as an address that already has an Executor account. */
     googleSignInAs: (user: {
       readonly email: string;
       readonly name: string;
@@ -1599,22 +1690,23 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
       (page) =>
         page.route("**/api/onboarding/create", (route) => route.abort("failed"), { times: 1 }),
     ),
-    /**
-     * Create the team, which opens its account step, then skip to agent setup and leave it:
-     * `connect` completes the full assistant journey with a real MCP OAuth authorization; `revisit`
-     * connects one on a phone and returns to setup through history, reloads and links; `skip` goes
-     * straight to the dashboard.
-     */
-    confirmTeam: (name: string, agent: "connect" | "revisit" | "skip" = "skip") =>
+    confirmTeam: (
+      name: string,
+      {
+        checkInstall = true,
+      }: {
+        readonly checkInstall?: boolean;
+      } = {},
+    ) =>
       Effect.gen(function* () {
         yield* browser.use("Confirm team creation", (page) =>
           page.getByRole("button", { name: "Continue", exact: true }).click(),
         );
-        yield* browser.use("Team creation opens the team's account step", (page) =>
+        yield* browser.use("Team creation opens the team's assistant step", (page) =>
           page.waitForURL(
             (url) =>
               url.origin === targetHosts(target).browser &&
-              /^\/org\/[^/]+\/setup\/accounts$/u.test(url.pathname),
+              /^\/org\/[^/]+\/setup\/assistant$/u.test(url.pathname),
           ),
         );
         const teams = yield* organizations;
@@ -1622,46 +1714,39 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
           return yield* new OnboardingFailed({
             operation: "Confirmation must create exactly the chosen team",
           });
-        const setup = `/org/${teams[0].slug}/setup`;
-        expect(
-          yield* browser.use("The account step belongs to the new team", (page) =>
-            Promise.resolve(new URL(page.url()).pathname),
-          ),
-        ).toBe(`${setup}/accounts`);
-        yield* browser.use("The account step offers the catalog's apps", (page) =>
-          page.getByRole("heading", { name: "Connect your accounts", exact: true }).waitFor(),
+        const team = teams[0];
+        const setup = `/org/${team.slug}/setup`;
+        expect(yield* setupPath).toBe(`${setup}/assistant`);
+        yield* browser.use("The MCP handoff offers the assistants", (page) =>
+          page.getByRole("heading", { name: "Connect your assistant", exact: true }).waitFor(),
         );
         expect(
           yield* browser.use("Setup stays outside the dashboard shell", (page) =>
             page.locator(".shell").count(),
           ),
         ).toBe(0);
-        // Nothing is connected yet, so the step offers to skip it.
-        yield* browser.use("The catalog has loaded", (page) =>
-          page.locator("[aria-label='Loading apps']").waitFor({ state: "detached" }),
-        );
-        yield* browser.checkpoint("Connect your accounts after team creation");
-        yield* browser.use("Skip connecting an account", (page) => skipStep(page).click());
-        yield* browser.use("Skip opens agent setup", (page) =>
-          page.waitForURL(`${targetHosts(target).browser}${setup}/assistant`),
-        );
-        yield* browser.use("The MCP handoff offers the assistants", (page) =>
-          page.getByRole("heading", { name: "Connect your assistant", exact: true }).waitFor(),
-        );
         yield* browser.checkpoint("Connect your assistant after team creation");
-        yield* browser.use("Reload the MCP handoff", (page) => page.reload());
-        yield* browser.use("Reload keeps the assistant choices open", (page) =>
-          page.getByRole("group", { name: "Choose your assistant", exact: true }).waitFor(),
-        );
+        if (checkInstall) {
+          yield* browser.use("Reload the MCP handoff", (page) => page.reload());
+          yield* browser.use("Reload keeps the assistant choices open", (page) =>
+            page.getByRole("group", { name: "Choose your assistant", exact: true }).waitFor(),
+          );
+        }
         expect(
           yield* browser.use("The starter prompt waits for a connection", (page) =>
             page.getByRole("button", { name: "Copy starter prompt", exact: true }).count(),
           ),
         ).toBe(0);
-        if (agent === "connect") yield* connectFirstAgent;
-        else if (agent === "revisit") yield* revisitAgentSetup(`${setup}/assistant`);
-        else yield* browser.use("Skip agent setup for now", (page) => skipStep(page).click());
-        const team = teams[0];
+        yield* offersSkip("on the assistants after team creation");
+        yield* browser.use("Skip agent setup for now", (page) => skipStep(page).click());
+        yield* browser.use("Skip opens the account step", (page) =>
+          page.waitForURL(`${targetHosts(target).browser}${setup}/accounts`),
+        );
+        yield* browser.use("The account step offers the catalog's apps", (page) =>
+          page.getByRole("heading", { name: "Connect your accounts", exact: true }).waitFor(),
+        );
+        yield* browser.checkpoint("Connect your accounts after skipping the assistant");
+        yield* skipAccountsToApps("after skipping the assistant");
         yield* browser.use("The new team opens Apps", (page) =>
           page.waitForURL(`${targetHosts(target).browser}/org/${team.slug}/apps`),
         );
@@ -1672,18 +1757,9 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
             .waitFor({ state: "visible" }),
         );
         yield* browser.checkpoint("Team opens without a setup screen");
-        yield* browser.use("The background Executor app appears without a reload", (page) =>
-          page
-            .getByRole("link", { name: "Open Executor", exact: true })
-            .waitFor({ state: "visible", timeout: 90000 }),
-        );
-        yield* browser.checkpoint("Executor appears after background provisioning");
-        yield* browser.use("Reload the provisioned team", (page) => page.reload());
-        yield* browser.use("The installed app remains available", (page) =>
-          page.getByRole("link", { name: "Open Executor", exact: true }).waitFor(),
-        );
-        yield* evidence.json("created-team.json", teams[0]);
-        return teams[0];
+        if (checkInstall) yield* backgroundInstall;
+        yield* evidence.json("created-team.json", team);
+        return team;
       }),
     signOut: Effect.gen(function* () {
       yield* browser.use("Open the account menu", (page) =>
@@ -1692,7 +1768,6 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
       yield* browser.use("Sign out of Cloud", (page) =>
         page.getByRole("menuitem", { name: "Sign out", exact: true }).click(),
       );
-      // Cloud's browser origin opens sign-in for a signed-out visitor; elsewhere the public entry.
       const entry = target.metadata.target === "cloud" ? "/login" : "/";
       yield* browser.use("Return to the public entry", (page) =>
         page.waitForURL(
@@ -1780,7 +1855,6 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
     }),
   };
 });
-/** End-to-end onboarding through browser and external emulators, with real product sessions. */
 export class Onboarding extends Context.Service<Onboarding, Effect.Success<typeof make>>()(
   "e2e/Onboarding",
 ) {

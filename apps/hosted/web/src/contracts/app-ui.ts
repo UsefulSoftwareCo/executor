@@ -1,7 +1,6 @@
 import { revalidated } from "@executor-js/ui/contracts/refresh";
 import { browserOnly } from "@executor-js/ui/contracts/http";
 import { organizationHttpClient } from "./organization-reference.ts";
-/** Host-specific pages opt into the shared private-app browser contract. */
 import {
   HostedAppUiApi,
   AppSignInFailure,
@@ -23,10 +22,6 @@ import {
 
 const batched = batchReads(HostedAppUiApi);
 
-/**
- * This client is used only by products that mount private app pages. Its reads batch with the
- * page's others.
- */
 export class AppUiClient extends AtomHttpApi.Service<AppUiClient>()("HostedAppUiClient", {
   api: HostedAppUiApi,
   httpClient: organizationHttpClient,
@@ -39,12 +34,7 @@ class AppUiKey extends Data.Class<{
   readonly app: AppId;
   readonly appSlug: AppSlug;
 }> {}
-/**
- * Keyed by the app and its origin, not its version, so an activation refreshes the read in place
- * and a mounted app frame stays mounted while its own watch script reloads it.
- */
 const location = Atom.family((key: AppUiKey) =>
-  // The open-app control polls version status; it loads after hydration.
   browserOnly(
     AppUiClient.runtime.atom(
       Stream.fromEffectSchedule(
@@ -56,15 +46,12 @@ const location = Atom.family((key: AppUiKey) =>
     ),
   ).pipe(revalidated),
 );
-/** A stable, non-secret app link; opening it initiates authentication when needed. */
 export const appUiLocationAtom = (key: ConstructorParameters<typeof AppUiKey>[0]) =>
   location(new AppUiKey(key));
-/** The server resolves attempts; the page only sees a request on client navigation, or a failure. */
 export const appUiSearch = (search: Record<string, unknown>) => ({
   request: Option.getOrUndefined(Schema.decodeUnknownOption(AppSignInId)(search.request)),
   failure: Option.getOrUndefined(Schema.decodeUnknownOption(AppSignInFailure)(search.failure)),
 });
-/** Why the server stopped an attempt, in the same words as other app errors. */
 export const appSignInFailureMessage = (failure: AppSignInFailure) =>
   Match.value(failure).pipe(
     Match.when("ended", () => "This sign-in attempt ended. Open the app URL again."),
@@ -77,7 +64,6 @@ export const appSignInFailureMessage = (failure: AppSignInFailure) =>
   );
 export { AppSignInFailure, AppSignInId };
 
-/** Expected app authentication failures stay typed through the atom and view. */
 export type AppUiError =
   | HttpApiEndpoint.Errors<
       (typeof HostedAppUiApi.groups.appUi.endpoints)[keyof typeof HostedAppUiApi.groups.appUi.endpoints]
@@ -117,7 +103,6 @@ const message = Match.type<AppUiError>().pipe(
       pageOutdated() ? outdatedPageMessage : "The server returned an unexpected response.",
   }),
 );
-/** Display safe copy instead of arbitrary error or credential payloads. */
 export const appUiError = (cause: Cause.Cause<AppUiError>) =>
   Option.match(Cause.findErrorOption(cause), {
     onSome: message,

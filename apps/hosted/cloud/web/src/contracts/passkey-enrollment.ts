@@ -6,7 +6,6 @@ import { Atom } from "effect/reactivity";
 import { passkeyEnrollmentCookie } from "../../../src/contracts/passkey-enrollment.ts";
 import { cloudAuthClient } from "./auth.ts";
 
-/** Enrollment is a sign-in concern; no cookie means the flow has nothing to do. */
 export const hasPasskeyEnrollment = (userId: string) =>
   document.cookie
     .split(";")
@@ -21,11 +20,6 @@ const clearEnrollment = (userId: string) =>
       document.cookie = `${passkeyEnrollmentCookie.name(window.location.origin)}=; Path=/; SameSite=Lax; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT${window.location.protocol === "https:" ? "; Secure" : ""}`;
   });
 
-/**
- * Whether the browser's enrollment cookie was present, as the Worker read it from the request for
- * a server-rendered sign-in page. The server cannot read the cookie itself, and hydration must
- * start from the same answer. Without a document's answer the browser reads its own cookie.
- */
 export const documentPasskeyEnrollmentAtom = Atom.family((userId: string) =>
   Atom.make<Option.Option<boolean>>(Option.none()).pipe(
     Atom.serializable({
@@ -36,7 +30,6 @@ export const documentPasskeyEnrollmentAtom = Atom.family((userId: string) =>
   ),
 );
 
-/** Only the browser that created this account offers enrollment, until dismissed. */
 export const passkeyEnrollmentAtom = Atom.family((userId: string) =>
   browserOnly(
     BrowserAtoms.atom(
@@ -65,7 +58,6 @@ export const passkeyEnrollmentAtom = Atom.family((userId: string) =>
   ),
 );
 
-/** Dismissal survives reloads and sign-ins; no server schema or reminders are needed. */
 export const dismissPasskeyEnrollmentAtom = BrowserAtoms.fn((userId: string, get) =>
   clearEnrollment(userId).pipe(
     Effect.tap(() =>

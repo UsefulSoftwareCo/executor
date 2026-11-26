@@ -1,4 +1,3 @@
-/** Early releases are deliberately beta-only, including direct npm publish calls. */
 import { readFile } from "node:fs/promises";
 
 const manifest = JSON.parse(await readFile(new URL("./package.json", import.meta.url), "utf8"));

@@ -18,7 +18,6 @@ const client = createAuthClient({
   plugins: [ssoClient({ domainVerification: { enabled: true } })],
 });
 
-/** Only public connection details enter browser state; secrets remain write-only. */
 export const SsoConnection = Schema.Struct({
   providerId: Schema.NonEmptyString,
   organizationId: Schema.NonEmptyString,
@@ -29,7 +28,6 @@ export const SsoConnection = Schema.Struct({
 });
 export type SsoConnection = typeof SsoConnection.Type;
 
-/** Each team owns its query identity; the server independently checks current admin access. */
 export const ssoConnectionsAtom = Atom.family((organizationId: string) =>
   acknowledgedQuery(
     BrowserAtoms.atom(
@@ -52,7 +50,6 @@ export const ssoConnectionsAtom = Atom.family((organizationId: string) =>
   ),
 );
 
-/** Preserve the caller's exact destination through the native state and PKCE flow. */
 export const startSsoSignIn = (
   input: { readonly redirect: string } & (
     | { readonly email: string }
@@ -72,10 +69,8 @@ export const startSsoSignIn = (
     ),
   ).pipe(Effect.asVoid);
 
-/** Explicit SSO sign-in uses the same verified-domain lookup as the main email form. */
 export const ssoSignInAtom = BrowserAtoms.fn(startSsoSignIn);
 
-/** Rotate write-only credentials without changing the provider's account identity. */
 export const updateSsoAtom = Atom.family((providerId: string) =>
   BrowserAtoms.fn(
     (
@@ -109,7 +104,6 @@ export const updateSsoAtom = Atom.family((providerId: string) =>
   ),
 );
 
-/** Remove a connection only after the server has checked the team's current admin role. */
 export const deleteSsoAtom = Atom.family((organizationId: string) =>
   BrowserAtoms.fn((providerId: string, get) =>
     authRequest((options) => client.sso.deleteProvider({ providerId }, options)).pipe(
@@ -139,7 +133,6 @@ type RegisterInput = {
   | { readonly type: "saml"; readonly issuer: string; readonly metadata: string }
 );
 
-/** Register one team-bound provider, then publish the server-confirmed details before closing the form. */
 export const registerSsoAtom = Atom.family((organizationId: string) =>
   BrowserAtoms.fn((input: RegisterInput, get) =>
     Effect.gen(function* () {
@@ -206,7 +199,6 @@ export const registerSsoAtom = Atom.family((organizationId: string) =>
   ),
 );
 
-/** Reuse the pending DNS token; requesting it does not rotate a record already being configured. */
 export const ssoDomainTokenAtom = Atom.family((providerId: string) =>
   BrowserAtoms.fn(() =>
     authRequest((options) => client.sso.requestDomainVerification({ providerId }, options)).pipe(
@@ -217,7 +209,6 @@ export const ssoDomainTokenAtom = Atom.family((providerId: string) =>
   ),
 );
 
-/** A successful DNS check activates the exact stored domain before updating the view. */
 export const verifySsoDomainAtom = Atom.family((organizationId: string) =>
   BrowserAtoms.fn((providerId: string, get) =>
     authRequest((options) => client.sso.verifyDomain({ providerId }, options)).pipe(

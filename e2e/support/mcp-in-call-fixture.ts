@@ -1,10 +1,3 @@
-/**
- * A synthetic upstream MCP server whose tools act inside their own call, using only the public
- * JSON-RPC and Streamable HTTP wire contract: `confirm` asks its client a question before answering,
- * and `refresh` announces that its tool list changed. Both messages travel on the call's own event
- * stream, so the call is still open when the client handles them. `answer` answers at once, and
- * `retire` stops listing `answer` without announcing it, so only a catalog refresh sees it go.
- */
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
@@ -28,17 +21,13 @@ const event = (message: object) =>
     `event: message\ndata: ${JSON.stringify({ jsonrpc: "2.0", ...message })}\n\n`,
   );
 
-/** Return the server's MCP URL; its listener is owned by the current test scope. */
 export const mcpInCallFixture = Effect.gen(function* () {
-  // Questions sent on a call's stream, by request ID, until the client's answer arrives.
   const asked = new Map<string, Deferred.Deferred<string>>();
-  // Whether `retire` has removed `answer` from the tool list.
   let retired = false;
   const handler = Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
     const message = yield* request.json.pipe(Effect.flatMap(Schema.decodeUnknownEffect(Message)));
     if (message.method === undefined) {
-      // The client's answer to a question.
       const question = typeof message.id === "string" ? asked.get(message.id) : undefined;
       if (question !== undefined && message.result !== undefined)
         yield* Deferred.succeed(question, message.result.action);
@@ -137,7 +126,6 @@ export const mcpInCallFixture = Effect.gen(function* () {
     HttpRouter.serve(
       Layer.mergeAll(
         HttpRouter.add("POST", "/mcp", handler),
-        // No standalone stream: every message rides on the call's own.
         HttpRouter.add("GET", "/mcp", Effect.succeed(HttpServerResponse.empty({ status: 405 }))),
         HttpRouter.add("DELETE", "/mcp", Effect.succeed(HttpServerResponse.empty({ status: 204 }))),
       ),

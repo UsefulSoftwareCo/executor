@@ -1,4 +1,3 @@
-/** Verify source display budgets through public hosted reads with full-sized files. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -11,7 +10,6 @@ import { appsManifest } from "../support/apps-release.ts";
 const Source = Schema.Struct({
   files: Schema.Array(Schema.Struct({ path: Schema.String, content: Schema.String })),
 });
-/** Display listings name every file; contents are inlined only within the budget. */
 const Display = Schema.Struct({
   files: Schema.Array(
     Schema.Struct({
@@ -35,7 +33,6 @@ layer(HostedLive, { excludeTestServices: true })("Source display budgets", (it) 
         const api = yield* Api;
         const actors = yield* Actors;
         const prefix = `/api/organizations/${actors.organization.id}`;
-        // Listings inline and format a bounded amount of source; larger files are read on their own.
         const largeFiles = [
           { path: "index.ts", content: 'export default "draft";' },
           ...Array.from({ length: 5 }, (_, index) => ({
@@ -85,11 +82,9 @@ layer(HostedLive, { excludeTestServices: true })("Source display budgets", (it) 
             .pipe(Effect.flatMap((response) => body(DisplayFile, response)));
         expect((yield* readFile("budget-4.ts")).content).toMatch(/^export const text =\n/);
         expect((yield* readFile("formatted.ts")).content).toMatch(/^export const text =\n/);
-        // Files above the formatting budget are returned as their exact stored text.
         expect((yield* readFile("oversized.ts")).content).toBe(
           largeFiles.find((file) => file.path === "oversized.ts")?.content,
         );
-        // Raw reads still return every stored file byte for byte.
         const raw = yield* body(
           Source,
           yield* api.request(actors.owner, "GET", `${prefix}/apps/${draft.id}/workspace`),

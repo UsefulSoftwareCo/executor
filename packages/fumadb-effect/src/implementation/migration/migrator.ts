@@ -1,11 +1,3 @@
-/**
- * The migration engine, independent of any provider.
- *
- * An adapter supplies how to read settings, execute operations, render SQL,
- * and optionally introspect the database. The engine chooses the source
- * schema (from stored version and name variants), the target schema, custom
- * `up` / `down` functions, and applies transformers.
- */
 import { Effect, Option } from "effect";
 import type { SqlError } from "effect/sql/SqlError";
 import { MigrationError } from "../../contracts/errors.ts";
@@ -26,10 +18,6 @@ import type {
   Migrator,
 } from "../../contracts/migration.ts";
 
-/**
- * Build a {@link Migrator} from adapter-supplied settings access, execution,
- * rendering, and optional introspection. Pure: no I/O until a method runs.
- */
 export const createMigrator = <R>(options: MigrationEngineOptions<R>): Migrator<R> => {
   const {
     executor,
@@ -126,10 +114,6 @@ export const createMigrator = <R>(options: MigrationEngineOptions<R>): Migrator<
     > = Effect.gen(function* () {
       let generated: ReadonlyArray<MigrationOperation>;
       if (mode === "from-schema") {
-        // Drops are opt-in on this path as well: a startup migration that runs
-        // without `unsafe` never destroys a table or a column. `unsafe` only
-        // supplies the default, so an adapter that states either setting keeps
-        // the value it states.
         generated = fromSchema(currentSchema, targetSchema, {
           ...userConfig,
           dropUnusedColumns: userConfig.dropUnusedColumns ?? unsafe,
@@ -158,7 +142,6 @@ export const createMigrator = <R>(options: MigrationEngineOptions<R>): Migrator<
       return generated;
     });
 
-    // Custom functions are environment-free; hand them an `auto` that already has R provided.
     const context = yield* Effect.context<R>();
     const migrationContext: MigrationContext = { auto: Effect.provideContext(auto, context) };
     let operations: ReadonlyArray<MigrationOperation> =

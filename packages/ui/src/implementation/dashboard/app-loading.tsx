@@ -1,7 +1,6 @@
 import { SkillBrowserLoading, WorkflowBrowserLoading } from "./app-browser-loading.tsx";
 import type { ReactElement, ReactNode } from "react";
 import { AppDetailLayout, type AppScreenTab } from "./app-detail.tsx";
-/** App tabs reserve the layout of their own content at every data-loading boundary. */
 import type { App } from "@executor-js/sdk";
 import type { AppView } from "../../contracts/dashboard.ts";
 import { Skeleton } from "../components/skeleton.tsx";
@@ -9,10 +8,9 @@ import { AppSectionHeader, AppSectionTitle } from "./app-section-header.tsx";
 import { AppSchedulesLoading } from "./schedules.tsx";
 import { SourceBrowserLoading } from "./source-browser.tsx";
 import { ToolBrowserLoading } from "./tools.tsx";
-import { EmptyState } from "./empty-state.tsx";
+import { AccountScopeSection, NoScopeAccounts, accountScopes } from "./app-accounts.tsx";
 import { cn } from "../lib/utils.ts";
 
-/** Card contents load independently, without replacing a card with a table skeleton. */
 export function OverviewCardLoading({
   label,
   rows = 4,
@@ -39,7 +37,6 @@ export function OverviewCardLoading({
   );
 }
 
-/** Reserve the same fixed-height cards and responsive grid as the app overview. */
 export function AppOverviewLoading({ app }: { readonly app?: App | undefined }) {
   return (
     <section role="status" aria-label="Loading overview" className="app-overview w-full">
@@ -79,46 +76,45 @@ export function AppOverviewLoading({ app }: { readonly app?: App | undefined }) 
   );
 }
 
-/** Account slots use known requirements; zero requirements do not flash invented account rows. */
 export function AppAccountsLoading({
   app,
+  canEdit,
   action,
 }: {
   readonly app?: App | undefined;
+  readonly canEdit?: boolean | undefined;
   readonly action?: ReactNode;
 }) {
-  const requirements =
-    app === undefined
-      ? undefined
-      : Object.entries(app.requirements.accounts).map(([slot, requirement]) => ({
-          slot,
-          name: requirement.definition.name,
-        }));
   return (
     <section role="status" aria-label="Loading accounts" className="w-full">
       <div className="max-w-3xl space-y-3 p-5 max-[740px]:p-4">
-        {requirements?.length !== 0 && action && (
-          <div className="mb-4 flex max-w-185 justify-end">{action}</div>
-        )}
-        {requirements?.length === 0 ? (
-          <EmptyState size="compact" title="No accounts required">
-            This app can run without a saved account.
-          </EmptyState>
+        {app === undefined ? (
+          <>
+            {action && <div className="mb-4 flex max-w-185 justify-end">{action}</div>}
+            <div className="overflow-hidden rounded-lg border">
+              <RequirementLoading />
+            </div>
+          </>
         ) : (
-          <div className="overflow-hidden rounded-lg border">
-            {(requirements ?? [{ slot: "pending", name: undefined }]).map(({ slot, name }) => (
-              <div key={slot} className="flex items-center gap-3.5 border-b p-4 last:border-b-0">
-                <Skeleton className="size-8.5 shrink-0 rounded-md" />
-                <div className="flex-1 space-y-2">
-                  {name ? (
-                    <h3 className="text-sm font-medium">{name}</h3>
+          <div className="accounts-section space-y-8">
+            {accountScopes.map(({ scope, title, description }) => {
+              const names = Object.values(app.requirements.accounts).flatMap((requirement) =>
+                requirement.scope === scope ? [requirement.definition.name] : [],
+              );
+              return (
+                <AccountScopeSection key={scope} title={title} description={description}>
+                  {names.length === 0 ? (
+                    <NoScopeAccounts app={app} scope={scope} canEdit={canEdit} />
                   ) : (
-                    <Skeleton className="h-3.5 w-28" />
+                    <div className="overflow-hidden rounded-lg border">
+                      {names.map((name, index) => (
+                        <RequirementLoading key={index} name={name} />
+                      ))}
+                    </div>
                   )}
-                  <Skeleton className="h-3 w-24" />
-                </div>
-              </div>
-            ))}
+                </AccountScopeSection>
+              );
+            })}
           </div>
         )}
       </div>
@@ -126,7 +122,22 @@ export function AppAccountsLoading({
   );
 }
 
-/** Settings keeps its compact header and metadata cards, including a known copied origin. */
+function RequirementLoading({ name }: { readonly name?: string }) {
+  return (
+    <div className="flex items-center gap-3.5 border-b p-4 last:border-b-0">
+      <Skeleton className="size-8.5 shrink-0 rounded-md" />
+      <div className="flex-1 space-y-2">
+        {name ? (
+          <h3 className="text-sm font-medium">{name}</h3>
+        ) : (
+          <Skeleton className="h-3.5 w-28" />
+        )}
+        <Skeleton className="h-3 w-24" />
+      </div>
+    </div>
+  );
+}
+
 export function AppSettingsLoading({ app }: { readonly app?: App | undefined }) {
   return (
     <section role="status" aria-label="Loading settings" className="w-full">
@@ -162,7 +173,6 @@ export function AppSettingsLoading({ app }: { readonly app?: App | undefined }) 
   );
 }
 
-/** Recent history reserves commit rows rather than the generic inventory list. */
 export function SourceHistoryLoading() {
   return (
     <div role="status" aria-label="Loading history">
@@ -181,7 +191,6 @@ export function SourceHistoryLoading() {
   );
 }
 
-/** Working-source reads preserve the real toolbar, shared file-column width and code viewport. */
 export function AppWorkspaceLoading({ view = "source" }: { readonly view?: "source" | "history" }) {
   return (
     <section
@@ -219,7 +228,6 @@ export function AppWorkspaceLoading({ view = "source" }: { readonly view?: "sour
   );
 }
 
-/** The detail read keeps version statistics above the retained file browser. */
 export function VersionSourceLoading() {
   return (
     <div role="status" aria-label="Loading version source" className="flex min-h-0 flex-1 flex-col">
@@ -241,7 +249,6 @@ export function VersionSourceLoading() {
   );
 }
 
-/** Version-list reads reserve both the version selector and retained source panes. */
 export function AppVersionsLoading() {
   return (
     <section role="status" aria-label="Loading versions" className="flex min-h-0 flex-1 flex-col">
@@ -266,17 +273,17 @@ export function AppVersionsLoading() {
   );
 }
 
-/** Choose the destination tab's shape for the initial app metadata read. */
 export function AppDetailLoading({
   view,
   app,
   selectedTool,
+  canEdit,
   accountAction,
 }: {
-  /** Undefined while the default destination is not known yet. */
   readonly view: AppView | undefined;
   readonly app?: App | undefined;
   readonly selectedTool?: string | undefined;
+  readonly canEdit?: boolean | undefined;
   readonly accountAction?: ReactNode;
 }): ReactElement {
   if (view === undefined)
@@ -313,7 +320,7 @@ export function AppDetailLoading({
     case "overview":
       return <AppOverviewLoading app={app} />;
     case "accounts":
-      return <AppAccountsLoading app={app} action={accountAction} />;
+      return <AppAccountsLoading app={app} canEdit={canEdit} action={accountAction} />;
     case "webhooks":
       return (
         <p className="p-5 text-sm text-muted-foreground" role="status">
@@ -334,7 +341,6 @@ export function AppDetailLoading({
   }
 }
 
-/** Route and inventory loading keep the same app heading, navigation and selected-tab geometry. */
 export function AppDetailPending({
   view,
   appScreen = "absent",

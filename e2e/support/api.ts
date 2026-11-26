@@ -1,16 +1,23 @@
 import { appOriginHttpClient } from "./app-origin-tls.ts";
-/** Effect HTTP adapter with independent cookie jars, bounded requests, and safe evidence. */
 import { Cause, Clock, Context, Effect, Layer, Redacted, Ref, Schema } from "effect";
 import { Cookies, HttpClient, HttpClientRequest } from "effect/http";
 import { randomBytes } from "node:crypto";
 import { Evidence } from "./evidence.ts";
-import { Target, type Response } from "./platform.ts";
+import { indented, keptCauseText, reveal, secret } from "./failure-text.ts";
+import { Target, withCause, type Response } from "./platform.ts";
+import {
+  CallFailed,
+  decodeFailure,
+  readResponse,
+  RequestFailure,
+  requestFailureText,
+  signatureText,
+} from "./request-failure.ts";
 import { isMcpPath, targetHosts } from "./role-hosts.ts";
 
 import { BrowserCookies } from "../sdk/contracts.ts";
 export { BrowserCookies } from "../sdk/contracts.ts";
 type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
-/** Each actor owns its cookie jar; no session state can bleed into another actor. */
 export interface Session {
   readonly cookies: Effect.Effect<Redacted.Redacted<BrowserCookies>>;
   readonly send: (
@@ -20,14 +27,8 @@ export interface Session {
     headers?: Record<string, string>,
   ) => Effect.Effect<Response, RequestFailed>;
 }
-/**
- * The wire revision this tree's clients state, sent on every request. A scenario acting as a
- * client released before revisions overrides it with {@link releasedClient}, which reads the same
- * as stating none.
- */
 export const currentClient = { "executor-wire-revision": "1" } as const;
 export const releasedClient = { "executor-wire-revision": "0" } as const;
-/** Request failures expose safe context; underlying errors remain redacted. */
 export class RequestFailed extends Schema.TaggedError<RequestFailed>()("RequestFailed", {
   method: Schema.String,
   path: Schema.String,
@@ -41,13 +42,14 @@ export class RequestFailed extends Schema.TaggedError<RequestFailed>()("RequestF
   ),
   reason: Schema.Literals(["origin", "timeout", "request", "deployment"]),
   cause: Schema.optional(Schema.Redacted(Schema.Unknown)),
+  failure: Schema.optional(RequestFailure),
 }) {
   override get message() {
-    return `${this.method} ${this.path} ${this.status === undefined ? `failed (${this.reason}) before a JSON response was read` : `returned HTTP ${this.status} without a JSON response`}${this.response ? ` (${this.response.contentType}, ${this.response.characters} characters, final path ${this.response.path})` : ""}`;
+    const detail = keptCauseText(this);
+    const failure = this.failure === undefined ? "" : `: ${requestFailureText(this.failure)}`;
+    return `${signatureText(this.failure)}${this.method} ${this.path} ${this.status === undefined ? `failed (${this.reason}) before a JSON response was read` : `returned HTTP ${this.status} without a JSON response`}${this.response ? ` (${this.response.contentType}, ${this.response.characters} characters, final path ${this.response.path})` : ""}${failure}${detail === undefined ? "" : `\n  ${indented(detail)}`}`;
   }
 }
-/** A server response may be decoded only against its public contract. */
-/** A decode failure names the status and body it rejected, so a wrong-shape error page is visible. */
 export const body = <A>(schema: Schema.ConstraintDecoder<A, never>, response: Response) =>
   Schema.decodeUnknownEffect(schema)(response.body).pipe(
     Effect.tapError(() =>
@@ -67,7 +69,6 @@ interface Sessions {
     headers?: Record<string, string>,
   ) => Effect.Effect<Response, RequestFailed>;
 }
-/** Run/suite-scoped HTTP construction. Session setup does not depend on case evidence. */
 export class SessionClients extends Context.Service<SessionClients, Sessions>()(
   "e2e/SessionClients",
 ) {
@@ -79,32 +80,26 @@ export class SessionClients extends Context.Service<SessionClients, Sessions>()(
           target.tlsCertificate === undefined
             ? yield* HttpClient.HttpClient
             : yield* appOriginHttpClient(target.tlsCertificate);
-      // Sessions belong to the browser origin, Cloud's `app.` host: its cookies are host-only
-      // there, wherever the fixture that issued them ran.
       const origin = targetHosts(target).browser;
       const deployment = targetHosts(target).deployment;
       const session = (initial?: Redacted.Redacted<BrowserCookies>) =>
         Effect.gen(function* () {
-          let initialJar = Cookies.empty;
-          for (const cookie of initial ? Redacted.value(initial) : [])
-            initialJar = Cookies.setUnsafe(
-              initialJar,
-              cookie.name,
-              decodeURIComponent(cookie.value),
-              {
+          const jar = yield* Ref.make<ReadonlyArray<Cookies.Cookie>>(
+            (initial ? reveal(initial) : []).map((cookie) =>
+              Cookies.makeCookieUnsafe(cookie.name, decodeURIComponent(cookie.value), {
                 domain: new URL(origin).hostname,
                 path: cookie.path,
                 httpOnly: cookie.httpOnly,
                 secure: cookie.secure,
-              },
-            );
-          const jar = yield* Ref.make(initialJar);
+              }),
+            ),
+          );
           const http = client.pipe(HttpClient.withCookiesRef(jar));
           return {
             cookies: Ref.get(jar).pipe(
               Effect.map((cookies) =>
-                Redacted.make(
-                  Object.values(cookies.cookies).map((cookie) => ({
+                secret(
+                  cookies.map((cookie) => ({
                     name: cookie.name,
                     value: cookie.valueEncoded,
                     domain: cookie.options?.domain ?? new URL(origin).hostname,
@@ -132,9 +127,6 @@ export class SessionClients extends Context.Service<SessionClients, Sessions>()(
             ) =>
               Effect.scoped(
                 Effect.gen(function* () {
-                  // Relative product URLs only. Never forward an actor's cookies to another origin.
-                  // MCP and its discovery are served at the resource origins, never the browser
-                  // origin; they go to the deployment origin, which serves both.
                   const base = isMcpPath(new URL(path, origin).pathname) ? deployment : origin;
                   const url = new URL(path, base);
                   if (url.origin !== base)
@@ -148,29 +140,41 @@ export class SessionClients extends Context.Service<SessionClients, Sessions>()(
                   });
                   if (data !== undefined)
                     request = yield* HttpClientRequest.bodyJson(request, data);
-                  const response = yield* http.execute(request);
-                  const text = yield* response.text;
-                  // Alchemy's temporary deployment Worker answers every path with
-                  // HTTP 200. Classify that exact response without retaining bodies.
+                  const { response, text, started } = yield* readResponse(
+                    http.execute(request),
+                    "60 seconds",
+                  );
                   const deploying =
                     response.status === 200 && text === "Alchemy worker is being deployed...";
                   const parsed = text.length
                     ? yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(
                         text,
                       ).pipe(
-                        Effect.mapError(
-                          () =>
-                            new RequestFailed({
-                              method,
-                              path: url.pathname,
-                              status: response.status,
-                              response: {
-                                contentType: response.headers["content-type"] ?? "absent",
-                                characters: text.length,
-                                path: new URL(response.url || url.href).pathname,
-                              },
-                              reason: deploying ? "deployment" : "request",
-                            }),
+                        Effect.catch((cause) =>
+                          decodeFailure(
+                            response.status,
+                            started,
+                            cause,
+                            response.headers,
+                            text,
+                          ).pipe(
+                            Effect.flatMap((failure) =>
+                              Effect.fail(
+                                new RequestFailed({
+                                  method,
+                                  path: url.pathname,
+                                  status: response.status,
+                                  response: {
+                                    contentType: response.headers["content-type"] ?? "absent",
+                                    characters: text.length,
+                                    path: new URL(response.url || url.href).pathname,
+                                  },
+                                  reason: deploying ? "deployment" : "request",
+                                  failure,
+                                }),
+                              ),
+                            ),
+                          ),
                         ),
                       )
                     : null;
@@ -178,16 +182,27 @@ export class SessionClients extends Context.Service<SessionClients, Sessions>()(
                 }),
               ).pipe(
                 Effect.provideService(HttpClient.TracerPropagationEnabled, false),
-                Effect.timeout("60 seconds"),
                 Effect.mapError((cause) =>
                   Schema.is(RequestFailed)(cause)
                     ? cause
-                    : new RequestFailed({
-                        method,
-                        path: new URL(path, origin).pathname,
-                        reason: Cause.isTimeoutError(cause) ? "timeout" : "request",
-                        cause: Redacted.make(cause),
-                      }),
+                    : cause instanceof CallFailed
+                      ? withCause(
+                          new RequestFailed({
+                            method,
+                            path: new URL(path, origin).pathname,
+                            reason: cause.failure.stage === "timeout" ? "timeout" : "request",
+                            failure: cause.failure,
+                            cause: cause.cause,
+                          }),
+                        )
+                      : withCause(
+                          new RequestFailed({
+                            method,
+                            path: new URL(path, origin).pathname,
+                            reason: Cause.isTimeoutError(cause) ? "timeout" : "request",
+                            cause: Redacted.make(cause),
+                          }),
+                        ),
                 ),
               ),
           } satisfies Session;
@@ -200,7 +215,6 @@ export class SessionClients extends Context.Service<SessionClients, Sessions>()(
     }),
   );
 }
-/** Case-scoped HTTP evidence decorates the injected session client. */
 export class Api extends Context.Service<Api, Sessions>()("e2e/Api") {
   static readonly layer = Layer.effect(
     Api,
@@ -213,8 +227,6 @@ export class Api extends Context.Service<Api, Sessions>()("e2e/Api") {
         session: clients.session,
         request: (actor, method, path, data, headers = {}) =>
           Effect.gen(function* () {
-            // A caller's `traceparent` puts the request in that trace, as one client operation
-            // spanning several requests would; each request still gets its own span.
             const traceId = headers.traceparent?.split("-")[1] ?? randomBytes(16).toString("hex"),
               spanId = randomBytes(8).toString("hex");
             yield* evidence.sending({

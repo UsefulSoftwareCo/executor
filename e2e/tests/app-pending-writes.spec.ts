@@ -1,4 +1,3 @@
-/** Closing an optimistic app must distinguish pending writes from read reconciliation. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";

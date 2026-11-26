@@ -1,4 +1,3 @@
-/** Store mail for agent inboxes. Everything else routed to this Worker is rejected. */
 import * as Cloudflare from "alchemy/Cloudflare";
 import { Effect, Layer, Schema } from "effect";
 import PostalMime from "postal-mime";
@@ -11,7 +10,6 @@ import {
 } from "./contracts/agent-mail.ts";
 import { AgentMailReceiver, AgentMailbox } from "./infrastructure/agent-mail.ts";
 
-/** Parsed messages are small; larger ones are rejected rather than truncated. */
 const maxMessageBytes = 1024 * 1024;
 
 export default AgentMailReceiver.make(

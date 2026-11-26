@@ -1,6 +1,6 @@
-/** Request-owned analytics and explicitly submitted feedback sent to PostHog. */
 import { readSiteVisitor, siteVisitorCookie } from "@executor-js/marketing/site-visitor";
-import { recordRoute } from "@executor-js/telemetry";
+import { readSignInOrigin } from "@executor-js/hosted-server/sign-in-origin";
+import { recordRoute, TelemetryDrainScope, TelemetryWaitReport } from "@executor-js/telemetry";
 import { FeedbackUnavailable } from "@executor-js/telemetry/product-analytics";
 import {
   ProductAnalytics,
@@ -8,13 +8,14 @@ import {
   type UsageProperties,
 } from "@executor-js/hosted-server";
 import { CurrentRuntimeContext } from "alchemy/RuntimeContext";
-import { Context, Effect, Option, Redacted, Schema } from "effect";
+import { Context, Effect, Option, Predicate, Redacted, Schema, Scope } from "effect";
 import {
   Cookies,
   FetchHttpClient,
   HttpBody,
   HttpClient,
   HttpClientRequest,
+  HttpMethod,
   HttpServerRequest,
   HttpServerResponse,
 } from "effect/http";
@@ -36,7 +37,9 @@ type EventName =
   | "cloud_login_completed"
   | "analytics_events_dropped"
   | "$feature_flag_called"
-  | "$identify";
+  | "$identify"
+  | McpFunnelEvent;
+export type McpFunnelEvent = "mcp_client_initialized" | "mcp_tools_listed";
 type Properties = Readonly<Record<string, string | number | boolean>>;
 interface Event {
   readonly event: EventName;
@@ -50,13 +53,11 @@ const Analytics = Context.Reference<{
   defaultValue: () => ({ add: () => {} }),
 });
 
-/** Called only after Better Auth creates a new verified user, never on returning sign-in. */
 export const recordCloudSignup = (userId: string, origin: string) =>
   Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
     const visitor = readSiteVisitor(request.headers.cookie ?? "", origin);
     const analytics = yield* Analytics;
-    // Attribute only a visit on this same host, never an identity supplied by a sibling app.
     if (visitor !== undefined)
       analytics.add({
         event: "$identify",
@@ -68,11 +69,10 @@ export const recordCloudSignup = (userId: string, origin: string) =>
       event: "cloud_signup_completed",
       distinct_id: userId,
       timestamp: new Date().toISOString(),
-      properties: {},
+      properties: { signup_origin: readSignInOrigin(request.headers.cookie ?? "") },
     });
   });
 
-/** Prevent a later user on a shared browser from inheriting an identified site visitor. */
 export const clearSiteVisitorOnSignOut =
   (origin: string) => (response: HttpServerResponse.HttpServerResponse) =>
     Effect.gen(function* () {
@@ -93,10 +93,6 @@ export const clearSiteVisitorOnSignOut =
       );
     });
 
-/**
- * PostHog's standard experiment exposure: the person saw the variant the flag assigned. Callers
- * record it once per person and experiment.
- */
 export const recordFlagExposure = (exposure: {
   readonly userId: string;
   readonly organizationId: string;
@@ -118,7 +114,6 @@ export const recordFlagExposure = (exposure: {
     ),
   );
 
-/** Count successful session creation without recording login credentials or callback URLs. */
 export const recordCloudLogin = (userId: string) =>
   Effect.flatMap(Analytics, (analytics) =>
     Effect.sync(() =>
@@ -127,6 +122,30 @@ export const recordCloudLogin = (userId: string) =>
         distinct_id: userId,
         timestamp: new Date().toISOString(),
         properties: {},
+      }),
+    ),
+  );
+
+export const recordMcpFirstUse = (first: {
+  readonly event: "mcp_client_initialized" | "mcp_tools_listed";
+  readonly userId: string;
+  readonly organizationId: string;
+  readonly clientId: string;
+  readonly properties: Properties;
+}) =>
+  Effect.flatMap(Analytics, (analytics) =>
+    Effect.sync(() =>
+      analytics.add({
+        event: first.event,
+        distinct_id: first.userId,
+        timestamp: new Date().toISOString(),
+        properties: {
+          ...first.properties,
+          source: "mcp",
+          client_id: first.clientId,
+          organization_id: first.organizationId,
+          event_id: crypto.randomUUID(),
+        },
       }),
     ),
   );
@@ -140,7 +159,6 @@ const readSettings = (read: Effect.Effect<unknown>) =>
     )(Redacted.isRedacted(value) ? Redacted.value(value) : value).pipe(Effect.orDie);
   });
 
-/** Drain one bounded batch through the owning request's Alchemy finalizer. */
 export const withProductAnalytics = <A, E, R>(
   handler: Effect.Effect<A, E, R>,
   settings: Effect.Effect<Settings | undefined>,
@@ -193,22 +211,32 @@ export const withProductAnalytics = <A, E, R>(
           Effect.timeout("3 seconds"),
           Effect.asVoid,
         );
-    yield* Effect.addFinalizer(() =>
-      events.length === 0
-        ? Effect.void
-        : send(
-            dropped === 0
-              ? events
-              : [
-                  ...events,
-                  {
-                    event: "analytics_events_dropped",
-                    distinct_id: "analytics-exporter",
-                    timestamp: new Date().toISOString(),
-                    properties: { dropped_events: dropped },
-                  },
-                ],
-          ).pipe(Effect.catch(() => Effect.logWarning("PostHog batch export failed"))),
+    const flushScope = (yield* TelemetryDrainScope) ?? (yield* Effect.scope);
+    const reportWait = yield* TelemetryWaitReport;
+    yield* Scope.addFinalizer(
+      flushScope,
+      Effect.suspend(() =>
+        events.length === 0
+          ? Effect.void
+          : send(
+              dropped === 0
+                ? events
+                : [
+                    ...events,
+                    {
+                      event: "analytics_events_dropped",
+                      distinct_id: "analytics-exporter",
+                      timestamp: new Date().toISOString(),
+                      properties: { dropped_events: dropped },
+                    },
+                  ],
+            ).pipe(
+              Effect.tapError((error) =>
+                Predicate.isTagged(error, "TimeoutError") ? reportWait("analytics") : Effect.void,
+              ),
+              Effect.catch(() => Effect.logWarning("PostHog batch export failed")),
+            ),
+      ),
     );
     return yield* handler.pipe(
       Effect.provideService(Analytics, {
@@ -245,7 +273,6 @@ export const withProductAnalytics = <A, E, R>(
     );
   }).pipe(Effect.provide(FetchHttpClient.layer));
 
-/** Background work has its own identity and never counts as an active human. */
 export const recordBackgroundUsage = (
   event: "schedule_run_completed" | "workflow_attempt_completed",
   identity: string,
@@ -274,10 +301,6 @@ export const recordBackgroundUsage = (
     });
   });
 
-/**
- * The PostHog SDK endpoints the proxy forwards, each with the route its span records. The
- * `array`, `static` and `s` endpoints take a project key and file names in the rest of the path.
- */
 const postHogEndpoints: ReadonlyArray<readonly [RegExp, `/${string}`]> = [
   [/^\/push$/, "/api/:channel/push"],
   [/^\/e\/?$/, "/api/:channel/e"],
@@ -292,7 +315,6 @@ const postHogEndpoints: ReadonlyArray<readonly [RegExp, `/${string}`]> = [
   [/^\/s\/.*$/, "/api/:channel/s/*"],
 ];
 
-/** Fixed upstreams and an explicit header allowlist prevent forwarding product credentials. */
 export const postHogUpstream = (
   request: HttpServerRequest.HttpServerRequest,
   config: Pick<Settings, "host" | "path">,
@@ -304,6 +326,8 @@ export const postHogUpstream = (
   const path = url.pathname.slice(config.path.length);
   const endpoint = postHogEndpoints.find(([pattern]) => pattern.test(path));
   if (endpoint === undefined) return undefined;
+  const method = request.method;
+  if (!HttpMethod.isHttpMethod(method)) return undefined;
   const upstream = new URL(config.host);
   if (path.startsWith("/static/"))
     upstream.hostname = upstream.hostname.replace(".i.posthog.com", "-assets.i.posthog.com");
@@ -315,7 +339,7 @@ export const postHogUpstream = (
     if (value !== undefined) headers[name] = value;
   }
   return {
-    request: HttpClientRequest.make(request.method)(upstream, {
+    request: HttpClientRequest.make(method)(upstream, {
       headers,
       ...(request.method === "POST"
         ? { body: HttpBody.stream(request.stream, headers["content-type"]) }
@@ -325,7 +349,6 @@ export const postHogUpstream = (
   };
 };
 
-/** Serve the public SDK endpoints through the managed first-party path shared by both browser builds. */
 const postHogProxy = (settings: Effect.Effect<Settings | undefined>) =>
   Effect.gen(function* () {
     const config = yield* settings;
@@ -337,7 +360,6 @@ const postHogProxy = (settings: Effect.Effect<Settings | undefined>) =>
     if (!upstream) return HttpServerResponse.empty({ status: 404 });
     yield* recordRoute(upstream.route);
     const response = yield* HttpClient.execute(upstream.request).pipe(
-      // PostHog is a third party: no client span or trace headers leave with the request.
       Effect.provideService(HttpClient.TracerDisabledWhen, () => true),
       Effect.provideService(HttpClient.TracerPropagationEnabled, false),
       Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
@@ -351,7 +373,6 @@ const postHogProxy = (settings: Effect.Effect<Settings | undefined>) =>
     );
   });
 
-/** Capture the Alchemy runtime accessor during initialization, then read bindings per request. */
 export const cloudAnalytics = Effect.gen(function* () {
   const context = yield* CurrentRuntimeContext;
   const settings = readSettings(

@@ -1,23 +1,28 @@
-import { requestServices } from "@executor-js/hosted-server";
+import { recordUnclassifiedRefusals, requestServices } from "@executor-js/hosted-server";
+import { previewActivity } from "./infrastructure/preview-activity.ts";
 import { previewLifetime } from "./infrastructure/test-stage-expiry.ts";
-/** Private app-origin entry point. Dashboard assets and management APIs are never mounted here. */
 import {
+  appSessionCookie,
   appUiAddressScheme,
   appUiEmbedded,
   hostedAppUi,
   appAddresses,
 } from "@executor-js/hosted-server/app-ui";
 import { appPrivateHeaders, appSignInCallbackPath } from "apps/ui/auth";
-import { AppUiApi } from "apps/ui/contracts";
+import { AppUiApi, appIconRoute, appMenuBarRoute } from "apps/ui/contracts";
 import { AlchemyContext } from "alchemy/AlchemyContext";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { Cause, Config, Effect, Layer, Option, Predicate } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 import { HttpRouter, HttpServer, HttpServerError, HttpServerResponse } from "effect/http";
 import { cloudAppUiBase, cloudAppUiPort, cloudAppUiRoute } from "./contracts/app-ui.ts";
-import { recordRequestRejections, requestTiming } from "@executor-js/telemetry/http";
-// Failures are logged as telemetry records them: tags and fixed sentences, never values.
+import {
+  toRequestHttpEffect,
+  recordRequestRejections,
+  requestTiming,
+} from "@executor-js/telemetry/http";
 import { recordedCause } from "@executor-js/telemetry/recorded-failure";
+import { recordClientNetwork } from "./implementation/client-network.ts";
 import { cloudSentry } from "./implementation/error-reporting.ts";
 import { cloudAnalytics } from "./implementation/product-analytics.ts";
 import { postHogBindings } from "./infrastructure/posthog.ts";
@@ -35,8 +40,8 @@ import {
 } from "./infrastructure/telemetry.ts";
 
 import { workerBuild } from "./infrastructure/worker-build.ts";
+import { servedRequest } from "./infrastructure/served-request.ts";
 
-/** Where a config read failed: key paths and issue kinds only, never the value it read. */
 const configIssues = (error: unknown): string[] => {
   if (!Predicate.hasProperty(error, "_tag") || error._tag !== "ConfigError") return [];
   const cause = Predicate.hasProperty(error, "cause") ? error.cause : undefined;
@@ -65,13 +70,11 @@ const configIssues = (error: unknown): string[] => {
   try {
     walk(cause.issue, []);
   } catch {
-    // An unexpected issue shape must not turn logging into another failure.
     return ["(unreadable)"];
   }
   return found;
 };
 
-/** Log a failure as telemetry records it, plus the config keys a ConfigError names. */
 const logFailure = (cause: Cause.Cause<unknown>) => {
   const keys = cause.reasons.flatMap((reason) =>
     Cause.isFailReason(reason)
@@ -85,7 +88,6 @@ const logFailure = (cause: Cause.Cause<unknown>) => {
   );
 };
 
-/** A dedicated native Worker guarantees that every private HTML/JS/CSS request passes app authentication. */
 export default class AppPages extends Cloudflare.Worker<AppPages>()(
   "AppPages",
   Effect.gen(function* () {
@@ -135,7 +137,6 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
     const appSessions = yield* cloudAppSessions;
     const executor = yield* cloudServingProduct(yield* appDataSupervisors);
     const base = yield* cloudAppUiBase.pipe(Effect.orDie);
-    // App pages send sign-in to the dashboard, on the browser origin.
     const appUi = hostedAppUi(
       appAddresses(
         (yield* cloudHosts.pipe(Effect.orDie)).browser,
@@ -149,8 +150,9 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
     const protectedRoutes = Layer.mergeAll(
       HttpRouter.add("GET", appSignInCallbackPath, appUi.callback),
       HttpRouter.add("GET", "/_executor/assets/:version/*", appUi.asset),
-      HttpRouter.add("GET", "/_executor/watch.js", appUi.watch),
       HttpRouter.add("GET", "/_executor/version", appUi.versions),
+      HttpRouter.add("GET", appMenuBarRoute, appUi.menuBar),
+      HttpRouter.add("GET", appIconRoute, appUi.icon),
       HttpRouter.add("POST", "/_executor/api/telemetry/traces", appUi.telemetry("traces")),
       HttpRouter.add("POST", "/_executor/api/telemetry/logs", appUi.telemetry("logs")),
       HttpRouter.add("GET", "*", appUi.page),
@@ -168,14 +170,13 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
     ).pipe(Layer.provide(appUi.originAccess.layer));
     const handle = yield* routes.pipe(
       Layer.provide(HttpServer.layerServices),
-      HttpRouter.toHttpEffect,
+      toRequestHttpEffect,
       Effect.provideService(Layer.CurrentMemoMap, yield* Layer.makeMemoMap),
     );
     const lifetime = yield* previewLifetime;
+    const activity = yield* previewActivity;
     return {
       fetch: appUi.frameResponse(handle).pipe(
-        // Every GET reaches the page route, so an unmatched route is another method. Not found,
-        // as on self-host.
         Effect.catchIf(
           (error): error is HttpServerError.HttpServerError =>
             HttpServerError.isHttpServerError(error) && error.reason._tag === "RouteNotFound",
@@ -195,7 +196,13 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
           );
         }),
         requestTiming,
+        recordClientNetwork,
+        recordUnclassifiedRefusals,
+        activity.http(
+          (request) => base !== undefined && Object.hasOwn(request.cookies, appSessionCookie(base)),
+        ),
         lifetime.http,
+        servedRequest,
       ),
     };
   }).pipe(

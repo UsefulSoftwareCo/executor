@@ -1,4 +1,3 @@
-/** Explicit CLI adapter for rendering a saved suite, including downloaded CI artifacts. */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect } from "effect";
