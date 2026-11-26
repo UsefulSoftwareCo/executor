@@ -258,7 +258,9 @@ export function McpConsentSelect({
   );
 }
 
-const approvalOptions = (product: string): readonly (ConsentOption & { readonly value: ApprovalMode })[] => [
+const approvalOptions = (
+  product: string,
+): readonly (ConsentOption & { readonly value: ApprovalMode })[] => [
   {
     value: "automatic",
     label: "Automatic",
