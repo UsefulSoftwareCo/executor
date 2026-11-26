@@ -138,7 +138,7 @@ export default defineConfig({
           "/concepts/organizations-and-access",
         ],
       },
-      { label: "Build", items: ["/author-an-app"] },
+      { label: "Build", items: ["/author-an-app", "/desktop-apps"] },
       {
         label: "Run Executor yourself",
         items: ["/run/cli", "/run/self-host", "/run/tracing", "/run/usage-analytics"],
