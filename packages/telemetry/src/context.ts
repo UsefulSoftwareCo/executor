@@ -44,6 +44,17 @@ export const withRemoteSpan =
       }),
     );
 
+const asSent = (request: Request) => {
+  const url = new URL(request.url);
+  url.hash = "";
+  const written = url.href;
+  url.search = "";
+  return HttpClientRequest.fromWeb(request).pipe(
+    HttpClientRequest.setUrl(url),
+    HttpClientRequest.setUrl(written),
+  );
+};
+
 export const invocationFetch = (signal: AbortSignal) =>
   Effect.gen(function* () {
     const { context } = yield* captureTelemetry;
@@ -52,7 +63,7 @@ export const invocationFetch = (signal: AbortSignal) =>
         Effect.gen(function* () {
           const request = yield* Effect.try(() => new Request(input, init));
           const client = yield* HttpClient.HttpClient;
-          const response = yield* client.execute(HttpClientRequest.fromWeb(request)).pipe(
+          const response = yield* client.execute(asSent(request)).pipe(
             Effect.withSpan(
               "provider.http.request",
               ownedBy("upstream", { attributes: { "http.request.method": request.method } }),
