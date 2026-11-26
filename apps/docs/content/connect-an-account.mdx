@@ -24,6 +24,9 @@ The dialog uses the provider fields already loaded with the app. Opening it does
 not create a connection or fetch the fields again. A connection is created when
 you submit; retries in that dialog reuse the same request.
 
+If the app explains where to get its credentials, the dialog shows its steps
+above the fields and each field's description under its input.
+
 OAuth setup is checked in the background and reused across forms. If Executor can
 use a saved client or register one automatically, the dialog can connect without
 asking for client details.
@@ -35,8 +38,9 @@ The provider's code declares the grant, endpoints, scopes, and authentication
 method. Open **Advanced** below Connect to review **Required permissions**.
 The dialog asks only for a client ID
 and, when required, a client secret. For browser sign-in, copy the fixed redirect
-URL into the OAuth app's settings. Machine-to-machine connections complete in the
-dialog and need no browser redirect.
+URL into the OAuth app's settings. When the app explains how to create that OAuth
+app at the service, its steps follow the redirect URL. Machine-to-machine
+connections complete in the dialog and need no browser redirect.
 
 If saved OAuth client details are wrong, open **Advanced** below the Connect button,
 choose **Change** next to OAuth client, and enter the replacement. Executor saves manual client details
@@ -116,6 +120,9 @@ for one of the app's own requirements; on hosted, only people who can edit the
 app can start the second. To replace the credentials of an account the app already
 uses, add its ID as `account` in the body. The account keeps its ID, name and
 links.
+
+The app's requirements carry its setup help, so the agent can explain in chat
+where to get the credentials before it sends the link.
 
 Check whether you finished:
 

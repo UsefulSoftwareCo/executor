@@ -1,8 +1,3 @@
-/**
- * Local's Accounts tab: the App accounts section picks the app's own account with a radio and
- * unlinks it, keeping it saved, Your accounts clears and checks a many() account, and the
- * Schedules tab controls the app schedule, which has no approval choice.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -21,7 +16,6 @@ import {
 } from "../support/local-links.ts";
 import { scenarios } from "../test-plan.ts";
 
-/** Datadog is the app's own account and Mail the caller's; `report` runs on the app schedule. */
 const source = `import { defineApp, defineProvider, secrets, query, mutation, appInterval, object, string, router, type QueryContext } from "apps";
 const key = secrets({ label: "Key", fields: object({ token: string() }) });
 const datadog = defineProvider({ name: "Datadog", auth: { key } });
@@ -69,7 +63,6 @@ layer(TestLive, { excludeTestServices: true })("Local Accounts tab", (it) => {
           }),
         );
         const owned = [`/v1/apps/${app.id}`];
-        // The app goes first: an account linked to it for everyone cannot be deleted.
         yield* Effect.addFinalizer(() =>
           Effect.forEach(owned, (path) => api.request(agent, "DELETE", path)).pipe(Effect.orDie),
         );
@@ -78,7 +71,6 @@ layer(TestLive, { excludeTestServices: true })("Local Accounts tab", (it) => {
           Effect.flatMap((response) => body(Settings, response)),
           Effect.map((rows) => rows.filter((row) => row.name === "report")),
         );
-        /** Connect a key account for one of the app's requirements, which links it there. */
         const connect = (requirement: string, label: string) =>
           Effect.gen(function* () {
             const account = (yield* connectLocalAccount(
@@ -95,8 +87,6 @@ layer(TestLive, { excludeTestServices: true })("Local Accounts tab", (it) => {
             owned.push(`/v1/accounts/${account}`);
             return account;
           });
-        // Connecting for the plain app requirement links each new account, replacing the last;
-        // for the many() user requirement it adds each.
         const team = yield* connect("datadog", "Team Datadog");
         const backup = yield* connect("datadog", "Backup Datadog");
         const work = yield* connect("mail", "Work mail");
@@ -158,7 +148,6 @@ layer(TestLive, { excludeTestServices: true })("Local Accounts tab", (it) => {
         );
         yield* evidence.attach("local-accounts-tab.png", "image/png", accountsShot);
 
-        // Selecting Team Datadog links it for every call, replacing Backup Datadog.
         yield* browser.use("Select Team Datadog", (page) =>
           datadogSection(page).getByRole("radio", { name: "Team Datadog", exact: true }).click(),
         );
@@ -169,8 +158,6 @@ layer(TestLive, { excludeTestServices: true })("Local Accounts tab", (it) => {
         );
         expect(yield* localAccountLinks(agent, app.id, "app")).toEqual([["datadog", team]]);
 
-        // Clearing a checkbox unlinks the account; no app uses it now, and keeping it leaves it
-        // saved. Checking it again links it back.
         yield* browser.use("Clear Home mail", (page) =>
           mailSection(page).getByRole("checkbox", { name: "Home mail", exact: true }).click(),
         );
@@ -199,7 +186,6 @@ layer(TestLive, { excludeTestServices: true })("Local Accounts tab", (it) => {
           ["mail", home],
         ]);
 
-        // Unlinking the plain requirement's account from its menu leaves nothing selected.
         yield* browser.use("Open Team Datadog's actions", (page) =>
           datadogSection(page)
             .getByRole("button", { name: "Manage Team Datadog", exact: true })
@@ -226,7 +212,6 @@ layer(TestLive, { excludeTestServices: true })("Local Accounts tab", (it) => {
         const saved = yield* api.request(agent, "GET", `/v1/accounts/${team}`);
         expect(saved.status, JSON.stringify(saved.body)).toBe(200);
 
-        // Linked again, the app schedule's declarations load in the Schedules tab.
         yield* linkLocal(agent, app.id, "datadog", team, "app");
         yield* browser.use("Open the app's schedules", (page) =>
           page.goto(`/apps/${app.id}?view=schedules`),

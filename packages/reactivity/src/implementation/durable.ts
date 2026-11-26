@@ -23,11 +23,6 @@ const PendingWrites = Context.Reference<ReadonlyMap<symbol, Set<string>>>(
   },
 );
 
-/**
- * Persist revision metadata beside data in a Durable Object's SQLite database.
- * Supply the Effect DO SQL driver with its full `storage`, not only `storage.sql`.
- * No Effect stream or authorization decision is retained across hibernation.
- */
 export const makeDurableCoordinator = (options: {
   readonly namespace: string;
   readonly sql: SqlClient;
@@ -66,7 +61,6 @@ export const makeDurableCoordinator = (options: {
     );
 
     const drainLocked = Effect.gen(function* () {
-      // This retry remains durable until every connected socket has caught up.
       yield* arm;
       const revision = yield* readRevision;
       const rows = yield* sql`SELECT table_key, revision FROM executor_live_tables`.pipe(
@@ -114,8 +108,6 @@ export const makeDurableCoordinator = (options: {
             );
             return;
           }
-          // Sending precedes cursor persistence. A crash may repeat a snapshot,
-          // but cannot persist a delivered cursor before the platform got it.
           yield* socketEffect(() =>
             socket.send(
               JSON.stringify({ type: "snapshot", revision, value: result.success.value }),
@@ -176,8 +168,6 @@ export const makeDurableCoordinator = (options: {
         return gate.withPermits(1)(
           Effect.uninterruptible(
             Effect.gen(function* () {
-              // Arm BEFORE commit. The gate prevents an interleaving alarm from clearing
-              // recovery until this transaction has either committed or rolled back.
               yield* arm;
               const value = yield* sql
                 .withTransaction(
@@ -198,8 +188,6 @@ export const makeDurableCoordinator = (options: {
                     Effect.fail(new CoordinatorError({ operation: "commit" })),
                   ),
                 );
-              // Delivery failure cannot turn a committed mutation into a failed command:
-              // the durable alarm retries it. Never encourage callers to repeat the write.
               yield* drainLocked.pipe(Effect.catch(() => Effect.void));
               return value;
             }),

@@ -2,11 +2,9 @@ import { ProviderError } from "apps/contracts";
 import { appProviderFailure } from "./provider-error.ts";
 import { invocationAccount } from "./provider.ts";
 import type { FirstPartyOAuthClient } from "../contracts/oauth.ts";
-/** Snapshot the configured app, then execute with the named accounts' credentials. */
 import {
   Cause,
   Clock,
-  type Crypto,
   Effect,
   ErrorReporter,
   Exit,
@@ -16,6 +14,7 @@ import {
   Result,
   Schema,
 } from "effect";
+import type { HostCrypto } from "./host-crypto.ts";
 import { recordedCause } from "@executor-js/telemetry/recorded-failure";
 import {
   type WorkflowHostControls,
@@ -97,8 +96,10 @@ import {
   type ToolSummary,
   InvocationPrefetch,
   InvocationSelection,
+  ToolCallKindObserved,
   type PrefetchedInvocation,
   type PrefetchHost,
+  SearchablePrefetch,
 } from "../contracts/tools.ts";
 import type { ExecutorDatabase } from "./storage.ts";
 import type { ProviderDefinition } from "../contracts/provider.ts";
@@ -122,11 +123,10 @@ import {
   selectionAccountIds,
   type SelectionAccountsRead,
 } from "./selection.ts";
-import type { Listings, ToolListing } from "./listings.ts";
+import type { Listings, SearchableAhead, ToolListing } from "./listings.ts";
 import { pageStart, pageTools } from "./tool-pages.ts";
 import { ownsDatabase } from "../contracts/apps.ts";
 
-/** The configured app with its active version, in one statement. */
 const readApp = (db: Query, app: AppId) =>
   query(() =>
     db.findFirst("apps", {
@@ -135,45 +135,57 @@ const readApp = (db: Query, app: AppId) =>
     }),
   );
 
-/**
- * The reads {@link snapshot} makes, made ahead and at once. The account read stands in only when it
- * named the accounts the call names; otherwise the snapshot reads again, in order. A read that
- * failed for storage stands in for nothing (see `answered`).
- */
+const readApps = (db: Query, apps: readonly AppId[]) =>
+  apps.length === 0
+    ? Effect.succeed([])
+    : query(() =>
+        db.findMany("apps", {
+          join: (b) => b.deployment(),
+          where: (b) => b("id", "in", apps),
+        }),
+      );
+
 interface SnapshotReads {
   readonly app: Result.Result<Effect.Success<ReturnType<typeof readApp>>, StorageError>;
   readonly accounts: SelectionAccountsRead;
 }
 
-/**
- * Resolve the app, pinned version and the named accounts before invoking authored code. The
- * snapshot keeps the current actor, so work it starts, such as a workflow, is checked against the
- * same subject later.
- *
- * These reads deliberately run outside a transaction. A transaction costs two extra round trips and
- * pins a pooled server connection (a Hyperdrive origin connection in Cloud) for as long as the
- * caller takes between statements. On Postgres at READ COMMITTED it gave no cross-statement
- * snapshot anyway. On PGlite it was atomic with respect to writers, because a transaction reserves
- * the only connection; that atomicity is dropped on purpose. A write that lands between two reads
- * cannot widen access: every cross-read disagreement fails closed (AppNotDeployed,
- * DeploymentNotFound, AccountNotFound, AccountSelectionInvalid or AccountRequired), and account
- * credentials are resolved from the returned selection afterwards.
- */
+const snapshotReads = (
+  db: Query,
+  input: {
+    readonly app: AppId;
+    readonly accounts?: AppAccounts | undefined;
+    readonly captured?: { readonly accounts: SelectedAccounts } | undefined;
+  },
+) => {
+  const ids =
+    input.captured !== undefined
+      ? selectionAccountIds(input.captured.accounts)
+      : input.accounts === undefined
+        ? []
+        : namedAccounts(input.accounts);
+  return ids.length === 0
+    ? Effect.succeed(undefined)
+    : Effect.all(
+        [Effect.result(readApp(db, input.app)), Effect.result(readSelectionAccounts(db, ids))],
+        {
+          concurrency: "unbounded",
+        },
+      ).pipe(Effect.map(([app, rows]): SnapshotReads => ({ app, accounts: { ids, rows } })));
+};
+
 export function snapshot(
   db: Query,
   input: {
     app: AppId;
     version?: VersionId | undefined;
     accounts?: AppAccounts | undefined;
-    /**
-     * A selection background work captured, such as a workflow run's or a registration's, with
-     * the scope it was captured in: without a caller it binds no `user`. Replaces `accounts`.
-     */
     captured?: { readonly accounts: SelectedAccounts; readonly scope: AccountScope } | undefined;
   },
-  ahead?: SnapshotReads,
+  readAhead?: SnapshotReads,
 ) {
   return Effect.gen(function* () {
+    const ahead = readAhead ?? (yield* snapshotReads(db, input));
     const row =
       ahead !== undefined && answered(ahead.app)
         ? yield* Effect.fromResult(ahead.app)
@@ -184,7 +196,6 @@ export function snapshot(
     );
     const versionId = input.version ?? app.activeVersion;
     if (versionId === null) return yield* new AppNotDeployed({ app: app.id });
-    // Historical invocations retain their pinned version and its lineage check.
     const version =
       versionId !== app.activeVersion
         ? yield* storedVersion(db, app, versionId)
@@ -210,27 +221,14 @@ export function snapshot(
   });
 }
 
-/**
- * The actor's app recheck run beside the snapshot's reads, before the call's own app and accounts
- * were read: the app, actor and accounts it ran for, and its outcome.
- */
 export interface RecheckAhead {
   readonly app: { readonly id: AppId; readonly owner: OwnerId };
   readonly actor: string | undefined;
   readonly accounts: readonly Pick<Account, "id" | "owner">[];
-  /**
-   * Each app requirement's account it authorized by the app link; see
-   * `ResourceLifecycle.appResolving`.
-   */
   readonly appUses: readonly AppAccountUse[];
   readonly result: Exit.Exit<ReadonlySet<AccountId>, StorageError>;
 }
 
-/**
- * Which accounts resolving reads a grant for: per requirement of the app, whether its provider
- * signs in with something other than secrets, and per account, the same by the account's method
- * when its row was read. Opaque to the host, which keeps it beside the accounts it was made for.
- */
 class GrantHint {
   readonly requirements: ReadonlyMap<string, boolean>;
   readonly accounts: ReadonlyMap<AccountId, boolean>;
@@ -245,10 +243,8 @@ class GrantHint {
     return hint instanceof GrantHint ? hint : undefined;
   }
 }
-/** Whether any of these sign-in types reads a grant; an unknown definition may. */
 const readsGrant = (types: ReadonlyArray<string | undefined> | undefined) =>
   types === undefined || types.some((type) => type !== "secrets");
-/** The {@link GrantHint} for an app's accounts, from its version and any account rows read. */
 const grantHint = (
   app: Effect.Success<ReturnType<typeof gotApp>>,
   accounts: AppAccounts | undefined,
@@ -277,10 +273,6 @@ const grantHint = (
   }
   return new GrantHint(requirements, grants);
 };
-/**
- * The accounts whose grants a batch reads: those the hint says hold one, by account or else by
- * requirement; every account without a hint.
- */
 const grantedAccounts = (accounts: AppAccounts, hint: GrantHint | undefined) => {
   const granted = new Set<AccountId>();
   for (const [slot, ids] of invocationEntries(accounts))
@@ -288,32 +280,20 @@ const grantedAccounts = (accounts: AppAccounts, hint: GrantHint | undefined) => 
       if ((hint?.accounts.get(id) ?? hint?.requirements.get(slot)) !== false) granted.add(id);
   return [...granted];
 };
-/** Each account's grant row as read in the batch; taken once, by the account's first read. */
 const grantReadAhead = (ids: readonly AccountId[], rows: ReadonlyArray<GrantRow>) => {
   const byId = new Map<AccountId, GrantRow | null>(ids.map((id) => [id, null]));
   for (const row of rows) if (byId.has(row.id as AccountId)) byId.set(row.id as AccountId, row);
   return byId;
 };
-/** The distinct accounts an operation names. */
 const namedAccounts = (accounts: AppAccounts) => [
   ...new Set(invocationEntries(accounts).flatMap(([, ids]) => ids)),
 ];
-/**
- * The accounts an operation names for user requirements, which the actor's use authorizes, and
- * each app requirement's account, which the app link for that requirement authorizes. An
- * account named in both scopes is in both.
- */
 const scopeSplit = (accounts: AppAccounts) => ({
   user: [...new Set(Object.values(accounts.user ?? {}).flat())],
   appUses: Object.entries(accounts.app).flatMap(([requirement, ids]) =>
     ids.map((id) => ({ requirement, id })),
   ),
 });
-/**
- * The recheck ran for exactly this app, actor and these uses, each account under the same owner:
- * the same accounts by the actor's use, and the same accounts for the same app requirements by the
- * app link (`appUses`).
- */
 const recheckedFor = (
   ahead: RecheckAhead,
   state: InvocationSnapshot,
@@ -346,11 +326,6 @@ const recheckedFor = (
   );
 };
 
-/**
- * Each account an invocation selects, once, in selection order, with every use it makes of it: by
- * the actor's use where a user requirement uses it, and by the app link for each app
- * requirement it fills. Each use is authorized on its own.
- */
 const distinctSelection = (state: Effect.Success<ReturnType<typeof snapshot>>) => {
   const distinct = new Map<
     AccountId,
@@ -371,11 +346,6 @@ const distinctSelection = (state: Effect.Success<ReturnType<typeof snapshot>>) =
   return [...distinct.values()];
 };
 
-/**
- * A reconnect an account the app uses as its own needs, named by its app requirement: the caller
- * did not link it and cannot reconnect it, someone who can edit the app must. An account the caller
- * also uses for a user requirement is theirs to reconnect.
- */
 const appAccountReconnect =
   (selection: ReturnType<typeof distinctSelection>) =>
   <E>(error: E): E | OAuthReconnectRequired => {
@@ -393,11 +363,9 @@ const appAccountReconnect =
         });
   };
 
-/**
- * Resolve current credentials, to run the app, without holding a database transaction open. It
- * rechecks the actor's app access. `ahead` stands in for the app recheck only when it succeeded,
- * for the app, actor and accounts this state holds. A refused account use is a `StorageError`.
- */
+export const reconnectReported = (state: Effect.Success<ReturnType<typeof snapshot>>) =>
+  appAccountReconnect(distinctSelection(state));
+
 export const resolve = (
   state: Effect.Success<ReturnType<typeof snapshot>>,
   resolveAccount: ReturnType<typeof makeOAuth>["resolveSelected"],
@@ -407,11 +375,6 @@ export const resolve = (
     Effect.catchTag("AccountUseRefused", () => Effect.fail(new StorageError())),
   );
 
-/**
- * Resolve current credentials only to remove what the app registered, as `resolve` does without
- * app access. A refused account use stays `AccountUseRefused`: it lasts until access changes, so
- * the removal waits for a person instead of retrying.
- */
 export const resolveRemoval = (
   state: Effect.Success<ReturnType<typeof snapshot>>,
   resolveAccount: ReturnType<typeof makeOAuth>["resolveSelected"],
@@ -428,13 +391,9 @@ function resolveFor(
       app: {},
       user: {},
     };
-    // An account selected for several slots is resolved once per invocation, in selection
-    // order. A token renewed for one slot is the token every slot uses, even when it already
-    // falls inside the refresh-ahead window, so one invocation never renews the same grant twice.
     const selected = distinctSelection(state);
     const { user, app: appUses } = accountAuthority(state.selections);
     const app = { id: state.app.id, owner: state.app.owner };
-    // The actor's app access and its accounts are rechecked together, before any credential.
     const resolvedFields = yield* (
       use === "run" &&
       ahead !== undefined &&
@@ -469,7 +428,6 @@ function resolveFor(
         selections[required.scope][slot] = account;
       }
     }
-    // Work without a caller binds no user accounts, so its context has no `user`.
     const accounts: HostAccounts =
       state.scope === "app"
         ? { app: selections.app }
@@ -478,11 +436,9 @@ function resolveFor(
   });
 }
 
-/** Whether an invocation's accounts can run its tools; recorded on the check's span. */
 const accountsOutcome = (outcome: "ready" | "reconnect" | "account_required") =>
   Effect.annotateCurrentSpan("executor.accounts.outcome", outcome);
 
-/** One resolved invocation: app, pinned version, actor and account selection. */
 export type InvocationSnapshot = Effect.Success<ReturnType<typeof snapshot>>;
 type InvocationContext = Effect.Success<ReturnType<typeof resolve>>;
 type SelectedAccount = HostAccountSlots[string];
@@ -491,16 +447,6 @@ const isMany = (
 ): value is Extract<SelectedAccount, ReadonlyArray<unknown>> => Array.isArray(value);
 const sameFields = Schema.toEquivalence(JsonObject);
 
-/**
- * The service refused one of this invocation's accounts: the app reported an `unauthorized`
- * provider failure attributed to a selected account. Renew that account once, or read a renewal
- * another call already made, and return the invocation's accounts with its new credentials.
- *
- * Returns undefined when there is nothing new to try: the failure is not an attributed
- * authentication refusal, or the account cannot be renewed, such as a secrets account or a grant
- * without a refresh token. A renewal the service refuses with `invalid_grant` fails with
- * `OAuthReconnectRequired`, as any resolve does.
- */
 const renewRefused = (
   oauth: Pick<ReturnType<typeof makeOAuth>, "renewRejected">,
   clients: ReadonlyMap<string, FirstPartyOAuthClient>,
@@ -524,8 +470,6 @@ const renewRefused = (
       .flatMap(([, value]) => (isMany(value) ? value : [value]))
       .find((account) => account.id === accountId);
     if (used === undefined) return undefined;
-    // Renewal authorizes the account and, once it settles, every account of the invocation and
-    // the app for the current actor, as `resolve` does: they all run the app's code again.
     const usedFields = used.fields;
     const renewed = yield* oauth
       .renewRejected(
@@ -538,8 +482,6 @@ const renewRefused = (
       .pipe(Effect.mapError(appAccountReconnect(selection)));
     if (sameFields(Redacted.value(renewed.fields), usedFields)) return undefined;
     yield* Effect.annotateCurrentSpan("executor.account.credentials_renewed", accountId);
-    // Rebuilt from the renewed credential itself, so whether it is managed is whatever the
-    // credential now is, even if a reconnect replaced it during this invocation.
     const definitions = new Map(
       state.selections.map(({ slot, required }) => [slot, required.definition] as const),
     );
@@ -594,10 +536,6 @@ function invocation(
   }).pipe(Effect.mapError(() => new StorageError()));
 }
 
-/**
- * Check failures that are answers: the saved call's app, version or accounts are now missing
- * or different. Anything else, such as storage failing, answers nothing.
- */
 const isContextChange = Schema.is(
   Schema.Union([
     AppNotFound,
@@ -609,16 +547,10 @@ const isContextChange = Schema.is(
   ]),
 );
 
-/** A failure the app runtime reports for a call. */
 type CallError = Effect.Error<ReturnType<Runtime["call"] | Runtime["query"] | Runtime["mutate"]>>;
 
-/**
- * What renewing a refused account's credentials after a call that may write came to: the call is
- * never repeated, so its failure reports the renewal.
- */
 type Renewal = "renewed" | RenewalFailure;
 
-/** The typed error of a failed call. */
 const runtimeFailure = (
   identity: { app: AppId; version: VersionId; tool: ToolName },
   state: InvocationSnapshot,
@@ -669,9 +601,6 @@ const runtimeFailure = (
       HostOutputInvalid: () => new ToolCallFailed({ ...identity, reason: "Tool execution failed" }),
       HostRequestInvalid: (error) => evaluationFailure(identity, error),
       HostAccountsInvalid: (error) => evaluationFailure(identity, error),
-      // Also how the app's framework reports an unexpected failure anywhere in its handling of
-      // the call, including after the handler returned, so it is not reported as a failure to
-      // load the app's tools.
       HostDeclarationInvalid: () =>
         new ToolCallFailed({
           ...identity,
@@ -682,10 +611,6 @@ const runtimeFailure = (
       SkillLoadFailed: (error) => evaluationFailure(identity, error),
       McpError: (error) => operationMcpFailure(identity, error),
       RuntimeBuildUnavailable: (error) => evaluationFailure(identity, error),
-      // The runtime's reply to the call was lost or unusable, which can happen after the tool ran,
-      // so it is not reported as a failure to load the app's tools. The kind is matched from the
-      // runtime's error, which the app's isolate can produce, so it is not claimed: a size failure
-      // stays a likely cause.
       RuntimeProtocolFailed: ({ reason }) =>
         reason === "too-large"
           ? new ToolCallFailed({
@@ -707,15 +632,9 @@ const runtimeFailure = (
     }),
   );
 
-/** The source a failure from the app's framework names: its code, a service or its storage. */
 const detailSource = ({ source }: { readonly source?: AppFailure["source"] }): CallFailureSource =>
   source === "service" ? "upstream" : source === "storage" ? "storage" : "app";
 
-/**
- * What a runtime's failure of a call names as its cause (`CallFailureSource`), read before
- * `runtimeFailure` turns it into the caller's error, which can no longer tell them apart: a lost
- * reply and the app's own exception are both `ToolCallFailed`.
- */
 const failureSource = Match.type<CallError>().pipe(
   Match.withReturnType<CallFailureSource>(),
   Match.tagsExhaustive({
@@ -752,31 +671,50 @@ const failureSource = Match.type<CallError>().pipe(
   }),
 );
 
-/** Tell the caller's observer, if any, what a call failed with (`CallFailureSources`). */
 const observeFailure = (source: CallFailureSource) =>
   Effect.map(CallFailureSources, (observe) => observe?.(source));
 
-/**
- * The error a failed call reports to its caller, such as an agent. A call that may write, a
- * mutation or a call that names no kind, may already have made its change once the host handed any of
- * its work to the app's code, or may still make it, whatever failed: the app's factory, account
- * hooks, approval policy and handler all run there, and every failure reported from there passes
- * through code the app controls, its name and fields included. So does a failure of Executor's own
- * work after the hand-off, such as saving an approval request. Its error records that, so it leads
- * with Executor's instruction not to repeat the call and is never offered as a retry. That includes
- * a refusal, such as invalid input or a denied approval, which the app's reply reports. A failure
- * before the host handed over any work, and every failure of a call the app confirms only reads
- * (`confirmedRead`), keep their own classification. A query only its upstream calls one, such as
- * an MCP tool with `readOnlyHint`, may write like any other call.
- */
-const callFailure =
-  (read: boolean, enteredApp: boolean) =>
+const toolCallFailure =
+  (
+    identity: { app: AppId; version: VersionId; tool: ToolName },
+    state: InvocationSnapshot,
+    renewal: Renewal | undefined,
+  ) =>
+  (failure: CallError) =>
+    failure._tag === "RuntimeProtocolFailed" && failure.notSent === true
+      ? new ToolCallFailed({
+          ...identity,
+          reason:
+            "Executor could not connect to the app runtime, so it did not send this tool call.",
+          notSent: true,
+        })
+      : failure._tag === "RuntimeProtocolFailed" && failure.reason === "unloading"
+        ? new ToolCallFailed({
+            ...identity,
+            reason:
+              "The app's previous Worker did not finish unloading, so Executor did not send this tool call.",
+            notSent: true,
+          })
+        : runtimeFailure(identity, state, renewal)(failure);
+const notSentOnly = (failure: CallFailure) =>
+  failure._tag === "ToolCallFailed" && failure.notSent === true;
+const partlyRun = ({ app, version, tool }: ToolCallFailed) =>
+  new ToolCallFailed({
+    app,
+    version,
+    tool,
+    reason:
+      "Executor could not reach the app runtime to finish this tool call. An earlier step of the call reached the app, so the call may have partly run.",
+  });
+export const callFailure =
+  (read: boolean, enteredApp: boolean, entries: number) =>
   (failure: CallFailure): CallFailure =>
-    read || !enteredApp
+    read || !enteredApp || (entries === 1 && notSentOnly(failure))
       ? failure
       : Match.value(failure).pipe(
           Match.tagsExhaustive({
-            ToolCallFailed: (failure) => mayHaveWritten(ToolCallFailed, failure),
+            ToolCallFailed: (failure) =>
+              mayHaveWritten(ToolCallFailed, notSentOnly(failure) ? partlyRun(failure) : failure),
             AppProviderFailed: (failure) => mayHaveWritten(AppProviderFailed, failure),
             AppEvaluationFailed: (failure) => mayHaveWritten(AppEvaluationFailed, failure),
             ToolElicitationFailed: (failure) => mayHaveWritten(ToolElicitationFailed, failure),
@@ -791,10 +729,17 @@ const callFailure =
           }),
         );
 
-/**
- * Report a defect that a call's failure replaces for its caller: the host's error reporter, such as
- * Sentry, captures it, and the call's span records it as the tracer records a defect it ends with.
- */
+export const appEntries = (onEntered: () => void, earlier = 0) => {
+  let entries = earlier;
+  return {
+    entered: () => {
+      entries += 1;
+      onEntered();
+    },
+    callFailure: (read: boolean, enteredApp: boolean) => callFailure(read, enteredApp, entries),
+  };
+};
+
 const reportDefect = (cause: Cause.Cause<unknown>) =>
   Effect.gen(function* () {
     yield* ErrorReporter.report(cause);
@@ -809,7 +754,6 @@ const reportDefect = (cause: Cause.Cause<unknown>) =>
       });
   });
 
-/** A listed tool without its schemas. */
 const summarizeTool = ({
   inputSchema: _input,
   outputSchema: _output,
@@ -817,14 +761,13 @@ const summarizeTool = ({
   ...summary
 }: Tool): ToolSummary => summary;
 
-/** Live calls return completion or a durable approval request. Resume trusts the supplied SDK decision. */
 export const makeTools = (
   storage: ExecutorDatabase,
   oauth: Pick<ReturnType<typeof makeOAuth>, "resolveSelected" | "renewRejected" | "usableAll">,
   clients: ReadonlyMap<string, FirstPartyOAuthClient>,
   runtime: Runtime,
   credentials: Credentials,
-  crypto: Crypto.Crypto,
+  crypto: HostCrypto,
   listings: Listings,
   workflows?: (state: InvocationSnapshot) => WorkflowHostControls,
   lifecycle?: ResourceLifecycle,
@@ -832,7 +775,6 @@ export const makeTools = (
   const db = database(storage);
   const resolveAccount = oauth.resolveSelected;
   const approvals = makeToolApprovals(db, credentials, crypto, storage.reactivity.inTransaction);
-  /** Renew an account the service refused without repeating what it refused; undefined when none was. */
   const renewOnce = (state: InvocationSnapshot, context: InvocationContext, error: unknown) =>
     renewRefused(oauth, clients, state, context, error).pipe(
       Effect.result,
@@ -844,7 +786,6 @@ export const makeTools = (
             : "renewed",
       ),
     );
-  /** The typed error of a catalog evaluation, with the renewal of an account it refused. */
   const catalogFailure = (
     state: InvocationSnapshot,
     error: Effect.Error<ReturnType<typeof runtime.index>>,
@@ -853,7 +794,6 @@ export const makeTools = (
     Schema.is(ProviderError)(error)
       ? appProviderFailure(state, error, renewal)
       : evaluationFailure({ app: state.app.id, version: state.version.id }, error);
-  /** Fail with a catalog evaluation's typed error, telling the caller's observer its source. */
   const failCatalog = (
     state: InvocationSnapshot,
     error: Effect.Error<ReturnType<typeof runtime.index>>,
@@ -862,14 +802,6 @@ export const makeTools = (
     observeFailure(failureSource(error)).pipe(
       Effect.andThen(Effect.fail(catalogFailure(state, error, renewal))),
     );
-  /**
-   * Run a tool, live or approved, and renew an account the service refuses. A 401 means the
-   * service did not perform the refused request, but an earlier request in the same call may
-   * already have made changes. A call the app confirms only reads (`read`, see `confirmedRead`) is
-   * repeated once with the renewed credentials, and a failed renewal is its failure. A call that may
-   * write is never repeated: the renewal, renewed or failed, comes after the call was dispatched, so
-   * it is reported with the call's failure rather than in its place.
-   */
   const executeRenewing = <A, E, R, R2>(
     state: InvocationSnapshot,
     context: InvocationContext,
@@ -888,11 +820,6 @@ export const makeTools = (
       const renewal = yield* renewOnce(state, context, result.failure);
       return { result, renewal };
     });
-  /**
-   * Runtime options that evaluate one invocation's catalog with its resolved accounts. Every
-   * inspection of a build that can share its definitions asks for them: the catalog is the same
-   * either way, only smaller to send. Index reads list no schemas and ignore it.
-   */
   const inspection = (state: InvocationSnapshot, context: InvocationContext) => ({
     app: state.app.id,
     build: state.version.build,
@@ -903,11 +830,6 @@ export const makeTools = (
       ? { definitions: "shared" as const }
       : {}),
   });
-  /**
-   * Evaluate a catalog and renew an account the service refuses while it is evaluated. Inspection
-   * only reads, so it is repeated once with the renewed credentials. Every catalog read, including
-   * the tool listing that MCP discovery serves, goes through here.
-   */
   const inspectRenewing = <A, R>(
     state: InvocationSnapshot,
     context: InvocationContext,
@@ -926,7 +848,6 @@ export const makeTools = (
         ),
       ),
     );
-  /** Read the live catalog of a resolved invocation, renewing an account the service refuses. */
   const readCatalog = <A, R>(
     state: InvocationSnapshot,
     context: InvocationContext,
@@ -943,21 +864,18 @@ export const makeTools = (
         state.version.requirements.capabilities?.scheduledTools === true,
       ),
     );
-  /** Inspect the live catalog for one tool, or all of it on builds without a tool index. */
   const inspectTool = (state: InvocationSnapshot, name: ToolName, context: InvocationContext) =>
     runtime.inspect(
       state.version.requirements.capabilities?.toolIndex === true
         ? { ...inspection(state, context), tools: [name] }
         : inspection(state, context),
     );
-  /** The named tool of an evaluated catalog; ToolNotFound when it is absent. */
   const found =
     (state: InvocationSnapshot, name: ToolName) =>
     ({ tools, routers }: Effect.Success<ReturnType<typeof runtime.inspect>>) =>
       Effect.gen(function* () {
         const tool = tools.find((tool) => tool.name === name);
         if (tool !== undefined) return tool;
-        // A tool under a router that could not be read fails with that router's error.
         const failed = routers.find(
           (router) => router.error !== undefined && name.startsWith(`${router.path}.`),
         )?.error;
@@ -971,17 +889,10 @@ export const makeTools = (
           tool: name,
         });
       });
-  /** Describe one tool of the live catalog; ToolNotFound when it is absent. */
   const describe = (state: InvocationSnapshot, context: InvocationContext, name: ToolName) =>
     inspectRenewing(state, context, (context) => inspectTool(state, name, context)).pipe(
       Effect.flatMap(found(state, name)),
     );
-  /**
-   * The kind of a call that names none, from the live catalog. Evaluating the catalog runs the
-   * app's code, which may write before it fails, and the call may write, so the catalog is
-   * evaluated once: a refused account is renewed, and the failure reports that renewal, as a call
-   * that may write does.
-   */
   const catalogKind = (state: InvocationSnapshot, context: InvocationContext, name: ToolName) =>
     inspectTool(state, name, context).pipe(
       Effect.catch((error) =>
@@ -991,15 +902,6 @@ export const makeTools = (
       ),
       Effect.flatMap(found(state, name)),
     );
-  /**
-   * The caller's kind, or the kept listing's for a caller that did not name one, so the call of an
-   * app with a database loads only its data facet, not the app's Worker too. Only the first call of
-   * an invocation state with no kept listing evaluates it, and an aged listing is not refreshed for
-   * this. That evaluation uses the accounts the call resolved, so the call renews a grant once. A
-   * tool the listing does not name, such as one a dynamic source resolves on demand or one added
-   * since the listing was evaluated, is described live from one evaluation of the catalog; one the catalog does not list either is
-   * called without a kind: the app applies the tool's own kind and storage opens for writing.
-   */
   const kindOf = (
     state: InvocationSnapshot,
     context: InvocationContext,
@@ -1007,41 +909,35 @@ export const makeTools = (
     kind: ToolKind | undefined,
   ) =>
     kind === undefined
-      ? listings.read(state, callListingOf(state), { refreshStale: false, resolved: context }).pipe(
-          Effect.map((listing) => listing.items.find((tool) => tool.name === name)),
-          // A listing that did not finish says nothing about the tool.
-          Effect.catchTag("ToolListingTimedOut", () => Effect.succeed(undefined)),
-          Effect.flatMap((listed) =>
-            listed === undefined ? catalogKind(state, context, name) : Effect.succeed(listed),
-          ),
-          Effect.map((tool): ToolKind | undefined =>
-            tool.readOnly === true ? "query" : "mutation",
-          ),
-          Effect.catchTag("ToolNotFound", () => Effect.succeed(undefined)),
-          Effect.withSpan("sdk.tools.kind"),
-        )
+      ? listings
+          .read(state, callListingOf(state), {
+            refreshStale: false,
+            followChanges: false,
+            resolved: context,
+          })
+          .pipe(
+            Effect.map((listing) => listing.items.find((tool) => tool.name === name)),
+            Effect.catchTag("ToolListingTimedOut", () => Effect.succeed(undefined)),
+            Effect.flatMap((listed) =>
+              listed === undefined ? catalogKind(state, context, name) : Effect.succeed(listed),
+            ),
+            Effect.map((tool): ToolKind | undefined =>
+              tool.readOnly === true ? "query" : "mutation",
+            ),
+            Effect.catchTag("ToolNotFound", () => Effect.succeed(undefined)),
+            Effect.withSpan("sdk.tools.kind"),
+          )
       : Effect.succeed(kind);
-  /**
-   * With the accounts the host's check resolved ({@link InvocationSelection}), make the call's
-   * reads of the app and those accounts, and the actor's app recheck, at once. The host's check has
-   * finished, so each read still follows it. The snapshot uses a read only where the call's own
-   * reads agree with what it was made for, and the recheck only when it ran for the app, actor and
-   * accounts the call runs with; failures are reported in the snapshot's order. A recheck after the
-   * reads would come before the grant reads anyway, so running it beside them leaves nothing older
-   * when the app starts. Without a matching selection nothing is read ahead.
-   */
   const invocationReads = (
     selection: {
       readonly app: AppId;
       readonly owner: OwnerId;
       readonly accounts: AppAccounts;
     },
-    /** Accounts whose grant rows to read too, for a host that sends them in the same batch. */
     grantsOf: readonly AccountId[] = [],
   ) => {
     const ids = namedAccounts(selection.accounts);
     const app = { id: selection.app, owner: selection.owner };
-    // The host resolved them under the app's owner; `resolve` uses the recheck only if they match.
     const split = scopeSplit(selection.accounts);
     const accounts = split.user.map((id) => ({ id, owner: selection.owner }));
     const appUses = split.appUses.map(({ requirement, id }) => ({
@@ -1069,7 +965,6 @@ export const makeTools = (
     if (lifecycle !== undefined)
       leaves.push(
         Effect.gen(function* () {
-          // The actor it ran as; `resolve` uses the outcome only for the same actor.
           const actor = yield* CurrentActor;
           const result = yield* Effect.exit(
             lifecycle
@@ -1106,7 +1001,6 @@ export const makeTools = (
               : { ids: grantsOf, rows: slots.grants.success },
         };
       },
-      /** Whether any read failed in storage: a batch that did is not used at all. */
       failed: () =>
         (
           [slots.app, slots.rows, slots.grants] as ReadonlyArray<
@@ -1120,15 +1014,8 @@ export const makeTools = (
     };
   };
   type InvocationReads = NonNullable<ReturnType<ReturnType<typeof invocationReads>["take"]>>;
-  /**
-   * {@link PrefetchHost}: what `apps.get` and the reads above return, read by the host in one batch
-   * with its own checks. The hint says which of the app's requirements and accounts resolve
-   * through a grant (see {@link GrantHint}), so the next batch reads only those grants. A stale
-   * hint costs a grant read in the resolve loop, in the call's own order, never a different answer.
-   */
   const prefetchInvocation: PrefetchHost["invocation"] = (selection) => {
     const known = selection.known;
-    // Grants of accounts the hint says hold none are not read; the resolve loop reads any it needs.
     const reads =
       known === undefined
         ? undefined
@@ -1144,7 +1031,6 @@ export const makeTools = (
         }),
       ),
     ];
-    // What `apps.get` returns for the row: it reads the app under its owner only.
     const asGot = (row: Effect.Success<ReturnType<typeof readApp>>) =>
       Effect.gen(function* () {
         if (row === null || row.owner !== selection.owner)
@@ -1184,8 +1070,101 @@ export const makeTools = (
     });
     return { leaves, take };
   };
-  // A prefetch answers one call: it is provided around the whole host call, so a later call in
-  // that scope (none today) must read live rather than reuse reads that may be seconds old.
+  interface SearchableEntry {
+    readonly target: {
+      readonly app: AppId;
+      readonly version: VersionId;
+      readonly accounts: AppAccounts;
+    };
+    readonly actor: string | undefined;
+    readonly state: InvocationSnapshot;
+    readonly ahead: SearchableAhead;
+  }
+  class SearchableReads {
+    readonly entries: Map<AppId, SearchableEntry>;
+    constructor(entries: Map<AppId, SearchableEntry>) {
+      this.entries = entries;
+    }
+    take(input: {
+      readonly app: AppId;
+      readonly version?: VersionId | undefined;
+      readonly accounts?: AppAccounts | undefined;
+    }) {
+      const entry = this.entries.get(input.app);
+      if (
+        entry === undefined ||
+        input.version !== entry.target.version ||
+        input.accounts === undefined ||
+        !sameAccounts(entry.target.accounts, input.accounts)
+      )
+        return undefined;
+      this.entries.delete(input.app);
+      return entry;
+    }
+  }
+  const prefetchSearchable: PrefetchHost["searchable"] = ({ owner, targets }) =>
+    Effect.gen(function* () {
+      const actor = yield* CurrentActor;
+      const [apps, accounts] = yield* Effect.all(
+        [
+          readApps(db, [...new Set(targets.map((target) => target.app))]),
+          readSelectionAccounts(db, [
+            ...new Set(targets.flatMap((target) => namedAccounts(target.accounts))),
+          ]),
+        ],
+        { concurrency: "unbounded" },
+      );
+      const states = yield* Effect.forEach(targets, (target) => {
+        const ids = new Set(namedAccounts(target.accounts));
+        const reads: SnapshotReads = {
+          app: Result.succeed(apps.find((row) => row.id === target.app) ?? null),
+          accounts: {
+            ids: [...ids],
+            rows: Result.succeed(accounts.filter((row) => ids.has(row.id))),
+          },
+        };
+        return snapshot(db, target, reads).pipe(
+          Effect.withSpan("sdk.invocation.snapshot"),
+          Effect.option,
+          Effect.map(Option.filter((state) => state.app.owner === owner)),
+          Effect.map(Option.map((state) => ({ target, state }))),
+        );
+      }).pipe(Effect.map((found) => found.flatMap(Option.toArray)));
+      const aheads = yield* listings.searchablePrefetch(
+        owner,
+        states.map(({ state }) => state),
+      );
+      const entries = new Map<AppId, SearchableEntry>();
+      states.forEach(({ target, state }, index) => {
+        const ahead = aheads[index];
+        if (ahead === undefined || entries.has(target.app)) return;
+        entries.set(target.app, { target, actor, state, ahead });
+      });
+      return { owner, value: new SearchableReads(entries) };
+    }).pipe(
+      Effect.catchCause(() => Effect.succeed({ owner, value: undefined })),
+      Effect.withSpan("sdk.tools.searchable.prefetch", {
+        attributes: { "executor.prefetch.targets": targets.length },
+      }),
+    );
+  const searchableAhead = (input: {
+    readonly app: AppId;
+    readonly version?: VersionId | undefined;
+    readonly accounts?: AppAccounts | undefined;
+  }) =>
+    Effect.gen(function* () {
+      const prefetched = yield* SearchablePrefetch;
+      if (prefetched === undefined || !(prefetched.value instanceof SearchableReads))
+        return undefined;
+      const entry = prefetched.value.take(input);
+      if (
+        entry === undefined ||
+        entry.state.app.owner !== prefetched.owner ||
+        entry.actor !== (yield* CurrentActor)
+      )
+        return undefined;
+      return entry;
+    });
   const consumedPrefetches = new WeakSet<object>();
   const readAhead = (input: { readonly app: AppId; readonly accounts?: AppAccounts | undefined }) =>
     Effect.gen(function* () {
@@ -1197,7 +1176,6 @@ export const makeTools = (
         !sameAccounts(selection.accounts, input.accounts)
       )
         return undefined;
-      // Made by the host in one batch with its checks, for exactly this selection.
       const prefetched = yield* InvocationPrefetch;
       if (
         prefetched !== undefined &&
@@ -1213,14 +1191,11 @@ export const makeTools = (
       yield* Effect.all(reads.leaves, { concurrency: "unbounded", discard: true });
       return reads.take();
     });
-  /** Evaluate the live catalog with the named accounts. */
   const evaluate = <A, R>(
     input: Parameters<Executor["tools"]["index"]>[0],
     read: (
       options: Parameters<typeof runtime.index>[0],
-      /** Earlier builds reject index and filtered inspection; they only describe every tool. */
       toolIndex: boolean,
-      /** Earlier builds reject scheduled inspection; they only describe every tool. */
       scheduledTools: boolean,
     ) => Effect.Effect<A, Effect.Error<ReturnType<typeof runtime.index>>, R>,
   ) =>
@@ -1236,7 +1211,6 @@ export const makeTools = (
       });
       return { version: state.version.id, value: yield* readCatalog(state, context, read) };
     });
-  /** The invocation state a listing is read for, annotated on the caller's span. */
   const listed = (input: Parameters<typeof snapshot>[1]) =>
     Effect.gen(function* () {
       const state = yield* snapshot(db, input).pipe(Effect.withSpan("sdk.invocation.snapshot"));
@@ -1247,8 +1221,6 @@ export const makeTools = (
       });
       return state;
     });
-  /** Evaluate every tool of the catalog with schemas, sorted by name, for the listing store. */
-  /** A catalog's tools as the listing store keeps them, sorted by name. */
   const toListing =
     (state: InvocationSnapshot) =>
     ({ tools, routers }: Effect.Success<ReturnType<typeof runtime.inspect>>): ToolListing => ({
@@ -1266,24 +1238,10 @@ export const makeTools = (
           name: ToolName.make(tool.name),
         })),
     });
-  /** Evaluate every tool of the catalog with schemas, sorted by name, for the listing store. */
   const listingOf = (state: InvocationSnapshot) => (context: InvocationContext) =>
     inspectRenewing(state, context, (context) => runtime.inspect(inspection(state, context))).pipe(
       Effect.map(toListing(state)),
     );
-  /**
-   * Whether the app confirms that a tool only reads: its kept listing names the tool a query of a
-   * kind the app's code or the tool's protocol fixes (`kindConfirmed`), not one only an upstream
-   * claims, such as an MCP server's `readOnlyHint`. Only a call named a query and confirmed here
-   * keeps a read's advice to repeat it after it fails, and only such a call is repeated with renewed
-   * credentials. The caller's kind is its own claim and confirms nothing. It comes only from a
-   * listing already kept (`listings.kept`): evaluating the catalog after a call failed would run
-   * the app's code again, and its writes, only to word the failure. The listing kept in this
-   * process is taken before the call hands over its work, since a cache change the call makes
-   * forgets it; it is checked, and one kept beyond this process is read, only once the call failed
-   * after the hand-off. A tool the kept listing does not confirm, or no kept listing, is not
-   * confirmed.
-   */
   const readOf = (state: InvocationSnapshot, name: ToolName, kind: ToolKind | undefined) =>
     kind === "query"
       ? listings.kept(state).pipe(
@@ -1307,12 +1265,26 @@ export const makeTools = (
           ),
         )
       : Effect.succeed(Effect.succeed(false));
-  /**
-   * The listing a call that names no kind evaluates when none is kept. Evaluating the catalog runs
-   * the app's code, which may write before it fails, and the call may write, so it is evaluated
-   * once: a refused account is renewed, and the failure reports that renewal, as a call that may
-   * write does.
-   */
+  const declaredReadOf = (state: InvocationSnapshot, name: ToolName, kind: ToolKind | undefined) =>
+    kind === "query"
+      ? listings.kept(state).pipe(
+          Effect.orElseSucceed(() => Effect.succeed<ToolListing | undefined>(undefined)),
+          Effect.flatMap((kept) =>
+            Effect.cached(
+              kept.pipe(
+                Effect.map(
+                  (listing) =>
+                    listing?.items.some((tool) => tool.name === name && tool.readOnly === true) ===
+                    true,
+                ),
+                Effect.tap((declared) =>
+                  Effect.annotateCurrentSpan("executor.tool.read_declared", declared),
+                ),
+              ),
+            ),
+          ),
+        )
+      : Effect.succeed(Effect.succeed(false));
   const callListingOf = (state: InvocationSnapshot) => (context: InvocationContext) =>
     runtime.inspect(inspection(state, context)).pipe(
       Effect.catch((error) =>
@@ -1324,15 +1296,7 @@ export const makeTools = (
     );
   return {
     prefetchInvocation,
-    /**
-     * The first of these accounts whose saved sign-in must reconnect before the app's tools can
-     * run with them; undefined when every account can supply credentials. Reads stored state only:
-     * it never renews a grant or evaluates the app.
-     *
-     * An account that must reconnect, or a required account that is not named, is an expected
-     * account state the owner resolves, not a fault of this check. It is recorded as the span's
-     * `executor.accounts.outcome`; a missing account fails the caller only after the span.
-     */
+    prefetchSearchable,
     accountNeedingReconnect: (input: { app: AppId; accounts: AppAccounts }) =>
       Effect.gen(function* () {
         const state = yield* snapshot(db, input);
@@ -1362,17 +1326,10 @@ export const makeTools = (
           Schema.is(AccountRequired)(found) ? Effect.fail(found) : Effect.succeed(found),
         ),
       ),
-    /**
-     * Page through the app's evaluated catalog. The whole listing is evaluated once and, with a
-     * listing store, reused across pages and requests for identical inputs. A page ends at its
-     * limit and, unless the caller asks for unbounded pages, before the tool that would take its
-     * JSON past `toolPageChars`.
-     */
     list: (input: Parameters<Executor["tools"]["list"]>[0], options?: ToolListOptions) =>
       Effect.gen(function* () {
         const state = yield* listed(input);
         const listing = yield* listings.read(state, listingOf(state), options);
-        // Pages share the listing's item objects, so a caller can recognise a kept listing.
         const start = pageStart(listing, input.cursor);
         const selected = yield* pageTools(
           listing,
@@ -1390,14 +1347,24 @@ export const makeTools = (
             : {}),
         };
       }).pipe(Effect.withSpan("sdk.tools.list")),
-    /** Keep the target's current listing as search rows; see `Listings.searchable`. */
     searchable: (
       input: Omit<Parameters<Executor["tools"]["list"]>[0], "cursor" | "limit">,
       options?: ToolListOptions,
     ) =>
       Effect.gen(function* () {
-        const state = yield* listed(input);
-        const found = yield* listings.searchable(state, listingOf(state), options);
+        const ahead = yield* searchableAhead(input);
+        const state =
+          ahead === undefined
+            ? yield* listed(input)
+            : yield* Effect.as(
+                Effect.annotateCurrentSpan({
+                  "executor.app.id": ahead.state.app.id,
+                  "executor.deployment.id": ahead.state.version.id,
+                  "executor.build.id": ahead.state.version.build,
+                }),
+                ahead.state,
+              );
+        const found = yield* listings.searchable(state, listingOf(state), options, ahead?.ahead);
         return {
           listing: found.listing,
           version: state.version.id,
@@ -1410,10 +1377,6 @@ export const makeTools = (
           ...(found.stale === undefined ? {} : { stale: found.stale }),
         };
       }).pipe(Effect.withSpan("sdk.tools.searchable")),
-    /**
-     * Describe the declared operations that have schedules. Current builds skip dynamic
-     * tool discovery, which can compile a large catalog in the shared app runtime.
-     */
     scheduled: (input: Parameters<Executor["tools"]["list"]>[0]) =>
       Effect.gen(function* () {
         const {
@@ -1422,7 +1385,6 @@ export const makeTools = (
         } = yield* evaluate(input, (options, _toolIndex, scheduled) =>
           runtime.inspect(scheduled ? { ...options, scheduled: true } : options),
         );
-        // Callers that act on the result can require that this version is still active.
         return {
           version,
           items: tools.flatMap((tool) =>
@@ -1433,10 +1395,6 @@ export const makeTools = (
           ),
         };
       }).pipe(Effect.withSpan("sdk.tools.scheduled")),
-    /**
-     * The catalog without schemas, read from the same kept listing as `list`, so browsing an app
-     * evaluates it no more often than MCP discovery does.
-     */
     index: (input: Parameters<Executor["tools"]["index"]>[0]) =>
       Effect.gen(function* () {
         const state = yield* listed(input);
@@ -1447,11 +1405,6 @@ export const makeTools = (
           items: listing.items.map(summarizeTool),
         };
       }).pipe(Effect.withSpan("sdk.tools.index")),
-    /**
-     * One tool's schemas from the kept listing. A tool the listing does not name, such as one a
-     * dynamic source resolves on demand or one added since the listing was evaluated, is described
-     * live; a tool under a router the listing could not read fails with that router's error.
-     */
     get: (input: Parameters<Executor["tools"]["get"]>[0]) =>
       Effect.gen(function* () {
         const state = yield* listed(input);
@@ -1486,7 +1439,6 @@ export const makeTools = (
         const parsed = yield* Schema.decodeUnknownEffect(ToolInputs.call)(input).pipe(
           Effect.mapError(() => new RequestInvalid()),
         );
-        // Round-trip before any async lookup: later caller mutations cannot change the dispatched or saved arguments.
         const args = yield* Schema.encodeEffect(Schema.fromJsonString(Json))(
           parsed.input === undefined ? {} : parsed.input,
         ).pipe(
@@ -1498,8 +1450,6 @@ export const makeTools = (
           const state = yield* snapshot(db, parsed, ahead?.reads);
           return { ahead, state };
         }).pipe(Effect.withSpan("sdk.invocation.snapshot"));
-        // Grant rows read in the batch, for accounts this state holds, stand in for each grant's
-        // first read; other accounts read theirs in the resolve loop.
         const held = new Set(selectionAccountIds(state.accounts));
         const grants =
           ahead?.grants !== undefined && ahead.grants.ids.every((id) => held.has(id))
@@ -1515,23 +1465,16 @@ export const makeTools = (
           "executor.deployment.id": state.version.id,
           "executor.build.id": state.version.build,
         });
-        // Set by the host when it hands this call's work to the app's code: catalog reads for its
-        // kind, and the call itself.
         let enteredApp = false;
-        const appCode = {
-          entered: () => {
-            enteredApp = true;
-          },
-        };
-        // The caller's kind, confirmed by the app for a query (`confirmedRead`), decides how a
-        // failure is reported and whether a refused call is repeated. For a call that names none,
-        // the catalog only names the kind it is dispatched with: reading the catalog ran the app's
-        // code, so the call's outcome stays unknown.
+        const appCode = appEntries(() => {
+          enteredApp = true;
+        });
         const named = parsed.kind;
         const read = yield* readOf(state, parsed.tool, named);
-        // Every failure from here, the app's or Executor's own, passes through `callFailure` once.
+        const declaredRead = yield* declaredReadOf(state, parsed.tool, named);
         return yield* Effect.gen(function* () {
           const kind = yield* kindOf(state, context, parsed.tool, named);
+          if (kind !== undefined) (yield* ToolCallKindObserved)?.(kind);
           let toolError = false;
           const execute = (context: InvocationContext) =>
             Effect.suspend(() => {
@@ -1557,7 +1500,6 @@ export const makeTools = (
               Effect.result,
             );
           const { result, renewal } = yield* executeRenewing(state, context, read, execute);
-          // The tool is named once the app has answered for it: a name it lacks is the caller's text.
           if (
             Result.isSuccess(result) ||
             (result.failure._tag !== "HostToolNotFound" &&
@@ -1576,10 +1518,7 @@ export const makeTools = (
               ...(toolError ? { toolError: true as const } : {}),
             };
           }
-          // The app reports the decoded input it asks approval for; its prompt is not used.
           if (Schema.is(HostToolApprovalRequired)(result.failure)) {
-            // The request saves the caller's kind, so its pending response and its resumption
-            // treat a call that named none as one that may write.
             return yield* approvals.save(
               yield* invocation(state, parsed.tool, named, result.failure.input),
               args,
@@ -1587,22 +1526,18 @@ export const makeTools = (
             );
           }
           yield* observeFailure(failureSource(result.failure));
-          return yield* Effect.fail(runtimeFailure(identity, state, renewal)(result.failure));
+          return yield* Effect.fail(toolCallFailure(identity, state, renewal)(result.failure));
         }).pipe(
           Effect.catch((failure) =>
-            // Only a confirmed read's renewal fails a call itself (`executeRenewing`), and a
-            // confirmed read keeps its classification. A missing account is the host's finding
-            // while it resolves accounts, before any of the app's code runs for it.
             failure._tag === "OAuthReconnectRequired" ||
             failure._tag === "OAuthRenewalFailed" ||
             failure._tag === "AccountRequired" ||
             !enteredApp
               ? Effect.fail(failure)
-              : Effect.flatMap(read, (read) => Effect.fail(callFailure(read, enteredApp)(failure))),
+              : Effect.flatMap(Effect.all([read, declaredRead]), ([read, declared]) =>
+                  Effect.fail(appCode.callFailure(read || declared, enteredApp)(failure)),
+                ),
           ),
-          // A defect after the hand-off, such as in Executor's own code, does not establish what
-          // the app's code did either. A call that may write reports it as a failure that records
-          // the write, and the defect is still reported as one. Interruption is unchanged.
           Effect.catchCause((cause) =>
             !enteredApp || !Cause.hasDies(cause) || Cause.hasInterrupts(cause)
               ? Effect.failCause(cause)
@@ -1642,7 +1577,6 @@ export const makeTools = (
           Effect.flatMap((input) =>
             approvals.resume(input, options?.issuer, (saved, originalInput) =>
               Effect.gen(function* () {
-                // The saved identities name the accounts; their credentials are resolved again.
                 const checked = yield* snapshot(db, {
                   app: saved.app,
                   version: saved.version,
@@ -1656,7 +1590,6 @@ export const makeTools = (
                   ),
                   Effect.result,
                 );
-                // A failed read shows nothing about the context: only an answer that differs does.
                 if (Result.isFailure(checked) && !isContextChange(checked.failure)) {
                   yield* Effect.annotateCurrentSpan({
                     "executor.outcome": "failed",
@@ -1692,13 +1625,12 @@ export const makeTools = (
                   const context = yield* resolve(state, resolveAccount).pipe(
                     Effect.withSpan("sdk.accounts.resolve"),
                   );
-                  // Set by the host when it hands this call's work to the app's code, as for a call.
                   let enteredApp = false;
-                  // As for a call, the saved (caller's) kind counts as a read only when the app
-                  // confirms it.
+                  const appCode = appEntries(() => {
+                    enteredApp = true;
+                  }, 1);
                   const read = yield* readOf(state, saved.tool, saved.kind);
-                  // As for a call, every failure from here passes through `callFailure` once, so a
-                  // resumed call that may write reports what it failed with as possibly written.
+                  const declaredRead = yield* declaredReadOf(state, saved.tool, saved.kind);
                   return yield* Effect.gen(function* () {
                     const kind = yield* kindOf(state, context, saved.tool, saved.kind);
                     let toolError = false;
@@ -1730,8 +1662,6 @@ export const makeTools = (
                         }),
                         Effect.result,
                       );
-                    // As for a call, the saved (caller's) kind, confirmed by the app, decides whether
-                    // a refused call is repeated; the catalog's only sets the dispatched kind.
                     const { result, renewal } = yield* executeRenewing(
                       state,
                       context,
@@ -1741,7 +1671,7 @@ export const makeTools = (
                     if (Result.isFailure(result)) {
                       yield* observeFailure(failureSource(result.failure));
                       return yield* Effect.fail(
-                        runtimeFailure(
+                        toolCallFailure(
                           { app: saved.app, version: saved.version, tool: saved.tool },
                           state,
                           renewal,
@@ -1766,18 +1696,13 @@ export const makeTools = (
                       failure._tag === "AccountRequired" ||
                       !enteredApp
                         ? Effect.fail(failure)
-                        : Effect.flatMap(read, (read) =>
-                            Effect.fail(callFailure(read, enteredApp)(failure)),
+                        : Effect.flatMap(Effect.all([read, declaredRead]), ([read, declared]) =>
+                            Effect.fail(appCode.callFailure(read || declared, enteredApp)(failure)),
                           ),
                     ),
-                    Effect.provideService(AppCodeEntered, {
-                      entered: () => {
-                        enteredApp = true;
-                      },
-                    }),
+                    Effect.provideService(AppCodeEntered, appCode),
                   );
                 }).pipe(
-                  // The request is consumed, so its caller receives the call's own failure.
                   Effect.catch((error) =>
                     Effect.succeed({
                       status: "failed" as const,

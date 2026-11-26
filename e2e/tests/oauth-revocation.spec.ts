@@ -39,7 +39,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth revocation", (it) => {
           api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
         );
 
-        /** Connect one account through the real start, consent and callback boundaries. */
         const connect = (label: string) =>
           Effect.gen(function* () {
             const connection = yield* body(
@@ -79,7 +78,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth revocation", (it) => {
             return yield* body(Resource, completed);
           });
 
-        /** Revocation runs after the response, so wait for the issuer to observe it. */
         const revocations = (count: number) =>
           issuer.metrics.pipe(
             Effect.map((metrics) => metrics.revocations),
@@ -91,7 +89,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth revocation", (it) => {
             Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 100 }),
           );
 
-        /** Delete through the public API. */
         const remove = (account: string) =>
           Effect.gen(function* () {
             expect(
@@ -100,7 +97,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth revocation", (it) => {
             return yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`);
           });
 
-        /** The delete dialog tells the person what deleting does at the service. */
         const deleteNotice = (label: string, revocation: "automatic" | "manual") =>
           Effect.gen(function* () {
             yield* browser.use(`Open deleting ${label}`, (page) =>
@@ -147,14 +143,11 @@ layer(HostedLive, { excludeTestServices: true })("OAuth revocation", (it) => {
         yield* browser.omitNetworkTrace;
         yield* browser.login(actors.owner);
 
-        // A successful deletion revokes the refresh token with the grant's own client.
         const revoked = yield* connect("Revoked account");
-        // The person is told so before deleting.
         expect(yield* revocationOf(revoked.id)).toEqual({ revocation: "automatic" });
         yield* deleteNotice("Revoked account", "automatic");
         const deleted = yield* remove(revoked.id);
         expect(deleted.status, JSON.stringify(deleted.body)).toBe(200);
-        // Hosted access checks refuse an account that no longer exists.
         expect(
           (yield* api.request(actors.owner, "GET", `${prefix}/accounts/${revoked.id}`)).status,
         ).toBe(403);
@@ -162,7 +155,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth revocation", (it) => {
           { token: "refresh", hint: "refresh_token", clientAuthenticated: true },
         ]);
 
-        // A failing revocation endpoint never blocks or rolls back the deletion.
         yield* issuer.configure({ revocation: "failing" });
         const kept = yield* connect("Revocation fails");
         const removed = yield* remove(kept.id);
@@ -176,8 +168,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth revocation", (it) => {
           clientAuthenticated: true,
         });
 
-        // A service without a revocation endpoint is never asked, and the person is told to
-        // revoke access there themselves.
         yield* issuer.configure({ revocation: "none" });
         const unrevocable = yield* connect("No revocation");
         expect(yield* revocationOf(unrevocable.id)).toEqual({ revocation: "manual" });

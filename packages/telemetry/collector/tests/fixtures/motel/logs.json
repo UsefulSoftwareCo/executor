@@ -1,0 +1,69 @@
+{
+  "query": "/api/logs?lookback=1d&limit=500",
+  "status": 200,
+  "shape": {
+    "types": ["object"],
+    "fields": {
+      "data": {
+        "types": ["array"],
+        "items": {
+          "types": ["object"],
+          "fields": {
+            "id": {
+              "types": ["string"]
+            },
+            "timestamp": {
+              "types": ["string"]
+            },
+            "serviceName": {
+              "types": ["string"]
+            },
+            "severityText": {
+              "types": ["string"]
+            },
+            "body": {
+              "types": ["string"]
+            },
+            "traceId": {
+              "types": ["null", "string"]
+            },
+            "spanId": {
+              "types": ["null", "string"]
+            },
+            "scopeName": {
+              "types": ["string"]
+            },
+            "attributes": {
+              "types": ["object"],
+              "fields": {
+                "*": {
+                  "types": ["string"]
+                }
+              }
+            }
+          }
+        }
+      },
+      "meta": {
+        "types": ["object"],
+        "fields": {
+          "limit": {
+            "types": ["number"]
+          },
+          "lookback": {
+            "types": ["string"]
+          },
+          "returned": {
+            "types": ["number"]
+          },
+          "truncated": {
+            "types": ["boolean"]
+          },
+          "nextCursor": {
+            "types": ["string"]
+          }
+        }
+      }
+    }
+  }
+}

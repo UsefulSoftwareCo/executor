@@ -1,4 +1,3 @@
-/** Navigation spans measure route changes only: not the document's first load, not time spent on a page. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schedule } from "effect";
 import { scenarios } from "../test-plan.ts";
@@ -7,11 +6,8 @@ import { Browser } from "../support/browser.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Evidence, Telemetry } from "../support/evidence.ts";
 
-/** How long the scenario stays on the first page before its first route change. */
 const STAY_MS = 3_000;
-/** The settings route's code, which its first navigation waits for. */
 const SETTINGS_CHUNK = "**/org._organizationSlug.organization-*.js";
-/** The groups route's code, held so its navigation is still pending when the next one starts. */
 const GROUPS_CHUNK = "**/org._organizationSlug.groups.index-*.js";
 
 layer(HostedLive, { excludeTestServices: true })("Browser navigation telemetry", (it) => {
@@ -36,7 +32,6 @@ layer(HostedLive, { excludeTestServices: true })("Browser navigation telemetry",
               document.dispatchEvent(new Event("visibilitychange"));
             }, state),
           );
-        // A held route's code keeps its first navigation pending until released.
         const hold = (name: string, chunk: string) =>
           Effect.gen(function* () {
             let requested = false;
@@ -60,7 +55,6 @@ layer(HostedLive, { excludeTestServices: true })("Browser navigation telemetry",
             );
             return {
               release: () => release(),
-              // The navigation is pending once its code has been requested.
               requested: Effect.suspend(() =>
                 requested
                   ? Effect.void
@@ -76,10 +70,8 @@ layer(HostedLive, { excludeTestServices: true })("Browser navigation telemetry",
         yield* browser.use("Confirm the apps page is rendered", (page) =>
           page.getByRole("link", { name: "Settings", exact: true }).waitFor(),
         );
-        // A span covering the document's first route would last at least this long.
         yield* browser.use("Stay on the first page", (page) => page.waitForTimeout(STAY_MS));
 
-        // 1. A navigation that starts visible and is hidden before its route resolves.
         yield* browser.use("Start navigating to settings", (page) =>
           page.getByRole("link", { name: "Settings", exact: true }).click(),
         );
@@ -91,7 +83,6 @@ layer(HostedLive, { excludeTestServices: true })("Browser navigation telemetry",
         });
         yield* setVisibility("visible");
 
-        // 2. A navigation on a visible page.
         yield* browser.use("Navigate to apps", (page) =>
           Promise.all([
             page.waitForURL(`**${apps}`),
@@ -102,7 +93,6 @@ layer(HostedLive, { excludeTestServices: true })("Browser navigation telemetry",
           page.getByRole("link", { name: "Settings", exact: true }).waitFor(),
         );
 
-        // 3. A navigation that starts while the page is hidden.
         yield* setVisibility("hidden");
         yield* browser.use("Navigate to settings while hidden", (page) =>
           Promise.all([
@@ -115,7 +105,6 @@ layer(HostedLive, { excludeTestServices: true })("Browser navigation telemetry",
         );
         yield* setVisibility("visible");
 
-        // 4. A navigation that is hidden while pending, then superseded by another on a visible page.
         yield* browser.use("Start navigating to groups", (page) =>
           page.getByRole("link", { name: "Groups", exact: true }).first().click(),
         );
@@ -131,11 +120,10 @@ layer(HostedLive, { excludeTestServices: true })("Browser navigation telemetry",
         yield* browser.use("Confirm apps is rendered again", (page) =>
           page.getByRole("link", { name: "Settings", exact: true }).waitFor(),
         );
-        // Report hidden again so the exporter flushes everything ended so far.
         yield* setVisibility("hidden");
 
         const delivered = (path: string, count: number) =>
-          telemetry.search("ui.navigation", { "url.path": path }).pipe(
+          telemetry.search("ui.navigation", { organizationPath: path }).pipe(
             Effect.flatMap((found) =>
               found.data.length >= count
                 ? Effect.succeed(
@@ -152,23 +140,18 @@ layer(HostedLive, { excludeTestServices: true })("Browser navigation telemetry",
         const toGroups = yield* delivered(groups, 1);
         yield* evidence.json("navigation-spans.json", { toSettings, toApps, toGroups });
 
-        // The document load of apps opened no span: the only apps spans are the two route
-        // changes, both completed on a visible page.
         expect(toApps).toHaveLength(2);
         for (const span of toApps) {
-          expect(span.tags["status.interrupted"]).toBeUndefined();
+          expect(span.tags["effect.fiber.interrupted"]).toBeUndefined();
           expect(span.tags["executor.navigation.hidden"]).toBe("false");
         }
-        // Both settings navigations completed and say the page was hidden: the first went
-        // hidden while pending, the second started hidden.
         expect(toSettings).toHaveLength(2);
         for (const span of toSettings) {
-          expect(span.tags["status.interrupted"]).toBeUndefined();
+          expect(span.tags["effect.fiber.interrupted"]).toBeUndefined();
           expect(span.tags["executor.navigation.hidden"]).toBe("true");
         }
-        // The groups navigation never resolved, and still says the page was hidden while it ran.
         expect(toGroups).toHaveLength(1);
-        expect(toGroups[0]!.tags["status.interrupted"]).toBe("true");
+        expect(toGroups[0]!.tags["effect.fiber.interrupted"]).toBe("true");
         expect(toGroups[0]!.tags["executor.navigation.hidden"]).toBe("true");
       }),
     ),

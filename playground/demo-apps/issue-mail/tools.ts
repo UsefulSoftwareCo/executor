@@ -11,7 +11,6 @@ const MessagePage = object({
   ).optional(),
 });
 
-/** Find the first page of message references in the selected Gmail account. */
 export const searchMail = async (
   { user: { accounts }, fetch }: Pick<WebhookCtx, "user" | "fetch">,
   { query }: { readonly query: string },
@@ -25,7 +24,6 @@ export const searchMail = async (
   const page = await decodeJson(response, MessagePage);
   return page.messages ?? [];
 };
-/** Standalone query receives current account bindings when invoked. */
 export const findMail = defineQuery(
   { description: "Find up to 20 messages in the selected Gmail account.", input: FindMailInput },
   (context: QueryCtx, input) => searchMail(context, input),

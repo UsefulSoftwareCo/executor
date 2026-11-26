@@ -1,12 +1,13 @@
+import { randomBytes } from "node:crypto";
 import { connectionsPath, linkedAccountIds } from "../support/app-accounts.ts";
 import { holdOrganizationEntry } from "../support/organization-entry.ts";
 import { scenarios } from "../test-plan.ts";
 import { expect, layer } from "@effect/vitest";
-import { Clock, Effect, Result, Schedule, Schema } from "effect";
+import { Clock, Console, Effect, Result, Schedule, Schema } from "effect";
 import { Api, body } from "../support/api.ts";
 import { Actors, password } from "../support/actors.ts";
 import { Browser } from "../support/browser.ts";
-import { Evidence, Telemetry } from "../support/evidence.ts";
+import { Evidence, Telemetry, type DeliveredSpan } from "../support/evidence.ts";
 import { Target } from "../support/platform.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App, Resource, Inventory } from "../support/contracts.ts";
@@ -25,6 +26,16 @@ export default defineApp({user: { accounts:{service:service.many()} }},async()=>
   },
   appsManifest,
 ];
+const connectStatements = 10;
+const submitStatements = 36;
+const sampledSaves = 8;
+const saveBoundMs = 60_000;
+const statementsOf = (spans: ReadonlyArray<DeliveredSpan>) =>
+  spans
+    .filter((span) => span.operationName === "sql.execute")
+    .toSorted((a, b) => a.startTime.localeCompare(b.startTime))
+    .map((span) => span.tags["db.query.text"] ?? "");
+const traceparent = (traceId: string) => `00-${traceId}-${randomBytes(8).toString("hex")}-01`;
 layer(HostedLive, { excludeTestServices: true })("Self-host", (it) => {
   it.effect(scenarios.password.title, (context) =>
     withHostedCase(
@@ -88,6 +99,7 @@ layer(HostedLive, { excludeTestServices: true })("Self-host", (it) => {
             api = yield* Api,
             browser = yield* Browser,
             evidence = yield* Evidence,
+            telemetry = yield* Telemetry,
             target = yield* Target;
           const count = target.rows,
             prefix = `/api/organizations/${actors.organization.id}`;
@@ -111,57 +123,129 @@ layer(HostedLive, { excludeTestServices: true })("Self-host", (it) => {
           yield* browser.use("Open account inventory", (page) =>
             page.goto(`/org/${actors.organization.slug}/accounts`),
           );
-          const ids = yield* evidence.step(
-            `Save ${count} accounts with four concurrent writers`,
+          const save = (row: number) =>
+            Effect.gen(function* () {
+              const actor = row % 2 === 0 ? actors.owner : actors.admin,
+                connect = randomBytes(16).toString("hex"),
+                submit = randomBytes(16).toString("hex");
+              const connection = yield* api.request(
+                actor,
+                "POST",
+                connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
+                {},
+                { traceparent: traceparent(connect) },
+              );
+              expect(connection.status).toBe(200);
+              const { id } = yield* body(Resource, connection);
+              const saved = yield* api.request(
+                actor,
+                "POST",
+                `${prefix}/connections/${id}/submit`,
+                {
+                  method: "key",
+                  label: `Scale account ${row}`,
+                  fields: { token: `synthetic-${row}` },
+                },
+                { traceparent: traceparent(submit) },
+              );
+              expect(saved.status).toBe(200);
+              return { row, id: (yield* body(Resource, saved)).id, connect, submit };
+            });
+          let saveMs = 0;
+          const saveRows = (rows: ReadonlyArray<number>, concurrency: number) =>
+            Effect.gen(function* () {
+              const started = yield* Clock.currentTimeMillis;
+              const saves = yield* Effect.forEach(rows, save, { concurrency });
+              saveMs += (yield* Clock.currentTimeMillis) - started;
+              return saves;
+            });
+          const statements = (traceId: string) =>
+            telemetry
+              .settled(traceId, (spans) =>
+                spans.some((span) => span.operationName.startsWith("http.server")),
+              )
+              .pipe(Effect.map(statementsOf));
+          const workOf = (saves: ReadonlyArray<Effect.Success<ReturnType<typeof save>>>) =>
             Effect.forEach(
-              Array.from({ length: count }, (_, row) => row),
-              (row) =>
-                Effect.gen(function* () {
-                  const actor = row % 2 === 0 ? actors.owner : actors.admin;
-                  const connection = yield* api.request(
-                    actor,
-                    "POST",
-                    connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
-                    { destination: { kind: "shared", audience: { kind: "everyone" } } },
-                  );
-                  expect(connection.status).toBe(200);
-                  const { id } = yield* body(Resource, connection);
-                  const saved = yield* api.request(
-                    actor,
-                    "POST",
-                    `${prefix}/connections/${id}/submit`,
-                    {
-                      method: "key",
-                      label: `Scale account ${row}`,
-                      fields: { token: `synthetic-${row}` },
-                    },
-                  );
-                  expect(saved.status).toBe(200);
-                  return (yield* body(Resource, saved)).id;
+              saves,
+              ({ row, connect, submit }) =>
+                Effect.all({
+                  row: Effect.succeed(row),
+                  connect: statements(connect),
+                  submit: statements(submit),
                 }),
               { concurrency: 4 },
-            ),
+            );
+          const rows = (from: number, to: number) =>
+            Array.from({ length: to - from }, (_, index) => from + index);
+          const sampled = Math.min(sampledSaves, count);
+          const { ids, first } = yield* evidence.step(
+            `Save ${count} accounts with four concurrent writers`,
+            Effect.gen(function* () {
+              const early = yield* saveRows(rows(0, sampled), 1);
+              const first = yield* workOf(early);
+              const rest = yield* saveRows(rows(sampled, count), 4);
+              return { ids: [...early, ...rest].map((saved) => saved.id), first };
+            }),
+          );
+          yield* evidence.step(
+            "A save's work does not depend on how many accounts the app has",
+            Effect.gen(function* () {
+              yield* evidence.json("inventory-scale.json", {
+                count,
+                saveMs,
+                first: first.map(({ row, connect, submit }) => ({
+                  row,
+                  connect: connect.length,
+                  submit: submit.length,
+                })),
+              });
+              yield* Console.log(JSON.stringify({ count, saveMs }));
+              for (const save of first) {
+                expect(save.connect.length, `row ${save.row} connect`).toBeLessThanOrEqual(
+                  connectStatements,
+                );
+                expect(save.submit.length, `row ${save.row} submit`).toBeLessThanOrEqual(
+                  submitStatements,
+                );
+              }
+              for (const save of first.slice(1))
+                expect(
+                  { connect: save.connect, submit: save.submit },
+                  `row ${save.row} runs the statements row ${first[0]!.row} ran`,
+                ).toEqual({ connect: first[0]!.connect, submit: first[0]!.submit });
+              expect(saveMs, "save time backstop").toBeLessThan(saveBoundMs);
+            }),
           );
           yield* evidence.step(
             "Every record and selection survives an independent read",
             Effect.gen(function* () {
               expect(new Set(ids).size).toBe(count);
-              const start = yield* Clock.currentTimeMillis;
-              const response = yield* api.request(actors.member, "GET", `${prefix}/inventory`);
-              expect(response.status).toBe(200);
-              const inventory = yield* body(Inventory, response),
-                saved = inventory.accounts.filter((account) =>
-                  account.label.startsWith("Scale account "),
-                );
-              expect(saved.map((account) => account.id).sort()).toEqual([...ids].sort());
-              expect(saved.map((account) => account.label).sort()).toEqual(
-                Array.from({ length: count }, (_, row) => `Scale account ${row}`).sort(),
-              );
-              expect(
-                (yield* Clock.currentTimeMillis) - start,
-                "inventory read budget",
-              ).toBeLessThan(5000);
-              // Connecting from the app links each account to the app for the writer only.
+              const inventoryOf = (actor: typeof actors.owner, writer: number) =>
+                Effect.gen(function* () {
+                  const start = yield* Clock.currentTimeMillis;
+                  const response = yield* api.request(actor, "GET", `${prefix}/inventory`);
+                  expect(response.status).toBe(200);
+                  const inventory = yield* body(Inventory, response),
+                    saved = inventory.accounts.filter((account) =>
+                      account.label.startsWith("Scale account "),
+                    );
+                  expect(
+                    (yield* Clock.currentTimeMillis) - start,
+                    "inventory read budget",
+                  ).toBeLessThan(5000);
+                  const rows = Array.from({ length: count }, (_, row) => row).filter(
+                    (row) => row % 2 === writer,
+                  );
+                  expect(saved.map((account) => account.id).sort()).toEqual(
+                    ids.filter((_, row) => row % 2 === writer).sort(),
+                  );
+                  expect(saved.map((account) => account.label).sort()).toEqual(
+                    rows.map((row) => `Scale account ${row}`).sort(),
+                  );
+                });
+              yield* inventoryOf(actors.owner, 0);
+              yield* inventoryOf(actors.admin, 1);
               const [owner, admin] = yield* Effect.all(
                 [actors.owner, actors.admin].map((actor) =>
                   linkedAccountIds(actor, `${prefix}/apps/${app.id}`),
@@ -176,16 +260,13 @@ layer(HostedLive, { excludeTestServices: true })("Self-host", (it) => {
               );
             }),
           );
-          yield* browser.use("Reload the large inventory", (page) => page.reload());
+          yield* browser.use("Reload the inventory", (page) => page.reload());
           yield* browser.use("The saved accounts are visible", (page) =>
             page.getByText("Scale account 0", { exact: true }).waitFor({ state: "visible" }),
           );
-          yield* browser.checkpoint("Large account inventory ready for manual use");
+          yield* browser.checkpoint("Account inventory ready for manual use");
         }),
       ),
-    // The test body's 4,000 writes through single-threaded PGlite take 40-48s on 16-vCPU CI
-    // x64 runners and passed 60s on 4 vCPUs. The
-    // inventory read keeps its own 5-second budget above.
     120_000,
   );
   it.effect(scenarios.telemetry.title, (context) =>
@@ -204,22 +285,23 @@ layer(HostedLive, { excludeTestServices: true })("Self-host", (it) => {
         expect(response.status).toBe(200);
         const request = (yield* evidence.requests).at(-1);
         if (!request) return yield* Effect.die(new Error("Request evidence missing"));
-        const delivered = telemetry.query(request.traceId).pipe(
-          Effect.flatMap((value) =>
-            value.data.some(
-              (entry) =>
-                entry.traceId === request.traceId &&
-                entry.span.serviceName === "executor-selfhost" &&
-                // The path records the route's template; the organization is recorded by ID.
-                entry.span.tags["url.path"] === "/api/organizations/:organization/inventory" &&
-                entry.span.tags["executor.organization.id"] === actors.organization.id &&
-                entry.span.tags["http.request.method"] === "GET" &&
-                entry.span.tags["http.response.status_code"] === "200",
-            )
-              ? Effect.succeed(value)
-              : Effect.fail(new Error("The actual HTTP server span must reach Motel")),
-          ),
-        );
+        const delivered = telemetry
+          .query(request.traceId)
+          .pipe(
+            Effect.flatMap((value) =>
+              value.data.some(
+                (entry) =>
+                  entry.traceId === request.traceId &&
+                  entry.span.serviceName === "executor-selfhost" &&
+                  entry.span.tags["url.path"] === "/api/organizations/:organization/inventory" &&
+                  entry.span.tags["executor.organization.id"] === actors.organization.id &&
+                  entry.span.tags["http.request.method"] === "GET" &&
+                  entry.span.tags["http.response.status_code"] === "200",
+              )
+                ? Effect.succeed(value)
+                : Effect.fail(new Error("The actual HTTP server span must reach the collector")),
+            ),
+          );
         const result = yield* delivered.pipe(
           Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 40 }),
           Effect.timeout("20 seconds"),
@@ -227,7 +309,7 @@ layer(HostedLive, { excludeTestServices: true })("Self-host", (it) => {
         );
         expect(
           Result.isSuccess(result),
-          "The actual HTTP server span must reach Motel within 20 seconds",
+          "The actual HTTP server span must reach the collector within 20 seconds",
         ).toBe(true);
         if (Result.isFailure(result)) return yield* Effect.fail(result.failure);
         const queries = result.success.data.filter(

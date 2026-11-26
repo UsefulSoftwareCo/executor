@@ -1,8 +1,3 @@
-/**
- * Compile host-owned browser scripts to string constants. Hosts inline or serve these strings, so
- * they must not come from Function.prototype.toString: a host bundle (minify, keepNames) rewrites
- * function bodies with helpers that do not exist in the page. Pass --check to fail when stale.
- */
 import { build } from "esbuild";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -29,7 +24,6 @@ const compile = async (entry) => {
   });
   const [file] = result.outputFiles;
   if (file === undefined) throw new Error(`No output for ${entry}`);
-  // Hosts inline these in <script> elements.
   if (/<\/script/i.test(file.text)) throw new Error(`${entry} must not contain </script`);
   return file.text.trim();
 };

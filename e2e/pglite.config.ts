@@ -1,6 +1,10 @@
 import { defineConfig } from "vitest/config";
+import { snapshotUpdate } from "./snapshot-updates.ts";
 
-/** In-process checks of the PGlite build the self-host product bundles. */
 export default defineConfig({
-  test: { include: ["e2e/tests/pglite-results.spec.ts"], testTimeout: 60_000 },
+  test: {
+    update: snapshotUpdate(),
+    include: ["e2e/tests/pglite-results.spec.ts", "e2e/tests/local-database-first-start.spec.ts"],
+    testTimeout: 60_000,
+  },
 });

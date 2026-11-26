@@ -1,4 +1,3 @@
-/** Billing reads the billing provider; it polls quickly only while a returned checkout settles. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -13,13 +12,10 @@ import { Evidence } from "../support/evidence.ts";
 import { batchedReads, batchPath } from "../support/read-batches.ts";
 import { scenarios } from "../test-plan.ts";
 
-/** Simulated time, advanced with the browser's clock in small steps. */
 const idleMinutes = 3;
 const step = 5_000;
-/** Visible pages reconcile, but no more than one read per 20 seconds idle. */
 const idleReadLimit = (idleMinutes * 60) / 20;
 const overview = /^\/api\/organizations\/[^/]+\/billing$/;
-/** A returned checkout is watched closely for two minutes. */
 const settlementWindow = 120_000;
 const BillingOverview = Schema.Struct({
   plans: Schema.Array(Schema.Struct({ id: Schema.String, name: Schema.String })),
@@ -59,7 +55,6 @@ layer(HostedLive, { excludeTestServices: true })("Billing polling", (it) => {
           };
           page.on("requestfinished", settle);
           page.on("requestfailed", settle);
-          // A navigation abandons the previous document's reads without always reporting them.
           page.on("framenavigated", (frame) => {
             if (frame !== page.mainFrame()) return;
             tracked.clear();
@@ -69,7 +64,6 @@ layer(HostedLive, { excludeTestServices: true })("Billing polling", (it) => {
         const settled = Effect.suspend(() =>
           inFlight === 0 ? Effect.void : Effect.fail("pending" as const),
         ).pipe(Effect.retry({ schedule: Schedule.spaced("50 millis"), times: 400 }), Effect.orDie);
-        // Reads count when they start; billing provider answers need not keep pace with the clock.
         const advance = (label: string, milliseconds: number) =>
           Effect.forEach(
             Array.from({ length: milliseconds / step }),
@@ -110,7 +104,6 @@ layer(HostedLive, { excludeTestServices: true })("Billing polling", (it) => {
           page.getByRole("heading", { name: "Billing", exact: true }).waitFor(),
         );
         yield* settled;
-        // Billing is in the navigation, and each plan states its catalog allowances and trial.
         expect(
           yield* browser.use("Billing is the current navigation entry", (page) =>
             page
@@ -145,10 +138,6 @@ layer(HostedLive, { excludeTestServices: true })("Billing polling", (it) => {
         expect(visible, "billing reconciles while visible").toBeGreaterThan(0);
         expect(visible, "billing reads while visible").toBeLessThanOrEqual(idleReadLimit);
 
-        // A poll due at the end of a clock step reads while visible, but the read waits out the
-        // page's batch window, a timer on this clock, and so starts on the next step. Hiding then
-        // would count it as a hidden read. Hide right after a visible poll's read instead: the next
-        // poll is due 30 simulated seconds after that one, several steps into the hidden window.
         const beforePoll = reads;
         yield* Effect.gen(function* () {
           for (let elapsed = 0; reads === beforePoll; elapsed += step) {
@@ -164,7 +153,6 @@ layer(HostedLive, { excludeTestServices: true })("Billing polling", (it) => {
         yield* setHidden(false);
         yield* settled;
 
-        // Checkout returns use their own organization, so seeding its plan changes no other case.
         const suffix = randomUUID().slice(0, 8);
         const team = yield* body(
           Organization,
@@ -195,7 +183,6 @@ layer(HostedLive, { excludeTestServices: true })("Billing polling", (it) => {
             return search.has("plan") || search.has("organization");
           });
 
-        // A checkout that returned for a plan not yet in effect is watched closely.
         yield* browser.use("Return from a checkout that never settles", (page) =>
           page.goto(returnFromCheckout),
         );
@@ -206,7 +193,6 @@ layer(HostedLive, { excludeTestServices: true })("Billing polling", (it) => {
         expect(settling, "billing reads while a checkout settles").toBeGreaterThanOrEqual(4);
         yield* browser.checkpoint("Billing waiting for a returned checkout");
 
-        // An abandoned checkout stops being watched closely and says so.
         const abandoned = yield* measure(
           "checkout-abandoned",
           advance("Checkout never settles", settlementWindow - 30_000 + step),
@@ -239,7 +225,6 @@ layer(HostedLive, { excludeTestServices: true })("Billing polling", (it) => {
         );
         yield* settled;
 
-        // A checkout that settles ends the close watch as soon as its plan is in effect.
         yield* browser.use("Return from a checkout that settles", (page) =>
           page.goto(returnFromCheckout),
         );

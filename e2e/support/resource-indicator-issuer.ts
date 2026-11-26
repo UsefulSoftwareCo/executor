@@ -28,10 +28,8 @@ const Registration = Schema.Struct({
   token_endpoint_auth_method: Schema.String,
 });
 
-/** The description such a server gives with `invalid_target`. */
 export const unknownResourceDescription = "resource indicator is missing, or unknown";
 
-/** How the token endpoint answers a resource it does not know: a 400 unless changed. */
 export interface ResourceRefusal {
   readonly status: number;
   readonly retryAfter?: string;
@@ -49,7 +47,6 @@ export const resourceIndicatorIssuer = (
       string,
       { clientId: string; redirect: string; challenge: string; resource: string | null }
     >();
-    /** Tokens issued, by the resource each is for. */
     const audiences = new Map<string, string | null>();
     const refreshGrants = new Map<string, { clientId: string; resource: string | null }>();
     const authorizations: Array<{ readonly resource: string | null }> = [];
@@ -59,7 +56,6 @@ export const resourceIndicatorIssuer = (
       readonly issued: boolean;
     }> = [];
     const apiRequests: Array<{ readonly audience: string | null; readonly accepted: boolean }> = [];
-    /** The API's own resource identifier, which its metadata does not name. */
     const apiResource = Effect.map(Deferred.await(address), (origin) => `${origin}/api`);
     const known = (resource: string | null) => Effect.map(apiResource, (api) => resource === api);
     /** The authorization server's issuer path, which RFC 8414 inserts after the well-known name. */
@@ -80,7 +76,6 @@ export const resourceIndicatorIssuer = (
     };
 
     const routes = Layer.mergeAll(
-      // Requests without credentials are answered: a client finds the resource's metadata itself.
       HttpRouter.add("GET", "/", Effect.succeed(HttpServerResponse.empty({ status: 200 }))),
       HttpRouter.add(
         "GET",
@@ -204,7 +199,6 @@ export const resourceIndicatorIssuer = (
             });
           if (clientId === undefined || clients.get(clientId) !== secret)
             return yield* refuse("invalid_client");
-          // An unknown resource is refused before the grant is looked at, on every grant type.
           if (service === "refuses-unknown" && !(yield* known(resource)))
             return yield* refuse("invalid_target", unknownResourceDescription, refusal);
           if (grant === "refresh_token") {
@@ -266,7 +260,6 @@ export const resourceIndicatorIssuer = (
     yield* Deferred.succeed(address, origin);
     return {
       origin,
-      /** The resource the API accepts tokens for; its metadata names `origin` instead. */
       apiResource: `${origin}/api`,
       refuseWith: (answer: ResourceRefusal) =>
         Effect.sync(() => {

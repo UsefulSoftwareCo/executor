@@ -6,7 +6,6 @@ import { AppCreateForm } from "./app-create.tsx";
 import { Button } from "../components/button.tsx";
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from "../components/dialog.tsx";
 
-/** Both owned and public apps copy through the same operation and naming form. */
 export function CopyApp<E>({
   app,
   atoms,

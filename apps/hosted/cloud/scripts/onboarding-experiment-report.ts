@@ -1,7 +1,3 @@
-/**
- * Read an onboarding experiment's native PostHog results: `--experiment order` (the default) or
- * `skip`. Alchemy alone owns provisioning.
- */
 import { isDeepStrictEqual, parseArgs } from "node:util";
 import { Config, Console, Context, Effect, Layer } from "effect";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";

@@ -1,14 +1,3 @@
-/**
- * FumaDB's own foreign key engine (`relationMode: "fumadb"`).
- *
- * Wraps an {@link OrmAdapter} and enforces every `ForeignKey` of the schema in
- * FumaDB instead of in the database. This is the default on MSSQL, where the
- * database refuses the cascade graphs FumaDB schemas commonly describe.
- *
- * Violations fail with Effect SQL's `SqlError` carrying a `ConstraintError`
- * reason, so a caller sees the same error type whether the constraint lives in
- * the database or in FumaDB.
- */
 import { DateTime, Effect, Equal, Option } from "effect";
 import { ConstraintError, SqlError } from "effect/sql/SqlError";
 import type { AnyColumn } from "../../contracts/schema/column.ts";
@@ -24,10 +13,8 @@ import type {
   Row,
 } from "../../contracts/query-adapter.ts";
 
-/** A `[referencing column, referenced column]` pair of a foreign key. */
 type ColumnPair = readonly [AnyColumn, AnyColumn];
 
-/** Zip the two parallel column lists of a foreign key. */
 const pairsOf = (key: ForeignKey): ReadonlyArray<ColumnPair> => {
   const out: Array<ColumnPair> = [];
   for (let i = 0; i < key.columns.length; i++) {
@@ -39,12 +26,9 @@ const pairsOf = (key: ForeignKey): ReadonlyArray<ColumnPair> => {
   return out;
 };
 
-/** `NULL` foreign key values are never checked, exactly like a SQL foreign key. */
-/** `NULL`, absent, or `Option.none()`: a join value that can never reference a row. */
 const isAbsent = (value: unknown): boolean =>
   value === null || value === undefined || (Option.isOption(value) && Option.isNone(value));
 
-/** Select every column of the rows matching `where`. */
 const findAll = (where: Condition | undefined): CompiledFindOptions => ({
   select: true,
   computed: [],
@@ -55,7 +39,6 @@ const findAll = (where: Condition | undefined): CompiledFindOptions => ({
   offset: undefined,
 });
 
-/** The failure raised for a violated foreign key. `operation` names the write that violated it. */
 const violation = (key: ForeignKey, operation: string): SqlError => {
   const message = `foreign constraint failed ${key.name}`;
   return new SqlError({
@@ -63,12 +46,6 @@ const violation = (key: ForeignKey, operation: string): SqlError => {
   });
 };
 
-/**
- * Rows of `key.table` that reference any of `targets`.
- *
- * `undefined` when no target can be referenced, because every candidate had a
- * `NULL` in a referenced column.
- */
 const referencingCondition = (
   pairs: ReadonlyArray<ColumnPair>,
   targets: ReadonlyArray<Row>,
@@ -90,14 +67,6 @@ const referencingCondition = (
   return items.length === 0 ? undefined : Condition.Or({ items });
 };
 
-/**
- * Whether the insert at `index` needs no check of its own.
- *
- * Two cases, both from upstream fumadb:
- * 1. An earlier insert in the same batch carries the same foreign key values.
- * 2. On a self-referencing key, an earlier insert in the same batch *is* the
- *    row being referenced, so it will exist once the batch is written.
- */
 const shouldSkipChecking = (
   key: ForeignKey,
   pairs: ReadonlyArray<ColumnPair>,
@@ -124,7 +93,6 @@ const shouldSkipChecking = (
   return false;
 };
 
-/** Identity of a row inside one cascade run. */
 const visitKey = (table: AnyTable, id: unknown): string =>
   JSON.stringify([
     table.ormName,
@@ -135,36 +103,18 @@ const visitKey = (table: AnyTable, id: unknown): string =>
         : String(id),
   ]);
 
-/**
- * The bookkeeping of one top-level `updateMany` or `deleteMany` call.
- *
- * A cascade re-enters this engine instead of the raw adapter, so that a
- * grandchild is reached too. That needs two guards:
- *
- * - `deleted` / `deletedIds`: rows the run already removes. They are skipped
- *   when the cascade reaches them again, and excluded from every `RESTRICT`
- *   check, because a row that the same operation deletes cannot hold back the
- *   operation that deletes it. This is SQL's statement level `NO ACTION` rule
- *   and it keeps upstream's behaviour for a cascade that removes both sides of
- *   a self-referencing key.
- * - `updating`: the rows on the current update path. A foreign key cycle with
- *   `onUpdate: "CASCADE"` would otherwise cascade between the two tables for
- *   ever. The outer call still writes the row, so no update is lost.
- */
 interface CascadeState {
   readonly deleted: Set<string>;
   readonly deletedIds: Map<string, Array<unknown>>;
   readonly updating: Set<string>;
 }
 
-/** Fresh bookkeeping for one top-level write. */
 const makeCascadeState = (): CascadeState => ({
   deleted: new Set<string>(),
   deletedIds: new Map<string, Array<unknown>>(),
   updating: new Set<string>(),
 });
 
-/** Record that this run deletes `id` of `table`. Returns `false` when it was already recorded. */
 const scheduleDelete = (state: CascadeState, table: AnyTable, id: unknown): boolean => {
   const key = visitKey(table, id);
   if (state.deleted.has(key)) return false;
@@ -176,7 +126,6 @@ const scheduleDelete = (state: CascadeState, table: AnyTable, id: unknown): bool
   return true;
 };
 
-/** `where`, narrowed to the rows of `table` that this run does not delete. */
 const withoutDeleted = (state: CascadeState, table: AnyTable, where: Condition): Condition => {
   const ids = state.deletedIds.get(table.ormName);
   if (ids === undefined || ids.length === 0) return where;
@@ -188,31 +137,10 @@ const withoutDeleted = (state: CascadeState, table: AnyTable, where: Condition):
   });
 };
 
-/**
- * Enforce the foreign keys of `schema` on top of `adapter`.
- *
- * Only tables that own a foreign key, or that a foreign key references, get
- * the extra work; every other table passes straight through to `adapter`.
- *
- * - `create` / `createMany` generate the column defaults up front, so the
- *   foreign key values are known, then check every key of the table.
- * - `updateMany` first checks every key of the table the `set` re-points, so
- *   an update cannot leave a dangling reference behind.
- * - `updateMany` and `deleteMany` run their checks and writes inside
- *   `adapter.transaction`, so a `RESTRICT` failure rolls back the cascades
- *   that already ran. A cascade re-enters this engine, so it reaches a
- *   grandchild as well; see {@link CascadeState} for the guards that keeps a
- *   foreign key cycle finite.
- * - `upsert` is reimplemented on `findFirst` plus `create` / `updateMany`, so
- *   the row it writes goes through the same checks and cascades.
- *
- * `count`, `findFirst`, `findMany`, and `transaction` are passed through.
- */
 export const createSoftForeignKey = <R>(
   schema: AnySchema,
   adapter: OrmAdapter<R>,
 ): OrmAdapter<R> => {
-  // referenced table ORM name -> the foreign keys pointing at it
   const childForeignKeys = new Map<string, Array<ForeignKey>>();
   for (const table of Object.values(schema.tables)) {
     for (const key of table.foreignKeys) {
@@ -223,7 +151,6 @@ export const createSoftForeignKey = <R>(
     }
   }
 
-  /** Whether any row of `table` matches `where`, ignoring the rows this run deletes. */
   const exists = Effect.fnUntraced(function* (
     table: AnyTable,
     where: Condition,
@@ -236,7 +163,6 @@ export const createSoftForeignKey = <R>(
     return row !== null;
   });
 
-  /** Fill in every column default the caller omitted, so the check sees the final row. */
   const generateDefaults = Effect.fnUntraced(function* (table: AnyTable, values: Row) {
     const out: Row = {};
     for (const [name, value] of Object.entries(values)) {
@@ -250,7 +176,6 @@ export const createSoftForeignKey = <R>(
     return out;
   });
 
-  /** Every referenced row of `key` must already exist, or be created by the same batch. */
   const checkForeignKeyOnInsert = Effect.fnUntraced(function* (
     key: ForeignKey,
     inserts: ReadonlyArray<Row>,
@@ -282,16 +207,6 @@ export const createSoftForeignKey = <R>(
     if (count < entries.length) return yield* Effect.fail(violation(key, "insert"));
   });
 
-  /**
-   * The foreign keys of `table` that the `set` re-points, split by how much
-   * the `set` decides.
-   *
-   * A `set` value is a constant in this ORM; there is no per row expression.
-   * So a key whose every column the `set` writes ends up with the same value
-   * in every updated row, and one lookup answers for all of them. A key the
-   * `set` writes only in part keeps one column of each row, so the rows
-   * themselves have to be read.
-   */
   const touchedForeignKeys = (
     table: AnyTable,
     set: Row,
@@ -309,11 +224,6 @@ export const createSoftForeignKey = <R>(
     return { constant, perRow };
   };
 
-  /**
-   * One check for a key the `set` writes in full: every updated row takes the
-   * same value, so the referenced row is looked up once, whatever the number
-   * of rows the update matches.
-   */
   const checkConstantForeignKeyOnUpdate = Effect.fnUntraced(function* (
     key: ForeignKey,
     set: Row,
@@ -322,7 +232,6 @@ export const createSoftForeignKey = <R>(
     const items: Array<Condition> = [];
     for (const [column, referenced] of pairsOf(key)) {
       const value = set[column.ormName];
-      // a `NULL` in the key references nothing, exactly like a SQL foreign key
       if (isAbsent(value)) return;
       items.push(Condition.Compare({ column: referenced, operator: "=", value }));
     }
@@ -330,18 +239,6 @@ export const createSoftForeignKey = <R>(
       return yield* Effect.fail(violation(key, "update"));
   });
 
-  /**
-   * Every foreign key the updated rows own must still point at an existing row.
-   *
-   * This is the referencing side of an update, the mirror of
-   * {@link checkForeignKeyOnInsert}. It runs only for a write the caller asked
-   * for, and only after that write's cascades: a `CASCADE` cycle writes the
-   * referenced row in the same run, so the row exists by then.
-   *
-   * `affected` holds the rows before the update, so a key the `set` touches
-   * only in part is still checked against the value each row ends up with.
-   * Only such a key reaches here; see {@link touchedForeignKeys}.
-   */
   const checkPartialForeignKeysOnUpdate = Effect.fnUntraced(function* (
     keys: ReadonlyArray<ForeignKey>,
     set: Row,
@@ -368,7 +265,6 @@ export const createSoftForeignKey = <R>(
           items.push(Condition.Compare({ column: referenced, operator: "=", value }));
         }
         if (containsAbsent) continue;
-        // One column holds one type, so the joined text identifies the tuple.
         const marker = values.map(String).join("\u0000");
         if (seen.has(marker)) continue;
         seen.add(marker);
@@ -378,10 +274,6 @@ export const createSoftForeignKey = <R>(
     }
   });
 
-  /**
-   * Check the table's own foreign keys for an update whose rows are already
-   * loaded, so nothing more has to be read.
-   */
   const checkOwnKeysOnRows = Effect.fnUntraced(function* (
     table: AnyTable,
     set: Row,
@@ -394,15 +286,6 @@ export const createSoftForeignKey = <R>(
     yield* checkPartialForeignKeysOnUpdate(perRow, set, affected, state);
   });
 
-  /**
-   * Check the table's own foreign keys for an update whose rows are not
-   * needed otherwise.
-   *
-   * The rows are read only for a key the `set` writes in part. For the normal
-   * case, a key the `set` writes in full, one bounded read says whether the
-   * update matches anything at all - an update that changes no row violates
-   * nothing - and one lookup then checks the single referenced value.
-   */
   const checkOwnKeysBeforeUpdate = Effect.fnUntraced(function* (
     table: AnyTable,
     set: Row,
@@ -427,9 +310,6 @@ export const createSoftForeignKey = <R>(
     for (const key of constant) yield* checkConstantForeignKeyOnUpdate(key, set, state);
   });
 
-  // `foreignKeyOnUpdate` and `updateManyImpl` call each other, so both carry an
-  // explicit type: a CASCADE on update may have to cascade again one level down.
-  /** Apply `key.onUpdate` to the rows referencing `targets`, before `targets` change. */
   const foreignKeyOnUpdate: (
     key: ForeignKey,
     set: Row,
@@ -442,7 +322,6 @@ export const createSoftForeignKey = <R>(
     state: CascadeState,
   ) {
     const pairs = pairsOf(key);
-    // nothing to do unless the update touches a referenced column
     if (!pairs.some(([, referenced]) => set[referenced.ormName] !== undefined)) return;
 
     const affected = referencingCondition(pairs, targets);
@@ -460,7 +339,6 @@ export const createSoftForeignKey = <R>(
         mapped[column.ormName] = null;
         continue;
       }
-      // CASCADE: only the referenced columns the update actually changes
       const value = set[referenced.ormName];
       if (value !== undefined) mapped[column.ormName] = value;
     }
@@ -468,17 +346,6 @@ export const createSoftForeignKey = <R>(
     yield* updateManyImpl(key.table, mapped, affected, state);
   });
 
-  /**
-   * Update the rows matching `where`, applying `onUpdate` of every foreign key
-   * that references `table` first.
-   *
-   * Rows already on the update path of `state` are left out: the call that put
-   * them there writes them, so the cascade of a foreign key cycle ends.
-   *
-   * `checkOwn` asks for the referencing side of this table's own foreign keys
-   * to be verified as well. Only the write the caller asked for sets it; a
-   * cascade writes a value its own parent is still about to take.
-   */
   const updateManyImpl: (
     table: AnyTable,
     set: Row,
@@ -499,7 +366,6 @@ export const createSoftForeignKey = <R>(
     }
 
     const idColumn = table.getIdColumn();
-    // resolve the affected rows first: the cascades below change what `where` matches
     const found = yield* adapter.findMany(table, findAll(where));
     const targets: Array<Row> = [];
     const path: Array<string> = [];
@@ -513,7 +379,6 @@ export const createSoftForeignKey = <R>(
 
     for (const marker of path) state.updating.add(marker);
     for (const key of foreignKeys) yield* foreignKeyOnUpdate(key, set, targets, state);
-    // after the cascades: a CASCADE cycle writes the referenced row in this run
     if (checkOwn) yield* checkOwnKeysOnRows(table, set, targets, state);
 
     yield* adapter.updateMany(table, {
@@ -524,18 +389,9 @@ export const createSoftForeignKey = <R>(
         value: targets.map((target) => target[idColumn.ormName]),
       }),
     });
-    // the whole run is abandoned on failure, so the path only has to be
-    // unwound when the update actually completed
     for (const marker of path) state.updating.delete(marker);
   });
 
-  /**
-   * Delete the rows matching `where`, applying `onDelete` of every foreign key
-   * that references `table` first.
-   *
-   * A `CASCADE` and a `SET NULL` both re-enter the engine, so the rule of the
-   * next level down applies as well.
-   */
   const deleteManyImpl: (
     table: AnyTable,
     where: Condition | undefined,
@@ -567,7 +423,6 @@ export const createSoftForeignKey = <R>(
       if (key.onDelete === "SET NULL") {
         const set: Row = {};
         for (const column of key.columns) set[column.ormName] = null;
-        // through the engine, so `onUpdate` of the next level down applies
         yield* updateManyImpl(key.table, set, affected, state);
         continue;
       }
@@ -613,8 +468,6 @@ export const createSoftForeignKey = <R>(
       table: AnyTable,
       options: { readonly where: Condition | undefined; readonly set: Row },
     ) {
-      // A table nothing references still owns foreign keys of its own, and the
-      // `set` may point one of them at a row that does not exist.
       const touchesOwnKey = table.foreignKeys.some((key) =>
         key.columns.some((column) => options.set[column.ormName] !== undefined),
       );
@@ -656,7 +509,6 @@ export const createSoftForeignKey = <R>(
       });
       yield* wrapped.updateMany(table, { where, set: options.update });
       if (!options.returning) return undefined;
-      // the database may encode or transform what was written, so read it back
       const row = yield* adapter.findFirst(table, findAll(where));
       return row ?? undefined;
     }),

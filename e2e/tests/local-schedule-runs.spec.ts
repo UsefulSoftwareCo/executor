@@ -1,4 +1,3 @@
-/** Real timers, mutations and cookie-authenticated approval delivery through the complete local product. */
 import { expect, layer } from "@effect/vitest";
 import { Clock, Duration, Effect, Redacted, Ref, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -77,7 +76,6 @@ layer(TestLive, { excludeTestServices: true })("Scheduled runs", (it) => {
         yield* Effect.addFinalizer(() =>
           session.send("DELETE", `/v1/apps/${app.id}`, undefined, headers).pipe(Effect.orDie),
         );
-        /** Each schedule's one copy, from configuring it. */
         const copies = new Map<string, string>();
         const configure = (
           name: string,
@@ -126,7 +124,6 @@ layer(TestLive, { excludeTestServices: true })("Scheduled runs", (it) => {
               );
             }),
           );
-        // Intervals are floored at one minute, so each check asks for its run now.
         const runNow = (name: string) =>
           session.send(
             "POST",
@@ -152,7 +149,6 @@ layer(TestLive, { excludeTestServices: true })("Scheduled runs", (it) => {
         yield* configure("input", false);
         yield* configure("slow", true);
         yield* dispatch("slow");
-        // Only one run is active per schedule; a second request is refused while the first runs.
         yield* waitFor("slow", "running");
         expect((yield* runNow("slow")).status).toBe(409);
         yield* waitFor("slow", "succeeded");
@@ -218,7 +214,6 @@ layer(TestLive, { excludeTestServices: true })("Scheduled runs", (it) => {
         expect(events.filter((event) => event.message === "review")).toHaveLength(1);
         expect(events.some((event) => event.message === "automatic")).toBe(true);
 
-        // App source defines schedules: an activation deletes settings it no longer declares.
         yield* configure("automatic", true);
         yield* configure("review", true, "browser");
         yield* dispatch("review");
@@ -264,7 +259,6 @@ layer(TestLive, { excludeTestServices: true })("Scheduled runs", (it) => {
           updated,
         );
         expect(yield* saved).toEqual(["blocked", "input"]);
-        // Run history and the waiting approval go with the removed settings.
         expect(
           (yield* runs).filter((run) => run.name === "automatic" || run.name === "review"),
         ).toEqual([]);
@@ -278,7 +272,6 @@ layer(TestLive, { excludeTestServices: true })("Scheduled runs", (it) => {
           })).body,
         ).toEqual({ status: "unavailable" });
 
-        // A removal that lands during a run lets the mutation finish, then drops its record.
         yield* activate(app.activeVersion, current.app.activeVersion);
         expect(yield* saved).toEqual(["blocked", "input"]);
         yield* configure("slow", true);

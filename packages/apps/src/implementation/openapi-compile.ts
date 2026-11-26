@@ -7,7 +7,7 @@ import {
   OpenapiOperation,
   openapiMediaKind,
   isOpenapiFileSchema,
-  isOpenapiJsonSequence,
+  isOpenapiJsonMedia,
   isOpenapiTextMedia,
   openapiBinaryResultSchema,
 } from "../contracts/openapi.ts";
@@ -175,7 +175,7 @@ function responseSchema(
     const media = Object.entries(record(content));
     if (media.length === 0) return undefined;
     for (const [type, body] of media) {
-      if (!type.includes("json") || isOpenapiJsonSequence(type)) {
+      if (!isOpenapiJsonMedia(type)) {
         shapes.push(() =>
           isOpenapiTextMedia(type) ? { type: "string" } : openapiBinaryResultSchema,
         );
@@ -282,7 +282,6 @@ export function errorResponses(
         typeof value.$ref === "string" && value.$ref.startsWith("#/") ? value.$ref : schemaAt;
       const variants = shape.anyOf;
       if (Array.isArray(variants)) {
-        // Validate both the selected branch and its parents, including reference siblings.
         for (const [index, variant] of variants.entries())
           visit(status, variant, `${shapeAt}/anyOf/${index}`, next, [
             ...parents,
@@ -323,7 +322,6 @@ export function errorResponses(
       });
       if (Option.isSome(declaration)) errors.push(declaration.value);
     } catch (error) {
-      // Unsupported error declarations must not prevent otherwise supported API calls.
       if (!(error instanceof TemplateError) && !Schema.isSchemaError(error)) throw error;
     }
   };
@@ -381,7 +379,6 @@ function prefixParameters(prefix: string): readonly string[] {
  */
 function declaredOperations(document: OpenApiDocument) {
   const { spec } = document;
-  // OpenAPI 3.2 adds QUERY and `additionalOperations`, keyed by the exact method to send.
   const version32 = spec.openapi.startsWith("3.2.");
   const candidates = Object.entries(spec.paths).flatMap(([path, source]) => {
     const item = document.resolve(source);
@@ -464,8 +461,6 @@ export const compileOpenApiDocument = (
     readonly fallbackSecurity?: GeneratedOperation["request"]["security"];
   } = {},
 ) => {
-  // The document is consumed once. Holding it only here, and clearing it when compilation takes
-  // it, keeps a finished effect from retaining the whole document while its output is written.
   let owned: JsonObject | undefined = inputDocument;
   const take = () => {
     const input = owned;
@@ -564,8 +559,6 @@ export const compileOpenApiDocument = (
           "This entry does not declare enough authentication details to generate an app.",
         );
       const methods = new Map<string, GeneratedSecrets>();
-      // An operation the importer cannot represent is left out, not fatal. Each is recorded with
-      // its reason, which a failure to import any operation reports.
       const skipped: OpenapiSkippedOperation[] = [];
       const built: {
         operation: GeneratedOperation;
@@ -574,7 +567,6 @@ export const compileOpenApiDocument = (
       }[] = [];
       const documentServer = spec.servers?.[0];
       const prefix = options.pathPrefix === undefined ? [] : prefixParameters(options.pathPrefix);
-      // Operations mostly share a server, so each distinct one is worked out once, errors included.
       const addresses = new Map<
         string,
         { readonly address: string } | { readonly error: unknown }
@@ -595,7 +587,6 @@ export const compileOpenApiDocument = (
       };
       const named = declaredOperations(document);
       if (!named.length) fail("no_operations", "This API does not contain any operations.");
-      // Left-out operations are reported in definition order, whatever stage left them out.
       const order = new Map(named.map(({ name }, index) => [name, index]));
       const inDefinitionOrder = (operations: readonly OpenapiSkippedOperation[]) =>
         [...operations].sort((a, b) => (order.get(a.name) ?? 0) - (order.get(b.name) ?? 0));
@@ -614,11 +605,9 @@ export const compileOpenApiDocument = (
             withoutNulls(document.resolve(record(value))),
           );
           const operation = decodeDefinition(Operation, resolved, at, "operation");
-          // Tags only label the tool; a malformed list is dropped rather than rejecting it.
           const tags = Option.getOrUndefined(
             Schema.decodeUnknownOption(Schema.Array(Schema.NonEmptyString))(resolved.tags),
           );
-          // Planning refines every collision; only a hash collision can repeat a name.
           if (built.some((op) => op.operation.name === name))
             fail(
               "duplicate_operation",
@@ -645,7 +634,6 @@ export const compileOpenApiDocument = (
           const baseUrl = addressOf(
             options.baseUrl === undefined && server !== undefined ? server : { url: serverUrl },
           );
-          // Path Item parameters apply to every operation; an operation's own replace them.
           const declared = [
             ...(Array.isArray(item.parameters) ? item.parameters : []).map(
               (parameter, position) => ({
@@ -666,8 +654,6 @@ export const compileOpenApiDocument = (
           >();
           for (const { parameter, at: parameterAt } of declared) {
             const declaration = document.resolve(record(parameter));
-            // A parameter in a place OpenAPI 3 does not have, such as Swagger 2.0's `body`, is not
-            // sent, as Executor v1 left it out.
             if (!isParameterLocation(declaration.in)) continue;
             const p = decodeDefinition(Parameter, declaration, parameterAt, "parameter");
             if (p.in === "querystring") {
@@ -686,7 +672,6 @@ export const compileOpenApiDocument = (
               at: parameterAt,
             });
           }
-          // A path prefix parameter the operation declares without placing it keeps its schema.
           for (const name of prefix) {
             const key = `path:${name}`;
             if (path.includes(`{${name}}`))
@@ -701,7 +686,6 @@ export const compileOpenApiDocument = (
                 at: undefined,
               });
           }
-          // Parameter schemas stay in the API dialect until the input schema is composed.
           const groups = new Map<
             string,
             { properties: Record<string, (api: ApiSchema) => Json>; required: string[] }
@@ -717,7 +701,6 @@ export const compileOpenApiDocument = (
               p.schema !== undefined || mediaType === undefined
                 ? `${parameterAt}/schema`
                 : mediaSchemaAt(document, `${parameterAt}`, mediaType, content);
-            // A parameter that only the path prefix declares is Executor's own Draft 2020-12.
             group.properties[p.name] =
               parameterAt === undefined
                 ? () => schema
@@ -750,7 +733,6 @@ export const compileOpenApiDocument = (
                   bodyAt,
                   "request body",
                 );
-          // A request body that declares no media types has nothing to send, as Executor v1 read it.
           if (request !== undefined && Object.keys(request.content).length > 0) {
             const rawContent = record(document.resolve(record(resolved.requestBody)).content);
             const retainedContent: Record<string, (typeof RequestBody.Type.content)[string]> = {};
@@ -764,8 +746,6 @@ export const compileOpenApiDocument = (
                 contentType,
                 rawContent[contentType],
               );
-              // The converted input already holds the body schema. Retain only the resolved
-              // multipart file shapes the runtime needs for base64 conversion.
               const retainedFiles: Record<string, JsonObject> = {};
               let inputSchema: (api: ApiSchema) => JsonObject =
                 kind === "binary"
@@ -786,7 +766,6 @@ export const compileOpenApiDocument = (
                 }
                 const form = schema;
                 const formAt = typeof declared.$ref === "string" ? declared.$ref : schemaAt;
-                // File fields take base64 input; the remaining form keeps its API constraints.
                 inputSchema = (api) => {
                   const converted = api({ ...form, properties: fields }, formAt);
                   return {
@@ -817,9 +796,6 @@ export const compileOpenApiDocument = (
             if (request.required) required.push("body");
           }
           const requirements = operation.security ?? spec.security ?? fallback ?? [];
-          // An alternative naming a scheme securitySchemes does not declare can never be met. It is
-          // ignored, so it neither hides another alternative nor reaches the request. When every
-          // alternative is ignored, the operation is left out rather than made public.
           const security = requirements.filter((requirement) =>
             Object.keys(requirement).every((key) => Object.hasOwn(schemes, key)),
           );
@@ -837,8 +813,6 @@ export const compileOpenApiDocument = (
           for (const requirement of security) {
             const keys = Object.keys(requirement).sort();
             if (!keys.length) continue;
-            // Each selected account supplies one complete supported alternative.
-            // Unsupported alternatives do not hide a usable key or public alternative.
             if (!keys.every((key) => bindings.has(key))) continue;
             const parts = keys.flatMap((key) => bindings.get(key) ?? []);
             const methodName =
@@ -867,7 +841,6 @@ export const compileOpenApiDocument = (
             fail("input_schema", "Its input schema is not valid JSON.");
           }
           const outputSchema = responseSchema(document, resolved, at, method);
-          // Only an operation without another success type is left with an event stream.
           const streaming = Object.values(operation.responses ?? {}).some((response) =>
             offersEventStream(document, response),
           );
@@ -933,11 +906,6 @@ export const compileOpenApiDocument = (
           });
         }
       }
-      // Every credential-bearing operation of one app addresses an origin the app allows, so an
-      // account's key never reaches a host it did not choose. Without `allowedOrigin`, the origin
-      // most operations use is pinned; on a tie the document server's origin wins, then the first
-      // origin seen. A document server that every operation overrides is never called, so it
-      // cannot outvote them.
       const counts = new Map<string, number>();
       for (const { operation } of built) {
         const origin = new URL(operation.baseUrl).origin;
@@ -962,7 +930,6 @@ export const compileOpenApiDocument = (
         if (count > best || (count === best && origin === documentOrigin)) mostUsed = origin;
       }
       const pinnedOrigins = new Set(allowed ?? (mostUsed === undefined ? [] : [mostUsed]));
-      // Operations on a pinned origin, each with its declaration.
       const imported: {
         operation: GeneratedOperation;
         declared: (typeof built)[number]["declared"];
@@ -986,7 +953,6 @@ export const compileOpenApiDocument = (
       const operations = imported.map(({ operation }) => operation);
       if (!operations.length) {
         const left = inDefinitionOrder(skipped);
-        // When the allowed origin is no operation's, say which origins the operations use.
         if (allowed !== undefined && built.length > 0)
           throw new TemplateError({
             code: "no_supported_operations",
@@ -994,7 +960,6 @@ export const compileOpenApiDocument = (
             skipped: left,
             origins: [...counts.keys()],
           });
-        // One shared cause, such as a missing server URL, keeps its own explanation.
         const [first] = left;
         if (
           first !== undefined &&
@@ -1007,9 +972,6 @@ export const compileOpenApiDocument = (
           skipped: left,
         });
       }
-      // An imported operation no account can call: it streams, or every security requirement
-      // needs a scheme Executor cannot authenticate with. When that is every operation, each one's
-      // reason is reported with the operations left out.
       const supported = (requirement: Readonly<Record<string, unknown>>) => {
         const keys = Object.keys(requirement);
         return (
@@ -1083,7 +1045,6 @@ export const compileOpenApiDocument = (
         fallback,
       };
     },
-    // Expected failures stay typed; anything else is a defect in the importer, not the definition.
     catch: (error) =>
       error instanceof TemplateError
         ? Exit.fail(error)

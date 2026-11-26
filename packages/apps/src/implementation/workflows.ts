@@ -40,13 +40,11 @@ export const workflow = <Input, Output, Context extends AnyWorkflowContext = Wor
       ? {}
       : { output: decoderOf(schemaArgument(options.output, "The workflow output")) }),
     ...(options.description === undefined ? {} : { description: options.description }),
-    // SAFETY: defineApp checks required context; the host supplies the pinned run's capabilities.
     run: (context, input) => fromPromise(run, "workflow")(context as Context, input),
   },
 });
 /** Only this module creates the private declaration symbol; input is decoded before invocation. */
 export const nativeWorkflow = (value: unknown): AppWorkflow | undefined => {
   if (typeof value !== "object" || value === null || !(NativeWorkflow in value)) return undefined;
-  // SAFETY: declaration constructors preserve the callback/decoder pairing behind this symbol.
   return value[NativeWorkflow] as AppWorkflow;
 };

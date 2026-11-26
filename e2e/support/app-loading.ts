@@ -1,4 +1,3 @@
-/** Exercise each real app tab across held metadata and content reads. */
 import { expect } from "@effect/vitest";
 import { Effect } from "effect";
 import { Browser } from "./browser.ts";
@@ -16,11 +15,6 @@ const tabs = [
   { view: "settings", title: "Settings", loading: "Loading settings" },
 ] as const;
 const redundantTitles = ["Overview", "Accounts", "Versions", "Settings"];
-/**
- * The bounds of a section's header row once it is laid out. An in-app navigation shows the route's
- * pending view and then the page itself; an element being swapped out has no layout, so the
- * measurement waits for a laid-out one.
- */
 const box = (page: Page, title: string) =>
   page
     .waitForFunction(
@@ -76,7 +70,7 @@ const contentBox = (
   const region = loading
     ? {
         overview: '[aria-label="App accounts placeholder"]',
-        accounts: '.accounts-section .empty-state, [aria-label="Loading accounts"] .empty-state',
+        accounts: ".accounts-section",
         tools: '[aria-label="Loading tools"]',
         source: '[aria-label="Loading files"]',
         history: '[aria-label="Loading history"] > div > div:first-child',
@@ -85,7 +79,7 @@ const contentBox = (
       }[view]
     : {
         overview: '[aria-label="App accounts"]',
-        accounts: ".empty-state",
+        accounts: ".accounts-section",
         tools: ".tools-section",
         source: '[aria-label="Source browser"]',
         history: '[aria-label="Source history"] li:first-child',
@@ -95,7 +89,6 @@ const contentBox = (
   return page.locator(region).boundingBox();
 };
 
-/** The server responses remain unchanged; only their delivery is held for assertions and screenshots. */
 export const checkAppLoading = (input: {
   readonly url: string;
   readonly name: string;
@@ -223,7 +216,6 @@ export const checkAppLoading = (input: {
             yield* browser.use(`${tab.view} reserves its own content`, (page) =>
               page.getByRole("status", { name: tab.loading, exact: true }).waitFor(),
             );
-            // Metadata is held, but the independent permission read must establish the manager layout.
             yield* browser.use("Manager navigation resolves while metadata is held", (page) =>
               page.getByRole("link", { name: "Source", exact: true }).waitFor(),
             );
@@ -324,11 +316,10 @@ export const checkAppLoading = (input: {
                 );
                 break;
               case "accounts":
-                yield* browser.use("Known empty accounts remain explicit", (page) =>
-                  page
-                    .getByRole("heading", { name: "No accounts required", exact: true })
-                    .waitFor(),
-                );
+                for (const heading of ["No app accounts", "No user accounts"])
+                  yield* browser.use(`${heading} remains explicit`, (page) =>
+                    page.getByRole("heading", { name: heading, exact: true }).waitFor(),
+                  );
                 break;
               case "tools":
                 if (selectedTool) {

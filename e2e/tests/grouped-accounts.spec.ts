@@ -64,8 +64,6 @@ layer(HostedLive, { excludeTestServices: true })("Grouped accounts", (it) => {
             accounts.push(account.id);
             return account.id;
           });
-        // The plain requirement keeps one linked account: connecting Personal for it after Work
-        // replaced Work, which stays saved.
         const work = yield* create("Work", "work"),
           personal = yield* create("Personal", "personal");
         expect(yield* linkedAccountIds(actors.owner, path)).toEqual([personal]);
@@ -81,7 +79,6 @@ layer(HostedLive, { excludeTestServices: true })("Grouped accounts", (it) => {
             expect(listed.status, JSON.stringify(listed.body)).toBe(200);
             return (yield* body(Tools, listed)).items.map((tool) => tool.name).sort();
           });
-        // The full catalog loads for the linked account without any choice.
         expect(yield* toolNames("")).toEqual(["common", "drafts", "identity"]);
         const workQuery = `?accounts=${encodeURIComponent(JSON.stringify({ service: [work] }))}`;
         yield* browser.login(actors.owner);
@@ -113,7 +110,6 @@ layer(HostedLive, { excludeTestServices: true })("Grouped accounts", (it) => {
           ),
         ).toBe(1);
         yield* browser.checkpoint("Overview summarizes the linked account's catalog");
-        // An old address naming an account choice selects nothing: the linked account is used.
         yield* browser.use("Open tools from an address naming Work", (page) =>
           page.goto(`/org/${actors.organization.slug}/apps/${app.id}${workQuery}&view=tools`),
         );
@@ -172,7 +168,6 @@ layer(HostedLive, { excludeTestServices: true })("Grouped accounts", (it) => {
           });
         yield* runIdentity("Personal", personal, "Work");
         yield* browser.checkpoint("Tool calls run with the linked account");
-        // Linking Work from the Accounts tab replaces Personal; the catalog follows the new link.
         yield* browser.use("Open Accounts", (page) =>
           page
             .getByRole("navigation", { name: "App navigation" })
@@ -182,9 +177,6 @@ layer(HostedLive, { excludeTestServices: true })("Grouped accounts", (it) => {
         const accountsRegion = yield* browser.use("Find the service accounts", (page) =>
           Promise.resolve(page.getByRole("region", { name: "Grouped fixture", exact: true })),
         );
-        // The plain requirement lists both saved accounts with Personal selected; selecting Work
-        // links it in Personal's place.
-        // The dashboard may address the organization by slug, so match the path from the app on.
         const workLink = `/apps/${app.id}/accounts/user/service/${work}`;
         const replaced = yield* browser.use("Link Work in place of Personal", (page) =>
           Promise.all([
@@ -229,7 +221,6 @@ layer(HostedLive, { excludeTestServices: true })("Grouped accounts", (it) => {
         yield* catalogShows("Work", "threads", "drafts", 4);
         yield* runIdentity("Work", work, "Personal");
         yield* browser.checkpoint("The catalog and calls follow the replacing link");
-        // An `accounts` field or query chooses nothing: calls run with the linked account.
         expect(yield* toolNames(workQuery.replace(work, personal))).toEqual([
           "common",
           "identity",
@@ -252,8 +243,6 @@ layer(HostedLive, { excludeTestServices: true })("Grouped accounts", (it) => {
               .getByRole("link", { name: "Accounts", exact: true })
               .click(),
           );
-          // The row's menu button can leave the accessibility tree before the unlink is answered,
-          // so the reads below wait for the unlink's own response.
           const unlinked = yield* browser.use("Unlink Work from Accounts", (page) =>
             Promise.all([
               page.waitForResponse(
@@ -269,7 +258,6 @@ layer(HostedLive, { excludeTestServices: true })("Grouped accounts", (it) => {
             ]).then(([response]) => response.status()),
           );
           expect(unlinked).toBe(200);
-          // Both accounts stay listed as ones the owner could link again, neither selected.
           yield* browser.use("Unlink Work from Accounts", (page) =>
             page
               .getByRole("list", { name: "Grouped fixture accounts", exact: true })
@@ -277,7 +265,6 @@ layer(HostedLive, { excludeTestServices: true })("Grouped accounts", (it) => {
               .waitFor(),
           );
         });
-        // Unlinking keeps both accounts, and no saved account is used in place of a link.
         expect(yield* linkedAccountIds(actors.owner, path)).toEqual([]);
         for (const account of [work, personal])
           expect(

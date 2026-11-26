@@ -1,7 +1,4 @@
 ---
-// The "Copy setup prompt" button: a dashed ghost button beside the primary,
-// carrying the three agent marks. Copies `setupPrompt`; the click handler
-// lives in pages/index.astro.
 import { setupPrompt } from "../../content/site-copy";
 import { logoClass } from "../../lib/logos";
 import { appOrigin, siteOrigin } from "../../content/site-origin.ts";
@@ -17,8 +14,6 @@ const logo = (name: string): string => {
   return hit[1];
 };
 const marks = ["claude", "codex", "cursor"];
-
-
 ---
 
 <button

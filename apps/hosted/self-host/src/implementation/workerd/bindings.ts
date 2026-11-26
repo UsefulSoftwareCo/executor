@@ -1,9 +1,8 @@
-/** Host bindings exist only on the trusted product Worker, never on authored app isolates. */
 import { Effect, Option, Schema, Stream } from "effect";
 import { FetchHttpClient, HttpClient, HttpServerResponse } from "effect/http";
 import { dashboardRoutes, fileHeaders } from "../web.ts";
 import { BlobKey, BlobStoreError, SourceError, type BlobStorage } from "@executor-js/sdk/core";
-import { pageOf, rangeWindow, windowed } from "@executor-js/sdk/blobs";
+import { pageOf, rangeWindow, removeEach, windowed } from "@executor-js/sdk/blobs";
 import { gitRepositories } from "@executor-js/app-source/host";
 import {
   parseDestination,
@@ -11,19 +10,15 @@ import {
   type UrlPolicy,
 } from "@executor-js/utils/url-policy";
 
-/** The HTTP service capability workerd supplies at its environment boundary. */
 export interface HttpBinding {
   readonly fetch: (request: Request) => Promise<Response>;
 }
 const diskRequest = (key: BlobKey, init?: RequestInit) =>
   new Request(`http://disk.internal/${key.split("/").map(encodeURIComponent).join("/")}`, init);
 
-/** workerd's disk service answers a directory GET with its entries as JSON. */
 const DirectoryListing = Schema.Array(Schema.Struct({ name: Schema.String, type: Schema.String }));
 
-/** workerd disk PUT atomically publishes an object; missing files remain ordinary results. */
 export const bindingBlobStore = (disk: HttpBinding): BlobStorage => {
-  /** A failed request keeps its cause; an answer outside `expected` keeps its status. */
   const send = (
     operation: BlobStoreError["operation"],
     key: BlobKey,
@@ -61,6 +56,10 @@ export const bindingBlobStore = (disk: HttpBinding): BlobStorage => {
     put: (key, body) =>
       send("put", key, [204], { method: "PUT", body: new Uint8Array(body) }).pipe(Effect.asVoid),
     remove: (key) => send("remove", key, [204, 404], { method: "DELETE" }).pipe(Effect.asVoid),
+    removeAll: (keys) =>
+      removeEach(keys, (key) =>
+        send("remove", key, [204, 404], { method: "DELETE" }).pipe(Effect.asVoid),
+      ),
     list: (folder, options) =>
       send("list", folder, [200, 404]).pipe(
         Effect.flatMap((response) =>
@@ -78,7 +77,6 @@ export const bindingBlobStore = (disk: HttpBinding): BlobStorage => {
           ),
         ),
       ),
-    // The disk service sends whole files, so a range is cut from the stream here.
     stream: (key, range) =>
       Effect.gen(function* () {
         const response = yield* send("get", key, [200, 404]);
@@ -103,7 +101,6 @@ export const bindingBlobStore = (disk: HttpBinding): BlobStorage => {
 const GitResult = Schema.Struct({ code: Schema.Int, output: Schema.Uint8ArrayFromBase64 });
 const Index = Schema.Struct({ index: Schema.NonEmptyString });
 
-/** Preserve the shared Git operations while a small native helper owns processes and indexes. */
 export const bindingRepositories = (binding: HttpBinding, directory: string) => {
   const call = (path: string, body: unknown) =>
     Effect.tryPromise({
@@ -128,7 +125,6 @@ export const bindingRepositories = (binding: HttpBinding, directory: string) => 
         Effect.flatMap(Schema.decodeUnknownEffect(GitResult)),
         Effect.mapError(() => new SourceError({ reason: "git" })),
       ),
-    // The native helper streams the request into `git http-backend` and its output back.
     httpBackend: (environment, body) =>
       Effect.tryPromise({
         try: async () => {
@@ -155,11 +151,6 @@ export const bindingRepositories = (binding: HttpBinding, directory: string) => 
   });
 };
 
-/**
- * DNS restrictions are enforced by workerd's network service at connection time. Requests for
- * this instance's own dashboard origin go to the product through a service binding instead,
- * whatever that origin's name resolves to.
- */
 export const bindingHttpClient = (
   policy: UrlPolicy,
   publicNetwork: HttpBinding,
@@ -187,14 +178,8 @@ export const bindingHttpClient = (
     );
   });
 
-/** The bundled collector's internal origin; it names a service binding, never a network address. */
-export const collectorOrigin = "http://motel.internal";
+export const collectorOrigin = "http://collector.internal";
 
-/**
- * Telemetry exports to the bundled collector go through its service binding, which the host
- * connects to a private Unix socket. The collector has no TCP listener, so an app's fetch cannot
- * reach it even when private fetch is allowed. Exports to any other collector use the network.
- */
 export const bindingTelemetryClient = (collector: HttpBinding) =>
   Effect.gen(function* () {
     const routedFetch: typeof fetch = (input, init) => {
@@ -209,7 +194,6 @@ export const bindingTelemetryClient = (collector: HttpBinding) =>
     );
   });
 
-/** Serve only the build's asset manifest; a disk directory listing can never become a public page. */
 export const bindingDashboard = (assets: HttpBinding, files: Readonly<Record<string, string>>) =>
   dashboardRoutes(new Set(Object.keys(files)), (relative) =>
     Effect.tryPromise(() =>

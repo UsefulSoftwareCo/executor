@@ -1,4 +1,3 @@
-/** Tombstone storage: one row hides an organization from the moment removal is accepted. */
 import { Effect, Schema } from "effect";
 import type { SqlClient } from "effect/sql";
 import type { OrganizationId } from "../contracts/organization.ts";
@@ -15,6 +14,7 @@ const Row = Schema.Struct({
   status: OrganizationRemovalRecord.fields.status,
   logo: OrganizationRemovalRecord.fields.logo,
 });
+const Removed = Schema.Array(Schema.Struct({ organization_id: Row.fields.organization_id }));
 const decode = (rows: unknown) =>
   Schema.decodeUnknownEffect(Schema.Array(Row))(rows).pipe(
     Effect.mapError(unavailable),
@@ -29,7 +29,6 @@ const decode = (rows: unknown) =>
     ),
   );
 
-/** One store over the hosted database; the middleware and the workflow read the same rows. */
 export const makeOrganizationRemovals = (
   database: Effect.Effect<SqlClient.SqlClient, OrganizationRemovalUnavailable>,
 ) => {
@@ -45,10 +44,24 @@ export const makeOrganizationRemovals = (
   return {
     tombstones: (organization: OrganizationId) =>
       Effect.map(read(organization), (record) => record !== null),
+    removed: (
+      organizations: ReadonlyArray<OrganizationId>,
+    ): Effect.Effect<ReadonlySet<OrganizationId>, OrganizationRemovalUnavailable> =>
+      organizations.length === 0
+        ? Effect.succeed(new Set<OrganizationId>())
+        : database.pipe(
+            Effect.flatMap(
+              (sql) =>
+                sql`select organization_id from hosted_organization_removal where ${sql.in("organization_id", organizations)}`,
+            ),
+            Effect.mapError(unavailable),
+            Effect.flatMap((rows) =>
+              Schema.decodeUnknownEffect(Removed)(rows).pipe(Effect.mapError(unavailable)),
+            ),
+            Effect.map((rows) => new Set(rows.map((row) => row.organization_id))),
+          ),
     removals: OrganizationRemovals.of({
       read,
-      // Accepting the same removal twice must reuse the first instance, or a
-      // retried request would start a second workflow over the same records.
       begin: (organization, instance) =>
         database.pipe(
           Effect.flatMap(
@@ -63,8 +76,6 @@ export const makeOrganizationRemovals = (
             record === null ? Effect.fail(unavailable()) : Effect.succeed(record),
           ),
         ),
-      // Written by the step that deletes the organization row, so a replay of
-      // the icon step can still address an icon whose owning row is long gone.
       recordLogo: (organization, logo) =>
         database.pipe(
           Effect.flatMap(

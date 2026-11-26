@@ -1,4 +1,3 @@
-/** Why an account cannot be linked to an app requirement, shared by the dashboard and agent routes. */
 import { AccountScope, AppId } from "@executor-js/sdk";
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
 import { Schema } from "effect";
@@ -22,11 +21,6 @@ const mismatch = {
       "Link an account from the provider this requirement names, or connect one for it.",
   },
 } as const;
-/**
- * The account cannot be linked to this requirement in this scope: the app's active version
- * does not declare the requirement in it (`requirement`), or the account's provider is not the
- * requirement's (`provider`).
- */
 export const RequirementMismatch = UserFacingError.define({
   tag: "RequirementMismatch",
   status: 422,
@@ -48,5 +42,4 @@ export const RequirementMismatch = UserFacingError.define({
     },
   }),
 });
-/** Parsed RequirementMismatch failure. */
 export type RequirementMismatch = typeof RequirementMismatch.Type;

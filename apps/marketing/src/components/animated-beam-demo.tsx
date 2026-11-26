@@ -5,8 +5,6 @@ import React, { forwardRef, useRef } from "react";
 import { cn } from "../lib/utils";
 import { AnimatedBeam } from "./ui/animated-beam";
 
-// Imported so Vite emits them as hashed build assets (served from /_astro/...);
-// the deploy pipeline does not pick up newly added /public files.
 import sentryLogo from "../assets/logos/sentry.svg?url";
 import githubLogo from "../assets/logos/github.svg?url";
 import linearLogo from "../assets/logos/linear.svg?url";
@@ -142,7 +140,6 @@ export function AnimatedBeamDemo({
       className={cn("relative flex w-full items-center justify-center py-2", className)}
     >
       <div className="flex w-full flex-row items-stretch justify-between gap-6 sm:gap-8">
-        {/* Agents (left) */}
         <div className="flex flex-col justify-center gap-7">
           <Row label="Claude Code" reverse={false} labelClass={v.labelClass}>
             <Node ref={agent1} className={v.nodeClass}>
@@ -161,7 +158,6 @@ export function AnimatedBeamDemo({
           </Row>
         </div>
 
-        {/* Hub (center) */}
         <div className="flex flex-col justify-center">
           <Node ref={hub} size="lg" className={v.hubClass}>
             <img
@@ -175,7 +171,6 @@ export function AnimatedBeamDemo({
           </Node>
         </div>
 
-        {/* Tools (right) */}
         <div className="flex flex-col justify-center gap-7">
           <Row label="Sentry" sub="OpenAPI" reverse labelClass={v.labelClass} subClass={v.subClass}>
             <Node ref={tool1} className={v.nodeClass}>
@@ -195,7 +190,6 @@ export function AnimatedBeamDemo({
         </div>
       </div>
 
-      {/* Beams: agents → hub */}
       <AnimatedBeam
         containerRef={containerRef}
         fromRef={agent1}
@@ -235,7 +229,6 @@ export function AnimatedBeamDemo({
         delay={0.6}
       />
 
-      {/* Beams: hub → tools */}
       <AnimatedBeam
         containerRef={containerRef}
         fromRef={hub}

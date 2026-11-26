@@ -24,13 +24,11 @@ import { groupsAtom } from "../../contracts/groups.ts";
 import { usePreload } from "@executor-js/ui/dashboard/context";
 import { AddAppMenu } from "../components/add-app.tsx";
 
-/** The groups and the unfiltered list the page opens with. */
 export const appsPageReads: OrganizationPageReads = (organization) => [
   groupsAtom(organization),
   resourceInventoryAtom(organization),
 ];
 
-/** One authorized list, with independent group and explicit management filters. */
 export function AppsPage() {
   const { organization, slug: organizationSlug } = useOrganizationRoute();
   const atoms = useMemo(() => createAppListAtoms(organization), [organization]);

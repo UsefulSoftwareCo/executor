@@ -1,4 +1,3 @@
-/** Generate searchable author contracts from the same TypeScript graph as declarations. */
 import ts from "typescript-5";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -6,9 +5,7 @@ import { resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
-// TypeScript reports source file names with POSIX separators on every platform.
 const workspace = resolve(root, "..").split("\\").join("/") + "/";
-/** Author modules and the skill document for each. Every export of these modules is described. */
 const modules = {
   ".": "tools.md",
   "./client": "ui.md",
@@ -19,7 +16,6 @@ const modules = {
   "./openapi": "integrations.md",
   "./skills": "tools.md",
 };
-/** Subpaths for hosts and Effect libraries. Apps do not import them, so the reference omits them. */
 const hostModules = new Set([
   "./contracts",
   "./host",
@@ -47,16 +43,13 @@ const methods = [
 ];
 const flags =
   ts.TypeFormatFlags.NoTruncation | ts.TypeFormatFlags.UseAliasDefinedOutsideCurrentScope;
-/** The node builder flags `signatureToString` and `typeToString` print with for `flags`. */
 const nodeFlags =
   ts.NodeBuilderFlags.NoTruncation |
   ts.NodeBuilderFlags.UseAliasDefinedOutsideCurrentScope |
   ts.NodeBuilderFlags.IgnoreErrors;
 
-/** Produce a deterministic catalog. No app code is imported or executed. */
 export async function generateFrameworkReference() {
   const manifest = JSON.parse(await readFile(resolve(root, "package.json"), "utf8"));
-  // A new subpath must be documented for authors or named as a host surface.
   const subpaths = Object.keys(manifest.exports).filter((key) => !key.endsWith(".json"));
   const unclassified = [
     ...subpaths.filter((key) => !Object.hasOwn(modules, key) && !hostModules.has(key)),
@@ -80,8 +73,6 @@ export async function generateFrameworkReference() {
     "ui/assets.d.ts",
     "package.json",
   ];
-  // The example deploys as written, so its manifest declares this release like every app. It keeps
-  // the type packages the local type check in deploy.md needs; the workspace `apps` link is dropped.
   const deployable = (content) => {
     const { name, type, dependencies, devDependencies } = JSON.parse(content);
     const types = Object.entries(devDependencies).filter(([dependency]) =>
@@ -142,14 +133,12 @@ export async function generateFrameworkReference() {
     const source = program.getSourceFile(resolve(root, file));
     const symbol = source && checker.getSymbolAtLocation(source);
     if (!symbol) throw new Error(`Missing reference module: ${file}`);
-    // Workspace declarations are recognised by this prefix; a mismatch would drop them all silently.
     if (!source.fileName.startsWith(workspace))
       throw new Error(`Reference module ${source.fileName} is outside the workspace ${workspace}`);
     return { source, exports: checker.getExportsOfModule(symbol) };
   };
   const resolveAlias = (symbol) =>
     symbol.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(symbol) : symbol;
-  // Declarations read like a declaration file: class members keep their types, not their bodies.
   const bodies = (declaration) =>
     (ts.isClassDeclaration(declaration) ? declaration.members : [])
       .flatMap((member) => (member.body === undefined ? [] : [member.body]))
@@ -164,15 +153,9 @@ export async function generateFrameworkReference() {
         source.slice(body.getEnd() - start);
     return source;
   };
-  // The declarations a node names. Source identifiers resolve where they are written. The nodes the
-  // checker prints signatures and value types from carry the symbol each name was printed for.
-  // Type names only: the namespace or value before `.`, as in Schema.Struct, is not followed.
-  // Printed nodes have no parent pointers, so each visit passes its parent.
   const qualifier = (node, parent) =>
     (ts.isQualifiedName(parent) && parent.left === node) ||
     (ts.isPropertyAccessExpression(parent) && parent.expression === node);
-  // `symbol` on a printed identifier is internal to TypeScript. A name that is not a declaration's own
-  // name and resolves to nothing means that internal changed, and every link it carried would be lost.
   const named = (id, node, skipped = []) => {
     const found = new Set();
     const visit = (child, parent) => {
@@ -192,8 +175,6 @@ export async function generateFrameworkReference() {
     visit(node, undefined);
     return found;
   };
-  // Each entry's symbol and the declarations its text names. Related types link by symbol, so a name
-  // links to the declaration it resolves to rather than to whichever entry shares its spelling.
   const symbols = new Map();
   const references = new Map();
   const ids = new Map();
@@ -275,7 +256,6 @@ export async function generateFrameworkReference() {
     if (symbol.flags & ts.SymbolFlags.Variable) return ["value", type];
     throw new Error(`Unclassified framework export: ${id}`);
   };
-  // Every export an author can import is described; one the reference cannot classify fails the build.
   for (const { module, file, docs } of authorModules) {
     for (const exported of sourceModule(file).exports) {
       const id = `${module}.${exported.name}`;
@@ -295,8 +275,6 @@ export async function generateFrameworkReference() {
     addMethods(name, checker.getDeclaredTypeOfSymbol(symbol), docs);
     add(name, symbol, "type", docs, checker.getDeclaredTypeOfSymbol(symbol));
   }
-  // A declaration an entry names but no module exports, such as a schema inside an options type, is
-  // described too so an agent can follow every definition it reads.
   const closure = new Map();
   const pending = [...references].map(([id, names]) => [records.get(id).docs, names]);
   while (pending.length) {
@@ -305,7 +283,6 @@ export async function generateFrameworkReference() {
       const target = symbol.valueDeclaration ?? symbol.declarations?.[0];
       if (target === undefined || ids.has(symbol) || closure.has(symbol)) continue;
       const file = target.getSourceFile().fileName;
-      // Parameters, type parameters, members and locals belong to the declaration that names them.
       const statement = ts.isVariableDeclaration(target) ? target.parent.parent : target;
       if (
         !file.startsWith(workspace) ||
@@ -314,15 +291,12 @@ export async function generateFrameworkReference() {
       )
         continue;
       const [kind, type] = classify(symbol.name, symbol);
-      // Private symbol keys brand framework values; their declaration says nothing more.
       if (type.flags & ts.TypeFlags.ESSymbolLike) continue;
       const described = describe(symbol.name, symbol, kind, type);
       closure.set(symbol, { described, docs });
       pending.push([docs, described.names]);
     }
   }
-  // Such a declaration is described under its bare name. A name another entry already ends with, or
-  // that two such declarations share, is qualified by its source so each id names one declaration.
   const spelled = new Map();
   for (const name of [
     ...[...records.keys()].map((id) => id.split(".").at(-1)),

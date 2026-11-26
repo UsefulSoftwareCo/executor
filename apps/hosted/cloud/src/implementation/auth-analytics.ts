@@ -1,4 +1,3 @@
-/** Better Auth owns these endpoints outside the hosted API middleware. Reads are not product use. */
 import { APIError, createAuthMiddleware, getSessionFromCtx } from "better-auth/api";
 import type { BetterAuthPlugin } from "better-auth";
 
@@ -20,13 +19,11 @@ const operations = new Set([
   "/revoke-other-sessions",
   "/sign-out",
 ]);
-/** Only server-established identity and authored operation names cross this callback. */
 export interface NativeAuthUsage {
   readonly userId: string;
   readonly operation: string;
   readonly status: number;
 }
-/** Record completed authenticated operations without inspecting bodies, return values or credentials. */
 export const nativeAuthAnalytics = (
   record: (usage: NativeAuthUsage) => Promise<void>,
 ): BetterAuthPlugin => ({
@@ -39,8 +36,6 @@ export const nativeAuthAnalytics = (
           context.path !== undefined &&
           operations.has(context.path),
         handler: createAuthMiddleware(async (context) => {
-          // Better Auth endpoint middleware does not retain its session in the after-hook context.
-          // Analytics lookup failure must not change an already completed auth operation.
           const session = await getSessionFromCtx(context).catch(() => null);
           const user = session?.user ?? context.context.newSession?.user;
           if (user === undefined || context.path === undefined) return;

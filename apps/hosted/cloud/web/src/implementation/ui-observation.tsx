@@ -79,8 +79,6 @@ const view = () => {
   };
 };
 
-// This observer wraps reads/subscriptions the app already performs. It never mounts
-// an atom, reads a node's value itself, or adds a subscription for its own lifetime.
 const observe = (registry: AtomRegistry.AtomRegistry) => {
   const names = new WeakMap<object, string>();
   const summaries = new WeakMap<object, string>();
@@ -265,7 +263,6 @@ function Observed({ children }: { readonly children: ReactNode }) {
   );
 }
 
-/** Opt-in development exploration; ordinary and production builds retain the normal registry. */
 export function UIObservation({ children }: { readonly children: ReactNode }) {
   return import.meta.env.DEV && import.meta.env.VITE_UI_OBSERVE === "1" ? (
     <Observed>{children}</Observed>

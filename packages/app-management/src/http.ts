@@ -12,7 +12,6 @@ export {
   frameworkHandlers,
   frameworkRoutes,
 } from "./implementation/framework.ts";
-/** Product-authorized app authoring, release discovery, and ordinary Git access. */
 import { Array as Arr, Context, Effect, Layer, Option, Schema } from "effect";
 import { HttpMiddleware, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import {
@@ -49,16 +48,11 @@ import {
   type Executor,
 } from "@executor-js/sdk/core";
 
-/** The executor and the product's authorization policy; every operation goes through the SDK. */
 export class AppManagementHost extends Context.Service<
   AppManagementHost,
   Effect.Effect<
     {
       readonly executor: Executor;
-      /**
-       * The product's policy for each app; every host states it, even when it allows all.
-       * Answers each app in order, so a list is checked in one read; any denied app fails it.
-       */
       readonly access: (
         apps: ReadonlyArray<App>,
         identity: Context.Service.Shape<typeof AppIdentity>,
@@ -67,30 +61,19 @@ export class AppManagementHost extends Context.Service<
     StorageError
   >
 >()("apps/ManagementHost") {}
-/**
- * The origins where the host serves {@link gitRoutes}, canonical first. Clone URLs use the
- * canonical one; the others keep earlier remotes working. A host that serves Git on the origin
- * it was called on reads that origin from the request.
- */
 export class AppGitOrigins extends Context.Service<
   AppGitOrigins,
   (request: HttpServerRequest.HttpServerRequest) => readonly [string, ...string[]]
 >()("apps/GitOrigins") {}
-/** The clone URL of an app, on the host's canonical Git origin. */
 const gitRemote = (scope: string, app: App) =>
   Effect.gen(function* () {
     const [origin] = (yield* AppGitOrigins)(yield* HttpServerRequest.HttpServerRequest);
     const path = `/git/${encodeURIComponent(scope)}/${app.slug}.git`;
     return { path, url: origin + path };
   });
-/**
- * The wire revision the requesting client reads; see `wire-revision.ts` in the SDK. The span
- * records it, so the requests still answered in an earlier revision can be counted.
- */
 const clientRevision = Effect.map(HttpServerRequest.HttpServerRequest, (request) =>
   requestWireRevision(request.headers),
 ).pipe(Effect.tap((revision) => Effect.annotateCurrentSpan("executor.wire_revision", revision)));
-/** Cookies never authorize Git. The host validates the explicit scoped Git credential. */
 export class AppGitAccess extends Context.Service<
   AppGitAccess,
   {
@@ -183,11 +166,6 @@ const authoring = (id: AppId) =>
       },
     };
   });
-/**
- * Name the app that holds a taken address, but only when the caller may see it. Hidden apps stay
- * anonymous; the address alone was already part of the request. The conflict remains the failure
- * when its holder cannot be read.
- */
 const nameAddressHolder = (
   host: ManagementHost,
   identity: Context.Service.Shape<typeof AppIdentity>,
@@ -208,7 +186,6 @@ const nameAddressHolder = (
     Effect.orElseSucceed(() => error),
     Effect.flatMap(Effect.fail),
   );
-/** Publication preview always checks the complete stored files, never a display listing. */
 const workspaceSource = (id: AppId) =>
   Effect.gen(function* () {
     const { app, host, metadata } = yield* authoring(id);
@@ -230,7 +207,6 @@ const workspaceSource = (id: AppId) =>
       ),
     };
   });
-/** Routes call existing SDK app operations; authoring never creates another project identity. */
 export const appManagementHandlers = <I extends HttpApiMiddleware.AnyId, S, Id extends string>(
   api: ReturnType<typeof appManagementApi<I, S>>,
   apiId: Id,
@@ -401,10 +377,6 @@ export const appManagementHandlers = <I extends HttpApiMiddleware.AnyId, S, Id e
         Effect.gen(function* () {
           const identity = yield* writeIdentity;
           const host = yield* Effect.flatten(AppManagementHost);
-          // Revision 0 is shown a scoped listing by a short name, `@acme/notes`, and states no
-          // commit. By the time a removal arrives that name can select another listing, so it is
-          // never resolved for one; the client is given the full name. A full name means only
-          // itself. A host that reads a remote registry refuses every removal anyway.
           const { publishing } = yield* host.executor.publications.status();
           const fullName = scopedNameFor(payload.package);
           if (publishing && Option.isSome(fullName) && (yield* clientRevision) < 1)
@@ -424,14 +396,12 @@ export const appManagementHandlers = <I extends HttpApiMiddleware.AnyId, S, Id e
         }),
       ),
   );
-/** Mount the same browser/CLI operations under a product's authorized API prefix. */
 export const appManagementRoutes = <I extends HttpApiMiddleware.AnyId, S>(
   api: ReturnType<typeof appManagementApi<I, S>>,
 ) => {
   return HttpApiBuilder.layer(api).pipe(Layer.provide(appManagementHandlers(api, api.identifier)));
 };
 
-/** Public registry reads expose selected release source, never private app Git history. */
 export const registryRoutes = (() => {
   const api = HttpApi.make("app-registry").add(
     HttpApiGroup.make("registry").add(
@@ -460,8 +430,6 @@ export const registryRoutes = (() => {
       ),
     ),
   );
-  // Public sites read the catalog from another origin (`executor.sh` reads `api.executor.sh`).
-  // The reads carry no credentials, so any origin may read them; a preflight gets the same answer.
   const anyOrigin = HttpRouter.middleware(HttpMiddleware.cors({ allowedMethods: ["GET"] })).layer;
   return Layer.mergeAll(
     HttpApiBuilder.layer(api).pipe(
@@ -484,7 +452,6 @@ export const registryRoutes = (() => {
   ).pipe(Layer.provide(anyOrigin));
 })();
 
-/** Resolve readable app slugs inside the authenticated owner's inventory before opening Git source. */
 export const gitRoutes = (() => {
   const api = HttpApi.make("app-git").add(AppGitProtocol.prefix("/git"));
   const handle = Effect.gen(function* () {
@@ -501,7 +468,6 @@ export const gitRoutes = (() => {
       ids: identity.appIds,
     })).filter((app) => app.slug === slug);
     const match = matches[0];
-    // Local root access spans owner partitions. Never choose an arbitrary same-named app.
     if (matches.length !== 1 || match === undefined)
       return yield* new AppAccessDenied({ reason: "forbidden" });
     const { app, access } = yield* ownedSource(host, identity, match.id);
@@ -526,7 +492,6 @@ export const gitRoutes = (() => {
       };
       if (Schema.is(AppAccessDenied)(error) || Schema.is(AppNotFound)(error))
         return Effect.succeed(HttpServerResponse.empty({ status: 401, headers }));
-      // Git prints a plain-text body as `remote:` lines when it cannot read the refs.
       const source = Schema.is(SourceError)(error) ? error : new SourceError({ reason: "git" });
       return Effect.succeed(
         HttpServerResponse.text(`${source.message}\n`, {

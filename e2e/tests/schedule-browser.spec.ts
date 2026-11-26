@@ -1,4 +1,3 @@
-/** Real dashboard controls and browser approval, backed by the complete local server. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schedule, Schema } from "effect";
 import { Api, body } from "../support/api.ts";

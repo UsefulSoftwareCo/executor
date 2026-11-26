@@ -4,7 +4,6 @@ import { buttonVariants } from "../components/button.tsx";
 import { useDashboard } from "./context.tsx";
 import { ErrorNotice } from "./error-notice.tsx";
 
-/** Shared recovery uses the product's account route and the server-verified account identity. */
 export function ProviderErrorNotice({
   error,
   ...props
