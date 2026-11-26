@@ -96,7 +96,11 @@ export interface AppAccountsContext<Slots extends AccountSlots> {
 
 /** The caller's own linked accounts. App-scope work has no caller, so it has none. */
 export interface UserAccountsContext<Slots extends AccountSlots> {
-  readonly user: { readonly accounts: BoundAccounts<Slots> };
+  readonly user: {
+    /** Opaque host identity, stable across calls. Undefined when the host has no subjects. */
+    readonly id: string | undefined;
+    readonly accounts: BoundAccounts<Slots>;
+  };
 }
 
 /**

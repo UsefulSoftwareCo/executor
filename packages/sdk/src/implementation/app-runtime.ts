@@ -164,6 +164,7 @@ export const appRuntime = (host: AppRuntimeHost) =>
             database: input.database,
             command,
             accounts: Redacted.value(input.accounts),
+            ...(input.caller === undefined ? {} : { caller: input.caller }),
             headers: Object.fromEntries(Object.entries(yield* traceHeaders)),
             ...(input.hostApi === undefined ? {} : { hostApi: input.hostApi }),
             ...(input.approval === undefined ? {} : { approval: input.approval }),

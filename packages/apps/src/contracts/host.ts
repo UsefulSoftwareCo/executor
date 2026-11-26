@@ -89,8 +89,9 @@ export { protocol10 } from "./protocols/10.ts";
 export { protocol11 } from "./protocols/11.ts";
 export { protocol12 } from "./protocols/12.ts";
 export { protocol13 } from "./protocols/13.ts";
+export { protocol14 } from "./protocols/14.ts";
 export {
-  current as protocol14,
+  current as protocol15,
   AccountCheckCommand,
   CredentialHost,
   MigrateCommand,
@@ -209,6 +210,8 @@ export const scopedSlots = <Slot>(accounts: {
 
 /** Trusted invocation context, supplied separately from the Request. */
 export interface HostContext {
+  /** Host-authenticated caller. Absent for app-scope work and hosts without subjects. */
+  readonly caller?: string;
   /** Trusted host deadline; never accepted in public operation JSON. */
   readonly deadline?: typeof InvocationDeadline.Type;
   /** Host-owned cache storage and refresh lifetime, separate from app database transactions. */

@@ -31,11 +31,13 @@ export interface AppProtocol {
   readonly accounts: (accounts: ResolvedAccounts) => ResolvedAccounts;
 }
 
+const withoutCaller = ({ caller: _caller, ...input }: HostInvocation) => input;
+
 const protocol14: AppProtocol = {
   version: 14,
   workerEntry: appBridge,
   nodeEntry: nodeAppEntry(14),
-  invocation: (input) => JSON.stringify(input),
+  invocation: (input) => JSON.stringify(withoutCaller(input)),
   request: (command) => command,
   refuse: () => undefined,
   response: (_command, body) => Effect.succeed(body),
@@ -43,6 +45,13 @@ const protocol14: AppProtocol = {
   concurrentData: true,
   sealedCredentials: true,
   accounts: (accounts) => accounts,
+};
+
+const protocol15: AppProtocol = {
+  ...protocol14,
+  version: 15,
+  nodeEntry: nodeAppEntry(15),
+  invocation: (input) => JSON.stringify(input),
 };
 
 const underscored = (host: string) => host.includes("_");
@@ -93,8 +102,8 @@ const scopedRequirements = (command: HostRequest, body: unknown) =>
     : body;
 
 const unscoped = {
-  invocation: <Input extends Pick<HostInvocation, "accounts">>(input: Input) =>
-    JSON.stringify({ ...input, accounts: unscopedAccounts(input.accounts) }),
+  invocation: (input: HostInvocation) =>
+    JSON.stringify({ ...withoutCaller(input), accounts: unscopedAccounts(input.accounts) }),
   workflow: (execution: WorkflowExecution): WorkflowExecution => ({
     ...execution,
     resolve: () =>
@@ -157,7 +166,7 @@ type LegacyVersion = keyof typeof legacyProtocols;
 
 const prefixKind = (tool: string) =>
   tool.startsWith("queries.") ? "query" : tool.startsWith("mutations.") ? "mutation" : undefined;
-const legacyCommand = (command: HostRequest) =>
+const legacyCommand = (command: HostRequest): HostRequest =>
   command.operation === "call"
     ? { operation: "call", tool: command.tool, input: command.input }
     : command;
@@ -217,6 +226,7 @@ const protocols: ReadonlyMap<number, AppProtocol> = new Map(
     protocol12,
     protocol13,
     protocol14,
+    protocol15,
   ].map((protocol) => [protocol.version, protocol]),
 );
 

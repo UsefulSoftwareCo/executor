@@ -29,9 +29,19 @@ Call `defineProvider({ name, hosts, auth, health })`:
 
 Pass requirements as the first argument to `defineApp`:
 
-- **`user: { accounts: { github } }`** — each caller links their own account, read at `ctx.user.accounts.github`.
+- **`user: { accounts: { github } }`** — each caller links their own account, read at `ctx.user.accounts.github`. The caller's own opaque identity is `ctx.user.id` (see [Caller identity](#caller-identity)).
 - **`app: { accounts: { service } }`** — an app manager links one shared account for the whole app, read at `ctx.app.accounts.service`. App-scoped schedules and app-account webhooks run without a user and use `app.accounts`.
 - **`provider.many()`** — lets a caller link zero or more accounts of the same provider (for example multiple workspaces). In an async `defineApp` factory, combine them with `tools: await accountRouter(ctx.user?.accounts.linear ?? [], discover, { signal: ctx.signal })`, where `discover(account)` returns that account's router. Same-name tools are merged and accept `{ accountId, input }`. No linked accounts means no tools.
+
+### Caller identity
+
+`ctx.user.id` identifies the caller in the host product. It is an opaque value that stays the same across that person's calls, including calls to apps with no account requirements. It is independent of `ctx.user.accounts` and of the accounts linked for everyone under `app`.
+
+Use the ID to attribute app records or enforce per-user limits. It is not an account ID or an app owner, and grants no permissions. The host supplies it after authentication; tool input cannot choose another caller.
+
+In a factory, use `ctx.user?.id`: app-scoped background work evaluates the factory without `ctx.user`. App-scoped handlers and workflow steps also have no `ctx.user`. A host without user identities may leave `ctx.user.id` undefined even in user scope; require an ID before relying on per-user attribution.
+
+The app database and `ctx.cache` are shared by callers. Include the caller ID in cache keys and filter stored rows when their contents belong to one caller.
 
 ### 3. Add a `health` check
 

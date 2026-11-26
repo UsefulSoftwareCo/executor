@@ -87,6 +87,7 @@ export interface AppRunnerHost {
 }
 
 export interface AppInvocation {
+  readonly caller?: string;
   readonly app: string;
   readonly build: string;
   readonly hostApi?: HostApiCheck;
@@ -705,6 +706,7 @@ export const makeAppRunner = (host: AppRunnerHost) => {
         const body = protocol.invocation({
           command: invocation.command,
           accounts,
+          ...(invocation.caller === undefined ? {} : { caller: invocation.caller }),
           ...(invocation.approval === undefined ? {} : { approval: invocation.approval }),
           ...(invocation.replay === undefined ? {} : { replay: invocation.replay }),
           ...(invocation.deadline === undefined ? {} : { deadline: invocation.deadline }),
