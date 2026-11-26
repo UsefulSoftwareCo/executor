@@ -361,14 +361,14 @@ export const hostedAppUi = <R = never>(
           if (target === undefined) return location;
           const credential = yield* CurrentCredential;
           const user = yield* CurrentUserId;
-          if (credential === undefined || user === undefined)
+          if (credential === undefined || credential.kind === "grant" || user === undefined)
             return yield* new OrganizationForbidden();
           const sessions = yield* HostedAppSessions;
           const code = yield* sessions
             .launch(
               target,
               Principal.fields.userId.make(user),
-              credential.kind === "session" ? credential.id : credential,
+              credential.kind === "session" ? credential.id : { kind: "apiKey", id: credential.id },
             )
             .pipe(Effect.mapError(() => new AppUiUnavailable()));
           const url = new URL(appLaunchPath, target.origin);
@@ -724,11 +724,31 @@ export const hostedAppUi = <R = never>(
   );
   const launch = Effect.gen(function* () {
     const resolved = yield* target;
+    const { request } = resolved;
+    if (
+      request.method !== "GET" ||
+      request.headers["sec-purpose"]?.includes("prefetch") ||
+      request.headers.purpose === "prefetch"
+    )
+      return HttpServerResponse.empty({ status: 405, headers: appPrivateHeaders });
     const code = Schema.decodeUnknownOption(AppSignInCode)(
-      new URL(resolved.request.url, resolved.target.origin).searchParams.get("code"),
+      new URL(request.url, resolved.target.origin).searchParams.get("code"),
     );
     if (Option.isNone(code)) return yield* refuse("missing", new UiUnauthorized());
     const sessions = yield* HostedAppSessions;
+    const current = Schema.decodeUnknownOption(AppSignInCode)(
+      request.cookies[sessionCookie(resolved.target.origin)],
+    );
+    const signedIn =
+      Option.isSome(current) &&
+      (yield* sessions.current(resolved.target, current.value).pipe(
+        Effect.as(true),
+        Effect.catchTags({
+          UiUnauthorized: () => Effect.succeed(false),
+          UiForbidden: () => Effect.succeed(false),
+        }),
+      ));
+    if (signedIn) return appRedirect("/");
     const opened = yield* sessions.redeem(resolved.target, code.value);
     return yield* appRedirect("/").pipe(
       HttpServerResponse.setCookie(

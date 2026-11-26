@@ -1,5 +1,5 @@
 import { expect, layer } from "@effect/vitest";
-import { Effect, Layer, Schema } from "effect";
+import { Effect, Layer, Redacted, Schema } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 import { randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
@@ -12,6 +12,7 @@ import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
 import { managementApp } from "../support/management-app.ts";
 import { McpClient } from "../support/mcp-client.ts";
+import { McpOAuth } from "../support/mcp-oauth.ts";
 import { Target } from "../support/platform.ts";
 import { serverControl } from "../support/server-control.ts";
 import { scenarios } from "../test-plan.ts";
@@ -49,20 +50,22 @@ const deployPage = (name: string) =>
 
 const plainHttp = Effect.gen(function* () {
   const http = yield* HttpClient.HttpClient;
-  return (url: string, headers: Record<string, string> = {}) =>
-    http.execute(HttpClientRequest.get(url).pipe(HttpClientRequest.setHeaders(headers))).pipe(
-      Effect.flatMap((response) =>
-        Effect.map(response.text, (text) => ({
-          status: response.status,
-          text,
-          location: response.headers.location,
-          cookie: response.headers["set-cookie"],
-        })),
-      ),
-      Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
-      Effect.scoped,
-      Effect.orDie,
-    );
+  return (url: string, headers: Record<string, string> = {}, method: "GET" | "HEAD" = "GET") =>
+    http
+      .execute(HttpClientRequest.make(method)(url).pipe(HttpClientRequest.setHeaders(headers)))
+      .pipe(
+        Effect.flatMap((response) =>
+          Effect.map(response.text, (text) => ({
+            status: response.status,
+            text,
+            location: response.headers.location,
+            cookie: response.headers["set-cookie"],
+          })),
+        ),
+        Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
+        Effect.scoped,
+        Effect.orDie,
+      );
 });
 
 const ownerKey = (name: string) =>
@@ -88,7 +91,8 @@ layer(HostedLive, { excludeTestServices: true })("App launch links", (it) => {
         const api = yield* Api,
           actors = yield* Actors,
           browser = yield* Browser,
-          mcp = yield* McpClient;
+          mcp = yield* McpClient,
+          oauth = yield* McpOAuth;
         const get = yield* plainHttp;
         const notes = yield* deployPage("Launched notes");
         const other = yield* deployPage("Other app");
@@ -121,6 +125,11 @@ layer(HostedLive, { excludeTestServices: true })("App launch links", (it) => {
         expect(yield* get(`${notes.origin}/`)).toMatchObject({
           status: 403,
           text: "App unavailable.",
+        });
+        expect(yield* get(link.url, {}, "HEAD")).toMatchObject({ status: 405, cookie: undefined });
+        expect(yield* get(link.url, { "sec-purpose": "prefetch" })).toMatchObject({
+          status: 405,
+          cookie: undefined,
         });
         yield* browser.use("Open the launch link with no Executor session", (page) =>
           page.goto(link.url),
@@ -168,9 +177,25 @@ layer(HostedLive, { excludeTestServices: true })("App launch links", (it) => {
         expect(yield* get(elsewhere.href)).toMatchObject({ status: 401, cookie: undefined });
         expect(yield* get(owners.url)).toMatchObject({ status: 401, cookie: undefined });
 
+        const sent = yield* body(Ready, yield* api.request(actors.owner, "POST", notes.launch));
+        expect(yield* get(sent.url, { cookie: session })).toMatchObject({
+          status: 302,
+          location: "/",
+          cookie: undefined,
+        });
+
         expect((yield* api.request(actors.member, "GET", notes.location)).status).toBe(403);
         expect((yield* api.request(actors.member, "POST", notes.launch)).status).toBe(403);
-      }).pipe(Effect.provide(Layer.mergeAll(McpClient.layer))),
+
+        yield* browser.login(actors.owner);
+        const grant = yield* oauth.authorizeApi;
+        const anonymous = yield* api.session();
+        expect(
+          (yield* api.request(anonymous, "POST", notes.launch, undefined, {
+            authorization: `Bearer ${Redacted.value(grant.tokens).access_token}`,
+          })).status,
+        ).toBe(403);
+      }).pipe(Effect.provide(Layer.mergeAll(McpClient.layer, McpOAuth.layer))),
     ),
   );
 

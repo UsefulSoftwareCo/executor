@@ -10988,7 +10988,7 @@ export const scenarios = plan({
     file: "app-ui-launch.spec.ts",
     appOrigin: true,
     title:
-      "a launch link from MCP signs a browser with no session in to one app page once, and a caller who may not open the app gets none",
+      "a launch link from MCP signs a browser with no session in to one app page once, a preview or a signed-in browser leaves it unspent, and a caller who may not open the app or holds only an OAuth token gets none",
     targets: {
       "self-host": scheduled,
       cloud: scheduled,

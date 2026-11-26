@@ -33,22 +33,8 @@ const launchCredentialTables = {
       fields: {
         referenceId: { type: "string" },
         enabled: { type: "boolean", required: false },
+        remaining: { type: "number", required: false },
         expiresAt: { type: "date", required: false },
-      },
-    },
-    mcpGrant: {
-      fields: {
-        userId: { type: "string" },
-        resource: { type: "string" },
-        revoked: { type: "boolean" },
-        connection: { type: "string", required: false },
-      },
-    },
-    mcpConnection: {
-      fields: {
-        userId: { type: "string" },
-        resource: { type: "string" },
-        revoked: { type: "boolean" },
       },
     },
   },

@@ -14,7 +14,7 @@ import { AppReturnPath, AppSignInCode, AppSignInId } from "apps/ui/auth/contract
 import { UiFailed, UiForbidden, UiUnauthorized } from "apps/ui/contracts";
 import { Context, type Effect, Schema } from "effect";
 import { HttpApi, HttpApiEndpoint, HttpApiGroup, HttpApiSchema, OpenApi } from "effect/http-api";
-import { BearerCredential, Principal } from "./auth.ts";
+import { Principal } from "./auth.ts";
 import { DesktopReadable, RequiredAction } from "./authorization.ts";
 import {
   OrganizationForbidden,
@@ -95,7 +95,10 @@ export const AppUiAttempt = Schema.Struct({
   returnTo: AppReturnPath,
   proof: Schema.String,
 });
-export const AppUiParent = Schema.Union([Principal.fields.sessionId, BearerCredential]);
+export const AppUiParent = Schema.Union([
+  Principal.fields.sessionId,
+  Schema.Struct({ kind: Schema.Literal("apiKey"), id: Schema.String }),
+]);
 export type AppUiParent = typeof AppUiParent.Type;
 export const AppUiGrant = Schema.Struct({
   kind: Schema.Literal("grant"),
@@ -240,7 +243,7 @@ export const HostedAppUi = HttpApiGroup.make("appUi")
     })
       .annotate(
         OpenApi.Description,
-        "Get a one-time link that opens the private app page signed in as the caller, for a browser with no Executor session, such as an embedded web view. The link works once, within 60 seconds; the page's session then lasts as long as one from signing in, and ends when the credential that made this call is revoked. Answers as location does when the app has no page address. Treat the link as a password: never log or share it.",
+        "Get a one-time link that opens the private app page signed in as the caller, for a browser with no Executor session, such as an embedded web view. The link works once, within 60 seconds; the page's session then lasts as long as one from signing in, and ends when the credential that made this call is revoked. Needs a browser session or an API key; an OAuth token is refused. Answers as location does when the app has no page address. Treat the link as a password: never log or share it.",
       )
       .annotate(RequiredAction, "data")
       .middleware(RequireOrganization),
