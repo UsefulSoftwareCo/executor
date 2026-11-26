@@ -61,7 +61,10 @@ const declaredAuthorizationQuery14 = Schema.makeFilter(
 );
 
 const declaredPkce14 = Schema.makeFilter(
-  (config: { readonly pkce?: false; readonly tokenEndpointAuthMethod?: typeof OAuthClientAuth14.Type }) =>
+  (config: {
+    readonly pkce?: false;
+    readonly tokenEndpointAuthMethod?: typeof OAuthClientAuth14.Type;
+  }) =>
     config.pkce === false &&
     (config.tokenEndpointAuthMethod === undefined || config.tokenEndpointAuthMethod === "none")
       ? {
