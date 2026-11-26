@@ -243,6 +243,8 @@ const installDialogOn = (page: Page, userAgent: string) =>
         .then(() => ({ title, description, links })),
     );
 
+const desktopReleases = "https://api.github.com/repos/UsefulSoftwareCo/executor/releases*";
+
 export const desktopHostAbsent = (
   path: string,
   app: { readonly id: string; readonly name: string; readonly organization?: string },
@@ -251,6 +253,15 @@ export const desktopHostAbsent = (
     const browser = yield* Browser;
     yield* browser.use("Let the scenario choose the browser's user agent", (page) =>
       page.context().addInitScript(userAgentOverride),
+    );
+    yield* browser.use("Answer the desktop release list with no release", (page) =>
+      page.context().route(desktopReleases, (route) =>
+        route.fulfill({
+          contentType: "application/json",
+          headers: { "access-control-allow-origin": "*" },
+          body: "[]",
+        }),
+      ),
     );
     yield* browser.use("Open the app's page in a browser", (page) => page.goto(path));
     yield* browser.use("The browser Open app link and install action render", (page) =>

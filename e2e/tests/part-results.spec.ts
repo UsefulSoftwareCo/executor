@@ -2,6 +2,7 @@ import { expect, layer } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, FileSystem, Path, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { recoveryTitles as recoveryTitlesOn } from "../recovery-suite.ts";
 import { scenariosForSuite } from "../test-plan.ts";
 
 const script = "e2e/part-results.ts";
@@ -13,9 +14,7 @@ const cliTitles = plan
       scenario.targets.local.status === "scheduled" && new RegExp(pattern).test(scenario.title),
   )
   .map((scenario) => scenario.title);
-const recoveryTitles = plan
-  .filter((scenario) => scenario.file === "desktop-recovery.spec.ts")
-  .map((scenario) => scenario.title);
+const recoveryTitles = recoveryTitlesOn("linux");
 const parts = (count: number) =>
   Array.from({ length: count }, (_, index) => ({
     platform: "linux",
