@@ -133,8 +133,14 @@ export default defineConfig({
   },
   navigation: {
     sidebar: [
-      { label: "Getting started", items: ["/", "/connect-an-account"] },
+      { label: "Getting started", items: ["/", "/quickstart", "/connect-an-account"] },
       { label: "Agents and MCP", items: ["/mcp", "/mcp-clients", "/api-keys"] },
+      {
+        label: "Apps",
+        items: ["/apps/add", "/apps/source-and-git", "/apps/publish", "/apps/executor-app"],
+      },
+      { label: "Automation", items: ["/workflows", "/schedules", "/webhooks"] },
+      { label: "Skills", items: ["/skills"] },
       {
         label: "Concepts",
         items: [
@@ -145,6 +151,8 @@ export default defineConfig({
         ],
       },
       { label: "Build", items: ["/author-an-app", "/desktop-apps"] },
+      { label: "Desktop app", items: ["/desktop"] },
+      { label: "Cloud", items: ["/cloud/sso"] },
       {
         label: "Run Executor yourself",
         items: ["/run/cli", "/run/self-host", "/run/tracing", "/run/usage-analytics"],

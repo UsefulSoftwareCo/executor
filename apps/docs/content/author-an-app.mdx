@@ -424,7 +424,9 @@ the approval still decides.
 
 Deploying is an operation, not a command. Have your agent call it through the
 MCP endpoint. Read the version with `framework.release`, create the app from
-`index.ts` and the `package.json` that pins it, then deploy the same files:
+`index.ts` and the `package.json` that pins it, then deploy the same files. For
+an app with other source files, include them in `files` too, including any SQL
+migrations.
 
 <CodeGroup>
 
@@ -469,13 +471,14 @@ return await executor.appManagement.deploy({ path: { app: app.id }, body: { file
 
 </CodeGroup>
 
-From a shell, write the same two files into a directory, using the version
-`executor apps framework` prints:
+From a shell, save the two files in `./hello`, using the version
+`executor apps framework` prints. Run these commands from the parent directory
+with `jq` installed:
 
-```sh
-executor apps create --name "Hello" --files ./hello    # prints the app, including its id
-executor apps source --app <app-id> | jq -r .revision.commit
-executor apps deploy --app <app-id> --commit <first-commit>
+```bash
+APP_ID="$(executor apps create --name "Hello" --files ./hello | jq -r .id)"
+COMMIT="$(executor apps source --app "$APP_ID" | jq -r .revision.commit)"
+executor apps deploy --app "$APP_ID" --commit "$COMMIT"
 ```
 
 The app activates only after the build succeeds, and earlier versions are
