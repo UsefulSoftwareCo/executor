@@ -134,16 +134,15 @@ export const dispatchProvisioning = <R>(
     const binding = yield* Schema.decodeUnknownEffect(NativeProvisioning)(environment.Provisioning);
     const sql = yield* Effect.flatten(GroupDatabase);
     yield* recoverContributedDepartures.pipe(Effect.provideService(SqlClient.SqlClient, sql));
-    const jobs =
-      yield* sql`with candidates as (
+    const jobs = yield* sql`with candidates as (
       select id from hosted_provisioning where available_at <= now() and
         (status = 'queued' or (status = 'running' and updated_at < now() - interval '30 minutes'))
       order by case when kind = 'team' then 0 else 1 end, available_at
       for update skip locked limit 50
     ) update hosted_provisioning job set available_at = now() + interval '30 seconds'
       from candidates where job.id = candidates.id returning job.id, job.kind`.pipe(
-        Effect.flatMap(Schema.decodeUnknownEffect(ClaimedJobs)),
-      );
+      Effect.flatMap(Schema.decodeUnknownEffect(ClaimedJobs)),
+    );
     const dispatched = yield* Effect.forEach(
       jobs,
       (job) =>
