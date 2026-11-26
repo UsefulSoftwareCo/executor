@@ -39,6 +39,9 @@ export const siteFiles: ReadonlyArray<SitePattern> = [
   "/apple-touch-icon.png",
   "/og-image.png",
   "/pattern-graph-paper.svg",
+  "/robots.txt",
+  "/sitemap.xml",
+  "/sitemap-marketing.xml",
   securityTxt,
   clientMetadataLogoPath,
 ];

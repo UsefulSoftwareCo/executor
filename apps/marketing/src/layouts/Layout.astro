@@ -15,7 +15,8 @@ const {
 } = Astro.props
 
 const ogImage = new URL('/og-image.png', Astro.site ?? Astro.url).toString()
-const canonical = new URL(Astro.url.pathname, Astro.site ?? Astro.url).toString()
+const canonicalPath = Astro.url.pathname.replace(/\/+$/, '') || '/'
+const canonical = new URL(canonicalPath, Astro.site ?? Astro.url).toString()
 ---
 
 <html lang="en">

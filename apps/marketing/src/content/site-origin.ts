@@ -1,9 +1,9 @@
-const DEFAULT_SITE_ORIGIN = "https://executor.sh";
+export const productionSiteOrigin = "https://executor.sh";
 
 export const parseSiteOrigin = (
   value: string | undefined,
   name = "EXECUTOR_SITE_ORIGIN",
-  fallback = DEFAULT_SITE_ORIGIN,
+  fallback = productionSiteOrigin,
 ): string => {
   const origin = value ?? fallback;
   const url = new URL(origin);

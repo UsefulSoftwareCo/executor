@@ -2,6 +2,8 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import { createHash } from "node:crypto";
 import { Effect, FileSystem, Path, Schema } from "effect";
+import { productionSiteOrigin, siteOrigin } from "@executor-js/marketing/site-origin";
+import { v1SitePages } from "../src/contracts/site-paths.ts";
 import { siteRedirects } from "../src/implementation/site-redirects.ts";
 import {
   RetainedAssetList,
@@ -27,6 +29,18 @@ export class SiteAssetNotPublishable extends Schema.TaggedError<SiteAssetNotPubl
 ) {}
 
 type Asset = Readonly<{ source: string; relative: string }>;
+
+const markup = (tag: string, entry: string, paths: Iterable<string>) =>
+  [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    `<${tag} xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">`,
+    ...Array.from(paths, (path) => {
+      const url = new URL(path, siteOrigin).href.replaceAll("&", "&amp;");
+      return `  <${entry}><loc>${url}</loc></${entry}>`;
+    }),
+    `</${tag}>`,
+    "",
+  ].join("\n");
 
 const siteBuild = Effect.gen(function* () {
   const path = yield* Path.Path;
@@ -117,19 +131,21 @@ const siteBuild = Effect.gen(function* () {
     }),
   );
 
+  const pageRoute = (file: string) =>
+    file === "index.html"
+      ? "/"
+      : file.endsWith("/index.html")
+        ? `/${file.slice(0, -"/index.html".length)}`
+        : `/${file.slice(0, -".html".length)}`;
+
   const pageRedirects = (pageAssets: ReadonlyArray<Asset>, prefix: string) => {
     const lines = new Set<string>();
     for (const asset of pageAssets) {
       if (!asset.relative.endsWith(".html")) continue;
       if (asset.relative === "404.html") continue;
       const relative = `${prefix}${asset.relative.replaceAll(path.sep, "/")}`;
-      const withoutPage = relative.endsWith("/index.html")
-        ? relative.slice(0, -"/index.html".length)
-        : relative === "index.html"
-          ? ""
-          : relative.slice(0, -".html".length);
-      if (withoutPage === "") continue;
-      const route = `/${withoutPage}`;
+      const route = pageRoute(relative);
+      if (route === "/") continue;
       lines.add(`${route} /${relative} 200`);
       lines.add(`${route}/ ${route} 308`);
     }
@@ -152,6 +168,30 @@ const siteBuild = Effect.gen(function* () {
     : [];
   const redirects = new Set([...marketingRedirects, ...customMarketingRedirects, ...docsRedirects]);
   yield* fs.writeFileString(path.join(output, "_redirects"), yield* siteRedirects(redirects));
+
+  const marketingPages = new Set<string>();
+  for (const asset of marketingAssets) {
+    if (!asset.relative.endsWith(".html") || asset.relative === "404.html") continue;
+    const route = pageRoute(asset.relative.replaceAll(path.sep, "/"));
+    if (route === "/apps/detail" || v1SitePages.some((legacy) => legacy === route)) continue;
+    const html = yield* fs.readFileString(asset.source);
+    if (/<meta name="robots" content="noindex\b/iu.test(html)) continue;
+    marketingPages.add(route);
+  }
+  yield* fs.writeFileString(
+    path.join(output, "sitemap-marketing.xml"),
+    markup("urlset", "url", [...marketingPages].sort()),
+  );
+  yield* fs.writeFileString(
+    path.join(output, "sitemap.xml"),
+    markup("sitemapindex", "sitemap", ["/sitemap-marketing.xml", "/docs/sitemap.xml"]),
+  );
+  yield* fs.writeFileString(
+    path.join(output, "robots.txt"),
+    siteOrigin === productionSiteOrigin
+      ? `User-agent: *\nAllow: /\nSitemap: ${siteOrigin}/sitemap.xml\n`
+      : "User-agent: *\nDisallow: /\n",
+  );
 
   const headerFiles: Array<string> = retainedAssetFolders.map(
     (folder) => `/${folder}/*\n  Cache-Control: ${retainedAssetCacheControl}`,
