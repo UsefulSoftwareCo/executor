@@ -4106,7 +4106,7 @@ export const scenarios = plan({
     targets: {
       "self-host": scheduled,
       cloud: managedCloud,
-      local: scheduled,
+      local: na("Local has one host user; this scenario requires hosted organization actors."),
     },
   },
   personalDataClientIsolation: {
@@ -4116,7 +4116,7 @@ export const scenarios = plan({
     targets: {
       "self-host": scheduled,
       cloud: na("The proof uses two E2E operator OAuth clients on one issuer."),
-      local: scheduled,
+      local: na("Local has one host user; this scenario requires hosted organization actors."),
     },
   },
   personalDataReconnectCadence: {
