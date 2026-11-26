@@ -4,7 +4,6 @@ import { InstallId } from "@executor-js/telemetry/product-analytics";
 import { lock } from "proper-lockfile";
 import { dataDirectory } from "../contracts/config.ts";
 
-/** Startup failures contain instructions, never secret values or parser input. */
 class BootstrapError extends Schema.TaggedError<BootstrapError>()("SelfHostBootstrapError", {
   message: Schema.String,
 }) {}
@@ -12,7 +11,6 @@ class BootstrapError extends Schema.TaggedError<BootstrapError>()("SelfHostBoots
 const sessionSecret = Schema.String.check(Schema.isMinLength(32));
 const encryptionKey = Schema.String.check(Schema.isPattern(/^[0-9a-fA-F]{64}$/u));
 
-/** Resolve self-host defaults before opening the database or starting diagnostics. */
 export const selfHostConfiguration = Effect.scoped(
   Effect.gen(function* () {
     const base = yield* ConfigProvider.ConfigProvider;
@@ -43,7 +41,6 @@ export const selfHostConfiguration = Effect.scoped(
       });
 
     yield* fs.makeDirectory(directory, { recursive: true, mode: 0o700 });
-    // Serialize first-boot key creation; the database separately owns the lifetime lock.
     yield* Effect.acquireRelease(
       Effect.tryPromise({
         try: () =>
@@ -99,8 +96,6 @@ export const selfHostConfiguration = Effect.scoped(
         yield* parent.sync;
         return Redacted.make(generated);
       });
-    // Analytics identity is not needed to read existing data, so a missing or invalid file is
-    // replaced instead of refusing to start.
     const resolveIdentity = (
       variable: string,
       filename: string,
@@ -141,7 +136,6 @@ export const selfHostConfiguration = Effect.scoped(
       EXECUTOR_ENCRYPTION_KEY: Redacted.value(key),
       EXECUTOR_INSTALL_ID: install,
       EXECUTOR_ANALYTICS_SECRET: analyticsSecret,
-      // The packaged image's native host supplies these for the workerd product.
       EXECUTOR_HOST_OS: process.platform,
       EXECUTOR_HOST_ARCH: process.arch,
     }).pipe(ConfigProvider.orElse(base));

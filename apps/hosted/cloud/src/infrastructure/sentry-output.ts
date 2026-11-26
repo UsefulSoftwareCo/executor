@@ -1,4 +1,3 @@
-/** Public configuration exported by the persistent Sentry Alchemy stack. */
 export interface SentryOutput {
   readonly organization: string;
   readonly browserProject: string;

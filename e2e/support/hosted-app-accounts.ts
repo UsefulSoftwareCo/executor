@@ -1,4 +1,3 @@
-/** Synthetic personal and shared accounts that members link to one hosted app. */
 import { expect } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -10,19 +9,16 @@ import { appsManifest } from "./apps-release.ts";
 import { connectionsPath, linkAccount } from "./app-accounts.ts";
 
 export const Access = Schema.Struct({ revision: Schema.String });
-/** The `who` tool's result: the context it ran in and the accounts it received. */
 export const Who = Schema.Struct({
   context: Schema.Struct({ auth: Schema.Boolean, profile: Schema.Boolean }),
   account: Schema.String,
   extra: Schema.Array(Schema.String),
 });
-/** Require a successful `who` call and decode its result. */
 export const who = (response: Response) =>
   Effect.gen(function* () {
     expect(response.status, JSON.stringify(response.body)).toBe(200);
     return yield* body(Who, response);
   });
-/** The fixture app's source. Its `service` requirement is the one the skill text depends on. */
 export const appAccountsSource = `import { defineApp, defineProvider, secrets, query, mutation, workflow, userInterval, object, string, router,
   type QueryContext, type MutationContext, type WorkflowContext } from "apps";
 const service = defineProvider({ name: "Linked account fixture", auth: { key: secrets({ label: "Key", fields: object({ token: string() }) }) } });
@@ -47,17 +43,11 @@ export default defineApp(requirements, async (ctx) => ({
   skills: [{ name: "selected-account", description: "Instructions for the selected account", files: [{ path: "SKILL.md",
     content: "---\\nname: selected-account\\ndescription: Instructions for the selected account\\n---\\n" + ctx.user.accounts.service.id }] }],
 }));`;
-/** The fixture app's `ticks` table. */
 export const appAccountsMigration = {
   path: "migrations/0001_ticks.sql",
   content: "CREATE TABLE ticks (seq INTEGER PRIMARY KEY AUTOINCREMENT, account TEXT NOT NULL);\n",
 };
 
-/**
- * An app everyone may use, with a personal account the member (Alice) and the admin (Bob) each
- * connected from the app for its plain `service` requirement, which links it there for them; their
- * many() `extra` requirement has no links yet. The owner links nothing.
- */
 export const appAccountsFixture = Effect.gen(function* () {
   const api = yield* Api,
     actors = yield* Actors;
@@ -92,26 +82,17 @@ export const appAccountsFixture = Effect.gen(function* () {
     [identity(actors.member), identity(actors.admin)],
     { concurrency: 2 },
   );
-  /**
-   * Connect an account from the app for one of its user requirements, `service` unless named. The
-   * connection links the new account to that requirement only, for the connecting member: it
-   * replaces their link of a plain requirement and joins a many() one.
-   */
   const connect = (
     actor: Session,
     label: string,
-    options: { readonly shared?: boolean; readonly requirement?: string } = {},
+    options: { readonly requirement?: string } = {},
   ) =>
     Effect.gen(function* () {
       const connection = yield* api.request(
         actor,
         "POST",
         connectionsPath(path, "user", options.requirement ?? "service"),
-        {
-          destination: options.shared
-            ? { kind: "shared", audience: { kind: "everyone" } }
-            : { kind: "personal" },
-        },
+        {},
       );
       expect(connection.status, JSON.stringify(connection.body)).toBe(200);
       const request = yield* body(Resource, connection);
@@ -130,14 +111,12 @@ export const appAccountsFixture = Effect.gen(function* () {
     [connect(actors.member, "Alice mail"), connect(actors.admin, "Bob mail")],
     { concurrency: 2 },
   );
-  /** Call a tool as `actor`. It runs with the accounts `actor` linked to the app. */
   const call = (actor: Session, tool: "who" | "tick" | "ticks" = "who") =>
     api.request(actor, "POST", `${path}/tools/call`, {
       tool,
       kind: tool === "tick" ? "mutation" : "query",
       input: {},
     });
-  /** The accounts `actor` links to this app, as the inventory reports them. */
   const inventoryLinks = (actor: Session) =>
     api.request(actor, "GET", `${prefix}/inventory`).pipe(
       Effect.flatMap((response) => body(Inventory, response)),
@@ -161,19 +140,19 @@ export const appAccountsFixture = Effect.gen(function* () {
   };
 });
 
-/**
- * Bob shares an account with everyone, connecting it from the app for `service`, which replaces
- * his personal account there. Each member then uses the shared account for `service` and links
- * their personal account and the shared one, in that order, to `extra`.
- */
-export const sharedAccountFixture = Effect.gen(function* () {
+export const secondAccountFixture = Effect.gen(function* () {
   const fixture = yield* appAccountsFixture;
   const { actors, path, connect, mailA, mailB } = fixture;
-  const shared = yield* connect(actors.admin, "Shared mail", { shared: true });
-  yield* linkAccount(actors.admin, path, "extra", mailB);
-  yield* linkAccount(actors.admin, path, "extra", shared);
-  yield* linkAccount(actors.member, path, "service", shared);
-  yield* linkAccount(actors.member, path, "extra", mailA);
-  yield* linkAccount(actors.member, path, "extra", shared);
-  return { ...fixture, shared };
+  const [secondA, secondB] = yield* Effect.all(
+    [connect(actors.member, "Alice second mail"), connect(actors.admin, "Bob second mail")],
+    { concurrency: 2 },
+  );
+  for (const [actor, first, second] of [
+    [actors.member, mailA, secondA],
+    [actors.admin, mailB, secondB],
+  ] as const) {
+    yield* linkAccount(actor, path, "extra", first);
+    yield* linkAccount(actor, path, "extra", second);
+  }
+  return { ...fixture, secondA, secondB };
 });

@@ -1,4 +1,3 @@
-/** Feedback from agents and people using this local Executor; local has no organizations. */
 import { RequestRejection } from "@executor-js/sdk/core";
 import {
   Feedback,
@@ -8,7 +7,6 @@ import {
 import { Schema } from "effect";
 import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
 
-/** The same `feedback.submit` operation as hosted Executor, without an organization parameter. */
 const localFeedbackApi = HttpApi.make("local-feedback").add(
   HttpApiGroup.make("feedback").add(
     HttpApiEndpoint.post("submit", "/v1/feedback", {
@@ -23,5 +21,4 @@ const localFeedbackApi = HttpApi.make("local-feedback").add(
       ),
   ),
 );
-/** Every endpoint answers a request its schema rejects with `RequestInvalid`. */
 export const LocalFeedbackApi = localFeedbackApi.middleware(RequestRejection);

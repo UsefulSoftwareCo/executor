@@ -1,4 +1,3 @@
-/** Follow a new app origin's sign-in navigations before asserting its authored UI. */
 import { expect } from "@effect/vitest";
 import { Effect, Schedule, Schema } from "effect";
 import { Api, body, type Session } from "./api.ts";
@@ -15,7 +14,6 @@ const AppLocation = Schema.Union([
 ]);
 class DomainPending extends Schema.TaggedError<DomainPending>()("DomainPending", {}) {}
 
-/** Pending provisioning exposes no URL; only a ready domain may enter the browser. */
 export const waitForAppUrl = (session: Session, path: string) =>
   Effect.gen(function* () {
     const api = yield* Api;
@@ -43,7 +41,6 @@ export const waitForAppUrl = (session: Session, path: string) =>
     return url;
   });
 
-/** The dashboard is signed in; the new app must complete its own browser-bound handshake. */
 export const openPrivateApp = (url: string) =>
   Effect.gen(function* () {
     const browser = yield* Browser;
@@ -51,8 +48,6 @@ export const openPrivateApp = (url: string) =>
     const origin = destination.origin;
     yield* browser.use("A new app origin redirects through its sign-in callback", (page) =>
       Promise.all([
-        // The callback is a redirect, never a rendered page. A previous page can still be
-        // navigating when this starts; only this origin's callback response counts.
         page.waitForResponse((response) => {
           const value = new URL(response.url());
           return (

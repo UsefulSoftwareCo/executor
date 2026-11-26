@@ -1,68 +1,15 @@
-/**
- * Rewrites authored app source from `{ accounts }` requirements to accounts by scope
- * (apps@0.0.1-beta.90, host protocol 13). See plans/app-and-user-accounts.md.
- *
- *   node scripts/codemods/app-user-accounts.ts [--check] <file or directory>...
- *
- * Every existing requirement is a caller's account, so it becomes a user requirement:
- *
- * - `{ accounts: { github } }` becomes `{ user: { accounts: { github } } }`; `{ accounts: {} }`
- *   loses the property, so `{ accounts: {} }` becomes `{}`.
- * - In a handler's context, `ctx.accounts` becomes `ctx.user.accounts` and a destructured
- *   `({ accounts })` becomes `({ user: { accounts } })`. A context is the first parameter of a
- *   handler passed to `query`, `mutation`, `workflow` or `defineApp` of `apps`, of a webhook's
- *   `register`, `handle` or `unregister`, or of the callback of a workflow step's `do`, or a
- *   parameter typed as a context, such as `ctx: MutationContext<typeof requirements>`. Names are
- *   resolved through imports, so `import { query as q } from "apps"` is read as `query` and a local
- *   `query` function is not; a name declared nowhere, as in a snippet, is read as written. A
- *   webhook is an object `defineApp` registers under `webhooks` or one typed as `Webhook`.
- * - A webhook's `account: "github"` becomes `account: { user: "github" }`.
- * - `cron` and `interval` become `userCron` and `userInterval` in an app with user requirements,
- *   and `appCron` and `appInterval` otherwise. An app schedule runs without a caller and cannot
- *   ask for approval, so a schedule of a mutation with an approval stays a user schedule. A
- *   handler of an app schedule's mutation that declares its context without a type is given
- *   `MutationContext<typeof requirements, "app">`: an undeclared type is the caller's context. A
- *   `mutation<Input, Output>(…)` call gets that type as its third type argument, which otherwise
- *   defaults to the caller's context, even for a handler that declares no parameters. A mutation
- *   made by anything but `mutation` of `apps`, such as a wrapper, or one out of reach of the
- *   app's requirements, such as one declared outside the factory declaring them, is left to a person.
- *   An import of `cron` or `interval` that code left as written still uses is kept.
- *
- * The source is parsed with the TypeScript compiler, so strings and comments are never rewritten
- * and only bindings of a context are. A file that imports `apps` is app source. In any other
- * TypeScript or JavaScript file, string and template literals holding app source are rewritten,
- * such as test fixtures; in Markdown, fenced code blocks. A node after a
- * `// app-user-accounts: keep` comment is left as written, such as a fixture for an older `apps`
- * release; in Markdown, a fence after a line with that marker, such as
- * `<!-- app-user-accounts: keep -->`. `--check` rewrites
- * nothing and exits 1 when a file would change.
- *
- * Warnings name what needs a person: requirements it cannot see, accounts read in an app without
- * user requirements, schedules that become app schedules, and a factory that reads `user`, which
- * is absent while the app runs without a caller.
- */
 import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { extname, join } from "node:path";
 import ts from "typescript-5";
 
-/** Report what needs a person, at a file offset. */
 type Warn = (message: string, offset: number) => void;
 type Edit = { readonly start: number; readonly end: number; readonly text: string };
 
-/** What one app's source says about its requirements, shared by its pieces of text. */
 type AppFacts = {
-  /** Whether the app declares user requirements; undefined when no declaration is visible. */
   hasUser: boolean | undefined;
-  /** Whether the app declares app requirements. */
   hasApp: boolean;
-  /** The schedule constructors the rewritten source uses, such as `userInterval`. */
   readonly constructors: Set<string>;
-  /** Whether the source is typechecked: a file of app source, not a string in another file. */
   readonly typed: boolean;
-  /**
-   * In app source written in strings, names that hold a handler's context outside the string being
-   * read, such as `ctx` in `"ctx.accounts.mail.id"` spliced into a handler.
-   */
   readonly contextNames: Set<string>;
 };
 
@@ -79,7 +26,6 @@ const markdownExtensions = new Set([".md", ".mdx"]);
 const skippedDirectories = new Set(["node_modules", "dist", ".git", ".turbo", ".output"]);
 const keepMarker = "app-user-accounts: keep";
 
-/** Apply non-overlapping edits; an edit inside one already taken is dropped. */
 const applyEdits = (text: string, edits: readonly Edit[]) => {
   const ordered = [...edits].sort(
     (left, right) => left.start - right.start || left.end - right.end,
@@ -94,19 +40,11 @@ const applyEdits = (text: string, edits: readonly Edit[]) => {
   return result + text.slice(position);
 };
 
-/**
- * App source to rewrite: its text, as TypeScript reads it, and the file offset of each of its
- * characters. Source in a string literal is read unescaped; a template literal's substitutions are
- * host code, read as placeholder identifiers.
- */
 type Piece = {
   readonly text: string;
-  /** `offsets[i]` is the file offset where character `i` starts; one more entry ends the text. */
   readonly offsets: readonly number[];
-  /** How inserted text is escaped for the literal holding it. */
   readonly escape: (text: string) => string;
   readonly scriptKind: ts.ScriptKind;
-  /** Whether the piece is typechecked TypeScript, which type annotations may be added to. */
   readonly typescript: boolean;
 };
 
@@ -120,7 +58,6 @@ const escapeFor =
           .replace(new RegExp(quote, "g"), `\\${quote}`)
           .replace(/\n/g, "\\n");
 
-/** Unescape a literal's raw text from `start` to `end`, recording where each character came from. */
 const cook = (file: string, start: number, end: number, text: string[], offsets: number[]) => {
   for (let index = start; index < end;) {
     const char = file[index]!;
@@ -166,12 +103,10 @@ const cook = (file: string, start: number, end: number, text: string[], offsets:
   }
 };
 
-/** `accounts` written the way the release before host protocol 13 did. */
 const unmigrated = /(?<!\buser\s*)(?<!\.\.)\.accounts\b|(?<!\buser\s*:\s*)\{\s*accounts\b/;
 
 const placeholder = (index: number) => `$__app_user_accounts_${index}__$`;
 
-/** A string or template literal of host code as a piece of app source. */
 const literalPiece = (
   source: ts.SourceFile,
   node: ts.StringLiteral | ts.NoSubstitutionTemplateLiteral | ts.TemplateExpression,
@@ -186,7 +121,6 @@ const literalPiece = (
   else {
     cook(file, start + 1, node.head.end - 2, text, offsets);
     for (const span of node.templateSpans) {
-      // `${…}`, from the dollar sign to the closing brace, reads as one placeholder identifier.
       const open = span.expression.pos - 2;
       const close = span.literal.getStart(source) + 1;
       const name = placeholder(substitutions.length);
@@ -214,7 +148,6 @@ const literalPiece = (
   };
 };
 
-/** A file or code block, as written. */
 const plainPiece = (
   text: string,
   offset: number,
@@ -228,13 +161,11 @@ const plainPiece = (
   typescript,
 });
 
-/** Whether a comment before `node` says to keep it as written. */
 const kept = (source: ts.SourceFile, node: ts.Node) =>
   (ts.getLeadingCommentRanges(source.text, node.pos) ?? []).some(({ pos, end }) =>
     source.text.slice(pos, end).includes(keepMarker),
   );
 
-/** Visit `node` and its descendants, skipping any a keep comment marks. */
 const walk = (source: ts.SourceFile, node: ts.Node, visit: (node: ts.Node) => void) => {
   const step = (child: ts.Node) => {
     if (kept(source, child)) return;
@@ -253,13 +184,11 @@ const nameOf = (node: ts.Node | undefined): string | undefined =>
         ? node.text
         : undefined;
 
-/** The entry points of `apps` that authors import. Host code imports others, such as `apps/contracts`. */
 const appsEntry =
   /^apps(\/(mcp(\/stdio)?|graphql|openapi|operations\/approval|skills|react|client))?$/;
 const isAppsModule = (specifier: ts.Expression | undefined) =>
   specifier !== undefined && ts.isStringLiteral(specifier) && appsEntry.test(specifier.text);
 
-/** An expression without parentheses, `as`, `satisfies` or a type assertion around it. */
 const unwrap = <Node extends ts.Node>(node: Node): Node | ts.Expression =>
   ts.isParenthesizedExpression(node) ||
   ts.isAsExpression(node) ||
@@ -279,18 +208,13 @@ const isFunction = (node: ts.Node): node is FunctionNode =>
   ts.isFunctionDeclaration(node) ||
   ts.isMethodDeclaration(node);
 
-/** One parsed piece of app source and the edits for it, in file offsets. */
 class Rewrite {
   readonly source: ts.SourceFile;
   readonly checker: ts.TypeChecker;
   readonly edits: Edit[] = [];
-  /** The same edits, in offsets of the piece. */
   readonly pieceEdits: Edit[] = [];
-  /** The `cron` and `interval` names this rewrite renamed. */
   readonly renamed = new Set<ts.Identifier>();
-  /** Handler contexts and mutation calls an app schedule's check has already read. */
   readonly typed = new Set<ts.ParameterDeclaration | ts.CallExpression>();
-  /** Whether this rewrite added `MutationContext` to the import of `apps`. */
   contextImported = false;
 
   readonly piece: Piece;
@@ -325,14 +249,12 @@ class Rewrite {
     this.parsed = program.getSyntacticDiagnostics(this.source).length === 0;
   }
 
-  /** Whether the piece parses as a whole; a fragment of a larger source may not. */
   readonly parsed: boolean;
 
   warn(node: ts.Node, message: string) {
     this.report(message, this.piece.offsets[this.start(node)]!);
   }
 
-  /** Replace characters `start` to `end` of the piece. */
   replace(start: number, end: number, text: string) {
     this.pieceEdits.push({ start, end, text });
     this.edits.push({
@@ -358,24 +280,16 @@ class Rewrite {
     return this.checker.getSymbolAtLocation(node);
   }
 
-  /** The variable a name reads: in `{ accounts }`, the `accounts` binding, not the property. */
   referent(node: ts.Identifier) {
     return ts.isShorthandPropertyAssignment(node.parent) && node.parent.name === node
       ? this.checker.getShorthandAssignmentValueSymbol(node.parent)
       : this.symbol(node);
   }
 
-  /** The declaration a name refers to, through imports in the same piece. */
   declaration(node: ts.Node) {
     return this.symbol(node)?.declarations?.[0];
   }
 
-  /**
-   * The export of `apps` an expression names, through an alias or a namespace import: `query` for
-   * `q` after `import { query as q } from "apps"`, or for `apps.query` after
-   * `import * as apps from "apps"`. A name declared nowhere, as in a snippet written without its
-   * imports, is taken as written; one declared any other way, such as a local function, is not.
-   */
   appsExport(node: ts.Node): string | undefined {
     const expression = unwrap(node);
     if (ts.isIdentifier(expression)) {
@@ -391,10 +305,6 @@ class Rewrite {
     return undefined;
   }
 
-  /**
-   * The export of `apps` a callee names, also through constants holding it, such as `m` after
-   * `const m = mutation`.
-   */
   appsCallee(node: ts.Expression, seen = new Set<ts.Node>()): string | undefined {
     const expression = unwrap(node);
     const declaration = ts.isIdentifier(expression) ? this.declaration(expression) : undefined;
@@ -411,10 +321,6 @@ class Rewrite {
     return this.appsExport(expression);
   }
 
-  /**
-   * Whether `name`, written at `at`, would name what it names where it is written. A name declared
-   * nowhere, as in a snippet, is taken as written when nothing else takes it at `at`.
-   */
   visibleAt(name: ts.Identifier, at: ts.Node) {
     const target = this.symbol(name);
     const found = this.checker
@@ -426,7 +332,6 @@ class Rewrite {
     );
   }
 
-  /** Whether a name is `import * as apps from "apps"`. */
   appsNamespace(name: ts.Identifier) {
     const declaration = this.declaration(name);
     return (
@@ -436,7 +341,6 @@ class Rewrite {
     );
   }
 
-  /** The type `apps` exports that a type reference names, such as `Webhook`. */
   appsType(node: ts.TypeReferenceNode) {
     const name = node.typeName;
     if (ts.isIdentifier(name)) return this.appsExport(name);
@@ -445,7 +349,6 @@ class Rewrite {
       : undefined;
   }
 
-  /** Identifiers in `scope` naming what `name` declares, outside code a keep comment marks. */
   references(name: ts.Identifier, scope: ts.Node) {
     const target = this.symbol(name);
     const found: ts.Identifier[] = [];
@@ -457,10 +360,6 @@ class Rewrite {
     return found;
   }
 
-  /**
-   * Whether an identifier in `scope` that `counts` accepts refers to the binding `name` declares.
-   * Code a keep comment marks counts: it is left as written, so it still refers to the binding.
-   */
   read(name: ts.Identifier, scope: ts.Node, counts: (node: ts.Identifier) => boolean = () => true) {
     const target = this.symbol(name);
     if (target === undefined) return false;
@@ -474,12 +373,10 @@ class Rewrite {
     return found;
   }
 
-  /** Whether anything other than a renamed schedule refers to an import. */
   unrenamed(name: ts.Identifier) {
     return this.read(name, this.source, (node) => !this.renamed.has(node));
   }
 
-  /** Remove one element of a list, with the comma that separates it. */
   removeElement(list: ts.NodeArray<ts.Node>, index: number) {
     const element = list[index]!;
     if (index < list.length - 1)
@@ -495,7 +392,6 @@ class Rewrite {
     this.schedules();
   }
 
-  /** Requirement objects: `defineApp`'s first argument and what context types name. */
   requirementObjects() {
     const objects = new Set<ts.ObjectLiteralExpression | ts.TypeLiteralNode>();
     const resolve = (node: ts.Node | undefined) => {
@@ -536,7 +432,6 @@ class Rewrite {
     return objects;
   }
 
-  /** `accounts: { github }` becomes `user: { accounts: { github } }`; `accounts: {}` goes. */
   requirements() {
     let visible = false;
     let hasUser = false;
@@ -571,10 +466,6 @@ class Rewrite {
     if (visible) this.facts.hasUser = (this.facts.hasUser ?? false) || hasUser;
   }
 
-  /**
-   * What an expression holds, through variables: `{ … }` for `push` after `const push = { … }`.
-   * A declaration a keep comment marks is not read.
-   */
   value(node: ts.Node | undefined): ts.Node | undefined {
     if (node === undefined) return undefined;
     const expression = unwrap(node);
@@ -587,7 +478,6 @@ class Rewrite {
     return this.value(declaration.initializer);
   }
 
-  /** The objects `defineApp` defines the app with: its second argument or what its factory returns. */
   definitions() {
     const objects: ts.ObjectLiteralExpression[] = [];
     const add = (node: ts.Node | undefined) => {
@@ -609,10 +499,6 @@ class Rewrite {
     return objects;
   }
 
-  /**
-   * Webhook objects: those `defineApp` registers under `webhooks`, and ones typed as the `Webhook`
-   * of `apps`, such as `{ … } satisfies Webhook<…>`.
-   */
   webhookObjects() {
     const objects = new Set<ts.ObjectLiteralExpression>();
     const add = (node: ts.Node | undefined) => {
@@ -644,11 +530,6 @@ class Rewrite {
     return objects;
   }
 
-  /**
-   * The handlers whose first parameter is a context, and parameters typed as a context. A handler
-   * is one passed to `query`, `mutation`, `workflow` or `defineApp` of `apps`, a webhook object's
-   * `register`, `handle` or `unregister`, or the callback of a workflow step's `do`.
-   */
   contextParameters() {
     const parameters = new Set<ts.ParameterDeclaration>();
     const workflows = new Set<ts.ParameterDeclaration>();
@@ -681,7 +562,6 @@ class Rewrite {
         if (ts.isMethodDeclaration(property)) handler(property);
         else if (ts.isPropertyAssignment(property)) handler(property.initializer);
       }
-    // A workflow step's callback: `ctx.step.do("name", async (step) => …)`.
     this.visit((node) => {
       if (
         ts.isCallExpression(node) &&
@@ -691,17 +571,12 @@ class Rewrite {
       )
         for (const argument of node.arguments) if (isFunction(argument)) handler(argument);
     });
-    // App source in a string may be one handler, spliced into a call elsewhere.
     if (!this.facts.typed)
       for (const statement of this.source.statements)
         if (ts.isExpressionStatement(statement)) handler(statement.expression);
     return parameters;
   }
 
-  /**
-   * Whether an expression is a workflow's step: `ctx.step` of a workflow's context, or `step`
-   * destructured from one. Names declared nowhere, as in a snippet, are read as written.
-   */
   step(node: ts.Expression, workflows: ReadonlySet<ts.ParameterDeclaration>): boolean {
     const expression = unwrap(node);
     const context = (name: ts.Identifier) => {
@@ -733,7 +608,6 @@ class Rewrite {
     return initializer !== undefined && ts.isIdentifier(initializer) && context(initializer);
   }
 
-  /** Whether a type names a context, such as `MutationContext<R>` or `Pick<WebhookCtx, "fetch">`. */
   contextType(type: ts.TypeNode) {
     let found = false;
     const visit = (node: ts.Node) => {
@@ -745,11 +619,9 @@ class Rewrite {
     return found;
   }
 
-  /** `ctx.accounts` becomes `ctx.user.accounts`; `({ accounts })` becomes `({ user: { accounts } })`. */
   contexts() {
     for (const parameter of this.contextParameters()) {
       const scope = parameter.parent;
-      // `Pick<WebhookCtx, "accounts" | "fetch">` picks `user` instead.
       if (parameter.type !== undefined && this.facts.hasUser !== false)
         walk(this.source, parameter.type, (node) => {
           if (
@@ -769,7 +641,6 @@ class Rewrite {
             parent.name.text === "accounts"
           )
             this.account(parent.name, `${reference.text}.accounts`);
-          // `const { accounts } = ctx`
           else if (
             ts.isVariableDeclaration(parent) &&
             parent.initializer === reference &&
@@ -780,8 +651,6 @@ class Rewrite {
       } else if (ts.isObjectBindingPattern(parameter.name)) this.pattern(parameter.name);
     }
     if (this.facts.typed) return;
-    // A context bound outside this string: `"ctx.accounts.mail.id"`. Prose that only mentions
-    // `ctx.accounts` does not parse.
     this.visit((node) => {
       if (
         ts.isPropertyAccessExpression(node) &&
@@ -795,7 +664,6 @@ class Rewrite {
     });
   }
 
-  /** Warn where app source that does not parse still reads `accounts` after the rewrite. */
   unparsed() {
     if (!this.parsed && unmigrated.test(applyEdits(this.piece.text, this.pieceEdits)))
       this.warn(
@@ -804,7 +672,6 @@ class Rewrite {
       );
   }
 
-  /** Rewrite one read of a context's `accounts`, unless the app declares no user requirements. */
   account(name: ts.MemberName, read: string) {
     if (this.facts.hasUser === false)
       this.warn(
@@ -814,7 +681,6 @@ class Rewrite {
     else this.insert(this.start(name), "user.");
   }
 
-  /** The `accounts` element of a destructured context. */
   pattern(pattern: ts.ObjectBindingPattern) {
     for (const [index, element] of pattern.elements.entries()) {
       if (nameOf(element.propertyName ?? element.name) !== "accounts" || element.dotDotDotToken)
@@ -824,7 +690,6 @@ class Rewrite {
         this.insert(element.end, " }");
         continue;
       }
-      // No user requirements: an unused binding goes; a used one is left for a person.
       const bound: ts.Identifier[] = [];
       const collect = (name: ts.BindingName) => {
         if (ts.isIdentifier(name)) bound.push(name);
@@ -833,7 +698,6 @@ class Rewrite {
             if (!ts.isOmittedExpression(inner)) collect(inner.name);
       };
       collect(element.name);
-      // A binding is read anywhere in its lexical scope, not only in the statement declaring it.
       const used = bound.some((name) => this.read(name, this.source));
       if (used)
         this.warn(
@@ -842,7 +706,6 @@ class Rewrite {
         );
       else if (pattern.elements.length > 1) this.removeElement(pattern.elements, index);
       else {
-        // The whole parameter destructured only `accounts`.
         const parameter = pattern.parent;
         if (ts.isParameter(parameter) && ts.isFunctionLike(parameter.parent)) {
           const list = parameter.parent.parameters;
@@ -858,14 +721,12 @@ class Rewrite {
           (ts.getLeadingCommentRanges(this.source.text, parameter.parent.parent.pos) ?? [])
             .length === 0
         )
-          // `const { accounts } = ctx;` goes, with its line.
           this.replace(parameter.parent.parent.pos, parameter.parent.parent.end, "");
         else this.replace(this.start(pattern), pattern.end, "{}");
       }
     }
   }
 
-  /** A webhook's `account: "github"` becomes `account: { user: "github" }`. */
   webhooks() {
     for (const webhook of this.webhookObjects())
       for (const property of webhook.properties)
@@ -880,7 +741,6 @@ class Rewrite {
         }
   }
 
-  /** The `mutation(…)` call a schedule names, when this piece declares it. */
   mutationOf(argument: ts.Expression): ts.CallExpression | undefined {
     const expression = unwrap(argument);
     if (ts.isCallExpression(expression)) return expression;
@@ -896,13 +756,11 @@ class Rewrite {
     return ts.isCallExpression(value) ? value : undefined;
   }
 
-  /** `cron` and `interval` become the constructor of the scope the app's requirements choose. */
   schedules() {
     this.visit((node) => {
       if (!ts.isCallExpression(node) || node.arguments.length !== 3) return;
       const callee = this.appsExport(node.expression);
       if (callee !== "cron" && callee !== "interval") return;
-      // `cron(…)`, or `apps.cron(…)` through a namespace import.
       const written = ts.isIdentifier(node.expression)
         ? node.expression
         : ts.isPropertyAccessExpression(node.expression) && ts.isIdentifier(node.expression.name)
@@ -954,12 +812,6 @@ class Rewrite {
     });
   }
 
-  /**
-   * An app schedule's mutation runs without a caller. A handler typed `MutationContext<R>` is
-   * retyped to the `"app"` scope, and one that declares its context without a type is given that
-   * type; one that declares no parameters already fits. A call with explicit type arguments takes
-   * its context from the third, which defaults to the caller's, so that one is added or retyped.
-   */
   appMutation(node: ts.Node, call: ts.CallExpression | undefined, schedule: string) {
     if (call === undefined) {
       if (this.facts.typed)
@@ -969,7 +821,6 @@ class Rewrite {
         );
       return;
     }
-    // A wrapper's type parameters and handler are its own, not those of `mutation`.
     if (this.appsCallee(call.expression) !== "mutation") {
       if (!this.typed.has(call)) {
         this.typed.add(call);
@@ -996,13 +847,10 @@ class Rewrite {
     if (parameter === undefined || this.typed.has(parameter)) return;
     this.typed.add(parameter);
     if (parameter.type !== undefined) this.appType(parameter.type, schedule);
-    // The third type argument types the context.
     else if (explicit === undefined) this.appContext(node, parameter, schedule);
   }
 
-  /** Retype a context type `MutationContext<R>` to the `"app"` scope, or name one that is neither. */
   appType(type: ts.TypeNode, schedule: string) {
-    // Only `MutationContext` of `apps` is known to take the scope second, not an alias of it.
     const context = ts.isTypeReferenceNode(type) && this.appsType(type) === "MutationContext";
     const scope = context ? type.typeArguments : undefined;
     if (scope?.length === 1) this.insert(scope[0]!.end, ', "app"');
@@ -1013,11 +861,6 @@ class Rewrite {
       );
   }
 
-  /**
-   * Type a handler's undeclared context as the `"app"` scope's, which an app schedule needs: a
-   * handler that declares a context without a type gets the caller's. Source that is not
-   * typechecked TypeScript, such as app source in a string, is left as written.
-   */
   appContext(node: ts.Node, parameter: ts.ParameterDeclaration, schedule: string) {
     if (!this.piece.typescript) return;
     const warning = `${schedule}: its handler declares a context without a type, which is the caller's; type it MutationContext<typeof requirements, "app">, or declare no parameters`;
@@ -1025,9 +868,7 @@ class Rewrite {
     const type = this.appContextType(node, parameter, schedule, warning);
     if (type === undefined) return;
     const annotation = `: ${type}`;
-    // The type follows the name and a `?`, before a default: `(ctx?: T)`, `({ sql }: T = …)`.
     const end = (parameter.questionToken ?? parameter.name).end;
-    // `async ctx => …` needs parentheses for a type.
     const parenthesized = parameter.parent
       .getChildren(this.source)
       .some((child) => child.kind === ts.SyntaxKind.OpenParenToken);
@@ -1043,12 +884,6 @@ class Rewrite {
       );
   }
 
-  /**
-   * `MutationContext<typeof requirements, "app">` for the app a schedule belongs to, to write at
-   * `at`, importing `MutationContext`. Undefined, after warning at `at`, when its requirements or
-   * the import of `apps` are not visible, or when the requirements' name at `at` is not in scope or
-   * names something else, such as a mutation hoisted out of the factory declaring them.
-   */
   appContextType(
     node: ts.Node,
     at: ts.Node,
@@ -1063,8 +898,6 @@ class Rewrite {
       app = app.parent;
     const requirements =
       app !== undefined && ts.isCallExpression(app) ? unwrap(app.arguments[0]!) : undefined;
-    // An app without user requirements declared none before host protocol 13: its requirements
-    // are empty once `accounts: {}` goes.
     const empty =
       requirements !== undefined &&
       ts.isObjectLiteralExpression(requirements) &&
@@ -1115,11 +948,6 @@ class Rewrite {
     return `MutationContext<${argument}, "app">`;
   }
 
-  /**
-   * Replace `cron` and `interval` imports from `apps` with the constructors the source now uses.
-   * A source whose schedules are written elsewhere, such as in another string, imports the
-   * constructor its requirements choose.
-   */
   imports() {
     this.visit((node) => {
       if (
@@ -1139,7 +967,6 @@ class Rewrite {
           continue;
         const kind = name === "cron" ? "Cron" : "Interval";
         const used = [...this.facts.constructors].filter((other) => other.endsWith(kind));
-        // Code left as written, such as a node a keep comment marks, still calls the old name.
         if (this.unrenamed(element.name)) {
           const fresh = used.filter((other) => !imported.has(other) && !added.has(other));
           for (const other of fresh) added.add(other);
@@ -1161,9 +988,7 @@ class Rewrite {
     });
   }
 
-  /** Warn where the app's factory reads the caller's accounts, absent without a caller. */
   factory() {
-    // A piece that needs no change has been migrated, or never needed it.
     if (this.edits.length === 0) return;
     this.visit((node) => {
       if (!ts.isCallExpression(node) || this.appsExport(node.expression) !== "defineApp") return;
@@ -1192,10 +1017,6 @@ class Rewrite {
   }
 }
 
-/**
- * Rewrite a literal of host code holding app source, and the literals in its substitutions with
- * the same app's facts. Returns the rewrites, to finish imports once every piece is read.
- */
 const rewriteLiteral = (
   source: ts.SourceFile,
   node: ts.StringLiteral | ts.NoSubstitutionTemplateLiteral | ts.TemplateExpression,
@@ -1224,7 +1045,6 @@ const isLiteral = (
   ts.isNoSubstitutionTemplateLiteral(node) ||
   ts.isTemplateExpression(node);
 
-/** Finish a set of rewrites of one app: imports, factory warnings, then all edits. */
 const finish = (rewrites: readonly Rewrite[]) => {
   for (const rewrite of rewrites) rewrite.imports();
   for (const rewrite of rewrites) rewrite.factory();
@@ -1235,14 +1055,9 @@ const finish = (rewrites: readonly Rewrite[]) => {
 const scriptKind = (file: string) =>
   file.endsWith(".tsx") || file.endsWith(".jsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
 
-/** Source that looks like an app's, in a string of another file. */
 const marker =
   /\bdefineApp\b|\bfrom\s*["']apps(?:\/[\w/-]+)?["']|\b(?:ctx|context|step)\.accounts\b|\w*Context\s*<\s*(?:typeof|\{)/;
 
-/**
- * Whether the file itself is app source: it imports `apps` or an entry point authors use. Host
- * code imports others, such as `apps/contracts`.
- */
 const importsApps = (source: ts.SourceFile) =>
   source.statements.some(
     (statement) =>
@@ -1279,7 +1094,6 @@ const rewriteMarkdown = (file: string, text: string, warn: Warn) => {
   const fence =
     /^([ \t]*)(```|~~~)(ts|tsx|typescript|js|jsx|javascript|mjs)\b[^\n]*\n([\s\S]*?)^\1\2[ \t]*$/gm;
   for (const match of text.matchAll(fence)) {
-    // `<!-- app-user-accounts: keep -->`, or `{/* app-user-accounts: keep */}` in MDX.
     const before = text.slice(0, match.index).trimEnd();
     if (before.slice(before.lastIndexOf("\n") + 1).includes(keepMarker)) continue;
     const body = match[4]!;

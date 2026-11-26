@@ -1,40 +1,3 @@
-/**
- * Credential handles. A provider that declares hosts never gives app code its secret values. The
- * runner seals each secret string into a handle bound to the app, the provider's hosts and an
- * expiry. The app's outbound network opens the handles it finds in a request, and substitutes
- * their values only when the request's target is one of those hosts. Values the service echoes
- * back are replaced with their handles before the app reads the response.
- *
- * A method that declares placements (`request`) narrows this further: each handle also carries its
- * field and the method's placements, and the outbound substitutes it only where a header or query
- * parameter matches one of those templates exactly, and only over HTTPS. A placed handle anywhere
- * else, such as a body an allowed host would store and return, is refused. Without placements a
- * handle is substituted anywhere in the request, as before placements existed.
- *
- * Placed handles have their own format (`exsec2_`, sealed with other associated data), which an
- * outbound from before placements neither finds nor opens: it sends such a handle as inert text,
- * never the value. Handles without placements keep the original format (`exsec_`), so every
- * outbound still substitutes them.
- *
- * A managed account's credential was issued to the instance operator's own OAuth client. Every one
- * of its strings is sealed as a placed handle, whatever the method exposes, carrying the operator's
- * one header placement and pinned hosts. The outbound sends it only in that header, replacing
- * whatever app code wrote there and any `authorization` or `proxy-authorization` header, and
- * refuses the request when the handle is anywhere else; see `placeManaged`.
- *
- * Sealing uses a key held only by the runner and the outbound network, never by app code. A
- * handle therefore carries its own value: the outbound needs no lookup, so it works from any
- * isolate, after the invocation's request context is gone, and for accounts not saved yet. App
- * code cannot alter what a handle carries: an altered handle does not decrypt and is refused.
- *
- * Echo redaction covers response headers and complete JSON, form and text bodies within the body
- * limit, where a value appears as it was substituted. Any other response, such as a streamed,
- * binary or oversized body, or a value the service transformed, reaches app code as sent, so the
- * declared hosts remain the trust boundary: a service on one of them is trusted not to hand back
- * the credential it was sent. Two rules keep Executor itself from handing it back: a request that
- * carries a handle is never sent with `TRACE`, which asks the service to echo the request, and the
- * outbound's own error messages never contain a substituted value.
- */
 import { Clock, Effect, Option, Result, Schema } from "effect";
 import { Base64, Hex } from "effect/encoding";
 import {
@@ -58,6 +21,7 @@ import {
 } from "apps/contracts";
 import { isLoopbackHostname, isPrivateHostname } from "@executor-js/utils/url-policy";
 import type { HostApiCheck } from "../contracts/host-api.ts";
+import { executorUserAgent } from "./user-agent.ts";
 import {
   hostApiChangingHeader,
   hostApiChangingResponse,
@@ -68,16 +32,12 @@ import {
   networkUnreachableStatus,
 } from "./app-network.ts";
 
-/** How long a handle stays usable. Every invocation, and every workflow step, seals afresh. */
 const handleLifetime = 60 * 60 * 1000;
-/** The largest request or response body searched for handles or echoed values. */
 export const credentialBodyLimit = 1024 * 1024;
 
-/** Lowercase hex between a prefix and a terminator that hex never contains. */
 const handleSource = "exsec2?_[0-9a-f]+_";
 const handlePattern = new RegExp(handleSource, "gu");
 
-/** What a handle carries. Only the key's holders can read or forge it. */
 const Sealed = Schema.Struct({
   app: Schema.String,
   account: Schema.String,
@@ -85,27 +45,13 @@ const Sealed = Schema.Struct({
   hosts: Schema.Array(Schema.String),
   expires: Schema.Number,
   value: Schema.String,
-  /** Where the value may be substituted. Only placed handles carry it; see `formats`. */
   request: Schema.optionalKey(Placements),
-  /** The account field the value is, when it can fill a placement. Nested values have none. */
   field: Schema.optionalKey(Schema.String),
-  /**
-   * The account's fields app code holds as real values. A placement copies them as written.
-   * Every other field in a placement must be a handle of this account and that field.
-   */
   exposed: Schema.optionalKey(Schema.Array(Schema.String)),
-  /** A managed account's value; see `placeManaged`. Only placed handles carry it. */
   managed: Schema.optionalKey(Schema.Literal(true)),
 });
 type Sealed = typeof Sealed.Type;
 
-/**
- * The two handle formats. `anywhere` handles carry no placements and are substituted anywhere in
- * a request to their hosts. `placed` handles carry their placements and go only there, over
- * HTTPS. Each format has its own prefix and associated data, so a handle of one cannot be passed
- * off as the other, and an outbound from before placements, which knows only `exsec_`, never
- * opens a placed handle.
- */
 const formats = {
   anywhere: {
     prefix: "exsec_",
@@ -127,7 +73,6 @@ const formats = {
 const formatOf = (sealed: Sealed) =>
   sealed.request === undefined ? formats.anywhere : formats.placed;
 
-/** The runner's and outbound network's shared key, derived from a host secret. */
 export const credentialKey = (secret: string) =>
   Effect.promise(async () => {
     const material = await crypto.subtle.importKey(
@@ -169,7 +114,6 @@ const seal = (key: CryptoKey, sealed: Sealed) =>
     return `${format.prefix}${Hex.encode(bytes)}_`;
   });
 
-/** A handle this key did not seal, or that was altered, opens to nothing. */
 const open = (key: CryptoKey, handle: string) =>
   Effect.gen(function* () {
     const format = handle.startsWith(formats.placed.prefix) ? formats.placed : formats.anywhere;
@@ -186,7 +130,6 @@ const open = (key: CryptoKey, handle: string) =>
     return Schema.decodeUnknownOption(format.json)(new TextDecoder().decode(plaintext.value));
   });
 
-/** Every string in a field value, sealed; numbers, booleans and structure stay readable. */
 const sealValue = (
   value: unknown,
   sealString: (value: string) => Effect.Effect<string>,
@@ -206,13 +149,10 @@ const sealAccount = (
 ): Effect.Effect<ResolvedAccount> =>
   Effect.gen(function* () {
     const hosts = account.provider.hosts;
-    // A provider without hosts has not opted in: its app code reads real values. A managed
-    // account always reaches app code sealed.
     if (hosts === undefined && managed === undefined) return account;
     const method = Object.hasOwn(account.provider.auth, account.method)
       ? account.provider.auth[account.method]
       : undefined;
-    // `plain()` and `raw()` do not apply to a managed account.
     const exposed = new Set(
       managed === undefined ? [...(method?.plain ?? []), ...(method?.raw ?? [])] : [],
     );
@@ -239,11 +179,9 @@ const sealAccount = (
         ? Effect.succeed(value)
         : typeof value === "string"
           ? sealString(name)(value)
-          : // Strings nested in a field fill no placement: placed, they are refused anywhere.
-            sealValue(value, sealString(undefined))
+          : sealValue(value, sealString(undefined))
       ).pipe(Effect.map((sealed) => [name, sealed] as const)),
     );
-    // SAFETY: sealing replaces strings with strings and keeps every other JSON value.
     return { ...account, fields: Object.fromEntries(fields) as ResolvedAccount["fields"] };
   });
 
@@ -253,17 +191,9 @@ const isMany = (value: Selected): value is Extract<Selected, ReadonlyArray<unkno
 const accountsOf = (accounts: HostAccounts) =>
   scopedSlots(accounts).flatMap(([, selected]) => (isMany(selected) ? selected : [selected]));
 
-/**
- * The accounts as they are, for a bundle that reads every field as a real value. Undefined when
- * one is managed: a managed credential reaches app code only sealed.
- */
 export const unsealedAccounts = (accounts: HostAccounts): ResolvedAccounts | undefined =>
   accountsOf(accounts).some((account) => account.managed !== undefined) ? undefined : accounts;
 
-/**
- * Replace the secret fields of accounts whose providers declare hosts, and every string of a
- * managed account, with handles. The key is derived only when some account needs sealing.
- */
 export const sealAccounts = (
   accounts: HostAccounts,
   context: { readonly app: string; readonly key: Effect.Effect<CryptoKey> },
@@ -292,10 +222,6 @@ export const sealAccounts = (
     return accounts.user === undefined ? { app } : { app, user: yield* sealScope(accounts.user) };
   });
 
-/**
- * Whether a declared credential host matches a request's target. A host without a port matches
- * only the scheme's default port; `*.example.com` matches exactly one more label.
- */
 export const credentialHostMatches = (pattern: string, url: URL) => {
   const separator = pattern.lastIndexOf(":");
   const [name, port] =
@@ -309,7 +235,6 @@ export const credentialHostMatches = (pattern: string, url: URL) => {
   return label.length > 0 && !label.includes(".");
 };
 
-/** A credential host pattern's parts; see `credentialHostMatches`. */
 const hostParts = (pattern: string) => {
   const lower = pattern.toLowerCase();
   const separator = lower.lastIndexOf(":");
@@ -321,13 +246,10 @@ const hostParts = (pattern: string) => {
   };
 };
 
-/** The narrower of two host patterns when every host one allows the other allows too. */
 const narrowerHost = (a: string, b: string) => {
   const [first, second] = [hostParts(a), hostParts(b)];
-  // A pattern without a port matches only the default one, so ports must be the same.
   if (first.port !== second.port) return undefined;
   if (first.wildcard === second.wildcard)
-    // Two wildcards each match exactly one more label, so only equal ones overlap.
     return first.name === second.name ? a.toLowerCase() : undefined;
   const [exact, wildcard, pattern] = first.wildcard ? [second, first, b] : [first, second, a];
   const suffix = wildcard.name.slice(1);
@@ -337,13 +259,6 @@ const narrowerHost = (a: string, b: string) => {
     : undefined;
 };
 
-/**
- * The hosts both lists allow, as patterns: an exact host one list names and the other's wildcard
- * matches stays exact, and `*.example.com` within `*.example.com` stays a wildcard. Wildcards
- * match one label and patterns without a port only the default port, as in `credentialHostMatches`,
- * so `*.example.com` and `*.api.example.com` share no host, and neither do `example.com` and
- * `example.com:8443`.
- */
 export const intersectCredentialHosts = (
   first: readonly string[],
   second: readonly string[],
@@ -363,10 +278,6 @@ type Body =
   | { readonly complete: true; readonly text: string }
   | { readonly complete: false; readonly stream: ReadableStream<Uint8Array> };
 
-/**
- * Read a body up to the limit. A longer body is returned as a stream that replays what was read,
- * so it is still sent or returned unchanged.
- */
 const readBody = async (stream: ReadableStream<Uint8Array>): Promise<Body> => {
   const reader = stream.getReader();
   const chunks: Uint8Array[] = [];
@@ -408,19 +319,15 @@ const replaceAll = (text: string, values: ReadonlyMap<string, string>) =>
   text.replace(handlePattern, (handle) => values.get(handle) ?? handle);
 
 const encodings = {
-  /** A value inside a JSON string. */
   json: (value: string) => JSON.stringify(value).slice(1, -1),
-  /** A value inside an `application/x-www-form-urlencoded` pair. */
   form: (value: string) => new URLSearchParams({ v: value }).toString().slice(2),
   text: (value: string) => value,
-  /** A value inside a URL component. */
   url: (value: string) => encodeURIComponent(value),
 };
 
 const encoded = (values: ReadonlyMap<string, string>, encode: (value: string) => string) =>
   new Map([...values].map(([handle, value]) => [handle, encode(value)]));
 
-/** Replace echoed secret values with their handles. Longer values first, so none is split. */
 const redact = (text: string, handles: ReadonlyMap<string, string>) =>
   [...handles]
     .sort(([, a], [, b]) => b.length - a.length)
@@ -428,13 +335,11 @@ const redact = (text: string, handles: ReadonlyMap<string, string>) =>
 
 const credentialHeaders = new Set(["authorization", "proxy-authorization"]);
 
-/** The decoded user and password of a Basic credential header. */
 const basicDecoded = (header: string) => {
   const match = /^basic\s+([A-Za-z0-9+/=]+)\s*$/i.exec(header);
   return match === null ? undefined : Result.getOrUndefined(Base64.decodeString(match[1] ?? ""));
 };
 
-/** Basic credentials are base64 in the header, so handles inside them are decoded first. */
 const basicCredentials = (header: string, values: ReadonlyMap<string, string>) => {
   const decoded = basicDecoded(header);
   if (decoded === undefined || handlesIn(decoded).length === 0) return header;
@@ -443,7 +348,6 @@ const basicCredentials = (header: string, values: ReadonlyMap<string, string>) =
 
 type Opened = ReadonlyMap<string, Sealed>;
 
-/** Where a placed handle was found outside its placements; see `credential_placement`. */
 interface Misplaced {
   readonly provider: string;
   readonly location: string;
@@ -453,11 +357,6 @@ const anyHandle = new RegExp(handleSource, "u");
 const base64Run = /[A-Za-z0-9+/]{16,}={0,2}/gu;
 const regExpText = /[.*+?^${}()|[\]\\]/gu;
 
-/**
- * The text a run of base64 characters encodes, read from each of its first four characters. A
- * template's literal text can end in base64 characters, such as `key=` before an encoded part, so
- * the encoded part need not start where the run does.
- */
 const base64Readings = (run: string) =>
   [0, 1, 2, 3].flatMap((offset) => {
     const body = run.slice(offset).replace(/=+$/u, "");
@@ -468,24 +367,13 @@ const base64Readings = (run: string) =>
     });
   });
 
-/**
- * The handles in a header or query parameter value, including those inside base64 text such as
- * Basic credentials or a template's `base64` part.
- */
 const handlesWithin = (text: string) => [
   ...handlesIn(text),
   ...[...text.matchAll(base64Run)].flatMap(([run]) => base64Readings(run).flatMap(handlesIn)),
 ];
 
-/** A query component as a form decoder reads it; malformed escapes stay as written. */
 const formDecoded = (text: string) => new URLSearchParams(`v=${text}`).get("v") ?? "";
 
-/**
- * `received` with real values in place of its handles when it is exactly `placement`, rendered by
- * the account that sealed `owner`. A secret field's slot holds exactly one handle of that account
- * and field whose placements include this one; an exposed field's slot holds what the app wrote,
- * without a handle. Base64 is decoded, matched and encoded again. Anything else is undefined.
- */
 const fill = (
   placement: Placement,
   received: string,
@@ -541,11 +429,6 @@ const fill = (
   return render(placement.value, received);
 };
 
-/**
- * Substitute placed handles where a header or query parameter matches one of their placements, or
- * name where one was found instead. The candidates for a value are the placements its own handles
- * carry for that location; unplaced handles are left for the substitution that predates placements.
- */
 const placeCredentials = (
   url: URL,
   headers: Headers,
@@ -623,13 +506,6 @@ const placeCredentials = (
   return Result.succeed({ href: target.href, headers: sent });
 };
 
-/**
- * Send each managed handle the request carries in its placement's header, the one the operator
- * configured, or name where one was found instead. That header's whole value becomes the
- * operator's, whatever app code wrote there, and the request's other credential headers are
- * removed, so a managed credential is the only one it carries. A managed handle anywhere else, or a
- * second managed credential for the same header, refuses the request.
- */
 const placeManaged = (
   url: URL,
   headers: Headers,
@@ -669,22 +545,11 @@ const placeManaged = (
   return Result.succeed(sent);
 };
 
-/** Which destinations Executor refuses before an app's request reaches the host's network. */
 export interface AppEgress {
-  /**
-   * Refuse private, loopback and internal destinations, named by the URL. The host's network
-   * must refuse their addresses too: a public name can resolve to a private address.
-   */
   readonly refusePrivateAddresses: boolean;
-  /** The instance's own origin, which the host reaches without the network. Never refused. */
   readonly selfOrigin: string | undefined;
 }
 
-/**
- * Whether placed credentials may travel to `url`: over HTTPS, or over plain HTTP to a loopback
- * address when the operator lets apps reach private addresses, which only local development and
- * test instances do. Loopback traffic never leaves the machine.
- */
 const secureTransport = (url: URL, egress: AppEgress) =>
   url.protocol === "https:" ||
   (url.protocol === "http:" && !egress.refusePrivateAddresses && isLoopbackHostname(url.hostname));
@@ -697,24 +562,13 @@ const egressRefusal = (url: URL, egress: AppEgress) =>
     : new NetworkRefused({ host: url.host, refusal: { reason: "private_address" } });
 
 export interface CredentialOutbound {
-  /** The app whose Worker sent the request. Bound by the runner, never by app code. */
   readonly app: string;
   readonly key: CryptoKey;
   readonly egress: AppEgress;
-  /** Send the rewritten request on the host's network. It rejects when that network fails. */
   readonly send: (request: Request) => Promise<Response>;
-  /** The host API revision the invocation's cache belongs to; see `hostApiDocument`. */
   readonly hostApi?: HostApiCheck;
 }
 
-/**
- * Send one app request, substituting the handles it carries when its target is allowed, and
- * returning a response with echoed values replaced by their handles. A refused request is never
- * sent; app code receives Executor's refusal response instead, see `networkRefusalResponse`.
- * When the host's network fails to send it, app code receives the marked response its isolate
- * turns into a rejected `fetch`, see `networkUnreachableResponse`, never a status the service could
- * send. Any other failure is Executor's own and rejects.
- */
 export const credentialFetch = (request: Request, outbound: CredentialOutbound) =>
   forward(request, outbound)
     .then((response) => hostApiDocument(request, response, outbound.hostApi))
@@ -723,14 +577,6 @@ export const credentialFetch = (request: Request, outbound: CredentialOutbound) 
       throw error;
     });
 
-/**
- * The host's API document, when its SHA-256 is the revision the invocation's cache belongs to. A
- * host that deploys its API apart from the Workers that call apps serves the previous API to a
- * caller of the next one, or the next API to a caller of the previous one, while either rolls
- * out. That document must not fill a cache named for the other revision. The app's `fetch`
- * rejects with `hostApiChangingCode` (see `hostApiChangingResponse`), so the app keeps nothing, its
- * caller is told to retry shortly, and a later read fetches the document again.
- */
 const hostApiDocument = async (
   request: Request,
   response: Response,
@@ -758,19 +604,10 @@ const hostApiDocument = async (
   return hostApiChangingResponse();
 };
 
-/**
- * The host's network failed to send. The app's own cancellation keeps its error, so the app's
- * `fetch` rejects with the abort it asked for.
- */
 const sendFailed = (signal: AbortSignal) => (error: unknown) => {
   throw signal.aborted ? error : new NetworkUnreachable();
 };
 
-/**
- * `error` with every value substituted into the request replaced by its handle, as each value was
- * written into the URL, a header or a body. The outbound's own failures, such as a URL or header
- * the network rejects, can quote what was sent; app code and logs read them only this way.
- */
 const scrubbed = (error: unknown, values: ReadonlyMap<string, string>) => {
   const forms = [...values].flatMap(([handle, value]) =>
     value === ""
@@ -799,25 +636,30 @@ const forward = async (request: Request, outbound: CredentialOutbound): Promise<
   const send = (sent: Request) => outbound.send(sent).catch(sendFailed(request.signal));
   const blocked = egressRefusal(url, outbound.egress);
   if (blocked !== undefined) return networkRefusalResponse(blocked);
-  const kind = request.body === null ? undefined : rewritable(request.headers.get("content-type"));
+  const requestHeaders = new Headers(request.headers);
+  if (!requestHeaders.has("user-agent")) requestHeaders.set("user-agent", executorUserAgent);
+  const kind = request.body === null ? undefined : rewritable(requestHeaders.get("content-type"));
   const body =
     kind === undefined || request.body === null ? undefined : await readBody(request.body);
   const found = new Set([
     ...handlesIn(url.href),
     ...[...url.searchParams.values()].flatMap(handlesWithin),
-    ...[...request.headers].flatMap(([, value]) => handlesWithin(value)),
+    ...[...requestHeaders].flatMap(([, value]) => handlesWithin(value)),
     ...(body?.complete === true ? handlesIn(body.text) : []),
   ]);
   if (found.size === 0)
     return send(
-      body === undefined
-        ? request
-        : new Request(request, {
-            body: body.complete ? body.text : body.stream,
-            ...(body.complete ? {} : { duplex: "half" }),
-          }),
+      new Request(
+        request,
+        body === undefined
+          ? { headers: requestHeaders }
+          : {
+              headers: requestHeaders,
+              body: body.complete ? body.text : body.stream,
+              ...(body.complete ? {} : { duplex: "half" }),
+            },
+      ),
     ).then(unmarked);
-  // TRACE asks the service to send the request back, credentials included.
   if (request.method.toUpperCase() === "TRACE")
     return networkRefusalResponse(
       new NetworkRefused({
@@ -861,17 +703,12 @@ const forward = async (request: Request, outbound: CredentialOutbound): Promise<
     opened.set(handle, sealed.value);
   }
 
-  // The outbound's own failures from here on may quote what it substituted.
   try {
-    // Managed handles go only in the operator's header, placed handles only where a placement
-    // matches, and every other handle anywhere.
     const searched = body?.complete === true ? body.text : undefined;
-    const placed = Result.flatMap(
-      placeManaged(url, request.headers, searched, opened),
-      (headers) =>
-        [...opened.values()].some((sealed) => sealed.request !== undefined)
-          ? placeCredentials(url, headers, searched, opened)
-          : Result.succeed({ href: url.href, headers }),
+    const placed = Result.flatMap(placeManaged(url, requestHeaders, searched, opened), (headers) =>
+      [...opened.values()].some((sealed) => sealed.request !== undefined)
+        ? placeCredentials(url, headers, searched, opened)
+        : Result.succeed({ href: url.href, headers }),
     );
     if (Result.isFailure(placed))
       return networkRefusalResponse(
@@ -900,7 +737,6 @@ const forward = async (request: Request, outbound: CredentialOutbound): Promise<
         method: request.method,
         headers,
         body: text ?? (body?.complete === false ? body.stream : request.body),
-        // A secret never follows a redirect here; the app's fetch sends each hop back to be checked.
         redirect: "manual",
         signal: request.signal,
         ...(text === undefined && request.body !== null ? { duplex: "half" } : {}),
@@ -912,11 +748,6 @@ const forward = async (request: Request, outbound: CredentialOutbound): Promise<
   }
 };
 
-/**
- * Only Executor's network marks a refusal or its own failure to send. A service's response
- * carrying a mark loses it, so app code and the framework's helpers never present a service's
- * text as Executor's refusal, and a service cannot make the app's `fetch` reject.
- */
 const marks = [
   [networkRefusalStatus, networkRefusalHeader],
   [networkUnreachableStatus, networkUnreachableHeader],
@@ -937,7 +768,6 @@ const unmarked = (response: Response) => {
   });
 };
 
-/** Replace values the service echoed with their handles, in headers and bounded text bodies. */
 const redactResponse = async (response: Response, values: ReadonlyMap<string, string>) => {
   if (response.status === 101) return response;
   const headers = new Headers();

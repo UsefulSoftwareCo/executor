@@ -13,7 +13,6 @@ import {
 type DocumentTitleContextValue = { readonly register: (title: string) => () => void };
 const DocumentTitleContext = createContext<DocumentTitleContextValue | undefined>(undefined);
 
-/** Own the document title once per app; pages only register their current title. */
 export function DocumentTitleProvider({
   fallbackTitle,
   children,
@@ -43,11 +42,9 @@ export function DocumentTitleProvider({
   return createElement(DocumentTitleContext, { value: context }, children);
 }
 
-/** Register a page title while mounted inside the product title provider. */
 export function useDocumentTitle(title: string) {
   const context = useContext(DocumentTitleContext);
   useEffect(() => context?.register(title), [context, title]);
 }
 
-/** Format a page label without exposing route IDs. */
 export const productTitle = (page: string) => `${page} · Executor`;

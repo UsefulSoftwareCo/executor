@@ -3,7 +3,6 @@ import type { Route } from "playwright";
 import { Browser } from "./browser.ts";
 import { driver } from "./platform.ts";
 
-/** Hold real responses independently; scope cleanup releases and drains every intercepted request. */
 export const dashboardLoadingProbe = Effect.gen(function* () {
   const browser = yield* Browser;
   const resourcesRequested = yield* Deferred.make<void>();

@@ -3,12 +3,12 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "@effect/platform-node": "4.0.1",
-    "@effect/sql-pglite": "4.0.1",
+    "@effect/platform-node": "4.1.4",
+    "@effect/sql-pglite": "4.1.4",
     "@executor-js/app-source": "workspace:*",
     "@executor-js/sdk": "workspace:*",
     "apps": "workspace:*",
-    "effect": "4.0.1",
+    "effect": "4.1.4",
     "fumadb-effect": "workspace:*"
   }
 }

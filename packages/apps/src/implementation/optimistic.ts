@@ -96,7 +96,6 @@ export const makeOptimisticClient = (transport: OptimisticTransport) => {
           reference: OperationReference<Input, Output, "query">,
           input: NoInfer<Input>,
         ) => {
-          // SAFETY: operation references bind the registered input/output types. Clone so author code cannot alter the base.
           return structuredClone(next.get(keyOf(reference.name, json(input)))) as
             | Output
             | undefined;
@@ -105,7 +104,6 @@ export const makeOptimisticClient = (transport: OptimisticTransport) => {
           [...entries]
             .filter(([, entry]) => entry.name === reference.name)
             .map(([key, entry]) => ({
-              // SAFETY: input is validated JSON; the referenced operation and each query decoder bind these types.
               input: structuredClone(entry.input) as Input,
               value: structuredClone(next.get(key)) as Output | undefined,
             })),
@@ -125,7 +123,6 @@ export const makeOptimisticClient = (transport: OptimisticTransport) => {
         values = next;
         for (const key of touched) changed.add(key);
       } catch (error) {
-        // Discard this entire projection, not other invocations or a captured cache snapshot.
         update.invalid = true;
         pending.delete(update);
         if (!update.sent) Deferred.doneUnsafe(update.result, Effect.fail(error));
@@ -170,7 +167,6 @@ export const makeOptimisticClient = (transport: OptimisticTransport) => {
   };
   const reconcile = Effect.gen(function* () {
     for (const entry of entries.values()) entry.staged = undefined;
-    // Include queries mounted while the write or earlier reads were pending.
     while (!disposed) {
       const unread = [...entries.values()].filter((entry) => entry.staged === undefined);
       if (unread.length === 0) break;
@@ -308,7 +304,6 @@ export const makeOptimisticClient = (transport: OptimisticTransport) => {
         const retained = entry;
         retained.subscribers++;
         const typed = (snapshot: Snapshot) => {
-          // SAFETY: the operation's decoder validates server results and every optimistic replacement.
           return snapshot as AsyncResult.AsyncResult<Output, unknown>;
         };
         const release = registry.subscribe(retained.visible, (snapshot) =>

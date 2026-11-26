@@ -10,7 +10,7 @@ import {
 } from "@executor-js/ui/dashboard/scoped-connections";
 import { ConnectedAgents } from "@executor-js/ui/dashboard/connected-agents";
 import { ConnectionToolPicker } from "@executor-js/ui/dashboard/connection-tool-picker";
-import { useOrganizationRoute } from "../components/organization.tsx";
+import { type OrganizationPageReads, useOrganizationRoute } from "../components/organization.tsx";
 import { HostedFailure } from "../components/dashboard-bindings.tsx";
 import { resourceInventoryAtom } from "../../contracts/resource-access.ts";
 import { connectionToolListAtom } from "../../contracts/apps.ts";
@@ -24,7 +24,16 @@ import {
 import { useDocumentationUrl } from "../documentation.ts";
 import { useResourceOrigins } from "../resource-origin.ts";
 
-/** Headless setup: a personal access token against this organization's own addresses. */
+export const connectionPageReads: OrganizationPageReads = (organization) => [
+  resourceInventoryAtom(organization),
+  mcpConnectionsAtom(organization),
+];
+
+export const connectPageReads: OrganizationPageReads = (organization, params) => [
+  ...connectionPageReads(organization, params),
+  mcpAgentsAtom(organization),
+];
+
 function PersonalTokenSetup({
   apiOrigin,
   mcpOrigin,
@@ -87,7 +96,6 @@ function ConnectionLink({ connection, className, children }: ConnectionLinkProps
   );
 }
 
-/** The bindings both connection pages share in this organization. */
 function useConnectionBindings() {
   const origins = useResourceOrigins();
   const { organization } = useOrganizationRoute();
@@ -116,7 +124,6 @@ function useConnectionBindings() {
   };
 }
 
-/** The member's full-access URL, scoped connections and connected agents for this organization. */
 export function ConnectPage() {
   const bindings = useConnectionBindings();
   const { organization } = useOrganizationRoute();
@@ -137,7 +144,6 @@ export function ConnectPage() {
   );
 }
 
-/** One of the member's scoped connections, or `new` to create one. */
 export function ConnectionPage({ connectionId }: { readonly connectionId: string }) {
   const bindings = useConnectionBindings();
   const { organization, slug: organizationSlug } = useOrganizationRoute();

@@ -2,7 +2,6 @@ import { LocalTime } from "../components/local-time.tsx";
 import { EmptyState } from "./empty-state.tsx";
 import { AppWorkspaceLoading, SourceHistoryLoading } from "./app-loading.tsx";
 import { AppSectionHeader, AppSectionTitle } from "./app-section-header.tsx";
-/** Inspect agent-authored source and manage app versions. */
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { AsyncResult } from "effect/reactivity";
 import { Option } from "effect";
@@ -27,7 +26,6 @@ import {
   Clock01Icon,
 } from "@hugeicons/core-free-icons";
 
-/** Products supply metadata reconciliation and navigation; people edit skill files in the Skills view; agents author other source. */
 export function AppWorkspace<E>({
   app,
   atoms,
@@ -39,7 +37,6 @@ export function AppWorkspace<E>({
   readonly app: App;
   readonly onApp: AppAcknowledgement;
   readonly view: "source" | "history";
-  /** The active version, read so the toolbar can compare it with working source. */
   readonly live?: Query<VersionDisplay, E> | undefined;
 }) {
   return (
@@ -140,7 +137,6 @@ function WorkspaceSource<E>({
     </div>
   );
 }
-/** Undefined until the live version is known; null when it was not deployed from a commit. */
 function useLiveCommit<E>(live: Query<VersionDisplay, E>) {
   return Option.getOrUndefined(
     Option.map(AsyncResult.value(useAtomValue(live)), (version) => version.sourceCommit),
@@ -167,7 +163,6 @@ function LiveStatus<E>({
   const history = AsyncResult.value(useAtomValue(atoms.history(app.id)));
   if (commit === undefined || commit === null) return null;
   if (commit === source.revision.commit) return <DeployStatus>Live · up to date</DeployStatus>;
-  // History is newest first, so the live commit's index counts the commits saved after it.
   const newer = Option.isSome(history)
     ? history.value.findIndex((entry) => entry.commit === commit)
     : -1;
@@ -237,7 +232,6 @@ function CloneRepository({ source }: { readonly source: typeof AppSourceDisplay.
     </Popover>
   );
 }
-/** The host names the clone URL; Git may be served on another origin than the dashboard. */
 function CloneDetails({ source }: { readonly source: typeof AppSourceDisplay.Type }) {
   const cloneUrl = source.gitUrl;
   return (
@@ -272,7 +266,6 @@ function SourceHistoryLink<E>({
 }) {
   const { AppLink } = useDashboard();
   const history = AsyncResult.value(useAtomValue(atoms.history(app.id)));
-  // The endpoint returns recent history, not an unbounded repository-wide count.
   const label = Option.isSome(history)
     ? `${history.value.length} recent ${history.value.length === 1 ? "commit" : "commits"}`
     : "History";

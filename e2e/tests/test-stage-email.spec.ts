@@ -25,7 +25,6 @@ const Settings = Schema.Struct({
   }),
 });
 
-/** Exercise an owned disposable preview, with control-plane reads before any signup request. */
 layer(Layer.mergeAll(FetchHttpClient.layer), { excludeTestServices: true })(
   "Test-stage email isolation",
   (it) => {
@@ -73,8 +72,6 @@ layer(Layer.mergeAll(FetchHttpClient.layer), { excludeTestServices: true })(
             settings.result.bindings.filter((binding) => binding.type === "send_email"),
           ).toEqual([]);
         }
-        // Deliberately resolved only after the binding assertion: the negative control must
-        // fail before attempting to send any message through an unfixed preview.
         const capture = yield* Config.Redacted("EMAIL_ISOLATION_CAPTURE").pipe(
           Effect.flatMap((value) =>
             Schema.decodeUnknownEffect(Schema.fromJsonString(Capture))(Redacted.value(value)),

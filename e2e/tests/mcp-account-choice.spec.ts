@@ -1,9 +1,3 @@
-/**
- * MCP calls never choose accounts. A plain requirement uses the one account linked to the app:
- * connecting another replaces it. A tool call that names accounts under `$accounts` fails with
- * `AccountChoiceUnsupported` before the tool runs, caught or not, and the skills tool refuses an
- * `accounts` input the same way.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -19,7 +13,6 @@ import { localAgent, localLinks } from "../support/local-links.ts";
 import { McpClient } from "../support/mcp-client.ts";
 import { siteless } from "../support/failure-site.ts";
 
-/** A tool result's text content. */
 const TextContent = Schema.Array(
   Schema.Struct({ type: Schema.Literal("text"), text: Schema.String }),
 );
@@ -46,7 +39,6 @@ const migration = {
 };
 const files = [{ path: "index.ts", content: source }, migration, appsManifest];
 
-/** AccountChoiceUnsupported's description, which every refusal carries. */
 const unsupported =
   "Accounts are not chosen per call. Each app uses the accounts you linked to it: one for each plain requirement, and every linked account for a many() requirement.";
 
@@ -70,17 +62,12 @@ const Search = Schema.Struct({
     Schema.Struct({ path: Schema.String, accounts: Schema.optional(Schema.String) }),
   ),
 });
-/** A caught tool error's message: the error's JSON response. */
 const CaughtResponse = Schema.fromJsonString(
   Schema.Struct({ code: Schema.String, status: Schema.Number, message: Schema.String }),
 );
 type Connected = Effect.Success<ReturnType<Effect.Success<typeof McpClient>["connect"]>>;
 type Account = { readonly id: string; readonly label: string };
 
-/**
- * The same MCP journey on every product, once `replaced` was connected first and `linked`
- * replaced it as the app's only linked account.
- */
 const checkNoAccountChoice = (
   client: Connected,
   slug: string,
@@ -100,11 +87,9 @@ const checkNoAccountChoice = (
     const app = `tools[${JSON.stringify(slug)}]`;
     const choice = `{ $accounts: { service: ${JSON.stringify(replaced.id)} } }`;
 
-    // The call runs with the linked account; the replaced one is never used.
     expect(
       yield* execute("Call with the linked account", "linked.json", `return await ${app}.who({});`),
     ).toEqual({ ok: true, value: linked.id });
-    // Search lists the account calls use and offers no way to choose another.
     const searched = yield* execute(
       "Search the app's tools",
       "search.json",
@@ -117,7 +102,6 @@ const checkNoAccountChoice = (
       `service: ${linked.id} (${linked.label})`,
     );
 
-    // A caught refusal: the tool error's message is its JSON response.
     const caught = yield* execute(
       "Catch a call that names an account",
       "caught.json",
@@ -130,7 +114,6 @@ const checkNoAccountChoice = (
     const response = yield* Schema.decodeUnknownEffect(CaughtResponse)(message);
     expect(response).toMatchObject({ code: "AccountChoiceUnsupported", status: 400 });
     expect(response.message).toContain(unsupported);
-    // An uncaught refusal fails the execution with the same error.
     const uncaught = yield* execute(
       "Call naming an account without catching",
       "uncaught.json",
@@ -143,7 +126,6 @@ const checkNoAccountChoice = (
       ),
       uncaught.error.message,
     ).toBe(true);
-    // Neither refused call ran the tool; a call without a choice does, with the linked account.
     expect(
       yield* execute("No refused call ran", "before.json", `return await ${app}.ticks({});`),
     ).toEqual({ ok: true, value: [] });
@@ -155,7 +137,6 @@ const checkNoAccountChoice = (
       ),
     ).toEqual({ ok: true, value: [linked.id] });
 
-    // The skills tool reads with the linked account and refuses an `accounts` input.
     const skills = (step: string, input: Record<string, unknown>) =>
       client.use(step, (client, signal) =>
         client.callTool({ name: "skills", arguments: input }, undefined, { signal }),
@@ -169,7 +150,6 @@ const checkNoAccountChoice = (
       accounts: { service: replaced.id },
     });
     expect(refused.isError, JSON.stringify(refused)).toBe(true);
-    // The skills tool's error text carries the code and status, as the uncaught refusal above.
     expect(
       Schema.decodeUnknownSync(TextContent)(refused.content).map((item) => ({
         ...item,
@@ -214,8 +194,6 @@ layer(HostedLive, { excludeTestServices: true })("Hosted MCP account choice", (i
               yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`);
           }).pipe(Effect.orDie),
         );
-        // Connecting from the app saves each account and links it for the owner, replacing the
-        // account linked before for the plain requirement.
         const connect = (label: string) =>
           Effect.gen(function* () {
             const connection = yield* body(
@@ -245,7 +223,6 @@ layer(HostedLive, { excludeTestServices: true })("Hosted MCP account choice", (i
           organization: actors.organization.id,
         });
         yield* checkNoAccountChoice(client, app.slug, work, personal);
-        // The replaced account stays saved.
         const kept = yield* api.request(actors.owner, "GET", `${prefix}/accounts/${work.id}`);
         expect(kept.status, JSON.stringify(kept.body)).toBe(200);
       }).pipe(Effect.provide(McpClient.layer)),
@@ -277,7 +254,6 @@ layer(TestLive, { excludeTestServices: true })("Local MCP account choice", (it) 
             for (const account of created) yield* agent.send("DELETE", `/v1/accounts/${account}`);
           }).pipe(Effect.orDie),
         );
-        // Connecting from the app links each account, replacing the one linked before.
         const add = (label: string) =>
           Effect.gen(function* () {
             const account = yield* connectLocalAccount(agent, {
@@ -295,7 +271,6 @@ layer(TestLive, { excludeTestServices: true })("Local MCP account choice", (it) 
         expect(yield* localLinks(agent, app.id)).toEqual([personal.id]);
         const client = yield* mcp.connect(target.apiKey, "local-account-choice");
         yield* checkNoAccountChoice(client, app.slug, work, personal);
-        // The replaced account stays saved.
         const kept = yield* agent.send("GET", `/v1/accounts/${work.id}`);
         expect(kept.status, JSON.stringify(kept.body)).toBe(200);
       }).pipe(Effect.provide(McpClient.layer)),

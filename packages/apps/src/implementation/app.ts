@@ -171,7 +171,6 @@ function adaptDefinition<
     definition.webhooks === undefined
       ? {}
       : {
-          // SAFETY: `Required` only where the optional method was just checked to be present.
           webhooks: Object.fromEntries(
             Object.entries(definition.webhooks).map(([name, webhook]) => [
               name,
@@ -221,7 +220,6 @@ function adaptDefinition<
     throw new Error("tools must be a router");
   const data = root === undefined ? {} : { tools: root };
   const declared = root?.kind === "router" ? declaredOperations(root) : [];
-  // Workflows and schedules name a mutation by its declaration, so each has one path.
   const mutations = new Set<unknown>();
   for (const { operation } of declared) {
     if (operation.kind !== "mutation") continue;
@@ -255,9 +253,6 @@ function adaptDefinition<
             }),
           ),
         };
-  // SAFETY: only the listed handler/schema fields are replaced. Each callback
-  // forwards the same arguments/result; every other property and catalog key survives.
-  // Object.entries/fromEntries erase those generic key associations.
   return {
     ...definition,
     ...webhooks,
@@ -295,7 +290,6 @@ function scopedSlots<Requirements extends AppRequirements>(
       throw new TypeError(
         `The requirement ${JSON.stringify(name)} is declared as both an app and a user account; name them differently`,
       );
-  // SAFETY: each scope is the declaration's own slots, or none when the app declares none in it.
   return { app, user } as RequirementSlots<Requirements>;
 }
 
@@ -310,7 +304,6 @@ export const defineApp = <
     | ((context: AppFactoryContext<Requirements>) => Promise<Def & AppDefinition<Requirements>>),
 ): App<Requirements, Def> => {
   const accounts = scopedSlots(requirements);
-  // A static definition is checked when the module loads, so such source fails its build.
   if (typeof definition !== "function") rejectCatalogs(definition);
   const evaluate = typeof definition === "function" ? definition : async () => definition;
   const factory = fromPromise(evaluate, "factory");
@@ -327,7 +320,6 @@ export const defineApp = <
             return [name, native];
           }),
         );
-  // Icons are read at build without evaluating the app, so invalid ones fail its build here.
   const iconsProblem =
     requirements.icons === undefined ? undefined : appIconsProblem(requirements.icons);
   if (iconsProblem !== undefined)

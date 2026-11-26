@@ -9,8 +9,6 @@ import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import { ExecutorCloudApi } from "../contracts/api.ts";
 import { CreateTeam, Onboarding, TeamDetailsInvalid } from "../contracts/onboarding.ts";
 
-// A 2 MiB image fits within 3 MiB after base64 encoding. Read through the stream
-// so the bound also applies to chunked requests before JSON or image decoding.
 const creationPayload = Effect.gen(function* () {
   const request = yield* HttpServerRequest.HttpServerRequest;
   const limit = 3 * 1024 * 1024;
@@ -30,7 +28,6 @@ const creationPayload = Effect.gen(function* () {
   );
 }).pipe(Effect.mapError(() => new TeamDetailsInvalid()));
 
-/** Authenticated setup and private icon reads; the browser never supplies the acting user. */
 export const onboardingHandlers = HttpApiBuilder.group(ExecutorCloudApi, "onboarding", (handlers) =>
   Effect.gen(function* () {
     const onboarding = yield* Onboarding;
@@ -62,10 +59,6 @@ export const onboardingHandlers = HttpApiBuilder.group(ExecutorCloudApi, "onboar
   }),
 );
 
-/**
- * The member's setup for a team they may already read, and whether its dashboard is open to them;
- * membership was checked first.
- */
 export const setupHandlers = HttpApiBuilder.group(ExecutorCloudApi, "setup", (handlers) =>
   Effect.gen(function* () {
     const onboarding = yield* Onboarding;

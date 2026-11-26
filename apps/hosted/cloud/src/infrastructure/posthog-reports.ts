@@ -1,4 +1,3 @@
-/** Declarative PostHog dashboards and saved insights. */
 import { isDeepStrictEqual } from "node:util";
 import * as Dashboards from "@distilled.cloud/posthog/dashboards";
 import * as Insights from "@distilled.cloud/posthog/insights";
@@ -19,11 +18,8 @@ interface ReportProps {
 interface ReportAttributes extends ReportProps {
   readonly id: number;
 }
-/** A retained product-usage dashboard. */
 export type PostHogDashboard = Resource<"Executor.PostHogDashboard", ReportProps, ReportAttributes>;
-/** Declare a dashboard; saved insights are separate dependent resources. */
 export const PostHogDashboard = Resource<PostHogDashboard>("Executor.PostHogDashboard");
-/** A saved query attached to one managed dashboard. */
 export interface PostHogInsightProps extends ReportProps {
   readonly dashboardId: number;
   readonly query: Insights.InsightQuerySchema;
@@ -32,13 +28,11 @@ interface InsightAttributes extends ReportAttributes {
   readonly query: unknown;
   readonly dashboards: ReadonlyArray<number>;
 }
-/** Saved insight identity is stable when its query or title changes. */
 export type PostHogInsight = Resource<
   "Executor.PostHogInsight",
   PostHogInsightProps,
   InsightAttributes
 >;
-/** Declare a saved insight and its dashboard membership. */
 export const PostHogInsight = Resource<PostHogInsight>("Executor.PostHogInsight");
 
 const Response = Schema.Struct({
@@ -86,7 +80,6 @@ const ownership = Effect.gen(function* () {
   return (id: string) => `[alchemy:${stack.name}:${stage}:${id}]`;
 });
 
-/** Dashboard and insight lifecycles share only the reporting API boundary. */
 export const postHogReportProviders = () =>
   Layer.mergeAll(
     Provider.effect(

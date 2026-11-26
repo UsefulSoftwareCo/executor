@@ -1,5 +1,4 @@
 import { cloudArtifactsTokensLive } from "./artifacts-tokens.ts";
-/** Native host workflows bootstrap teams before any authored app exists. */
 import { RuntimeContext } from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import type { Workflow } from "@cloudflare/workers-types";
@@ -26,7 +25,6 @@ import { cloudAnalytics } from "../implementation/product-analytics.ts";
 import { jobUnits } from "../contracts/job-outcome.ts";
 import { cloudBackgroundJobs } from "./background-jobs.ts";
 
-/** Each committed lifecycle action has its own workflow, so unrelated failures do not block setup. */
 export class Provisioning extends Cloudflare.Workflow<Provisioning>()(
   "Provisioning",
   Effect.gen(function* () {
@@ -38,9 +36,6 @@ export class Provisioning extends Cloudflare.Workflow<Provisioning>()(
     const domains = yield* AppDomainCoordinator.from(AppDomainController);
     const meter = yield* BillingMeter.pipe(Effect.provide(yield* billingLive.pipe(Effect.orDie)));
     const analytics = yield* cloudAnalytics;
-    // Default installation and member setup link accounts; wake webhook sources once committed. A
-    // workflow step is not placed, so it must not be the coordinator's first caller: it asks the
-    // placed handler to, in a step of its own that is retried until the handler has woken it.
     const jobs = yield* cloudBackgroundJobs;
     const services: ProvisioningServices = {
       requireVerifiedEmail: true,
@@ -61,7 +56,6 @@ export class Provisioning extends Cloudflare.Workflow<Provisioning>()(
           Effect.gen(function* () {
             const id = yield* Schema.decodeUnknownEffect(Schema.NonEmptyString)(input.id);
             const step = yield* Cloudflare.Workflows.WorkflowStep;
-            // Native step callbacks start a new Effect fiber; carry the invocation's host bindings.
             const context = yield* Effect.context<never>();
             yield* step
               .do({
@@ -74,12 +68,10 @@ export class Provisioning extends Cloudflare.Workflow<Provisioning>()(
                     Effect.provideService(SqlClient.SqlClient, sql),
                   );
                 }).pipe(
-                  // The next step wakes the coordinator.
                   Effect.provideService(ScheduleWakeup, Effect.void),
                   Effect.provide(executor),
                   Effect.scoped,
                   Effect.provideContext(context),
-                  // The engine retries typed failures only; a defect ends the workflow at once.
                   Effect.mapError(() => new ProvisioningFailed()),
                 ),
               })
@@ -97,9 +89,6 @@ export class Provisioning extends Cloudflare.Workflow<Provisioning>()(
                       }),
                 ),
               );
-            // After every successful provisioning, not only an attempt that linked accounts: an
-            // earlier attempt may have committed them and failed later, and its retry finds
-            // nothing left to do. A wake with nothing to set up is one empty pass.
             yield* step
               .do({
                 name: "schedule-wake",
@@ -110,7 +99,6 @@ export class Provisioning extends Cloudflare.Workflow<Provisioning>()(
                   .pipe(Effect.provideContext(context), Effect.orDie),
               })
               .pipe(
-                // Provisioning itself succeeded; the minute job wakes the coordinator anyway.
                 Effect.catchCause((cause) =>
                   Cause.hasInterrupts(cause)
                     ? Effect.interrupt
@@ -138,12 +126,6 @@ const ClaimedJobs = Schema.Array(
     kind: Schema.Literals(["user", "member", "team", "billing", "domain"]),
   }),
 );
-/**
- * Start by stable outbox ID. A crash after create is recovered by observing the same instance.
- * Once a team installation's workflow exists and has not finished, `installTeam` may also run
- * that job at once (see {@link provisionTeamNow}); its other jobs keep dispatching meanwhile.
- * A job that fails to dispatch is tried again once its lease ends; the outcome counts it.
- */
 export const dispatchProvisioning = <R>(
   installTeam: (job: string) => Effect.Effect<void, never, R>,
 ) =>
@@ -163,8 +145,8 @@ export const dispatchProvisioning = <R>(
       for update skip locked limit 50
     ) update hosted_provisioning job set available_at = now() + interval '30 seconds'
       from candidates where job.id = candidates.id returning job.id, job.kind`.pipe(
-        Effect.flatMap(Schema.decodeUnknownEffect(ClaimedJobs)),
-      );
+      Effect.flatMap(Schema.decodeUnknownEffect(ClaimedJobs)),
+    );
     const dispatched = yield* Effect.forEach(
       jobs,
       (job) =>
@@ -206,11 +188,6 @@ export const dispatchProvisioning = <R>(
     );
   }).pipe(Effect.mapError(() => new ProvisioningFailed()));
 
-/**
- * Install a new team in this isolate instead of waiting for its workflow to be scheduled.
- * Run only jobs handed over by {@link dispatchProvisioning}: their workflow already exists, so
- * it finishes an attempt here that fails or is cut short, and finds a successful one done.
- */
 export const provisionTeamNow = (job: string) =>
   Effect.gen(function* () {
     const sql = yield* Effect.flatten(GroupDatabase);

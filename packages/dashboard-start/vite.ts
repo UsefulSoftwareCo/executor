@@ -1,4 +1,3 @@
-/** Shared TanStack Start build for every dashboard. Hosts supply only their routes and entries. */
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { tanstackStart } from "@tanstack/react-start/plugin/vite";
@@ -7,12 +6,6 @@ import type { PluginOption } from "vite-plus";
 type StartOptions = NonNullable<Parameters<typeof tanstackStart>[0]>;
 type RouterOptions = NonNullable<StartOptions["router"]>;
 
-/**
- * Build metadata is public page configuration. The environment name is compiled into both bundles.
- * The build id is compiled into the server bundle only: a browser file naming it would change with
- * every deploy, and so would every file importing it, so deploys would remove files that pages
- * still running the previous build need. The browser reads it from the document instead.
- */
 const buildMetadata = (): PluginOption => ({
   name: "executor-build-metadata",
   config: () => ({
@@ -33,7 +26,6 @@ const buildMetadata = (): PluginOption => ({
   }),
 });
 
-/** Server builds are self-contained; dev keeps dependencies external to Vite's Node module runner. */
 const serverBundle = (runtime: "workerd" | "node"): PluginOption => ({
   name: "executor-dashboard-server-bundle",
   config: (_, { command }) => ({
@@ -50,11 +42,6 @@ const serverBundle = (runtime: "workerd" | "node"): PluginOption => ({
   }),
 });
 
-/**
- * Start's server manifest records each route's absolute source path, which the server never
- * reads. Recording it relative to the app keeps the server build identical wherever the
- * repository is checked out, so a size measured in one checkout holds in every other.
- */
 const relativeRouteFiles = (): PluginOption => {
   let root = "";
   return {
@@ -68,10 +55,6 @@ const relativeRouteFiles = (): PluginOption => {
   };
 };
 
-/**
- * E2E builds write source maps beside the bundles without referencing them, so the suite can map
- * the browser's coverage of each bundle back to its sources. See `e2e/coverage.ts`.
- */
 const e2eSourceMaps = (): PluginOption => ({
   name: "executor-e2e-source-maps",
   config: () =>
@@ -80,7 +63,6 @@ const e2eSourceMaps = (): PluginOption => ({
       : undefined,
 });
 
-/** Start owns routing, code splitting, the browser entry and the server document handler. */
 export const dashboardStartPlugins = ({
   runtime,
   router = {},

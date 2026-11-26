@@ -1,4 +1,3 @@
-/** Per-test evidence is a scoped service, including errors, exported spans and browser artifacts. */
 import {
   Cause,
   Clock,
@@ -10,6 +9,7 @@ import {
   Option,
   Path,
   Ref,
+  Schedule,
   Schema,
 } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
@@ -19,9 +19,11 @@ import { EvidenceEntries } from "../report-model.ts";
 import { Target } from "./platform.ts";
 import { Collector, SpanQuery } from "./contracts.ts";
 import { RecordingFocus } from "./recording-focus.ts";
-import { axiomSpans } from "./axiom.ts";
+import { axiomSpans, stageEnvironment } from "./axiom.ts";
+import { scopeOf, type Scope } from "./scope.ts";
+import { stepFailureText } from "./failure-text.ts";
+import { lostRequestsOf, stageRequestsOf } from "./lost-connections.ts";
 
-/** Public request measurements contain no request bodies, cookies or credentials. */
 export interface RequestEvidence {
   readonly method: string;
   readonly path: string;
@@ -29,14 +31,12 @@ export interface RequestEvidence {
   readonly durationMs: number;
   readonly traceId: string;
 }
-/** A traced request as it is sent. A request that never answers is listed with these fields. */
 export interface SentRequest {
   readonly method: string;
   readonly path: string;
   readonly traceId: string;
   readonly spanId: string;
 }
-/** One ended test-client span, sent through OTLP to complete the distributed trace. */
 export interface ClientSpan {
   traceId: string;
   spanId: string;
@@ -46,7 +46,6 @@ export interface ClientSpan {
   endTimeUnixNano: string;
   status: { code: number };
 }
-/** The case owns artifact paths and records every named step through a typed Effect operation. */
 export class Evidence extends Context.Service<
   Evidence,
   {
@@ -57,16 +56,12 @@ export class Evidence extends Context.Service<
       contents: string | Uint8Array,
     ) => Effect.Effect<void>;
     readonly json: (name: string, contents: unknown) => Effect.Effect<void>;
+    readonly measure: (name: string, milliseconds: number) => Effect.Effect<void>;
     readonly artifact: (name: string, contentType: string, file: string) => Effect.Effect<void>;
-    /** Call before sending a traced request, so a request that never answers keeps its trace. */
     readonly sending: (request: SentRequest) => Effect.Effect<void>;
     readonly request: (request: RequestEvidence, span: ClientSpan) => Effect.Effect<void>;
     readonly requests: Effect.Effect<ReadonlyArray<RequestEvidence>>;
     readonly browserTrace: (id: string) => Effect.Effect<void>;
-    /**
-     * Records a failure the evidence scope's exit does not carry, such as a failure of the case's
-     * own cleanup. A failed case keeps the trace of every request it sent.
-     */
     readonly failed: (cause: Cause.Cause<unknown>) => Effect.Effect<void>;
     readonly intervention: (name: string) => Effect.Effect<void>;
     readonly step: <A, E, R>(
@@ -77,29 +72,81 @@ export class Evidence extends Context.Service<
   }
 >()("e2e/Evidence") {}
 
-/** Motel queries read delivered spans through HTTP. No in-process instrumentation assertions. */
+const ownedIds = {
+  organization: "executor.organization.id",
+  app: "executor.app.id",
+  account: "executor.account.id",
+  run: "executor.run.id",
+  user: "executor.user.id",
+  page: "executor.page.id",
+  build: "executor.build.id",
+  worker: "executor.worker.identity",
+  requestTrace: "executor.trace_id",
+} as const;
+type OwnedId = keyof typeof ownedIds;
+export type SpanScope = Scope<
+  { readonly traces: ReadonlyArray<string>; readonly organizationPath: string } & {
+    readonly [K in OwnedId]: string;
+  }
+>;
+export type DeliveredSpan = (typeof SpanQuery.Type)["data"][number]["span"];
+
+export const searchLimit = 500;
+
+export const refuseTruncated = (found: typeof SpanQuery.Type, url: URL) =>
+  found.meta?.truncated === true
+    ? Effect.die(
+        new Error(
+          `The collector's span search ${url.pathname}${url.search} matched more than ${found.meta.returned ?? searchLimit} spans and answered only those; narrow the search so a check reads all of them`,
+        ),
+      )
+    : Effect.void;
+
+const LogPage = Schema.Struct({
+  data: Schema.Array(Schema.Json),
+  meta: Schema.optionalKey(
+    Schema.Struct({
+      truncated: Schema.Boolean,
+      nextCursor: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    }),
+  ),
+});
+const logPages = 40;
+
+export const collectorReadMs = 5_000;
+
 export class Telemetry extends Context.Service<
   Telemetry,
   {
     readonly query: (traceId: string) => Effect.Effect<typeof SpanQuery.Type, TelemetryUnavailable>;
-    /** The tags of delivered spans of one operation whose attributes match exactly, in any trace. */
+    readonly stored: (
+      traceId: string,
+    ) => Effect.Effect<typeof SpanQuery.Type, TelemetryUnavailable>;
+    readonly settled: (
+      traces: string | ReadonlyArray<string> | Effect.Effect<ReadonlyArray<string>>,
+      ready: (spans: ReadonlyArray<DeliveredSpan>) => boolean,
+    ) => Effect.Effect<ReadonlyArray<DeliveredSpan>, TraceUnsettled | TelemetryUnavailable>;
     readonly spans: (
       operation: string,
-      attributes: Readonly<Record<string, string>>,
+      scope: SpanScope,
+      attributes?: Readonly<Record<string, string>>,
     ) => Effect.Effect<ReadonlyArray<Readonly<Record<string, string>>>, TelemetryUnavailable>;
-    /** Delivered spans of one operation whose attributes match exactly, with their trace and status. */
     readonly search: (
+      operation: string,
+      scope: SpanScope,
+      attributes?: Readonly<Record<string, string>>,
+    ) => Effect.Effect<typeof SpanQuery.Type, TelemetryUnavailable>;
+    readonly searchRecent: (
+      operation: string,
+      attributes: Readonly<Record<string, string>>,
+      minutes: number,
+    ) => Effect.Effect<typeof SpanQuery.Type, TelemetryUnavailable>;
+    readonly searchWholeEnvironment: (
       operation: string,
       attributes: Readonly<Record<string, string>>,
     ) => Effect.Effect<typeof SpanQuery.Type, TelemetryUnavailable>;
-    /**
-     * The delivered log records of one trace, and those whose body contains `text` in any trace,
-     * as the collector returns them. Only a collector this suite runs can be read.
-     */
-    readonly logs: (
-      traceId: string,
-      text: string,
-    ) => Effect.Effect<ReadonlyArray<string>, TelemetryUnavailable>;
+    readonly logs: (traceId: string) => Effect.Effect<string, TelemetryUnavailable>;
+    readonly logsWholeEnvironment: (text: string) => Effect.Effect<string, TelemetryUnavailable>;
     readonly export: (
       spans: ReadonlyArray<ClientSpan>,
     ) => Effect.Effect<number, TelemetryUnavailable>;
@@ -111,95 +158,174 @@ export class Telemetry extends Context.Service<
       const target = yield* Target;
       const fs = yield* FileSystem.FileSystem;
       const http = yield* HttpClient.HttpClient;
-      const cloud = yield* axiomSpans;
+      const cloud = yield* axiomSpans(stageEnvironment(target.metadata.origin));
+      const attached = target.metadata.target === "cloud" && target.metadata.mode === "attached";
       const origin = fs.readFileString(`${target.directory}/data/diagnostics/collector.json`).pipe(
         Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Collector))),
         Effect.map((collector) => collector.url),
       );
       const safe = <A, E>(program: Effect.Effect<A, E>) =>
         program.pipe(
-          Effect.timeout("5 seconds"),
+          Effect.timeout(collectorReadMs),
           Effect.mapError(() => new TelemetryUnavailable()),
         );
-      const search = <A>(
+      const read = (url: URL) =>
+        Effect.gen(function* () {
+          const response = yield* http.get(url.href);
+          if (response.status !== 200) return yield* new TelemetryUnavailable();
+          return yield* response.text;
+        });
+      const searchIn = (
         operation: string,
         attributes: Readonly<Record<string, string>>,
-        schema: Schema.Codec<A>,
+        traceId: string | undefined,
+        lookback?: { readonly minutes: number },
       ) =>
-        target.metadata.target === "cloud" && target.metadata.mode === "attached"
-          ? cloud.search(operation, attributes).pipe(
-              Effect.flatMap(Schema.decodeUnknownEffect(schema)),
-              Effect.mapError(() => new TelemetryUnavailable()),
-            )
+        attached
+          ? cloud
+              .search(
+                operation,
+                attributes,
+                traceId,
+                lookback === undefined ? undefined : Date.now() - lookback.minutes * 60_000,
+              )
+              .pipe(Effect.mapError(() => new TelemetryUnavailable()))
           : safe(
               Effect.scoped(
                 Effect.gen(function* () {
                   const url = new URL("/api/spans/search", yield* origin);
                   url.searchParams.set("operation", operation);
-                  url.searchParams.set("lookback", "1d");
-                  url.searchParams.set("limit", "10000");
+                  url.searchParams.set(
+                    "lookback",
+                    lookback === undefined ? "1d" : `${Math.max(1, Math.ceil(lookback.minutes))}m`,
+                  );
+                  url.searchParams.set("limit", String(searchLimit));
+                  if (traceId !== undefined) url.searchParams.set("traceId", traceId);
                   for (const [key, value] of Object.entries(attributes))
                     url.searchParams.set(`attr.${key}`, value);
-                  const response = yield* http.get(url.href);
-                  if (response.status !== 200) return yield* new TelemetryUnavailable();
-                  return yield* response.json.pipe(
-                    Effect.flatMap(Schema.decodeUnknownEffect(schema)),
+                  return yield* read(url).pipe(
+                    Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(SpanQuery))),
+                    Effect.tap((found) => refuseTruncated(found, url)),
                   );
                 }),
               ),
             );
-      return {
-        query: (id) =>
-          target.metadata.target === "cloud" && target.metadata.mode === "attached"
-            ? cloud.trace(id).pipe(Effect.mapError(() => new TelemetryUnavailable()))
-            : safe(
-                Effect.scoped(
-                  Effect.gen(function* () {
-                    const url = yield* origin;
-                    const response = yield* http.get(`${url}/api/traces/${id}/spans`);
-                    if (response.status !== 200) return yield* new TelemetryUnavailable();
-                    return yield* response.json.pipe(
-                      Effect.flatMap(Schema.decodeUnknownEffect(SpanQuery)),
-                    );
-                  }),
-                ),
-              ),
-        spans: (operation, attributes) =>
-          search(
-            operation,
-            attributes,
-            Schema.Struct({
-              data: Schema.Array(
-                Schema.Struct({
-                  span: Schema.Struct({ tags: Schema.Record(Schema.String, Schema.String) }),
+      const search = (
+        operation: string,
+        scope: SpanScope,
+        attributes: Readonly<Record<string, string>> = {},
+      ): Effect.Effect<typeof SpanQuery.Type, TelemetryUnavailable> =>
+        scopeOf("A span read", scope).pipe(
+          Effect.flatMap(({ kind, value }) => {
+            if (kind === "traces")
+              return typeof value === "string"
+                ? Effect.die(new Error("A span read's traces must be a list"))
+                : Effect.forEach(
+                    [...new Set(value)],
+                    (traceId) => searchIn(operation, attributes, traceId),
+                    { concurrency: 8 },
+                  ).pipe(Effect.map((found) => ({ data: found.flatMap(({ data }) => data) })));
+            if (typeof value !== "string")
+              return Effect.die(new Error(`A span read's ${kind} must be one ID`));
+            if (kind === "organizationPath") {
+              if (!/^\/org\/[^/]+\//u.test(value))
+                return Effect.die(new Error(`${value} is not an organization's page`));
+              return searchIn(operation, { ...attributes, "url.path": value }, undefined);
+            }
+            const attribute = (ownedIds as Readonly<Record<string, string>>)[kind];
+            if (attribute === undefined)
+              return Effect.die(new Error(`A span read has no scope named ${kind}`));
+            if (attributes[attribute] !== undefined && attributes[attribute] !== value)
+              return Effect.die(new Error(`The scope and the attributes name two ${attribute}`));
+            return searchIn(operation, { ...attributes, [attribute]: value }, undefined);
+          }),
+        );
+      const stored = (id: string) =>
+        attached
+          ? cloud.trace(id).pipe(Effect.mapError(() => new TelemetryUnavailable()))
+          : safe(
+              Effect.scoped(
+                Effect.gen(function* () {
+                  const url = yield* origin;
+                  return yield* read(new URL(`/api/traces/${id}/spans`, url)).pipe(
+                    Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(SpanQuery))),
+                  );
                 }),
               ),
-            }),
-          ).pipe(Effect.map((found) => found.data.map(({ span }) => span.tags))),
-        search: (operation, attributes) => search(operation, attributes, SpanQuery),
-        logs: (traceId, text) =>
-          target.metadata.target === "cloud" && target.metadata.mode === "attached"
-            ? Effect.fail(new TelemetryUnavailable())
-            : safe(
-                Effect.scoped(
-                  Effect.gen(function* () {
-                    const base = yield* origin;
-                    const byBody = new URL("/api/logs/search", base);
-                    byBody.searchParams.set("body", text);
-                    byBody.searchParams.set("lookback", "1d");
-                    const read = (url: URL) =>
-                      Effect.gen(function* () {
-                        const response = yield* http.get(url.href);
-                        if (response.status !== 200) return yield* new TelemetryUnavailable();
-                        return yield* response.text;
-                      });
-                    return [
-                      yield* read(new URL(`/api/traces/${traceId}/logs`, base)),
-                      yield* read(byBody),
-                    ];
-                  }),
-                ),
+            );
+      const logs = (url: (base: string) => URL) =>
+        attached
+          ? Effect.fail(new TelemetryUnavailable())
+          : safe(
+              Effect.scoped(
+                Effect.gen(function* () {
+                  const page = url(yield* origin);
+                  page.searchParams.set("limit", String(searchLimit));
+                  const data: Array<Schema.Json> = [];
+                  for (let read_ = 1; ; read_++) {
+                    const found = yield* read(page).pipe(
+                      Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(LogPage))),
+                    );
+                    data.push(...found.data);
+                    if (found.meta?.truncated !== true) return JSON.stringify({ data });
+                    const cursor = found.meta.nextCursor;
+                    if (cursor === undefined || cursor === null || read_ >= logPages)
+                      return yield* Effect.die(
+                        new Error(
+                          `The collector's log list ${page.pathname}${page.search} holds more than it answered and cannot be read whole; narrow it so a check reads every log`,
+                        ),
+                      );
+                    page.searchParams.set("cursor", cursor);
+                  }
+                }),
               ),
+            );
+      const query = (id: string) =>
+        stored(id).pipe(
+          Effect.tap((found) =>
+            found.meta?.truncated === true
+              ? Effect.die(
+                  new Error(
+                    `The collector answered trace ${id} in part (${found.meta.returned ?? "?"} of ${found.meta.spanCount ?? "?"} spans); a check cannot read it as the whole trace`,
+                  ),
+                )
+              : Effect.void,
+          ),
+        );
+      return {
+        query,
+        stored,
+        settled: (traces, ready) => {
+          const list = Effect.isEffect(traces)
+            ? traces
+            : Effect.succeed(typeof traces === "string" ? [traces] : traces);
+          return Effect.gen(function* () {
+            const ids = [...new Set(yield* list)];
+            yield* scopeOf("A trace wait", { traces: ids });
+            const found = yield* Effect.forEach(ids, query, { concurrency: 8 });
+            const spans = found.flatMap(({ data }) => data.map(({ span }) => span));
+            return ready(spans)
+              ? spans
+              : yield* Effect.fail(new TraceUnsettled({ traces: ids, spans: spans.length }));
+          }).pipe(Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 40 }));
+        },
+        spans: (operation, scope, attributes) =>
+          search(operation, scope, attributes).pipe(
+            Effect.map((found) => found.data.map(({ span }) => span.tags)),
+          ),
+        search,
+        searchRecent: (operation, attributes, minutes) =>
+          searchIn(operation, attributes, undefined, { minutes }),
+        searchWholeEnvironment: (operation, attributes) =>
+          searchIn(operation, attributes, undefined),
+        logs: (traceId) => logs((base) => new URL(`/api/traces/${traceId}/logs`, base)),
+        logsWholeEnvironment: (text) =>
+          logs((base) => {
+            const url = new URL("/api/logs/search", base);
+            url.searchParams.set("body", text);
+            url.searchParams.set("lookback", "1d");
+            return url;
+          }),
         export: (spans) =>
           safe(
             Effect.scoped(
@@ -230,52 +356,42 @@ export class Telemetry extends Context.Service<
     }),
   );
 }
-/** Collector failures are explicit and safe to retain in reports. */
 export class TelemetryUnavailable extends Schema.TaggedError<TelemetryUnavailable>()(
   "TelemetryUnavailable",
   {},
 ) {}
+export class TraceUnsettled extends Schema.TaggedError<TraceUnsettled>()("TraceUnsettled", {
+  traces: Schema.Array(Schema.String),
+  spans: Schema.Number,
+}) {}
 
-/** Traces kept for every case: the slowest API requests and the latest browser traces. */
 const slowestTraceCount = 5;
-/**
- * A failed case keeps the trace of every request it sent, up to this many bytes of compact JSON.
- * The largest case, the 1,000-account inventory load, sends about 4,000 requests whose traces
- * take 47 MB. Past the budget, the oldest traces are left out. A case can set its own budget.
- */
 export const FailureTraceBudget = Context.Reference<number>("e2e/FailureTraceBudget", {
   defaultValue: () => 64 * 1024 * 1024,
 });
-/** How long a failed case waits for the server to deliver the spans that answered its requests. */
 const failureDeliveryWait = 5_000;
-/** How many traces a failed case reads from the collector at a time. */
 const failureQueryBatch = 32;
-/**
- * How long a case's evidence may spend exporting and reading traces. The cleanup hook allows 60
- * seconds (30 for the welcome email), and the product still has to stop after the evidence is
- * written. Traces not read by then are listed as unfetched.
- */
 const traceCollectionTime = 25_000;
 
-/** A traced request the case sent, answered or not. */
 interface Sent extends SentRequest {
   readonly answered: boolean;
 }
-/** One trace to read into telemetry.json, and why it is kept. */
 interface Planned {
   readonly traceId: string;
   readonly spanId: string | undefined;
   readonly kept: ReadonlyArray<string>;
-  /** Kept even past the budget. */
   readonly always: boolean;
 }
 
-/** Build a fresh evidence store for a single Vitest case. Its scope writes the final outcome. */
 export const evidenceLayer = (context: TestContext) =>
-  scenarioEvidence({ file: context.task.file.name, name: context.task.name });
+  scenarioEvidence({ file: context.task.file.name, name: context.task.name }, (message) =>
+    Effect.tryPromise(() => context.annotate(message, "measurement")).pipe(Effect.ignore),
+  );
 
-/** Record the same evidence for an interactive scenario or a committed Vitest case. */
-export const scenarioEvidence = (identity: { readonly file: string; readonly name: string }) =>
+export const scenarioEvidence = (
+  identity: { readonly file: string; readonly name: string },
+  output: (message: string) => Effect.Effect<void> = () => Effect.void,
+) =>
   Layer.effect(
     Evidence,
     Effect.gen(function* () {
@@ -298,18 +414,16 @@ export const scenarioEvidence = (identity: { readonly file: string; readonly nam
       const started = yield* Clock.currentTimeMillis;
       const attachments: (typeof EvidenceEntries.Type)[number]["attachments"][number][] = [];
       const annotations: { type: string; description: string }[] = [];
-      const steps: { name: string; durationMs: number; status: string }[] = [];
+      const measurements: Record<string, number> = {};
+      const steps: { name: string; durationMs: number; status: string; error?: string }[] = [];
       const requests = yield* Ref.make<ReadonlyArray<RequestEvidence>>([]);
       const spans = yield* Ref.make<ReadonlyArray<ClientSpan>>([]);
       const browserTraces = new Set<string>();
-      // Every request the case sent, in the order each was last sent or answered, oldest first.
       const sent = new Map<string, Sent>();
       let newestSent: string | undefined;
-      // A failure the evidence scope's exit does not carry, such as the case's own cleanup failing.
       let failure: Cause.Cause<unknown> | undefined;
       const artifact = (name: string, contentType: string, file: string) =>
         Effect.sync(() => {
-          // A file written again, such as by a flush and the final write, is listed once.
           if (!attachments.some((attachment) => attachment.name === name))
             attachments.push({ name, contentType, href: `evidence/${id}/${file}` });
         });
@@ -343,6 +457,7 @@ export const scenarioEvidence = (identity: { readonly file: string; readonly nam
                 target: target.metadata.target,
                 origin: target.metadata.origin,
                 status: cause === undefined ? "passed" : "failed",
+                startedAt: started,
                 duration: ended - started,
                 errors: cause === undefined ? [] : [Cause.pretty(cause)],
                 annotations,
@@ -353,8 +468,6 @@ export const scenarioEvidence = (identity: { readonly file: string; readonly nam
             ),
           );
         }).pipe(Effect.orDie);
-      // The final write reports the outcome before it reads any trace, and again when it ends, so a
-      // cleanup hook that runs out of time still leaves result.json and trace-ids.json.
       const write = (cause: Cause.Cause<unknown> | undefined, final: boolean) =>
         Effect.gen(function* () {
           const failed = cause !== undefined;
@@ -362,6 +475,10 @@ export const scenarioEvidence = (identity: { readonly file: string; readonly nam
           const outcome = final ? report(cause) : Effect.void;
           const rows = yield* Ref.get(requests);
           yield* json("requests.json", rows);
+          const lost = lostRequestsOf(identity.name);
+          if (lost.length > 0) yield* json("lost-requests.json", lost);
+          const stage = stageRequestsOf(identity.name);
+          if (stage.rows.length > 0) yield* json("stage-requests.json", stage);
           yield* json("steps.json", steps);
           const timeline = yield* recording.snapshot;
           yield* json("recording-timeline.json", timeline);
@@ -405,9 +522,6 @@ export const scenarioEvidence = (identity: { readonly file: string; readonly nam
             });
             return yield* outcome;
           }
-          // A failed case keeps every request's trace, newest first. Its newest request, the
-          // requests still unanswered and the traces a passing case keeps are always kept; the
-          // others are kept while they fit the budget, and the oldest are left out past it.
           const newestFirst = [...sent.values()].toReversed();
           const reasons = (traceId: string) => [
             ...(failed ? ["failure"] : []),
@@ -425,12 +539,9 @@ export const scenarioEvidence = (identity: { readonly file: string; readonly nam
               }))
             : [];
           const extras = new Map<string, string[]>();
-          // A failed case already reads its slowest requests with the others.
           if (!failed) for (const traceId of slowest) extras.set(traceId, ["slowest"]);
           for (const traceId of browser)
             extras.set(traceId, [...(extras.get(traceId) ?? []), "browser"]);
-          // Read order: the newest request first, then the other traces always kept, then the rest
-          // newest first, so a deadline leaves out the oldest.
           const alwaysKept = failures
             .filter(({ always }) => always)
             .toSorted(
@@ -463,7 +574,6 @@ export const scenarioEvidence = (identity: { readonly file: string; readonly nam
                 browser: [...browserTraces],
                 failure: failures.map(({ traceId }) => traceId).filter((id) => keptIds.has(id)),
                 dropped: dropped.map(({ traceId }) => traceId),
-                // Traces not read yet while collecting, and not read before the deadline after.
                 unfetched: unfetched.map(({ traceId }) => traceId),
                 requests: newestFirst.map(({ method, path, traceId, answered }) => ({
                   traceId,
@@ -482,8 +592,6 @@ export const scenarioEvidence = (identity: { readonly file: string; readonly nam
 
           const exported = yield* telemetry.export(yield* Ref.get(spans)).pipe(Effect.result);
           yield* json("client-export.json", exported);
-          // telemetry.json grows a batch at a time, so the traces read so far survive a cleanup
-          // hook that runs out of time.
           const file = path.join(directory, "telemetry.json");
           let entries = 0;
           const append = (values: ReadonlyArray<unknown>) =>
@@ -500,23 +608,20 @@ export const scenarioEvidence = (identity: { readonly file: string; readonly nam
           const entry = (
             traceId: string,
             kept: ReadonlyArray<string>,
-            query: typeof telemetry.query,
+            query: typeof telemetry.stored,
           ) =>
             query(traceId).pipe(
               Effect.map((value) => ({ id: traceId, kept, ...value })),
               Effect.catch(() =>
-                Effect.succeed({ id: traceId, kept, error: "Motel query failed" }),
+                Effect.succeed({ id: traceId, kept, error: "The collector query failed" }),
               ),
             );
-          // The server exports its spans every second, so the requests just before the failure
-          // are not delivered yet. Each read waits a bounded time for the server span that
-          // answered the test's client span.
           const deadline = (yield* Clock.currentTimeMillis) + failureDeliveryWait;
           const delivered = (
             traceId: string,
             spanId: string,
           ): Effect.Effect<typeof SpanQuery.Type, TelemetryUnavailable> =>
-            telemetry.query(traceId).pipe(
+            telemetry.stored(traceId).pipe(
               Effect.flatMap((found) =>
                 Effect.gen(function* () {
                   if (
@@ -531,17 +636,15 @@ export const scenarioEvidence = (identity: { readonly file: string; readonly nam
             );
           const read = ({ traceId, spanId, kept }: Planned) =>
             spanId === undefined
-              ? entry(traceId, kept, telemetry.query)
+              ? entry(traceId, kept, telemetry.stored)
               : entry(traceId, kept, (id) => delivered(id, spanId));
           const size = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
           let used = 0;
-          // The batch being read. Settling it is atomic, so the deadline either stops a batch
-          // before it settles, keeping the traces it read, or after.
           let pending: { readonly index: number; value?: unknown }[] = [];
           const settle = Effect.gen(function* () {
             const values: unknown[] = [];
             for (const { index, value } of pending) {
-              if (value === undefined) continue;
+              if (value === undefined) break;
               const trace = plan[index]!;
               used += size(value);
               if (!trace.always) {
@@ -592,7 +695,6 @@ export const scenarioEvidence = (identity: { readonly file: string; readonly nam
             Effect.interruptible,
             Effect.timeoutOption(Math.max(0, collectUntil - (yield* Clock.currentTimeMillis))),
           );
-          // The batch the deadline stopped keeps the traces it had read.
           yield* settle;
           const { unfetched, ids } = listed(Option.isSome(finished) ? "complete" : "partial");
           yield* append(
@@ -607,7 +709,6 @@ export const scenarioEvidence = (identity: { readonly file: string; readonly nam
           yield* outcome;
         });
       yield* Effect.addFinalizer((exit) =>
-        // withCase records a failure of the case's own cleanup, which closes before this scope.
         write(
           Exit.isFailure(exit)
             ? failure === undefined
@@ -635,7 +736,6 @@ export const scenarioEvidence = (identity: { readonly file: string; readonly nam
           }),
         request: (row, span) =>
           Effect.gen(function* () {
-            // An answer makes the request newest again.
             sent.delete(row.traceId);
             sent.set(row.traceId, {
               method: row.method,
@@ -652,6 +752,12 @@ export const scenarioEvidence = (identity: { readonly file: string; readonly nam
           Effect.sync(() => {
             browserTraces.add(id);
           }),
+        measure: (name, milliseconds) =>
+          Effect.gen(function* () {
+            measurements[name] = Math.round(milliseconds);
+            yield* json("measurements.json", measurements);
+            yield* output(`${name}: ${Math.round(milliseconds)} ms`);
+          }),
         intervention: (name) =>
           Effect.sync(() => {
             annotations.push({ type: "manual intervention", description: name });
@@ -663,11 +769,18 @@ export const scenarioEvidence = (identity: { readonly file: string; readonly nam
               Effect.onExit((exit) =>
                 Effect.gen(function* () {
                   const end = yield* Clock.currentTimeMillis;
-                  steps.push({
-                    name,
-                    durationMs: end - start,
-                    status: Exit.isSuccess(exit) ? "passed" : "failed",
-                  });
+                  steps.push(
+                    Exit.isSuccess(exit)
+                      ? { name, durationMs: end - start, status: "passed" }
+                      : Cause.hasInterruptsOnly(exit.cause)
+                        ? { name, durationMs: end - start, status: "interrupted" }
+                        : {
+                            name,
+                            durationMs: end - start,
+                            status: "failed",
+                            error: stepFailureText(exit.cause),
+                          },
+                  );
                 }),
               ),
               Effect.withSpan(name),

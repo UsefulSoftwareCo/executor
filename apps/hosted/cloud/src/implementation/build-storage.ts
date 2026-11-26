@@ -1,4 +1,3 @@
-/** Shared immutable app builds and browser assets. */
 export {
   retainWorkerBuild as retainCloudBuild,
   loadStoredWorkerBuild as loadCloudBuildRecord,

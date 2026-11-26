@@ -4,6 +4,7 @@ import {
   HttpBody,
   HttpClient,
   HttpClientRequest,
+  HttpMethod,
   HttpRouter,
   HttpServer,
   HttpServerRequest,
@@ -12,9 +13,7 @@ import {
 import { createServer } from "node:http";
 import { publicTemplateUpstream, templateUpstream } from "./template-upstream.ts";
 
-/** The fake provider deliberately puts this private value in unsafe response fields. */
 export const providerSecretMarker = "synthetic-private-provider-detail";
-/** Provider behavior is controlled outside the real Executor server and app runtime. */
 const makeProviderErrorUpstream = Effect.fn(function* (healthyUpstream: typeof templateUpstream) {
   const healthy = yield* healthyUpstream;
   const http = yield* HttpClient.HttpClient;
@@ -23,10 +22,8 @@ const makeProviderErrorUpstream = Effect.fn(function* (healthyUpstream: typeof t
     readonly phase?: "call" | "discover";
     readonly headers?: Record<string, string>;
     readonly code?: string;
-    /** Answer this JSON body instead of the default one, as a service's own error format. */
     readonly body?: unknown;
     readonly accounts?: "all";
-    /** Answer the failure only after this long, as a slow or distant service does. */
     readonly delayMs?: number;
   };
   const state = yield* Ref.make<Failure | undefined>(undefined);
@@ -47,7 +44,6 @@ const makeProviderErrorUpstream = Effect.fn(function* (healthyUpstream: typeof t
         path,
         Effect.gen(function* () {
           const request = yield* HttpServerRequest.HttpServerRequest;
-          // GitHub rejects requests from runtimes that omit an identifying User-Agent.
           if (path === "/graphql" && request.headers["user-agent"] !== "Executor")
             return yield* HttpServerResponse.json(
               { message: "User-Agent required" },
@@ -89,6 +85,8 @@ const makeProviderErrorUpstream = Effect.fn(function* (healthyUpstream: typeof t
             );
           }
           if (path.startsWith("/custom/")) return yield* HttpServerResponse.json({ ok: true });
+          if (!HttpMethod.isHttpMethod(request.method))
+            return yield* HttpServerResponse.json({ error: "unsupported method" }, { status: 405 });
           const response = yield* http.execute(
             HttpClientRequest.make(request.method)(`${healthy}${path}`, {
               headers: {

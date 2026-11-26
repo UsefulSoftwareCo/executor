@@ -1,4 +1,3 @@
-/** Synthetic apps and browser journeys exercise public products, never UI implementations. */
 import { expect } from "@effect/vitest";
 import { Effect } from "effect";
 import type { Page } from "playwright";
@@ -7,7 +6,6 @@ import { openThroughBrowser } from "./in-app-navigation.ts";
 import { holdQuery, refreshVisiblePage } from "./query-transition.ts";
 import { appsManifest, firstMigration } from "./apps-release.ts";
 
-/** A small deployed app exposes static documents, dynamic workflows, data and a private page. */
 export const appBrowserFiles = [
   firstMigration,
   {
@@ -46,14 +44,12 @@ export default defineApp({}, {
   appsManifest,
 ];
 
-/** Hold and fail actual HTTP reads while preserving the user's selected file. */
 export const checkAppBrowser = (input: {
   readonly url: string;
   readonly listUrl: string;
   readonly name: string;
   readonly readPaths: readonly string[];
   readonly version: string;
-  /** Readers browse the deployed catalog; people who can manage the app edit its working source. */
   readonly skills: "reader" | "editor";
 }) =>
   Effect.gen(function* () {
@@ -281,7 +277,6 @@ export const checkAppBrowser = (input: {
     yield* browser.checkpoint("Mobile skill reader");
   });
 
-/** The deployed catalog loads once; choosing skills and files never starts another read. */
 const readSkillCatalog = (readPaths: readonly string[]) =>
   Effect.gen(function* () {
     const browser = yield* Browser;
@@ -435,7 +430,6 @@ const selectedSkillFile = (page: Page) =>
     .locator("[aria-current=page]")
     .textContent();
 
-/** Working source and the deployed catalog load together; selecting files starts no reads. */
 const editSkillWorkspace = (readPaths: readonly string[]) =>
   Effect.gen(function* () {
     const browser = yield* Browser;

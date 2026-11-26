@@ -1,8 +1,3 @@
-/**
- * Local and desktop run each workflow run as its own engine in the product's workerd process.
- * An engine that stays loaded after its run finishes keeps its database and state resident, so
- * a long-running local or desktop process grows with every run it has ever executed.
- */
 import { randomUUID } from "node:crypto";
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schedule, Schema } from "effect";
@@ -58,12 +53,9 @@ export default defineApp({}, {
           expect(yield* loaded, "engines are loaded while their runs are recent").toBeGreaterThan(
             0,
           );
-          // workerd unloads an idle object once it has been inactive for about 70 s and its
-          // callers have gone, checked on a timer, so within about two and a half minutes.
           const settled = yield* loaded.pipe(
             Effect.flatMap((count) => (count === 0 ? Effect.succeed(count) : Effect.fail(count))),
             Effect.retry({ schedule: Schedule.spaced("5 seconds"), times: 48 }),
-            // Report how many engines remain loaded rather than that polling ran out.
             Effect.catch((error) =>
               typeof error === "number" ? Effect.succeed(error) : Effect.fail(error),
             ),

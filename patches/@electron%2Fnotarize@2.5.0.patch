@@ -1,0 +1,29 @@
+diff --git a/lib/staple.js b/lib/staple.js
+index 47dbd85b2fc279d999b57f47fb8171e1cc674436..43d7e80383b64fe5febf013e9164267c1644e203 100644
+--- a/lib/staple.js
++++ b/lib/staple.js
+@@ -43,9 +43,21 @@ const d = (0, debug_1.default)('electron-notarize:staple');
+ function stapleApp(opts) {
+     return __awaiter(this, void 0, void 0, function* () {
+         d('attempting to staple app:', opts.appPath);
+-        const result = yield (0, spawn_1.spawn)('xcrun', ['stapler', 'staple', '-v', path.basename(opts.appPath)], {
+-            cwd: path.dirname(opts.appPath),
+-        });
++        // Executor: when EXECUTOR_STAPLE_SCRIPT names its staple script, staple through it. It
++        // repeats only a failure to reach Apple's ticket service, and prints each repeat as it
++        // happens, so its output goes straight to this process's.
++        const script = process.env.EXECUTOR_STAPLE_SCRIPT;
++        const result = script
++            ? yield new Promise((resolve, reject) => {
++                const child = require('child_process').spawn(process.execPath, [script, opts.appPath], {
++                    stdio: 'inherit',
++                });
++                child.on('error', reject);
++                child.on('exit', (code) => resolve({ code: code === null ? 1 : code, output: '' }));
++            })
++            : yield (0, spawn_1.spawn)('xcrun', ['stapler', 'staple', '-v', path.basename(opts.appPath)], {
++                cwd: path.dirname(opts.appPath),
++            });
+         if (result.code !== 0) {
+             throw new Error(`Failed to staple your application with code: ${result.code}\n\n${result.output}`);
+         }

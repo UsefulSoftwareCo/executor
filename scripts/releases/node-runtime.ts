@@ -1,4 +1,3 @@
-/** Bundle the official Node distribution matching the release build's pinned toolchain. */
 import { createHash } from "node:crypto";
 import { Effect, FileSystem, Path, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
@@ -9,7 +8,6 @@ class NodeRuntimeFailed extends Schema.TaggedError<NodeRuntimeFailed>()("NodeRun
   stage: Schema.Literals(["version", "checksum", "extract", "executable"]),
 }) {}
 
-/** Verify the upstream archive, then retain only Node's executable and complete license notices. */
 export const installNodeRuntime = (runtime: string) =>
   Effect.gen(function* () {
     const target = nativePlatform(process.platform, process.arch);
@@ -42,9 +40,6 @@ export const installNodeRuntime = (runtime: string) =>
     const temporary = yield* fs.makeTempDirectoryScoped({ prefix: "executor-node-" });
     const archive = path.join(temporary, archiveName);
     yield* fs.writeFile(archive, bytes);
-    // Windows ships bsdtar with ZIP support; Git Bash's GNU tar cannot read ZIPs.
-    // Extract only the two distributed files, without npm's unused dependency tree.
-    // Node's Windows env lookup is case-insensitive; ConfigProvider's copied record is not.
     const tar = windows
       ? path.join(
           yield* Schema.decodeUnknownEffect(Schema.NonEmptyString)(process.env.SystemRoot),

@@ -101,7 +101,6 @@ export const makeWorkflowContext = (
           byte.toString(16).padStart(2, "0"),
         ).join("");
       });
-    // Mirror the native step deadline so a timed-out attempt releases its own capabilities.
     const attempt = <A>(options: WorkflowStepOptions, work: Effect.Effect<A, WorkflowFailure>) => {
       const timeout = workflowDurationMillis(options.timeout ?? "10 minutes");
       if (timeout === undefined)
@@ -109,8 +108,6 @@ export const makeWorkflowContext = (
       return work.pipe(
         Effect.timeout(timeout),
         Effect.catchTag("TimeoutError", () =>
-          // Both the capability deadline and the native engine deadline describe
-          // the same cancellation, regardless of which timer fires first.
           Effect.fail(new WorkflowFailure({ reason: "engine", retryable: true })),
         ),
       );
@@ -195,8 +192,6 @@ export const makeWorkflowContext = (
       });
     const invoke = <A>(effect: Effect.Effect<A, WorkflowFailure>) =>
       toPromise(() => effect.pipe(Effect.provideContext(services)), signal)();
-    // SAFETY: nativeOperation pairs each registered input/output with its decoder. The driver
-    // returns the same JSON-validated callback result on execution and replay of pinned code.
     const step: WorkflowContext["step"] = {
       do: (
         name: string,

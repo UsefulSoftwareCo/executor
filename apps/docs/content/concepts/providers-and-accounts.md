@@ -25,10 +25,36 @@ const vercel = defineProvider({
 `apiKey` is the method name. `secrets` means fields you paste; `oauth2` means a
 browser sign-in.
 
+Tell people where to get credentials with each field's `description` and, for
+ordered setup or prerequisites, a `guide` on a `secrets` method. `title`
+replaces a field's name as its label, and an `oauth2` method's `clientGuide`
+explains creating an OAuth client at the service:
+
+```ts
+apiKey: secrets({
+  label: "API token",
+  guide: "Sign in as the user the app acts as, then create the token.",
+  fields: object({
+    token: string({
+      minLength: 1,
+      description: "Create one under [Account settings](https://vercel.com/account/tokens).",
+    }),
+  }),
+}),
+```
+
+The connect form shows this setup help as Markdown: the guide above the fields,
+in place of a generic pointer to the service's account settings, and each
+description under its field. Links must be absolute `https:` URLs. A deploy
+refuses raw HTML, images, a guide over 4,000 characters and a description over
+1,000.
+
 A provider is not registered anywhere and has no owner and no slug. Two apps
 that declare the same provider resolve to the same provider reference, so an
 account saved for one can be used by the other. You do not coordinate an
-identifier between apps; matching definitions are enough.
+identifier between apps; matching definitions are enough. Setup help is not part
+of what has to match: editing it keeps the provider and its accounts, and two
+apps may explain one provider differently.
 
 A provider reference is also not permission. Knowing it does not let an app read
 an account. Access is authorized separately.
@@ -90,7 +116,9 @@ with your links.
 
 People who can edit an app link its app accounts for everyone, in the **App
 accounts** section of the app's **Accounts** tab. Linking needs edit access to
-the app and use of the account. Callers use the account through the app without
+the app, and the account must be your own: accounts are never shared, so this is
+how one account serves everyone. It stops serving if its owner leaves the
+organization. Callers use the account through the app without
 access to the account itself, and they cannot choose or replace it; everyone
 else sees the section read-only, without the account's details from the
 provider. Linking another account to a plain slot replaces the one before; a

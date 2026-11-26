@@ -1,5 +1,4 @@
 import { LocalTime, timeOfDay } from "../components/local-time.tsx";
-/** A shared review page for tool consent and standard MCP form input. */
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
 import {
   BrowserApprovalFailed,
@@ -37,7 +36,6 @@ const defaults = (request: PendingInteraction) =>
       ],
     ),
   );
-/** Executor accepted the answer, so the form must not offer it again. */
 const unreadableReply =
   "Executor received your answer, but this page could not read its reply. If you approved, the tool may have run and made changes. Reload the page, and check before running it again.";
 const failureMessage = (cause: Cause.Cause<BrowserApprovalFailure>) => {
@@ -66,7 +64,6 @@ const replyUnreadable = (cause: Cause.Cause<BrowserApprovalFailure>) => {
 };
 type Outcome = "answered" | "unavailable" | "reply-unreadable";
 
-/** Authentication is provided by the product; the server independently checks every read and answer. */
 export function BrowserApprovalPage({ atoms }: { readonly atoms: BrowserApprovalAtoms }) {
   return (
     <main className="mx-auto flex min-h-svh w-full max-w-2xl flex-col px-5 py-12 sm:py-20">
@@ -78,7 +75,6 @@ export function BrowserApprovalPage({ atoms }: { readonly atoms: BrowserApproval
     </main>
   );
 }
-/** Reuse the same form inside a product page; completion copy belongs to the delivery surface. */
 export function BrowserApprovalCard({
   atoms,
   completion,
@@ -101,7 +97,6 @@ export function BrowserApprovalCard({
   return (
     <ApprovalCard>
       {refused !== undefined ? (
-        // Reading again cannot change a refusal, so it shows its cause and recovery, not a retry.
         <ErrorNotice error={refused} context="Reviewing a tool request from the Tools tab" />
       ) : AsyncResult.isFailure(view) ? (
         <>
@@ -238,8 +233,6 @@ function ApprovalForm({
         </h1>
       </header>
       <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted p-4 font-sans text-sm">
-        {/* An approval shows the exact call it runs. Its saved prompt, which MCP clients are
-            sent, shortens long arguments. */}
         {request.status === "approval-required"
           ? `Approve ${tool}?\n\nArguments:\n${JSON.stringify(request.invocation.input, null, 2)}`
           : request.elicitation.message}

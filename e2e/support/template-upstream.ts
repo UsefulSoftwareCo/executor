@@ -1,4 +1,3 @@
-/** Synthetic upstream protocols; the product still generates, deploys and calls real apps. */
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Effect, Layer, Schema } from "effect";
 import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
@@ -25,7 +24,6 @@ const output = {
   required: ["account"],
 };
 
-/** Start isolated OpenAPI, MCP and GraphQL endpoints; close the listener with the case scope. */
 const makeTemplateUpstream = Effect.fn(function* (access: "bearer" | "public") {
   const routes = Layer.mergeAll(
     HttpRouter.add(
@@ -153,5 +151,4 @@ const makeTemplateUpstream = Effect.fn(function* (access: "bearer" | "public") {
 });
 
 export const templateUpstream = makeTemplateUpstream("bearer");
-/** Public fixtures reject Authorization headers so credential-free connections are observable. */
 export const publicTemplateUpstream = makeTemplateUpstream("public");

@@ -1,7 +1,6 @@
 import { Effect, FileSystem, Path, Schema } from "effect";
 import { UICaptures, UIObservations, UIStateReport } from "../state-model.ts";
 
-/** Assemble directly captured states, retaining every uncaptured candidate with its reason. */
 export const renderStateEvidence = (directory: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem,

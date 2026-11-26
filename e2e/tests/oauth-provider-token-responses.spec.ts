@@ -1,8 +1,3 @@
-/**
- * Sign in and renew against a loopback issuer that answers with the token responses real services
- * send: Slack's `bot` type, Shopify and Mailchimp without a type, null or array members, and
- * an empty scope. Declared options read Slack's nested user grant and send JSON token requests.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
@@ -33,7 +28,6 @@ const Echo = Schema.Struct({
 const ScopeEcho = Schema.Struct({ ...Echo.fields, scope: Schema.String });
 const client = { clientId: "token-shape-client", clientSecret: "synthetic-manual-secret" };
 
-/** Slack's `oauth.v2.access` answer for a bot install with token rotation. */
 const slack: TokenShape = (tokens) => ({
   ok: true,
   app_id: "A0SYNTHETIC",
@@ -48,7 +42,6 @@ const slack: TokenShape = (tokens) => ({
   ...(tokens.expires_in === undefined ? {} : { expires_in: tokens.expires_in }),
   ...(tokens.refresh_token === undefined ? {} : { refresh_token: tokens.refresh_token }),
 });
-/** Slack's `oauth.v2.access` answer for a user-only install: the grant is under `authed_user`. */
 const slackUser: TokenShape = (tokens) => ({
   ok: true,
   app_id: "A0SYNTHETIC",
@@ -64,7 +57,6 @@ const slackUser: TokenShape = (tokens) => ({
   enterprise: null,
   is_enterprise_install: false,
 });
-/** Shopify's expiring offline token: no `token_type`, comma-separated scopes. */
 const shopify: TokenShape = (tokens) => ({
   access_token: tokens.access_token,
   scope: "read_products,write_orders",
@@ -72,16 +64,13 @@ const shopify: TokenShape = (tokens) => ({
   ...(tokens.refresh_token === undefined ? {} : { refresh_token: tokens.refresh_token }),
   refresh_token_expires_in: 7776000,
 });
-/** Mailchimp: no `token_type`, no lifetime, and a null scope. */
 const mailchimp: TokenShape = (tokens) => ({ access_token: tokens.access_token, scope: null });
-/** Optional members sent as null. A refresh keeps the previous refresh token. */
 const nullMembers: TokenShape = (tokens, refreshing) => ({
   ...tokens,
   refresh_token: refreshing ? null : tokens.refresh_token,
   scope: null,
   id_token: null,
 });
-/** No lifetime, no refresh token and an empty ID token. */
 const nullLifetime: TokenShape = (tokens) => ({
   access_token: tokens.access_token,
   token_type: "bearer",
@@ -89,33 +78,23 @@ const nullLifetime: TokenShape = (tokens) => ({
   refresh_token: null,
   id_token: "",
 });
-/** Scopes as a JSON array. */
 const scopeArray: TokenShape = (tokens) => ({ ...tokens, scope: ["read", "write"] });
-/** The given scope on sign-in and on renewal; null sends `scope: null`. */
 const scoped =
   (signIn: string, renewal: string | null): TokenShape =>
   (tokens, refreshing) => ({ ...tokens, scope: refreshing ? renewal : signIn });
-/** Answer sign-in in the standard shape and renewals in the given one. */
 const onRenewal =
   (shape: TokenShape): TokenShape =>
   (tokens, refreshing) =>
     refreshing ? shape(tokens, refreshing) : tokens;
-/** A DPoP-bound token on sign-in or on renewal; Executor cannot create DPoP proofs. */
 const dpop =
   (on: "exchange" | "refresh"): TokenShape =>
   (tokens, refreshing) =>
     refreshing === (on === "refresh") ? { ...tokens, token_type: "DPoP" } : tokens;
 
-/**
- * Deploy an app whose only query presents the account's token to the issuer, with helpers that
- * sign a new account in and call that query with it. With `scope`, the provider declares a response that
- * requires a string `scope` and the query echoes the scope app code sees.
- */
 const serviceApp = (
   issuer: Effect.Success<typeof oauthSetupIssuer>,
   options: {
     readonly scope?: boolean;
-    /** Further OAuth options the provider declares. */
     readonly oauth?: Readonly<Record<string, unknown>>;
   } = {},
 ) =>
@@ -162,7 +141,6 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
       api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
     );
 
-    /** Sign a new account in through the issuer and complete the callback, linking it to the app. */
     const signIn = (label: string) =>
       Effect.gen(function* () {
         const connection = yield* body(
@@ -211,9 +189,6 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
           yield* Effect.addFinalizer(() =>
             api.request(actors.owner, "DELETE", `${prefix}/accounts/${saved}`).pipe(Effect.orDie),
           );
-          // Linking the account sets it up as the app's webhook source in the background, which
-          // resolves, and so may renew, the account. Let it finish so each renewal below belongs to
-          // the call the scenario makes.
           yield* settleWebhookSources(actors.owner, `${prefix}/apps/${app.id}`, (sources) =>
             sources.some((source) => source.account === saved && source.status !== "pending"),
           );
@@ -222,10 +197,6 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
         return { account, completed, failure: yield* body(Failure, completed) };
       });
 
-    /**
-     * Call the app's query, which presents the account's access token to the issuer. Each sign-in
-     * links its account to the app in place of the one before, so the call uses the signed-in one.
-     */
     const read = (signedIn: { readonly account: string | undefined }) =>
       Effect.gen(function* () {
         if (signedIn.account === undefined)
@@ -250,7 +221,6 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
     return { signIn, read };
   });
 
-/** Sign in and renew with each shape through declared endpoints. */
 const tokenResponses = (context: TestContext) =>
   withHostedCase(
     context,
@@ -261,7 +231,6 @@ const tokenResponses = (context: TestContext) =>
       const accepted: ReadonlyArray<{
         readonly name: string;
         readonly tokenShape: TokenShape;
-        /** Tokens inside the host's refresh window renew on the first call. */
         readonly renews: boolean;
       }> = [
         { name: "Slack bot token", tokenShape: slack, renews: true },
@@ -270,7 +239,6 @@ const tokenResponses = (context: TestContext) =>
         { name: "Null optional members", tokenShape: nullMembers, renews: true },
         { name: "Null lifetime and refresh token", tokenShape: nullLifetime, renews: false },
         { name: "Scope array", tokenShape: scopeArray, renews: true },
-        // Sign-in answers in the standard shape; only renewals use the service's shape.
         { name: "Slack bot token on renewal", tokenShape: onRenewal(slack), renews: true },
         { name: "Null members on renewal", tokenShape: onRenewal(nullMembers), renews: true },
       ];
@@ -279,14 +247,12 @@ const tokenResponses = (context: TestContext) =>
         yield* issuer.configure({
           tokenShape: scenario.tokenShape,
           refreshTokens: true,
-          // Inside the host's 30-second refresh window, so each call renews once.
           expiresIn: 10,
         });
         const signedIn = yield* signIn(label);
         expect(signedIn.completed.status, `${label}: ${JSON.stringify(signedIn.failure)}`).toBe(
           200,
         );
-        // Renew twice: the second renewal presents the refresh token the first one kept.
         const presented: string[] = [];
         for (const call of [1, 2]) {
           const { response, refreshes } = yield* read(signedIn);
@@ -306,7 +272,6 @@ const tokenResponses = (context: TestContext) =>
         if (scenario.renews) expect(presented[1], label).not.toBe(presented[0]);
       }
 
-      // Executor sends every token as Bearer and cannot create DPoP proofs.
       yield* issuer.configure({
         tokenShape: dpop("exchange"),
         refreshTokens: true,
@@ -319,8 +284,6 @@ const tokenResponses = (context: TestContext) =>
         reason: "unsupported",
       });
 
-      // A DPoP token on renewal is refused without ending the grant. While the sign-in token is
-      // still valid, the call keeps using it and every call renews again.
       yield* issuer.configure({ tokenShape: dpop("refresh") });
       const dpopRenewal = yield* signIn("DPoP renewal");
       expect(dpopRenewal.completed.status, JSON.stringify(dpopRenewal.failure)).toBe(200);
@@ -335,7 +298,6 @@ const tokenResponses = (context: TestContext) =>
           authorization: "Bearer synthetic-access-token",
         });
       }
-      // Once the sign-in token has expired, the refused renewal fails the call.
       yield* issuer.configure({ expiresIn: 1 });
       const dpopExpired = yield* signIn("DPoP renewal after expiry");
       expect(dpopExpired.completed.status, JSON.stringify(dpopExpired.failure)).toBe(200);
@@ -349,10 +311,6 @@ const tokenResponses = (context: TestContext) =>
     }),
   );
 
-/**
- * An empty `scope` is a granted scope, not an absent one: app code sees it after sign-in and
- * after a renewal that narrows a nonempty scope. A null scope on renewal keeps the granted one.
- */
 const emptyScope = (context: TestContext) =>
   withHostedCase(
     context,
@@ -384,7 +342,6 @@ const emptyScope = (context: TestContext) =>
         yield* issuer.configure({
           tokenShape: scenario.tokenShape,
           refreshTokens: scenario.renews,
-          // Inside the host's 30-second refresh window when renewing; otherwise outside it.
           expiresIn: scenario.renews ? 10 : 3600,
         });
         const signedIn = yield* signIn(label);
@@ -400,11 +357,6 @@ const emptyScope = (context: TestContext) =>
     }),
   );
 
-/**
- * A provider that declares `tokenResponse: { path: "authed_user" }` signs in and renews with
- * Slack's user-only response, and app code sees the nested grant's scopes space-separated. A
- * top-level grant with a scope still wins. Without the option the nested grant is not read.
- */
 const nestedTokenResponse = (context: TestContext) =>
   withHostedCase(
     context,
@@ -420,7 +372,6 @@ const nestedTokenResponse = (context: TestContext) =>
         readonly scope: string;
       }> = [
         { name: "Slack user token", tokenShape: slackUser, scope: "search:read chat:write" },
-        // A bot install answers with a top-level grant and scope, and only the user's ID nested.
         { name: "Slack bot token beside a nested user", tokenShape: slack, scope: "read,write" },
       ];
       for (const scenario of cases) {
@@ -428,14 +379,12 @@ const nestedTokenResponse = (context: TestContext) =>
         yield* issuer.configure({
           tokenShape: scenario.tokenShape,
           refreshTokens: true,
-          // Inside the host's 30-second refresh window, so each call renews once.
           expiresIn: 10,
         });
         const signedIn = yield* nested.signIn(label);
         expect(signedIn.completed.status, `${label}: ${JSON.stringify(signedIn.failure)}`).toBe(
           200,
         );
-        // Renew twice: the second renewal presents the refresh token the first one kept.
         const presented: string[] = [];
         for (const call of [1, 2]) {
           const { response, refreshes } = yield* nested.read(signedIn);
@@ -454,7 +403,6 @@ const nestedTokenResponse = (context: TestContext) =>
         expect(presented[1], label).not.toBe(presented[0]);
       }
 
-      // The same response without the declared option has no access token Executor can read.
       const standard = yield* serviceApp(issuer, { scope: true });
       yield* issuer.configure({ tokenShape: slackUser, refreshTokens: true, expiresIn: 10 });
       const refused = yield* standard.signIn("Slack user token without the option");
@@ -463,10 +411,6 @@ const nestedTokenResponse = (context: TestContext) =>
     }),
   );
 
-/**
- * A provider that declares `tokenRequestFormat: "json"` signs in and renews against a service
- * that reads only JSON token requests. Without the option, the form request is refused.
- */
 const jsonTokenRequests = (context: TestContext) =>
   withHostedCase(
     context,
@@ -491,7 +435,6 @@ const jsonTokenRequests = (context: TestContext) =>
           `call ${call}: ${JSON.stringify((yield* issuer.metrics).refreshChecks)}`,
         ).toMatch(/^Bearer synthetic-refreshed-token-\d+$/);
       }
-      // The exchange and every renewal were JSON.
       const types = (yield* issuer.metrics).tokenContentTypes.slice(sent);
       expect(types.length).toBeGreaterThanOrEqual(3);
       expect(types).toEqual(types.map(() => "application/json"));
