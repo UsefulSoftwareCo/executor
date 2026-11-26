@@ -6,7 +6,6 @@ import type { PostHogOutput } from "./posthog-output.ts";
 import { productionSiteTelemetry } from "../contracts/edge-paths.ts";
 import { pinnedInProduction } from "./site-telemetry.ts";
 
-/** Bind the optional relay outside PostHog's enablement gate. */
 const telemetryRelayBindings = (dev: boolean) =>
   Effect.gen(function* () {
     const configuredUrl = yield* Config.String("EXECUTOR_TELEMETRY_RELAY_URL").pipe(Config.option);
@@ -45,7 +44,6 @@ const telemetryRelayBindings = (dev: boolean) =>
     };
   });
 
-/** The browser and server use the same project and deployment identity. */
 export const postHogBindings = Effect.gen(function* () {
   const dev = (yield* AlchemyContext).dev;
   const relay = yield* telemetryRelayBindings(dev);

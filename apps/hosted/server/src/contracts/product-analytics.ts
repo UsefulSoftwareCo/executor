@@ -16,7 +16,6 @@ export interface UsageProperties {
   readonly area?: string;
   readonly operation?: string;
   readonly app_id?: string;
-  /** Stable service catalog identifier supplied by a host's local classifier. */
   readonly service_id?: string;
   readonly version_id?: string;
   readonly account_id?: string;

@@ -1,4 +1,3 @@
-/** Request-owned analytics and explicit feedback with optional destinations. */
 import { readSiteVisitor, siteVisitorCookie } from "@executor-js/marketing/site-visitor";
 import { readSignInOrigin } from "@executor-js/hosted-server/sign-in-origin";
 import { recordRoute, TelemetryDrainScope, TelemetryWaitReport } from "@executor-js/telemetry";
@@ -50,7 +49,6 @@ type EventName =
   | "account_connection_failed"
   | "invitation_sent"
   | "invitation_accepted"
-  // The search observer is carried separately from this destination change.
   | "tool_search_empty"
   | "$feature_flag_called"
   | "$identify"
@@ -184,7 +182,6 @@ export const withProductAnalytics = <A, E, R>(
   Effect.gen(function* () {
     const [config, relay] = yield* Effect.all([settings, relaySettings]);
     if (!config && !relay) return yield* handler;
-    // A configured relay can receive explicit feedback even when its analytics stream is opted out.
     const request =
       relay === undefined
         ? Option.none<HttpServerRequest.HttpServerRequest>()
@@ -215,25 +212,23 @@ export const withProductAnalytics = <A, E, R>(
       else dropped++;
     };
     const client = yield* HttpClient.HttpClient;
-    const send = (batch: readonly Event[]) => {
-      if (relay !== undefined) {
-        const allowed: RelayEvent[] = batch.flatMap((event) => {
-          const safe = relayEvent({
-            event: event.event,
-            accountId: event.distinct_id,
-            timestamp: event.timestamp,
-            properties: event.properties,
+    const send = (batch: readonly Event[]) =>
+      Effect.gen(function* () {
+        if (relay !== undefined) {
+          const allowed: RelayEvent[] = batch.flatMap((event) => {
+            const safe = relayEvent({
+              event: event.event,
+              accountId: event.distinct_id,
+              timestamp: event.timestamp,
+              properties: event.properties,
+            });
+            return safe === undefined ? [] : [safe];
           });
-          return safe === undefined ? [] : [safe];
-        });
-        return sendRelayAnalytics(relay, allowed).pipe(
-          Effect.timeout("3 seconds"),
-          Effect.asVoid,
-        );
-      }
-      if (config === undefined) return Effect.void;
-      return client
-        .execute(
+          yield* sendRelayAnalytics(relay, allowed).pipe(Effect.timeout("3 seconds"));
+          return;
+        }
+        if (config === undefined) return;
+        const response = yield* client.execute(
           HttpClientRequest.post(`${config.host}/batch/`).pipe(
             HttpClientRequest.bodyJsonUnsafe({
               api_key: config.token,
@@ -259,17 +254,10 @@ export const withProductAnalytics = <A, E, R>(
               })),
             }),
           ),
-        )
-        .pipe(
-          Effect.flatMap((response) =>
-            response.status >= 200 && response.status < 300
-              ? Effect.void
-              : Effect.fail(response.status),
-          ),
-          Effect.timeout("3 seconds"),
-          Effect.asVoid,
         );
-    };
+        if (response.status < 200 || response.status >= 300)
+          return yield* Effect.fail(response.status);
+      });
     const flushScope = (yield* TelemetryDrainScope) ?? (yield* Effect.scope);
     const reportWait = yield* TelemetryWaitReport;
     yield* Scope.addFinalizer(

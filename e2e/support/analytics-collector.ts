@@ -80,7 +80,6 @@ export const startAnalyticsCollector = (directory: string) =>
         });
         return HttpServerResponse.jsonUnsafe({ status: "accepted" });
       }).pipe(Effect.orDie);
-    // A fresh router per collector: one process can own several products, each with its own.
     const services = yield* Layer.build(
       Layer.fresh(
         HttpRouter.serve(

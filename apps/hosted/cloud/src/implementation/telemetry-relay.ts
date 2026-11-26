@@ -1,4 +1,3 @@
-/** Strict, authenticated HTTP export for hosted product events and explicit feedback. */
 import { Effect, Option, Redacted, Schema } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest, HttpServerRequest } from "effect/http";
 import { FeedbackUnavailable } from "@executor-js/telemetry/product-analytics";
@@ -9,7 +8,6 @@ const Identifier = Schema.String.check(
   Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9_-]*$/u),
 );
 
-/** Base URL and bearer credential for the optional hosted telemetry relay. */
 export interface TelemetryRelaySettings {
   readonly url: string;
   readonly token: Redacted.Redacted<string>;
@@ -37,7 +35,6 @@ const RelayUrl = Schema.String.check(
   }),
 );
 
-/** An absent pair is optional; a partial or malformed pair fails closed. */
 export const readTelemetryRelaySettings = (read: BindingReader) =>
   Effect.gen(function* () {
     const url = bindingText(yield* read("EXECUTOR_TELEMETRY_RELAY_URL"));
@@ -51,7 +48,6 @@ export const readTelemetryRelaySettings = (read: BindingReader) =>
     } satisfies TelemetryRelaySettings;
   });
 
-/** Request or environment opt-out suppresses relay analytics; explicit feedback stays enabled. */
 export const readRelayAnalyticsOptOut = (
   read: BindingReader,
   request: HttpServerRequest.HttpServerRequest,
@@ -65,7 +61,6 @@ export const readRelayAnalyticsOptOut = (
     return false;
   });
 
-/** An analytics event after the relay allowlist has removed all unrelated properties. */
 export interface RelayEvent {
   readonly event: string;
   readonly account_id: string;
@@ -95,7 +90,6 @@ const propertiesFor = (
     case "account_connection_failed":
     case "tool_execution_completed":
       return appId === undefined ? {} : { app_id: appId };
-    // The search observer is carried independently; its query never crosses this boundary.
     case "tool_search_empty":
       return serviceId === undefined ? {} : { service_id: serviceId };
     default:
@@ -103,7 +97,6 @@ const propertiesFor = (
   }
 };
 
-/** Convert only contract-approved events to the relay wire format. */
 export const relayEvent = (input: {
   readonly event: string;
   readonly accountId: string;
@@ -138,13 +131,11 @@ const post = (settings: TelemetryRelaySettings, path: "analytics" | "feedback", 
     Effect.provide(FetchHttpClient.layer),
   );
 
-/** Send a bounded analytics batch. Invalid and unsupported events are dropped before HTTP. */
 export const sendRelayAnalytics = (
   settings: TelemetryRelaySettings,
   events: ReadonlyArray<RelayEvent>,
 ) => (events.length === 0 ? Effect.void : post(settings, "analytics", { events }));
 
-/** Explicit feedback is independent of analytics opt-out and must be confirmed by the relay. */
 export const sendRelayFeedback = (
   settings: TelemetryRelaySettings,
   feedback: { readonly message: string; readonly accountId: string },

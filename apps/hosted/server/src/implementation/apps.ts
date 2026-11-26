@@ -23,7 +23,6 @@ export const installApp = (owner: OwnerId, input: typeof InstallApp.Type) =>
     const executor = yield* Effect.flatten(HostedExecutor);
     const catalog = yield* HostedCatalog;
     const generated = yield* catalog.prepare(input);
-    // An official app keeps its own package name, as an installed published app does.
     if (generated.origin !== undefined) {
       const app = yield* executor.apps
         .copy({

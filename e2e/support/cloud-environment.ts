@@ -83,14 +83,9 @@ export const startCloudEnvironment = (input: {
   readonly commit: string;
   readonly observeUI: boolean;
   readonly authRateLimit: boolean;
-  /** Enable the synthetic local relay for the focused telemetry relay scenario. */
   readonly telemetryRelay?: boolean;
   readonly removalRevocationBudgetMs?: number;
   readonly releaseNotes?: CloudNotesSource;
-  /**
-   * Which host serves the dashboard and sign-in: `app.` of the origin, or, with the rollback
-   * switch (`CLOUD_BROWSER_ORIGIN=deployment`), the origin itself.
-   */
   readonly browserOrigin: "app" | "deployment";
   readonly npmRegistry?: string;
   readonly catalogs?: string;

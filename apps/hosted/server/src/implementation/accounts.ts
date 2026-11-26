@@ -108,7 +108,6 @@ export const checkCredentials = (
     const executor = yield* Effect.flatten(HostedExecutor);
     yield* requireAppAccess(input.app, "use");
     return yield* executor.apps.checkCredentials({ ...input, owner }).pipe(
-      // Check failures may happen before the SDK resolves this caller-supplied app ID.
       Effect.tapError(() => recordUsage("account_connection_failed")),
     );
   });

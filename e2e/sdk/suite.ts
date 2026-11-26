@@ -231,8 +231,6 @@ export const runSuite = ({
         catch: () =>
           new RunFailed({ message: "The test-name filter is not a valid regular expression." }),
       });
-      // The relay test gets its own synthetic receiver only when explicitly selected. A full
-      // Cloud run keeps the existing PostHog destination for the rest of the analytics suite.
       const telemetryRelaySelected =
         name !== "" &&
         plan.some(

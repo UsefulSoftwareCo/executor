@@ -1,19 +1,13 @@
 import { expect, layer } from "@effect/vitest";
-import { Effect, FileSystem, Schema, Schedule } from "effect";
+import { Effect, Schema, Schedule } from "effect";
 import { scenarios } from "../test-plan.ts";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
+import { analyticsEvents, telemetryRelayRecords } from "../support/collector-events.ts";
 import { App } from "../support/contracts.ts";
-import { Target } from "../support/platform.ts";
 import { appsManifest } from "../support/apps-release.ts";
 
-const Event = Schema.Struct({
-  event: Schema.String,
-  distinct_id: Schema.optional(Schema.String),
-  properties: Schema.Record(Schema.String, Schema.Json),
-});
-const PostHogBatch = Schema.Struct({ batch: Schema.Array(Event) });
 const RelayEvent = Schema.Struct({
   event: Schema.String,
   account_id: Schema.String,
@@ -26,19 +20,8 @@ const RelayRecord = Schema.Struct({
 });
 const RelayBatch = Schema.Struct({ events: Schema.Array(RelayEvent) });
 
-const posthogEvents = (text: string) =>
-  text
-    .trim()
-    .split("\n")
-    .filter(Boolean)
-    .flatMap((line) => Schema.decodeUnknownSync(Schema.fromJsonString(PostHogBatch))(line).batch);
-
-const relayRecords = (text: string) =>
-  text
-    .trim()
-    .split("\n")
-    .filter(Boolean)
-    .map((line) => Schema.decodeUnknownSync(Schema.fromJsonString(RelayRecord))(line));
+const relayRecords = (records: ReadonlyArray<unknown>) =>
+  records.map((record) => Schema.decodeUnknownSync(RelayRecord)(record));
 
 layer(HostedLive, { excludeTestServices: true })("Telemetry relay", (it) =>
   it.effect(scenarios.telemetryRelay.title, (context) =>
@@ -46,20 +29,15 @@ layer(HostedLive, { excludeTestServices: true })("Telemetry relay", (it) =>
       context,
       Effect.gen(function* () {
         const actors = yield* Actors,
-          api = yield* Api,
-          fs = yield* FileSystem.FileSystem,
-          target = yield* Target;
+          api = yield* Api;
         const relayEnabled = process.env.E2E_TELEMETRY_RELAY === "1";
         const session = yield* body(
           Schema.Struct({ user: Schema.Struct({ id: Schema.String }) }),
           yield* api.request(actors.owner, "GET", "/api/auth/get-session"),
         );
-        const beforeRelay = relayEnabled
-          ? relayRecords(yield* fs.readFileString(`${target.directory}/telemetry-relay.ndjson`))
-          : [];
-        const beforePostHog = relayEnabled
-          ? []
-          : posthogEvents(yield* fs.readFileString(`${target.directory}/analytics.ndjson`));
+        const person = { person: session.user.id };
+        const beforeRelay = relayEnabled ? relayRecords(yield* telemetryRelayRecords(person)) : [];
+        const beforePostHog = relayEnabled ? [] : yield* analyticsEvents(person);
         const prefix = `/api/organizations/${actors.organization.id}`;
         const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
           name: "Telemetry relay fixture",
@@ -143,10 +121,7 @@ export default defineApp({}, async () => ({ tools: router({
 
         if (relayEnabled) {
           const records = yield* Effect.gen(function* () {
-            const read = () =>
-              fs
-                .readFileString(`${target.directory}/telemetry-relay.ndjson`)
-                .pipe(Effect.map(relayRecords));
+            const read = () => telemetryRelayRecords(person).pipe(Effect.map(relayRecords));
             return yield* read().pipe(
               Effect.repeat({
                 schedule: Schedule.spaced("100 millis"),
@@ -187,10 +162,7 @@ export default defineApp({}, async () => ({ tools: router({
             expect(wire).not.toContain(privateValue);
         } else {
           const events = yield* Effect.gen(function* () {
-            const read = () =>
-              fs
-                .readFileString(`${target.directory}/analytics.ndjson`)
-                .pipe(Effect.map(posthogEvents));
+            const read = () => analyticsEvents(person);
             return yield* read().pipe(
               Effect.repeat({
                 schedule: Schedule.spaced("100 millis"),

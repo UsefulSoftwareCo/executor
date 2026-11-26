@@ -15,7 +15,6 @@ const observeTool = <A extends ToolCallResult | ToolResumeResult, E, R>(
   Effect.gen(function* () {
     const started = yield* Clock.currentTimeMillis;
     const { app_id: _requestedAppId, ...requestedProperties } = properties;
-    // Before the SDK call resolves, `app` is still caller input.
     yield* recordUsage("tool_execution_started", requestedProperties);
     return yield* work.pipe(
       Effect.onExit((exit) =>
@@ -32,8 +31,6 @@ const observeTool = <A extends ToolCallResult | ToolResumeResult, E, R>(
             return;
           }
           const status = exit.value.status;
-          // A pending invocation carries the SDK-resolved ID; a completed call proves the SDK
-          // resolved the requested ID from stored app state before dispatching the tool.
           const appId =
             status === "approval-required" ? exit.value.invocation.app : properties.app_id;
           const attributed = appId === undefined ? timed : { ...timed, app_id: appId };
@@ -62,8 +59,6 @@ export const withExecutorAnalytics = (executor: Executor): Executor => ({
       ),
     resume: (input, options) =>
       Effect.gen(function* () {
-        // Resume input carries only a request ID. Read the stored SDK invocation so the relay
-        // gets the authoritative app identity, without trusting request-local caller metadata.
         const approval = yield* executor.tools
           .approval({
             requestId: input.requestId,

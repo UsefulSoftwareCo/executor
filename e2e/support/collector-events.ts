@@ -3,7 +3,7 @@ import { Target } from "./platform.ts";
 import { scopeOf, type Scope } from "./scope.ts";
 
 export const collectorLinesWholeEnvironment = (
-  file: "sentry.ndjson" | "analytics.ndjson" | "flags.ndjson",
+  file: "sentry.ndjson" | "analytics.ndjson" | "flags.ndjson" | "telemetry-relay.ndjson",
 ) =>
   Effect.gen(function* () {
     const target = yield* Target,
@@ -69,6 +69,23 @@ export const analyticsEvents = (scope: AnalyticsScope) =>
       return Array.isArray(batch) ? batch.filter(owned) : [];
     });
     return yield* Effect.forEach(events, (event) => decodeEvent(event));
+  });
+
+export const telemetryRelayRecords = (scope: Scope<{ readonly person: string }>) =>
+  Effect.gen(function* () {
+    const { value: person } = yield* scopeOf("A telemetry relay read", scope);
+    const lines = yield* collectorLinesWholeEnvironment("telemetry-relay.ndjson");
+    return lines.flatMap((line) => {
+      const record = parseLeniently(line);
+      const kind = field(record, "kind");
+      const body = field(record, "body");
+      if (kind === "feedback") return field(body, "account_id") === person ? [record] : [];
+      if (kind !== "analytics") return [];
+      const events = field(body, "events");
+      if (!Array.isArray(events)) return [];
+      const scopedEvents = events.filter((event) => field(event, "account_id") === person);
+      return scopedEvents.length === 0 ? [] : [{ kind, body: { events: scopedEvents } }];
+    });
   });
 
 export const flagEvaluations = (person: string) =>
