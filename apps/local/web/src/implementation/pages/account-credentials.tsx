@@ -4,10 +4,6 @@ import { Button } from "@executor-js/ui/components/button";
 import { ProviderIcon } from "../components/common.tsx";
 import { AppAccountForm } from "./account-form.tsx";
 
-/**
- * Replace credentials from an app that uses the account. The form shows the app's declaration,
- * so it names the hosts the credentials reach. The account keeps its ID, name and links.
- */
 export function ReplaceCredentials({
   data: { account },
   app,

@@ -1,22 +1,17 @@
 import { Textarea } from "../components/textarea.tsx";
 
-/** The account metadata a dashboard can change. Only supplied fields change. */
 export interface AccountMetadataUpdate {
   readonly label?: string;
-  /** Null removes the description. */
   readonly description?: string | null;
 }
 
-/** Products reject longer descriptions; agents read them with every tool that uses the account. */
 export const accountDescriptionMaxLength = 500;
 
-/** A saved description, or null when the draft is blank. */
 export const accountDescriptionValue = (draft: string) => {
   const trimmed = draft.trim();
   return trimmed === "" ? null : trimmed;
 };
 
-/** The agent-visible description of an account, edited with its name. */
 export function AccountDescriptionField({
   value,
   onChange,

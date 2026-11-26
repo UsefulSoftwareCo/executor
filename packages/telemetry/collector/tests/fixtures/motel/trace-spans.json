@@ -1,0 +1,97 @@
+{
+  "query": "/api/traces/2af894fe72f36e3c1d0d0ad4ec7a6f51/spans",
+  "status": 200,
+  "shape": {
+    "types": ["object"],
+    "fields": {
+      "data": {
+        "types": ["array"],
+        "items": {
+          "types": ["object"],
+          "fields": {
+            "traceId": {
+              "types": ["string"]
+            },
+            "rootOperationName": {
+              "types": ["string"]
+            },
+            "parentOperationName": {
+              "types": ["null", "string"]
+            },
+            "span": {
+              "types": ["object"],
+              "fields": {
+                "spanId": {
+                  "types": ["string"]
+                },
+                "parentSpanId": {
+                  "types": ["null", "string"]
+                },
+                "serviceName": {
+                  "types": ["string"]
+                },
+                "scopeName": {
+                  "types": ["string"]
+                },
+                "kind": {
+                  "types": ["null", "string"]
+                },
+                "operationName": {
+                  "types": ["string"]
+                },
+                "startTime": {
+                  "types": ["string"]
+                },
+                "isRunning": {
+                  "types": ["boolean"]
+                },
+                "durationMs": {
+                  "types": ["number"]
+                },
+                "status": {
+                  "types": ["string"]
+                },
+                "depth": {
+                  "types": ["number"]
+                },
+                "tags": {
+                  "types": ["object"],
+                  "fields": {
+                    "*": {
+                      "types": ["string"]
+                    }
+                  }
+                },
+                "warnings": {
+                  "types": ["array"]
+                },
+                "events": {
+                  "types": ["array"],
+                  "items": {
+                    "types": ["object"],
+                    "fields": {
+                      "name": {
+                        "types": ["string"]
+                      },
+                      "timestamp": {
+                        "types": ["string"]
+                      },
+                      "attributes": {
+                        "types": ["object"],
+                        "fields": {
+                          "*": {
+                            "types": ["string"]
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -3,7 +3,6 @@ import { WebhookSetupPage as SharedPage } from "@executor-js/ui/dashboard/webhoo
 import type { AppId, WebhookId } from "@executor-js/sdk";
 import { localWebhookSetupAtoms } from "../../contracts/webhook-setup.ts";
 import { Failure } from "../components/common.tsx";
-/** The existing dashboard gate pairs the browser before these private atoms mount. */
 export function WebhookSetupPage({
   appId,
   subscriptionId,

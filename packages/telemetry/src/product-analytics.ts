@@ -1,24 +1,16 @@
-/**
- * Anonymous product analytics for the CLI, desktop and self-host. Hosts record explicit events; each
- * event's schema is its allowlist, so a property it does not declare is never sent. Delivery is a
- * bounded in-memory batch to PostHog's `/batch/` endpoint and never affects product operations.
- */
 import { Cause, Config, Effect, Exit, Option, Queue, Schema, Semaphore } from "effect";
 import { ApiError } from "@executor-js/utils/api-error";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 
-/** Feedback text: at least one non-whitespace character and at most 10,000 characters. */
 export const FeedbackMessage = Schema.String.check(
   Schema.isMinLength(1),
   Schema.isMaxLength(10_000),
   Schema.isPattern(/\S/u),
 );
 
-/** Explicit feedback text; arbitrary event properties and caller identities are not accepted. */
 export const Feedback = Schema.Struct({ message: FeedbackMessage });
 export type Feedback = typeof Feedback.Type;
 
-/** Feedback could not be confirmed: ingestion failed, rejected the batch or timed out. */
 export const FeedbackUnavailable = ApiError.define({
   tag: "FeedbackUnavailable",
   status: 503,
@@ -26,36 +18,27 @@ export const FeedbackUnavailable = ApiError.define({
 });
 export type FeedbackUnavailable = typeof FeedbackUnavailable.Type;
 
-/**
- * The operator turned analytics off, or this build has no analytics destination. A 4xx status
- * reaches agents with its explanation; generated app clients hide 5xx response bodies.
- */
 export class FeedbackDisabled extends Schema.TaggedError<FeedbackDisabled>()(
   "FeedbackDisabled",
   { message: Schema.Literal("Feedback is disabled on this instance.") },
   { httpApiStatus: 409 },
 ) {}
 
-/** The error returned whenever this instance does not send feedback. */
 export const feedbackDisabled = () =>
   new FeedbackDisabled({ message: "Feedback is disabled on this instance." });
 
-/** The product that sent an event. Cloud has its own request-owned exporter. */
 export const AnalyticsProduct = Schema.Literals(["cli", "desktop", "self-host"]);
 export type AnalyticsProduct = typeof AnalyticsProduct.Type;
 
 const Token = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$/u));
-/** An anonymous install ID: a random UUID minted once per data directory. */
 export const InstallId = Schema.String.check(
   Schema.isPattern(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u),
 );
-/** A registrable domain, or `private` for local, tunnel and shared-platform hosts. */
 export const RootDomain = Schema.String.check(
   Schema.isPattern(/^(?:private|(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9-]{2,63})$/u),
 );
 const Count = Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 1_000_000_000 }));
 const Duration = Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 1e12 }));
-/** Fixed API group, endpoint and MCP operation names; never an author's query or tool name. */
 const RouteName = Schema.String.check(Schema.isPattern(/^[A-Za-z][A-Za-z0-9_.-]{0,63}$/u));
 
 const usage = {
@@ -72,10 +55,6 @@ const completion = {
   status_code: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 100, maximum: 599 }))),
 };
 
-/**
- * Every event and the only properties it may carry. Decoding drops undeclared properties, so
- * names, inputs, outputs, URLs, raw IDs and error messages cannot reach the batch.
- */
 export const analyticsEvents = {
   instance_started: Schema.Struct({
     product: AnalyticsProduct,
@@ -123,15 +102,12 @@ export const analyticsEvents = {
 } as const;
 
 type Events = typeof analyticsEvents;
-/** An event name with an allowlist. */
 export type AnalyticsEventName = keyof Events;
-/** The typed properties a host may record for an event. */
 export type AnalyticsProperties<Name extends AnalyticsEventName> = Events[Name]["Type"];
 
 const isEventName = (name: string): name is AnalyticsEventName =>
   Object.hasOwn(analyticsEvents, name);
 
-/** Keep only the declared properties of a known event; anything else is not recorded. */
 const allowlisted = (name: string, properties: unknown) =>
   isEventName(name)
     ? Schema.decodeUnknownOption(analyticsEvents[name] as Schema.Decoder<object>)(properties).pipe(
@@ -143,7 +119,6 @@ const ErrorTag = Schema.Struct({
   _tag: Schema.String.check(Schema.isPattern(/^[A-Z][A-Za-z0-9]{0,79}$/u)),
 });
 
-/** A failed or cancelled exit as an outcome and a bounded error tag, never a message or cause. */
 export const failureProperties = (cause: Cause.Cause<unknown>) => {
   if (Cause.hasInterrupts(cause)) return { outcome: "cancelled" as const, ok: false };
   const tag = Cause.findErrorOption(cause).pipe(
@@ -156,7 +131,6 @@ export const failureProperties = (cause: Cause.Cause<unknown>) => {
   };
 };
 
-/** A tool call's terminal outcome. A completed call that reports a tool error is a failure. */
 export const toolCompletion = (result: {
   readonly status: string;
   readonly toolError?: boolean | undefined;
@@ -176,16 +150,13 @@ export const toolCompletion = (result: {
   };
 };
 
-/** Properties sent with every event from this installation. */
 export interface CommonProperties {
   readonly install_id: string;
   readonly product: AnalyticsProduct;
   readonly version: string;
-  /** Self-host only: the registrable domain of its public origin, or `private`. */
   readonly root_domain?: string;
 }
 
-/** Release channel of an `EXECUTOR_BUILD_VERSION`; source and test builds are `development`. */
 export const releaseChannelOf = (version: string) =>
   /^2\.\d+\.\d+-beta\.\d+$/.test(version)
     ? ("beta" as const)
@@ -193,15 +164,12 @@ export const releaseChannelOf = (version: string) =>
       ? ("latest" as const)
       : ("development" as const);
 
-/** Normalize a platform name to the vocabulary the event allows. */
 export const platformToken = (value: string) =>
   Option.isSome(Schema.decodeUnknownOption(Token)(value)) ? value : "unknown";
 
-// consoledonottrack.com: any value other than an explicit false turns analytics off.
 const truthy = (value: string) =>
   !["", "0", "false", "no", "off"].includes(value.trim().toLowerCase());
 
-/** `DO_NOT_TRACK` or `EXECUTOR_DISABLE_ANALYTICS` turns off every event, including feedback. */
 export const analyticsOptedOut = Effect.gen(function* () {
   for (const name of ["DO_NOT_TRACK", "EXECUTOR_DISABLE_ANALYTICS"]) {
     const value = yield* Config.String(name).pipe(Config.option);
@@ -210,7 +178,6 @@ export const analyticsOptedOut = Effect.gen(function* () {
   return false;
 });
 
-/** Where batches go and how often a partial batch is sent. */
 export interface AnalyticsDestination {
   readonly host: string;
   readonly key: string;
@@ -231,11 +198,6 @@ const IngestionHost = Schema.String.check(
   }),
 );
 
-/**
- * Resolve the destination, or none. Release builds bake `EXECUTOR_POSTHOG_PUBLIC_KEY` and
- * `EXECUTOR_POSTHOG_HOST`; other builds send nothing. Under `NODE_ENV=test` only the loopback
- * collector on `EXECUTOR_ANALYTICS_TEST_PORT` is used, so tests never reach PostHog.
- */
 export const analyticsDestination = Effect.gen(function* () {
   if (yield* analyticsOptedOut) return undefined;
   const environment = yield* Config.String("NODE_ENV").pipe(Config.withDefault("production"));
@@ -261,7 +223,6 @@ export const analyticsDestination = Effect.gen(function* () {
   } satisfies AnalyticsDestination;
 }).pipe(Effect.catch(() => Effect.succeed(undefined)));
 
-/** The one-line notice servers print when analytics are on. */
 export const analyticsNotice =
   "Executor sends anonymous usage analytics. Set DO_NOT_TRACK=1 or EXECUTOR_DISABLE_ANALYTICS=1 to turn them off.";
 
@@ -270,15 +231,11 @@ interface Pending {
   readonly event: AnalyticsEventName;
   readonly properties: object;
   readonly timestamp: string;
-  /** A product user, resolved to a distinct ID only while sending; never stored in a batch. */
   readonly user: string | undefined;
 }
 
-/** Records events for one host process. */
 export interface AnalyticsSender {
-  /** Buffer an event. An unknown event, or a property outside its allowlist, is dropped. */
   readonly capture: (event: string, properties: unknown, user?: string) => void;
-  /** Send one event now and wait for ingestion to accept it. */
   readonly submit: (
     event: AnalyticsEventName,
     properties: unknown,
@@ -289,14 +246,9 @@ export interface AnalyticsSender {
 const bufferLimit = 1_000;
 const batchSize = 100;
 
-/**
- * Own the buffer and its delivery for the current scope: send on an interval, when a batch fills,
- * and once more at shutdown. A failed batch returns to the front of the bounded buffer.
- */
 export const makeAnalyticsSender = (options: {
   readonly destination: AnalyticsDestination;
   readonly common: CommonProperties;
-  /** Self-host pseudonymizes users; without it every event uses the install ID. */
   readonly distinctId?: (user: string) => Effect.Effect<string>;
 }) =>
   Effect.gen(function* () {
@@ -344,7 +296,6 @@ export const makeAnalyticsSender = (options: {
         if (response.status < 200 || response.status >= 300)
           return yield* Effect.fail(new FeedbackUnavailable());
       }).pipe(
-        // PostHog is a third party: no client span or trace headers leave with the request.
         Effect.provideService(HttpClient.TracerDisabledWhen, () => true),
         Effect.provideService(HttpClient.TracerPropagationEnabled, false),
         Effect.provide(FetchHttpClient.layer),
@@ -362,7 +313,6 @@ export const makeAnalyticsSender = (options: {
         }
       }),
     );
-    // Added before the loop, so it runs after the loop is interrupted at shutdown.
     yield* Effect.addFinalizer(() => flush.pipe(Effect.timeout("3 seconds"), Effect.ignore));
     yield* Effect.forever(
       Queue.take(wake).pipe(Effect.timeoutOption(destination.flushInterval), Effect.andThen(flush)),

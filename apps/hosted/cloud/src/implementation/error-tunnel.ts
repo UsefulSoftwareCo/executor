@@ -1,4 +1,3 @@
-/** Same-origin browser error delivery, restricted to this stage's managed Sentry project. */
 import { SentryTransportFailed } from "./error-reporting.ts";
 import { CurrentRuntimeContext } from "alchemy/RuntimeContext";
 import { ByteSize, Effect, Option, Schema } from "effect";
@@ -19,7 +18,6 @@ const Settings = Schema.Struct({
 });
 const Header = Schema.fromJsonString(Schema.Struct({ dsn: Schema.String }));
 
-/** Validate the envelope's destination before deriving a fixed ingestion URL from configuration. */
 export const sentryEnvelopeTarget = (
   body: string,
   expectedDsn: string,
@@ -39,7 +37,6 @@ export const sentryEnvelopeTarget = (
   return `${dsn.origin}/api${dsn.pathname}/envelope/?sentry_version=7&sentry_key=${encodeURIComponent(dsn.username)}`;
 };
 
-/** Capture the native binding accessor during initialization and resolve it per request. */
 export const cloudErrorTunnel = Effect.gen(function* () {
   const context = yield* CurrentRuntimeContext;
   return Effect.gen(function* () {
@@ -77,7 +74,6 @@ export const cloudErrorTunnel = Effect.gen(function* () {
       yield* response.arrayBuffer;
       return { status: response.status, headers };
     }).pipe(
-      // Sentry is a third party: no client span or trace headers leave with the envelope.
       Effect.provideService(HttpClient.TracerDisabledWhen, () => true),
       Effect.provideService(HttpClient.TracerPropagationEnabled, false),
       Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),

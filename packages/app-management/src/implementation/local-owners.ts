@@ -1,30 +1,3 @@
-/**
- * Local only, one-off: give `local` every record of an owner local does not assign. Local assigns
- * two owners: `local` for the user's records and `executor-local` for the server's own Executor
- * app and its API key account. Before it did, agents could name any owner when creating apps,
- * OAuth clients and connections, and those records were then missing from the dashboard and their
- * apps could not open. Hosted owners are organizations; the step never moves one.
- *
- * One item covers the whole move, in one transaction. Outcomes other than `moved` change no
- * product row or ciphertext; like every outcome, the journal records the attempt.
- * - `moved` / `would_move`: every record of the other owners moves, or would move, to `local`.
- * - `unchanged`: no record has another owner.
- * - `collision`: moving would give `local` two apps with one name or slug, or two clients holding
- *   the same credentials. The log and the dashboard name them, and the next start retries once a
- *   person renames or removes one of each.
- * - `blocked`: a record the move has to read does not decrypt with this install's key, or the
- *   product would not read it back. Moving the rest would strand it under its old owner. The log
- *   and the dashboard name each by kind and ID, never its content, with what a person does about
- *   it (`blockedRecovery`), and the next start retries.
- * - `storage_before_step`: the SDK schema is older than `localOwnersStorage`.
- * - `organization_owner`: a record belongs to a hosted organization.
- * - `unavailable`: storage failed; the next start retries.
- *
- * Once the step has moved records, no local release that lets an agent name another owner may
- * open the database again: records it wrote would keep that owner, and the applied step never
- * looks again. Every release before this step refuses SDK schema 4.0.11 (`checkMigration`), so
- * the step runs only on that schema or later.
- */
 import {
   OwnerMovesHost,
   type Executor,
@@ -37,34 +10,22 @@ import { Effect } from "effect";
 import type { DataStep, DataStepMode } from "../contracts/data-steps.ts";
 import { blockedRecovery, type LocalOwnerMigration } from "../contracts/local-owners.ts";
 
-/** The owners a local host assigns. Hosts without them never run the step. */
 export interface LocalOwnersHost {
   readonly executor: Executor;
   readonly localOwners?: {
-    /** Where every other owner's records move. */
     readonly owner: OwnerId;
-    /** Owners that keep their records: `owner` and the server's own Executor app's. */
     readonly kept: ReadonlyArray<OwnerId>;
-    /** The SDK schema version the database records, once migrated. */
     readonly storage: Effect.Effect<string | undefined, StorageError>;
-    /** Why records have not moved yet, for the dashboard; called only when they have not. */
     readonly status: (status: LocalOwnerMigration) => Effect.Effect<void>;
   };
 }
 
-/** The journal name. It never changes and the step never repeats. */
 export const localOwnersStepName = "7_local_owners";
 
-/**
- * The first SDK schema no local release before this step opens. The step ships with or after it,
- * so a database it has moved records in cannot be served by a release that writes other owners.
- */
 export const localOwnersStorage = "4.0.11";
 
-/** Hosted organization owners; see `organizationOwner` in the hosted server. */
 const organizationPrefix = "organization:";
 
-/** Whether a dotted version is at least another. A version that is not numeric is not. */
 const atLeast = (version: string, minimum: string) => {
   const have = version.split(".").map(Number);
   const need = minimum.split(".").map(Number);
@@ -127,7 +88,6 @@ export const localOwnersStep = (
           }
           const result = yield* moves.move({ from, to: local.owner, apply: mode === "apply" });
           const owners = from.map((owner) => JSON.stringify(owner)).join(", ");
-          // Moved records need no word; anything else waits, and the dashboard says why.
           const waiting =
             result.status === "would_move"
               ? "pending"

@@ -1,11 +1,3 @@
-/**
- * Read-only sweep of public remote MCP servers through the same check quick add uses. Every
- * request is unauthenticated: initialize, tools/list and metadata GETs. It never signs in,
- * registers a client or calls a tool. Run it by hand; it is not part of CI.
- *
- * Client setup is reported for a host without a Client ID Metadata Document, like a default
- * install. Set EXECUTOR_OAUTH_CLIENT_METADATA_URL, as a host would, to report one that has it.
- */
 import { detectMcpAccess, McpDetection, McpSignal } from "@executor-js/catalog";
 import { httpsOnlyUrlPolicy } from "@executor-js/utils/url-policy";
 import { Config, Console, Effect, Option } from "effect";
@@ -32,7 +24,6 @@ const servers = [
   ["Fastmail", "https://api.fastmail.com/mcp"],
   ["Slack", "https://mcp.slack.com/mcp"],
   ["Supabase", "https://mcp.supabase.com/mcp"],
-  // Microsoft Entra ID: its metadata lists no PKCE methods, but it accepts S256.
   ["Azure DevOps", "https://mcp.dev.azure.com/mcp"],
   ["Microsoft 365 Agents", "https://agent365.svc.cloud.microsoft/mcp"],
 ] as const;

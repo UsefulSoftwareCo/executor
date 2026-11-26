@@ -1,4 +1,3 @@
-/** Scheduled and approved calls renew a grant whose token the service refuses, as direct calls do. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schedule, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
@@ -28,7 +27,6 @@ const Runs = Schema.Array(
     failure: Schema.NullOr(Schema.String),
   }),
 );
-/** A run has finished once it is neither running nor waiting for its approval. */
 const finished = (status: string) => status !== "running" && status !== "awaiting-approval";
 
 layer(HostedLive, { excludeTestServices: true })("OAuth scheduled renewal", (it) => {
@@ -44,8 +42,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth scheduled renewal", (it)
             mcp = yield* McpClient;
           const issuer = yield* oauthSetupIssuer;
           const prefix = `/api/organizations/${actors.organization.id}`;
-          // Salesforce issues a refresh token but no `expires_in`, so nothing renews it ahead of
-          // time. Its API later answers the old token with 401.
           yield* issuer.configure({ refreshTokens: true, expiresIn: null });
           const name = `Scheduled renewal ${randomUUID().slice(0, 8)}`;
           const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
@@ -118,9 +114,6 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
               .request(actors.owner, "DELETE", `${prefix}/accounts/${account.id}`)
               .pipe(Effect.orDie),
           );
-          // Linking the account sets it up as the app's webhook source in the background, which
-          // resolves, and so may renew, the account. Let it finish so each renewal below belongs to
-          // the call the scenario makes.
           yield* settleWebhookSources(actors.owner, path, (sources) =>
             sources.some((source) => source.account === account.id && source.status !== "pending"),
           );
@@ -128,10 +121,6 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
           const runs = api
             .request(actors.owner, "GET", `${prefix}/scheduled-runs?app=${app.id}`)
             .pipe(Effect.flatMap((response) => body(Runs, response)));
-          /**
-           * Start one occurrence now and wait for the scheduler's worker, which has no signed-in
-           * caller, to finish it. Automatic approval resumes an approval-gated call in the worker.
-           */
           const runOnce = (schedule: string) =>
             Effect.gen(function* () {
               const seen = new Set((yield* runs).map((run) => run.id));
@@ -153,7 +142,6 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
                 Effect.retry({ schedule: Schedule.spaced("200 millis"), times: 100 }),
               );
             });
-          /** Enable one schedule only while it is used, so no ordinary occurrence interleaves. */
           const withSchedule = <A, E, R>(schedule: string, work: Effect.Effect<A, E, R>) =>
             Effect.acquireUseRelease(
               api
@@ -179,8 +167,6 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
           const refreshes = issuer.metrics.pipe(Effect.map((metrics) => metrics.refreshes));
           const requests = issuer.metrics.pipe(Effect.map((metrics) => metrics.resourceRequests));
 
-          // A scheduled mutation meets a refused token in the worker, which has no signed-in
-          // caller. The grant is renewed; the mutation is not repeated, and the next one succeeds.
           yield* withSchedule(
             "write",
             Effect.gen(function* () {
@@ -205,7 +191,6 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
             }),
           );
 
-          // An approved mutation renews when it resumes, and is not repeated either.
           yield* withSchedule(
             "reviewedWrite",
             Effect.gen(function* () {
@@ -226,7 +211,6 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
             }),
           );
 
-          // A query the owner approves in their MCP client renews on resume and repeats once.
           const created = yield* api.request(actors.owner, "POST", "/api/auth/api-key/create", {
             name: "Scheduled renewal MCP",
           });
@@ -270,7 +254,6 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
             },
           });
           expect(yield* refreshes).toBe(before + 1);
-          // The refused read and its one repetition with the renewed token.
           expect((yield* requests).GET).toBe(gets + 2);
         }).pipe(Effect.provide(McpClient.layer)),
       ),

@@ -4,7 +4,6 @@ import * as React from "react";
 import { cn } from "../lib/utils.ts";
 import { Avatar as AvatarPrimitive } from "radix-ui";
 
-/** Avatar primitive; accepts native props and composes caller styles. */
 function Avatar({
   className,
   size = "default",
@@ -25,7 +24,6 @@ function Avatar({
   );
 }
 
-/** Avatar Image primitive; accepts native props and composes caller styles. */
 function AvatarImage({ className, ...props }: React.ComponentProps<typeof AvatarPrimitive.Image>) {
   return (
     <AvatarPrimitive.Image
@@ -36,7 +34,6 @@ function AvatarImage({ className, ...props }: React.ComponentProps<typeof Avatar
   );
 }
 
-/** Avatar Fallback primitive; accepts native props and composes caller styles. */
 function AvatarFallback({
   className,
   ...props
@@ -53,7 +50,6 @@ function AvatarFallback({
   );
 }
 
-/** Avatar Badge primitive; accepts native props and composes caller styles. */
 function AvatarBadge({ className, ...props }: React.ComponentProps<"span">) {
   return (
     <span
@@ -70,7 +66,6 @@ function AvatarBadge({ className, ...props }: React.ComponentProps<"span">) {
   );
 }
 
-/** Avatar Group primitive; accepts native props and composes caller styles. */
 function AvatarGroup({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
@@ -84,7 +79,6 @@ function AvatarGroup({ className, ...props }: React.ComponentProps<"div">) {
   );
 }
 
-/** Avatar Group Count primitive; accepts native props and composes caller styles. */
 function AvatarGroupCount({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div

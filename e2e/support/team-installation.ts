@@ -1,15 +1,12 @@
-/** Control the list's public provisioning signal without inventing a client-side app. */
 import { Deferred, Effect, Schema } from "effect";
 import { Browser } from "./browser.ts";
 
-/** Preserve real app/account wire records while varying the list's installation state. */
 export const InstallationDirectory = Schema.Struct({
   apps: Schema.Array(Schema.Unknown),
   accounts: Schema.Array(Schema.Unknown),
   pendingApp: Schema.Boolean,
 });
 
-/** Hold the missing-app state until the scenario restores real server responses. */
 export const holdTeamInstallation = (
   paths: readonly string[],
   directory: typeof InstallationDirectory.Type,

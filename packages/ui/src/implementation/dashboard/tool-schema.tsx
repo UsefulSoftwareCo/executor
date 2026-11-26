@@ -13,7 +13,6 @@ const count = (value: unknown) => (typeof value === "number" ? value : undefined
 
 const acronyms = new Set(["id", "ids", "url", "uri", "api", "json", "http", "html", "sql", "mcp"]);
 
-/** Split identifiers such as `appData_query` or `completeOAuth` into readable words. */
 export function humanize(name: string) {
   const words = name
     .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
@@ -75,7 +74,6 @@ const primitive = (type: string, schema: JsonSchema) => {
   }
 };
 
-/** A plain-language name for the kind of value a schema accepts. */
 function typeLabel(schema: JsonSchema): string {
   if (Array.isArray(schema.enum)) return "Choice";
   if ("const" in schema) return "Fixed value";
@@ -99,10 +97,6 @@ function typeLabel(schema: JsonSchema): string {
   return "Any value";
 }
 
-/**
- * Merge `allOf` parts and a nullable union's one real variant. Real alternatives keep their own
- * limits, so only the parent's facts are shown for them.
- */
 function flatten(schema: JsonSchema): JsonSchema {
   const alternatives = [...schemas(schema.anyOf), ...schemas(schema.oneOf)].filter(
     (variant) => variant.type !== "null",
@@ -115,7 +109,6 @@ function flatten(schema: JsonSchema): JsonSchema {
   );
 }
 
-/** Friendly limits. Patterns and other machine-only rules stay in the JSON view. */
 function hints(schema: JsonSchema): readonly string[] {
   const merged = flatten(schema);
   const result: string[] = [];
@@ -145,7 +138,6 @@ interface Field {
   readonly schema: JsonSchema;
 }
 
-/** Named fields of an object schema, or of the object each list item holds. */
 function fieldsOf(schema: JsonSchema): readonly Field[] {
   const merged = flatten(schema);
   const target =
@@ -270,7 +262,6 @@ function FieldList({
   );
 }
 
-/** Fixed values last, then required fields before optional ones. */
 const sorted = (fields: readonly Field[]) =>
   [...fields].sort(
     (a, b) =>
@@ -278,10 +269,6 @@ const sorted = (fields: readonly Field[]) =>
       Number(b.required) - Number(a.required),
   );
 
-/**
- * One schema as a readable field list, with the exact JSON a tab away.
- * Required fields come first; the JSON view keeps the document's own order.
- */
 export function SchemaSection({
   title,
   subtitle,
@@ -297,7 +284,6 @@ export function SchemaSection({
 }) {
   const document = isSchema(schema) ? schema : {};
   const fields = sorted(fieldsOf(document));
-  // Several object shapes, e.g. one input per selected account: list each shape's fields.
   const shapes =
     fields.length === 0
       ? [...schemas(document.anyOf), ...schemas(document.oneOf)]

@@ -1,4 +1,3 @@
-/** The languages supported by the shared code renderer. */
 export type CodeLanguage =
   | "typescript"
   | "javascript"
@@ -9,7 +8,6 @@ export type CodeLanguage =
   | "shellscript"
   | "text";
 
-/** Choose the language for a file from its extension. */
 export function codeLanguage(path: string): CodeLanguage {
   if (/\.[cm]?tsx?$/.test(path)) return "typescript";
   if (/\.[cm]?jsx?$/.test(path)) return "javascript";
@@ -21,7 +19,6 @@ export function codeLanguage(path: string): CodeLanguage {
   return "text";
 }
 
-/** Choose the language for a Markdown fence from its info string, such as `ts` or `bash`. */
 export function fenceLanguage(info: string): CodeLanguage {
   const name = info.toLowerCase();
   if (["ts", "tsx", "mts", "cts", "typescript"].includes(name)) return "typescript";

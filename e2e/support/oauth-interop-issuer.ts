@@ -1,7 +1,3 @@
-/**
- * Loopback MCP servers whose authorization servers reproduce specific services' OAuth behaviour.
- * Executor still uses its real discovery, registration, callback and token paths against them.
- */
 import { createServer } from "node:http";
 import { createHash, generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
@@ -46,12 +42,9 @@ export type InteropService =
   | "facebook"
   | "ahrefs";
 
-/** The signed-in user's Microsoft tenant, and a different one for mismatched tokens. */
 export const entraTenant = "8a0f2c35-6b1d-4c9e-9f4a-1d2b3c4d5e6f" as const;
 export const otherTenant = "0b1c2d3e-4f50-4617-8293-a4b5c6d7e8f9" as const;
-/** A client registered by hand, as Microsoft Entra requires. */
 export const entraClient = { clientId: "synthetic-entra-client", clientSecret: "synthetic-secret" };
-/** An Entra-style scope whose prefix names the API the token is for. */
 export const entraApiScope = "api://synthetic-mcp/access";
 
 const Registration = Schema.Struct({
@@ -75,13 +68,9 @@ export const oauthInteropIssuer = (service: InteropService) =>
             : ahrefs
               ? "/"
               : "";
-    /** ID tokens name this tenant in `iss` but claim `entraTenant` in `tid`. */
     let mismatchedTenantIssuer = false;
-    /** The tenant a refreshed ID token names in both `tid` and `iss`, with the same `sub`. */
     let refreshTenant: string = entraTenant;
-    /** Lifetime of tokens from the code exchange; a short one makes the first use renew. */
     let exchangedExpiresIn = 3600;
-    /** Refresh tokens issued, by the client they belong to. */
     const refreshGrants = new Map<string, string>();
     const refreshedAccessTokens = new Set<string>();
     const rsaKey = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey;
@@ -109,7 +98,6 @@ export const oauthInteropIssuer = (service: InteropService) =>
       readonly accepted: boolean;
     }> = [];
     const tokenRequests: Array<{ readonly resource: string | null; readonly issued: boolean }> = [];
-    /** The Content-Type header of each token request, as sent. */
     const tokenContentTypes: Array<string | undefined> = [];
     const refreshes: Array<{ readonly tenant: string; readonly issued: boolean }> = [];
 
@@ -137,8 +125,7 @@ export const oauthInteropIssuer = (service: InteropService) =>
         id_token_signing_alg_values_supported: ["RS256"],
         scopes_supported: entra ? ["openid", "profile", "email", "offline_access"] : ["read"],
         ...(entra
-          ? // Microsoft identity platform's own metadata extension, published in every cloud.
-            { cloud_instance_name: "microsoftonline.com" }
+          ? { cloud_instance_name: "microsoftonline.com" }
           : {
               registration_endpoint: `${origin}/register`,
               grant_types_supported:
@@ -148,7 +135,6 @@ export const oauthInteropIssuer = (service: InteropService) =>
             }),
       });
     });
-    /** Every metadata location the services use; each service answers only its own. */
     const locations = {
       rfc8414: "/.well-known/oauth-authorization-server",
       openId: "/.well-known/openid-configuration",
@@ -348,7 +334,6 @@ export const oauthInteropIssuer = (service: InteropService) =>
             : [input.get("client_id"), input.get("client_secret")];
           const origin = yield* Deferred.await(address);
           const now = Math.floor(Date.now() / 1000);
-          /** A signed ID token naming `tenant` in `tid`, and `issuerTenant` in `iss`. */
           const idToken = (claims: {
             clientId: string;
             tenant: string;
@@ -389,7 +374,6 @@ export const oauthInteropIssuer = (service: InteropService) =>
             refreshes.push({ tenant: refreshTenant, issued: valid });
             if (!valid)
               return yield* HttpServerResponse.json({ error: "invalid_grant" }, { status: 400 });
-            // A refreshed ID token carries no nonce (OpenID Connect Core 12.2).
             const accessToken = `synthetic-refreshed-token-${refreshes.length}`;
             refreshedAccessTokens.add(accessToken);
             return yield* HttpServerResponse.json({
@@ -453,7 +437,6 @@ export const oauthInteropIssuer = (service: InteropService) =>
         Effect.gen(function* () {
           const request = yield* HttpServerRequest.HttpServerRequest;
           const authorization = request.headers.authorization ?? null;
-          // Report whether a renewed token was presented, and echo the credential itself.
           return yield* HttpServerResponse.json({
             refreshed: refreshedAccessTokens.has(authorization?.replace(/^Bearer /, "") ?? ""),
             authorization,
@@ -474,19 +457,15 @@ export const oauthInteropIssuer = (service: InteropService) =>
     yield* Deferred.succeed(address, origin);
     return {
       origin,
-      /** The authorization server's issuer as protected-resource metadata names it. */
       issuer: `${origin}${issuerPath}`,
-      /** Issue ID tokens whose `iss` names a different tenant than their `tid`. */
       mismatchTenantIssuer: (mismatched: boolean) =>
         Effect.sync(() => {
           mismatchedTenantIssuer = mismatched;
         }),
-      /** Name this tenant in a refreshed ID token's `tid` and `iss`, keeping its `sub`. */
       refreshAsTenant: (tenant: string) =>
         Effect.sync(() => {
           refreshTenant = tenant;
         }),
-      /** Lifetime of tokens from later code exchanges, in seconds. */
       exchangeExpiresIn: (seconds: number) =>
         Effect.sync(() => {
           exchangedExpiresIn = seconds;

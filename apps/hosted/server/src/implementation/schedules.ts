@@ -1,8 +1,7 @@
 import { requireAppAccess } from "./resource-policy.ts";
 import { GroupDatabase } from "../contracts/groups.ts";
 import { CurrentOrganization } from "../contracts/organization.ts";
-/** Scheduled work has a saved actor, not a retained browser session or an invented service account. */
-import { Effect, Schema } from "effect";
+import { Effect, Result, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import { HttpApiBuilder } from "effect/http-api";
 import {
@@ -41,7 +40,6 @@ import { callerAccounts } from "./app-accounts.ts";
 import { actorUsesApp } from "./resource-lifecycle.ts";
 import { policyDatabase } from "./resource-policy.ts";
 
-/** Capture the actual host SQL client and policy while preserving per-run membership checks. */
 export const makeScheduledAuthority = (executor: Executor) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -51,8 +49,6 @@ export const makeScheduledAuthority = (executor: Executor) =>
         const organization = yield* Schema.decodeUnknownEffect(OrganizationId)(
           target.owner.slice("organization:".length),
         ).pipe(Effect.mapError(() => new OrganizationForbidden()));
-        // An app schedule has no actor: an app manager enabled it for the app, which must still
-        // be its organization's. Its runs use the app's linked accounts, which the SDK rechecks.
         if (target.actor === null) {
           const apps = yield* sql`select id from hosted_app_access
             where id = ${target.app} and organization_id = ${organization}`.pipe(
@@ -70,7 +66,6 @@ export const makeScheduledAuthority = (executor: Executor) =>
         )(rows).pipe(Effect.mapError(() => new StorageError()));
         if (members.length !== 1 || members[0] === undefined)
           return yield* new OrganizationForbidden();
-        // Each run resolves the actor's linked accounts; the SDK rechecks each account it uses.
         const actor = target.actor;
         yield* usableApp(executor, target.owner, target.app).pipe(
           Effect.provideService(GroupDatabase, Effect.succeed(sql)),
@@ -84,7 +79,17 @@ export const makeScheduledAuthority = (executor: Executor) =>
       });
   });
 const wake = Effect.flatten(ScheduleWakeup);
-/** The saved actor of each schedule copy of an app; null for an app schedule. */
+const perApp = <A, E, R>(check: (app: AppId) => Effect.Effect<A, E, R>) => {
+  const outcomes = new Map<AppId, Result.Result<A, E>>();
+  return (app: AppId) =>
+    Effect.gen(function* () {
+      const known = outcomes.get(app);
+      if (known !== undefined) return yield* Effect.fromResult(known);
+      const outcome = yield* Effect.result(check(app));
+      outcomes.set(app, outcome);
+      return yield* Effect.fromResult(outcome);
+    });
+};
 const scheduleActors = (executor: Executor, owner: OwnerId, app: AppId) =>
   executor.schedules
     .list({ app, owner })
@@ -94,7 +99,6 @@ const scheduleActors = (executor: Executor, owner: OwnerId, app: AppId) =>
           new Map<ScheduleId, string | null>(settings.map((item) => [item.id, item.actor])),
       ),
     );
-/** One copy of a declaration; a copy of another app or declaration is not found. */
 const scheduleCopy = (
   executor: Executor,
   owner: OwnerId,
@@ -106,10 +110,6 @@ const scheduleCopy = (
       return found === undefined ? Effect.fail(new ScheduleNotFound()) : Effect.succeed(found);
     }),
   );
-/**
- * Start a copy's run now. The run is its actor's: refuse it, rather than start it, when they
- * cannot use the app. An app schedule's run is the app's; the caller already manages the app.
- */
 const runCopy = (executor: Executor, owner: OwnerId, copy: ScheduleSettings) =>
   Effect.gen(function* () {
     if (copy.actor !== null) {
@@ -126,7 +126,6 @@ const runCopy = (executor: Executor, owner: OwnerId, copy: ScheduleSettings) =>
     yield* wake;
     return result;
   });
-/** Shared handlers retain product ownership and reuse the existing browser approval contract. */
 export const hostedScheduleHandlers = HttpApiBuilder.group(HostedApi, "schedules", (handlers) =>
   handlers
     .handle("list", ({ params }) =>
@@ -143,7 +142,6 @@ export const hostedScheduleHandlers = HttpApiBuilder.group(HostedApi, "schedules
         const owner = yield* currentOwner;
         const executor = yield* Effect.flatten(HostedExecutor);
         const { accounts } = yield* selectedApp(executor, owner, params.app);
-        // Each declaration carries the caller's own copy.
         return yield* executor.schedules.definitions({ app: params.app, owner, accounts, actor });
       }),
     )
@@ -154,8 +152,6 @@ export const hostedScheduleHandlers = HttpApiBuilder.group(HostedApi, "schedules
         if (actor === undefined) return yield* new Forbidden();
         const { scope, ...settings } = payload;
         if (scope === "app") {
-          // The app schedule runs without a caller, with the app's linked accounts; only the app's
-          // managers enable or pause it. The SDK refuses a declaration of the other scope.
           const owner = yield* appManagerOwner(params.app);
           const result = yield* executor.schedules.configure({
             app: params.app,
@@ -166,9 +162,7 @@ export const hostedScheduleHandlers = HttpApiBuilder.group(HostedApi, "schedules
           yield* wake;
           return result;
         }
-        // The caller's own copy: it runs as them, with the accounts they linked to the app.
         const owner = yield* currentOwner;
-        // A run uses only accounts the caller links and their grant permits.
         if (payload.enabled) yield* callerAccounts(yield* usableApp(executor, owner, params.app));
         const result = yield* executor.schedules.configure({
           app: params.app,
@@ -188,7 +182,6 @@ export const hostedScheduleHandlers = HttpApiBuilder.group(HostedApi, "schedules
         if (actor === undefined) return yield* new Forbidden();
         const owner = yield* currentOwner;
         yield* usableApp(executor, owner, params.app);
-        // The caller's own copy.
         const copy = yield* executor.schedules.copy({
           app: params.app,
           name: params.name,
@@ -202,8 +195,6 @@ export const hostedScheduleHandlers = HttpApiBuilder.group(HostedApi, "schedules
       Effect.gen(function* () {
         const executor = yield* Effect.flatten(HostedExecutor);
         const copy = yield* scheduleCopy(executor, yield* currentOwner, params);
-        // The copy's member controls it; someone who manages the app may pause it, but only its
-        // member can make it run again. The app's managers control an app schedule.
         const owner = yield* actorManagerOwner(params.app, copy.actor);
         if (payload.enabled && copy.actor !== null) {
           if (copy.actor !== (yield* CurrentUserId)) return yield* new Forbidden();
@@ -250,18 +241,25 @@ export const hostedScheduleHandlers = HttpApiBuilder.group(HostedApi, "schedules
         if (query.app !== undefined) yield* requireAppAccess(query.app, "read");
         const runs = yield* executor.schedules.runs({ ...query, owner });
         const actors = new Map(
-          yield* Effect.forEach([...new Set(runs.map((run) => run.app))], (app) =>
-            scheduleActors(executor, owner, app).pipe(
-              Effect.map((byId) => [app, byId] as const),
-              Effect.catchTag("AppNotFound", () => Effect.succeed([app, new Map()] as const)),
-            ),
-          ),
+          query.pending
+            ? yield* Effect.forEach([...new Set(runs.map((run) => run.app))], (app) =>
+                scheduleActors(executor, owner, app).pipe(
+                  Effect.map((byId) => [app, byId] as const),
+                  Effect.catchTag("AppNotFound", () => Effect.succeed([app, new Map()] as const)),
+                ),
+              )
+            : [],
         );
+        const caller = yield* CurrentUserId;
+        const usable = perApp((app) => usableApp(executor, owner, app));
+        const manages = perApp((app) => requireAppAccess(app, "manage"));
         return yield* Effect.filter(runs, (run) =>
           Effect.gen(function* () {
-            yield* usableApp(executor, owner, run.app);
-            if (query.pending)
-              yield* actorManagerOwner(run.app, actors.get(run.app)?.get(run.scheduleId) ?? null);
+            yield* usable(run.app);
+            if (query.pending) {
+              const actor = actors.get(run.app)?.get(run.scheduleId) ?? null;
+              if (actor === null || actor !== caller) yield* manages(run.app);
+            }
             return true;
           }).pipe(
             Effect.catchTags({

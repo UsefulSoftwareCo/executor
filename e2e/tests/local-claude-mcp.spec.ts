@@ -1,4 +1,3 @@
-/** The real client registers, pairs consent through the local dashboard and invokes a tool. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Layer } from "effect";
 import { scenarios } from "../test-plan.ts";

@@ -1,4 +1,3 @@
-/** Destroy a stage's dynamic Alchemy stack before removing the Worker and its durable journal. */
 import { Resource } from "alchemy";
 import { Action } from "alchemy/Action";
 import { State } from "alchemy/State/State";
@@ -13,9 +12,7 @@ import { appDomainControlSecretId } from "./app-domain-control.ts";
 interface DomainLifecycleProps {
   readonly origin: string;
   readonly workerName: string;
-  /** The worker name is available during precreate; its hash waits for the completed upload. */
   readonly deployment: Worker<never>["Attributes"]["hash"];
-  /** The controller Worker holds the DNS journal, so it is deleted only after the drain. */
   readonly controller: Worker<never>["Attributes"]["hash"];
 }
 
@@ -24,7 +21,6 @@ interface DomainControl {
   readonly secret: Redacted.Redacted<string>;
 }
 
-/** Authenticated deployment control failed. No credential-bearing HTTP error is exposed. */
 export class AppDomainLifecycleFailed extends Schema.TaggedError<AppDomainLifecycleFailed>()(
   "AppDomainLifecycleFailed",
   { operation: Schema.Literals(["resume", "drain"]), status: Schema.optionalKey(Schema.Number) },
@@ -34,13 +30,11 @@ export class AppDomainLifecycleFailed extends Schema.TaggedError<AppDomainLifecy
   }
 }
 
-/** This resource depends on both Workers, so Alchemy drains team DNS before deleting either. */
 export type AppDomainLifecycle = Resource<
   "Executor.AppDomainLifecycle",
   DomainLifecycleProps,
   { readonly origin: string }
 >;
-/** A deployment-owned lifecycle barrier for runtime-created Alchemy resources. */
 export const AppDomainLifecycle = Resource<AppDomainLifecycle>("Executor.AppDomainLifecycle");
 
 const control = (props: DomainControl, operation: "resume" | "drain") =>
@@ -63,11 +57,8 @@ const control = (props: DomainControl, operation: "resume" | "drain") =>
     Effect.retry({ times: 10, schedule: Schedule.spaced("3 seconds") }),
   );
 
-/** Persist the teardown relationship before the separate resume action runs. */
 export const AppDomainLifecycleProvider = () =>
   Provider.succeed(AppDomainLifecycle, {
-    // This is a lifecycle relationship, not a separate physical resource. Keep
-    // its cleanup discoverable even when the first resume call was interrupted.
     read: ({ output, olds }) =>
       Effect.succeed(output ?? (olds === undefined ? undefined : { origin: olds.origin })),
     reconcile: ({ news }) => Effect.succeed({ origin: news.origin }),
@@ -87,7 +78,6 @@ export const AppDomainLifecycleProvider = () =>
       }),
   });
 
-/** Resume only after the lifecycle barrier and Worker are committed, so failures cannot lose teardown credentials. */
 export const ResumeAppDomains = Action(
   "ResumeAppDomains",
   (input: DomainControl & Pick<DomainLifecycleProps, "deployment" | "controller">) =>

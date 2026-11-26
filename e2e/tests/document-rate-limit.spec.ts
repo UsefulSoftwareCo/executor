@@ -6,7 +6,6 @@ import { Browser } from "../support/browser.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { scenarios } from "../test-plan.ts";
 
-/** Documents are requested as a browser navigation. */
 const navigation = { accept: "text/html" };
 
 layer(HostedLive, { excludeTestServices: true })("Document rate limit", (it) => {
@@ -17,8 +16,6 @@ layer(HostedLive, { excludeTestServices: true })("Document rate limit", (it) => 
         const actors = yield* Actors;
         const api = yield* Api;
         const browser = yield* Browser;
-        // Each page reads the session, and an organization page its memberships, on the server
-        // with the visitor's address. More pages than the per-address auth limit all render.
         const load = (label: string, path: string) =>
           browser.use(label, (page) =>
             Promise.all(
@@ -41,7 +38,6 @@ layer(HostedLive, { excludeTestServices: true })("Document rate limit", (it) => 
         ).toEqual([]);
 
         const signedOut = yield* api.session();
-        // Credential routes keep their limits.
         const attempts = yield* Effect.forEach(
           Array.from({ length: 6 }),
           () =>

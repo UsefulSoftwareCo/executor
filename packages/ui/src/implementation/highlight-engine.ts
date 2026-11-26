@@ -12,7 +12,6 @@ import shellscript from "shiki/langs/shellscript.mjs";
 import light from "shiki/themes/github-light.mjs";
 import dark from "shiki/themes/github-dark.mjs";
 
-/** Lazily acquire only the grammars used by source and schema views; dispose with the Atom registry. */
 export const highlighter = Effect.acquireRelease(
   Effect.tryPromise({
     try: () =>

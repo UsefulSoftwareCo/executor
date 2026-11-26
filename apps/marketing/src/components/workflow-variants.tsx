@@ -256,7 +256,6 @@ function ResumableRun({ clock }: IllustrationProps) {
   );
 }
 
-/** Three isolated content directions for comparing the workflow illustration at its landing-page size. */
 export function WorkflowVariants() {
   const ref = useRef<HTMLDivElement>(null);
   const visible = useInView(ref);

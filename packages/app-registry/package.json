@@ -10,11 +10,11 @@
   "dependencies": {
     "@executor-js/sdk": "workspace:*",
     "@executor-js/utils": "workspace:*",
-    "effect": "4.0.1",
+    "effect": "4.1.4",
     "fumadb-effect": "workspace:*"
   },
   "devDependencies": {
-    "@effect/platform-node": "4.0.1",
+    "@effect/platform-node": "4.1.4",
     "@executor-js/app-source": "workspace:*"
   }
 }

@@ -1,4 +1,3 @@
-/** A member's own scoped MCP connections and connected agents in one organization. Browser sessions only. */
 import {
   AccountNotFound,
   AccountSelectionInvalid,
@@ -18,7 +17,7 @@ import { ConnectedAgent, ConnectedAgentNotFound } from "@executor-js/mcp-auth/ag
 import { GrantId } from "@executor-js/mcp-auth";
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
-import { AuthenticationUnavailable, RequireUser } from "./auth.ts";
+import { AuthenticationUnavailable, RequireBrowserSession } from "./auth.ts";
 import { RequiredAction } from "./authorization.ts";
 import {
   OrganizationForbidden,
@@ -31,7 +30,6 @@ const organization = { organization: OrganizationReference };
 const connection = { ...organization, connection: ConnectionId };
 const agentsPath = "/api/organizations/:organization/mcp-agents";
 const errors = [AuthenticationUnavailable, OrganizationForbidden] as const;
-/** Saving may link accounts to apps, so it reports account failures. */
 const saveErrors = [
   ...errors,
   ConnectionAccessInvalid,
@@ -40,16 +38,13 @@ const saveErrors = [
   AccountNotFound,
   AccountSelectionInvalid,
 ] as const;
-/** Bearer credentials, including a connection's own grants, cannot manage connections. */
 export const HostedMcpConnections = HttpApiGroup.make("mcpConnections")
   .add(
     HttpApiEndpoint.get("list", path, {
       params: organization,
       success: Schema.Array(ConnectionView),
       error: errors,
-    })
-      .annotate(RequiredAction, "manage")
-      .middleware(RequireUser),
+    }).annotate(RequiredAction, "read"),
   )
   .add(
     HttpApiEndpoint.post("create", path, {
@@ -59,7 +54,7 @@ export const HostedMcpConnections = HttpApiGroup.make("mcpConnections")
       error: [...saveErrors, ConnectionIdTaken],
     })
       .annotate(RequiredAction, "manage")
-      .middleware(RequireUser),
+      .middleware(RequireBrowserSession),
   )
   .add(
     HttpApiEndpoint.put("update", `${path}/:connection`, {
@@ -72,7 +67,7 @@ export const HostedMcpConnections = HttpApiGroup.make("mcpConnections")
       error: [...saveErrors, ConnectionNotFound],
     })
       .annotate(RequiredAction, "manage")
-      .middleware(RequireUser),
+      .middleware(RequireBrowserSession),
   )
   .add(
     HttpApiEndpoint.post("revoke", `${path}/:connection/revoke`, {
@@ -81,7 +76,7 @@ export const HostedMcpConnections = HttpApiGroup.make("mcpConnections")
       error: [...errors, ConnectionNotFound],
     })
       .annotate(RequiredAction, "manage")
-      .middleware(RequireUser),
+      .middleware(RequireBrowserSession),
   )
   .add(
     HttpApiEndpoint.get("agents", agentsPath, {
@@ -90,7 +85,7 @@ export const HostedMcpConnections = HttpApiGroup.make("mcpConnections")
       error: errors,
     })
       .annotate(RequiredAction, "manage")
-      .middleware(RequireUser),
+      .middleware(RequireBrowserSession),
   )
   .add(
     HttpApiEndpoint.post("revokeAgent", `${agentsPath}/:agent/revoke`, {
@@ -99,6 +94,6 @@ export const HostedMcpConnections = HttpApiGroup.make("mcpConnections")
       error: [...errors, ConnectedAgentNotFound],
     })
       .annotate(RequiredAction, "manage")
-      .middleware(RequireUser),
+      .middleware(RequireBrowserSession),
   )
   .middleware(RequireOrganization);

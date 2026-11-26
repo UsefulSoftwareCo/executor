@@ -1,9 +1,3 @@
-/**
- * A wildcard route's span records the route's template and no part of the path under it: an SSO
- * provider's ID, an analytics tail, a site page or a probe of a not-found namespace are chosen by
- * administrators and callers. A handler that serves fixed endpoints under its wildcard, such as
- * Better Auth's, names the endpoint by its own template.
- */
 import { randomBytes, randomUUID } from "node:crypto";
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schedule } from "effect";
@@ -25,7 +19,6 @@ interface Probe {
   readonly route: string;
 }
 
-/** Send each probe with its own trace and return its status and delivered server span. */
 const probeRoutes = (probes: ReadonlyArray<Probe>, headers = {}) =>
   Effect.gen(function* () {
     const telemetry = yield* Telemetry;
@@ -53,7 +46,6 @@ const probeRoutes = (probes: ReadonlyArray<Probe>, headers = {}) =>
     return recorded;
   });
 
-/** Every probe's span records its route's template as both route and path, and no marker. */
 const expectTemplates = (
   probes: ReadonlyArray<Probe>,
   recorded: Effect.Success<ReturnType<typeof probeRoutes>>,
@@ -112,21 +104,18 @@ layer(HostedLive, { excludeTestServices: true })("Wildcard route telemetry", (it
         const appOrigin = new URL(yield* waitForAppUrl(actors.owner, `${prefix}/apps/${app.id}/ui`))
           .origin;
         const probes: ReadonlyArray<Probe> = [
-          // Better Auth's own endpoint keeps its name.
           {
             name: "auth endpoint",
             url: `${origin}/api/auth/get-session`,
             status: 200,
             route: "/api/auth/get-session",
           },
-          // A path no auth endpoint serves records only the wildcard.
           {
             name: "unknown auth path",
             url: `${origin}/api/auth/${marker}`,
             status: 404,
             route: "/api/auth/*",
           },
-          // An app host's not-found namespace.
           {
             name: "app host not found",
             url: `${appOrigin}/_executor/${marker}`,
@@ -135,23 +124,18 @@ layer(HostedLive, { excludeTestServices: true })("Wildcard route telemetry", (it
           },
           ...(cloud
             ? [
-                // An organization's administrator names its SSO provider; the callback records
-                // the endpoint's parameter, not the name.
                 {
                   name: "SSO callback",
                   url: `${origin}/api/auth/sso/callback/sso-${marker}`,
                   status: 302,
                   route: "/api/auth/sso/callback/:providerId",
                 },
-                // The analytics proxy forwards a fixed set of PostHog endpoints; anything else
-                // under its channel records only the wildcard.
                 {
                   name: "analytics",
                   url: `${origin}/api/${randomBytes(8).toString("hex")}/array/${marker}/config.js`,
                   status: 404,
                   route: "/api/:channel/*",
                 },
-                // A site page under a site glob.
                 {
                   name: "site page",
                   url: `${roleHost(origin, "edge")}/docs/${marker}`,
@@ -183,7 +167,6 @@ layer(HostedLive, { excludeTestServices: true })("Wildcard route telemetry", (it
             status: 404,
             route: "/api/auth/*",
           },
-          // The dashboard's fallback, which answers a page it does not have with a 404.
           {
             name: "dashboard page",
             url: `${origin}/${marker}/page`,

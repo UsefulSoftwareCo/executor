@@ -33,7 +33,6 @@ interface WorkflowActions {
       ) => ReactNode)
     | undefined;
 }
-/** Runs remain the primary view and load independently of workflow descriptions. */
 export function AppWorkflows<E>({
   app,
   bindings,
@@ -317,7 +316,6 @@ function RunList({
     </div>
   );
 }
-/** Render returned values as readable fields without presenting code or inferred explanations. */
 function RunOutput({ value }: { readonly value: WorkflowOutput }) {
   if (value === null) return <span className="text-muted-foreground">No value</span>;
   if (typeof value !== "object")

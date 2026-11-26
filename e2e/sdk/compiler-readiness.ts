@@ -1,4 +1,3 @@
-/** Prove a deployed stage compiles apps before any scenario sends its first deploy. */
 import { Clock, Console, Effect, Layer, Schedule, Schema } from "effect";
 import { randomBytes } from "node:crypto";
 import { Actors } from "../support/actors.ts";
@@ -8,7 +7,6 @@ import { App } from "../support/contracts.ts";
 import { Target } from "../support/platform.ts";
 import { startScenario } from "./scenario.ts";
 
-/** One deploy attempt that the stage did not answer with a built app. */
 class CompilerAttemptFailed extends Schema.TaggedError<CompilerAttemptFailed>()(
   "CompilerAttemptFailed",
   {
@@ -17,7 +15,6 @@ class CompilerAttemptFailed extends Schema.TaggedError<CompilerAttemptFailed>()(
   },
 ) {}
 
-/** The stage did not build a sample app through its public API within the deadline. */
 export class CompilerNotReady extends Schema.TaggedError<CompilerNotReady>()("CompilerNotReady", {
   attempts: Schema.Number,
   elapsedMs: Schema.Number,
@@ -35,12 +32,6 @@ export default defineApp({}, async () => ({
   tools: router({ ping: query({ description: "Compiler readiness", input: object({}) }, async () => "ok") }),
 }));`;
 
-/**
- * A fresh compiler Worker can lose its first requests while it starts; scenarios that deploy at
- * that moment hang past their own deadline. A dedicated organization deploys one small app
- * through `POST /apps/deploy`, retrying unanswered or failed requests until one builds. A client
- * error is the probe's own fault and fails at once. The organization is removed afterwards.
- */
 export const awaitCompiler = (base: typeof Target.Service, deadline: "5 minutes") =>
   Effect.gen(function* () {
     const started = yield* Clock.currentTimeMillis;

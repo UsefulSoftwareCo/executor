@@ -1,8 +1,3 @@
-/**
- * The API document, the Executor app generator and the authoring skills load on first use.
- * Concurrent reads get one identical document, and the installed Executor app is generated from it.
- * The app reads the published skills at runtime; framework lookups come from the management API.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { HttpClient } from "effect/http";
@@ -55,8 +50,6 @@ layer(HostedLive, { excludeTestServices: true })("Deferred server paths", (it) =
           ).pipe(Effect.orDie),
         );
 
-        // Read the document and install the Executor app together, so neither
-        // request relies on the other having produced the document.
         const name = `Executor deferred ${randomUUID().slice(0, 8)}`;
         const [documents, install] = yield* Effect.all(
           [
@@ -84,7 +77,6 @@ layer(HostedLive, { excludeTestServices: true })("Deferred server paths", (it) =
           expect.arrayContaining(["browserSession", "oauth"]),
         );
 
-        // The prepared Executor app was generated from the same document.
         const files = (yield* body(
           Source,
           yield* api.request(actors.owner, "GET", `${prefix}/apps/${app.id}/source`),
@@ -95,11 +87,9 @@ layer(HostedLive, { excludeTestServices: true })("Deferred server paths", (it) =
         const configuration = yield* Schema.decodeUnknownEffect(Configuration)(
           configurationFile.content,
         );
-        // The Executor app calls the API at its canonical origin.
         expect(configuration.source.url).toBe(`${targetHosts(target).api}/openapi.json`);
         expect(configuration.securitySchemes).toEqual(document.components.securitySchemes);
 
-        // The app reads its skills from the published index; the server answers framework lookups.
         expect(files.map((file) => file.path)).not.toContain("framework-reference.json");
         const lookup = yield* api.request(
           actors.owner,
@@ -112,7 +102,6 @@ layer(HostedLive, { excludeTestServices: true })("Deferred server paths", (it) =
             expect.objectContaining({ symbol: expect.stringContaining("defineApp") }),
           ]),
         });
-        // The app reads its skills beside the API it calls, at the canonical API origin.
         expect(files.find((file) => file.path === "index.ts")?.content).toContain(
           `${targetHosts(target).api}/.well-known/agent-skills/index.json`,
         );
@@ -130,7 +119,6 @@ layer(HostedLive, { excludeTestServices: true })("Deferred server paths", (it) =
         const index = yield* published("index.json");
         expect(index.status).toBe(200);
         const { skills } = yield* Schema.decodeUnknownEffect(SkillIndex)(index.text);
-        // Every skill directory the host ships is published, with the entry skill beside the guides.
         expect(skills.map((skill) => skill.name).sort()).toEqual([
           "app-authoring",
           "code-mode",
@@ -147,7 +135,6 @@ layer(HostedLive, { excludeTestServices: true })("Deferred server paths", (it) =
             expect(file.status).toBe(200);
             expect(file.contentType).toBe("text/markdown; charset=utf-8");
             expect(file.text.length).toBeGreaterThan(0);
-            // Each relative link names a file the same skill publishes, as agents read it.
             for (const [, target = ""] of file.text
               .replace(/^```[\s\S]*?^```/gm, "")
               .matchAll(/\]\(([^)\s]+)\)/g)) {
@@ -164,7 +151,6 @@ layer(HostedLive, { excludeTestServices: true })("Deferred server paths", (it) =
         );
         expect((yield* published("executor/SKILL.md")).text).toMatch(/^---\nname: executor\n/);
         expect((yield* published("app-authoring/missing.md")).status).toBe(404);
-        // Feedback guidance belongs to the entry skill, not the authoring guide.
         expect((yield* published("app-authoring/feedback.md")).status).toBe(404);
       }),
     ),

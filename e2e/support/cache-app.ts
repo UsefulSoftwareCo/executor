@@ -1,4 +1,3 @@
-/** A fresh deployed app for each cache scenario, shared so a second member can call it. */
 import { expect } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -83,7 +82,6 @@ export const cacheApp = Effect.gen(function* () {
       audience: { kind: "everyone" },
     })).status,
   ).toBe(200);
-  /** A call as the owner by default, with the caller's linked accounts. */
   const request = (
     name: string,
     input: Schema.Json = {},
@@ -91,7 +89,6 @@ export const cacheApp = Effect.gen(function* () {
   ) =>
     api.request(options.actor ?? actors.owner, "POST", `${path}/tools/call`, {
       tool: `${name}`,
-      // Every fixture tool is a query.
       kind: "query",
       input,
     });

@@ -47,8 +47,6 @@ export const fromPromise =
   ): ((...args: Args) => Effect.Effect<A, unknown>) =>
   (...args) => {
     if (NativeCallback in callback) {
-      // SAFETY: this private symbol is installed only by toPromise on the same
-      // callback signature. Preserve native composition instead of starting a runtime.
       const native = callback[NativeCallback] as (...args: Args) => Effect.Effect<A, unknown>;
       return native(...args);
     }
@@ -70,9 +68,7 @@ export const method = <
 ): T[K] => {
   const value = target[key];
   const call = (...args: unknown[]): unknown => Reflect.apply(value, target, args);
-  // Executor's own methods keep their native operation, so `fromPromise` still composes them.
   if (NativeCallback in value) Object.assign(call, { [NativeCallback]: value[NativeCallback] });
-  // SAFETY: `call` passes every argument and the result through unchanged, on `target`.
   return call as unknown as T[K];
 };
 
