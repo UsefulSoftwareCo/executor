@@ -1,9 +1,10 @@
 /// <reference types="vite/client" />
 import { RegistryContext, scheduleTask, useAtomValue } from "@effect/atom-react";
-import type { AnyRouter } from "@tanstack/react-router";
+import type { AnyRouter, ParsedLocation, StaticDataRouteOption } from "@tanstack/react-router";
 import { Cause, Schema } from "effect";
 import { AsyncResult, Atom, AtomRegistry, Hydration } from "effect/reactivity";
 import { createContext, useContext, useSyncExternalStore, type ReactNode } from "react";
+import { nodeKey } from "./loaded-value.ts";
 
 interface DehydratedAtoms {
   readonly initial: ReadonlyArray<Hydration.DehydratedAtom>;
@@ -14,9 +15,6 @@ const pendingResult = (value: unknown) =>
   AsyncResult.isAsyncResult(value) && AsyncResult.isInitial(value) && value.waiting;
 
 const renderDeadline = 10_000;
-
-const nodeKey = (atom: Atom.Atom<unknown>) =>
-  Atom.isSerializable(atom) ? atom[Atom.SerializableTypeId].key : atom;
 
 const documentGuards = (registry: AtomRegistry.AtomRegistry) => {
   const guards = new Map<
@@ -296,6 +294,34 @@ const hydrateAtoms = (router: AnyRouter, registry: AtomRegistry.AtomRegistry) =>
   };
 };
 
+export type RouteReads = (
+  match: {
+    readonly staticData: StaticDataRouteOption;
+    readonly params: Readonly<Record<string, unknown>>;
+  },
+  get: <A>(atom: Atom.Atom<A>) => A,
+) => ReadonlyArray<Atom.Atom<unknown>>;
+
+const prefetchHold = 10_000;
+
+const prefetchRouteReads = (
+  router: AnyRouter,
+  registry: AtomRegistry.AtomRegistry,
+  reads: RouteReads,
+) => {
+  const start = (location: ParsedLocation) => {
+    const get = <A,>(atom: Atom.Atom<A>) => registry.get(atom);
+    for (const atom of router.matchRoutes(location).flatMap((match) => reads(match, get)))
+      setTimeout(registry.mount(atom), prefetchHold);
+  };
+  const preload = router.preloadRoute;
+  router.preloadRoute = (options) => {
+    start(router.buildLocation(options as Parameters<typeof router.buildLocation>[0]));
+    return preload(options);
+  };
+  router.subscribe("onBeforeLoad", ({ toLocation }) => start(toLocation));
+};
+
 type InitialValues = NonNullable<
   NonNullable<Parameters<typeof AtomRegistry.make>[0]>["initialValues"]
 >;
@@ -308,9 +334,11 @@ export const dashboardRegistry = (initialValues: InitialValues) => {
   const guards = import.meta.env.SSR ? documentGuards(registry) : undefined;
   return {
     registry,
-    connect: <R extends AnyRouter>(router: R): R => {
-      if (guards === undefined) hydrateAtoms(router, registry);
-      else streamAtoms(router, registry, () => view.dispose(), guards);
+    connect: <R extends AnyRouter>(router: R, reads?: RouteReads): R => {
+      if (guards === undefined) {
+        hydrateAtoms(router, registry);
+        if (reads !== undefined) prefetchRouteReads(router, registry, reads);
+      } else streamAtoms(router, registry, () => view.dispose(), guards);
       return router;
     },
     Wrap: ({ children }: { readonly children: ReactNode }) => (
