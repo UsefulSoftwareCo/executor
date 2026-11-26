@@ -1,4 +1,3 @@
-/** Google-labelled services keep BYO visible without changing a new or saved account's client. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -68,9 +67,12 @@ export default defineApp({ user: { accounts: { service: service.many() } } }, { 
             );
             const connection = (account?: string) =>
               api
-                .request(actors.owner, "POST", connectionsPath(path, "user", "service"), {
-                  ...(account === undefined ? {} : { account }),
-                })
+                .request(
+                  actors.owner,
+                  "POST",
+                  connectionsPath(path, "user", "service"),
+                  account === undefined ? {} : { account },
+                )
                 .pipe(Effect.flatMap((answer) => body(Resource, answer)));
             return { path, id: app.id, connection };
           });

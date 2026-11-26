@@ -268,7 +268,6 @@ export function OAuthFields<A, E>({
       onPendingChange?.(false);
     });
   };
-  // Google keeps its personal-client option beside a shared or current client.
   const googleOwnClientChoice =
     googleProvider &&
     !machine &&
