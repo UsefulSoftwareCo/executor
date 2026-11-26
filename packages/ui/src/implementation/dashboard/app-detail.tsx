@@ -34,10 +34,6 @@ const sections = [
   { view: "versions", label: "Versions" },
   { view: "settings", label: "Settings" },
 ] as const;
-/**
- * Read at render. Server bundles can split icons into a chunk that imports this one back, so a
- * module-level table could capture them before that chunk initializes.
- */
 const sectionIcon = (view: (typeof sections)[number]["view"]) => {
   switch (view) {
     case "overview":
@@ -77,7 +73,6 @@ const contentClasses = {
   versions: "flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden",
 } as const;
 
-/** A stable app heading and linked section tabs frame each product's app details. */
 export function AppDetailLayout({
   app,
   view,
@@ -129,8 +124,6 @@ export function AppDetailLayout({
             <div
               className={cn(
                 "ml-auto flex min-h-9 flex-wrap items-center justify-end gap-1 empty:hidden max-[740px]:min-h-11 max-[640px]:ml-0 max-[640px]:w-full max-[640px]:justify-start max-[640px]:gap-2",
-                // Hosts with known actions supply their placeholder before metadata arrives.
-                // Do not invent an actions row for products that have none.
                 app === undefined && !actions && "max-[640px]:hidden",
               )}
             >
@@ -204,7 +197,6 @@ export function AppDetailLayout({
   );
 }
 
-/** Unknown app metadata can render its frame before product navigation bindings are ready. */
 function BoundAppLink(props: AppLinkProps) {
   const { AppLink } = useDashboard();
   return <AppLink {...props} />;

@@ -1,11 +1,3 @@
-/**
- * Time between the API Worker forwarding an MCP request and its session object answering it.
- * Each organization's PAT addresses its own session object. A round waits out the idle gap, so
- * Cloudflare has usually evicted the object, then opens a session (`idle`), makes sequential
- * calls (`warm`) and parallel calls on the same session (`concurrent`). The hop is
- * `mcp.session.forward` minus the object's `http.server` span: both are measured on their own
- * isolate's clock, so the difference holds even when the two clocks disagree.
- */
 import { Clock, Console, Effect } from "effect";
 import type { PerfTarget } from "./scenarios.ts";
 import { mcpSession, type McpExchange } from "./client.ts";
@@ -22,7 +14,6 @@ export interface SessionHopSample {
   readonly status: number;
   readonly clientMs: number;
   readonly traceId: string;
-  /** Forward duration minus the session object's request duration, from the stage trace. */
   readonly hopMs: number | undefined;
 }
 
@@ -71,7 +62,6 @@ export const runSessionHop = (input: {
       (org, index) =>
         Effect.gen(function* () {
           const entry = input.target.org(org);
-          // Stagger organizations so their idle requests do not arrive together.
           yield* Effect.sleep(`${index * 20} seconds`);
           for (let round = 0; round < input.rounds; round++) {
             yield* Effect.sleep(`${input.gapSeconds} seconds`);
@@ -102,7 +92,6 @@ export const runSessionHop = (input: {
         }),
       { concurrency: "unbounded", discard: true },
     );
-    // Traces arrive after their requests; each lookup retries while its spans are missing.
     const samples: SessionHopSample[] = yield* Effect.forEach(
       measured,
       (sample) =>

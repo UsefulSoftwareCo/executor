@@ -1,4 +1,3 @@
-/** Public local APIs used by the identity scenarios, including the real OAuth callback and app invocation. */
 import { expect } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";

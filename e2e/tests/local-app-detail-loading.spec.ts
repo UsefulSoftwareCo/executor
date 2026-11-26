@@ -87,9 +87,6 @@ export default defineApp({}, async () => ({
               }).observe(document, { childList: true, subtree: true });
             }),
           );
-          // A document load shows live app data read by the server. The browser's own live
-          // subscriptions are held, so hydration must keep that content rather than falling back
-          // to the loading panel until the browser's first snapshot.
           for (const [view, reads] of [
             ["settings", [`/dashboard/api/live/apps/${app.id}`]],
             [

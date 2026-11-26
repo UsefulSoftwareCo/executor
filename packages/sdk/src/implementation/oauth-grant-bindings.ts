@@ -1,4 +1,3 @@
-/** Shared grants keep their encryption identity and renewal lock after individual bindings disappear. */
 import { Effect } from "effect";
 import type { StoredAccount } from "../contracts/storage.ts";
 import type { AccountId } from "../contracts/shared.ts";
@@ -16,14 +15,12 @@ export const grantBindings = (db: Query, grant: AccountId) =>
     }),
   );
 
-/** Call after the binding was deleted or detached, inside the same transaction. */
 export const releaseAccountGrant = (
   db: Query,
-  account: Pick<StoredAccount, "id" | "oauthGrantId" | "provider">,
+  account: Pick<StoredAccount, "id" | "oauthGrantId" | "owner" | "provider">,
 ) =>
   Effect.gen(function* () {
     const id = accountGrantId(account);
-    // Serializing shared releases makes the last concurrent removal responsible for cleanup.
     if (account.oauthGrantId !== null) {
       const saved = yield* query(() =>
         db.findFirst("oauthGrants", { where: (b) => b("id", "=", id) }),
@@ -44,5 +41,5 @@ export const releaseAccountGrant = (
     yield* query(() => db.deleteMany("oauthGrants", { where: (b) => b("id", "=", id) }));
     return grant === null
       ? undefined
-      : { account: id, provider: account.provider, encrypted: grant.encrypted };
+      : { account: id, owner: account.owner, provider: account.provider, encrypted: grant.encrypted };
   });

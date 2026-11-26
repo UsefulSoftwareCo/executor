@@ -1,4 +1,3 @@
-/** Read the summary line each finished data step pass writes to the product's log. */
 import { Effect, FileSystem, Option, Schedule, Schema } from "effect";
 
 const prefix = "Data step pass finished: ";
@@ -23,13 +22,11 @@ const LogRecord = Schema.fromJsonString(
 );
 const Summary = Schema.fromJsonString(DataStepSummary);
 
-/** A finished pass, and when the host logged it when its log records carry a time. */
 export interface DataStepPass {
   readonly summary: DataStepSummary;
   readonly loggedAt: number | undefined;
 }
 
-/** Hosts write JSON log records; the message holds the prefix and the summary's JSON. */
 const passOf = (line: string): Option.Option<DataStepPass> => {
   const record = Schema.decodeUnknownOption(LogRecord)(line.slice(line.indexOf("{")));
   const messages = Option.match(record, {
@@ -51,7 +48,6 @@ const passOf = (line: string): Option.Option<DataStepPass> => {
   return Option.none();
 };
 
-/** Every message in the host's log: each JSON record's text parts, or a plain line itself. */
 export const logMessages = (log: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -67,7 +63,6 @@ export const logMessages = (log: string) =>
     );
   });
 
-/** Every finished pass in the log for one step, oldest first. */
 export const dataStepPasses = (log: string, step: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -78,7 +73,6 @@ export const dataStepPasses = (log: string, step: string) =>
       .filter((pass) => pass.summary.step === step);
   });
 
-/** Every summary in the log for one step, oldest first. */
 export const dataStepSummaries = (log: string, step: string) =>
   dataStepPasses(log, step).pipe(Effect.map((passes) => passes.map((pass) => pass.summary)));
 
@@ -86,7 +80,6 @@ class SummaryPending extends Schema.TaggedError<SummaryPending>()("SummaryPendin
   step: Schema.String,
 }) {}
 
-/** Wait for the log to hold more than `seen` summaries for the step, and return the newest. */
 export const nextDataStepSummary = (log: string, step: string, seen: number) =>
   dataStepSummaries(log, step).pipe(
     Effect.flatMap((summaries) => {

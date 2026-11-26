@@ -1,8 +1,3 @@
-/**
- * OAuth sign-in clients are the organization's resources. Administrators register them, each has
- * an audience, and every connection names the client it signs in with; nothing is reused because
- * an owner happened to connect before. Client credentials are each account's own.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
@@ -60,9 +55,8 @@ const CompletionFailure = Schema.Struct({ _tag: Schema.String, reason: Schema.St
 const Members = Schema.Struct({
   members: Schema.Array(Schema.Struct({ id: Schema.String, userId: Schema.String })),
 });
-const Ownership = Schema.Struct({ ownership: Schema.Struct({ kind: Schema.String }) });
+const AccountDetail = Schema.Struct({ canManage: Schema.Boolean });
 
-/** Synthetic client details the loopback service accepts once allowed. */
 const teamClient = { clientId: "synthetic-team-client", clientSecret: "synthetic-team-secret" };
 const restrictedClient = {
   clientId: "synthetic-restricted-client",
@@ -80,16 +74,13 @@ const recheckedClient = {
 };
 
 layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
-  /** Shared steps over the organization's HTTP API for the browser sign-in scenarios. */
   const organizationOAuth = Effect.gen(function* () {
     const api = yield* Api,
       actors = yield* Actors,
       http = yield* HttpClient.HttpClient;
     const issuer = yield* oauthSetupIssuer;
     const prefix = `/api/organizations/${actors.organization.id}`;
-    // Only registered or entered clients can sign in: the service offers no registration.
     yield* issuer.configure({ registration: false, tokenError: null });
-    /** An app every member may use, whose provider signs in through the loopback service. */
     const deploy = Effect.gen(function* () {
       const name = `OAuth clients ${randomUUID().slice(0, 8)}`;
       const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
@@ -110,17 +101,12 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
         revision: access.revision,
       });
       expect(shared.status, JSON.stringify(shared.body)).toBe(200);
-      // The provider is named after the app.
       return { id: app.id, name, provider: app.requirements.accounts.service.provider };
     });
     const options = (actor: Session, provider: string) =>
       api
         .request(actor, "GET", `${prefix}/providers/${provider}/oauth/oauth/setup`)
         .pipe(Effect.flatMap((response) => body(Options, response)));
-    /**
-     * A personal connection from the app, which links the saved account to it for the actor, or
-     * one that replaces an existing account's credentials.
-     */
     const connection = (actor: Session, app: string, account?: string) =>
       Effect.gen(function* () {
         return (yield* body(
@@ -138,7 +124,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
         method: "oauth",
         ...(client === undefined ? {} : { client }),
       });
-    /** Approve the sign-in at the service and return to Executor's callback. */
     const consent = (authorizationUrl: string) =>
       Effect.scoped(
         Effect.gen(function* () {
@@ -153,10 +138,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
       api.request(actor, "POST", `${prefix}/connections/${connection}/oauth/complete`, {
         callbackUrl,
       });
-    /**
-     * Other scenarios' apps may be installed too, so the service is always chosen. A service is
-     * the server the app signs in at, listed with every app that signs in there.
-     */
     const chooseService = (page: Page, name: string) =>
       page
         .getByRole("form", { name: "Register OAuth client" })
@@ -197,7 +178,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
         } = yield* organizationOAuth;
         const browser = yield* Browser;
         const app = yield* deploy;
-        // Members cannot register clients through the API, and the account list offers them no manager.
         expect(
           (yield* api.request(actors.member, "POST", `${prefix}/oauth-clients`, {
             issuer: issuer.origin,
@@ -221,7 +201,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
             .getByRole("button", { name: "Register client", exact: true })
             .click(),
         );
-        // A client is not named, and everyone in the organization may use it unless chosen otherwise.
         yield* browser.use("Everyone may use a new client by default", (page) =>
           page
             .getByRole("form", { name: "Register OAuth client" })
@@ -260,7 +239,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
         );
         yield* browser.checkpoint("Registered OAuth clients");
         const listed = yield* api.request(actors.admin, "GET", `${prefix}/oauth-clients`);
-        // The secret is write-only.
         expect(JSON.stringify(listed.body)).not.toContain(teamClient.clientSecret);
         const registered = (yield* body(Directory, listed)).clients.find(
           (entry) => entry.client.clientId === teamClient.clientId,
@@ -268,7 +246,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
         if (registered === undefined) return yield* Effect.die("The registered client is missing");
         expect(registered.access.audience).toEqual({ kind: "everyone" });
 
-        // A member is offered the client for their own account, and signs in with it.
         expect(yield* options(actors.member, app.provider)).toEqual({
           mode: "client-required",
           clients: [{ id: registered.client.id, clientId: teamClient.clientId }],
@@ -277,7 +254,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
         yield* browser.use("Open accounts as a member", (page) =>
           page
             .goto(`/org/${actors.organization.slug}/accounts`)
-            // The heading shows the account count once the list has loaded.
             .then(() => page.getByRole("heading", { name: /^Accounts\s*\d+$/ }).waitFor()),
         );
         expect(
@@ -291,8 +267,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
         yield* browser.use("Open the connect form", (page) =>
           page.getByRole("button", { name: "Connect new account", exact: true }).click(),
         );
-        // With one client to sign in with there is nothing to choose: the form uses it, and keeps
-        // the choice, with entering details, under Advanced.
         expect(
           yield* browser.use("A single registered client is not offered as a choice", (page) =>
             page
@@ -354,12 +328,10 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
         );
         expect(
           (yield* body(
-            Ownership,
-            yield* api.request(actors.member, "GET", `${prefix}/accounts/${account.id}/access`),
-          )).ownership.kind,
-        ).toBe("personal");
-        // Removing the client stops new connections and keeps the connected account, but its
-        // details are withdrawn: a reconnect does not sign in with the grant's copy of them.
+            AccountDetail,
+            yield* api.request(actors.member, "GET", `${prefix}/accounts/${account.id}`),
+          )).canManage,
+        ).toBe(true);
         expect(
           (yield* api.request(
             actors.admin,
@@ -371,8 +343,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
         const after = yield* connection(actors.member, app.id);
         expect((yield* start(actors.member, after, { id: registered.client.id })).status).toBe(403);
         expect(
-          (yield* api.request(actors.member, "GET", `${prefix}/accounts/${account.id}/access`))
-            .status,
+          (yield* api.request(actors.member, "GET", `${prefix}/accounts/${account.id}`)).status,
         ).toBe(200);
         const reconnect = yield* start(
           actors.member,
@@ -380,9 +351,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
         );
         expect(reconnect.status, JSON.stringify(reconnect.body)).toBe(404);
         expect((yield* body(Tagged, reconnect))._tag).toBe("OAuthClientNotFound");
-        // The sign-in found the client itself, so the refusal does not name it.
         expect(JSON.stringify(reconnect.body)).not.toContain(registered.client.id);
-        // Nor does entering them: they were withdrawn from everyone.
         const entered = yield* start(actors.member, yield* connection(actors.member, app.id), {
           ...teamClient,
         });
@@ -428,7 +397,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
             yield* api.request(actors.admin, "GET", `${prefix}/oauth-clients`),
           )).clients.filter((entry) => entry.client.clientId === teamClient.clientId);
         });
-        // Entering details for one account saves nothing for the organization.
         const entered = yield* body(
           Redirect,
           yield* start(actors.member, yield* connection(actors.member, app.id), teamClient),
@@ -440,7 +408,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
         );
         yield* browser.omitNetworkTrace;
 
-        // Members cannot register clients, so they enter their own OAuth app's details.
         yield* browser.login(actors.member);
         yield* openConnect("a member");
         expect(
@@ -450,7 +417,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
         ).toBe(0);
         yield* browser.checkpoint("Connect form without an OAuth client, as a member");
 
-        // Administrators enter the client in the connect form; there is no separate step.
         yield* browser.login(actors.admin);
         yield* openConnect("an administrator");
         expect(
@@ -464,7 +430,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
             ]),
           ),
         ).toEqual([1, 0, 1]);
-        // The secret is mistyped, which the service would refuse when exchanging the code.
         yield* browser.use("Enter the client with a mistyped secret", (page) =>
           dialog(page)
             .getByLabel("Client ID", { exact: true })
@@ -477,7 +442,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
         );
         yield* browser.checkpoint("Connect form without an OAuth client, as an administrator");
 
-        // Connect registers the client, then signs in with it; this sign-in is cancelled.
         const origin = yield* browser.use("Read the dashboard origin", (page) =>
           page.evaluate(() => location.origin),
         );
@@ -501,7 +465,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
         );
         yield* browser.checkpoint("Sign-in cancelled after registering the client");
 
-        // Editing reopens the registered client's details and updates it in place.
         yield* issuer.configure({ authorizeError: null });
         expect(
           yield* browser.use("Edit the registered client's details", (page) =>
@@ -562,33 +525,20 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
           chooseService,
         } = yield* organizationOAuth;
         const app = yield* deploy;
-        // An administrator connects a shared account with client details entered for it alone.
-        const shared = yield* body(
-          Resource,
-          yield* api.request(
-            actors.owner,
-            "POST",
-            connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
-            {
-              destination: { kind: "shared", audience: { kind: "everyone" } },
-            },
-          ),
-        );
+        const owners = yield* connection(actors.owner, app.id);
         const entered = { clientId: "synthetic-entered-client", clientSecret: "synthetic-entered" };
-        const sharedStart = yield* body(Redirect, yield* start(actors.owner, shared.id, entered));
-        yield* issuer.allowClient({ ...entered, redirect: sharedStart.redirectUri });
-        const sharedAccount = yield* complete(
+        const ownersStart = yield* body(Redirect, yield* start(actors.owner, owners, entered));
+        yield* issuer.allowClient({ ...entered, redirect: ownersStart.redirectUri });
+        const ownersAccount = yield* complete(
           actors.owner,
-          shared.id,
-          yield* consent(sharedStart.authorizationUrl),
+          owners,
+          yield* consent(ownersStart.authorizationUrl),
         );
-        expect(sharedAccount.status, JSON.stringify(sharedAccount.body)).toBe(200);
-        const sharedId = (yield* body(Resource, sharedAccount)).id;
+        expect(ownersAccount.status, JSON.stringify(ownersAccount.body)).toBe(200);
+        const ownersId = (yield* body(Resource, ownersAccount)).id;
         yield* Effect.addFinalizer(() =>
-          api.request(actors.owner, "DELETE", `${prefix}/accounts/${sharedId}`).pipe(Effect.orDie),
+          api.request(actors.owner, "DELETE", `${prefix}/accounts/${ownersId}`).pipe(Effect.orDie),
         );
-        // The organization's earlier connection gives a member nothing to sign in with: setup
-        // says a client is required, and a personal connection without one is refused the same.
         expect(yield* options(actors.member, app.provider)).toEqual({
           mode: "client-required",
           clients: [],
@@ -598,8 +548,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
         expect(unavailable.status).toBe(409);
         expect((yield* body(Tagged, unavailable))._tag).toBe("OAuthClientUnavailable");
 
-        // Administrators choose a client's audience when they register it. A client registered
-        // for a group the member is not in is neither offered nor usable.
         const memberIdentity = yield* body(
           Schema.Struct({ userId: Schema.String }),
           yield* api.request(actors.member, "GET", "/api/viewer"),
@@ -638,7 +586,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
         const directory = api
           .request(actors.admin, "GET", `${prefix}/oauth-clients`)
           .pipe(Effect.flatMap((response) => body(Directory, response)));
-        // An unknown group is refused before any client exists.
         const before = (yield* directory).clients.length;
         const unknownGroup = yield* api.request(actors.admin, "POST", `${prefix}/oauth-clients`, {
           issuer: issuer.origin,
@@ -661,17 +608,13 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
           mode: "client-required",
           clients: [],
         });
-        // The server rechecks the audience when the member names the client anyway.
         const refused = yield* start(actors.member, personal, { id: registered.client.id });
         expect(refused.status).toBe(403);
         expect((yield* body(Tagged, refused))._tag).toBe("OrganizationForbidden");
-        // Its ID and secret are the same client however they arrive, so entering them is refused
-        // as an implicit reconnect that would keep it is.
         const typed = yield* start(actors.member, personal, restrictedClient);
         expect(typed.status, JSON.stringify(typed.body)).toBe(404);
         expect((yield* body(Tagged, typed))._tag).toBe("OAuthClientNotFound");
 
-        // A client registered in the browser for the member's group is offered only to them.
         const browser = yield* Browser;
         yield* browser.omitNetworkTrace;
         yield* browser.login(actors.admin);
@@ -702,7 +645,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
             .click()
             .then(() => page.getByRole("option", { name: "Selected groups", exact: true }).click()),
         );
-        // A group audience needs a group before the client can be registered.
         yield* browser.use("Registering without a group is refused", (page) =>
           page
             .getByRole("button", { name: "Register", exact: true })
@@ -755,7 +697,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
             .pipe(Effect.orDie),
         );
 
-        // Widening the restricted client's audience lets the member use it too.
         expect(
           (yield* api.request(
             actors.admin,
@@ -815,7 +756,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
         expect((yield* options(actors.member, app.provider)).clients).toEqual([
           { id: registered.client.id, clientId: editedClient.clientId },
         ]);
-        // Members can neither edit a client's details nor its audience.
         const memberEdit = yield* api.request(
           actors.member,
           "PATCH",
@@ -825,7 +765,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
         expect(memberEdit.status).toBe(403);
         expect((yield* body(Tagged, memberEdit))._tag).toBe("OrganizationForbidden");
 
-        // The new audience is a group of the administrator alone, so the member falls outside it.
         const adminIdentity = yield* body(
           Schema.Struct({ userId: Schema.String }),
           yield* api.request(actors.admin, "GET", "/api/viewer"),
@@ -852,7 +791,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
             .pipe(Effect.orDie),
         );
 
-        // An administrator edits the client's details and audience in one save.
         const browser = yield* Browser;
         yield* browser.omitNetworkTrace;
         yield* browser.login(actors.admin);
@@ -872,11 +810,9 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
             .getByRole("button", { name: menu(clientId), exact: true })
             .click()
             .then(() => page.getByRole("menuitem", { name: "Edit", exact: true }).click());
-        // A long client ID truncates inside the dialog, and the row's menu stays beside it.
         const layout = yield* browser.use("Measure the client's row", (page) => {
           const dialog = page.getByRole("dialog", { name: "OAuth clients" });
           return Promise.all([
-            // The dialog's content edge: inside its scrollbar and padding, whatever the fonts.
             dialog.evaluate((element) => {
               const rect = element.getBoundingClientRect();
               const right =
@@ -903,7 +839,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
         yield* browser.checkpoint("OAuth client row");
         yield* browser.use("Edit the client", (page) => openEdit(page, editedClient.clientId));
         const form = (page: Page) => page.getByRole("form", { name: "Edit OAuth client" });
-        // The form starts from the client: its service is fixed and its secret is kept unless replaced.
         const prefilled = yield* browser.use("Read the prefilled form", (page) =>
           Promise.all([
             form(page).getByLabel("Service", { exact: true }).inputValue(),
@@ -922,7 +857,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
           app.name,
           false,
           editedClient.clientId,
-          // The saved secret shows as filled rather than blank; its value is never sent back.
           true,
           "Everyone in the organization",
         ]);
@@ -966,11 +900,9 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
         );
         expect(edited?.client.clientId).toBe(replacementClient.clientId);
         expect(edited?.access.audience).toEqual({ kind: "groups", groups: [group.id] });
-        // Neither secret is ever returned.
         for (const secret of [editedClient.clientSecret, replacementClient.clientSecret])
           expect(JSON.stringify(listed.body)).not.toContain(secret);
 
-        // The member outside the new audience is no longer offered the client, nor may name it.
         const memberOptions = yield* api.request(
           actors.member,
           "GET",
@@ -982,7 +914,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
           403,
         );
 
-        // The next sign-in uses the new client ID, and the service accepts the new secret.
         const adminOptions = yield* api.request(
           actors.admin,
           "GET",
@@ -1016,8 +947,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
           for (const secret of [editedClient.clientSecret, replacementClient.clientSecret])
             expect(JSON.stringify(response.body)).not.toContain(secret);
 
-        // Saving the form again with its filled secret untouched keeps the new secret: the
-        // service still accepts the client below.
         yield* browser.use("Open the edited client", (page) =>
           openEdit(page, replacementClient.clientId),
         );
@@ -1057,7 +986,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
             .pipe(Effect.orDie),
         );
 
-        // Automatic clients keep the service's registration and are not edited.
         yield* issuer.configure({ registration: true, tokenError: null });
         const automaticConnection = yield* connection(actors.member, app.id);
         expect((yield* start(actors.member, automaticConnection)).status).toBe(200);
@@ -1076,7 +1004,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
         );
         expect(refused.status).toBe(409);
         expect((yield* body(Tagged, refused))._tag).toBe("OAuthClientNotEditable");
-        // The manager offers no edit for it either; the same views in dark mode.
         yield* browser.use("Reopen the manager in dark mode", (page) =>
           page
             .emulateMedia({ colorScheme: "dark" })
@@ -1137,7 +1064,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
             .request(actors.admin, "DELETE", `${prefix}/oauth-clients/${registered.client.id}`)
             .pipe(Effect.orDie),
         );
-        // While everyone may use the client, a member connects an account with it.
         const first = yield* connection(actors.member, app.id);
         const started = yield* body(
           Redirect,
@@ -1156,7 +1082,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
             .request(actors.member, "DELETE", `${prefix}/accounts/${account.id}`)
             .pipe(Effect.orDie),
         );
-        // Another sign-in with it is at the service, consent given, when the audience narrows.
         const pending = yield* connection(actors.member, app.id);
         const pendingStart = yield* body(
           Redirect,
@@ -1172,20 +1097,17 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
         expect(narrowed.status, JSON.stringify(narrowed.body)).toBe(200);
         const restricted = yield* body(Registered, narrowed);
 
-        // The member is neither offered the client nor may name it.
         expect((yield* options(actors.member, app.provider)).clients).toEqual([]);
         const named = yield* start(actors.member, yield* connection(actors.member, app.id), {
           id: registered.client.id,
         });
         expect(named.status).toBe(403);
-        // A reconnect that names no client does not keep it, nor fall back to the grant's copy.
         const reconnect = yield* start(
           actors.member,
           yield* connection(actors.member, app.id, account.id),
         );
         expect(reconnect.status, JSON.stringify(reconnect.body)).toBe(404);
         expect((yield* body(Tagged, reconnect))._tag).toBe("OAuthClientNotFound");
-        // The pending sign-in is refused before its code is exchanged.
         const exchanges = (yield* issuer.metrics).tokenExchanges;
         const refused = yield* complete(actors.member, pending, callback);
         expect(refused.status, JSON.stringify(refused.body)).toBe(400);
@@ -1195,7 +1117,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
         });
         expect((yield* issuer.metrics).tokenExchanges).toBe(exchanges);
 
-        // Widening the audience again lets the member reconnect with it: the audience refused it.
         expect(
           (yield* api.request(
             actors.admin,
@@ -1222,7 +1143,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
         const { api, actors, issuer, prefix, deploy, connection, start, consent, complete } =
           yield* organizationOAuth;
         const app = yield* deploy;
-        // The service registers clients, so a sign-in naming none registers one and stores it.
         yield* issuer.configure({ registration: true, tokenError: null });
         const pending = yield* connection(actors.member, app.id);
         const started = yield* body(Redirect, yield* start(actors.member, pending));
@@ -1236,7 +1156,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
               new URL(started.authorizationUrl).searchParams.get("client_id"),
         );
         if (automatic === undefined) return yield* Effect.die("No automatic client was created");
-        // The member gives consent at the service while an administrator removes the client.
         const callback = yield* consent(started.authorizationUrl);
         const removed = yield* api.request(
           actors.admin,
@@ -1245,8 +1164,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
         );
         expect(removed.status, JSON.stringify(removed.body)).toBe(200);
 
-        // Removing it withdrew its credentials: the pending sign-in is refused before its code
-        // is exchanged.
         const exchanges = (yield* issuer.metrics).tokenExchanges;
         const refused = yield* complete(actors.member, pending, callback);
         expect(refused.status, JSON.stringify(refused.body)).toBe(400);
@@ -1256,7 +1173,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
         });
         expect((yield* issuer.metrics).tokenExchanges).toBe(exchanges);
 
-        // Starting again registers a new client, and that sign-in completes.
         const again = yield* connection(actors.member, app.id);
         const restarted = yield* body(Redirect, yield* start(actors.member, again));
         expect(new URL(restarted.authorizationUrl).searchParams.get("client_id")).not.toBe(
@@ -1309,15 +1225,12 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
             directory.clients.find((entry) => entry.client.id === registered.client.id),
           ),
         );
-        // Changing only the client ID advances the revision.
         const edited = yield* body(
           Registered,
           yield* edit({ clientId: after, revision: registered.access.revision }),
         );
         expect(edited.client.clientId).toBe(after);
         expect(edited.access.revision).not.toBe(registered.access.revision);
-        // Edits made from the earlier revision are refused, whether they change the details or
-        // leave the audience as it is, and change nothing.
         for (const payload of [
           { clientSecret: "synthetic-stale-secret" },
           { clientId: "synthetic-stale-client" },
@@ -1330,13 +1243,11 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
         const unchanged = yield* current;
         expect(unchanged?.client.clientId).toBe(after);
         expect(unchanged?.access.revision).toBe(edited.access.revision);
-        // Saving from the current revision without a change keeps the revision.
         const same = yield* body(
           Registered,
           yield* edit({ audience: { kind: "everyone" }, revision: edited.access.revision }),
         );
         expect(same.access.revision).toBe(edited.access.revision);
-        // The refused secret was never stored: the service accepts the original one.
         const adminConnection = yield* connection(actors.admin, app.id);
         const started = yield* body(
           Redirect,
@@ -1361,7 +1272,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
             .pipe(Effect.orDie),
         );
 
-        // In the manager, an edit saved after the client changed elsewhere is refused and says so.
         const browser = yield* Browser;
         yield* browser.omitNetworkTrace;
         yield* browser.login(actors.admin);
@@ -1378,7 +1288,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
             .then(() => page.getByRole("menuitem", { name: "Edit", exact: true }).click())
             .then(() => form(page).waitFor({ state: "visible" })),
         );
-        // Another administrator narrows the audience while the form is open.
         expect(
           (yield* edit({ audience: { kind: "private" }, revision: edited.access.revision })).status,
         ).toBe(200);
@@ -1441,7 +1350,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
           .request(actors.admin, "GET", `${prefix}/oauth-clients`)
           .pipe(Effect.flatMap((response) => body(Directory, response)));
 
-        // A member connects an account while everyone may use the client.
         const first = yield* connection(actors.member, app.id);
         const started = yield* body(
           Redirect,
@@ -1461,8 +1369,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
             .pipe(Effect.orDie),
         );
 
-        // An administrator replaces the secret. The service may accept the old one until it is
-        // revoked there, so the account's copy of it is still this client.
         const replaced = yield* body(
           Registered,
           yield* edit(registered.client.id, {
@@ -1471,7 +1377,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
           }),
         );
 
-        // The same details are one client: registering them again, old or current, is refused.
         for (const details of [original, { ...original, clientSecret: rotated }]) {
           const again = yield* register(details);
           expect(again.status, JSON.stringify(again.body)).toBe(409);
@@ -1479,7 +1384,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
             yield* body(Schema.Struct({ _tag: Schema.String, client: Schema.String }), again),
           ).toEqual({ _tag: "OAuthClientExists", client: registered.client.id });
         }
-        // An edit into another client's earlier details is refused with its audience change.
         const other = yield* body(
           Registered,
           yield* register({
@@ -1505,7 +1409,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
         expect(untouched?.client.clientId).toBe("synthetic-identity-other");
         expect(untouched?.access).toEqual(other.access);
 
-        // The member falls outside the client's audience.
         const narrowed = yield* body(
           Registered,
           yield* edit(registered.client.id, {
@@ -1514,16 +1417,13 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
           }),
         );
         const exchanges = (yield* issuer.metrics).tokenExchanges;
-        // A reconnect with the account's copy of the old secret is still the client, and refused.
         const reconnect = yield* start(
           actors.member,
           yield* connection(actors.member, app.id, account.id),
         );
         expect(reconnect.status, JSON.stringify(reconnect.body)).toBe(404);
         expect((yield* body(Tagged, reconnect))._tag).toBe("OAuthClientNotFound");
-        // The member cannot list the client, so the refusal does not name it.
         expect(JSON.stringify(reconnect.body)).not.toContain(registered.client.id);
-        // So is entering the old details by hand.
         const entered = yield* start(actors.member, yield* connection(actors.member, app.id), {
           ...original,
         });
@@ -1532,8 +1432,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
         expect(JSON.stringify(entered.body)).not.toContain(registered.client.id);
         expect((yield* issuer.metrics).tokenExchanges).toBe(exchanges);
 
-        // Admitted again, the reconnect keeps the client and signs in with its current secret:
-        // the service now accepts only that one.
         expect(
           (yield* edit(registered.client.id, {
             audience: { kind: "everyone" },
@@ -1557,7 +1455,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
         );
         expect(reconnected.status, JSON.stringify(reconnected.body)).toBe(200);
 
-        // The client manager says why registering the same details again is refused.
         const browser = yield* Browser;
         yield* browser.omitNetworkTrace;
         yield* browser.login(actors.admin);
@@ -1594,9 +1491,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
           (yield* directory).clients.filter((entry) => entry.client.clientId === original.clientId),
         ).toHaveLength(1);
 
-        // Other credentials with the same client ID are another client. The manager and the connect
-        // form tell clients sharing a client ID apart without a secret: how and when each was added,
-        // and the end of its stored ID, which clients with a client ID of their own do not show.
         const twin = yield* body(
           Registered,
           yield* register({ clientId: original.clientId, clientSecret: "synthetic-identity-twin" }),
@@ -1610,7 +1504,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
         const ends = [registered.client.id, twin.client.id, other.client.id].map(end);
         expect(
           yield* browser.use("Clients sharing a client ID show the end of their IDs", (page) =>
-            // The manager's open state is in the address, so it reopens with the reloaded list.
             page.reload().then(() => {
               const list = page
                 .getByRole("dialog", { name: "OAuth clients" })
@@ -1697,13 +1590,10 @@ export default defineApp({user: { accounts:{service:service.many()} }},async()=>
             .pipe(Effect.orDie),
         );
         const requests = (yield* issuer.metrics).requests;
-        // Another account must bring its own credentials; the first account's are never reused.
         const second = yield* connect();
         expect(second.status, JSON.stringify(second.body)).toBe(409);
         expect((yield* body(Tagged, second))._tag).toBe("OAuthClientUnavailable");
         expect((yield* issuer.metrics).requests).toBe(requests);
-        // A machine client is the account itself, so a stored client, even one registered for
-        // the same server, never signs in a client credentials connection.
         const shared = yield* api.request(actors.owner, "POST", `${prefix}/oauth-clients`, {
           issuer: `${issuer.origin}/token`,
           ...machineClient,

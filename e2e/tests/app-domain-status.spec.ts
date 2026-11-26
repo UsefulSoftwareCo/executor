@@ -1,4 +1,3 @@
-/** Exercise domain readiness states at the browser's public HTTP boundary. */
 import { expect, layer } from "@effect/vitest";
 import { Effect } from "effect";
 import { randomUUID } from "node:crypto";
@@ -50,7 +49,9 @@ layer(HostedLive, { excludeTestServices: true })("App domain readiness", (it) =>
                 json:
                   status === "too_long"
                     ? { _tag: "AppUiAddressInvalid", reason: "too_long" }
-                    : { status, url: status === "ready" ? url : null },
+                    : status === "ready"
+                      ? { status, url, name: "Domain status", icon: false, menuBar: false }
+                      : { status, url: null },
               });
             },
           ),

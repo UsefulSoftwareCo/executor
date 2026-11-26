@@ -65,10 +65,9 @@ export const AccountConnectionRefused = UserFacingError.define({
   description:
     "Your access doesn’t allow connecting this account for the app, so nothing was saved.",
   recovery: {
-    action:
-      "Check your access to the app and to the account’s destination, then start account setup again.",
+    action: "Check your access to the app, then start account setup again.",
     instructions:
-      "The product refused this connection for its creator under current access. A member’s own account needs use of the app. An app’s account needs management of the app and use of the connected account, such as membership in a group it is shared with. Check the signed-in member’s access, choose a destination they can use or have someone with the needed access connect the account, then start a fresh connection. Do not bypass authorization or reuse this request.",
+      "The product refused this connection for its creator under current access. A member’s own account needs use of the app. An app’s account needs management of the app. Replacing an account’s credentials needs use of that account, which only its owner has. Check the signed-in member’s access or have someone with the needed access connect the account, then start a fresh connection. Do not bypass authorization or reuse this request.",
   },
 });
 /** Parsed AccountConnectionRefused failure. */
@@ -166,6 +165,11 @@ export const StartConnectionOAuth = Schema.Struct({
   label: Schema.optional(Schema.NonEmptyString),
   redirectUri: Schema.optional(HttpUrl),
   client: Schema.optional(OAuthClientChoice),
+  /**
+   * On a reconnect where setup offers it: sign in with a client registered for this connection
+   * alone, so the service asks again which account or organization to use.
+   */
+  chooseAgain: Schema.optional(Schema.Literal(true)),
 });
 /** Reuse the selected account's actual grant, retaining its OAuth client. Hosts authorize both resources. */
 export const ReuseConnectionOAuth = Schema.Struct({

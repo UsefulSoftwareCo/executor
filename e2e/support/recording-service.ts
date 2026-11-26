@@ -1,16 +1,8 @@
-/** A loopback service that saves records at once, or later as a service still finishing a change. */
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Effect, Layer, Queue, Ref, Schema } from "effect";
 import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { createServer } from "node:http";
 
-/**
- * A service an app saves records to. `POST /records` saves a record at once, or with `?pending`
- * accepts it to save later, when `commit` runs, as a service still working on a change.
- * `GET /quota?status=` refuses with that status; with `&after=write` it first waits for a pending
- * record to arrive, so the refusal comes while that change is pending. `GET /records` reads the
- * saved records.
- */
 export const recordingService = Effect.gen(function* () {
   const saved = yield* Ref.make<ReadonlyArray<string>>([]);
   const pending = yield* Ref.make<ReadonlyArray<string>>([]);
@@ -49,9 +41,7 @@ export const recordingService = Effect.gen(function* () {
   if (!("port" in server.address)) return yield* Effect.die("Fixture must listen on TCP");
   return {
     url: `http://127.0.0.1:${server.address.port}`,
-    /** The records the service saved, in order. */
     saved: Ref.get(saved),
-    /** Save the pending records, as the service finishing its work. */
     commit: Ref.getAndSet(pending, []).pipe(
       Effect.flatMap((committed) => Ref.update(saved, (records) => [...records, ...committed])),
     ),

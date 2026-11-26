@@ -1,23 +1,15 @@
-/** Protocol of the store of evaluated results an app's supervisor keeps beside its app cache. */
 import { Schema } from "effect";
 
 const Key = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u));
 const Time = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0));
 const Body = Schema.Uint8Array;
 
-/** Bounds of one app's store. Bodies are compressed by the caller before they are written. */
 export const evaluatedLimits = {
-  /** SQLite on Durable Objects stores at most 2 MB in one value. */
   partBytes: 1_000_000,
   entryBytes: 8_000_000,
   totalBytes: 64_000_000,
 } as const;
 
-/**
- * `at` is when the read that produced the result began; `until` is when the store may drop it.
- * A write whose evaluation began no later than the app's last cache change is refused. `changed`
- * reads when that change was, so a process can forget the results it keeps in memory from before.
- */
 export const EvaluatedCommand = Schema.Union([
   Schema.Struct({ operation: Schema.Literal("read"), key: Key }),
   Schema.Struct({ operation: Schema.Literal("changed") }),
@@ -31,11 +23,6 @@ export const EvaluatedCommand = Schema.Union([
 ]);
 export type EvaluatedCommand = typeof EvaluatedCommand.Type;
 
-/**
- * How the supervisor that answered was running, for the caller's span: whether the command was
- * the first its instance received, and how long its instance and its isolate had been running,
- * on the supervisor's clock. A command that wakes the supervisor reads `woke` with both near 0.
- */
 export const EvaluatedSupervisor = Schema.Struct({
   woke: Schema.Boolean,
   instanceMs: Time,
@@ -43,11 +30,6 @@ export const EvaluatedSupervisor = Schema.Struct({
 });
 export type EvaluatedSupervisor = typeof EvaluatedSupervisor.Type;
 
-/**
- * A read's reply: the kept body, or `missing` when there is none evaluated since the last
- * invalidation. Supervisors deployed before `supervisor` was reported answer a miss with `null`;
- * a caller from before then decodes `missing` as a failed read, which it also treats as a miss.
- */
 export const EvaluatedEntry = Schema.Union([
   Schema.Null,
   Schema.Struct({ at: Time, body: Body, supervisor: Schema.optionalKey(EvaluatedSupervisor) }),
@@ -55,24 +37,18 @@ export const EvaluatedEntry = Schema.Union([
 ]);
 export type EvaluatedEntry = typeof EvaluatedEntry.Type;
 
-/** A write's reply. Callers from before `supervisor` was reported ignore it. */
 export const EvaluatedWritten = Schema.Struct({
   kept: Schema.Boolean,
   supervisor: EvaluatedSupervisor,
 });
 export type EvaluatedWritten = typeof EvaluatedWritten.Type;
 
-/**
- * A `changed` reply: when the app's cached data last changed, on the supervisor's clock, or null
- * when it never has. Supervisors deployed before `changed` answer it as `missing`.
- */
 export const EvaluatedChanged = Schema.Struct({
   changed: Schema.NullOr(Time),
   supervisor: EvaluatedSupervisor,
 });
 export type EvaluatedChanged = typeof EvaluatedChanged.Type;
 
-/** A command or reply as JSON text, with bodies in base64, for a host that sends it over HTTP. */
 export const EvaluatedCommandJson = Schema.fromJsonString(Schema.toCodecJson(EvaluatedCommand));
 export const EvaluatedReplyJson = Schema.fromJsonString(
   Schema.toCodecJson(Schema.Union([EvaluatedEntry, EvaluatedWritten, EvaluatedChanged])),

@@ -1,8 +1,6 @@
-/** Built marketing files for local development. The composition root owns their routes. */
 import { Effect, FileSystem, Path } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 
-/** Discover public files once; never resolve an arbitrary browser path directly on disk. */
 export const marketingFiles = (directory: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;

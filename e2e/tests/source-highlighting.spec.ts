@@ -190,9 +190,6 @@ layer(HostedLive, { excludeTestServices: true })("Source highlighting", (it) => 
           ),
         ).toBe(snippet);
         yield* browser.checkpoint("Highlighted code block in the skill editor");
-        // Type characters rather than pressing Enter. The browser inserts text at the DOM caret,
-        // while ProseMirror handles Enter with the selection it last read, and Chrome can deliver
-        // fast synthetic keys before the click's selectionchange event.
         yield* browser.use("Place the cursor after the last code line", (page) =>
           page
             .getByRole("textbox", { name: "Skill instructions", exact: true })

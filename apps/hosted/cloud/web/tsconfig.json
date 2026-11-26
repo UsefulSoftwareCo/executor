@@ -7,6 +7,6 @@
       "@/*": ["./src/*"]
     }
   },
-  "include": ["src", "vite.config.ts", "cloudflare-routes.ts", "server.d.ts"],
+  "include": ["src", "vite.config.ts", "cloudflare-routes.ts", "release-notes.ts", "server.d.ts"],
   "exclude": []
 }

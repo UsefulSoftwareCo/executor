@@ -1,41 +1,16 @@
-/**
- * Who a span's work belongs to, and how a measured span's time divides among them. A span that
- * starts work for someone other than its caller declares the owner with `ownedBy`; any other span
- * works for whoever its parent works for. Each instant then belongs to the innermost boundary in
- * progress, so Executor's work inside an upstream session stays Executor's, and an app's callback
- * inside Executor's cache stays the app's. Background work is the exception: everything inside it
- * is background, and it runs beside its caller rather than inside it. It takes no instant from the
- * caller's window; how long it ran within the window is reported beside the division.
- *
- * Workers clocks advance only on I/O, so durations are comparable within one isolate and not across
- * isolates: each isolate measures its own part, and the spans that already bracket the work define
- * it, so the accounting and the trace agree.
- */
 import { Clock, Context, Effect, type Exit, Option, Tracer } from "effect";
 
-/**
- * Executor's own work; the app's authored code; waiting on an upstream provider; waiting on a
- * person's answer; waiting on another call that holds the lease to load a cache entry; or work
- * handed to the background, such as refreshing a stale cache entry, that no caller waits on.
- */
 export type Owner = "executor" | "app" | "upstream" | "person" | "lease" | "background";
 
-/** The attribute that shows a boundary's owner in the trace; the telemetry tracer sets it. */
 export const ownerAttribute = "executor.owner";
 
 const SpanOwner = Context.Reference<Owner | undefined>("@executor-js/telemetry/SpanOwner", {
   defaultValue: () => undefined,
 });
 
-/** The owner a span declared when it started, if it is an ownership boundary. */
 export const declaredOwner = (annotations: Context.Context<never>) =>
   Context.get(annotations, SpanOwner);
 
-/**
- * Options for a span whose work belongs to `owner`. Every ownership boundary uses them, at the point
- * the work starts: provider requests and sessions are the upstream's, Executor's services called by
- * an app are Executor's, an app's callbacks are the app's, and waiting for an answer is the person's.
- */
 export const ownedBy = (
   owner: Owner,
   options: Tracer.SpanOptionsNoTrace = {},
@@ -44,30 +19,21 @@ export const ownedBy = (
   annotations: Context.add(options.annotations ?? Context.empty(), SpanOwner, owner),
 });
 
-/** Run `effect` in span `name`, owned by `owner`. */
 export const owned =
   (owner: Owner, name: string, options?: Tracer.SpanOptionsNoTrace) =>
   <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     effect.pipe(Effect.withSpan(name, ownedBy(owner, options)));
 
-/** What a measured span does with its work and its end. */
 export interface SpanMeasure {
-  /** Wraps the work inside the span, for example to observe the spans it opens. */
   readonly around?: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>;
-  /** Receives the span's end, before the span ends, to record what it measured on it. */
   readonly end: (end: bigint, span: Tracer.Span) => void;
 }
 
-/**
- * Run `effect` in span `name`, measured by `measure` from the span's own start to its own end, so
- * the span's duration and the measurement share both boundaries.
- */
 export const measuredSpan =
   (name: string, options: Tracer.SpanOptionsNoTrace, measure: (start: bigint) => SpanMeasure) =>
   <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, Exclude<R, Tracer.ParentSpan>> =>
     Effect.useSpan(name, options, (span) => {
       const inner = Effect.withParentSpan(effect, span);
-      // A span that never started, because tracing is off, has no window to measure.
       if (span.status._tag === "Ended") return inner;
       const { around, end } = measure(span.status.startTime);
       return (around === undefined ? inner : around(inner)).pipe(
@@ -82,7 +48,6 @@ export const measuredSpan =
       );
     });
 
-/** A span in progress: its owner, the span it was opened in, and how many of its children run. */
 interface Boundary {
   readonly owner: Owner;
   parent: Boundary | undefined;
@@ -90,13 +55,6 @@ interface Boundary {
   children: number;
 }
 
-/**
- * When work runs in several branches at once, each instant goes to the first owner here with a
- * branch in progress. Executor's work counts wherever it runs, and a person's answer outweighs the
- * upstream request that waits on it. Waiting, on a provider or on another call's lease, outweighs
- * the authored code that awaits it, whose own span stays open meanwhile. Background work is not
- * here: it never takes an instant.
- */
 const concurrent: readonly Owner[] = ["executor", "person", "upstream", "lease", "app"];
 
 const noTime = (): Record<Owner, number> => ({
@@ -108,21 +66,12 @@ const noTime = (): Record<Owner, number> => ({
   background: 0,
 });
 
-/**
- * Divide a window that starts at `origin`, whose own work is `owner`'s, among owners. At each
- * instant, the work in progress is the innermost span of each branch: a span with no child still
- * open. Its owner takes the instant. With nothing open inside the window, `owner` takes it. Spans
- * are counted as they open and end, in constant time each, and only spans still open are kept.
- * `background` is not part of the division: it is how long background work was in progress.
- */
 export const makeOwnershipAccounting = (origin: bigint, owner: Owner) => {
   const totals = noTime();
-  // Innermost spans in progress, by owner.
   const innermost = noTime();
   const boundaries = new WeakMap<Tracer.AnySpan, Boundary>();
   let reached = origin;
   let done = false;
-  // Background spans in progress. They take no part in the division.
   let background = 0;
   const advance = (time: bigint) => {
     if (time <= reached) return;
@@ -132,7 +81,6 @@ export const makeOwnershipAccounting = (origin: bigint, owner: Owner) => {
     if (background > 0) totals.background += elapsed;
     reached = time;
   };
-  /** The closest span still open around `boundary`; a span's children outlive it in its parent. */
   const enclosing = (boundary: Boundary) => {
     let found = boundary.parent;
     while (found !== undefined && !found.open) found = found.parent;
@@ -171,7 +119,6 @@ export const makeOwnershipAccounting = (origin: bigint, owner: Owner) => {
       const declared = inBackground ? "background" : declaredOwner(options.annotations);
       const boundary: Boundary = {
         owner: declared ?? enclosingBoundary?.owner ?? owner,
-        // Background work runs beside its caller, which stays innermost meanwhile.
         parent: declared === "background" ? undefined : enclosingBoundary,
         open: true,
         children: 0,
@@ -226,16 +173,11 @@ export const makeOwnershipAccounting = (origin: bigint, owner: Owner) => {
     },
   });
   return {
-    /** Run `effect` with the spans it opens observed, including spans it hands to later work. */
     observe: <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
       Effect.gen(function* () {
         const tracer = yield* Tracer.Tracer;
         return yield* effect.pipe(Effect.provideService(Tracer.Tracer, observed(tracer)));
       }),
-    /**
-     * Close the window at `end` and return its milliseconds by owner, each instant counted once.
-     * Spans still open count up to `end`; spans that open or end afterwards are ignored.
-     */
     read: (end: bigint): Readonly<Record<Owner, number>> => {
       if (!done) advance(end);
       done = true;

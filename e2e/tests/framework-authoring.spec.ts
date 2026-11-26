@@ -1,4 +1,3 @@
-/** Discover checked source through MCP, deploy it unchanged, and exercise its optimistic UI. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Layer, Schema } from "effect";
 import { randomUUID } from "node:crypto";

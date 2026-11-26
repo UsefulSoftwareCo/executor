@@ -27,7 +27,6 @@ import {
   type SsoConnection,
 } from "../../contracts/sso.ts";
 
-/** Enterprise owners and admins can configure SSO; other teams never load its controls. */
 export function SsoSettings() {
   const organization = useOrganizationRoute();
   if (

@@ -1,6 +1,6 @@
-/** Identity grouping retains every app binding and its independent access policy. */
-import { type Crypto, Effect, Schema } from "effect";
+import { Effect, Schema } from "effect";
 import { Hex } from "effect/encoding";
+import { Digest } from "effect/crypto";
 import {
   AccountIdentity,
   AccountIdentityId,
@@ -11,6 +11,7 @@ import type { ResourceLifecycle } from "../contracts/executor.ts";
 import { StorageError } from "../contracts/shared.ts";
 import type { StoredAccount } from "../contracts/storage.ts";
 import { query, transaction, type Query } from "./database.ts";
+import type { HostCrypto } from "./host-crypto.ts";
 
 export interface VerifiedAccountSubject {
   readonly issuer: string;
@@ -19,11 +20,9 @@ export interface VerifiedAccountSubject {
   readonly label: string;
 }
 
-/** Legacy grants remain encrypted under their account ID until explicitly shared. */
 export const accountGrantId = (account: Pick<StoredAccount, "id" | "oauthGrantId">) =>
   account.oauthGrantId ?? account.id;
 
-/** A host with resource policies must resolve placement from its own durable records. */
 export const identityPlacement = (
   account: Pick<Account, "id" | "owner">,
   lifecycle: ResourceLifecycle | undefined,
@@ -32,7 +31,6 @@ export const identityPlacement = (
     ? Effect.succeed<string | null>(account.owner)
     : (lifecycle.accountIdentityPlacement?.(account) ?? Effect.succeed<string | null>(null));
 
-/** Metadata is useful only while the saved binding still belongs to the identity's placement. */
 export const accountIdentity = (
   db: Query,
   account: Pick<StoredAccount, "id" | "owner" | "identityId">,
@@ -58,10 +56,9 @@ export const accountIdentity = (
     );
   });
 
-/** Called after external verification; no token or profile request runs inside this transaction. */
 export const recordAccountIdentity = (
   db: Query,
-  crypto: Crypto.Crypto,
+  crypto: HostCrypto,
   lifecycle: ResourceLifecycle | undefined,
   account: Pick<StoredAccount, "id" | "owner" | "credentialGeneration">,
   verified: VerifiedAccountSubject,
@@ -72,8 +69,8 @@ export const recordAccountIdentity = (
       const placement = yield* identityPlacement(account, lifecycle);
       if (placement === null) return undefined;
       const key = JSON.stringify([account.owner, placement, verified.issuer, verified.subject]);
-      const digest = yield* crypto
-        .digest("SHA-256", new TextEncoder().encode(key))
+      const digest = yield* crypto.digest
+        .digest(Digest.sha256, new TextEncoder().encode(key))
         .pipe(Effect.mapError(() => new StorageError()));
       const id = AccountIdentityId.make(`aid_${Hex.encode(digest)}`);
       const identity = yield* Schema.decodeUnknownEffect(StoredAccountIdentity)({
@@ -91,7 +88,6 @@ export const recordAccountIdentity = (
           update: { name: identity.name, label: identity.label, verifiedAt: now },
         }),
       );
-      // A reconnect that committed during verification owns the new identity instead.
       yield* query(() =>
         tx.updateMany("accounts", {
           where: (b) =>

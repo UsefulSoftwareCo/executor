@@ -18,7 +18,6 @@ import {
 } from "../../contracts/accounts.ts";
 import { Failure, LoadingRows } from "../components/common.tsx";
 
-/** Prompt for a name for a newly connected account, over whatever page follows. */
 export function NameAccountDialog() {
   const pending = useAtomValue(accountToNameAtom);
   const setPending = useAtomSet(accountToNameAtom);
@@ -44,7 +43,6 @@ export function NameAccountDialog() {
           />
         </>
       ) : (
-        // After an OAuth return the prompt has only the account ID, so it reads the account first.
         <QueryView
           query={accountAtom(pending.account)}
           Failure={Failure}
@@ -73,7 +71,6 @@ export function NameAccountDialog() {
   );
 }
 
-/** Stop waiting for a name if the expected selection or its check never arrives. */
 const identityWaitMillis = 10_000;
 
 function LocalNameAccount({
@@ -91,8 +88,6 @@ function LocalNameAccount({
 }) {
   const update = useAtomSet(updateAccountAtom(account.id), { mode: "promiseExit" });
   const check = useAtomSet(checkAccountAtom(account.id), { mode: "promiseExit" });
-  // The account is saved before the app selects it, so follow the live account and check as soon
-  // as a selecting app can. A passing check may name the upstream account.
   const health = Option.getOrUndefined(
     AsyncResult.value(useAtomValue(accountAtom(account.id))),
   )?.health;

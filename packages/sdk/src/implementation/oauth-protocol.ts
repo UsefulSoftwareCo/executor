@@ -1,4 +1,3 @@
-/** OAuth wire protocol. Effect owns transport and cancellation; oauth4webapi validates responses. */
 import { RecordedMessage } from "@executor-js/utils/recorded-message";
 import { parseDestination } from "@executor-js/utils/url-policy";
 import { Clock, Effect, Match, Result, Schema } from "effect";
@@ -8,6 +7,7 @@ import { FetchHttpClient, HttpClientRequest } from "effect/http";
 import * as oauth from "oauth4webapi";
 import {
   AuthorizationServerSignal,
+  type FirstPartyOAuthClientId,
   maxOAuthServiceErrorLength,
   maxOAuthServiceTextLength,
   type OAuthClientRegistration,
@@ -21,6 +21,7 @@ import {
   OAuthRegistration,
   type OAuthOptions,
   type OAuthClientAuth,
+  OAuthConnectionClient,
   ResourceMetadataSignal,
   type ResourceMetadataLocation,
   ResourceOAuth,
@@ -62,7 +63,6 @@ const ProtocolCode = Schema.Literals([
   "schema_decode",
   "timeout",
 ]);
-/** Private, sanitized protocol failure. Never retain a response, request, or thrown library error. */
 export class OAuthProtocolFailed extends Schema.TaggedError<OAuthProtocolFailed>()(
   "OAuthProtocolFailed",
   {
@@ -81,13 +81,10 @@ export class OAuthProtocolFailed extends Schema.TaggedError<OAuthProtocolFailed>
       "unsupported",
     ]),
     diagnostics: Schema.optional(OAuthDiagnostics),
-    /** The service's own words, for the person connecting. Never part of the message below. */
     serviceError: Schema.optional(OAuthServiceError),
-    /** With HTTP 429, the time the answer's Retry-After header named. */
     retryAfter: Schema.optional(Schema.Date),
   },
 ) {
-  /** Only the sanitized evidence above; telemetry records this as the exception message. */
   override get message(): string {
     const diagnostics = this.diagnostics;
     return [
@@ -116,18 +113,18 @@ export class OAuthProtocolFailed extends Schema.TaggedError<OAuthProtocolFailed>
   }
 }
 
-/** Keep diagnostics only when there is evidence to record. */
+type VerifiedOAuthIdentity = {
+  readonly issuer: string;
+  readonly subject: string;
+  readonly name: string;
+  readonly label: string;
+};
+
 const withDiagnostics = (diagnostics: OAuthDiagnostics) =>
   Object.values(diagnostics).some((value) => value !== undefined) ? { diagnostics } : {};
 
-/** Credentials a request sent, which the service's answer must not repeat back to anyone. */
 type SentSecrets = ReadonlyArray<string | null | undefined>;
 
-/**
- * Each form a request or an echo of it can carry a sent secret in: as is, form- or URI-encoded,
- * or inside a JSON string, with or without escaped slashes. Longest first, so a secret containing
- * another is replaced whole.
- */
 const secretForms = (secrets: SentSecrets) => {
   const forms = new Set<string>();
   for (const secret of secrets)
@@ -145,10 +142,6 @@ const secretForms = (secrets: SentSecrets) => {
   return [...forms].sort((a, b) => b.length - a.length);
 };
 
-/**
- * Credentials a service's text names, whatever their source, such as a token it issued: the
- * values of credential parameters, HTTP authorization credentials, and JWTs.
- */
 const namedCredentials: ReadonlyArray<readonly [RegExp, string]> = [
   [
     /\b(access_token|refresh_token|id_token|client_secret|code_verifier|client_assertion|password)(["']?\s*[:=]\s*["']?)[\w.~+/%=-]+/gi,
@@ -158,18 +151,12 @@ const namedCredentials: ReadonlyArray<readonly [RegExp, string]> = [
   [/\beyJ[\w-]+\.[\w-]+\.[\w-]*/g, "[redacted]"],
 ];
 
-/** Cut text to `max` characters, ending with an ellipsis and never inside a surrogate pair. */
 const bounded = (text: string, max: number) => {
   if (text.length <= max) return text;
   const cut = text.slice(0, max - 1);
   return `${/[\uD800-\uDBFF]$/.test(cut) ? cut.slice(0, -1) : cut}…`;
 };
 
-/**
- * Service text without anything secret: each sent secret, in every form above, and each named
- * credential become `[redacted]`. Control and formatting characters become spaces, and the
- * result is bounded after redaction.
- */
 const serviceText = (value: unknown, secrets: SentSecrets, max: number) => {
   if (typeof value !== "string") return undefined;
   let text = value;
@@ -183,7 +170,6 @@ const serviceText = (value: unknown, secrets: SentSecrets, max: number) => {
   return text === "" ? undefined : bounded(text, max);
 };
 
-/** The service's own `error` and `error_description`, when it named an error. */
 const serviceErrorResponse = (error: unknown, description: unknown, secrets: SentSecrets) => {
   const code = serviceText(error, secrets, maxOAuthServiceErrorLength);
   if (code === undefined) return undefined;
@@ -209,10 +195,6 @@ const oauthErrorBody = (body: unknown) => {
     : undefined;
 };
 
-/**
- * What a request's last response said: its status and media type, a 429's Retry-After time, then
- * its body once read.
- */
 type Answer = {
   readonly status: number;
   readonly contentType: OAuthMediaType | undefined;
@@ -241,16 +223,13 @@ const retryAfterTime = (header: string | undefined, now: number) => {
   return Number.isNaN(at.getTime()) || at.getTime() <= now ? undefined : at;
 };
 
-/** A 429's Retry-After time, read when the answer arrives. */
 const limitedUntil = (status: number, header: string | undefined) =>
   status === 429
     ? Clock.currentTimeMillis.pipe(Effect.map((now) => retryAfterTime(header, now)))
     : Effect.succeed(undefined);
 
-/** The most of an error body Executor reads for its text, in bytes. */
 const serviceBodyReadLimit = 64 * 1024;
 
-/** A body as text, read up to the limit. A cut never leaves part of a word, which may be a secret. */
 const answerText = (body: ArrayBuffer) => {
   const text = new TextDecoder().decode(body.slice(0, serviceBodyReadLimit));
   if (body.byteLength <= serviceBodyReadLimit) return text;
@@ -267,7 +246,6 @@ const jsonValue = (text: string): unknown => {
   }
 };
 
-/** Elements whose content a reader of the page never sees as text. */
 const hiddenElements = new Set([
   "script",
   "style",
@@ -286,7 +264,6 @@ const characterReferences: Readonly<Record<string, string>> = {
   nbsp: " ",
 };
 
-/** Decode numeric and common named character references; anything else stays as written. */
 const decodeReferences = (text: string) =>
   text.replace(/&(#x[0-9a-f]{1,6}|#[0-9]{1,7}|[a-z]{2,4});/gi, (reference, name: string) => {
     if (!name.startsWith("#")) return characterReferences[name.toLowerCase()] ?? reference;
@@ -296,12 +273,6 @@ const decodeReferences = (text: string) =>
       : reference;
   });
 
-/**
- * The text of an HTML or XML page. Tags and comments are removed, the content of scripts,
- * styles and similar elements is dropped, and character references are decoded before any
- * secret is redacted. An unfinished tag ends the text. Each search moves forward, so this is
- * linear in the page.
- */
 const markupText = (markup: string) => {
   const lower = markup.toLowerCase();
   let text = "";
@@ -354,14 +325,12 @@ const serviceAnswer = (answer: Answer, sent: SentSecrets): OAuthServiceError | u
   return body === undefined ? undefined : { body };
 };
 
-/** Add response evidence to a failure. Evidence the failure already carries wins. */
 const withEvidence = (
   failed: OAuthProtocolFailed,
   evidence: {
     readonly status?: number | undefined;
     readonly diagnostics: OAuthDiagnostics;
     readonly serviceError?: OAuthServiceError | undefined;
-    /** The Retry-After time of the latest 429 answer, kept only when the failure is a 429. */
     readonly retryAfter?: Date | undefined;
   },
 ) => {
@@ -459,7 +428,6 @@ const failure = (error: unknown): OAuthProtocolFailed => {
     Schema.is(OAuthProviderErrorCode)(error.error)
       ? error.error
       : undefined;
-  // Match library-owned validation labels; never record its message, cause, expected value or body.
   const fieldValue =
     error instanceof oauth.OperationProcessingError
       ? error.message === 'unexpected JWT "alg" header parameter'
@@ -486,18 +454,46 @@ const failure = (error: unknown): OAuthProtocolFailed => {
   });
 };
 
+export type OAuthClientKind =
+  | { readonly kind: "first_party"; readonly id: FirstPartyOAuthClientId }
+  | { readonly kind: "stored" }
+  | { readonly kind: "connection" }
+  | { readonly kind: "entered" };
+
+export const clientSpanAttributes = (
+  client: OAuthClientKind,
+  method: OAuthRegistration["token_endpoint_auth_method"],
+  endpoint: { readonly name: "token_endpoint" | "revocation_endpoint"; readonly url: string },
+) => ({
+  "oauth.client.kind": client.kind,
+  ...(client.kind === "first_party" ? { "oauth.first_party.id": client.id } : {}),
+  "oauth.client.auth_method": method,
+  [`oauth.${endpoint.name}.host`]: new URL(endpoint.url).hostname,
+});
+
 /**
- * `failure`, keeping the service's own error from an authorization response. It comes through the
- * browser, not in answer to a request Executor sent, so it repeats nothing secret of Executor's.
+ * The secrets to redact from what the service says in a failed answer, or undefined to keep none
+ * of its words. A service answering the operator's client is answering a secret shared by every
+ * organization, and can echo part of it, a new encoding of it, or a token it minted, none of which
+ * redaction can recognize. Its failures therefore keep only their reason, HTTP status, RFC 6749
+ * error code and Retry-After, never `serviceError`.
  */
-const callbackFailure = (error: unknown): OAuthProtocolFailed => {
-  const failed = failure(error);
-  const serviceError =
-    error instanceof oauth.AuthorizationResponseError
-      ? serviceErrorResponse(error.error, error.error_description, [])
-      : undefined;
-  return serviceError === undefined ? failed : new OAuthProtocolFailed({ ...failed, serviceError });
-};
+const serviceWords = (client: OAuthClientKind, sent: SentSecrets) =>
+  client.kind === "first_party" ? undefined : sent;
+
+const callbackFailure =
+  (client: OAuthClientKind) =>
+  (error: unknown): OAuthProtocolFailed => {
+    const failed = failure(error);
+    const sent = serviceWords(client, []);
+    const serviceError =
+      sent !== undefined && error instanceof oauth.AuthorizationResponseError
+        ? serviceErrorResponse(error.error, error.error_description, sent)
+        : undefined;
+    return serviceError === undefined
+      ? failed
+      : new OAuthProtocolFailed({ ...failed, serviceError });
+  };
 
 /**
  * The endpoint answered with an OAuth error: an error body (RFC 6749 §5.2) or a client
@@ -526,13 +522,30 @@ const protocolStage =
       | "exchange"
       | "clientCredentials"
       | "refresh"
-      | "revoke",
+      | "revoke"
+      | "deleteClient",
+    attributes: Readonly<Record<string, string>> = {},
   ) =>
   <A, R>(program: Effect.Effect<A, OAuthProtocolFailed, R>) =>
     program.pipe(
       Effect.tapError(observeFailure),
-      Effect.withSpan(`oauth.${stage}`, { attributes: { "oauth.stage": stage } }),
+      Effect.withSpan(`oauth.${stage}`, { attributes: { ...attributes, "oauth.stage": stage } }),
     );
+const tokenStage = (
+  stage: "exchange" | "clientCredentials" | "refresh",
+  input: {
+    readonly clientKind: OAuthClientKind;
+    readonly client: OAuthRegistration;
+    readonly server: OAuthTokenServer;
+  },
+) =>
+  protocolStage(
+    stage,
+    clientSpanAttributes(input.clientKind, input.client.token_endpoint_auth_method, {
+      name: "token_endpoint",
+      url: input.server.token_endpoint,
+    }),
+  );
 
 /**
  * Microsoft identity platform's multi-tenant endpoints (`common`, `organizations`) publish
@@ -541,14 +554,12 @@ const protocolStage =
  */
 const tenantPlaceholder = "{tenantid}";
 const tenantSegment = /^[A-Za-z0-9._-]+$/;
-/** The concrete issuer for one tenant, or undefined when `template` is not a tenant template. */
 const tenantIssuer = (template: string, tenant: unknown) => {
   const parts = template.split(tenantPlaceholder);
   return parts.length === 2 && typeof tenant === "string" && tenantSegment.test(tenant)
     ? `${parts[0]}${tenant}${parts[1]}`
     : undefined;
 };
-/** Whether `requested` is `template` with one tenant segment in place of its placeholder. */
 const instantiatesTenantTemplate = (template: string, requested: URL) => {
   const [prefix, suffix, ...rest] = template.split(tenantPlaceholder);
   if (prefix === undefined || suffix === undefined || rest.length > 0) return false;
@@ -561,7 +572,6 @@ const instantiatesTenantTemplate = (template: string, requested: URL) => {
     tenantIssuer(template, tenant) === href
   );
 };
-/** Rehydrate mutable protocol arrays from the immutable storage contract. */
 const metadata = (server: OAuthTokenServer): oauth.AuthorizationServer => ({
   issuer: server.issuer,
   ...(server.authorization_endpoint === undefined
@@ -606,7 +616,6 @@ const basicAuth =
  */
 const formEncode = (value: string) => new URLSearchParams([["", value]]).toString().slice(1);
 
-/** What a client's authentication sends that is secret: its secret and any Basic credential. */
 const clientSecrets = (client: OAuthRegistration): SentSecrets => {
   switch (client.token_endpoint_auth_method) {
     case "none":
@@ -640,6 +649,24 @@ const clientAuth = (client: OAuthRegistration) => {
 };
 
 /** Fill a missing client_secret_expires_at with RFC 7591's "does not expire" value. */
+const publishedPromptValues = <A extends object>(server: A) => {
+  if (!("prompt_values_supported" in server)) return server;
+  const { prompt_values_supported: values, ...rest } = server;
+  return Array.isArray(values)
+    ? {
+        ...rest,
+        prompt_values_supported: values.filter(
+          (value): value is string => typeof value === "string",
+        ),
+      }
+    : rest;
+};
+
+const RegistrationManagement = Schema.Struct({
+  registration_client_uri: Schema.NonEmptyString,
+  registration_access_token: Schema.NonEmptyString,
+});
+
 const registrationBody = (text: string) => {
   const parsed: unknown = (() => {
     try {
@@ -658,7 +685,6 @@ const registrationBody = (text: string) => {
     : text;
 };
 
-/** Read a copy of a JSON object response body, or undefined when it is not one. */
 const jsonObject = async (response: Response) => {
   try {
     const body: unknown = await response.clone().json();
@@ -668,7 +694,6 @@ const jsonObject = async (response: Response) => {
   }
 };
 
-/** Token response members some services send as null when they issued none. */
 const optionalTokenMembers = new Set(["token_type", "expires_in", "refresh_token", "scope"]);
 
 /**
@@ -698,18 +723,11 @@ const normalizedTokens = (body: object) => {
   return tokens;
 };
 
-/** Members that describe one grant; a nested grant replaces all of them. */
 const grantMembers = ["access_token", ...optionalTokenMembers];
 
 const isObject = (value: unknown): value is object =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-/**
- * The grant a provider declared at a nested member, used when the top-level response has no
- * access token or no scope. Slack answers a user-only install with `authed_user` holding the
- * user token and its comma-separated scopes. Other top-level members, such as Slack's `team`,
- * stay beside it; the top-level grant members do not.
- */
 const nestedGrant = (body: object, nested: OAuthTokenResponse | undefined) => {
   if (nested === undefined) return body;
   const scope = Reflect.get(body, "scope");
@@ -764,10 +782,6 @@ const tokenResponse = async (response: Response, nested?: OAuthTokenResponse) =>
   });
 };
 
-/**
- * Record the HTTP status a failure came from, unless it already names one. Every other field of
- * the failure is kept as it was.
- */
 const withStatus = (failed: OAuthProtocolFailed, status: number | undefined) =>
   failed.status !== undefined || status === undefined
     ? failed
@@ -804,21 +818,17 @@ const tokenTypes = async (response: Response): Promise<oauth.RecognizedTokenType
   };
 };
 
-/** Issuer metadata, or the answer that said it is missing there. */
 type IssuerMissing = { readonly missing: OAuthProtocolFailed };
 type IssuerFound = {
   readonly server: OAuthTokenServer;
   readonly audienceFromScopes: boolean;
-  /** The document that answered; absent for an explicitly declared metadata URL. */
   readonly document?: "oauth" | "openid";
 };
 type IssuerDiscovery = IssuerFound | IssuerMissing;
-/** A metadata document before validation, and the document that answered. */
 type IssuerAnswer =
   | { readonly server: oauth.AuthorizationServer; readonly document?: "oauth" | "openid" }
   | IssuerMissing;
 
-/** Resource metadata lookups, with the validated document or the failure that ended them. */
 type ResourceRead = {
   readonly lookups: ReadonlyArray<ResourceMetadataSignal>;
   readonly found?: {
@@ -860,7 +870,6 @@ const metadataLocations = (
 const resourceScopes = (metadata: OAuthResource | undefined) =>
   metadata?.scopes_supported ?? metadata?.scopes_provided;
 
-/** Why advertised OAuth cannot be used, from the discovery failure that said so. */
 const unusableReason = (failed: OAuthProtocolFailed) =>
   Match.value(failed.reason).pipe(
     Match.when("request", () => "unavailable" as const),
@@ -902,6 +911,11 @@ const applicationType = (redirect: URL) =>
   redirect.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(redirect.hostname)
     ? "native"
     : "web";
+
+const renewableGrantParams = (endpoint: URL): Readonly<Record<string, string>> =>
+  endpoint.protocol === "https:" && endpoint.host === "accounts.google.com"
+    ? { access_type: "offline", prompt: "consent" }
+    : {};
 
 /**
  * A token request as the JSON object some services require instead of RFC 6749's form. The
@@ -950,20 +964,14 @@ export const preferredClientMethod = (
   );
 };
 
-/**
- * The grants a registration asks for: refresh tokens too, unless the server's metadata lists grant
- * types without them. Singular advertises only authorization_code and rejects the request.
- */
 export const registrationGrantTypes = (server: { readonly grant_types_supported?: unknown }) =>
   !Array.isArray(server.grant_types_supported) ||
   server.grant_types_supported.includes("refresh_token")
     ? ["authorization_code", "refresh_token"]
     : ["authorization_code"];
 
-/** Resolve protocol operations against one host-supplied Effect HTTP client. */
 export const makeOAuthProtocol = (options: OAuthOptions) => {
   const httpClient = withExecutorUserAgent(options.httpClient);
-  // This callback is the external library boundary, not an internal Promise implementation.
   const transport =
     (
       telemetry: Effect.Success<typeof captureTelemetry>,
@@ -973,7 +981,6 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
     (url: string, init: oauth.CustomFetchOptions<string, BodyInit | undefined>) =>
       Effect.runPromiseWith(telemetry.context)(
         Effect.gen(function* () {
-          // Enforce host policy on every request, including discovered endpoints and saved grants.
           const destination = parseDestination(url, options.urlPolicy);
           if (destination === undefined)
             return yield* new OAuthProtocolFailed({ reason: "destination_blocked" });
@@ -1002,7 +1009,10 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
           answered(answer);
           const body = yield* response.arrayBuffer.pipe(Effect.withSpan("oauth.response.read"));
           answered({ ...answer, body });
-          return new Response(body, { status: response.status, headers: response.headers });
+          return new Response([101, 204, 205, 304].includes(response.status) ? null : body, {
+            status: response.status,
+            headers: response.headers,
+          });
         }).pipe(
           Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
           Effect.mapError(failure),
@@ -1019,23 +1029,16 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
     [oauth.allowInsecureRequests]: true,
     signal,
   });
-  /**
-   * Run one library call. `format` re-encodes its form bodies; only token requests set it. A call
-   * that gives `sent`, the secrets its request carries, keeps what the service said in a failed
-   * answer as `serviceError`, without them.
-   */
   const request = <A>(
     run: (settings: ReturnType<typeof requestOptions>) => Promise<A>,
     options: {
       readonly format?: OAuthTokenRequestFormat | undefined;
-      readonly sent?: SentSecrets;
+      readonly sent?: SentSecrets | undefined;
     } = {},
   ) =>
     Effect.gen(function* () {
       const telemetry = yield* captureTelemetry;
-      // The last response status tells a rejection (4xx) from a response we could not use (2xx).
       let last: Answer | undefined;
-      // The latest 429: discovery tries another location after one and still reports the 429.
       let limited: Answer | undefined;
       return yield* Effect.tryPromise({
         try: (signal) =>
@@ -1080,7 +1083,6 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
       ),
     );
 
-  /** The client authentication to use, refused when the server does not advertise it. */
   const clientMethod = (
     server: OAuthTokenServer,
     client: "entered" | "registered",
@@ -1103,7 +1105,6 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
     return response;
   };
 
-  /** Validate one metadata document. A `{tenantid}` template matches its instantiated issuer. */
   const issuerMetadata = async (issuer: URL, response: Response) => {
     const body = await jsonObject(response);
     const published = body === undefined ? undefined : Reflect.get(body, "issuer");
@@ -1175,7 +1176,7 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
       Effect.flatMap((found): Effect.Effect<IssuerDiscovery, OAuthProtocolFailed> =>
         "missing" in found
           ? Effect.succeed(found)
-          : decode(OAuthTokenServer, found.server).pipe(
+          : decode(OAuthTokenServer, publishedPromptValues(found.server)).pipe(
               Effect.map((server) => ({
                 server,
                 audienceFromScopes: scopedAudience(found.server),
@@ -1196,7 +1197,6 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
       : Effect.succeed(url);
   };
 
-  /** One metadata document, read only from a 200 response. Redirects are never followed. */
   const metadataDocument = (location: ResourceMetadataLocation, endpoint: URL, url?: URL) =>
     request(async (settings) => {
       const response =
@@ -1286,8 +1286,6 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
           record(location, "blocked", status);
           return done({ failed: new OAuthProtocolFailed({ reason: "destination_blocked" }) });
         }
-        // A resource can cover /mcp from the origin root, but cannot name a sibling
-        // service or a different host. Preserve its exact advertised identifier.
         const prefix = resource.pathname.endsWith("/")
           ? resource.pathname
           : resource.pathname + "/";
@@ -1304,12 +1302,6 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
       return done({});
     });
 
-  /**
-   * The authorization server named by the resource metadata. Without resource metadata, MCP's
-   * earlier authorization rules use the server itself, then its origin, as the authorization
-   * base; Atlassian publishes metadata only at the origin. Only missing metadata falls back:
-   * served metadata that is invalid or names another issuer never selects a different issuer.
-   */
   const resolveIssuer = (issuerUrl: URL, fromResourceMetadata: boolean, metadataUrl?: URL) =>
     metadataUrl === undefined && !fromResourceMetadata && issuerUrl.pathname !== "/"
       ? discoverIssuer(issuerUrl).pipe(
@@ -1325,7 +1317,6 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
 
   const discoverResource = (endpoint: URL) =>
     Effect.gen(function* () {
-      // Inspect only headers: a successful MCP GET may open an endless SSE stream.
       const challenge = yield* probeOAuthChallenge(endpoint, options.httpClient).pipe(
         Effect.flatMap((response) =>
           response.status === 429 || response.status >= 500
@@ -1351,10 +1342,6 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
 
   type OAuthMethod = Extract<ProviderAuthMethod, { type: "oauth2" }>;
 
-  /**
-   * Settings discovered from a resource whose protected-resource metadata was already read:
-   * the authorization server that metadata names, or the resource itself without metadata.
-   */
   const fromResource = (
     method: OAuthMethod,
     resource: URL,
@@ -1373,9 +1360,6 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
       if (issuer === undefined)
         return yield* new OAuthProtocolFailed({ reason: "invalid_response" });
       const issuerUrl = yield* secureUrl(issuer);
-      // Authored scopes win. MCP challenges name the operations' required scopes; the
-      // resource metadata's scope list is the default only when the challenge omits it. The list
-      // never widens a challenge: an issuer can support two scopes and refuse them together.
       const scopes = new Set(method.scopes ?? read.scopes ?? resourceScopes(found) ?? []);
       const { server, audienceFromScopes, document } = yield* resolveIssuer(
         issuerUrl,
@@ -1388,9 +1372,6 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
         server.scopes_supported?.includes("offline_access")
       )
         scopes.add("offline_access");
-      // A declared resource, or an explicit null, always applies. A discovered one is not
-      // sent to a server whose metadata suggests it takes the audience from the scopes instead;
-      // that is Executor's inference from the server's own claims, and its source says so.
       const resourceIndicator =
         method.resource !== undefined
           ? method.resource
@@ -1405,8 +1386,6 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
             : audienceFromScopes
               ? ("inferred_scope_audience" as const)
               : ("metadata" as const);
-      // Scopes only the resource metadata lists are what the resource offers, not what an
-      // operation requires, so an operator's client may ask for fewer of them.
       const advertised =
         method.scopes === undefined &&
         read.scopes === undefined &&
@@ -1436,11 +1415,6 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
       return { settings, ...(document === undefined ? {} : { document }) };
     });
 
-  /**
-   * Every endpoint account setup would call must satisfy the host's URL policy. The optional
-   * revocation endpoint is not required to connect; the transport still enforces this policy
-   * when revocation calls it.
-   */
   const allowedEndpoints = (server: OAuthTokenServer) =>
     Effect.forEach(
       [
@@ -1453,14 +1427,6 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
       { discard: true },
     );
 
-  /**
-   * A browser sign-in needs an authorization endpoint, and Executor always sends PKCE with S256.
-   * A server that lists its PKCE methods without S256 is refused. One that omits the list still
-   * gets S256: Microsoft Entra ID and Sign in with Apple accept it without listing it, so
-   * refusing such a server, as MCP asks, would refuse every MCP server they protect. Account
-   * setup and import checks both apply this, so a check never confirms OAuth that setup would
-   * refuse.
-   */
   const browserServer = (server: OAuthTokenServer) =>
     Effect.gen(function* () {
       yield* allowedEndpoints(server);
@@ -1477,12 +1443,12 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
     });
 
   return {
-    /** UserInfo is authenticated by the access token and pinned to verified issuer metadata. */
+    // external: OIDC UserInfo uses the bearer token and is pinned to verified issuer metadata.
     identify: (
       identity: { readonly issuer: string; readonly name: string },
       server: OAuthServer,
       accessToken: string,
-    ) =>
+    ): Effect.Effect<VerifiedOAuthIdentity, OAuthProtocolFailed> =>
       Effect.gen(function* () {
         const issuer = yield* secureUrl(identity.issuer);
         const discovered = yield* discoverIssuer(issuer);
@@ -1541,7 +1507,6 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
                   : { revocation_endpoint: method.revocationUrl }),
               }),
               scopes: [...method.scopes],
-              // Undeclared means the client decides: with nothing advertised, a secret uses Basic.
               tokenEndpointAuthMethod: method.tokenEndpointAuthMethod,
               ...(method.resource == null ? {} : { resource: method.resource }),
               resourceSource:
@@ -1551,7 +1516,6 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
           const read = yield* discoverResource(resource);
           return (yield* fromResource(method, resource, read)).settings;
         });
-        // Frozen on the attempt and grant, so renewal sends what sign-in did.
         const requestEncoding = {
           ...(method.scopeSeparator === undefined ? {} : { scopeSeparator: method.scopeSeparator }),
           ...(method.tokenRequestFormat === undefined
@@ -1571,16 +1535,9 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
             ? {}
             : { authorizationParams: method.authorizationParams }),
           ...(method.tokenResponse === undefined ? {} : { tokenResponse: method.tokenResponse }),
+          ...("pkce" in method && method.pkce === false ? { pkce: false as const } : {}),
         };
       }).pipe(protocolStage("discover")),
-    /**
-     * What a resource advertises about authorization-code OAuth, for an import check. The caller
-     * has already requested the resource and passes the challenge it saw, so nothing is probed
-     * here. `originFallback` applies MCP's earlier rule for a server that rejects anonymous use
-     * but publishes no resource metadata. The rest is account setup's own discovery and checks,
-     * and `registration` is how setup on this host would obtain a client, so an import check
-     * never confirms OAuth that setup would refuse. Every lookup is returned as a signal.
-     */
     inspect: (
       endpoint: URL,
       observed: {
@@ -1599,7 +1556,6 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
         if (read.found === undefined && !observed.originFallback)
           return ResourceOAuth.cases.OAuthNotAdvertised.make({ signals });
         const issuer = read.found === undefined ? "origin" : "resource_metadata";
-        // The provider an import generates declares only `discover`, so setup sees this method.
         const method: OAuthMethod = { type: "oauth2", discover: endpoint.href, response: {} };
         const checked = yield* Effect.result(
           fromResource(method, endpoint, { metadata: read.found?.metadata }).pipe(
@@ -1623,7 +1579,6 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
               ...(failed.status === undefined ? {} : { status: failed.status }),
             }),
           );
-          // Without resource metadata, a missing authorization server means no OAuth at all.
           return reason === "metadata_missing" && read.found === undefined
             ? ResourceOAuth.cases.OAuthNotAdvertised.make({ signals })
             : ResourceOAuth.cases.OAuthUnusable.make({ reason, signals });
@@ -1679,23 +1634,48 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
             return oauth.processDynamicClientRegistrationResponse(
               new Response(registrationBody(text), { status: 201, headers: response.headers }),
             );
-            // A registration request sends no secret.
           },
           { sent: [] },
         );
+        const management = yield* decode(RegistrationManagement, registered).pipe(
+          Effect.flatMap((issued) =>
+            decode(OAuthConnectionClient, {
+              registrationClientUri: issued.registration_client_uri,
+              registrationAccessToken: issued.registration_access_token,
+            }),
+          ),
+          Effect.orElseSucceed(() => undefined),
+        );
         const issued = registered.token_endpoint_auth_method;
         if (issued === undefined || issued === advertised)
-          return yield* decode(OAuthRegistration, {
-            ...registered,
-            token_endpoint_auth_method: method,
-          });
+          return {
+            client: yield* decode(OAuthRegistration, {
+              ...registered,
+              token_endpoint_auth_method: method,
+            }),
+            management,
+          };
         // RFC 7591 section 3.2.1: the server may replace requested metadata, and the client
         // uses what was issued. Vercel registers a public client when asked for a secret one.
         // A method the app configured is a requirement, so a replacement there is a mismatch.
         if (configured !== undefined)
           return yield* new OAuthProtocolFailed({ reason: "invalid_response" });
-        return yield* decode(OAuthRegistration, registered);
+        return { client: yield* decode(OAuthRegistration, registered), management };
       }).pipe(protocolStage("register")),
+    deleteClient: (management: {
+      readonly registrationClientUri: string;
+      readonly registrationAccessToken: string;
+    }) =>
+      request(async (settings) => {
+        const response = await settings[oauth.customFetch](management.registrationClientUri, {
+          method: "DELETE",
+          headers: { authorization: `Bearer ${management.registrationAccessToken}` },
+          redirect: "manual",
+          signal: settings.signal,
+          body: undefined,
+        });
+        return response.status;
+      }).pipe(protocolStage("deleteClient")),
     authorize: (input: {
       server: OAuthServer;
       client: OAuthRegistration;
@@ -1704,36 +1684,56 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
       resource?: string;
       authorizationParams?: Readonly<Record<string, string>>;
       scopeSeparator?: string;
+      pkce?: false;
+      prompt?: string;
     }) =>
       Effect.gen(function* () {
+        if (input.pkce === false && input.client.token_endpoint_auth_method === "none")
+          return yield* new OAuthProtocolFailed({ reason: "invalid_client" });
         const state = `${options.statePrefix ?? ""}${yield* Effect.sync(oauth.generateRandomState)}`;
-        const verifier = yield* Effect.sync(oauth.generateRandomCodeVerifier);
-        const challenge = yield* request(() => oauth.calculatePKCECodeChallenge(verifier));
+        const verifier =
+          input.pkce === false ? undefined : yield* Effect.sync(oauth.generateRandomCodeVerifier);
+        const challenge =
+          verifier === undefined
+            ? undefined
+            : yield* request(() => oauth.calculatePKCECodeChallenge(verifier));
         const url = new URL(input.server.authorization_endpoint);
-        // Declared extras go first so the protocol parameters below always win.
+        for (const [key, value] of Object.entries(renewableGrantParams(url)))
+          if (!url.searchParams.has(key)) url.searchParams.set(key, value);
         for (const [key, value] of Object.entries(input.authorizationParams ?? {}))
           url.searchParams.set(key, value);
+        if (input.prompt !== undefined && !url.searchParams.has("prompt"))
+          url.searchParams.set("prompt", input.prompt);
         for (const [key, value] of Object.entries({
           response_type: "code",
           client_id: input.client.client_id,
           redirect_uri: input.redirectUri,
           state,
-          code_challenge: challenge,
-          code_challenge_method: "S256",
+          ...(challenge === undefined
+            ? {}
+            : { code_challenge: challenge, code_challenge_method: "S256" }),
         }))
           url.searchParams.set(key, value);
         if (input.scopes.length > 0)
           url.searchParams.set("scope", input.scopes.join(input.scopeSeparator ?? " "));
         if (input.resource !== undefined) url.searchParams.set("resource", input.resource);
-        // No `nonce`: Executor ignores ID tokens, and PKCE S256 binds the code to this attempt.
-        return { state, verifier, authorizationUrl: url.href };
+        return {
+          state,
+          ...(verifier === undefined ? {} : { verifier }),
+          authorizationUrl: url.href,
+        };
       }).pipe(protocolStage("authorize")),
     /**
      * Validate the authorization response before any token request: its state, its RFC 9207
      * issuer, and then any RFC 6749 §4.1.2.1 `error`. Failures here never reached the token endpoint.
      */
     callback: (
-      input: { server: OAuthServer; client: OAuthRegistration; state: string },
+      input: {
+        server: OAuthServer;
+        client: OAuthRegistration;
+        clientKind: OAuthClientKind;
+        state: string;
+      },
       callback: URL,
     ) =>
       Effect.try({
@@ -1755,14 +1755,15 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
             });
           return parameters;
         },
-        catch: callbackFailure,
+        catch: callbackFailure(input.clientKind),
       }).pipe(protocolStage("authorize")),
     exchange: (
       input: {
         server: OAuthServer;
         client: OAuthRegistration;
+        clientKind: OAuthClientKind;
         redirectUri: string;
-        verifier: string;
+        verifier?: string | undefined;
         resource?: string | undefined;
         tokenRequestFormat?: OAuthTokenRequestFormat | undefined;
         tokenResponse?: OAuthTokenResponse | undefined;
@@ -1779,7 +1780,7 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
               clientAuth(input.client),
               parameters,
               input.redirectUri,
-              input.verifier,
+              input.verifier ?? oauth.nopkce,
               {
                 ...settings,
                 ...(input.resource === undefined
@@ -1795,12 +1796,17 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
         },
         {
           format: input.tokenRequestFormat,
-          sent: [parameters.get("code"), input.verifier, ...clientSecrets(input.client)],
+          sent: serviceWords(input.clientKind, [
+            parameters.get("code"),
+            input.verifier,
+            ...clientSecrets(input.client),
+          ]),
         },
-      ).pipe(protocolStage("exchange")),
+      ).pipe(tokenStage("exchange", input)),
     clientCredentials: (input: {
       server: OAuthTokenServer;
       client: OAuthConfidentialRegistration;
+      clientKind: OAuthClientKind;
       scopes: readonly string[];
       resource?: string | undefined;
       scopeSeparator?: string | undefined;
@@ -1826,14 +1832,18 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
             recognizedTokenTypes: await tokenTypes(response),
           });
         },
-        { format: input.tokenRequestFormat, sent: clientSecrets(input.client) },
-      ).pipe(protocolStage("clientCredentials")),
+        {
+          format: input.tokenRequestFormat,
+          sent: serviceWords(input.clientKind, clientSecrets(input.client)),
+        },
+      ).pipe(tokenStage("clientCredentials", input)),
     refresh: (input: {
       server: OAuthServer;
       client: OAuthRegistration;
+      clientKind: OAuthClientKind;
       refreshToken: string;
+      redirectUri?: string | undefined;
       resource?: string | undefined;
-      /** Asked for again only when the grant names them; see `OAuthGrant`. */
       scopes?: readonly string[] | undefined;
       tokenRequestFormat?: OAuthTokenRequestFormat | undefined;
       tokenResponse?: OAuthTokenResponse | undefined;
@@ -1842,6 +1852,7 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
         async (settings) => {
           const server = metadata(input.server);
           const additionalParameters = {
+            ...(input.redirectUri === undefined ? {} : { redirect_uri: input.redirectUri }),
             ...(input.scopes === undefined || input.scopes.length === 0
               ? {}
               : { scope: input.scopes.join(" ") }),
@@ -1865,13 +1876,17 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
         },
         {
           format: input.tokenRequestFormat,
-          sent: [input.refreshToken, ...clientSecrets(input.client)],
+          sent: serviceWords(input.clientKind, [
+            input.refreshToken,
+            ...clientSecrets(input.client),
+          ]),
         },
-      ).pipe(protocolStage("refresh")),
+      ).pipe(tokenStage("refresh", input)),
     /** RFC 7009 revocation with the grant's own client authentication. */
     revoke: (input: {
-      server: OAuthTokenServer;
+      server: OAuthTokenServer & { readonly revocation_endpoint: string };
       client: OAuthRegistration;
+      clientKind: OAuthClientKind;
       token: string;
       tokenTypeHint: "refresh_token" | "access_token";
     }) =>
@@ -1885,15 +1900,18 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
             { ...settings, additionalParameters: { token_type_hint: input.tokenTypeHint } },
           ),
         ),
-      ).pipe(protocolStage("revoke")),
+      ).pipe(
+        protocolStage(
+          "revoke",
+          clientSpanAttributes(input.clientKind, input.client.token_endpoint_auth_method, {
+            name: "revocation_endpoint",
+            url: input.server.revocation_endpoint,
+          }),
+        ),
+      ),
   };
 };
 
-/**
- * What a protected resource advertises about authorization-code OAuth an account connection can
- * complete, with the lookups that decided it. The caller passes the challenge it observed when it
- * requested the resource. A discovery failure is reported, never replaced by another method.
- */
 export const discoverResourceOAuth = (
   resource: string,
   options: Pick<OAuthOptions, "httpClient" | "urlPolicy" | "clientMetadataUrl">,

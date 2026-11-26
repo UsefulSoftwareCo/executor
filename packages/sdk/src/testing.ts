@@ -1,4 +1,3 @@
-/** Explicit ephemeral adapters for isolated SDK fixtures. Hosts use durable Git and catalogs. */
 import { Effect } from "effect";
 import {
   encodeBase64,
@@ -13,7 +12,6 @@ import {
 type SourceFiles = readonly [SourceFile, ...SourceFile[]];
 import { RegistryError, type Registry } from "./contracts/registry.ts";
 
-/** Each fixture owns its revisions; reuse this instance when testing executor restarts. */
 export const memoryRepositories = (): RepositoryBackend => {
   const snapshots = new Map<string, SourceFiles>();
   const heads = new Map<string, string>();
@@ -50,7 +48,6 @@ export const memoryRepositories = (): RepositoryBackend => {
           return yield* new SourceError({ reason: "conflict" });
         const previous =
           input.expected === null ? [] : (snapshots.get(`${input.id}/${input.expected}`) ?? []);
-        // Uploads are kept inline; stored files keep the entry the caller read.
         const kept: SourceFile[] = [];
         for (const file of input.files)
           kept.push(
@@ -76,7 +73,6 @@ export const memoryRepositories = (): RepositoryBackend => {
           ),
         };
       }),
-    // Fixture saves keep every file inline, so no read lists a blob.
     blob: () => Effect.fail(new SourceError({ reason: "not-found" })),
     file: (id, commit, path) =>
       Effect.suspend(() => {
@@ -90,7 +86,6 @@ export const memoryRepositories = (): RepositoryBackend => {
   return adapter;
 };
 
-/** An empty remote catalog for fixtures that never publish or install public apps. */
 export const memoryRegistry = (): Registry => ({
   origin: "https://registry.invalid",
   list: () => Effect.succeed([]),

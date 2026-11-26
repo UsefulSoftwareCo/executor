@@ -1,5 +1,4 @@
-/** Scoped Vite adapter shared by browser and desktop development hosts. */
-import { createServer as createHttpServer, type IncomingMessage } from "node:http";
+import { createServer as createHttpServer, IncomingMessage, ServerResponse } from "node:http";
 import * as NodeHttpServerRequest from "@effect/platform-node/NodeHttpServerRequest";
 import {
   dashboardDocument,
@@ -14,29 +13,21 @@ import type { ServerConfig } from "../contracts/config.ts";
 import { StartupFailed } from "../contracts/startup.ts";
 import type { LocalWeb } from "../node.ts";
 
-/** Vite's HMR socket path, served on the dashboard's own origin. */
 const hmrPath = "/@vite/hmr";
 
-/** Vite answers only its own subprotocols; any other upgrade would wait on it forever. */
 const isHmrUpgrade = (incoming: IncomingMessage) =>
   incoming.headers.upgrade?.toLowerCase() === "websocket" &&
   ["vite-hmr", "vite-ping"].includes(incoming.headers["sec-websocket-protocol"] ?? "") &&
   new URL(incoming.url ?? "/", "http://localhost").pathname === hmrPath;
 
-/** Options for one development host. Separate hosts keep separate Vite dependency caches. */
 export type DevelopmentWebOptions = {
-  /** Vite cache directory relative to the repository root; Vite's default when omitted. */
   readonly cacheDir?: string;
 };
 
-/** Serve UI assets and HMR beside the authenticated local API; closes Vite with the host. */
 export const developmentWeb = (settings: ServerConfig, options: DevelopmentWebOptions = {}) =>
   Effect.gen(function* () {
     const path = yield* Path.Path;
     const root = yield* path.fromFileUrl(new URL("../../../web/", import.meta.url));
-    // Vite's HMR socket server, fed the upgrades the asset handler takes for `hmrPath`. It never
-    // listens: the browser reaches HMR at its page's own origin, through any proxy in front of
-    // this server, and Vite stays clear of the Effect HTTP server's own upgrade handler.
     const hmrServer = createHttpServer();
     const vite = yield* Effect.acquireRelease(
       Effect.tryPromise({
@@ -50,13 +41,11 @@ export const developmentWeb = (settings: ServerConfig, options: DevelopmentWebOp
               : { cacheDir: path.join(root, "../../..", options.cacheDir) }),
             server: {
               middlewareMode: true,
-              // T3 Code warms the entry graph before the first Electron request.
               warmup: { clientFiles: ["./src/client.tsx"] },
               allowedHosts:
                 settings.browserOrigin === undefined
                   ? []
                   : [new URL(settings.browserOrigin).hostname],
-              // With a server and no port or protocol, the client connects to its page's origin.
               ws: { server: hmrServer, path: hmrPath },
             },
           }),
@@ -64,9 +53,6 @@ export const developmentWeb = (settings: ServerConfig, options: DevelopmentWebOp
       }),
       (server) => Effect.promise(() => server.close()),
     );
-    // The socket belongs to Vite once the upgrade is handed over. The handler waits for it to
-    // close, and Effect then writes nothing to a destroyed socket. A WebSocket client sends nothing
-    // before the handshake answer, so the upgrade has no buffered head to pass on.
     const hmrUpgrade = (incoming: IncomingMessage) =>
       Effect.callback<HttpServerResponse.HttpServerResponse>((resume) => {
         const { socket } = incoming;
@@ -78,8 +64,10 @@ export const developmentWeb = (settings: ServerConfig, options: DevelopmentWebOp
     const assets = Effect.gen(function* () {
       const request = yield* HttpServerRequest.HttpServerRequest;
       const incoming = NodeHttpServerRequest.toIncomingMessage(request);
-      if (isHmrUpgrade(incoming)) return yield* hmrUpgrade(incoming);
       const response = NodeHttpServerRequest.toServerResponse(request);
+      if (!(incoming instanceof IncomingMessage) || !(response instanceof ServerResponse))
+        return HttpServerResponse.empty({ status: 505 });
+      if (isHmrUpgrade(incoming)) return yield* hmrUpgrade(incoming);
       return yield* Effect.callback<HttpServerResponse.HttpServerResponse>((resume) => {
         const cleanup = () => {
           response.off("finish", done);
@@ -107,8 +95,6 @@ export const developmentWeb = (settings: ServerConfig, options: DevelopmentWebOp
     const ssr = vite.environments.ssr;
     if (ssr === undefined || !isRunnableDevEnvironment(ssr))
       return yield* new StartupFailed({ stage: "dev-server" });
-    // The same document handler the built server uses, reloaded by Vite when its modules change.
-    // The local session cookie is strict; see `withSameSiteReload`.
     const document = withSameSiteReload(
       dashboardDocument({
         server: Effect.tryPromise({
@@ -118,7 +104,6 @@ export const developmentWeb = (settings: ServerConfig, options: DevelopmentWebOp
             ),
           catch: () => new StartupFailed({ stage: "dev-server" }),
         }).pipe(Effect.map((module) => module.default)),
-        // Local pages read their session through the same in-process API as their data.
         context: () => Effect.succeed({}),
         headers: { "referrer-policy": "no-referrer" },
       }),

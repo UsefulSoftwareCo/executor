@@ -1,4 +1,3 @@
-/** Low-cardinality transport measurements; these are wall/CPU totals with explicit units, not app data. */
 import { Effect, Metric } from "effect";
 
 const boundaries = [1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 30000];
@@ -42,7 +41,6 @@ const group = (path: string | undefined) =>
                 ? "api"
                 : "document";
 
-/** Classify URLs into a fixed set before attaching attributes; raw paths and query strings are never labels. */
 export const recordResponseReady = (
   path: string | undefined,
   method: string,
@@ -56,7 +54,17 @@ export const recordResponseReady = (
   );
 };
 
-/** Fixed failure metadata goes to both local/native logs and the metric registry, even when the remote exporter is down. */
+const signalOf = (path: string) =>
+  path.endsWith("/traces")
+    ? "traces"
+    : path.endsWith("/logs")
+      ? "logs"
+      : path.endsWith("/metrics")
+        ? "metrics"
+        : path === "app"
+          ? "app"
+          : "other";
+
 export const recordExportFailure = (
   path: string,
   reason:
@@ -69,16 +77,9 @@ export const recordExportFailure = (
     | "relay"
     | "shutdown",
   records = 0,
+  elapsedMs?: number,
 ) => {
-  const signal = path.endsWith("/traces")
-    ? "traces"
-    : path.endsWith("/logs")
-      ? "logs"
-      : path.endsWith("/metrics")
-        ? "metrics"
-        : path === "app"
-          ? "app"
-          : "other";
+  const signal = signalOf(path);
   return Metric.update(Metric.withAttributes(exportFailures, { signal, reason }), 1).pipe(
     Effect.andThen(
       Metric.update(Metric.withAttributes(rejectedRecords, { signal, reason }), records),
@@ -89,13 +90,13 @@ export const recordExportFailure = (
           "executor.telemetry.signal": signal,
           "executor.telemetry.failure": reason,
           "executor.telemetry.rejected_records": records,
+          ...(elapsedMs === undefined ? {} : { "executor.telemetry.elapsed_ms": elapsedMs }),
         }),
       ),
     ),
   );
 };
 
-/** Record provider-owned invocation totals separately from response-ready timing. */
 export const recordWorkerMeasurements = (
   worker: string,
   outcome: string,

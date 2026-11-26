@@ -1,8 +1,6 @@
-/** Fresh hosted policy tables; every resource receives policy in its creation transaction. */
 import { Effect } from "effect";
 import { SqlClient } from "effect/sql";
 
-/** Caller holds the hosted migration lock after SDK and group tables exist. */
 export const migrateResourceAccess = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`create unique index if not exists hosted_groups_organization_identity on hosted_groups (organization_id, id)`;
@@ -49,4 +47,10 @@ export const migrateResourceAccess = Effect.gen(function* () {
     destination jsonb not null,
     target jsonb
   )`;
+});
+
+export const removeGroupAccountConnections = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`delete from hosted_connection_access
+    where destination ->> 'kind' = 'shared' and destination -> 'audience' ->> 'kind' = 'groups'`;
 });

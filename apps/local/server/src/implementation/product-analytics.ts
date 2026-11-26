@@ -1,4 +1,3 @@
-/** Local and desktop analytics. Every event uses this installation's anonymous ID. */
 import type { Executor, ToolCallResult, ToolResumeResult } from "@executor-js/sdk/core";
 import type { ScheduleObservation } from "@executor-js/sdk/scheduling";
 import {
@@ -16,7 +15,6 @@ import {
 import { Clock, Config, Effect, Exit, FileSystem, Option, Path, Schema } from "effect";
 import { SqlClient, type SqlError } from "effect/sql";
 
-/** The anonymous install ID, minted on the first start with analytics on and kept in the data directory. */
 const installId = (directory: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -40,7 +38,6 @@ const count = (rows: Effect.Effect<ReadonlyArray<unknown>, SqlError.SqlError>) =
     Effect.map(Option.getOrUndefined),
   );
 
-/** This process's analytics, or none when the operator opted out or the build has no destination. */
 export const localAnalytics = (options: {
   readonly directory: string;
   readonly product: Extract<AnalyticsProduct, "cli" | "desktop">;
@@ -63,10 +60,8 @@ export const localAnalytics = (options: {
     });
     yield* Effect.logInfo(analyticsNotice);
     const { sql } = options;
-    // Counting must not delay startup; a failed count is omitted.
     yield* Effect.gen(function* () {
       const [apps, accounts] = yield* Effect.all([
-        // The bundled Executor app and its account belong to the host, not the person.
         count(sql`select count(*) as count from executor_apps where owner <> 'executor-local'`),
         count(sql`select count(*) as count from executor_accounts where owner <> 'executor-local'`),
       ]);
@@ -81,12 +76,8 @@ export const localAnalytics = (options: {
       });
     }).pipe(Effect.forkScoped);
     return sender;
-  }).pipe(
-    // Analytics never prevents the product from starting.
-    Effect.catch(() => Effect.succeed(undefined)),
-  );
+  }).pipe(Effect.catch(() => Effect.succeed(undefined)));
 
-/** Terminal schedule runs; a run carries no identity beyond this installation. */
 export const scheduleAnalytics = (sender: AnalyticsSender): typeof ScheduleObservation.Service => ({
   completed: (run) =>
     Effect.sync(() =>
@@ -107,10 +98,6 @@ export const scheduleAnalytics = (sender: AnalyticsSender): typeof ScheduleObser
     ),
 });
 
-/**
- * Record use through one product surface. Only outcomes are recorded; inputs, results, names and
- * IDs stay out because each event's allowlist does not declare them.
- */
 export const observeLocalExecutor = (
   executor: Executor,
   sender: AnalyticsSender | undefined,
@@ -136,7 +123,6 @@ export const observeLocalExecutor = (
         ),
       );
     });
-  // Approval pauses are counted separately from completed tool calls.
   const tool = <A extends ToolCallResult | ToolResumeResult, E, R>(
     resumed: boolean,
     work: Effect.Effect<A, E, R>,

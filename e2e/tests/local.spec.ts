@@ -18,7 +18,6 @@ layer(TestLive, { excludeTestServices: true })("Local pairing", (it) => {
           target = yield* Target,
           anonymous = yield* api.session();
         expect((yield* api.request(anonymous, "GET", "/dashboard/api/overview")).status).toBe(401);
-        // Pair issuance is deliberately not a browser-origin request.
         const pairing = yield* anonymous.send("POST", "/auth/pair", undefined, {
           authorization: `Bearer ${Redacted.value(target.apiKey)}`,
         });
@@ -43,7 +42,6 @@ layer(TestLive, { excludeTestServices: true })("Local pairing", (it) => {
         yield* browser.use("Dashboard remains authenticated", (page) =>
           page.getByRole("heading", { name: /^Apps/ }).waitFor({ state: "visible" }),
         );
-        // A packaged host must retain the compiler and framework, not only its HTTP shell.
         const deployed = yield* anonymous.send(
           "POST",
           "/v1/apps/deploy",

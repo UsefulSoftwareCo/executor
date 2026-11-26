@@ -1,4 +1,3 @@
-/** Disposable external identity provider for the real Cloud and self-host SSO journeys. */
 import { createServer } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
 import { generateKeyPairSync, createHash, randomUUID, sign, type KeyObject } from "node:crypto";
@@ -14,16 +13,6 @@ import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "e
 
 const Control = Schema.Struct({
   email: Schema.String.check(Schema.isPattern(/^[a-z0-9-]+@[a-z0-9.-]+$/u)),
-  /**
-   * `userinfo-verified` omits `email_verified` from the ID token and asserts it only at UserInfo,
-   * as Okta's org authorization server does; `userinfo-other-subject` also answers UserInfo for a
-   * different subject. The discovery and cleartext modes publish metadata a product must refuse
-   * when it reads discovery: an HTTPS document that redirects to a cleartext copy, or one that
-   * names a cleartext sign-in, token or key endpoint. The redirect modes redirect the HTTPS token
-   * or key request to cleartext at sign-in. The provider does not vouch for the address in the
-   * unverified modes: `unverified` reports `email_verified: false` in the ID token and at
-   * UserInfo, `unverified-thin` only at UserInfo, and `unverified-absent` never sends the claim.
-   */
   mode: Schema.Literals([
     "valid",
     "tamper",
@@ -41,7 +30,6 @@ const Control = Schema.Struct({
     "unverified-absent",
   ]),
 });
-// ID tokens in these modes leave out `email_verified`.
 const thinModes: ReadonlySet<typeof Control.Type.mode> = new Set([
   "userinfo-verified",
   "userinfo-other-subject",
@@ -72,7 +60,6 @@ const signJwt = (key: KeyObject, kid: string, claims: Record<string, unknown>) =
 const command = Command.make("sso-idp", {
   directory: Flag.String("directory"),
   application: Flag.String("application"),
-  // Self-host accepts only an HTTPS discovery URL; the caller trusts this certificate explicitly.
   certificate: Flag.String("tls-certificate").pipe(Flag.optional),
   key: Flag.String("tls-key").pipe(Flag.optional),
 }).pipe(
@@ -84,12 +71,9 @@ const command = Command.make("sso-idp", {
         );
         const fs = yield* FileSystem.FileSystem;
         const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
-        // The browser reaches `address`; Executor's server reaches `issuer`, which is HTTPS when
-        // the caller passes a certificate and otherwise the same loopback HTTP origin.
         const address = yield* Deferred.make<string>();
         const issuer = yield* Deferred.make<string>();
         const keys = generateKeyPairSync("rsa", { modulusLength: 2048 });
-        // Keys the provider does not publish; only the cleartext discovery copy names them.
         const unpublished = generateKeyPairSync("rsa", { modulusLength: 2048 });
         const certificateDirectory = yield* fs.makeTempDirectoryScoped();
         const keyFile = `${certificateDirectory}/key.pem`,
@@ -144,11 +128,6 @@ const command = Command.make("sso-idp", {
             ],
             nameIDFormat: ["urn:oasis:names:tc:SAML:2.0:nameid-format:persistent"],
           });
-        /**
-         * Both listeners serve the same routes. `listener` is the origin a request arrived at, so
-         * the HTTPS listener can redirect to the loopback HTTP one, which stands for any cleartext
-         * path.
-         */
         const routes = (listener: Effect.Effect<string>) =>
           Layer.mergeAll(
             HttpRouter.add(
@@ -168,8 +147,6 @@ const command = Command.make("sso-idp", {
               Effect.gen(function* () {
                 const origin = yield* Deferred.await(issuer);
                 const cleartextOrigin = yield* Deferred.await(address);
-                // The cleartext copy names the same issuer, with token and key endpoints the
-                // provider does not publish.
                 const copied = control.mode === "discovery-redirect";
                 if (copied && (yield* listener) === origin && origin !== cleartextOrigin)
                   return HttpServerResponse.redirect(
@@ -250,7 +227,6 @@ const command = Command.make("sso-idp", {
               "/token",
               Effect.gen(function* () {
                 const cleartextOrigin = yield* Deferred.await(address);
-                // 307 keeps the method and body, so the code and client secret would follow.
                 if (control.mode === "token-redirect" && (yield* listener) !== cleartextOrigin)
                   return HttpServerResponse.redirect(`${cleartextOrigin}/token`, { status: 307 });
                 const request = yield* HttpServerRequest.HttpServerRequest;
@@ -272,7 +248,6 @@ const command = Command.make("sso-idp", {
                   code.redirect !== input.redirect_uri ||
                   code.challenge !==
                     createHash("sha256").update(input.code_verifier).digest("base64url") ||
-                  // client_secret_basic (Cloud's SSO) or client_secret_post (self-host's).
                   (request.headers.authorization !==
                     `Basic ${Buffer.from("synthetic-sso-client:synthetic-sso-secret").toString("base64")}` &&
                     (input.client_id !== "synthetic-sso-client" ||
@@ -307,8 +282,6 @@ const command = Command.make("sso-idp", {
                 });
               }),
             ),
-            // Answers for the same issuer with another verified address, signed by the unpublished
-            // keys. It checks no client credentials.
             HttpRouter.add(
               "POST",
               "/unpublished/token",
@@ -434,7 +407,6 @@ const command = Command.make("sso-idp", {
                               NameID: createHash("sha256").update(control.email).digest("hex"),
                               InResponseTo: id,
                               AuthnStatement: "",
-                              // Entra commonly uses an opaque NameID and a signed email claim.
                               Email: control.email,
                             },
                           ),

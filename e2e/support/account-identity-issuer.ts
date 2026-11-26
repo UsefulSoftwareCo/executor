@@ -1,4 +1,3 @@
-/** An external OIDC issuer with rotating grants and stable subjects; all product state stays in the real server. */
 import { createServer } from "node:http";
 import { createHash, randomUUID } from "node:crypto";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
@@ -123,7 +122,6 @@ export const accountIdentityIssuer = Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest;
         const grant = access.get(request.headers.authorization?.replace(/^Bearer /, "") ?? "");
         if (grant === undefined || profileFails) return HttpServerResponse.empty({ status: 401 });
-        // Deliberately identical email for different subjects: it cannot be a grouping key.
         return yield* HttpServerResponse.json({ sub: grant.subject, email: "same@example.test" });
       }),
     ),

@@ -1,4 +1,3 @@
-/** Isolated, script-free status documents shown before the local server is ready. */
 const statusUrl = (title: string, detail: string) =>
   `data:text/html;charset=utf-8,${encodeURIComponent(`<!doctype html>
 <html lang="en">
@@ -18,7 +17,6 @@ const statusUrl = (title: string, detail: string) =>
 
 export const startupUrl = statusUrl("Starting Executor", "Your apps will open here.");
 
-/** Shown while the desktop's old data moves into the CLI's data directory, once. */
 export const movingUrl = statusUrl(
   "Moving your Executor data…",
   "Executor now shares its data with the CLI. This happens once and can take a minute.",

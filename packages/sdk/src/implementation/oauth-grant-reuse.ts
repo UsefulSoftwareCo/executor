@@ -1,5 +1,4 @@
-/** A connection can borrow one covering grant; permission labels from separate grants never combine. */
-import { Clock, type Crypto, Effect, Redacted, Schema } from "effect";
+import { Clock, Effect, Redacted, Schema } from "effect";
 import type { ResourceLifecycle } from "../contracts/executor.ts";
 import { Account } from "../contracts/account.ts";
 import {
@@ -29,12 +28,13 @@ import { requireTargetProvider } from "./connection-target.ts";
 import { query, transaction, type Query } from "./database.ts";
 import { makeOAuthProtocol } from "./oauth-protocol.ts";
 import { canonical } from "./provider.ts";
+import type { HostCrypto } from "./host-crypto.ts";
 
 export const makeOAuthGrantReuse =
   (
     db: Query,
     credentials: Credentials,
-    crypto: Crypto.Crypto,
+    crypto: HostCrypto,
     options: OAuthOptions | undefined,
     lifecycle: ResourceLifecycle | undefined,
   ) =>
@@ -75,7 +75,6 @@ export const makeOAuthGrantReuse =
             !(yield* lifecycle.accountsResolving([source])).has(source.id)
           )
             return yield* refused();
-          // Reuse creates an exact provider binding. Reconnecting an existing one needs the consent path.
           if (current.reconnectAccount !== null) return consent("identity");
           yield* query(() =>
             tx.updateMany("accounts", {
@@ -96,7 +95,6 @@ export const makeOAuthGrantReuse =
           );
           if (read === null || read.status === "reconnect") return consent("identity");
           if (!read.status.startsWith("ready_")) return consent("busy");
-          // Lock the exact ready revision before promotion; an in-flight renewal keeps its own lock.
           yield* query(() =>
             tx.updateMany("oauthGrants", {
               where: (b) => b.and(b("id", "=", oldId), b("status", "=", read.status)),
@@ -147,7 +145,7 @@ export const makeOAuthGrantReuse =
             return consent("client");
           const resource = isFirstPartyGrant(grant) ? server?.resource : grant.resource;
           if (resource !== discovered.resource) return consent("resource");
-          // With inferred audiences (for example Microsoft), different API scopes can name different audiences.
+          // external: Microsoft scope-derived audiences can differ between APIs.
           if (
             discovered.resourceSource === "inferred_scope_audience" &&
             canonical(grant.requestedScopes ?? []) !== canonical(discovered.scopes)
@@ -168,7 +166,7 @@ export const makeOAuthGrantReuse =
           )
             return consent("scopes");
           const id = AccountId.make(
-            `acc_${yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()))}`,
+            `acc_${yield* crypto.random.uuidV4().pipe(Effect.mapError(() => new StorageError()))}`,
           );
           const account = {
             id,
@@ -180,7 +178,6 @@ export const makeOAuthGrantReuse =
             createdAt: new Date(yield* Clock.currentTimeMillis),
             identity,
           };
-          // OAuth reads its grant directly; the new binding stores no copied access or refresh token.
           const encryptedCredentials = yield* credentials.encrypt(id, Redacted.make({}));
           yield* query(() =>
             tx.create("accounts", {
@@ -201,7 +198,7 @@ export const makeOAuthGrantReuse =
           const grantId =
             live.oauthGrantId ??
             AccountId.make(
-              `acc_grant_${yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()))}`,
+              `acc_grant_${yield* crypto.random.uuidV4().pipe(Effect.mapError(() => new StorageError()))}`,
             );
           if (live.oauthGrantId === null) {
             const encrypted = yield* credentials.encrypt(

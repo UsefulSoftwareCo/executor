@@ -1,9 +1,3 @@
-/**
- * Self-host SSO against a synthetic OpenID provider. The product reads discovery once as it
- * starts and signs in only over HTTPS provider endpoints. An ID token may carry `sub` and `email`
- * but not `email_verified`, which the provider asserts only at UserInfo, as Okta's org
- * authorization server does; a UserInfo answer for another subject must not verify the email.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, FileSystem, Schema } from "effect";
 import type { Page } from "playwright";
@@ -19,10 +13,6 @@ const Session = Schema.NullOr(
   Schema.Struct({ user: Schema.Struct({ email: Schema.String, emailVerified: Schema.Boolean }) }),
 );
 
-/**
- * Start a fresh instance with SSO against a synthetic IdP in `mode`, with its organization set
- * up. The product reads discovery as it starts, so the mode decides the metadata it signs in with.
- */
 const startSsoInstance = (mode: IdentityMode) =>
   Effect.gen(function* () {
     const browser = yield* Browser,
@@ -31,8 +21,6 @@ const startSsoInstance = (mode: IdentityMode) =>
     const origin = instance.metadata.origin;
     const idp = yield* selfHostSsoIdp(origin);
     yield* idp.configure("member@sso.example.test", mode);
-    // The browser cannot trust the synthetic certificate, so it reaches the same sign-in page on
-    // the IdP's loopback listener. The product still sees only the HTTPS endpoints.
     yield* browser.use("Route the browser to the IdP's sign-in page", (page) =>
       page.context().route(
         (url) => url.origin === idp.issuer && url.pathname === "/authorize",
@@ -43,7 +31,6 @@ const startSsoInstance = (mode: IdentityMode) =>
           }),
       ),
     );
-    // The operator turns SSO on once the instance's origin is known.
     yield* Effect.gen(function* () {
       yield* serverControl("stop");
       yield* serverControl("environment", 200, {
@@ -51,12 +38,10 @@ const startSsoInstance = (mode: IdentityMode) =>
         SSO_CLIENT_ID: "synthetic-sso-client",
         SSO_CLIENT_SECRET: "synthetic-sso-secret",
         SSO_ALLOWED_DOMAINS: "sso.example.test",
-        // The product trusts only the fixture's synthetic certificate, not disabled TLS checks.
         NODE_EXTRA_CA_CERTS: idp.certificate,
       });
       yield* serverControl("start");
     }).pipe(Effect.provideService(Target, instance));
-    // SSO admits members into the instance's organization, so the operator sets it up first.
     expect(
       yield* browser.use("Set up the instance", (page) =>
         page
@@ -99,7 +84,6 @@ const continueWithSso = (origin: string, step: string) =>
     );
   });
 
-/** A sign-in that must end on the login page with an explanation and no session. */
 const expectRejectedSignIn = (origin: string, step: string) =>
   Effect.gen(function* () {
     const browser = yield* Browser;
@@ -110,7 +94,6 @@ const expectRejectedSignIn = (origin: string, step: string) =>
     expect(yield* session(origin)).toBeNull();
   });
 
-/** A rejected sign-in whose explanation names the reason and the recovery. */
 const expectExplainedRejection = (origin: string, step: string, explanation: string) =>
   Effect.gen(function* () {
     const browser = yield* Browser;
@@ -125,7 +108,6 @@ const expectExplainedRejection = (origin: string, step: string, explanation: str
 const unverified =
   "Your identity provider did not confirm that this email address is verified. Ask your administrator to have the provider mark it verified.";
 
-/** Metadata the product refuses at startup leaves SSO unavailable and tells the operator why. */
 const expectUnavailableSso = (mode: IdentityMode, step: string, reason: string) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -138,14 +120,10 @@ const expectUnavailableSso = (mode: IdentityMode, step: string, reason: string) 
     }),
   );
 
-// Better Auth allows three sign-in attempts per address in ten seconds, so each scenario
-// stays within one window on its own instances.
 layer(TestLive, { excludeTestServices: true })("Self-host SSO", (it) => {
   it.effect(scenarios.selfHostSsoDiscoveryRedirect.title, (context) =>
     withCase(
       context,
-      // The cleartext copy names the same issuer, with token and key endpoints the provider
-      // does not publish.
       expectUnavailableSso(
         "discovery-redirect",
         "Discovery redirected to cleartext",
@@ -185,7 +163,6 @@ layer(TestLive, { excludeTestServices: true })("Self-host SSO", (it) => {
       Effect.gen(function* () {
         const browser = yield* Browser;
         const { idp, origin } = yield* startSsoInstance("valid");
-        // Keys are fetched on first use and then cached, so the key redirect comes first.
         yield* idp.configure("jwks-redirect@sso.example.test", "jwks-redirect");
         yield* expectRejectedSignIn(origin, "Signing keys redirected to cleartext");
         yield* idp.configure("token-redirect@sso.example.test", "token-redirect");
@@ -209,7 +186,6 @@ layer(TestLive, { excludeTestServices: true })("Self-host SSO", (it) => {
         const browser = yield* Browser;
         const { idp, origin } = yield* startSsoInstance("valid");
 
-        // UserInfo about another subject does not verify this one's address.
         yield* idp.configure("other-subject@sso.example.test", "userinfo-other-subject");
         yield* expectExplainedRejection(origin, "UserInfo for another subject", unverified);
         yield* browser.checkpoint("SSO refused when UserInfo names another subject");
@@ -237,8 +213,6 @@ layer(TestLive, { excludeTestServices: true })("Self-host SSO", (it) => {
       context,
       Effect.gen(function* () {
         const { idp, origin } = yield* startSsoInstance("valid");
-        // A provider that reports the address unverified is refused, wherever it says so, and
-        // so is one that never vouches for it.
         yield* idp.configure("unverified@sso.example.test", "unverified");
         yield* expectExplainedRejection(origin, "Unverified everywhere", unverified);
         yield* idp.configure("unverified-thin@sso.example.test", "unverified-thin");
@@ -258,8 +232,6 @@ layer(TestLive, { excludeTestServices: true })("Self-host SSO", (it) => {
       context,
       Effect.gen(function* () {
         const { idp, origin } = yield* startSsoInstance("valid");
-        // The operator's password account has the same address the provider verifies. Nothing
-        // proved the password account owns the mailbox, so SSO is not linked to it.
         yield* idp.configure("owner@sso.example.test", "valid");
         yield* expectExplainedRejection(
           origin,
@@ -281,7 +253,6 @@ layer(TestLive, { excludeTestServices: true })("Self-host SSO", (it) => {
       context,
       Effect.gen(function* () {
         const browser = yield* Browser;
-        // Setup leaves the password owner signed in.
         const { idp, origin } = yield* startSsoInstance("valid");
         const card = (page: Page) =>
           page.getByRole("heading", { name: "Single sign-on", exact: true });
@@ -289,7 +260,6 @@ layer(TestLive, { excludeTestServices: true })("Self-host SSO", (it) => {
         yield* browser.use("Security offers to connect SSO", (page) => card(page).waitFor());
         yield* browser.checkpoint("Security offers to connect SSO");
 
-        // The provider signs in someone else: the instance refuses to connect it and says why.
         yield* idp.configure("member@sso.example.test", "valid");
         yield* browser.use("Connect another person's SSO account", (page) =>
           page.getByRole("button", { name: "Connect SSO", exact: true }).click(),
@@ -306,7 +276,6 @@ layer(TestLive, { excludeTestServices: true })("Self-host SSO", (it) => {
         );
         yield* browser.checkpoint("SSO for another email is refused with a reason");
 
-        // The provider verifies the owner's own address: SSO is connected to the password account.
         yield* idp.configure("owner@sso.example.test", "valid");
         yield* browser.use("Connect the owner's SSO account", (page) =>
           page.getByRole("button", { name: "Connect SSO", exact: true }).click(),
@@ -324,7 +293,6 @@ layer(TestLive, { excludeTestServices: true })("Self-host SSO", (it) => {
         );
         yield* browser.checkpoint("SSO connected to the password owner");
 
-        // The owner now signs in with SSO as the same account.
         yield* continueWithSso(origin, "Owner signs in with connected SSO");
         yield* browser.use("The owner leaves sign-in", (page) =>
           page.waitForURL(

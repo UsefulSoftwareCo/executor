@@ -1,4 +1,3 @@
-/** Apps declare their icons on defineApp; the build records them and the dashboard shows them. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -35,10 +34,6 @@ const svg = (fill: string) =>
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="${fill}"/></svg>`,
   ).toString("base64")}`;
 
-/**
- * An app declaring these icons beside its accounts. Its provider's OAuth host would give the
- * dashboard a domain logo, which must not stand in for the declared icon.
- */
 const source = (
   icons: unknown,
 ) => `import { defineApp, defineProvider, oauth2, object, query, router } from "apps";
@@ -71,7 +66,6 @@ layer(HostedLive, { excludeTestServices: true })("App icons", (it) => {
             files: [{ path: "index.ts", content: source(icons) }, appsManifest],
           });
 
-        // A source the dashboard must never load fails the build at its declaration stage.
         const refused = yield* deploy(`Unsafe icon ${randomUUID().slice(0, 8)}`, [
           { src: "javascript:alert(1)", theme: "light" },
         ]);
@@ -96,8 +90,6 @@ layer(HostedLive, { excludeTestServices: true })("App icons", (it) => {
           api.request(actors.owner, "DELETE", path).pipe(Effect.orDie),
         );
 
-        // The build recorded the icons with the version: the app and the inventory carry them
-        // at once, before anything evaluated the app or listed its tools.
         expect(app.requirements.icons).toEqual(icons);
         const read = yield* body(IconApp, yield* api.request(actors.owner, "GET", path));
         expect(read.requirements.icons).toEqual(icons);
@@ -109,9 +101,7 @@ layer(HostedLive, { excludeTestServices: true })("App icons", (it) => {
           icons,
         );
 
-        // The dashboard loads the variant made for the current color scheme.
         yield* browser.login(actors.owner);
-        /** The loaded source once it is the expected one, or whatever loaded instead. */
         const shown = (step: string, find: (page: Page) => Locator, expected: string) =>
           browser.use(step, (page) => {
             const image = find(page).locator('img[data-icon="app"]');
@@ -155,8 +145,6 @@ layer(HostedLive, { excludeTestServices: true })("App icons", (it) => {
         expect(yield* shown("The app page heading shows its icon", heading, dark)).toBe(dark);
         yield* browser.checkpoint("App heading with its dark icon");
 
-        // The declared icon needs no catalog: while the catalog read is held, a fresh document shows
-        // it in the heading and on the provider row, and never requests a domain logo.
         const catalog = yield* holdQuery(["/api/catalog"], "continue");
         const logos: string[] = [];
         yield* browser.use("Watch for domain logos", (page) => {

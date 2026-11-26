@@ -1,4 +1,3 @@
-/** Terminal Control sessions share the browser's focus clock; maintenance never steals focus. */
 import { TerminalControl, type LaunchOptions, type Session } from "@kitlangton/terminal-control";
 import { Clock, Context, Effect, Layer } from "effect";
 import { randomUUID } from "node:crypto";
@@ -31,7 +30,6 @@ const make = Effect.gen(function* () {
         });
         yield* Effect.addFinalizer(() =>
           Effect.gen(function* () {
-            // These calls save an existing capture, rather than representing a user's operation.
             const source = `${evidence.directory}/${name}.termctrl`;
             yield* driver("save terminal capture", () => session.saveRecording(source));
             const text = yield* driver("save terminal output", () => session.logs.text());
@@ -61,7 +59,6 @@ const make = Effect.gen(function* () {
       }),
   };
 });
-/** A new scope owns each terminal. All public session operations go through its focused use adapter. */
 export class Terminal extends Context.Service<Terminal, Effect.Success<typeof make>>()(
   "e2e/Terminal",
 ) {

@@ -1,8 +1,3 @@
-/**
- * Private dashboard renderer. React, the router and every page belong only to this Worker, so
- * the API Worker's isolates never compile them. The API Worker resolves each document's
- * context and serves its reads; this Worker only renders.
- */
 import type { DocumentRead, DocumentRenderContext } from "./contracts/dashboard.ts";
 import { Effect } from "effect";
 import { Dashboard } from "./infrastructure/dashboard-worker.ts";
@@ -10,20 +5,11 @@ import { cloudSite } from "./infrastructure/site.ts";
 import { cloudObservability } from "./infrastructure/telemetry.ts";
 import { workerBuild } from "./infrastructure/worker-build.ts";
 
-/**
- * Loaded on the first render and kept for the isolate. Local development rebuilds the dashboard
- * while this Worker runs, so the renderer is not part of this Worker's startup.
- */
 const server = () =>
   import("@executor-js/hosted-cloud-web/server").then((module) => module.default);
 
-/** A read callback received as an argument is released when the call returns, unless duplicated. */
 type HeldRead = DocumentRead & { dup?: () => HeldRead; [Symbol.dispose]?: () => void };
 
-/**
- * Start returns once the headers are ready and keeps streaming, so reads continue after the
- * call returns. The duplicated read lives until the body ends or the browser cancels it.
- */
 const render = async (request: Request, context: DocumentRenderContext, read: HeldRead) => {
   const held = read.dup?.() ?? read;
   const release = () => held[Symbol.dispose]?.();
@@ -70,8 +56,6 @@ const render = async (request: Request, context: DocumentRenderContext, read: He
 export default Dashboard.make(
   Effect.gen(function* () {
     if (globalThis.__ALCHEMY_RUNTIME__) return { main: import.meta.url };
-    // The renderer is bundled from the site build's server output, whose pages name the hashed
-    // browser files that build uploads. Depending on that build's output orders the bundle after it.
     const site = yield* cloudSite;
     return {
       main: import.meta.url,
@@ -79,7 +63,6 @@ export default Dashboard.make(
       workersDev: false,
       build: workerBuild("dashboard"),
       env: { EXECUTOR_SITE_BUILD: site.hash.output },
-      // No placement: a service binding runs this Worker beside its caller, the placed API Worker.
       compatibility: { date: "2026-09-08", flags: ["nodejs_compat", "no_brotli_content_encoding"] },
     };
   }),

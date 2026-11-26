@@ -1,9 +1,3 @@
-/**
- * Local-only writer for rows no public surface can produce, such as a token whose stored fields
- * were changed after issue. Applies parameterized statements to the managed Cloud's loopback
- * database in one transaction and prints each statement's rows. Never installed in the HTTP
- * server; scenarios must scope their statements to rows they created.
- */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Pool } from "pg";

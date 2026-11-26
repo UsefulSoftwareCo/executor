@@ -1,9 +1,3 @@
-/**
- * Local-only: expire one evaluated result kept in the managed Cloud's app data supervisors, as a
- * day passing does, so the supervisor's next command removes it and a read of it misses. The
- * supervisors are Alchemy's local Durable Objects, each a SQLite file under `directory`; only rows
- * of the exact `key` are changed. Prints how many rows were expired. Never installed in a server.
- */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { DatabaseSync } from "node:sqlite";
