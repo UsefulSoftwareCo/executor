@@ -7,12 +7,6 @@ import { Button } from "../components/button.tsx";
 import { cn } from "../lib/utils.ts";
 import { Box, Card } from "./workflow-diagram-cards.tsx";
 
-/**
- * A laid-out workflow: boxes underneath, then the connecting lines and option labels, then the
- * cards. It fits the panel's width by default, down to a size that stays readable and scrolls
- * sideways past that; the zoom controls step from there.
- */
-
 const ZOOM_STEP = 0.15;
 const MIN_FIT = 0.75;
 const MIN_ZOOM = 0.3;
@@ -45,7 +39,7 @@ export function WorkflowCanvas({
   }, []);
   const fit = available ? Math.max(MIN_FIT, Math.min(1, available / layout.width)) : 1;
   const scale = zoom ?? fit;
-  // Boxes and cards in reading order, so Tab follows the drawing; z-index keeps boxes underneath.
+
   const items = useMemo(
     () =>
       [
@@ -68,7 +62,6 @@ export function WorkflowCanvas({
             <Edges layout={layout} />
             {layout.labels.map((label, index) => (
               <span
-                // Labels have no identity of their own; their order is fixed for one layout.
                 key={index}
                 className={cn(
                   "pointer-events-none absolute z-[2] -translate-x-1/2 rounded-full border bg-background px-2 text-[11px] leading-[18px] whitespace-nowrap",
@@ -171,7 +164,6 @@ function Edges({ layout }: { readonly layout: WorkflowLayout }) {
       </defs>
       {layout.edges.map((edge, index) => (
         <path
-          // An edge is identified by its ends and option; two can share both, so order breaks ties.
           key={`${edge.from}:${edge.to}:${edge.arm?.index}:${index}`}
           d={roundedPath(edge.points, 8)}
           fill="none"

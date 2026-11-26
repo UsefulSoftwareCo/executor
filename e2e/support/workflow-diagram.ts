@@ -1,4 +1,3 @@
-/** A deployed app whose workflows use every construct the workflow diagram draws. */
 import { appsManifest } from "./apps-release.ts";
 
 export const workflowDiagramFiles = [

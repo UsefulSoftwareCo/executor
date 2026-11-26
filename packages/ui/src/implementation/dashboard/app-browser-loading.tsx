@@ -110,7 +110,6 @@ export function WorkflowBrowserLoading() {
   );
 }
 
-/** The diagram's frame while the version's source and the diagram's code load. */
 export function WorkflowDiagramLoading() {
   return (
     <div className="grid grid-cols-1 @[760px]:grid-cols-[minmax(0,1fr)_320px]" aria-busy>

@@ -18,6 +18,6 @@ export interface WorkflowBindings<E> {
     workflow: string | undefined,
     cursor: WorkflowRunId | undefined,
   ) => Query<WorkflowRunPage, E>;
-  /** The active version's source, for people who may read it; workflows are drawn from it. */
+
   readonly source?: Query<Version, E> | undefined;
 }

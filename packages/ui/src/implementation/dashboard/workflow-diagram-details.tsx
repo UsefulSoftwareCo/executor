@@ -25,10 +25,8 @@ import {
   UseRow,
 } from "./workflow-diagram-references.tsx";
 
-/** What the selected card is, what it uses and the code it came from. */
-
 const MAX_EXCERPT = 16;
-/** The start card shows the declaration through the options and handler signature. */
+
 const START_EXCERPT = 4;
 
 type IconSvgElement = ComponentProps<typeof HugeiconsIcon>["icon"];
@@ -43,7 +41,7 @@ export function WorkflowDetails({
 }: {
   readonly app: App;
   readonly graph: WorkflowGraph;
-  /** `undefined` for the start card. */
+
   readonly node: WorkflowNode | undefined;
   readonly files: ReadonlyArray<SourceFile>;
   readonly onOpenWorkflow: (name: string, step: string) => void;
@@ -276,7 +274,6 @@ function IconTile({ icon }: { readonly icon: IconSvgElement }) {
   );
 }
 
-/** The lines a card was drawn from. */
 function Excerpt({
   app,
   files,
@@ -295,7 +292,7 @@ function Excerpt({
   if (!source || "encoding" in source || !("content" in source)) return null;
   const last = Math.min(to, from + MAX_EXCERPT - 1);
   const lines = source.content.split("\n").slice(from - 1, last);
-  // A call nested in loops starts deep in; the excerpt reads better without the shared indent.
+
   const indent = Math.min(
     ...lines
       .filter((text) => text.trim() !== "")

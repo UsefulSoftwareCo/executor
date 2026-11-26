@@ -18,7 +18,7 @@ export function AppResources({
       app: app.id,
       version: app.activeVersion ?? undefined,
     });
-    // Local has one person, who can always read the source.
+
     const source =
       app.activeVersion === null
         ? undefined

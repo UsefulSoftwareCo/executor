@@ -1,12 +1,5 @@
 import type { WorkflowGraph, WorkflowNode } from "../contracts/graph.ts";
 
-/**
- * Places a workflow top to bottom. The graph is a tree, so each block is measured, then drawn
- * centred on its own axis: a decision's options sit side by side and rejoin below, and loops,
- * parallel groups and try blocks are boxes around their own blocks. No graph-layout engine is
- * needed, and the same graph always lands in the same place.
- */
-
 export interface Point {
   readonly x: number;
   readonly y: number;
@@ -40,7 +33,6 @@ export interface LayoutBox {
   readonly height: number;
 }
 
-/** Which option of which decision an edge belongs to. */
 export interface ArmRef {
   readonly decision: string;
   readonly index: number;
@@ -48,7 +40,7 @@ export interface ArmRef {
 
 export interface LayoutEdge {
   readonly from: string;
-  /** `null` where lines meet in mid-air; only edges that enter something get an arrowhead. */
+
   readonly to: string | null;
   readonly arm: ArmRef | undefined;
   readonly failure: boolean;
@@ -84,9 +76,9 @@ const COLUMN_GAP = 30;
 const ARM_DROP = 30;
 const EMPTY_ARM = 96;
 const FAILURE_DROP = 58;
-/** Room between a box's header and its first card for the line that enters it. */
+
 const ENTRY = 26;
-/** Room above a `finally` section for its label. */
+
 const CLEANUP_LABEL = 26;
 const MARGIN = 40;
 
@@ -95,7 +87,6 @@ interface Size {
   readonly height: number;
 }
 
-/** An open end of a line, waiting for whatever comes next to connect to it. */
 interface Open extends Point {
   readonly from: string;
   readonly arm: ArmRef | undefined;
@@ -168,7 +159,6 @@ function nodeSize(node: WorkflowNode): Size {
   }
 }
 
-/** The try box's body and failure columns side by side, and its `finally` section below them. */
 function tryParts(node: Extract<WorkflowNode, { type: "try" }>) {
   const body = armSize(node);
   const failure = node.failure.length > 0 ? blockSize(node.failure) : undefined;
@@ -195,7 +185,6 @@ function blockSize(nodes: ReadonlyArray<WorkflowNode>): Size {
 
 type Out = { cards: LayoutCard[]; boxes: LayoutBox[]; edges: LayoutEdge[]; labels: LayoutLabel[] };
 
-/** Draws a block from `top` down and returns its open ends. */
 function drawBlock(
   out: Out,
   nodes: ReadonlyArray<WorkflowNode>,
@@ -221,21 +210,18 @@ function drawBlock(
   return [...open];
 }
 
-/** Down, across just above the target, then down into it. */
 function join(from: Point, to: Point): Point[] {
   if (Math.abs(from.x - to.x) < 0.5) return [from, to];
   const middle = to.y - GAP / 2 - 2;
   return [from, { x: from.x, y: middle }, { x: to.x, y: middle }, to];
 }
 
-/** Down out of a decision, across just below it, then down to the option. */
 function split(from: Point, to: Point): Point[] {
   if (Math.abs(from.x - to.x) < 0.5) return [from, to];
   const middle = from.y + ARM_DROP / 2 + 4;
   return [from, { x: from.x, y: middle }, { x: to.x, y: middle }, to];
 }
 
-/** Joins open ends to a box's bottom; returns how many paths leave the box there. */
 function rejoin(out: Out, open: ReadonlyArray<Open>, bottom: Point): number {
   for (const end of open)
     out.edges.push({
@@ -326,7 +312,7 @@ function drawNode(out: Out, node: WorkflowNode, size: Size, axis: number, y: num
       const mainLeft = axis - parts.mainWidth / 2;
       const bodyAxis = mainLeft + parts.body.width / 2;
       const entry = { x: bodyAxis, y: y + HEAD, from: node.id, arm: undefined };
-      // A body without steps still runs, and can still fail into the catch.
+
       const fromBody: Open[] =
         node.body.length === 0
           ? [{ x: bodyAxis, y: top, from: node.id, arm: undefined }]
@@ -357,7 +343,7 @@ function drawNode(out: Out, node: WorkflowNode, size: Size, axis: number, y: num
         });
         fromFailure.push(...drawBlock(out, node.failure, failureAxis, failureTop, []));
       }
-      // An empty catch swallows the failure and carries on from below the body.
+
       const swallowed: Open[] =
         node.catches && node.failure.length === 0
           ? [{ x: axis, y: top + parts.mainHeight, from: node.id, arm: undefined }]
@@ -367,8 +353,7 @@ function drawNode(out: Out, node: WorkflowNode, size: Size, axis: number, y: num
         rejoin(out, [...fromBody, ...fromFailure, ...swallowed], bottom);
         return reaching > 0 ? [{ x: axis, y: y + size.height, from: node.id, arm: undefined }] : [];
       }
-      // `finally` runs whichever way the rest leaves; the run goes on after it only when some
-      // path through the body or the catch reached its end.
+
       const cleanupTop = top + parts.mainHeight + GAP + CLEANUP_LABEL;
       out.labels.push({
         x: axis,
@@ -377,8 +362,7 @@ function drawNode(out: Out, node: WorkflowNode, size: Size, axis: number, y: num
         arm: undefined,
         failure: false,
       });
-      // When every path ended inside, the cleanup still runs before that end takes effect; it is
-      // entered from its label, and the run doesn't go on past it.
+
       const entering: Open[] =
         reaching > 0
           ? [...fromBody, ...fromFailure, ...swallowed]
@@ -391,7 +375,6 @@ function drawNode(out: Out, node: WorkflowNode, size: Size, axis: number, y: num
   }
 }
 
-/** An orthogonal polyline as an SVG path, its corners rounded by up to `radius`. */
 export function roundedPath(points: ReadonlyArray<Point>, radius: number): string {
   const [start, ...rest] = points;
   if (!start) return "";

@@ -25,22 +25,8 @@ import {
 } from "./source.ts";
 import { Walker, type Block, type Context, type Tools } from "./walker.ts";
 
-/**
- * Reads an app's source the way its author wrote it: the `defineApp` definition names the
- * workflows, tools, schedules and webhooks, and each workflow's handler is walked statement by
- * statement. `ctx.step.*` calls become steps and the control flow around them becomes decisions,
- * loops, parallel groups and try blocks. Plain code between steps is not drawn.
- *
- * Nothing is evaluated. A name or target computed at runtime keeps its static text and `…`, and
- * draws no reference.
- */
-
-/** Units of work one derivation may spend: plenty for real apps, quick to run out on hostile source. */
 const WORK_BUDGET = 200_000;
-/**
- * Parsing is the one step the work budget can't interrupt, so how much source is parsed is capped
- * instead. Workflow code is small; a file past the cap, usually generated, is skipped.
- */
+
 const MAX_FILE_LENGTH = 512 * 1024;
 const MAX_TOTAL_LENGTH = 2 * 1024 * 1024;
 const MAX_FILES = 2_000;
@@ -100,7 +86,7 @@ export function deriveAppGraph(files: ReadonlyArray<SourceFile>): AppGraph {
     const graph = readWorkflow(name, entry, { modules, tools, startsByTool, budget });
     if (graph) workflows.push(graph);
   }
-  // Workflows that start each other through a tool are known once every workflow is read.
+
   for (const graph of workflows)
     walkNodes(graph.nodes, (node) => {
       if (node.type !== "step") return;
@@ -115,7 +101,7 @@ export function deriveAppGraph(files: ReadonlyArray<SourceFile>): AppGraph {
           });
         }
     });
-  // A spent budget may have cut any reading short, so no graph can claim to be complete.
+
   return {
     workflows: workflows.map((graph) => ({
       ...graph,
@@ -163,10 +149,6 @@ function findDefinition(modules: Map<string, Module>): At | undefined {
   return undefined;
 }
 
-/**
- * A definition written as a function (`defineApp(requirements, async (ctx) => ({ … }))`) returns
- * its object; the function's own `const`s stay in scope, so a workflow declared inside it resolves.
- */
 function returned(at: At, modules: Map<string, Module>): At | undefined {
   if (at.node.type === "ObjectExpression") return at;
   if (!isFunction(at.node)) return undefined;
@@ -185,7 +167,6 @@ function returned(at: At, modules: Map<string, Module>): At | undefined {
 
 const SCHEDULE_HELPERS = new Set(["userInterval", "userCron", "appInterval", "appCron"]);
 
-/** The tool a schedule runs: `userCron(timing, operation, input)` and friends, or `{ tool: "path" }`. */
 function scheduledTool(entry: At, tools: Tools, modules: Map<string, Module>): string | undefined {
   const name = calleeName(entry.node);
   if (entry.node.type === "CallExpression" && name !== undefined && SCHEDULE_HELPERS.has(name)) {
@@ -221,15 +202,11 @@ function readTools(app: At, modules: Map<string, Module>): Tools {
   return tools;
 }
 
-/**
- * Workflow names a handler starts with a literal `workflows.start({ workflow: "…" })`, in code that
- * runs when the handler does. A name a spread could replace starts nothing that can be known.
- */
 function startedIn(at: At, modules: Map<string, Module>, budget: Budget): Set<string> {
   const names = new Set<string>();
   const fn = at.node;
   if (!isFunction(fn)) return names;
-  // The handler's own parameters and declarations shadow outer names.
+
   const env = new Map<string, Binding>(at.env ?? []);
   for (const param of fn.params) for (const name of patternNames(param)) env.set(name, null);
   if (fn.body.type === "BlockStatement")
@@ -246,7 +223,7 @@ function startedIn(at: At, modules: Map<string, Module>, budget: Budget): Set<st
         entry.value.type === "Identifier"
       )
         workflows = entry.value.name;
-  // Only the handler's own context starts a workflow; another object's `workflows.start` doesn't.
+
   const isWorkflows = (node: t.Node) => {
     const current = unwrap(node);
     if (current.type === "Identifier") return current.name === workflows;
@@ -254,7 +231,7 @@ function startedIn(at: At, modules: Map<string, Module>, budget: Budget): Set<st
     const owner = unwrap(current.object);
     return owner.type === "Identifier" && owner.name === context;
   };
-  // A callback whose own parameter takes the context's or `workflows`' name is about another object.
+
   const keeps = (inner: FunctionNode) =>
     !inner.params.some((param) =>
       patternNames(param).some((name) => name === context || name === workflows),
@@ -277,7 +254,6 @@ function startedIn(at: At, modules: Map<string, Module>, budget: Budget): Set<st
   return names;
 }
 
-/** A workflow's graph, or none when its handler can't be read or the source trips the walk. */
 function readWorkflow(name: string, at: At, context: Context): WorkflowGraph | undefined {
   if (at.node.type !== "CallExpression" || calleeName(at.node) !== "workflow") return undefined;
   const handler = at.node.arguments.at(-1);
@@ -290,10 +266,9 @@ function readWorkflow(name: string, at: At, context: Context): WorkflowGraph | u
   try {
     block = walker.body(fn.node, walker.enter(fn.module, fn.node, [], "workflow", [], fn.env));
   } catch {
-    // App source is untrusted; a shape the walk can't take, such as very deep nesting, draws nothing.
     return undefined;
   }
-  // The run finishes after the last step unless every path already ended.
+
   const nodes: WorkflowNode[] = block.ends
     ? block.nodes
     : [

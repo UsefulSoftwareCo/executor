@@ -15,8 +15,6 @@ import { ProviderIcon } from "./common.tsx";
 import { useDashboard } from "./context.tsx";
 import { declaresHost } from "./workflow-diagram-cards.tsx";
 
-/** Rows that name what a workflow or step uses or is started by, linking to where it lives. */
-
 type IconSvgElement = ComponentProps<typeof HugeiconsIcon>["icon"];
 
 export function Row({ name, children }: { readonly name: string; readonly children: ReactNode }) {
@@ -151,7 +149,6 @@ function ReferenceRowContent({
   );
 }
 
-/** One thing a step uses, as a row of the step's details. */
 export function UseRow({ app, use }: { readonly app: App; readonly use: Reference }) {
   const { AppLink } = useDashboard();
   switch (use.kind) {
@@ -193,7 +190,6 @@ export function UseRow({ app, use }: { readonly app: App; readonly use: Referenc
   }
 }
 
-/** An account or host in the workflow's summary. */
 export function UseReference({ app, use }: { readonly app: App; readonly use: Reference }) {
   const { AppLink } = useDashboard();
   if (use.kind === "host")

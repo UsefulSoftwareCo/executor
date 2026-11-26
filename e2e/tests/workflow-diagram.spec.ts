@@ -49,7 +49,7 @@ layer(HostedLive, { excludeTestServices: true })("Workflow diagrams", (it) => {
         const url = `/org/${actors.organization.slug}/apps/${app.id}?view=workflows`;
         const diagram = (page: Parameters<Parameters<typeof browser.use>[1]>[0]) =>
           page.getByRole("group", { name: "Workflow diagram" });
-        // A step's accessible name is its kind and then its name, as the card reads.
+
         const step = (page: Parameters<Parameters<typeof browser.use>[1]>[0], name: string) =>
           diagram(page).getByRole("button", {
             name: new RegExp(`${name.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}$`, "u"),
@@ -199,7 +199,6 @@ layer(HostedLive, { excludeTestServices: true })("Workflow diagrams", (it) => {
           yield* browser.use("The trail is back at its start", (page) => trail(page).textContent()),
         ).toBe("triage");
 
-        // Members who cannot read the source keep today's run history, without the diagram.
         const sourceReads: string[] = [];
         yield* browser.use("Watch for source reads", (page) => {
           page.on("request", (request) => {

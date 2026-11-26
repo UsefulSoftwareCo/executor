@@ -20,8 +20,6 @@ import {
 } from "./source.ts";
 import type { Context } from "./walker.ts";
 
-/** What one `ctx.step` call says: its kind, name, options as written and what its code reaches. */
-
 const STEP_METHODS: ReadonlyMap<string, StepKind> = new Map([
   ["do", "do"],
   ["runQuery", "query"],
@@ -52,7 +50,7 @@ export function describeStep(
     const fn = call.arguments.at(-1);
     if (fn) {
       const target = resolve({ module, node: fn, env }, context.modules);
-      // A `fetch` the app declares itself, at any level above the step, is not the network.
+
       const ownFetch =
         env.has("fetch") ||
         target.env?.has("fetch") === true ||
@@ -89,7 +87,6 @@ export function describeStep(
   };
 }
 
-/** `timeout` and `retries` as written, read the way any property is: only when nothing overrides them. */
 function stepOptions(at: At, context: Context): Array<{ name: string; value: string }> {
   const options = resolve(at, context.modules);
   const out: Array<{ name: string; value: string }> = [];
@@ -112,7 +109,6 @@ function stepOptions(at: At, context: Context): Array<{ name: string; value: str
   return out;
 }
 
-/** A step's name: literal text, a template's static parts, or the expression that computes it. */
 function stepName(module: Module, node: t.Node): Label {
   const current = unwrap(node);
   if (current.type === "StringLiteral") return { text: current.value, dynamic: false };
@@ -133,7 +129,6 @@ function sourceValue(module: Module, node: t.Node): string {
   return current.type === "StringLiteral" ? current.value : sourceText(module, current);
 }
 
-/** The code of `node` on one line, shortened to fit a card. */
 export function sourceText(module: Module, node: t.Node): string {
   const source =
     node.start != null && node.end != null ? module.source.slice(node.start, node.end) : "";
@@ -141,18 +136,12 @@ export function sourceText(module: Module, node: t.Node): string {
   return flat.length > MAX_LABEL ? `${flat.slice(0, MAX_LABEL - 1)}…` : flat;
 }
 
-/**
- * Accounts and hosts a step's own code reaches through its step context: `step.user.accounts.x`
- * (or a destructured `user`, `app` or `accounts`), and `fetch` of a URL whose host is written out.
- * Code that never runs is skipped. A callback that declares its own `step`, accounts holder or
- * `fetch` anywhere inside reports nothing through that name, rather than guess which one is meant.
- */
 function usesIn(fn: FunctionNode, budget: Budget, networkFetch: boolean): Reference[] {
   const uses: Reference[] = [];
   const param = fn.params[0];
   const redeclared = declaredInside(fn, budget);
   const step = param?.type === "Identifier" && !redeclared.has(param.name) ? param.name : undefined;
-  // Destructured names that hold an accounts object, by the scope they belong to.
+
   const holders = new Map<string, "user" | "app" | undefined>();
   const accounts = new Map<string, "user" | "app" | undefined>();
   if (param?.type === "ObjectPattern")
@@ -169,7 +158,7 @@ function usesIn(fn: FunctionNode, budget: Budget, networkFetch: boolean): Refere
     const current = unwrap(node);
     return step !== undefined && current.type === "Identifier" && current.name === step;
   };
-  /** The scope of an expression that is the step's accounts object, or `false` when it isn't one. */
+
   const accountsOf = (node: t.Node): "user" | "app" | undefined | false => {
     const current = unwrap(node);
     if (current.type === "Identifier")
@@ -205,7 +194,6 @@ function usesIn(fn: FunctionNode, budget: Budget, networkFetch: boolean): Refere
   return uses;
 }
 
-/** Every name a function's body declares or reassigns, at any depth, including nested parameters. */
 function declaredInside(fn: FunctionNode, budget: Budget): Set<string> {
   const names = new Set<string>();
   const visit = (node: t.Node) => {
@@ -218,7 +206,7 @@ function declaredInside(fn: FunctionNode, budget: Budget): Set<string> {
       for (const param of node.params) for (const name of patternNames(param)) names.add(name);
     if (node.type === "CatchClause" && node.param)
       for (const name of patternNames(node.param)) names.add(name);
-    // A name written to inside is no longer what it was handed in as.
+
     if (node.type === "AssignmentExpression" && node.left.type === "Identifier")
       names.add(node.left.name);
     for (const child of children(node)) visit(child);
@@ -227,10 +215,6 @@ function declaredInside(fn: FunctionNode, budget: Budget): Set<string> {
   return names;
 }
 
-/**
- * The host of a URL only when the code writes all of its authority, read with the same URL parser
- * that runs the request. A dynamic part before the authority closes could still change the host.
- */
 function writtenHost(node: t.Node): string | undefined {
   const prefix = staticPrefix(node);
   if (!prefix || !/^https?:\/\//iu.test(prefix.text)) return undefined;
@@ -245,7 +229,6 @@ function writtenHost(node: t.Node): string | undefined {
   return new URL(text).hostname.toLowerCase() || undefined;
 }
 
-/** The text a string expression starts with, and whether that is the whole string. */
 function staticPrefix(
   node: t.Node,
 ): { readonly text: string; readonly complete: boolean } | undefined {

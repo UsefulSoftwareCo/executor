@@ -76,7 +76,6 @@ function WorkflowBrowser<E>({
   const [workflow, setWorkflow] = useState<string>();
   const [trail, setTrail] = useState<readonly Crumb[]>([]);
   const select = (name: string | undefined) => {
-    // The diagram's code downloads while its source is read, not after.
     if (name !== undefined && bindings.source) void preloadWorkflowDiagram().catch(() => undefined);
     setWorkflow(name);
     setTrail([]);
@@ -149,7 +148,6 @@ function WorkflowBrowser<E>({
                 setWorkflow(name);
               }}
               onShowWorkflow={(name) => {
-                // Going to a workflow already on the trail goes back to it.
                 const index = trail.findIndex((crumb) => crumb.workflow === name);
                 setTrail(index >= 0 ? trail.slice(0, index) : [...trail, { workflow }]);
                 setWorkflow(name);

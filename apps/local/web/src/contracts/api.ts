@@ -182,7 +182,7 @@ const versionSourceQuery = Atom.family((key: VersionKey) =>
     hydrated({ params: { app: key.app, version: key.version } }),
   ),
 );
-/** A retained version's stored files, unformatted and complete, as workflow diagrams read them. */
+
 export const versionSourceAtom = (key: { readonly app: AppId; readonly version: VersionId }) =>
   versionSourceQuery(new VersionKey(key));
 class SourceFileKey extends Data.Class<{

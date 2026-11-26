@@ -21,8 +21,6 @@ import { cn } from "../lib/utils.ts";
 import { ProviderIcon } from "./common.tsx";
 import { providerDisplayUrl } from "../../contracts/dashboard.ts";
 
-/** The cards and boxes a workflow is drawn with, and the words and tiles they share with the details panel. */
-
 const frame =
   "absolute z-[2] flex cursor-pointer items-center gap-3 border bg-background px-3 text-left shadow-[0_1px_2px_#0000000a] outline-none transition-[border-color,box-shadow] duration-150 hover:border-foreground/25 focus-visible:ring-2 focus-visible:ring-ring";
 const selectedFrame =
@@ -97,7 +95,7 @@ export function Card({
         className={cn(frame, "rounded-full pr-5", selected && selectedFrame)}
         style={style}
       >
-        {/* The diamond is what tells a decision from a step at a glance. */}
+        {}
         <span className="mx-0.5 flex size-6.5 shrink-0 rotate-45 items-center justify-center rounded-md bg-primary text-primary-foreground">
           <HugeiconsIcon
             icon={GitForkIcon}
@@ -169,9 +167,8 @@ function CardText({
 
 export function StepName({ node }: { readonly node: StepNode }) {
   if (!node.label.dynamic) return node.label.text;
-  // Templates show `…` for each dynamic part; it reads as a placeholder, not as text.
+
   return node.label.text.split("…").map((part, index, parts) => (
-    // The parts of one label never reorder.
     <span key={index}>
       {part}
       {index < parts.length - 1 && <span className="font-normal text-muted-foreground">…</span>}
@@ -216,7 +213,6 @@ const KIND_ICON = {
   sleepUntil: HourglassIcon,
 } as const;
 
-/** The square at the start of a step: the account's provider, else the host's logo, else the step's kind. */
 export function StepTile({ app, node }: { readonly app: App; readonly node: StepNode }) {
   const account = node.uses.find((use) => use.kind === "account");
   const provider =
@@ -287,10 +283,6 @@ export function boxTitle(node: WorkflowNode): string {
   return "Try";
 }
 
-/**
- * Logos come from a third-party icon service. Only hosts of providers the app declares are looked
- * up there, so a private hostname in an app's code is never sent anywhere by drawing it.
- */
 export function declaresHost(app: App, host: string): boolean {
   const site = (name: string) => name.split(".").slice(-2).join(".");
   return Object.values(app.requirements.accounts).some((slot) => {

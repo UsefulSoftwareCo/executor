@@ -7,14 +7,6 @@ import { useHydrated } from "../hooks/hydrated.ts";
 import { QueryView } from "./context.tsx";
 import type { Crumb } from "./workflow-diagram.tsx";
 
-/**
- * The diagram above a workflow's runs. Its code, and the parser in it, load on demand in a browser
- * after hydration, so a server build drops the import: every module a Worker uploads is compiled
- * whenever one of its isolates starts. A failed load or a source the diagram trips on stays inside
- * this frame, so the run history never goes with it.
- */
-
-/** Starts loading the diagram's code. The module system keeps the loaded module for later calls. */
 export const preloadWorkflowDiagram = () =>
   import.meta.env.SSR
     ? Promise.reject(new Error("The workflow diagram renders only in a browser"))
@@ -40,7 +32,7 @@ export function WorkflowDiagramSection<E>({
   readonly Failure: ComponentType<FailureProps<E>>;
 }) {
   const hydrated = useHydrated();
-  // A new lazy component per attempt: React keeps a failed lazy load and would not ask again.
+
   const [attempt, setAttempt] = useState(0);
   const [Diagram, setDiagram] = useState(() => lazy(preloadWorkflowDiagram));
   return (

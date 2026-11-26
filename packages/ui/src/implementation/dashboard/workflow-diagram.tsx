@@ -6,14 +6,6 @@ import { Fragment, useMemo, useState } from "react";
 import { WorkflowCanvas } from "./workflow-diagram-canvas.tsx";
 import { WorkflowDetails } from "./workflow-diagram-details.tsx";
 
-/**
- * The selected workflow drawn from the deployed version's own source, above its run history.
- * Reaching another workflow through a step or a "Started by" entry adds to the breadcrumb trail.
- * Loaded on demand, so the parser stays out of every other dashboard page. It stays mounted while
- * the person moves between workflows, so the source is parsed once per version.
- */
-
-/** A workflow on the way here, and the step that led on when one did. */
 export interface Crumb {
   readonly workflow: string;
   readonly step?: string;
@@ -39,7 +31,7 @@ export default function WorkflowDiagram({
   const graphs = useMemo(() => deriveAppGraph(version.files), [version.files]);
   const graph = graphs.workflows.find((item) => item.name === workflow);
   const layout = useMemo(() => (graph ? layoutWorkflow(graph) : undefined), [graph]);
-  // A selection belongs to the workflow it was made in; another workflow opens at its start.
+
   const [selection, setSelection] = useState({ workflow, id: "start" });
   const selected = selection.workflow === workflow ? selection.id : "start";
   const node = useMemo(

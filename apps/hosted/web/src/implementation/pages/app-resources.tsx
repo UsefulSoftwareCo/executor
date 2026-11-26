@@ -14,7 +14,7 @@ export function AppResources({
 }: {
   readonly app: App;
   readonly view: "workflows" | "webhooks";
-  /** People who may open the app's Source tab also see its workflows drawn from that source. */
+
   readonly canReadSource?: boolean;
 }) {
   const { organization, slug } = useOrganizationRoute();

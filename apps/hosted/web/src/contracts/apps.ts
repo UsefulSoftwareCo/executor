@@ -420,7 +420,7 @@ export const sourceAtom = (key: {
   readonly app: AppId;
   readonly version: VersionId;
 }) => sourceQuery(new SourceKey(key));
-/** A retained version's stored files, unformatted and complete, as workflow diagrams read them. */
+
 export const versionSourceAtom = (key: {
   readonly organization: OrganizationReference;
   readonly app: AppId;
