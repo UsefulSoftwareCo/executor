@@ -23,7 +23,7 @@ layer(HostedLive, { excludeTestServices: true })("Status persistence", (it) => {
             params: [fixture.account],
           },
         ]);
-        expect(version).toEqual([{ value: "4.0.15" }]);
+        expect(version).toEqual([{ value: "4.0.17" }]);
         expect(columns).toEqual([]);
         expect(records).toEqual([
           {
