@@ -10,7 +10,6 @@ import { formerPasskeyHostAtom } from "../contracts/auth.ts";
 import { documentationBaseAtom } from "@executor-js/hosted-web/contracts/documentation";
 import { documentPasskeyEnrollmentAtom } from "../contracts/passkey-enrollment.ts";
 
-/** Server only: the context the Worker passed with this document request. */
 export const serverDocument = (): CloudDocumentContext => {
   const document = getGlobalStartContext();
   if (document === undefined)
@@ -18,7 +17,6 @@ export const serverDocument = (): CloudDocumentContext => {
   return document;
 };
 
-/** Sign-in and setup pages start from the membership and team data the Worker resolved. */
 export const cloudServerValues = (document: CloudDocumentContext) => {
   const entry = document.entry;
   const shared = [
@@ -27,7 +25,6 @@ export const cloudServerValues = (document: CloudDocumentContext) => {
     Atom.initialValue(documentationBaseAtom, document.documentation),
   ];
   if (entry === null || entry.session === null) return shared;
-  // The Worker read the browser's enrollment cookie; the page cannot read it on the server.
   const enrollment = Atom.initialValue(
     documentPasskeyEnrollmentAtom(entry.session.user.id),
     Option.some(entry.passkeyEnrollment),

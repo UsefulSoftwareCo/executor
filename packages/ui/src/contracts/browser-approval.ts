@@ -1,4 +1,3 @@
-/** Shared browser approval data access. Products provide the route and their page-owned Atom runtime. */
 import { dashboardHttpClient, hydratedResult, requestKey } from "./http.ts";
 import {
   BrowserApprovalAcknowledgement,
@@ -11,10 +10,6 @@ import { Effect, Option, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
 import { Atom, type AsyncResult } from "effect/reactivity";
 
-/**
- * Safe HTTP outcomes shared by the local and hosted browser approval endpoints. `reply-unreadable`:
- * Executor accepted an answer, which may have resumed the call, but its reply did not decode here.
- */
 export class BrowserApprovalFailed extends Schema.TaggedError<BrowserApprovalFailed>()(
   "BrowserApprovalFailed",
   {
@@ -28,12 +23,7 @@ export class BrowserApprovalFailed extends Schema.TaggedError<BrowserApprovalFai
     ]),
   },
 ) {}
-/**
- * A review can also fail with the product's own refusal. Reading it again cannot change the answer,
- * so the card shows the refusal's cause and recovery instead of offering a retry.
- */
 export type BrowserApprovalFailure = BrowserApprovalFailed | ToolRunApprovalRefused;
-/** Send one read or answer. Transport failures become safe outcomes; the body is decoded later. */
 const send = (endpoint: string, answer: ElicitationResponse | undefined) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -60,7 +50,6 @@ const request = <A, E = never>(
   schema: Schema.Decoder<A>,
   options: {
     readonly answer?: ElicitationResponse;
-    /** The product's typed 403, kept with its cause and recovery. */
     readonly refused?: Schema.Decoder<E>;
   } = {},
 ) =>
@@ -83,7 +72,6 @@ const request = <A, E = never>(
                   ? "unavailable"
                   : "network",
       });
-    // Reading again is safe. An accepted answer is not: the request may already be used.
     return yield* Schema.decodeUnknownEffect(schema)(body).pipe(
       Effect.mapError(
         () =>
@@ -94,7 +82,6 @@ const request = <A, E = never>(
     );
   });
 
-/** Construct one review and acknowledge its removal from any product-owned queue after an answer. */
 export const browserApproval = (
   runtime: Atom.AtomRuntime<never>,
   endpoint: string,
@@ -113,10 +100,6 @@ export const browserApproval = (
     ),
   ),
 });
-/**
- * The same review for a person's own dashboard run. Its answer carries the resumed call's outcome.
- * A request the dashboard may not review keeps the product's refusal and its recovery.
- */
 export const toolRunApproval = (runtime: Atom.AtomRuntime<never>, endpoint: string) => ({
   view: runtime
     .atom(request(endpoint, BrowserApprovalView, { refused: ToolRunApprovalRefused }))
@@ -134,14 +117,10 @@ export const toolRunApproval = (runtime: Atom.AtomRuntime<never>, endpoint: stri
     }),
   ),
 });
-/** Bindings for a dashboard run's review. */
 export type ToolRunApprovalAtoms = ReturnType<typeof toolRunApproval>;
-/** Each link owns its query and submission state; answers from one request cannot overwrite another. */
 export const browserApprovalAtoms = (runtime: Atom.AtomRuntime<never>) =>
   Atom.family((endpoint: string) => browserApproval(runtime, endpoint));
-/** Bindings for the shared review page. */
 export type BrowserApprovalAtoms = ReturnType<typeof browserApproval>;
-/** What the review card reads and answers, from either kind of review. */
 export interface ReviewAtoms {
   readonly view: Atom.Atom<AsyncResult.AsyncResult<BrowserApprovalView, BrowserApprovalFailure>>;
   readonly answer: Atom.AtomResultFn<

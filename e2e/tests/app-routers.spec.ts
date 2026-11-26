@@ -1,4 +1,3 @@
-/** Routers group tools by path, carry source metadata to agents, and isolate a failing source. */
 import { expect, layer } from "@effect/vitest";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Effect, Layer, Redacted, Schema } from "effect";
@@ -24,11 +23,9 @@ const Wire = Schema.Struct({
 
 const instructions = "Search the docs before answering. Cite the page you used.";
 
-/** Property documentation a server or document gives, which only describe shows agents. */
 const startDoc = "Start time in unix milliseconds, not an ISO 8601 string.";
 const statusDoc = "One of: draft, open, paid.";
 
-/** An MCP server that describes itself during initialization. One tool name contains a dot. */
 const docsServer = Effect.gen(function* () {
   const routes = Layer.mergeAll(
     HttpRouter.add("GET", "/mcp", HttpServerResponse.empty({ status: 405 })),
@@ -66,7 +63,6 @@ const docsServer = Effect.gen(function* () {
                     : {},
                 additionalProperties: false,
               },
-              // One tool declares the shape of its structured content; the other declares none.
               ...(name === "lookup"
                 ? {
                     outputSchema: {
@@ -102,7 +98,6 @@ const docsServer = Effect.gen(function* () {
   return `http://127.0.0.1:${server.address.port}`;
 });
 
-/** An inline OpenAPI document whose info and tag descriptions describe its router. */
 const billing = (origin: string) => ({
   openapi: "3.1.0",
   info: { title: "Billing API", version: "1", description: "Invoices and refunds" },
@@ -113,7 +108,6 @@ const billing = (origin: string) => ({
       get: {
         operationId: "listInvoices",
         tags: ["invoices"],
-        // OpenAPI documents a parameter on the parameter, beside its schema.
         parameters: [
           { $ref: "#/components/parameters/Status" },
           { name: "page", in: "query", deprecated: true, schema: { type: "integer" } },
@@ -129,7 +123,6 @@ const billing = (origin: string) => ({
   },
 });
 
-/** Static routers, an MCP server and an OpenAPI document under keys, and a server that is down. */
 const source = (docs: string, offline: string) => `
 import { defineApp, mutation, object, query, router, string } from "apps";
 import { mcpRouter } from "apps/mcp";
@@ -185,7 +178,6 @@ const Catalog = Schema.Struct({
 });
 const Skills = Schema.Struct({ skills: Schema.Array(Schema.Struct({ name: Schema.String })) });
 const Failure = Schema.Struct({ _tag: Schema.String, mcp: Schema.optional(Schema.Unknown) });
-/** An authored skill whose name a router's instructions would once have taken. */
 const authoredSkill = (name: string) => ({
   path: `skills/${name}/SKILL.md`,
   content: `---\nname: ${name}\ndescription: Authored ${name} guide\n---\n\nAuthored ${name} guide.\n`,
@@ -226,7 +218,6 @@ layer(HostedLive, { excludeTestServices: true })("App routers", (it) => {
                 dependencies: withApps({ "@modelcontextprotocol/sdk": mcpSdkVersion }),
               }),
             },
-            // Port 9 on loopback refuses connections, so the second server fails fast.
             { path: "index.ts", content: source(`${docs}/mcp`, "http://127.0.0.1:9/mcp") },
             authoredSkill("issues"),
           ],
@@ -238,8 +229,6 @@ layer(HostedLive, { excludeTestServices: true })("App routers", (it) => {
           api.request(actors.owner, "DELETE", path).pipe(Effect.orDie),
         );
 
-        // Paths come from router keys; kind stays on each tool. The failing server hides only
-        // its own tools.
         const listed = yield* api.request(actors.owner, "GET", `${path}/tools`);
         expect(listed.status).toBe(200);
         const catalog = yield* body(Catalog, listed);
@@ -265,7 +254,6 @@ layer(HostedLive, { excludeTestServices: true })("App routers", (it) => {
           description: "Issue triage",
           skill: "tools-issues",
         });
-        // The MCP server's own self-description reaches the router.
         expect(router("docs")).toEqual({
           path: "docs",
           title: "Docs fixture",
@@ -273,7 +261,6 @@ layer(HostedLive, { excludeTestServices: true })("App routers", (it) => {
           skill: "tools-docs",
         });
         expect(router("offline")?.description).toBe("A server that is down");
-        // An OpenAPI document's info describes its router; its tags label tools.
         expect(router("api")).toEqual({
           path: "api",
           title: "Billing API",
@@ -296,7 +283,6 @@ layer(HostedLive, { excludeTestServices: true })("App routers", (it) => {
         const closed = yield* call("issues.close", "mutation", { id: "7" });
         expect(closed.status).toBe(200);
         expect(closed.body).toEqual({ closed: "7" });
-        // The caller names the kind, like an HTTP verb; the wrong one is rejected before running.
         const wrongKind = yield* call("issues.close", "query", { id: "8" });
         expect(wrongKind.status).toBe(409);
         expect(wrongKind.body).toMatchObject({
@@ -310,15 +296,11 @@ layer(HostedLive, { excludeTestServices: true })("App routers", (it) => {
         expect(searched.body).toMatchObject({ structuredContent: { tool: "search.pages" } });
         expect((yield* call("offline.anything", "query")).status).toBeGreaterThanOrEqual(400);
 
-        // Reading a tool under the failed router reports the server's failure, not a missing tool.
         const hidden = yield* api.request(actors.owner, "GET", `${path}/tools/offline.anything`);
         expect(hidden.status).not.toBe(404);
         expect(yield* body(Failure, hidden)).toMatchObject({ _tag: "AppEvaluationFailed" });
         expect((yield* body(Failure, hidden)).mcp).toBeDefined();
 
-        // Router instructions, including the server's own, are published as skills in their own
-        // namespace, beside an authored skill named like a router. Paths that slug alike get
-        // distinct names, and the failed server contributes no skill.
         const flat = router("issue_notes")?.skill ?? "";
         expect(router("issue.notes")?.skill).toBe("tools-issue-notes");
         expect(flat).toMatch(/^tools-issue-notes-\d{10}$/);
@@ -339,8 +321,6 @@ layer(HostedLive, { excludeTestServices: true })("App routers", (it) => {
         expect((yield* read("tools-issue-notes")).content).toContain("Nested notes.");
         expect((yield* read(flat)).content).toContain("Flat notes.");
 
-        // Skills do not depend on the tool source: an app whose only source is down still
-        // serves its authored skills, while its tools fail.
         const unreachable = yield* body(
           App,
           yield* api.request(actors.owner, "POST", `${prefix}/deploy`, {
@@ -375,8 +355,6 @@ export default defineApp({}, async ({ signal }) => ({
           "guide",
         ]);
 
-        // A key restricted to some tools sees only the routers that hold them. A failed router
-        // appears only when the selection names a tool under it.
         const browser = yield* Browser;
         const oauth = yield* McpOAuth;
         yield* browser.login(actors.owner);
@@ -421,7 +399,6 @@ export default defineApp({}, async ({ signal }) => ({
           routers: ["issues"],
         });
 
-        // Agents see each tool's group in search, and a call into the failed router names it.
         const key = yield* body(
           Schema.Struct({ id: Schema.String, key: Schema.RedactedFromValue(Schema.String) }),
           yield* api.request(actors.owner, "POST", "/api/auth/api-key/create", { name: "Routers" }),
@@ -449,14 +426,12 @@ export default defineApp({}, async ({ signal }) => ({
           `return await tools.search({ query: "List open issues", namespace: ${JSON.stringify(app.slug)} });`,
         );
         const found = yield* Schema.decodeUnknownEffect(Search)(search.execution.value);
-        // The router's title is listed once, with the namespace its tools share.
         expect(found.items.find((item) => item.path.endsWith(".issues.list"))?.description).toBe(
           "List open issues",
         );
         expect(found.namespaces).toContainEqual(
           expect.objectContaining({ path: expect.stringMatching(/\.issues$/), router: "Issues" }),
         );
-        // The type an agent reads from describe must accept what the same MCP tool returns.
         const docsTools = yield* execute(
           "Describe and call the MCP server's tools",
           `const found = await tools.search({ query: "Synthetic", namespace: ${JSON.stringify(app.slug)} });
@@ -491,8 +466,6 @@ return { items: described.items, lookup: await docs.lookup({}), pages: await doc
             "const name: unknown = value.structuredContent?.tool;",
           ),
         ).toEqual([]);
-        // Describe documents each property with the text its server or document gives, attached
-        // to the property it describes. Search's one-line input type stays compact without it.
         const documented = yield* execute(
           "Describe documented properties",
           `const found = await tools.search({ namespace: ${JSON.stringify(app.slug)}, limit: 50 });

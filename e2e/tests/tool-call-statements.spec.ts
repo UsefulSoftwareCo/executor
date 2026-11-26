@@ -1,12 +1,3 @@
-/**
- * An MCP tool call checks its access and reads its stored state before the app runs, and each
- * SQL statement is a network round trip from Cloud's session object to the database. The check
- * reads the app, then checks membership with the app's policy and reads the caller's linked
- * accounts in one statement. The call then reads the app and the accounts it runs, after that
- * check, and rechecks the caller's use of the app with its accounts in one more statement. An
- * OAuth account's grant is read in one more. The statement count under `mcp.tool.call`, outside
- * the app's own runtime, is the regression guard.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schedule, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
@@ -104,7 +95,6 @@ layer(HostedLive, { excludeTestServices: true })("Tool call statements", (it) =>
             );
             return { app, path };
           });
-        // Connecting an account from the app links it for the owner.
         const connection = (path: string) =>
           api.request(actors.owner, "POST", connectionsPath(path, "user", "service"), {}).pipe(
             Effect.tap((pending) => Effect.sync(() => expect(pending.status).toBe(200))),
@@ -174,7 +164,6 @@ layer(HostedLive, { excludeTestServices: true })("Tool call statements", (it) =>
         );
         const client = yield* mcp.connect(token.key, "pat", { organization });
 
-        /** Call the tool with the caller's linked accounts and return the SQL made before the app ran. */
         const statements = (target: typeof key, returned: string, operation: string) =>
           Effect.gen(function* () {
             const code = `return await tools[${JSON.stringify(target.app.slug)}].token({})`;
@@ -187,9 +176,7 @@ layer(HostedLive, { excludeTestServices: true })("Tool call statements", (it) =>
               .at(-1);
             if (request === undefined)
               return yield* Effect.die(new Error("MCP request evidence missing"));
-            // Statements the session makes for the call: everything under the tool call except
-            // the app's own runtime, which reads nothing for this tool.
-            const reads = yield* telemetry.query(request.traceId).pipe(
+            const traced = yield* telemetry.query(request.traceId).pipe(
               Effect.flatMap((result) => {
                 const root = result.data.find(
                   (entry) => entry.span.operationName === "mcp.tool.call",
@@ -198,7 +185,9 @@ layer(HostedLive, { excludeTestServices: true })("Tool call statements", (it) =>
                   (entry) => entry.span.tags["http.response.status_code"] === "200",
                 );
                 if (root === undefined || !complete)
-                  return Effect.fail(new Error("The completed server trace must reach Motel"));
+                  return Effect.fail(
+                    new Error("The completed server trace must reach the collector"),
+                  );
                 const byId = new Map(result.data.map(({ span }) => [span.spanId, span]));
                 const path = (spanId: string | null) => {
                   const names: string[] = [];
@@ -213,25 +202,48 @@ layer(HostedLive, { excludeTestServices: true })("Tool call statements", (it) =>
                   }
                   return undefined;
                 };
-                const reads = result.data.flatMap(({ span }) => {
-                  if (span.operationName !== "sql.execute") return [];
+                const text = (span: (typeof result.data)[number]["span"]) =>
+                  String(span.tags["db.query.text"] ?? "")
+                    .replace(/\s+/g, " ")
+                    .slice(0, 80);
+                const reads: string[] = [];
+                const logWrites: string[] = [];
+                for (const { span } of result.data) {
+                  if (span.operationName !== "sql.execute") continue;
                   const names = path(span.parentSpanId);
                   if (names === undefined || names.some((name) => name.startsWith("runtime.")))
-                    return [];
-                  return [
-                    String(span.tags["db.query.text"] ?? "")
-                      .replace(/\s+/g, " ")
-                      .slice(0, 80),
-                  ];
-                });
-                return reads.length === 0
-                  ? Effect.fail(new Error("SQL descendants must reach Motel"))
-                  : Effect.succeed(reads);
+                    continue;
+                  (names.includes("product.tool_call_log.write") ? logWrites : reads).push(
+                    text(span),
+                  );
+                }
+                const ends = (span: (typeof result.data)[number]["span"]) =>
+                  Date.parse(span.startTime) + span.durationMs;
+                const write = result.data.find(
+                  ({ span }) =>
+                    span.operationName === "product.tool_call_log.write" &&
+                    path(span.parentSpanId) !== undefined,
+                );
+                return reads.length === 0 || write === undefined || logWrites.length === 0
+                  ? Effect.fail(
+                      new Error("SQL descendants and the log's write must reach the collector"),
+                    )
+                  : Effect.succeed({
+                      reads,
+                      logWrites,
+                      writeEndsAfterCall: ends(write.span) >= ends(root.span),
+                    });
               }),
               Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 40 }),
               Effect.timeout("25 seconds"),
             );
-            return { traceId: request.traceId, count: reads.length, statements: reads };
+            return {
+              traceId: request.traceId,
+              count: traced.reads.length,
+              statements: traced.reads,
+              logWrites: traced.logWrites,
+              writeEndsAfterCall: traced.writeEndsAfterCall,
+            };
           });
 
         const keyCall = yield* statements(
@@ -276,6 +288,17 @@ layer(HostedLive, { excludeTestServices: true })("Tool call statements", (it) =>
           appCall.count,
           "Authentication, the check's read of the app, one access check, the call's read of the app and one recheck",
         ).toBe(5);
+        for (const [label, call] of [
+          ["key", keyCall],
+          ["oauth", oauthCall],
+          ["empty", emptyCall],
+          ["app", appCall],
+        ] as const) {
+          expect(call.logWrites.length, `${label}: the tool call log's one insert`).toBe(1);
+          expect(call.writeEndsAfterCall, `${label}: the log's write ends after the call`).toBe(
+            true,
+          );
+        }
       }).pipe(Effect.provide(McpClient.layer)),
     ),
   );

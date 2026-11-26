@@ -33,7 +33,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth permissions", (it) => {
           ...Array.from({ length: 100 }, (_, index) => `report_${index}:read`),
           `https://permissions.example.test/${"long_permission_".repeat(12)}:read`,
         ];
-        // Slack's user_scope asks for the signed-in user's own token beside the scopes.
         const userScopes = ["users:read", "chat:write"];
         yield* issuer.configure({ scopes });
         const prefix = `/api/organizations/${actors.organization.id}`;
@@ -54,7 +53,6 @@ export default defineApp({user: { accounts: {service} }}, async () => ({tools: r
         yield* Effect.addFinalizer(() =>
           api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
         );
-        // Agents read the same permissions from the setup check before handing over a link.
         const setup = yield* api.request(
           actors.owner,
           "GET",
@@ -72,7 +70,6 @@ export default defineApp({user: { accounts: {service} }}, async () => ({tools: r
         yield* browser.use("Wait for advanced connection options", (page) =>
           page.getByText("Advanced", { exact: true }).waitFor({ state: "visible" }),
         );
-        // Signing in enters no token, so one line says where the sign-in goes.
         const notice = yield* browser.use("Read where the sign-in goes", (page) => {
           const lines = page.getByRole("dialog").locator("[data-credential-access]");
           return Promise.all([

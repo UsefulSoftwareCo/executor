@@ -16,12 +16,14 @@ Each requirement is one of two scopes:
 Use `user` unless the account belongs to the team rather than to whoever calls
 the tool. A requirement name is used once across both scopes.
 
-**The provider ID comes from the whole definition except `hosts` and display
-text, including `name`, method names, fields and OAuth `scopes`.** Changing any
-of them after users connect gives a new provider, and existing accounts no
-longer fit the slot. Users must connect a new account. Settle these before users
-connect. A `secrets` label and its fields' `title` and `description` only word
-the connect form, so you can change them at any time.
+**The provider ID comes from the whole definition except `hosts`, setup help,
+and display text: a `secrets` label and its fields' `title` and `description`.
+Other content, including `name`, method names, interactive method labels,
+fields, and OAuth `scopes`, still counts.** Changing it after users connect
+gives a new provider, and existing accounts no longer fit the slot. Users must
+connect a new account. Settle it before users connect. Setup help
+([below](#tell-users-where-to-get-credentials)) and display text can change at
+any time.
 
 This is a complete `index.ts` for Vercel with an API token:
 
@@ -65,7 +67,7 @@ const listProjects = query(
 export default defineApp(requirements, { tools: router({ listProjects }) });
 ```
 
-For one shared account instead, declare it under `app` and read
+For one account every caller uses instead, declare it under `app` and read
 `ctx.app.accounts.vercel`:
 
 ```ts
@@ -344,6 +346,72 @@ Each app checks with its own `health` function, so two apps can verify the same
 account differently. Adding or editing `health` does not change the provider's
 identity or disconnect accounts; it only makes earlier results outdated.
 
+## Tell users where to get credentials
+
+The connect form shows what you write about each field and method. Give every
+field a `description` first: where to get the value, with a link to the page
+that shows or creates it, and what it looks like. The form shows it under the
+input, so the link sits beside the field it is for. `title` replaces the
+field's name as its label. Give a `secrets` method a `guide` only for what no
+single field owns: prerequisites, setup that spans fields, or warnings. It
+replaces the form's generic "Get these credentials from your Jira account
+settings." line:
+
+```ts
+const jira = defineProvider({
+  name: "Jira",
+  hosts: ["*.atlassian.net"],
+  auth: {
+    token: secrets({
+      label: "API token",
+      guide: `
+        Sign in as the Jira user the app acts as before you create the token.
+        Atlassian shows a new token once, so copy it before you close the page.
+      `,
+      fields: object({
+        email: plain(string({ description: "The address you sign in to Jira with." })),
+        token: string({
+          title: "API token",
+          description:
+            "Create one under [API tokens](https://id.atlassian.com/manage-profile/security/api-tokens). Starts with `ATATT`.",
+        }),
+      }),
+      request: ({ email, token }) =>
+        header("authorization", t`Basic ${base64(t`${email}:${token}`)}`),
+    }),
+  },
+});
+```
+
+`number()` and `boolean()` take the same `title` and `description`. For OAuth,
+`clientGuide` explains where to create an OAuth client at the service. The form
+shows it when someone enters a client: after Executor's own line and the
+redirect URL to copy, before Client ID:
+
+```ts
+oauth2({
+  authorizationUrl: "https://auth.example.com/authorize",
+  tokenUrl: "https://auth.example.com/token",
+  scopes: ["reports:read"],
+  clientGuide:
+    "Create an app under [Developer settings](https://example.com/settings/apps) and choose **Web application**.",
+});
+```
+
+Help text is Markdown; only `title` is plain text. Write code blocks with `~~~`
+fences, so a template literal needs no escaped backticks. Executor removes the
+indentation every line shares, so an indented template literal is fine. A deploy
+fails with `VersionBuildFailed` at the `declaration` stage, naming the
+requirement, provider, method and field, when a link is not an absolute `https:`
+URL, the text has raw HTML or an image, a `guide` or `clientGuide` is over 4,000
+characters, or a `description` is over 1,000. A bare `www.example.com` counts as
+an `http:` link, so write `https://`.
+
+Setup help belongs to your app's version, not to the provider: editing it never
+changes the provider ID or disconnects accounts, and another app may explain the
+same provider differently. Agents read it in the app's requirements
+(`apps.get`), so explain setup in chat from it before sending a connection link.
+
 ## OAuth sign-in
 
 Prefer discovery. When the service publishes OAuth authorization server or OpenID
@@ -451,6 +519,10 @@ in app code:
   of the token response when the top level has no access token or scope.
   Slack returns user tokens there. Comma-separated scopes in that member become
   space-separated.
+- `pkce: false` signs in without PKCE, for declared endpoints whose token
+  endpoint refuses a confidential client's `code_verifier`. LinkedIn answers
+  `invalid_client` to it, which looks like a wrong secret. It requires a secret
+  `tokenEndpointAuthMethod`.
 
 ```ts
 oauth2({
@@ -463,8 +535,11 @@ oauth2({
 });
 ```
 
-A connected account keeps the settings it signed in with; reconnect it after
-changing them.
+A connected account keeps the settings it signed in with. These settings,
+`pkce` included, are part of the provider ID, so changing one after users
+connect gives a new provider: accounts connected before can't be reconnected
+into it, and users must connect a new account. A sign-in in progress when the
+app is redeployed fails when it saves, and the user starts it again.
 
 When the service documents an RFC 7009 token revocation endpoint, also declare
 `revocationUrl`. Executor calls it when a user deletes the account, so the

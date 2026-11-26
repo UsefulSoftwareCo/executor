@@ -16,8 +16,6 @@ const representativeKey = (state: State) =>
     landmarks: state.view.landmarks.map(({ key, label, role }) => ({ key, label, role })),
   });
 const stateImages = (states: readonly State[]): StateImage[] => {
-  // Match semantics exactly, then apply the same geometry tolerance as layout highlights.
-  // Input contents and image contents are deliberately absent from the diagnostics.
   const representatives = new Map<
     string,
     { screenshot: string; sourceIndex: number; state: State }[]
@@ -242,7 +240,6 @@ function Frame({
   );
 }
 
-/** Step through observed states, with explicit provenance for transition and representative images. */
 export function StateStoryboard({
   href,
   journey,

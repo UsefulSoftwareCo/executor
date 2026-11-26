@@ -1,4 +1,3 @@
-/** Framework lookups over the reference this server ships. No app evaluation or account is involved. */
 import { Effect, Layer, Schema } from "effect";
 import type { HttpApiMiddleware } from "effect/http-api";
 import { HttpApi, HttpApiBuilder } from "effect/http-api";
@@ -10,12 +9,6 @@ import {
   type frameworkApi,
 } from "../contracts/framework.ts";
 
-/**
- * Decode the packaged `framework-reference.json` from a host's authoring assets and keep it.
- * Concurrent first lookups each decode their own copy instead of waiting on one another: on
- * Workers a waiter resumed by another request's fiber runs in that request's I/O context, and
- * its response then fails.
- */
 export const frameworkDocumentation = (
   files: Effect.Effect<readonly { readonly path: string; readonly content: string }[]>,
 ) =>
@@ -40,7 +33,6 @@ const identity = (reference: FrameworkReference) => ({
   digest: reference.digest,
 });
 
-/** Reject a lookup that names another build, so stale references are never answered silently. */
 const select = (
   reference: FrameworkReference,
   selection: { readonly version?: string | undefined; readonly digest?: string | undefined },
@@ -56,7 +48,6 @@ const select = (
       )
     : Effect.void;
 
-/** Exact symbols rank first, then name matches, then documentation matches. */
 const rank = (reference: FrameworkReference, text: string) => {
   const terms = text
     .replace(/([a-z])([A-Z])/g, "$1 $2")
@@ -89,9 +80,7 @@ export const frameworkHandlers = <I extends HttpApiMiddleware.AnyId, S, Id exten
 ) =>
   HttpApiBuilder.group(HttpApi.make(apiId).addHttpApi(api), "framework", (handlers) =>
     Effect.gen(function* () {
-      // Read on the first lookup and kept; later lookups never touch I/O.
       const documentation = yield* FrameworkDocumentation;
-      // The apps release this host runs; builds that do not declare it name the same version.
       return handlers
         .handle("release", () => Effect.succeed({ version: appsVersion }))
         .handle("search", ({ query }) =>
@@ -150,7 +139,6 @@ export const frameworkHandlers = <I extends HttpApiMiddleware.AnyId, S, Id exten
     }),
   );
 
-/** Standalone routes for hosts that serve this group as its own HttpApi, as local does. */
 export const frameworkRoutes = <I extends HttpApiMiddleware.AnyId, S>(
   api: ReturnType<typeof frameworkApi<I, S>>,
 ) => HttpApiBuilder.layer(api).pipe(Layer.provide(frameworkHandlers(api, api.identifier)));

@@ -1,4 +1,3 @@
-/** Mutable publication fixture outside the real Executor server and isolated app runtime. */
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Effect, FileSystem, Layer, Ref, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
@@ -7,7 +6,6 @@ import { createServer } from "node:http";
 
 type FileFailure = "oversized" | "encoding" | "redirect";
 
-/** Serve well-known and GitHub-shaped publications with controlled changes and incomplete generations. */
 export const skillUpstream = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -74,7 +72,6 @@ export const skillUpstream = Effect.gen(function* () {
     fileFailure: undefined,
   });
   const requests = yield* Ref.make<string[]>([]);
-  /** The token a private repository requires, and the credentials its requests carried. */
   const access = yield* Ref.make<string | undefined>(undefined);
   const credentials = yield* Ref.make<{ path: string; authorization: string | undefined }[]>([]);
   const route = HttpRouter.add(
@@ -92,7 +89,6 @@ export const skillUpstream = Effect.gen(function* () {
           ...items,
           { path: url.pathname, authorization },
         ]);
-        // GitHub asks git clients for credentials and hides private files from everyone else.
         const git = url.pathname.endsWith(".git/git-upload-pack");
         const expected = git
           ? `Basic ${Buffer.from(`x-access-token:${token}`).toString("base64")}`
@@ -177,9 +173,7 @@ export const skillUpstream = Effect.gen(function* () {
       }),
     commit: Ref.get(state).pipe(Effect.map((current) => current.commit)),
     requests: Ref.get(requests),
-    /** Make the GitHub repository private, readable only with this token. */
     requireToken: (token: string) => Ref.set(access, token),
-    /** The Authorization header of every GitHub request, in order. */
     credentials: Ref.get(credentials),
   };
 });

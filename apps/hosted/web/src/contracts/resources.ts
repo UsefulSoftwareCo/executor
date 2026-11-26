@@ -1,4 +1,3 @@
-/** Independent resource queries and mutations retain the accounts and version that opened them. */
 import { hydrated } from "@executor-js/ui/contracts/http";
 import { revalidated } from "@executor-js/ui/contracts/refresh";
 import { Data, Effect } from "effect";
@@ -111,10 +110,6 @@ const terminate = Atom.family((key: RunKey) =>
     ),
   ),
 );
-/**
- * Read the app's workflow definitions and webhooks again, as after the caller links or unlinks an
- * account: both are discovered with the app's linked accounts.
- */
 export const refreshResourceDiscovery = (
   get: Atom.FnContext,
   key: ConstructorParameters<typeof DefinitionKey>[0],
@@ -124,7 +119,6 @@ export const refreshResourceDiscovery = (
   get.refresh(hooksSource(target));
   get.refresh(sourcesSource(target));
 };
-/** Current definitions are independent of retained, paginated run history. */
 export const workflowBindings = (input: ConstructorParameters<typeof DefinitionKey>[0]) => {
   const key = new DefinitionKey(input);
   const target = new Target({ organization: key.organization, app: key.app });
@@ -170,7 +164,6 @@ const sourcesSource = Atom.family((key: Target) =>
     protectedQuery,
   ),
 );
-/** Saving keeps the listed label; the source's subscriptions are re-registered in the background. */
 const configure = Atom.family((key: SourceKey) =>
   HostedClient.runtime.fn((input: typeof ConfigureWebhookSource.Type, get) =>
     Effect.flatMap(HostedClient, (client) =>
@@ -190,7 +183,6 @@ const configure = Atom.family((key: SourceKey) =>
     ),
   ),
 );
-/** Subscriptions of the app the caller can see; each runs as its own actor. */
 export const webhookBindings = (input: ConstructorParameters<typeof Target>[0]) => {
   const target = new Target(input);
   return {

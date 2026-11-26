@@ -4,7 +4,6 @@ import {
   selfHostSsoDiscovery,
 } from "./implementation/auth-options.ts";
 import { selfHostRegistration, selfHostUserHooks } from "./implementation/registration.ts";
-/** Better Auth over the host's shared, persisted PGlite database. */
 import { betterAuth } from "better-auth";
 import { HostedAppSessions, hostedAppSessions } from "@executor-js/hosted-server/app-ui";
 import {
@@ -12,17 +11,19 @@ import {
   mcpBrowserGrantError,
   mcpConnectionStore,
   provisionHostedOAuthResources,
-  ApiAuthentication,
+  BearerAuthentication,
   apiBearerAccess,
   callerSpanAttributes,
+  describeMcpAccess,
   mcpBearerAccess,
-  Authentication,
+  SessionAuthentication,
   AuthenticationUnavailable,
   sessionPrincipal,
   lookupMembership,
   lookupOrganizationSlug,
   resolveOrganizationReference,
   deleteOrganizationRecords,
+  deleteUserRecords,
   grantExpiry,
   authEndpointTemplates,
 } from "@executor-js/hosted-server";
@@ -32,7 +33,6 @@ import { SqlClient } from "effect/sql";
 import { AuthDatabase } from "./contracts/database.ts";
 import { HttpServerRequest, HttpServerResponse } from "effect/http";
 
-/** Initialize auth before listening; the database owns persistent users and sessions. */
 export const selfHostAuth = Effect.gen(function* () {
   const settings = yield* selfHostAuthSettings;
   const database = yield* AuthDatabase;
@@ -59,7 +59,7 @@ export const selfHostAuth = Effect.gen(function* () {
   yield* provisionHostedOAuthResources(origins, context).pipe(
     Effect.mapError(() => new AuthenticationUnavailable()),
   );
-  const identity = Layer.succeed(Authentication, {
+  const identity = Layer.succeed(SessionAuthentication, {
     ...origins,
     oauthRedirectUri: Option.getOrUndefined(settings.oauthRedirectUri),
     current: (headers) =>
@@ -86,6 +86,8 @@ export const selfHostAuth = Effect.gen(function* () {
       deleteOrganizationRecords(context.adapter, organizationId).pipe(
         Effect.withSpan("auth.removeOrganization"),
       ),
+    removeUser: (user) =>
+      deleteUserRecords(context.adapter, user).pipe(Effect.withSpan("auth.removeUser")),
   });
   const mcpIdentity = Layer.succeed(McpAuthentication, {
     ...origins,
@@ -102,6 +104,8 @@ export const selfHostAuth = Effect.gen(function* () {
         try: () => auth.api.getMcpBrowserAccess({ headers, body: { id } }),
         catch: mcpBrowserGrantError,
       }),
+    describe: (access) =>
+      describeMcpAccess(access).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
     metadata: Effect.tryPromise({
       try: () => auth.api.getOAuthServerConfig(),
       catch: () => new AuthenticationUnavailable(),
@@ -110,10 +114,15 @@ export const selfHostAuth = Effect.gen(function* () {
       Effect.tryPromise({ try: () => run(auth.api), catch: (cause) => cause }),
     ),
   });
-  const apiIdentity = Layer.succeed(ApiAuthentication, {
+  const apiIdentity = Layer.succeed(BearerAuthentication, {
     ...origins,
-    authenticate: (headers, organization) =>
-      apiBearerAccess(origins, { headers, organization }).pipe(
+    authenticate: (headers, organization, options) =>
+      apiBearerAccess(origins, {
+        headers,
+        organization,
+        desktop: options?.desktop,
+        tools: options?.tools,
+      }).pipe(
         Effect.provideService(SqlClient.SqlClient, sql),
         Effect.tap(({ access, userId }) =>
           Effect.annotateCurrentSpan(callerSpanAttributes(access.organization, userId)),
@@ -127,7 +136,6 @@ export const selfHostAuth = Effect.gen(function* () {
     const incoming = yield* HttpServerRequest.toWeb(request);
     yield* routes.record(new URL(incoming.url).pathname);
     const web = new Request(incoming, { headers: new Headers(incoming.headers) });
-    // The socket address is trusted. Never accept a client-supplied forwarding header.
     web.headers.delete("x-executor-client-ip");
     if (Option.isSome(request.remoteAddress))
       web.headers.set("x-executor-client-ip", request.remoteAddress.value);
@@ -160,7 +168,6 @@ export const selfHostAuth = Effect.gen(function* () {
   };
 });
 
-/** The one auth instance, built before startup data steps and shared with the routes. */
 export class SelfHostAuth extends Context.Service<
   SelfHostAuth,
   Effect.Success<typeof selfHostAuth>

@@ -287,7 +287,7 @@ layer(HostedLive, { excludeTestServices: true })("Provider label identity", (it)
           // The fresh install ran the upgrade's data step over no providers; the upgrade runs it.
           ...["private_hosted_data_step_items", "private_hosted_data_steps"].map((journal) => ({
             sql: `DELETE FROM ${journal} WHERE name = $1`,
-            params: ["11_provider_identities"],
+            params: ["14_provider_identities"],
           })),
         ]);
         // The upgrade's data step records the stored provider's identity.

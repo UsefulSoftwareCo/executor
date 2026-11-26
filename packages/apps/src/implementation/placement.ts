@@ -208,7 +208,6 @@ export const withPlacements = <
       throw new TypeError(undeclared(account.method));
     return placements;
   };
-  // SAFETY: both members of AccountRequest are defined here.
   return Object.defineProperties(account, {
     headers: {
       enumerable: false,

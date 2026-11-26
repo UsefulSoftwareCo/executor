@@ -1,4 +1,3 @@
-/** Shared app-domain foundation. The existing paid ACM subscription is a prerequisite, never purchased by deployment. */
 import { adopt } from "alchemy/AdoptPolicy";
 import { retain } from "alchemy/RemovalPolicy";
 import * as Cloudflare from "alchemy/Cloudflare";
@@ -38,9 +37,6 @@ export default AppDomainZone.make(
         ]),
       ),
     }).pipe(retain());
-    // Account-owned tokens currently share the saturated account allowance.
-    // Test stages use the deployment user's separate quota through one scoped
-    // token, without consuming a token for every disposable environment.
     const testToken = yield* Cloudflare.ApiToken.UserApiToken("TestControllerToken", {
       policies: zone.zoneId.pipe(
         Output.map((zoneId) => [

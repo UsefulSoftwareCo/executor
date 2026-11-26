@@ -1,13 +1,5 @@
-/**
- * Setup steps for refusals an agent can recover from. The caller may be the agent itself, so each
- * refusal says what to call next. Steps never repeat what the caller sent.
- */
 import type { CatalogRecovery } from "./catalog.ts";
 
-/**
- * Recovery for an MCP server added by URL that Executor could not confirm. The caller chose the
- * URL, so the steps never repeat it.
- */
 export const customSetupRecovery: CatalogRecovery = {
   action:
     "Write this app with the app-authoring skill, using the MCP server URL you supplied. The refusal's reason says what the server answered.",
@@ -18,7 +10,6 @@ export const customSetupRecovery: CatalogRecovery = {
   ].join("\n"),
 };
 
-/** Recovery for an install whose entry the catalog does not list. */
 export const unknownEntryRecovery: CatalogRecovery = {
   action:
     "Install takes the id of an entry the catalog lists. Add a remote MCP server by its URL with the custom MCP import instead.",

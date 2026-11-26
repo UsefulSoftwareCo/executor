@@ -22,7 +22,6 @@ import {
 import { ProviderIcon } from "./common.tsx";
 import { useDashboard } from "./context.tsx";
 
-/** Account management lives on its list row; products supply the menu items they support. */
 export function AccountActionsMenu({
   account,
   children,
@@ -48,7 +47,6 @@ export function AccountActionsMenu({
   );
 }
 
-/** One modal shell for every row action, titled for the action and identified by the account. */
 export function AccountDialog({
   title,
   description,
@@ -78,7 +76,6 @@ export function AccountDialog({
   );
 }
 
-/** The account a dialog acts on, shown the same way in every action. */
 export function AccountDialogIdentity({ data }: { readonly data: AccountDetail }) {
   const { account, provider } = data;
   return (
@@ -95,7 +92,6 @@ export function AccountDialogIdentity({ data }: { readonly data: AccountDetail }
   );
 }
 
-/** Edit a saved account's name and agent-visible description; the product owns the mutation. */
 export function EditAccountForm<E>({
   account,
   update,
@@ -172,7 +168,6 @@ export function EditAccountForm<E>({
   );
 }
 
-/** Show affected apps before deleting credentials, using the host's typed mutation. */
 export function DisconnectAccountForm<E>({
   data,
   disconnect,
@@ -250,7 +245,6 @@ export function DisconnectAccountForm<E>({
   );
 }
 
-/** Links are managed on the app itself. */
 export function AccountApps({ apps }: { readonly apps: readonly App[] }) {
   const { AppLink } = useDashboard();
   return apps.length === 0 ? (

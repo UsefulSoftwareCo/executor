@@ -1,4 +1,3 @@
-/** Compile server and browser source inside workerd using Cloudflare's dependency resolver. */
 import { createApp, InMemoryFileSystem } from "@cloudflare/worker-bundler";
 import {
   boundBuildMessage,
@@ -17,21 +16,16 @@ import { sourceImports } from "./worker-source-imports.ts";
 import { serverSourceMap, sourceLocation } from "./worker-source-map.ts";
 import { wasmBuild } from "./worker-wasm-build.ts";
 import { jsonModules } from "./worker-json-modules.ts";
+import { compiledFiles } from "./worker-compiled-files.ts";
 import { serverFilesModule, serverFilesSource } from "./worker-bridge.ts";
 import { workerDependencies } from "./worker-dependencies.ts";
 import apps from "apps/package.json" with { type: "json" };
 
-/**
- * What the compiling host contributes. `registry` replaces the public npm registry. A host has no
- * framework of its own: every source declares the `apps` release it uses in `dependencies.apps`.
- * `apps` supplies the package files of one declared release, so a test deployment can build apps
- * against its own unpublished framework. Any other declared release installs from the registry.
- */
 export interface WorkerHost {
   readonly registry?: string;
+  readonly tarballFetch?: (input: string, init?: RequestInit) => Promise<Response>;
   readonly apps?: {
     readonly version: string;
-    /** Package-relative paths and contents, as in the published archive. */
     readonly files: Effect.Effect<Readonly<Record<string, string>>, RuntimeBuildFailed>;
   };
 }
@@ -48,10 +42,6 @@ const frameworkExports = [
   "apps/skills/effect",
   "apps/operations/approval",
 ];
-/**
- * The build's own entry for each framework import. These re-exports belong to this host's export
- * list, not to the release, so they stay with the app and the stored framework is the release's.
- */
 const frameworkEntries = Object.fromEntries(
   frameworkExports.map((name) => [
     name,
@@ -82,10 +72,8 @@ const EsbuildFailure = Schema.Struct({
     }),
   ),
 });
-/** Shown compiler errors; the rest are counted. */
 const shownCompileErrors = 5;
 
-/** Keep the compiler's own errors and the first failing location for the deployer. */
 const compileFailure = (cause: unknown) =>
   Option.match(Schema.decodeUnknownOption(EsbuildFailure)(cause), {
     onNone: () => new RuntimeBuildFailed({ stage: "compile", message: describeBuildCause(cause) }),
@@ -139,12 +127,6 @@ const selectedFramework = (filesystem: InMemoryFileSystem) =>
     ),
   );
 
-/**
- * Compilation returns browser bytes separately; neither imports nor credentials cross from server
- * execution. The selected framework's protocol must be supported before anything compiles. The
- * bundle holds only the app's modules; `framework` holds the release's server modules, which a
- * host stores once and links on load (see `assembleWorkerBundle`).
- */
 export const compileWorkerApp = (
   files: CodeFiles,
   host: WorkerHost,
@@ -178,6 +160,7 @@ export const compileWorkerApp = (
     const wasm = wasmBuild(filesystem, path);
     const json = jsonModules(files, entry);
     const sourceMap = serverSourceMap(entry);
+    const sizes = compiledFiles(filesystem);
     const compiled = yield* Effect.tryPromise({
       try: () =>
         createApp({
@@ -195,13 +178,12 @@ export const compileWorkerApp = (
             wasm.plugin,
             sourceMap.plugin,
             json.plugin,
-            // The browser plugin wraps script-imported assets in a module-relative URL first; its
-            // own lookup of the asset file then reaches the source resolver.
             ...(browser === undefined ? [] : [browser.plugin]),
             sourceImports(filesystem, path),
+            sizes.plugin,
           ],
         }),
-      catch: (cause) => json.failure() ?? compileFailure(cause),
+      catch: (cause) => sizes.failure() ?? json.failure() ?? compileFailure(cause),
     });
     const map = sourceMap.map();
     if (map === undefined)
@@ -235,7 +217,6 @@ export const compileWorkerApp = (
       framework: { version: selected.version, modules: selected.server },
       ui,
       protocol: selected.protocol,
-      // Locates this build's declaration failures; never retained with it.
       sourceMap: map,
     };
   }).pipe(Effect.provide(Path.layer), Effect.withSpan("runtime.cloud.compile"));

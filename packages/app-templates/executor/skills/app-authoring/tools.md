@@ -31,9 +31,12 @@ Response, Date, stream, SDK class instance, undefined or BigInt.
 
 The schema helpers are `object`, `string`, `number`, `boolean`, `array`,
 `record`, `json` and `literal`. Use `.optional()` for absent fields and
-`.default(value)` for defaults. `Infer<typeof Input>` gives the parsed input
-type. `object` strips undeclared properties. `decodeJson(response, schema)`
-checks HTTP status and parses a JSON response.
+`.default(value)` for defaults. `string`, `number` and `boolean` take an
+optional `title` and `description`, such as
+`string({ description: "An ISO 8601 date" })`, which agents see in the tool's
+input schema. `Infer<typeof Input>` gives the parsed input type. `object`
+strips undeclared properties. `decodeJson(response, schema)` checks HTTP status
+and parses a JSON response.
 
 ## Give the app an icon
 
@@ -254,7 +257,7 @@ Only the selected tool's callback runs, after input validation. Omitted approval
 permits execution. Invalid decisions and callback failures prevent the tool body
 from running. There is no app-level `policy` or `createExecutor` policy option.
 
-In the default model mode, when execute returns `approval-required`, show its `elicitation.message` and reviewed
+In model mode, when execute returns `approval-required`, show its `elicitation.message` and reviewed
 invocation to the user. This is an MCP form request with an empty `requestedSchema`.
 After the user answers, call `resume({ requestId, response: { action: "accept", content: {} } })`,
 `resume({ requestId, response: { action: "decline" } })`, or

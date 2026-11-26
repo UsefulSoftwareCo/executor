@@ -1,10 +1,5 @@
-/**
- * Repository lint rules. `.oxlintrc.jsonc` chooses the files each rule covers.
- * Adapted from the rat-stack Oxlint plugins.
- */
 import { definePlugin, defineRule, type ESTree } from "@oxlint/plugins";
 
-/** True when a `var` binding is hoisted to module scope rather than into a function. */
 const hoistedToModule = (node: ESTree.Node) => {
   for (let current = node.parent; current !== null; current = current.parent) {
     switch (current.type) {
@@ -21,7 +16,6 @@ const hoistedToModule = (node: ESTree.Node) => {
   return false;
 };
 
-/** `let` is module state only when declared directly in the module body. */
 const declaredInModuleBody = (node: ESTree.VariableDeclaration) =>
   node.parent.type === "Program" ||
   (node.parent.type === "ExportNamedDeclaration" && node.parent.parent.type === "Program");
@@ -59,7 +53,6 @@ const runners = new Set([
   "runSyncWith",
 ]);
 
-/** `Effect.runPromise(...)` and friends, or `ManagedRuntime.make(...)`. */
 const manualRunner = (callee: ESTree.Node) => {
   if (
     callee.type !== "MemberExpression" ||
@@ -95,7 +88,6 @@ const noManualEffectRuntimeInTests = defineRule({
   }),
 });
 
-/** Effects whose waiters resume when another fiber finishes shared, in-flight work. */
 const sharedWaits = new Map([
   ["Effect", new Set(["cached", "cachedWithTTL", "cachedInvalidateWithTTL"])],
   ["Deferred", new Set(["make", "makeUnsafe"])],
@@ -105,7 +97,6 @@ const sharedWaits = new Map([
   ["RcMap", new Set(["make"])],
 ]);
 
-/** `Effect.cached(...)` and the other constructors above, by their written name. */
 const sharedWait = (callee: ESTree.Node) => {
   if (
     callee.type !== "MemberExpression" ||
@@ -119,7 +110,6 @@ const sharedWait = (callee: ESTree.Node) => {
     : undefined;
 };
 
-/** `Effect.gen(...)`, possibly followed by `.pipe(...)`, unwrapped to its generator. */
 const generatorOf = (node: ESTree.Node): ESTree.Node | undefined => {
   if (node.type !== "CallExpression") return undefined;
   const callee = node.callee;
@@ -136,11 +126,6 @@ const generatorOf = (node: ESTree.Node): ESTree.Node | undefined => {
   return undefined;
 };
 
-/**
- * The generator that initializes a Worker's handlers: the second argument of
- * `export default Entrypoint.make(props, Effect.gen(...))`. It runs once per isolate, and every
- * request the isolate serves uses what it returns.
- */
 const isWorkerInitialization = (fn: ESTree.Node) => {
   const gen = fn.parent;
   if (gen?.type !== "CallExpression") return false;
@@ -163,7 +148,6 @@ const isWorkerInitialization = (fn: ESTree.Node) => {
   );
 };
 
-/** The nearest function around a node. */
 const enclosingFunction = (node: ESTree.Node) => {
   for (let current = node.parent; current !== null; current = current.parent)
     if (
@@ -198,7 +182,6 @@ const noSharedWaitInWorkerInitialization = defineRule({
   }),
 });
 
-/** The named type of `x as T`, `<T>x` or `x satisfies T`, including `ns.T`. */
 const assertedTypeName = (type: ESTree.TSType) => {
   if (type.type !== "TSTypeReference") return undefined;
   const name = type.typeName;
@@ -226,7 +209,6 @@ const noProofForgery = defineRule({
   },
 });
 
-/** Effect functions that wait on a Promise or an async iterable, by the module that exports them. */
 const promiseBridges = new Map([
   ["Effect", new Set(["tryPromise", "promise"])],
   ["Stream", new Set(["fromAsyncIterable", "fromReadableStream"])],
@@ -236,7 +218,6 @@ const promiseBridges = new Map([
 const fromEffect = (source: string) =>
   source === "effect" || source.startsWith("effect/") || source.startsWith("@effect/");
 
-/** A member's name when it is written statically: `a.b`, `a["b"]` or `` a[`b`] ``. */
 const staticKey = (node: ESTree.MemberExpression) => {
   if (!node.computed) return node.property.type === "Identifier" ? node.property.name : undefined;
   const key = node.property;
@@ -246,23 +227,144 @@ const staticKey = (node: ESTree.MemberExpression) => {
   return undefined;
 };
 
-/**
- * Resolves names the way a file imports them: `import { Effect as Fx } from "effect"`,
- * `import * as Fx from "effect/Effect"`, `import * as effect from "effect"` (then `effect.Effect`),
- * `const Fx = Effect`, and bridges imported or destructured by name. Syntactic only: a module passed
- * through a function, reassigned, or reached through a helper in another file is not followed.
- */
+const propertyKey = (node: { readonly computed: boolean; readonly key: ESTree.PropertyKey }) => {
+  if (node.computed)
+    return node.key.type === "Literal" && typeof node.key.value === "string"
+      ? node.key.value
+      : undefined;
+  if (node.key.type === "Identifier") return node.key.name;
+  return node.key.type === "Literal" && typeof node.key.value === "string"
+    ? node.key.value
+    : undefined;
+};
+
+const secureContextOnly = new Map([
+  ["crypto", new Set(["randomUUID", "subtle"])],
+  ["navigator", new Set(["clipboard"])],
+]);
+const globalObjects = new Set(["window", "globalThis", "self"]);
+type Holder = "global" | "crypto" | "navigator";
+
+const member = (holder: Holder | undefined, key: string | undefined): Holder | undefined => {
+  if (holder !== "global" || key === undefined) return undefined;
+  if (globalObjects.has(key)) return "global";
+  return key === "crypto" || key === "navigator" ? key : undefined;
+};
+const isSecureOnly = (holder: Holder | undefined, key: string | undefined) =>
+  holder !== undefined && key !== undefined && secureContextOnly.get(holder)?.has(key) === true;
+
+const aliasDepth = 4;
+
+const pathTo = (pattern: ESTree.Node, name: string): readonly string[] | undefined => {
+  if (pattern.type === "Identifier") return pattern.name === name ? [] : undefined;
+  if (pattern.type === "AssignmentPattern") return pathTo(pattern.left, name);
+  if (pattern.type !== "ObjectPattern") return undefined;
+  for (const property of pattern.properties) {
+    if (property.type !== "Property") continue;
+    const inner = pathTo(property.value, name);
+    if (inner === undefined) continue;
+    const key = propertyKey(property);
+    return key === undefined ? undefined : [key, ...inner];
+  }
+  return undefined;
+};
+
+const noSecureContextApi = defineRule({
+  meta: {
+    type: "problem",
+    docs: { description: "Keep browser code off APIs that exist only in secure contexts." },
+    messages: {
+      secureOnly:
+        "{{name}} is undefined on a plain HTTP origin other than localhost, where a self-hosted dashboard may be served. Call randomUuid from @executor-js/utils/random-uuid or copyText from @executor-js/ui/lib/clipboard instead. Any feature detection for it belongs inside such a helper.",
+    },
+  },
+  create: (context) => {
+    const source = context.sourceCode;
+
+    const declared = (node: ESTree.Node, name: string) => {
+      for (
+        let scope: ReturnType<typeof source.getScope> | null = source.getScope(node);
+        scope;
+        scope = scope.upper
+      ) {
+        const variable = scope.set.get(name);
+        if (variable !== undefined && variable.defs.length > 0) return variable;
+      }
+      return undefined;
+    };
+
+    const denotes = (node: ESTree.Node, depth = 0): Holder | undefined => {
+      if (depth > aliasDepth) return undefined;
+      if (
+        node.type === "ParenthesizedExpression" ||
+        node.type === "TSNonNullExpression" ||
+        node.type === "TSAsExpression" ||
+        node.type === "TSSatisfiesExpression"
+      )
+        return denotes(node.expression, depth);
+      if (node.type === "MemberExpression")
+        return member(denotes(node.object, depth), staticKey(node));
+      if (node.type !== "Identifier") return undefined;
+      const variable = declared(node, node.name);
+      if (variable === undefined) {
+        if (globalObjects.has(node.name)) return "global";
+        return node.name === "crypto" || node.name === "navigator" ? node.name : undefined;
+      }
+      const [definition, ...others] = variable.defs;
+      if (definition === undefined || others.length > 0 || definition.type !== "Variable")
+        return undefined;
+      const declarator = definition.node;
+      const declaration = definition.parent;
+      if (
+        declarator.type !== "VariableDeclarator" ||
+        declaration?.type !== "VariableDeclaration" ||
+        declaration.kind !== "const" ||
+        declarator.init === null
+      )
+        return undefined;
+      const path = pathTo(declarator.id, node.name);
+      if (path === undefined) return undefined;
+      return path.reduce<Holder | undefined>(
+        (holder, key) => member(holder, key),
+        denotes(declarator.init, depth + 1),
+      );
+    };
+
+    const report = (node: ESTree.Node, holder: Holder, key: string) =>
+      context.report({ node, messageId: "secureOnly", data: { name: `${holder}.${key}` } });
+
+    const destructured = (pattern: ESTree.Node, holder: Holder | undefined) => {
+      if (holder === undefined) return;
+      if (pattern.type === "AssignmentPattern") return destructured(pattern.left, holder);
+      if (pattern.type !== "ObjectPattern") return;
+      for (const property of pattern.properties) {
+        if (property.type !== "Property") continue;
+        const key = propertyKey(property);
+        if (key !== undefined && isSecureOnly(holder, key)) report(property, holder, key);
+        else destructured(property.value, member(holder, key));
+      }
+    };
+
+    return {
+      MemberExpression(node) {
+        const holder = denotes(node.object);
+        const key = staticKey(node);
+        if (holder !== undefined && key !== undefined && isSecureOnly(holder, key))
+          report(node, holder, key);
+      },
+      VariableDeclarator(node) {
+        if (node.init !== null) destructured(node.id, denotes(node.init));
+      },
+    };
+  },
+});
+
 const effectBindings = () => {
-  /** Local name to the Effect module it is. */
   const modules = new Map<string, string>();
-  /** `import * as effect from "effect"`. */
   const namespaces = new Set<string>();
-  /** Local names bound directly to a bridge, such as `const { tryPromise } = Effect`. */
   const bridges = new Map<string, string>();
-  /** Every name imported from an Effect package: a module, never a Promise. */
   const imported = new Set<string>();
   const moduleOf = (node: ESTree.Node): string | undefined => {
-    // `(Effect as Record<string, unknown>)[key]` is still Effect.
     if (
       node.type === "TSAsExpression" ||
       node.type === "TSSatisfiesExpression" ||
@@ -281,7 +383,6 @@ const effectBindings = () => {
     }
     return undefined;
   };
-  /** The bridge a callee names, such as `Fx.tryPromise` or a destructured `tryPromise`. */
   const bridgeOf = (callee: ESTree.Node) => {
     if (callee.type === "Identifier") return bridges.get(callee.name);
     if (callee.type !== "MemberExpression") return undefined;
@@ -297,7 +398,6 @@ const effectBindings = () => {
   return { modules, namespaces, bridges, imported, moduleOf, bridgeOf, isEffectValue };
 };
 
-/** `x.then(...)`, `x.catch(...)` or `x.finally(...)` on a value, not on an Effect module. */
 const promiseChain = (callee: ESTree.Node, isEffectValue: (node: ESTree.Node) => boolean) => {
   if (callee.type !== "MemberExpression") return undefined;
   const key = staticKey(callee);
@@ -305,7 +405,6 @@ const promiseChain = (callee: ESTree.Node, isEffectValue: (node: ESTree.Node) =>
   return isEffectValue(callee.object) ? undefined : `.${key}`;
 };
 
-/** True inside a function a bridge waits on, `Effect.tryPromise(async () => ...)`: the bridge is reported. */
 const insideBridge = (node: ESTree.Node, bridgeOf: (callee: ESTree.Node) => string | undefined) => {
   const fn = enclosingFunction(node);
   if (fn === undefined) return false;
@@ -319,12 +418,6 @@ const insideBridge = (node: ESTree.Node, bridgeOf: (callee: ESTree.Node) => stri
   );
 };
 
-/**
- * A guard against the common ways framework code waits on an app's Promise without the adapter.
- * It cannot be complete: without type information it cannot tell a Promise from another value, or
- * follow a callback into a helper in another file or package. The tool-call timing scenarios in
- * `e2e/tests/tool-call-overhead.spec.ts` are the backstop.
- */
 const authoredCodeThroughAdapter = defineRule({
   meta: {
     type: "problem",
@@ -355,7 +448,6 @@ const authoredCodeThroughAdapter = defineRule({
       ImportDeclaration(node) {
         const source = node.source.value;
         if (!fromEffect(source)) return;
-        // `effect/Effect`, `effect/Stream`: the module itself.
         const direct = source.startsWith("effect/") ? source.slice("effect/".length) : undefined;
         for (const specifier of node.specifiers) {
           names.imported.add(specifier.local.name);
@@ -379,9 +471,7 @@ const authoredCodeThroughAdapter = defineRule({
         if (node.init === null) return;
         const module = names.moduleOf(node.init);
         if (module === undefined) return;
-        // `const Fx = Effect`
         if (node.id.type === "Identifier") names.modules.set(node.id.name, module);
-        // `const { tryPromise: run } = Effect`
         if (node.id.type !== "ObjectPattern") return;
         for (const property of node.id.properties) {
           if (property.type !== "Property") continue;
@@ -411,7 +501,6 @@ const authoredCodeThroughAdapter = defineRule({
           context.report({ node, messageId: "dynamic", data: { module } });
           return;
         }
-        // Reported where it is named, so `const run = Effect.tryPromise` is caught too.
         if (promiseBridges.get(module)?.has(key))
           context.report({ node, messageId: "bridge", data: { call: `${module}.${key}` } });
       },
@@ -440,7 +529,6 @@ const authoredCodeThroughAdapter = defineRule({
   },
 });
 
-/** Calls along a fluent chain such as `endpoint.annotate(...).pipe(...)`, outermost first. */
 function* chainCalls(node: ESTree.Node): Generator<ESTree.CallExpression> {
   let current: ESTree.Node = node;
   while (current.type === "CallExpression") {
@@ -451,7 +539,6 @@ function* chainCalls(node: ESTree.Node): Generator<ESTree.CallExpression> {
   }
 }
 
-/** The outermost call of the fluent chain that `node` belongs to. */
 const chainRoot = (node: ESTree.CallExpression) => {
   let current: ESTree.Node = node;
   for (;;) {
@@ -471,7 +558,6 @@ const isMethodCall = (node: ESTree.CallExpression, method: string, argument: Reg
   node.arguments[0]?.type === "Identifier" &&
   argument.test(node.arguments[0].name);
 
-/** `.pipe(..., requireAccount.<action>, ...)` */
 const pipesRequireAccount = (node: ESTree.CallExpression) =>
   node.callee.type === "MemberExpression" &&
   node.callee.property.type === "Identifier" &&
@@ -508,7 +594,6 @@ const accountMiddlewareThroughHelper = defineRule({
   }),
 });
 
-/** The flags `Schema.isPattern` can export: Unicode, optionally with `d`, `g` or `y`. */
 const exportableFlags = /^[dg]*uy?$/u;
 
 const exportableSchemaPattern = defineRule({
@@ -546,6 +631,144 @@ const exportableSchemaPattern = defineRule({
   }),
 });
 
+const isStdioFd = (node: ESTree.Node) =>
+  node.type === "MemberExpression" &&
+  !node.computed &&
+  node.property.type === "Identifier" &&
+  node.property.name === "fd" &&
+  node.object.type === "MemberExpression" &&
+  !node.object.computed &&
+  node.object.property.type === "Identifier" &&
+  (node.object.property.name === "stdout" || node.object.property.name === "stderr") &&
+  node.object.object.type === "Identifier" &&
+  node.object.object.name === "process";
+
+const namesStdio = (node: ESTree.Node | undefined) =>
+  node !== undefined &&
+  ((node.type === "Literal" &&
+    (node.value === 1 ||
+      node.value === 2 ||
+      node.value === "/dev/stdout" ||
+      node.value === "/dev/stderr")) ||
+    isStdioFd(node));
+
+const syncWrites = new Set(["writeSync", "writeFileSync", "appendFileSync"]);
+
+const noSyncStdioWrite = defineRule({
+  meta: {
+    type: "problem",
+    docs: { description: "Write stdout and stderr through a stream, never synchronously." },
+    messages: {
+      syncStdio:
+        "{{call}} to stdout or stderr waits for its reader. A pipe nobody reads blocks it for good: on Windows always, and on Linux and macOS when the process never opened that stream. The process then cannot answer or exit, as the local server's exit line once did. Write through the process's output stream (processOutput in the local CLI), which waits without blocking.",
+    },
+  },
+  create: (context) => ({
+    CallExpression(node) {
+      const callee = node.callee;
+      const name =
+        callee.type === "Identifier"
+          ? callee.name
+          : callee.type === "MemberExpression" &&
+              !callee.computed &&
+              callee.property.type === "Identifier"
+            ? callee.property.name
+            : undefined;
+      if (name !== undefined && syncWrites.has(name) && namesStdio(node.arguments[0]))
+        context.report({ node, messageId: "syncStdio", data: { call: name } });
+    },
+  }),
+});
+
+const commentDirectivePattern =
+  /^\s*(?:oxlint-(?:disable|enable)|eslint-(?:disable|enable)|@ts-(?:expect-error|ignore|nocheck|check)|prettier-ignore|oxfmt-ignore|biome-ignore|deno-lint-ignore|v8 ignore|c8 ignore|istanbul ignore|@__PURE__|@__NO_SIDE_EFFECTS__|\/ <reference|@jsx)/;
+
+const commentLicensePattern =
+  /SPDX-License-Identifier|Copyright\s+(?:\(c\)|©|\d{4})|Licensed under/i;
+
+const commentReferencePattern =
+  /https?:\/\/\S+|RFC\s*\d+|(?!UsefulSoftwareCo\/)[a-zA-Z0-9_-]+\/[a-zA-Z0-9_.-]+#\d+/i;
+
+const commentExternalPattern = /^\s*(?:\*\s*)?external:/im;
+
+const isAllowedCommentText = (text: string) =>
+  commentLicensePattern.test(text) ||
+  commentReferencePattern.test(text) ||
+  commentExternalPattern.test(text);
+
+const isPublicJsdoc = (value: string) => value.startsWith("*") && !value.startsWith("**");
+
+const isAdjacentLineComment = (
+  sourceText: string,
+  previous: ESTree.Comment,
+  current: ESTree.Comment,
+) => {
+  const between = sourceText.slice(previous.range[1], current.range[0]);
+  return /^\r?\n[ \t]*$/.test(between);
+};
+
+const noComments = defineRule({
+  meta: {
+    type: "suggestion",
+    docs: {
+      description:
+        "Disallow prose comments outside tooling directives, licenses, external references, and public API contract JSDoc.",
+    },
+    schema: [
+      {
+        type: "object",
+        properties: { allowJsdoc: { type: "boolean" } },
+        additionalProperties: false,
+      },
+    ],
+    messages: {
+      noComments:
+        "Avoid prose comments. Express intent through clear names, types, or checks. Allowed: tooling directives, license headers, public SDK/apps contract JSDoc, URLs/RFCs/upstream issues, or 'external: <reason>' for non-obvious external platform constraints.",
+    },
+  },
+  create: (context) => {
+    const rawOptions = context.options[0];
+    const allowJsdoc =
+      typeof rawOptions === "object" &&
+      rawOptions !== null &&
+      "allowJsdoc" in rawOptions &&
+      rawOptions.allowJsdoc === true;
+
+    return {
+      Program() {
+        const sourceText = context.sourceCode.text;
+        const comments = context.sourceCode.getAllComments();
+        for (let i = 0; i < comments.length; i++) {
+          const comment = comments[i]!;
+          if (comment.type === "Shebang") continue;
+          if (commentDirectivePattern.test(comment.value)) continue;
+          if (comment.type === "Block") {
+            if (allowJsdoc && isPublicJsdoc(comment.value)) continue;
+            if (isAllowedCommentText(comment.value)) continue;
+            context.report({ node: comment, messageId: "noComments" });
+            continue;
+          }
+          const group: ESTree.Comment[] = [comment];
+          while (i + 1 < comments.length) {
+            const next = comments[i + 1]!;
+            if (
+              next.type !== "Line" ||
+              commentDirectivePattern.test(next.value) ||
+              !isAdjacentLineComment(sourceText, group[group.length - 1]!, next)
+            )
+              break;
+            group.push(next);
+            i++;
+          }
+          const combined = group.map((entry) => entry.value).join("\n");
+          if (isAllowedCommentText(combined)) continue;
+          context.report({ node: group[0]!, messageId: "noComments" });
+        }
+      },
+    };
+  },
+});
+
 export default definePlugin({
   meta: { name: "executor" },
   rules: {
@@ -556,5 +779,8 @@ export default definePlugin({
     "account-middleware-through-helper": accountMiddlewareThroughHelper,
     "exportable-schema-pattern": exportableSchemaPattern,
     "authored-code-through-adapter": authoredCodeThroughAdapter,
+    "no-secure-context-api": noSecureContextApi,
+    "no-sync-stdio-write": noSyncStdioWrite,
+    "no-comments": noComments,
   },
 });

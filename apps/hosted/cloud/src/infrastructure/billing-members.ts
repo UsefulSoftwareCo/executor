@@ -1,4 +1,3 @@
-/** Billing's own database connection for jobs and billing routes. No identity or email fields leave it. */
 import { PgClient } from "@effect/sql-pg";
 import { RuntimeContext } from "alchemy";
 import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
@@ -7,7 +6,6 @@ import { SqlClient } from "effect/sql";
 import { cloudDatabaseConnection } from "./database.ts";
 import { BillingUnavailable } from "../contracts/billing.ts";
 
-/** Run billing statements on one connection per invocation; any failure is BillingUnavailable. */
 export const billingMembers = Effect.gen(function* () {
   const connection = yield* cloudDatabaseConnection;
   const sql = yield* makeExecutionMemo(

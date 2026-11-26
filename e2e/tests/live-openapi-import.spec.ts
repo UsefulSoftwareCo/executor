@@ -8,9 +8,12 @@ import {
   clientCredentialsScheme,
   credentialEchoUpstream,
   deployPublicApp,
+  hujsonPolicy,
   invalidSchemaDocument,
+  jsonAnswers,
   jsonLines,
   malformedSwaggerDocument,
+  mediaTypeUpstream,
   openapi32Upstream,
   otherHostDocument,
   requestEchoUpstream,
@@ -19,14 +22,12 @@ import {
 } from "../support/openapi-import.ts";
 import { scenarios } from "../test-plan.ts";
 
-/** A router's listing failure; the importer's failures carry every field. */
 const RouterFailure = Schema.Struct({
   _tag: Schema.String,
   errorName: Schema.optionalKey(Schema.String),
   code: Schema.optionalKey(Schema.String),
   message: Schema.optionalKey(Schema.String),
 });
-/** What `openapiToolNames` resolves to, as a query returns it. */
 const OpenapiToolNames = Schema.Struct({
   tools: Schema.Array(
     Schema.Struct({
@@ -58,12 +59,10 @@ const EvaluationFailed = Schema.Struct({
     message: Schema.String,
   }),
 });
-/** How every message about left-out operations ends, unless each one streams events. */
 const customTool =
   'To call a left-out operation anyway, write a custom tool for it in this app with the same account: see "Custom tools beside generated ones" in the app-authoring skill\'s integrations.md.';
 const Recorded = Schema.Struct({ method: Schema.String, url: Schema.String, body: Schema.String });
 
-/** Definitions the importer cannot fully use, each mounted under its own key. */
 const diagnosed = `import { defineApp, router } from "apps";
 import { liveOpenapiRouter } from "apps/openapi";
 const common = { securitySchemes: {}, methods: {}, oauth: [] };
@@ -86,7 +85,6 @@ export default defineApp({}, async ({ cache, fetch, signal }) => ({
 }));
 `;
 
-/** A legacy API without operationIds, where a list and a single item share their resource words. */
 const pathParameters = (...names: string[]) =>
   names.map((name) => ({ name, in: "path", required: true, schema: { type: "string" } }));
 const ok = { responses: { "200": { description: "OK" } } };
@@ -103,19 +101,12 @@ const unnamedDocument = {
       get: ok,
       delete: ok,
     },
-    // Needs an account, so a router without one does not list it.
     "/project/{username}/{project}/build": {
       parameters: pathParameters("username", "project"),
       post: { ...ok, security: [{ token: [] }] },
     },
   },
 };
-/**
- * An operation, then a sibling the API adds later whose name normalizes to the same one: another
- * version of the path, the path without its parameter, and an operationId equal to a refined name.
- * In `taken`, the sibling collides with `/forks` and its refined name is one `/starred` already
- * holds by its own operationId.
- */
 const repos = (operationId: string) => ({ ...ok, operationId, tags: ["repos"] });
 const collisions = {
   version: [{ "/v1/items": { get: ok } }, { "/v2/items": { get: ok } }],
@@ -138,9 +129,7 @@ const itemsDocument = (paths: Record<string, unknown>) => ({
   servers: [{ url: "https://ci.example.com" }],
   paths,
 });
-/** Each case alone, after the sibling is added, and with the definition's order reversed. */
 const collisionPlans = Object.entries(collisions).flatMap(([name, [existing, sibling]]) => {
-  // An operation no sibling collides with, so every definition imports something.
   const added = { "/status": { get: ok }, ...existing, ...sibling };
   return Object.entries({
     alone: { "/status": { get: ok }, ...existing },
@@ -185,11 +174,6 @@ export default defineApp({}, async ({ cache, fetch, signal }) => ({
 }));
 `;
 
-/**
- * Operations that accept one of several credentials, where some alternatives name a scheme the
- * app's securitySchemes leaves out or the definition never declares. Each router's account fills
- * one alternative.
- */
 const alternatives = (origin: string) => {
   const json = { "application/json": { schema: { type: "object" } } };
   const get = (operationId: string, security: readonly Record<string, string[]>[]) => ({
@@ -216,14 +200,12 @@ const alternatives = (origin: string) => {
   const queryKey = { type: "apiKey", in: "query", name: "key" };
   const basicAuth = { type: "http", scheme: "basic" };
   const options = {
-    // The definition declares OAuth, but the app declares only the schemes its account fills.
     bot: {
       source: {
         document: definition(
           { botToken, queryKey, oauth: oauth2 },
           {
             "/channels": get("listChannels", [{ botToken: [] }, { oauth: ["read"] }]),
-            // The first alternative pairs the query key with a scheme declared nowhere.
             "/guilds": get("listGuilds", [{ queryKey: [], session: [] }, { botToken: [] }]),
           },
         ),
@@ -253,7 +235,6 @@ const alternatives = (origin: string) => {
       },
       oauth: [],
     },
-    // The definition itself names a scheme it never declares.
     posts: {
       source: {
         document: definition(
@@ -295,11 +276,6 @@ export default defineApp({}, async ({ cache, fetch, signal }) => ({
 `;
 };
 
-/**
- * Stripe's shape: an expandable field is an ID or the object, and the `x-expansionResources`
- * extension names the object with a `$ref` the converter leaves as written. Each account's
- * schemas are nested under its branch of the merged tool, which must not read the extension.
- */
 const expandable = (origin: string) => {
   const customer = { $ref: "#/components/schemas/customer" };
   const expansion = { "x-expansionResources": { oneOf: [customer] } };
@@ -359,8 +335,6 @@ layer(HostedLive, { excludeTestServices: true })("Live OpenAPI import", (it) => 
         const upstream = yield* credentialEchoUpstream;
         const app = yield* deployPublicApp(alternatives(upstream.origin));
 
-        // Before an account connects, each operation with a met alternative lists the method that
-        // meets it; the one whose every alternative names an undeclared scheme is left out.
         const listing = yield* app.call("names", "query", {});
         expect(listing.status, JSON.stringify(listing.body)).toBe(200);
         const names = yield* body(Schema.Record(Schema.String, OpenapiToolNames), listing);
@@ -396,8 +370,6 @@ layer(HostedLive, { excludeTestServices: true })("Live OpenAPI import", (it) => 
           "posts.posts.listPosts",
         ]);
 
-        // Each call carries only the met alternative's credentials: the bot token, never the
-        // query key paired with an undeclared scheme.
         const Echo = Schema.Struct({
           method: Schema.String,
           url: Schema.String,
@@ -431,7 +403,6 @@ layer(HostedLive, { excludeTestServices: true })("Live OpenAPI import", (it) => 
           authorization: "Bearer synthetic-access",
         });
 
-        // Calling the left-out operation explains why, without sending a request.
         const admin = yield* app.call("posts.admin.getAdmin", "query", {});
         expect(admin.status, JSON.stringify(admin.body)).toBe(502);
         expect((yield* body(EvaluationFailed, admin)).failure).toEqual({
@@ -455,7 +426,6 @@ layer(HostedLive, { excludeTestServices: true })("Live OpenAPI import", (it) => 
         const routers = catalog.routers;
         const failure = (path: string) => routers.find((router) => router.path === path)?.error;
 
-        // An allowed origin no operation uses names the origins they do use, and each operation.
         expect(failure("mail")).toMatchObject({
           errorName: "OpenapiCompileError",
           code: "no_supported_operations",
@@ -467,14 +437,10 @@ layer(HostedLive, { excludeTestServices: true })("Live OpenAPI import", (it) => 
           "GET /mail/v1/users/{userId}/messages and 1 more (multiple_hosts:",
         );
 
-        // An operation whose schema holds an unresolvable reference is left out; the rest import,
-        // including an invalid schema without a reference.
         expect(failure("teams")).toBeUndefined();
         const teams = catalog.items.filter((tool) => tool.name.startsWith("teams."));
         expect(teams.map((tool) => tool.name)).toEqual(["teams.teams.listTeams"]);
 
-        // Reading or calling the left-out tool names the invalid schema by its JSON Pointer and
-        // the operation that reaches it.
         const pointer =
           "#/components/schemas/Team/allOf/1/properties/_embedded/properties/members/items";
         const leftOut = {
@@ -494,7 +460,6 @@ layer(HostedLive, { excludeTestServices: true })("Live OpenAPI import", (it) => 
         expect(called.status, JSON.stringify(called.body)).toBe(502);
         expect((yield* body(EvaluationFailed, called)).failure).toEqual(leftOut);
 
-        // A malformed Swagger 2.0 definition is named by its JSON Pointer before it is upgraded.
         expect(failure("status")).toEqual({
           _tag: "HostEvaluationFailed",
           errorName: "OpenapiCompileError",
@@ -503,8 +468,6 @@ layer(HostedLive, { excludeTestServices: true })("Live OpenAPI import", (it) => 
             "The response at #/paths/~1status/get/responses/200 is invalid: Expected object.",
         });
 
-        // When no operation can be called, each one says which authentication or response it
-        // needs.
         expect(failure("jobs")).toMatchObject({
           errorName: "OpenapiCompileError",
           code: "no_supported_operations",
@@ -512,7 +475,6 @@ layer(HostedLive, { excludeTestServices: true })("Live OpenAPI import", (it) => 
         expect(failure("jobs")?.message).toContain(
           "GET /jobs (auth_method: Executor cannot authenticate with any of its security requirements: client (oauth2 clientCredentials)); GET /jobs/events (event_stream: It responds with text/event-stream",
         );
-        // It still offers a custom tool, for the operation that needs other authentication.
         expect(failure("jobs")?.message?.endsWith(customTool)).toBe(true);
       }),
     ),
@@ -524,7 +486,6 @@ layer(HostedLive, { excludeTestServices: true })("Live OpenAPI import", (it) => 
       Effect.gen(function* () {
         const upstream = yield* credentialEchoUpstream;
         const app = yield* deployPublicApp(expandable(upstream.origin));
-        // Connecting from the app links the new account to its requirement for the caller.
         const connection = yield* body(
           Resource,
           yield* app.api.request(
@@ -554,7 +515,6 @@ layer(HostedLive, { excludeTestServices: true })("Live OpenAPI import", (it) => 
         expect((yield* body(Catalog, listed)).items.map((tool) => tool.name)).toEqual([
           "charges.getCharges",
         ]);
-        // The extension is kept as the definition wrote it, outside the schemas that validate.
         const described = yield* app.tool("charges.getCharges");
         expect(described.status, JSON.stringify(described.body)).toBe(200);
         expect(JSON.stringify(described.body)).toContain(
@@ -592,8 +552,6 @@ export default defineApp({}, async ({ cache, fetch, signal }) => ({
 `);
         const listed = yield* app.tools;
         expect(listed.status, JSON.stringify(listed.body)).toBe(200);
-        // Unnamed operations in one group are told apart by their paths, not hashes. QUERY is a
-        // query; a method Executor cannot send is left out.
         const tools = (yield* body(Catalog, listed)).items;
         expect(tools.map((tool) => tool.name).sort()).toEqual([
           "artifacts.findArtifacts",
@@ -632,7 +590,6 @@ export default defineApp({}, async ({ cache, fetch, signal }) => ({
           method: "GET",
           url: "/projects/alpha/artifacts?name=app+log&tag=x&tag=y",
         });
-        // JSON Lines are returned as their text, not parsed as one JSON value.
         const events = yield* app.call("events.getEvents", "query", { path: project });
         expect(events.status, JSON.stringify(events.body)).toBe(200);
         expect(yield* body(Schema.String, events)).toBe(jsonLines);
@@ -667,8 +624,6 @@ export default defineApp({}, async ({ cache, fetch, signal }) => ({
   }),
 }));
 `);
-        // Every operation v1 imported is a tool. Only the one that answers with nothing but an
-        // event stream is not: a tool cannot return a stream.
         const listing = yield* app.call("names", "query", {});
         expect(listing.status, JSON.stringify(listing.body)).toBe(200);
         const { tools, skipped } = yield* body(OpenapiToolNames, listing);
@@ -679,7 +634,6 @@ export default defineApp({}, async ({ cache, fetch, signal }) => ({
           ["items.streamItems", "GET", "/items/stream"],
           ["search.searchItems", "GET", "/search?type=items"],
           ["items.getItems", "GET", "/items/{id}?view=full"],
-          // Their names differ only in the stable hash of the whole path.
           ["docs.readDocsGet00jgt2p1", "GET", "/docs#latest"],
           ["docs.readDocsGet00ru2ttw", "GET", "/docs#archive"],
           ["legacy.postLegacy", "POST", "/legacy"],
@@ -711,13 +665,10 @@ export default defineApp({}, async ({ cache, fetch, signal }) => ({
               ),
             );
 
-        // A reference into another component's properties validates the input as its target.
         expect(
           yield* call("items.createItem", "mutation", { body: { owner: { name: "Ada" } } }),
         ).toMatchObject({ method: "POST", url: "/items", body: '{"owner":{"name":"Ada"}}' });
         yield* rejected("items.createItem", "mutation", { body: { owner: {} } });
-        // So do a request body that reuses another operation's schema and a parameter schema
-        // that points into a Parameter Object.
         expect(
           yield* call("items.copyItem", "mutation", {
             query: { max: 2 },
@@ -729,19 +680,16 @@ export default defineApp({}, async ({ cache, fetch, signal }) => ({
           body: { owner: { name: "Ada" } },
         });
         yield* rejected("items.copyItem", "mutation", { body: { owner: { title: "Ada" } } });
-        // The response refers to a component whose name is not URI-encoded; its schema is read.
         const described = yield* app.tool("api.items.createItem");
         expect(described.status, JSON.stringify(described.body)).toBe(200);
         expect(JSON.stringify(described.body)).toContain('"required":["id"]');
 
-        // The operation that can also answer with JSON asks for JSON only.
         expect(yield* call("items.streamItems", "query", {})).toEqual({
           method: "GET",
           url: "/items/stream",
           accept: "application/json",
           body: "",
         });
-        // A path's fixed query is sent with the operation's own; its fragment is not sent.
         expect(yield* call("search.searchItems", "query", { query: { q: "lamp" } })).toMatchObject({
           method: "GET",
           url: "/search?type=items&q=lamp",
@@ -752,8 +700,6 @@ export default defineApp({}, async ({ cache, fetch, signal }) => ({
         });
         for (const docs of ["docs.readDocsGet00jgt2p1", "docs.readDocsGet00ru2ttw"])
           expect(yield* call(docs, "query", {})).toMatchObject({ method: "GET", url: "/docs" });
-        // An empty operationId is no operationId. The parameter in `body` and the request body
-        // without media types are not inputs, as v1 dropped them.
         expect(yield* call("legacy.postLegacy", "mutation", { query: { q: "old" } })).toEqual({
           method: "POST",
           url: "/legacy?q=old",
@@ -761,6 +707,75 @@ export default defineApp({}, async ({ cache, fetch, signal }) => ({
           body: "",
         });
         yield* rejected("legacy.postLegacy", "mutation", { body: {} });
+      }),
+    ),
+  );
+
+  it.effect(scenarios.liveOpenapiHujson.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const upstream = yield* mediaTypeUpstream;
+        const app = yield* deployPublicApp(`import { defineApp } from "apps";
+import { liveOpenapiRouter } from "apps/openapi";
+export default defineApp({}, async ({ cache, fetch, signal }) => ({
+  tools: liveOpenapiRouter({ cache, fetch, signal,
+    source: { document: ${JSON.stringify(upstream.document)} },
+    allowedOrigin: ${JSON.stringify(upstream.origin)},
+    securitySchemes: {}, methods: {}, oauth: [] }),
+}));
+`);
+        const call = (tool: string, input: unknown) =>
+          app
+            .call(tool, "mutation", input)
+            .pipe(
+              Effect.tap((response) =>
+                Effect.sync(() => expect(response.status, JSON.stringify(response.body)).toBe(200)),
+              ),
+            );
+        const set = (input: unknown) => call("policy.setPolicyFile", input);
+        yield* set({ contentType: "application/hujson", body: hujsonPolicy });
+        yield* set({ body: { grants: [] } });
+        yield* set({ contentType: "application/merge-patch+json", body: { grants: null } });
+        const json = [
+          ["aws.listTables", "/aws/json-1.0", { Limit: 1 }],
+          ["aws.listStreams", "/aws/json-1.1", { Limit: 2 }],
+          ["scene.putScene", "/scene", { scenes: [{ nodes: [0] }] }],
+        ] as const;
+        for (const [tool, path, input] of json) {
+          const answered = yield* call(tool, { body: input });
+          expect(answered.body).toEqual(jsonAnswers[path].body);
+        }
+        expect(yield* upstream.requests).toEqual([
+          {
+            method: "POST",
+            url: "/policy",
+            contentType: "application/hujson",
+            body: hujsonPolicy,
+          },
+          {
+            method: "POST",
+            url: "/policy",
+            contentType: "application/json",
+            body: '{"grants":[]}',
+          },
+          {
+            method: "POST",
+            url: "/policy",
+            contentType: "application/merge-patch+json",
+            body: '{"grants":null}',
+          },
+          ...json.map(([, path, input]) => ({
+            method: "POST",
+            url: path,
+            contentType: jsonAnswers[path].contentType,
+            body: JSON.stringify(input),
+          })),
+        ]);
+
+        const read = yield* app.call("policy.getPolicyFile", "query", {});
+        expect(read.status, JSON.stringify(read.body)).toBe(200);
+        expect(yield* body(Schema.String, read)).toBe(hujsonPolicy);
       }),
     ),
   );
@@ -775,8 +790,6 @@ export default defineApp({}, async ({ cache, fetch, signal }) => ({
         const names = (yield* body(Catalog, listed)).items
           .map((tool) => tool.name)
           .filter((name) => name.startsWith("api."));
-        // Released names stay: an operation without an operationId drops its path parameters, so
-        // the single item reads like a list.
         expect(names.sort()).toEqual([
           "api.project.deleteEnvvar",
           "api.project.getEnvvar",
@@ -784,8 +797,6 @@ export default defineApp({}, async ({ cache, fetch, signal }) => ({
           "api.projects.getProjects",
         ]);
 
-        // The definition alone lists the tools the router exposes and the accounts that expose
-        // each, including the one this router cannot list without an account.
         const listing = yield* app.call("names", "query", {});
         expect(listing.status, JSON.stringify(listing.body)).toBe(200);
         const { tools, skipped } = yield* body(OpenapiToolNames, listing);
@@ -826,8 +837,6 @@ export default defineApp({}, async ({ cache, fetch, signal }) => ({
         );
         expect(skipped).toEqual([]);
 
-        // Released collision handling stays: adding a colliding sibling refines both names, in
-        // either order.
         const collided = yield* app.call("collisions", "query", {});
         expect(collided.status, JSON.stringify(collided.body)).toBe(200);
         const status = "GET /status status.getStatus";
@@ -844,7 +853,6 @@ export default defineApp({}, async ({ cache, fetch, signal }) => ({
             "GET /items/{id} items.getItems",
             ["GET /items/lookup items.getItemsById", "GET /items/{id} items.getItems"],
           ],
-          // `repos.listStars` keeps calling `/starred`; the sibling is refined past the held name.
           taken: [
             ["GET /forks repos.list", "GET /starred repos.listStars"],
             [
@@ -862,7 +870,6 @@ export default defineApp({}, async ({ cache, fetch, signal }) => ({
         }
         expect(collided.body).toEqual(expected);
 
-        // An approval policy keyed by a listed name applies before any request is sent.
         const deleted = yield* app.call("api.project.deleteEnvvar", "mutation", {
           path: { username: "octo", project: "demo", name: "TOKEN" },
         });

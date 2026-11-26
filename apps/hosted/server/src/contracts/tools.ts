@@ -1,6 +1,5 @@
 import { withLegacyKeys } from "@executor-js/utils/legacy-keys";
 import { RequiredAction } from "./authorization.ts";
-/** Account-dependent discovery and execution within a configured app. */
 import {
   AccountChoiceUnsupported,
   AccountNotFound,
@@ -46,6 +45,7 @@ import {
   ToolRunApprovalRefused,
 } from "@executor-js/mcp/browser";
 import { BrowserSessionOnly, Forbidden } from "./auth.ts";
+import { referencedErrors } from "./tool-call-log.ts";
 import {
   OrganizationReference,
   OrganizationForbidden,
@@ -71,13 +71,11 @@ const discoveryErrors = [
   OrganizationForbidden,
 ] as const;
 const prefix = "/api/organizations/:organization/apps/:app/tools";
-// `deployment` is the former name of `version`; callers written before the rename still send it.
 const versionQuery = Schema.Struct({ version: Schema.optional(VersionId) }).pipe(
   withLegacyKeys({ version: "deployment" }),
 );
 const callPayload = Schema.Struct({
   tool: ToolName,
-  /** "query" for tools the catalog marks readOnly, otherwise "mutation". Omitted, it is read from the catalog. */
   kind: Schema.optional(ToolKind),
   input: Json,
   version: Schema.optional(VersionId),
@@ -95,6 +93,13 @@ const callErrors = [
   RequestInvalid,
   OrganizationForbidden,
 ] as const;
+export const RunFailures = referencedErrors([Forbidden, ...callErrors]);
+const [, ...callFailures] = RunFailures.errors;
+export const CallFailures = {
+  errors: callFailures,
+  withReference: RunFailures.withReference,
+  referenced: RunFailures.referenced,
+};
 const approval = { ...params, requestId: ApprovalRequestId };
 const reviewErrors = [
   ...discoveryErrors,
@@ -104,7 +109,6 @@ const reviewErrors = [
   Forbidden,
   ToolRunApprovalRefused,
 ] as const;
-/** Members may discover tools; execution requires an administrator in the handler. */
 export const HostedTools = HttpApiGroup.make("tools")
   .add(
     HttpApiEndpoint.get("list", prefix, {
@@ -138,15 +142,20 @@ export const HostedTools = HttpApiGroup.make("tools")
       params,
       payload: callPayload,
       success: Json,
-      error: callErrors,
-    }).annotate(RequiredAction, "run"),
+      error: CallFailures.errors,
+    })
+      .annotate(RequiredAction, "run")
+      .annotate(
+        OpenApi.Description,
+        "Call a tool with the caller's linked accounts. A call that fails returns its error with `reference`, the call's ID in the organization's tool call log, when the call was logged.",
+      ),
   )
   .add(
     HttpApiEndpoint.post("run", `${prefix}/run`, {
       params,
       payload: callPayload,
       success: BrowserToolRun,
-      error: [...callErrors, Forbidden],
+      error: RunFailures.errors,
     })
       .annotate(RequiredAction, "run")
       .annotate(BrowserSessionOnly, true)

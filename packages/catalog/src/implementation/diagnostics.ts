@@ -1,4 +1,3 @@
-/** Catalog traces retain stable failure codes, never source documents, URLs, or authored names. */
 import { Effect, Schema } from "effect";
 import {
   CatalogImportFailed,
@@ -6,7 +5,6 @@ import {
   type CatalogRecovery,
 } from "../contracts/catalog.ts";
 
-/** Keep the failure stage and safe reason on the span before product error translation. */
 export const catalogStage =
   (stage: "prepare" | "lookup" | "custom") =>
   <A, E, R>(program: Effect.Effect<A, E, R>) =>
@@ -21,7 +19,6 @@ export const catalogStage =
       Effect.withSpan(`catalog.${stage}`, { attributes: { "catalog.stage": stage } }),
     );
 
-/** A refusal that leaves setup to the caller's agent carries the steps that agent follows. */
 export const setupRecovery =
   (recovery: CatalogRecovery) =>
   <A, E, R>(program: Effect.Effect<A, E | CatalogImportFailed, R>) =>

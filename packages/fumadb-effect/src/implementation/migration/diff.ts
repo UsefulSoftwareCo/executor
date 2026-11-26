@@ -1,9 +1,3 @@
-/**
- * Generate migration operations by diffing two schemas.
- *
- * This is the `from-schema` mode. The same function serves `from-database`
- * mode with an introspected schema as `old`.
- */
 import { Equal } from "effect";
 import type { Provider, RelationMode } from "../../contracts/provider.ts";
 import { defaultRelationMode } from "../../contracts/provider.ts";
@@ -18,20 +12,10 @@ import {
   type MigrationOperation,
 } from "../../contracts/migration-operation.ts";
 
-/** Options of {@link generateMigrationFromSchema}. */
 export interface GenerateMigrationOptions {
   readonly provider: Provider;
   readonly relationMode?: RelationMode;
-  /**
-   * Drop tables that no longer exist in the target schema. Only tables known to
-   * the source schema are affected. Destructive, so it defaults to `false`.
-   */
   readonly dropUnusedTables?: boolean;
-  /**
-   * Drop columns that no longer exist in the target schema. Destructive, so it
-   * defaults to `false`. When it is `false`, a kept column that is required and
-   * has no default is made nullable instead, so the table stays writable.
-   */
   readonly dropUnusedColumns?: boolean;
 }
 
@@ -42,24 +26,12 @@ const ORDER = { pre: -1, default: 0, post: 1 } as const;
 const sameStrings = (a: ReadonlyArray<string>, b: ReadonlyArray<string>): boolean =>
   a.length === b.length && a.every((v, i) => v === b[i]);
 
-/**
- * Default values are compared structurally. Runtime defaults never reach the
- * database, and a default the provider cannot store as a literal
- * ({@link supportsLiteralDefault}) is never in the database either, so it must
- * not show up as a change. The DDL generator reads the same predicate.
- */
 const hashDefault = (col: AnyColumn, provider: Provider): unknown => {
   if (col.defaultValue === undefined || col.defaultValue._tag === "Runtime") return undefined;
   if (!supportsLiteralDefault(col, provider)) return undefined;
   return col.defaultValue.encoded;
 };
 
-/**
- * The operations that turn the database described by `old` into `target`.
- *
- * Operations are ordered so they can run in sequence: renames and removed
- * foreign keys first, then column and constraint changes, then drops.
- */
 export const generateMigrationFromSchema = (
   old: AnySchema,
   target: AnySchema,
@@ -209,8 +181,6 @@ export const generateMigrationFromSchema = (
     for (const oldColumn of Object.values(oldTable.columns)) {
       if (newTable.columns[oldColumn.ormName] !== undefined) continue;
       if (!dropUnusedColumns) {
-        // A kept column that is required and has no default would make every
-        // insert fail, so it is made nullable. Nothing is dropped.
         if (oldColumn.isNullable || oldColumn.defaultValue !== undefined) continue;
         operations.push({
           type: "update-table",
@@ -229,7 +199,6 @@ export const generateMigrationFromSchema = (
         });
         continue;
       }
-      // MSSQL does not drop unique indexes together with the column.
       if (provider === "mssql" && oldColumn.isUnique) {
         for (const con of constraints) {
           if (con.columns.every((col) => col.ormName !== oldColumn.ormName)) continue;
@@ -254,8 +223,6 @@ export const generateMigrationFromSchema = (
   for (const table of Object.values(target.tables)) {
     const oldTable = old.tables[table.ormName];
     if (oldTable === undefined) {
-      // CockroachDB cannot add a foreign key in `CREATE TABLE` when the
-      // referenced table is created in the same transaction.
       if (provider === "cockroachdb" && relationMode !== "fumadb") {
         operations.push({ type: "create-table", value: table, skipForeignKeys: true });
         for (const key of table.foreignKeys) {
@@ -285,7 +252,6 @@ export const generateMigrationFromSchema = (
       operations.push({ type: "drop-table", name: oldTable.names.sql, enforce: "post" });
     }
   }
-  // Stable sort keeps the relative order within each phase.
   return operations
     .map((op, index) => ({ op, index }))
     .sort(

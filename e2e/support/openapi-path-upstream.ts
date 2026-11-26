@@ -3,7 +3,6 @@ import { Effect, Layer, Ref } from "effect";
 import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { createServer } from "node:http";
 
-/** A private credential-bearing API records requests instead of deleting any data. */
 export const openapiPathUpstream = Effect.gen(function* () {
   const requests = yield* Ref.make<
     readonly { readonly path: string; readonly authenticated: boolean }[]

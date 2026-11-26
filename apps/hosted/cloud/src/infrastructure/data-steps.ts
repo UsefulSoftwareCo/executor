@@ -1,17 +1,6 @@
-/**
- * Cloud runs data steps inside the new Worker after it deploys. Schema migrations run earlier, in
- * Alchemy, with only a database connection; data steps need the Worker's services, such as app
- * source in Cloudflare Artifacts. The minute cron advances them from the SQL journal the schema
- * migration created, never from a request. An older Worker version does not know a new step, so
- * the first tick of the version that ships it starts it. A pass that leaves items to retry records
- * a backoff in the journal, so a step that keeps failing is not retried every minute.
- *
- * Each tick's outcome counts the items it handled: `partial` or `failed` when some or all of them
- * ended with an outcome their step retries. A tick that only waited for a lease or a backoff, or
- * ran out of time, records `completed`.
- */
 import { AppManagementHost } from "@executor-js/app-management";
 import {
+  catalogCopyRebuildScope,
   hostDataSteps,
   runDataSteps,
   type AgentGrantExpiry,
@@ -28,17 +17,14 @@ import { SqlClient } from "effect/sql";
 import { cloudBlobs } from "./blobs.ts";
 import { jobUnitCounts } from "../contracts/job-outcome.ts";
 
-/** A tick stops starting items after this long, then resumes from its cursor on the next tick. */
 const tickBudgetMs = 20_000;
 
-/**
- * The last step that `apply` applies when no deploy names one. Steps after it report however
- * `CLOUD_DATA_STEPS` is set, so a new step ships in report mode even where earlier steps apply.
- * Never move this forward to approve a step; set the deploy variable instead.
- */
+const catalogCopyRebuildPace = 2;
+
+const catalogCopyRebuildPasses = 24;
+
 const reviewedThrough = "2_app_framework_pin_catch_up";
 
-/** A tick's outcome over the items its runs handled. */
 const tickOutcome = (...runs: ReadonlyArray<DataStepRun>) =>
   jobUnitCounts(
     runs.reduce((total, run) => total + run.attempted, 0),
@@ -46,15 +32,6 @@ const tickOutcome = (...runs: ReadonlyArray<DataStepRun>) =>
     "DataStepItemFailed",
   );
 
-/**
- * Read during Worker initialization, so Alchemy binds the deploy's values into the Worker.
- * `CLOUD_DATA_STEPS` is `report` unless a deploy sets `apply`. `apply` applies steps up to and
- * including `CLOUD_DATA_STEPS_APPLY_THROUGH` (`reviewedThrough` when unset or empty); later steps
- * report until a deploy names them, and start only once every applied step is complete. Every
- * deploy resumes the same report, `report:<CLOUD_DATA_STEPS_REPORT>` (`report:cloud` by default):
- * step names are immutable, so a later build's outcomes for a step are comparable with an earlier
- * one's. A report restarts from the first item only when a deploy sets a new label.
- */
 export const cloudDataSteps = (agentGrants: AgentGrantExpiry) =>
   Effect.gen(function* () {
     const mode = yield* Config.Literals(["report", "apply"], "CLOUD_DATA_STEPS").pipe(
@@ -63,15 +40,26 @@ export const cloudDataSteps = (agentGrants: AgentGrantExpiry) =>
     const report = yield* Config.NonEmptyString("CLOUD_DATA_STEPS_REPORT").pipe(
       Config.withDefault("cloud"),
     );
-    // The deploy workflow passes an unset repository variable as an empty string.
     const named = yield* Config.String("CLOUD_DATA_STEPS_APPLY_THROUGH").pipe(
       Config.withDefault(""),
     );
     const applyThrough = named === "" ? reviewedThrough : named;
-    // The build framework step rewrites retained builds in the same bucket the executor reads.
+    const scopeText = yield* Config.String("CLOUD_CATALOG_COPY_REBUILD_SCOPE").pipe(
+      Config.withDefault(""),
+    );
+    const scope = yield* catalogCopyRebuildScope(scopeText).pipe(
+      Effect.catchTag("CatalogCopyRebuildScopeInvalid", (error) =>
+        Effect.logError("CLOUD_CATALOG_COPY_REBUILD_SCOPE cannot be read", error.token).pipe(
+          Effect.andThen(catalogCopyRebuildScope("")),
+        ),
+      ),
+    );
+    const paceText = yield* Config.String("CLOUD_CATALOG_COPY_REBUILD_PACE").pipe(
+      Config.withDefault(""),
+    );
+    const pace = /^\d+$/u.test(paceText) ? Number(paceText) : catalogCopyRebuildPace;
     const blobs = yield* cloudBlobs;
     return Effect.gen(function* () {
-      // A redeploy leaves its app's webhook sources pending; the job wakes reconciliation for them.
       const wake = yield* ScheduleWakeup;
       const { executor } = yield* Effect.flatten(AppManagementHost);
       const sql = yield* Effect.flatten(GroupDatabase);
@@ -82,6 +70,12 @@ export const cloudDataSteps = (agentGrants: AgentGrantExpiry) =>
         agentGrants,
         executorAppRedeployed: executorDefaultRedeployed(wake),
         appCopies: hostedAppCopies(executor),
+        catalogCopyRebuild: {
+          rebuilt: () => wake,
+          scope,
+          pace,
+          passes: catalogCopyRebuildPasses,
+        },
       });
       const run = (selected: typeof steps, selectedMode: typeof mode) =>
         runDataSteps(selected, {
@@ -94,7 +88,6 @@ export const cloudDataSteps = (agentGrants: AgentGrantExpiry) =>
       if (mode === "report") return tickOutcome(yield* run(steps, "report"));
       const through = steps.findIndex((step) => step.name === applyThrough);
       if (through < 0) {
-        // Hold everything rather than guess which steps were approved.
         yield* Effect.logError("CLOUD_DATA_STEPS_APPLY_THROUGH names no data step", applyThrough);
         return tickOutcome(yield* run(steps, "report"));
       }
@@ -104,7 +97,12 @@ export const cloudDataSteps = (agentGrants: AgentGrantExpiry) =>
         : tickOutcome(applied);
     }).pipe(
       Effect.withSpan("job.data-steps", {
-        attributes: { "data_step.mode": mode, "data_step.apply_through": applyThrough },
+        attributes: {
+          "data_step.mode": mode,
+          "data_step.apply_through": applyThrough,
+          "data_step.catalog_rebuild_run": scope.run,
+          "data_step.catalog_rebuild_pace": pace,
+        },
       }),
     );
   }).pipe(Effect.orDie);

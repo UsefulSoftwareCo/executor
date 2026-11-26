@@ -9,7 +9,6 @@ import { OverviewCardLoading } from "./app-loading.tsx";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowRight02Icon } from "@hugeicons/core-free-icons";
 
-/** Preview the actual skills and workflow descriptions, with entry points to their full views. */
 export function AppOverviewEntries<E>({
   app,
   bindings,
@@ -62,7 +61,6 @@ export function AppOverviewEntries<E>({
     </>
   );
 }
-/** Workflow descriptions appear once across the available account catalogs. */
 export function AppWorkflowPreview<E>({
   sources,
   Failure,

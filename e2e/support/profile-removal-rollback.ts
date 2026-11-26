@@ -1,13 +1,3 @@
-/**
- * Undo SDK 4.0.13 for a fixture that labels the database an earlier version: its webhook sources,
- * planned app copies, actor columns, tool search targets, indexes and, on a database upgraded
- * through 4.0.13 rather than created at it, the triggers and functions it adds for the previous
- * server. The one-copy-per-member schedule index goes too: the profile version kept one schedule
- * of a declaration per profile, so a member could have several.
- * Dropping a column drops the indexes that name it. The 4.0.1 keys 4.0.13 replaces are not
- * restored: rows written since may share them, and the step drops them only if they exist.
- * `toolSearch: false` leaves the tool search listings to a fixture that drops their table.
- */
 export const beforeProfileRemoval = (
   options: { readonly toolSearch: boolean } = { toolSearch: true },
 ): ReadonlyArray<{ readonly sql: string }> => [
@@ -31,11 +21,6 @@ export const beforeProfileRemoval = (
     : []),
 ];
 
-/**
- * Make data step `10_profile_app_copies` pending again in a host's data step journal
- * (`private_hosted` or `private_local`), so the next start creates the copies that 4.0.13 plans.
- * A database created at the current version recorded the step with nothing to copy.
- */
 export const profileAppCopiesPending = (
   journal: "private_hosted" | "private_local",
 ): ReadonlyArray<{ readonly sql: string; readonly params: ReadonlyArray<string> }> => [
@@ -47,10 +32,11 @@ export const profileAppCopiesPending = (
 ];
 
 /**
- * Undo SDK 4.0.18, 4.0.17, 4.0.15 and 4.0.14 and label the database 4.0.13, as an upgrade from
- * the version before app accounts finds it: providers record no identity, webhook sources count no
- * retries, schedules and webhook sources always have an actor, workflow runs record no scope, and
- * start keys are unique per app and actor without one.
+ * Undo SDK 4.0.19, 4.0.18, 4.0.17, 4.0.15 and 4.0.14 and label the database 4.0.13, as an
+ * upgrade from the version before app accounts finds it: providers record no identity, event
+ * subscriptions have no selections, webhook sources count no retries, schedules and webhook
+ * sources always have an actor, workflow runs record no scope, and start keys are unique per app
+ * and actor without one.
  * The host's link step (hosted `9_app_account_links`, local `2_app_account_links`) ships with app
  * accounts and runs after the SDK steps, so it is left to the caller: one that undoes it removes its
  * ledger row and table.
@@ -58,6 +44,12 @@ export const profileAppCopiesPending = (
 export const beforeAppAccounts = (): ReadonlyArray<{ readonly sql: string }> => [
   { sql: "DROP INDEX executor_providers_identity" },
   { sql: "ALTER TABLE executor_providers DROP COLUMN identity" },
+  { sql: "DROP INDEX executor_event_subscriptions_owner_selection" },
+  {
+    sql: `ALTER TABLE executor_event_subscriptions DROP COLUMN selection,
+      ALTER COLUMN app DROP DEFAULT, ALTER COLUMN app SET NOT NULL,
+      ALTER COLUMN event DROP DEFAULT, ALTER COLUMN event SET NOT NULL`,
+  },
   { sql: "ALTER TABLE executor_webhook_sources DROP COLUMN retries" },
   { sql: "DROP INDEX executor_schedules_app" },
   { sql: "DROP INDEX executor_workflow_runs_scope_key" },

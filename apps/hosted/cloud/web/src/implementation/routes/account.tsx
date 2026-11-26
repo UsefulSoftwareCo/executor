@@ -4,7 +4,6 @@ import { AccountPending, AccountShell } from "@executor-js/hosted-web/account";
 import { CloudSupport } from "../components/support.tsx";
 import { PasskeysPending } from "../components/passkeys.tsx";
 
-/** Personal settings sit outside every organization; the switcher gives way to a way back. */
 export const Route = createFileRoute("/account")({
   component: AccountLayout,
   pendingComponent: () => (

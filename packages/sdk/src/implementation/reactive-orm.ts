@@ -1,4 +1,3 @@
-/** Bind one SQL client and track coarse dependencies at the ORM boundary. */
 import { Context, Effect, Option } from "effect";
 import { SqlClient } from "effect/sql";
 import { SqlError, UnknownError } from "effect/sql/SqlError";
@@ -8,7 +7,6 @@ import type { Orm, OrmError } from "fumadb-effect";
 import type { AnySchema, AnyTable } from "fumadb-effect/schema";
 import type { UpsertOptions, TableToColumnValues } from "fumadb-effect/query";
 
-/** Private app storage adapter override. Unpartitioned ORM writes still invalidate every app reader. */
 export const AppRecordPartition = Context.Reference<ReadonlyArray<string> | undefined>(
   "executor/storage/AppRecordPartition",
   {
@@ -16,7 +14,6 @@ export const AppRecordPartition = Context.Reference<ReadonlyArray<string> | unde
   },
 );
 
-/** Conservatively include reachable relations whenever a query has joins. */
 function reads(table: AnyTable | undefined, joined: boolean): ReadonlyArray<string> {
   const found = new Set<string>();
   const visit = (table: AnyTable | undefined) => {
@@ -28,7 +25,6 @@ function reads(table: AnyTable | undefined, joined: boolean): ReadonlyArray<stri
   return [...found];
 }
 
-/** Include transitive database cascades, even though they bypass ORM calls. */
 function writes(
   schema: AnySchema,
   name: string,
@@ -57,10 +53,6 @@ function writes(
   return [...found];
 }
 
-/**
- * A failed statement names its operation, its table and the database's kind of failure, for the
- * span that records it once the failure is a `StorageError`. Never its SQL, values or message.
- */
 const located = <A>(
   operation: string,
   table: PropertyKey,
@@ -74,12 +66,6 @@ const located = <A>(
     }),
   );
 
-/**
- * Capture the host driver without starting another Effect runtime. Transactions
- * keep their fiber-local SQL connection and publish only after commit. App record
- * operations use finer app/table keys in app-storage.ts. Unpartitioned writes
- * invalidate all app readers; direct SQL writes are intentionally outside this API.
- */
 export function bindOrm<S extends AnySchema>(
   orm: Orm<S, SqlClient.SqlClient>,
   sql: SqlClient.SqlClient,
@@ -101,8 +87,6 @@ export function bindOrm<S extends AnySchema>(
             }),
           });
         }
-        // Preserve the caller's cancellation policy. Cleanup transactions run in
-        // finalizers and must not be made interruptible by this adapter.
         return yield* reactive.transaction(sql.withTransaction(restore(effect)));
       }),
     );

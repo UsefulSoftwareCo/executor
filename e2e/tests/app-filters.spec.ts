@@ -117,7 +117,6 @@ export default defineApp({}, { tools: router({ status: query({ input: object({})
                     ).toBe(true);
                   });
                 yield* checkRetained("The group filter keeps the current cards and search");
-                // Retry refreshes both lists, which share a path; hold the management list the filter reads.
                 const managed = { query: { view: "managed" } };
                 const held = yield* holdQuery(paths, outcome, managed);
                 yield* browser.use("Open access selection", (page) =>

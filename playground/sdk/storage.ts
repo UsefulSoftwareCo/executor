@@ -1,16 +1,14 @@
-/** Caller-owned Effect SQL driver and one reactive storage handle shared by SDK clients. */
 import { makeExecutorStorage, AppRequirements, StoredApp, StoredVersion } from "@executor-js/sdk";
 import { pgliteLayer } from "fumadb-effect/pglite";
 import { Effect, Schema } from "effect";
 
-/** Initialize SQLite, commit an app, and close the driver with the enclosing scope. */
 export const storageWalkthrough = () =>
   Effect.runPromise(
     Effect.scoped(
       Effect.gen(function* () {
         const storage = yield* makeExecutorStorage({ provider: "postgresql" });
         yield* storage.migrate;
-        const orm = storage.orm("4.0.18");
+        const orm = storage.orm("4.0.19");
         const createdAt = new Date("2026-01-01T00:00:00.000Z");
         const version = yield* Schema.decodeUnknownEffect(StoredVersion)({
           id: "dpl_example",

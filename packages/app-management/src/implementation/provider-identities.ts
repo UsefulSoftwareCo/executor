@@ -1,5 +1,5 @@
 /**
- * `11_provider_identities` records the identity of each provider stored before SDK storage 4.0.17:
+ * `14_provider_identities` records the identity of each provider stored before SDK storage 4.0.18:
  * its ID as its definition hashes without display text. A deploy finds the provider a definition
  * already has by it, so apps that word one provider differently share its ID and accounts. Deploys
  * record it on the rows they write; this step records the rest. Outcomes:
@@ -19,7 +19,7 @@ export interface ProviderIdentitiesStepHost {
 }
 
 /** Journal name. It never changes and the step never repeats. */
-export const providerIdentitiesStepName = "11_provider_identities";
+export const providerIdentitiesStepName = "14_provider_identities";
 
 export const providerIdentitiesStep = (host: ProviderIdentitiesStepHost): DataStep<never> => ({
   name: providerIdentitiesStepName,

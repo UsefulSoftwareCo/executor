@@ -24,7 +24,6 @@ import {
 import { accountToNameAtom } from "../../contracts/accounts.ts";
 import type { HostedError } from "../../contracts/errors.ts";
 
-/** The SDK decides recovery for every completion reason; `setup` means the connection itself ended. */
 type Recovery = Exclude<OAuthCompletionRecovery, "cancelled"> | "setup";
 
 type CallbackState =
@@ -37,12 +36,6 @@ type CallbackState =
       readonly fixPrompt?: string | undefined;
     };
 
-/**
- * Complete provider OAuth in whichever tab or browser the provider opened. Some services sign in
- * through an emailed link, so the callback cannot rely on the starting tab's session storage: the
- * server finds the pending connection from the callback's state and checks that the signed-in
- * user created it. The starting tab's context only adds its manual-client retry hint.
- */
 export function OAuthCallbackPage() {
   const navigate = useNavigate();
   const registry = useContext(RegistryContext);
@@ -52,8 +45,6 @@ export function OAuthCallbackPage() {
   useEffect(() => {
     if (started.current) return;
     started.current = true;
-    // The server renders this page too and cannot see the tab's storage, so the context is read
-    // once the page has hydrated; until then both render the same neutral progress.
     const stored = Schema.decodeUnknownOption(Schema.fromJsonString(PendingOAuth))(
       sessionStorage.getItem("executor:hosted:oauth"),
     );
@@ -70,7 +61,6 @@ export function OAuthCallbackPage() {
       });
       return;
     }
-    /** Map a failed step to the SDK's recovery for its reason. */
     const fail = (cause: Cause.Cause<HostedError>) => {
       const error = Cause.findErrorOption(cause);
       const completion = Option.filter(error, Schema.is(OAuthCompletionFailed));
@@ -116,7 +106,6 @@ export function OAuthCallbackPage() {
         AtomRegistry.getResult(registry, resolveOAuthCallbackAtom, { suspendOnWaiting: true }),
       );
       if (Exit.isFailure(resolved)) {
-        // Only the member who started a connection may finish it.
         if (
           Option.exists(
             Cause.findErrorOption(resolved.cause),
@@ -132,9 +121,7 @@ export function OAuthCallbackPage() {
         return fail(resolved.cause);
       }
       const { organizationSlug, connection, app, reconnect } = resolved.value;
-      // The organization's pages key their state by the route's slug reference.
       const organization = organizationSlug;
-      // Only the tab that started this connection knows the page it started from.
       const started = Option.filter(stored, (value) => value.connection === connection);
       const registeredClient = Option.flatMapNullishOr(started, (value) => value.registeredClient);
       const returnTo = Option.getOrUndefined(started)?.returnTo;
@@ -155,7 +142,6 @@ export function OAuthCallbackPage() {
       );
       if (Exit.isFailure(result)) return fail(result.cause);
       sessionStorage.removeItem("executor:hosted:oauth");
-      // Reconnects keep their name; a new account is named on the page that follows.
       if (!reconnect) registry.set(accountToNameAtom, { organization, account: result.value.id });
       await (returnTo !== undefined
         ? navigate({
@@ -193,7 +179,6 @@ export function OAuthCallbackPage() {
   );
 }
 
-/** Recovery links resume the original connection or return to the page that started it. */
 function OAuthRecoveryActions({
   pending,
   recovery,
@@ -210,9 +195,6 @@ function OAuthRecoveryActions({
       </Button>
     );
   const context = pending.value;
-  // A client registered for this attempt stays registered, so a retry signs in with it and its
-  // details reopen only to be edited. Other entered clients are account-only, so a retry reopens
-  // their fields.
   const registered = context.registeredClient;
   const retry =
     recovery === "restart" || recovery === "client"

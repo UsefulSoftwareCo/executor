@@ -1,7 +1,3 @@
-/**
- * Quick add cannot confirm an unavailable server, so it keeps the form and retries. After an app is
- * added, a later outage cannot erase an account setup draft or hide the app.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -74,7 +70,6 @@ layer(HostedLive, { excludeTestServices: true })("Deferred MCP setup", (it) => {
         ).toEqual([name, 1]);
         yield* browser.checkpoint("Quick add reports an unreachable MCP server");
         yield* issuer.configure({ mcpStatus: null });
-        // The saved app's Accounts tab preloads setup. Hold that separate read to isolate import.
         const initialSetup = yield* holdQuery(
           /\/providers\/[^/]+\/oauth\/oauth\/setup$/,
           "continue",

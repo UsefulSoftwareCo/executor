@@ -28,8 +28,8 @@ export const ProviderDefinition = Schema.Struct({
 export type ProviderDefinition = typeof ProviderDefinition.Type;
 
 /**
- * Host-only: recording the identity of providers stored before SDK storage 4.0.17, outside the
- * HTTP and Promise facades. Data step `11_provider_identities` walks them.
+ * Host-only: recording the identity of providers stored before SDK storage 4.0.18, outside the
+ * HTTP and Promise facades. Data step `14_provider_identities` walks them.
  */
 export const ProviderIdentitiesHost = Symbol("executor.ProviderIdentities");
 

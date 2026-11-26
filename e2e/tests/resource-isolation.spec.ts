@@ -1,4 +1,3 @@
-/** Real Cloud organizations exercise tenant boundaries through the hosted API. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -129,8 +128,6 @@ layer(HostedLive, { excludeTestServices: true })("Resource isolation", (it) => {
           ),
         );
         saved.push(account.id);
-        // An account of one organization cannot be linked to another's app, so that app's calls
-        // never run with it.
         expect(
           (yield* linkAccountResponse(
             actors.owner,

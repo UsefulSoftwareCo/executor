@@ -1,8 +1,3 @@
-/**
- * Local serves MCP events with its own delivery loop and egress client. The administrative key
- * subscribes a loopback receiver, which local's URL policy allows; the receiver checks each
- * Standard Webhooks signature and answers the first event delivery with a failure.
- */
 import { expect, layer } from "@effect/vitest";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Clock, Effect, Layer, Redacted, Schema, Stream } from "effect";
@@ -26,6 +21,7 @@ import {
   EventList,
   Granted,
   RpcResult,
+  appEvent,
   emitterFiles,
   meta,
   revision,
@@ -42,12 +38,10 @@ interface Received {
   readonly body: string;
 }
 
-/** A loopback receiver that verifies signatures and fails the first event it is sent. */
 const receiver = Effect.gen(function* () {
   const received: Received[] = [];
   const key = Buffer.from(secrets[0].slice("whsec_".length), "base64");
   let failNext = true;
-  /** Stalled responses whose request the sender has since closed. */
   const closed = { count: 0, after: 0 };
   let stalledAt = 0;
   const routes = HttpRouter.add(
@@ -63,7 +57,6 @@ const receiver = Effect.gen(function* () {
       const message = JSON.parse(text) as { type?: string; challenge?: string };
       const kind = message.type === "verification" ? "verification" : "event";
       const data = (message as { data?: { number?: number } }).data;
-      // Issue 5 is refused for good, with a body that never finishes.
       const stalled = kind === "event" && data?.number === 5;
       const status = stalled ? 410 : kind === "event" && failNext ? 503 : 200;
       if (kind === "event" && !stalled) failNext = false;
@@ -77,7 +70,6 @@ const receiver = Effect.gen(function* () {
         body: text,
       });
       if (stalled) stalledAt = Date.now();
-      // The first chunk sends the status line; the rest of the body never comes.
       if (stalled)
         return HttpServerResponse.stream(
           Stream.concat(Stream.make(new TextEncoder().encode("partial")), Stream.never).pipe(
@@ -186,7 +178,7 @@ layer(TestLive, { excludeTestServices: true })("Local MCP events", (it) => {
             });
 
           const listed = yield* Schema.decodeUnknownEffect(EventList)(yield* rpc("events/list"));
-          expect(listed.events.map((event) => event.name)).toContain(name);
+          expect(listed.events.map((event) => event.name)).toEqual([appEvent]);
           const granted = yield* Schema.decodeUnknownEffect(Granted)(
             yield* rpc("events/subscribe", {
               name,
@@ -198,7 +190,6 @@ layer(TestLive, { excludeTestServices: true })("Local MCP events", (it) => {
             { kind: "verification", subscription: granted.id, signed: true },
           ]);
 
-          // The first attempt is refused; the delivery loop retries it with the same event ID.
           const first = yield* emit("acme/widgets", 1);
           yield* emit("acme/gadgets", 2);
           yield* awaitReceived(() =>
@@ -216,21 +207,16 @@ layer(TestLive, { excludeTestServices: true })("Local MCP events", (it) => {
             cursor: null,
           });
 
-          // A final status is final even when its body never arrives: the delivery is not retried
-          // after the request deadline, which a read of the body would have run into.
           const stalled = yield* emit("acme/widgets", 5);
           yield* awaitReceived(() => hook.received.some((item) => item.id === stalled));
-          // The sender closes the request instead of leaving the stalled body open.
           yield* awaitReceived(() => hook.closed.count === 1);
           expect(hook.closed.after).toBeLessThan(3_000);
-          // The request deadline (10 s), the first backoff (5 s) and a poll (2 s) have passed.
           yield* Effect.sleep("18 seconds");
           expect(
             hook.received.filter((item) => item.id === stalled),
             JSON.stringify(hook.received.map(({ body: _body, ...item }) => item)),
           ).toHaveLength(1);
 
-          // After unsubscribing, the next matching event is not sent.
           expect(
             yield* rpc("events/unsubscribe", {
               name,
@@ -238,7 +224,6 @@ layer(TestLive, { excludeTestServices: true })("Local MCP events", (it) => {
               delivery: { mode: "webhook", url: hook.url },
             }),
           ).toEqual(expect.objectContaining({}));
-          // A second subscription marks when the first would have received the next event.
           const marker = yield* Schema.decodeUnknownEffect(Granted)(
             yield* rpc("events/subscribe", {
               name,
@@ -252,6 +237,28 @@ layer(TestLive, { excludeTestServices: true })("Local MCP events", (it) => {
             hook.received.some((item) => item.id === marked && item.subscription === marker.id),
           );
           expect(hook.received.filter((item) => item.id === dropped)).toHaveLength(0);
+
+          const everything = yield* Schema.decodeUnknownEffect(Granted)(
+            yield* rpc("events/subscribe", {
+              name: appEvent,
+              arguments: {},
+              delivery: { mode: "webhook", url: hook.url, secret: secrets[0] },
+            }),
+          );
+          const selected = yield* emit("acme/selected", 6);
+          yield* awaitReceived(() =>
+            hook.received.some(
+              (item) => item.id === selected && item.subscription === everything.id,
+            ),
+          );
+          const delivery = hook.received.find(
+            (item) => item.id === selected && item.subscription === everything.id,
+          );
+          expect(JSON.parse(delivery!.body)).toMatchObject({
+            eventId: selected,
+            name: appEvent,
+            data: { app: app.slug, event: "issue.opened", data: { title: "Issue 6", number: 6 } },
+          });
         }),
       ),
     { timeout: 120_000 },

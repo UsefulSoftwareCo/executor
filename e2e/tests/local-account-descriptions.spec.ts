@@ -1,4 +1,3 @@
-/** Account descriptions through the public account API and the MCP tool catalog agents search. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -91,8 +90,6 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
           }).pipe(Effect.orDie),
         );
 
-        // Connecting from the app links the account, replacing the one linked before; both stay
-        // saved. Work key, connected last, is the one the app uses.
         const connect = (label: string, token: string) =>
           connectLocalAccount(
             agent,
@@ -111,7 +108,6 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
         expect(connected.description).toBeNull();
         expect(yield* localLinks(agent, app.id)).toEqual([connected.id]);
 
-        // A description is returned with the account's metadata once set.
         const created = yield* body(
           Account,
           yield* agent.send("PATCH", `/v1/accounts/${connected.id}`, {
@@ -137,9 +133,6 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
           ]),
         );
 
-        // Agents read the linked account's ID, label and description once, with the app's
-        // namespace. Calls cannot choose accounts, so signatures name none; the saved account
-        // the app does not use is not listed.
         const client = yield* mcp.connect(target.apiKey, "local-account-descriptions");
         const searched = (step: string) =>
           client
@@ -182,7 +175,6 @@ return { found, described: await tools.search.describe({ paths: found.items.map(
         for (const absent of [created.id, undescribed.id, "$accounts"])
           expect(described.signature).not.toContain(absent);
 
-        // Renaming keeps the description; the agent reads the new label with it.
         const renamed = yield* body(
           Account,
           yield* agent.send("PATCH", `/v1/accounts/${created.id}`, { label: "Production key" }),
@@ -197,7 +189,6 @@ return { found, described: await tools.search.describe({ paths: found.items.map(
           `service: ${created.id} (Production key: Reads only; use the sandbox account for writes.)`,
         );
 
-        // A null description removes it; the label stays and agents see no description.
         const cleared = yield* body(
           Account,
           yield* agent.send("PATCH", `/v1/accounts/${created.id}`, { description: null }),

@@ -1,12 +1,3 @@
-/**
- * Database-side observer for a perf stage's PlanetScale branch.
- *
- * It creates a short-lived monitoring role (pg_monitor, TTL) through the PlanetScale API, then
- * samples pg_stat_activity and blocking PIDs with psql `\watch`. Each sample records only backend
- * state, wait events, ages, the statement's leading keyword and its SQLCommenter traceparent, so a
- * slow `sql.execute` span can be matched to what the origin was doing. SQL text, parameters, rows
- * and credentials are never written. The role password stays in this process's memory.
- */
 import { Config, Console, Effect, FileSystem, Redacted, Schedule, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { HttpClient, HttpClientRequest } from "effect/http";
@@ -25,7 +16,6 @@ const Role = Schema.Struct({
   database_name: Schema.String,
 });
 
-/** One backend in one sample. Ages are milliseconds; `tp` is the statement's traceparent. */
 export const Backend = Schema.Struct({
   pid: Schema.Number,
   user: Schema.NullOr(Schema.String),
@@ -86,7 +76,6 @@ const planetscale = (method: "POST" | "DELETE", path: string, body?: unknown) =>
     return method === "DELETE" ? null : yield* response.json;
   });
 
-/** Observe `test-<slug>` for `seconds`, appending one JSON observation per line to `output`. */
 export const observe = (input: {
   readonly slug: string;
   readonly output: string;
@@ -95,7 +84,6 @@ export const observe = (input: {
 }) =>
   Effect.scoped(
     Effect.gen(function* () {
-      // Share the harness's stage-name guard so the observer never reaches another branch.
       yield* Schema.decodeUnknownEffect(perfSlug)(input.slug).pipe(
         Effect.mapError((error) => new ObserverFailed({ message: error.message })),
       );
@@ -115,7 +103,6 @@ export const observe = (input: {
         return yield* new ObserverFailed({ message: "PlanetScale returned no role password" });
       const fs = yield* FileSystem.FileSystem;
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-      // New roles take a moment to propagate; wait for a successful login first.
       const env = {
         PGHOST: role.access_host_url,
         PGUSER: role.username,
@@ -173,7 +160,6 @@ export const observe = (input: {
     }),
   );
 
-/** Summaries: origin connections by state, lock waits, and blocked statements' traceparents. */
 export const summarizeObservations = (lines: readonly Observation[]) => {
   const perSample = lines.map((line) => {
     const busy = line.rows.filter(

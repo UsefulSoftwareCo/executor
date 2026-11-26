@@ -1,11 +1,9 @@
-/** A real loopback token service. It exposes protocol observations, never submitted secrets or access tokens. */
 import { createServer } from "node:http";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Clock, Deferred, Effect, Layer } from "effect";
 import { Base64 } from "effect/encoding";
 import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
 
-/** Synthetic values include punctuation so raw Basic differs from standard OAuth Basic. */
 export const machineClient = {
   clientId: "synthetic+client",
   clientSecret: "synthetic:secret &value",
@@ -32,14 +30,12 @@ export const tokenRequestParameters = (contentType: string | undefined, text: st
   }
 };
 
-/** Token issuance and resource access use actual HTTP; renewal is visible through the token generation. */
 export const clientCredentialsIssuer = Effect.gen(function* () {
   const address = yield* Deferred.make<string>();
   let expiresIn = 120;
   let rejected = false;
   let method: "client_secret_post" | "client_secret_basic" | "client_secret_basic_raw" =
     "client_secret_basic";
-  /** The body encoding the token endpoint accepts; the other one is refused. */
   let format: "form" | "json" = "form";
   let requests = 0;
   let generation = 0;
@@ -132,7 +128,6 @@ export const clientCredentialsIssuer = Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest;
         const issued = tokens.get(request.headers.authorization ?? "");
         return yield* HttpServerResponse.json({
-          // Issuing another token does not revoke an unexpired in-flight token.
           authenticated:
             issued !== undefined && issued.expiresAt > (yield* Clock.currentTimeMillis),
           generation: issued?.generation ?? 0,
