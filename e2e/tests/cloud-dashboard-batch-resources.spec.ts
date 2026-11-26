@@ -100,13 +100,16 @@ export default defineApp({}, async () => ({ tools: router({
           { concurrency: "unbounded" },
         ).pipe(Effect.provideService(HttpClient.TracerPropagationEnabled, false));
         for (const trace of traces) {
-          // Exports can arrive out of order; wait for the reads and both initialization spans.
           const spans = yield* telemetry.query(trace).pipe(
             Effect.flatMap((result) =>
               result.data.filter(({ span }) => span.operationName === "dashboard.batch.read")
                 .length === reads.length &&
-              result.data.some(({ span }) => span.operationName === "runtime.cloud.database.initialize") &&
-              result.data.some(({ span }) => span.operationName === "runtime.cloud.executor.initialize")
+              result.data.some(
+                ({ span }) => span.operationName === "runtime.cloud.database.initialize",
+              ) &&
+              result.data.some(
+                ({ span }) => span.operationName === "runtime.cloud.executor.initialize",
+              )
                 ? Effect.succeed(result.data)
                 : Effect.fail(new Error("The completed batch trace has not reached Motel")),
             ),

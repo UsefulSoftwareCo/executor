@@ -1,8 +1,3 @@
-/**
- * The SQL client one Worker event (or Durable Object call) uses for every database consumer:
- * the executor, hosted permission checks and Better Auth. Worker events connect through Hyperdrive
- * (about 4 ms); consumers still share one pool, so sequential work reuses one connection.
- */
 import { Context, Effect, Layer, Option, Scope } from "effect";
 import { SqlClient, type SqlError } from "effect/sql";
 import {
