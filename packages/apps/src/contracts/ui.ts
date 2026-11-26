@@ -14,7 +14,6 @@ const UiContextFields = Schema.Struct({
     Schema.Record(Schema.NonEmptyString, Schema.Array(Schema.NonEmptyString)),
   ),
 });
-// Pages built with framework releases before versions were named read and send `deployment`.
 export const UiContext = UiContextFields.pipe(withLegacyKeys({ version: "deployment" }));
 /** A problem with one of the page's accounts, from stored state. Labels are the owner's own names. */
 export type UiAccountProblem =
@@ -35,6 +34,36 @@ export interface UiAccountNotice {
   /** The app's accounts in the dashboard. */
   readonly fix: string;
 }
+/**
+ * The pages a host can open for an app: the source file that defines each, and where the build
+ * retains it. `main` is the app's page in a browser tab or an installed window; `menuBar` is the
+ * desktop menu-bar popover. Retained pages outside `index.html` sit under the host-owned
+ * `_executor/` prefix, which neither compiled output nor public files can use.
+ */
+export const appUiDocuments = {
+  main: { source: "ui/index.html", asset: "index.html" },
+  menuBar: { source: "ui/menubar.html", asset: "_executor/menubar.html" },
+} as const;
+export type AppUiDocument = keyof typeof appUiDocuments;
+/** The app's icon, for desktop launchers, windows and the menu bar. */
+export const appUiIcon = { source: "ui/icon.svg", asset: "_executor/icon.svg" } as const;
+/**
+ * Which optional pages a build retained, written beside them so a host learns this from one read.
+ * Builds from before it have only the main page.
+ */
+export const appUiPagesAsset = "_executor/pages.json";
+export const AppUiPagesManifest = Schema.Struct({ menuBar: Schema.Boolean, icon: Schema.Boolean });
+/** What a version's retained UI has: its main page, menu-bar page and icon. */
+export interface AppUiPages {
+  readonly main: boolean;
+  readonly menuBar: boolean;
+  readonly icon: boolean;
+}
+/** Where an app's origin serves its menu-bar page and its icon. */
+export const appMenuBarRoute = "/_executor/menubar";
+export const appIconRoute = "/_executor/icon.svg";
+/** Bytes an icon may contain. */
+export const appUiIconMaxBytes = 64 * 1024;
 /** Retained browser bytes. Hosts authorize access before reading or rendering them. */
 export interface AppUiFile {
   readonly body: Uint8Array;
@@ -129,3 +158,4 @@ export const AppUiApi = HttpApi.make("app-ui").add(
       }),
     ),
 );
+export * from "./desktop.ts";

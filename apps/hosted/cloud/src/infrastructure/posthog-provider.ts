@@ -1,4 +1,3 @@
-/** Alchemy lifecycle for a PostHog project, including its server-issued ingestion token. */
 import { isDeepStrictEqual } from "node:util";
 import * as Api from "@distilled.cloud/posthog/organizations";
 import { Credentials } from "@distilled.cloud/posthog/Credentials";
@@ -11,7 +10,6 @@ import { Stage } from "alchemy/Stage";
 import { Config, Effect, Layer, Redacted, Schema } from "effect";
 import { FetchHttpClient } from "effect/http";
 
-/** Fields owned by deployment; other project settings remain untouched. */
 export interface PostHogProjectProps {
   readonly organizationId: string;
   readonly name: string;
@@ -32,7 +30,6 @@ const ProjectResponse = Schema.Struct({
   test_account_filters: Schema.Unknown,
 });
 
-/** Persist only the fields used for reconciliation and the redacted ingestion token. */
 export interface PostHogProjectAttributes {
   readonly id: number;
   readonly organizationId: string;
@@ -48,13 +45,11 @@ export interface PostHogProjectAttributes {
   readonly testFilters: unknown;
 }
 
-/** A project owns one ingestion token; reconciliation never rotates it. */
 export type PostHogProject = Resource<
   "Executor.PostHogProject",
   PostHogProjectProps,
   PostHogProjectAttributes
 >;
-/** Declare a project. Retain data-bearing production projects at the call site. */
 export const PostHogProject = Resource<PostHogProject>("Executor.PostHogProject");
 
 const attributes = (organizationId: string, response: Api.ProjectBackwardCompat) =>
@@ -86,7 +81,6 @@ const testFilters = [
   { key: "executor_internal", operator: "exact", type: "person", value: [true] },
 ];
 
-/** Provider failures keep credential-bearing API bodies redacted in CLI diagnostics. */
 export class PostHogProvisioningFailed extends Schema.TaggedError<PostHogProvisioningFailed>()(
   "PostHogProvisioningFailed",
   { operation: Schema.String, detail: Schema.Redacted(Schema.Unknown) },
@@ -97,7 +91,6 @@ const protect = (operation: string) =>
       new PostHogProvisioningFailed({ operation, detail: Redacted.make(detail) }),
   );
 
-/** Read, update and recover owned projects using a stable stack/stage ownership tag. */
 export const postHogProjectProvider = () =>
   Provider.effect(
     PostHogProject,
@@ -205,7 +198,6 @@ export const postHogProjectProvider = () =>
     }),
   );
 
-/** Resolve management authorization only during provisioning; never bind it into the Worker. */
 export const postHogProviderCredentials = <A, E, R>(
   providers: Layer.Layer<A, E, R | Credentials>,
 ) =>

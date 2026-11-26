@@ -120,7 +120,6 @@ const expectedValue = (ast: SchemaAST.AST): string | undefined => {
   return described === "a value with other constraints" ? undefined : described;
 };
 
-// Reported input only exists when a parser opts in; never render it either way.
 const leafHook: SchemaIssue.LeafHook = (issue) =>
   SchemaIssue.hasInput(issue)
     ? "Invalid value"
@@ -197,7 +196,6 @@ const located = (
         : issues.flatMap((issue) => located(issue, path)),
     ),
     Match.orElse((issue) => {
-      // An imported schema's problems come from its check, which knows the keys it may accept.
       const accepts = issue._tag === "Filter" ? importedSchemaKeys(issue.filter) : undefined;
       return format(issue).issues.map((problem) => ({
         path: [
@@ -210,7 +208,6 @@ const located = (
     }),
   );
 
-// Field names and indexes locate the problem; keys that could carry supplied data are not echoed.
 const segment = (key: PropertyKey) =>
   typeof key === "number"
     ? `[${key}]`

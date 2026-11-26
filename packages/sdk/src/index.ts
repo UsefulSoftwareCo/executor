@@ -4,7 +4,7 @@
  */
 import { Effect } from "effect";
 import { promiseExecutor } from "./implementation/promise.ts";
-import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
+import { Digest, SecureRandom } from "effect/crypto";
 import type {
   PromiseExecutor as Executor,
   ExecutorOptions,
@@ -29,7 +29,7 @@ export { makeExecutorStorage, type ExecutorDatabase } from "./implementation/sto
 export const createExecutor = (options: ExecutorOptions): Promise<Executor> =>
   Effect.runPromise(
     createExecutorEffect(options).pipe(
-      Effect.provide(BrowserCrypto.layer),
+      Effect.provide([SecureRandom.layerWebCrypto, Digest.layerWebCrypto]),
       Effect.map(promiseExecutor),
     ),
   );

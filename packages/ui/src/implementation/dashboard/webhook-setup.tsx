@@ -19,7 +19,6 @@ import { Textarea } from "../components/textarea.tsx";
 import { CopyButton } from "./code.tsx";
 
 type Action<E> = () => Promise<Exit.Exit<WebhookSubscription, E>>;
-/** Compact setup UI shared by every product; authentication and exact error types stay in the caller. */
 export function WebhookSetupPage<E>({
   result,
   complete,

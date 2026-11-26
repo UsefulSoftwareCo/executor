@@ -1,26 +1,18 @@
-/**
- * An idle server's frequent polls export nothing; a job a poll finds is still traced, and so is a
- * poll that fails, with the statement that failed.
- */
 import { expect, layer } from "@effect/vitest";
-import { Clock, Effect, FileSystem, Layer, Schedule, Schema } from "effect";
-import { HttpClient } from "effect/http";
+import { Clock, Effect, FileSystem, Layer, Schedule } from "effect";
 import { Api, SessionClients } from "../support/api.ts";
 import { TestLive, withCase } from "../support/case.ts";
-import { SpanQuery } from "../support/contracts.ts";
+import type { SpanQuery } from "../support/contracts.ts";
 import { startControlledSelfHost, startFreshSelfHost } from "../support/managed-server.ts";
-import { serveOtlpCollector } from "../support/otlp-collector.ts";
+import { ownCollectorSpans, serveOtlpCollector } from "../support/otlp-collector.ts";
 import { Target } from "../support/platform.ts";
 import { Evidence } from "../support/evidence.ts";
 import { legacyStorage } from "../support/legacy-storage.ts";
 import { serverControl } from "../support/server-control.ts";
 import { scenarios } from "../test-plan.ts";
 
-/** The scheduler and provisioning poll every second and event delivery every two. */
 const idleWindow = "10 seconds";
-/** The product exports spans every second. */
 const exportDelay = "3 seconds";
-/** Tables only these polls read while nobody calls the server. */
 const polled = [
   "executor_scheduled_runs",
   "executor_schedules",
@@ -28,36 +20,13 @@ const polled = [
   "executor_event_deliveries",
   "executor_event_subscriptions",
 ];
-/** Spans only the event delivery pass starts. */
 const passes = new Set(["events.dispatch", "sdk.events.deliver"]);
 
-/** Spans in `collector` that started in [from, to), newest first; Motel answers at most 500 a search. */
 const exported = (collector: string, from: number, to: number, operation?: string) =>
-  Effect.gen(function* () {
-    const http = yield* HttpClient.HttpClient;
-    return yield* Effect.scoped(
-      Effect.gen(function* () {
-        const url = new URL("/api/spans/search", collector);
-        if (operation !== undefined) url.searchParams.set("operation", operation);
-        url.searchParams.set("lookback", "1h");
-        url.searchParams.set("limit", "10000");
-        const response = yield* http.get(url.href);
-        return yield* response.json.pipe(Effect.flatMap(Schema.decodeUnknownEffect(SpanQuery)));
-      }),
-    ).pipe(
-      Effect.map(({ data }) =>
-        data.filter(({ span }) => {
-          const at = Date.parse(span.startTime);
-          return at >= from && at < to;
-        }),
-      ),
-    );
-  });
+  ownCollectorSpans(collector, { from, to, operation });
 
-/** What a root records beside its failure: the statement that failed. */
 const detail = (tags: Readonly<Record<string, string>>) =>
   Object.fromEntries(Object.entries(tags).filter(([key]) => key.startsWith("executor.storage.")));
-/** Each failing poll's own trace: a root span, failed, with the failure it recorded. */
 const failedRoots = (spans: typeof SpanQuery.Type.data) =>
   spans
     .filter(({ span }) => span.parentSpanId === null && span.status === "error")
@@ -66,12 +35,10 @@ const failedRoots = (spans: typeof SpanQuery.Type.data) =>
       exception: span.events.find(({ name }) => name === "exception")?.attributes ?? {},
       detail: detail(span.tags),
     }));
-/** The failure type each failing poll's root recorded, by its operation. */
 const failureTypes = (roots: ReturnType<typeof failedRoots>) =>
   Object.fromEntries(
     roots.map(({ operation, exception }) => [operation, exception["exception.type"]]),
   );
-/** The roots `operation` exported, oldest first. */
 const of = <A extends { readonly operation: string }>(roots: ReadonlyArray<A>, operation: string) =>
   roots.filter((root) => root.operation === operation).reverse();
 
@@ -83,7 +50,6 @@ layer(TestLive, { excludeTestServices: true })("Idle poll traces", (it) => {
         const target = yield* Target,
           fs = yield* FileSystem.FileSystem,
           evidence = yield* Evidence;
-        // The server's only collector, so every span in it is the server's.
         const directory = yield* fs.makeTempDirectory({
           directory: target.directory,
           prefix: "collector",
@@ -95,7 +61,6 @@ layer(TestLive, { excludeTestServices: true })("Idle poll traces", (it) => {
         const spans = (from: number, to: number, operation?: string) =>
           exported(collector, from, to, operation);
 
-        // Startup's one-off steps finish first; then nothing is due and no one calls.
         yield* Effect.sleep("5 seconds");
         const idleFrom = yield* Clock.currentTimeMillis;
         yield* Effect.sleep(idleWindow);
@@ -120,8 +85,6 @@ layer(TestLive, { excludeTestServices: true })("Idle poll traces", (it) => {
           "Idle polls for due runs, queued jobs and event deliveries export no traces",
         ).toBe(0);
 
-        // First-admin setup queues the owner's member setup. The poll that finds the job records
-        // nothing of its own, so the job's trace is a root.
         const api = yield* Api.pipe(
           Effect.provide(Layer.fresh(Api.layer)),
           Effect.provide(Layer.fresh(SessionClients.layer)),
@@ -168,7 +131,6 @@ layer(TestLive, { excludeTestServices: true })("Idle poll traces", (it) => {
         const instance = yield* startControlledSelfHost(target, {
           OTEL_EXPORTER_OTLP_ENDPOINT: collector,
         });
-        /** Restart the stopped instance over `statements` and return the failed roots it exports. */
         const failingAfter = (
           statements: Parameters<typeof legacyStorage>[0],
           expected: Readonly<Record<string, string>>,
@@ -177,9 +139,10 @@ layer(TestLive, { excludeTestServices: true })("Idle poll traces", (it) => {
             yield* legacyStorage(statements);
             const from = yield* Clock.currentTimeMillis;
             yield* serverControl("start");
-            // Each poll runs every one or two seconds and the product exports every second.
-            return yield* exported(collector, from, Number.MAX_SAFE_INTEGER).pipe(
-              Effect.map(failedRoots),
+            return yield* Effect.forEach(Object.keys(expected), (operation) =>
+              exported(collector, from, Number.MAX_SAFE_INTEGER, operation),
+            ).pipe(
+              Effect.map((found) => failedRoots(found.flat())),
               Effect.repeat({
                 schedule: Schedule.spaced("1 second"),
                 until: (found) =>
@@ -189,7 +152,6 @@ layer(TestLive, { excludeTestServices: true })("Idle poll traces", (it) => {
             );
           }).pipe(Effect.provideService(Target, instance));
 
-        // Each poll reads a column that is no longer there.
         const polls = {
           "events.dispatch": "StorageError",
           "schedule.dispatch": "StorageError",
@@ -212,7 +174,6 @@ layer(TestLive, { excludeTestServices: true })("Idle poll traces", (it) => {
           "Each failing poll exports its failure as a root span",
         ).toMatchObject(polls);
         yield* evidence.json("failed-polls.json", broken);
-        // The root says which statement failed and how, though the poll only sees a StorageError.
         const subscriptions = of(broken, "events.dispatch")[0]?.detail;
         expect(subscriptions, "The event poll names its failed statement").toMatchObject({
           "executor.storage.operation": "findMany",
@@ -225,7 +186,6 @@ layer(TestLive, { excludeTestServices: true })("Idle poll traces", (it) => {
           "executor.storage.reason": "SqlSyntaxError",
         });
 
-        // A different statement of the same poll fails: its root says which.
         const deliveries = yield* failingAfter(
           [
             {
@@ -246,8 +206,6 @@ layer(TestLive, { excludeTestServices: true })("Idle poll traces", (it) => {
         });
         expect(due).not.toEqual(subscriptions);
 
-        // Event delivery reads again, but claiming a due delivery and retention both fail. Both
-        // are caught inside a pass that otherwise succeeds.
         const steps = {
           "sdk.events.claim": "StorageError",
           "sdk.events.retention": "StorageError",

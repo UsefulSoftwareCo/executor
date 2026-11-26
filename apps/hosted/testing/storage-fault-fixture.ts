@@ -1,14 +1,3 @@
-/**
- * Test host only: fails a read that binds one chosen ID inside a chosen operation, so a
- * scenario can show how a storage failure is reported where Executor reads saved state. The arm
- * names the spans the read must run inside (for example `sdk.invocation.snapshot`), so reads of
- * the same ID elsewhere, such as the host's own authorization reads, pass untouched. The
- * statement is replaced by one the database rejects, so the failure is a real SQL error from the
- * driver. It can instead fail the commit of the next transaction inside the named spans: the
- * database refuses the commit, or answers it with its timeout error, and rolls the transaction
- * back; or the commit applies and its answer is lost, as a dropped connection would lose it.
- * Production entry points never provide it.
- */
 import { Effect, Layer, Option, Schema, type Tracer } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { SqlClient, SqlError } from "effect/sql";
@@ -20,10 +9,6 @@ const Arm = Schema.Union([
   Schema.Struct({ binds: Schema.NonEmptyString, within: Within }),
   Schema.Struct({ commit: Schema.Literals(["refused", "timeout", "lost"]), within: Within }),
 ]);
-/**
- * Runs last in the transaction: a deferred trigger the database fires at COMMIT, which fails it.
- * PGlite has no statement timer, so the timeout is the error PostgreSQL's timer raises.
- */
 const commitFault = (fault: "refused" | "timeout") => `
 create temp table executor_test_commit_fault (id int) on commit drop;
 create function pg_temp.executor_test_commit_fault() returns trigger language plpgsql as $$
@@ -38,7 +23,6 @@ create constraint trigger executor_test_commit_fault after insert on executor_te
   deferrable initially deferred for each row execute function pg_temp.executor_test_commit_fault();
 insert into executor_test_commit_fault values (1);`;
 
-/** Names of the spans enclosing a statement, innermost first. */
 const enclosing = (span: Tracer.AnySpan): ReadonlyArray<string> => {
   const names: Array<string> = [];
   let current: Option.Option<Tracer.AnySpan> = Option.some(span);
@@ -50,10 +34,6 @@ const enclosing = (span: Tracer.AnySpan): ReadonlyArray<string> => {
 };
 
 export const storageFaultFixture = Effect.sync(() => {
-  /**
-   * Armed until a read binding the ID, or a transaction for a commit fault, inside every named span
-   * reaches it; then reported until the next arm.
-   */
   let armed: typeof Arm.Type | undefined;
   let failed: ReadonlyArray<string> | undefined;
   const transformer: Statement.Transformer = (statement, sql, _fiber, span) =>
@@ -122,7 +102,6 @@ export const storageFaultFixture = Effect.sync(() => {
     HttpRouter.add(
       "GET",
       path,
-      // `spans` names where the failed read ran, so a scenario can check the fault hit its target.
       Effect.sync(() =>
         HttpServerResponse.jsonUnsafe(
           failed === undefined ? { failed: false } : { failed: true, spans: failed },
@@ -139,9 +118,7 @@ export const storageFaultFixture = Effect.sync(() => {
     ),
   );
   return {
-    /** Every statement the server runs passes through the transformer. */
     transformer,
-    /** Compose the product with its SQL client's transactions open to the commit fault. */
     provide: <A, E, R>(product: Effect.Effect<A, E, R>) =>
       product.pipe(Effect.updateService(SqlClient.SqlClient, sql)),
     routes,

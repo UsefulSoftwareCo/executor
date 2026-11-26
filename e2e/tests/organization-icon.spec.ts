@@ -10,8 +10,6 @@ const pixel = Buffer.from(
   "base64",
 );
 
-// A valid ancillary text chunk keeps this synthetic PNG above the browser's
-// 64 KiB keepalive request limit without depending on a large binary fixture.
 const metadata = Buffer.from("fixture\0" + "x".repeat(128 * 1024));
 const chunk = Buffer.alloc(metadata.length + 12);
 chunk.writeUInt32BE(metadata.length, 0);

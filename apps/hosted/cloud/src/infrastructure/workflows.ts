@@ -1,21 +1,35 @@
 import { cloudArtifactsTokensLive } from "./artifacts-tokens.ts";
 import { cloudSentry, reportCloudFailure } from "../implementation/error-reporting.ts";
-/** One native Cloudflare workflow routes every run to its retained Dynamic Worker app build. */
 import { cloudAnalytics, recordBackgroundUsage } from "../implementation/product-analytics.ts";
 import * as Cloudflare from "alchemy/Cloudflare";
-import { Clock, Effect, Exit, Schema } from "effect";
+import { Cause, Clock, Config, Effect, Exit, Option, Schema } from "effect";
 import { HostedExecutor } from "@executor-js/hosted-server";
 import {
   WorkflowHost,
   WorkflowRunId,
   type WorkflowDriver,
+  EngineFaults,
+  engineFaultError,
+  engineFaultFor,
+  engineLateFor,
+  type EngineFault,
+  type EngineFaultList,
+  nativeEngineFailure,
   workflowFailureMessage,
 } from "@executor-js/sdk/core";
+import { cloudEmulators } from "./emulators.ts";
 import { cloudProduct } from "./product.ts";
 import { appDataSupervisors } from "./app-data.ts";
 import { safe } from "./workflow-runtime.ts";
 
-/** A retryable step failure. The engine serializes its encoded message, so a replay decodes the same. */
+const nativeSleep = (effect: Effect.Effect<void>) =>
+  effect.pipe(
+    Effect.catchCause((cause) => {
+      if (Cause.hasInterrupts(cause)) return Effect.interrupt;
+      return Effect.fail(nativeEngineFailure(Cause.squash(cause)));
+    }),
+  );
+
 class RetryableStepFailure extends Schema.TaggedError<RetryableStepFailure>()(
   "RetryableStepFailure",
   { message: Schema.String },
@@ -23,9 +37,38 @@ class RetryableStepFailure extends Schema.TaggedError<RetryableStepFailure>()(
 
 const encode = workflowFailureMessage;
 
-const runWorkflow = (input: {
-  run: string;
-}): Effect.Effect<Schema.Json, never, Cloudflare.Workflows.WorkflowServices | HostedExecutor> =>
+const engineFaults = Effect.gen(function* () {
+  if (Option.isNone(yield* cloudEmulators.pipe(Effect.orDie))) return null;
+  const configured = yield* Config.option(Config.String("EXECUTOR_TEST_WORKFLOW_ENGINE_FAULTS"));
+  if (Option.isNone(configured)) return null;
+  return yield* Schema.decodeUnknownEffect(Schema.fromJsonString(EngineFaults))(
+    configured.value,
+  ).pipe(Effect.orDie);
+});
+
+const faulted = (
+  late: number | undefined,
+  fault: EngineFault | undefined,
+  call: Effect.Effect<void>,
+) => {
+  const sleep =
+    late === undefined
+      ? call
+      : Effect.andThen(
+          Effect.promise(() => new Promise((settle) => setTimeout(settle, late))),
+          call,
+        );
+  return fault === undefined
+    ? sleep
+    : fault.when === "before"
+      ? Effect.die(engineFaultError(fault))
+      : Effect.flatMap(sleep, () => Effect.die(engineFaultError(fault)));
+};
+
+const runWorkflow = (
+  input: { run: string },
+  faults: EngineFaultList | null,
+): Effect.Effect<Schema.Json, never, Cloudflare.Workflows.WorkflowServices | HostedExecutor> =>
   Effect.gen(function* () {
     const { NonRetryableError } = yield* Effect.promise(() => import("cloudflare:workflows"));
     const run = yield* Schema.decodeUnknownEffect(WorkflowRunId)(input.run);
@@ -33,8 +76,11 @@ const runWorkflow = (input: {
     const services = yield* Effect.context<never>();
     const executor = yield* Effect.flatten(HostedExecutor);
     const driver: WorkflowDriver = {
-      do: (name, options, work) =>
-        safe(
+      do: (name, options, work) => {
+        const fault = engineFaultFor(faults, run, name);
+        if (fault?.when === "before")
+          return Effect.fail(nativeEngineFailure(engineFaultError(fault)));
+        const call = safe(
           step.do({
             name,
             ...options,
@@ -49,7 +95,6 @@ const runWorkflow = (input: {
                   },
                 }),
                 Effect.provideContext(services),
-                // The engine retries typed failures and stops at a defect.
                 Effect.catch((error) =>
                   error.retryable
                     ? Effect.fail(new RetryableStepFailure({ message: encode(error) }))
@@ -58,9 +103,29 @@ const runWorkflow = (input: {
               ),
             ),
           }),
+        );
+        return fault === undefined
+          ? call
+          : call.pipe(
+              Effect.flatMap(() => Effect.fail(nativeEngineFailure(engineFaultError(fault)))),
+            );
+      },
+      sleep: (name, duration) =>
+        nativeSleep(
+          faulted(
+            engineLateFor(faults, run, name),
+            engineFaultFor(faults, run, name),
+            step.sleep(name, duration),
+          ),
         ),
-      sleep: (name, duration) => safe(step.sleep(name, duration)),
-      sleepUntil: (name, timestamp) => safe(step.sleepUntil(name, timestamp)),
+      sleepUntil: (name, timestamp) =>
+        nativeSleep(
+          faulted(
+            engineLateFor(faults, run, name),
+            engineFaultFor(faults, run, name),
+            step.sleepUntil(name, timestamp),
+          ),
+        ),
     };
     const started = yield* Clock.currentTimeMillis;
     return yield* executor[WorkflowHost].execute(run, driver).pipe(
@@ -76,7 +141,6 @@ const runWorkflow = (input: {
       ),
     );
   }).pipe(Effect.orDie);
-/** Step callbacks run inside the app's Dynamic Worker; the Cloudflare engine owns the journal. */
 export class AppWorkflows extends Cloudflare.Workflow<AppWorkflows>()(
   "AppWorkflows",
   Effect.gen(function* () {
@@ -86,11 +150,12 @@ export class AppWorkflows extends Cloudflare.Workflow<AppWorkflows>()(
     );
     const analytics = yield* cloudAnalytics;
     const report = yield* cloudSentry;
+    const faults = yield* engineFaults;
     return (input: { run: string }) =>
       Effect.scoped(
         report(
           analytics.wrap(
-            runWorkflow(input).pipe(
+            runWorkflow(input, faults).pipe(
               Effect.provide(executor),
               Effect.tapCause(reportCloudFailure),
               Effect.withSpan("workflow.attempt", {

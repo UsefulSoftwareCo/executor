@@ -1,12 +1,3 @@
-/**
- * An app's request Executor's network failed to send fails the app's `fetch`, as the platform's
- * own fetch does when its network fails, through every `fetch` app code can reach. Executor's
- * network never presents its own failure as a status the service could have sent, a service's
- * real answer still reaches the app unchanged, and Cloud reports only failures on Executor's
- * side, with a fixed category. The failure names no host: the app knows which request it sent,
- * and nothing Executor records about it, in Sentry or in traces, names the destination. On Cloud,
- * the outbound request's span records no part of the app's path.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -22,8 +13,8 @@ import { Evidence, Telemetry } from "../support/evidence.ts";
 import { Target } from "../support/platform.ts";
 import {
   SentryEvent,
-  sentryEventText,
-  sentryEvents,
+  sentryEventTextWholeEnvironment,
+  sentryEventsWholeEnvironment,
   sentryExceptions,
 } from "../support/sentry-events.ts";
 
@@ -57,11 +48,6 @@ const Answered = Schema.Struct({
   text: Schema.String,
 });
 
-/**
- * The platform's `fetch` and the framework's `ctx.fetch`, as app code uses them, and the ways app
- * code could reach around the global it is given. An app with migrations owns a database, so its
- * queries run in the app's data facet, an isolate with its own global scope.
- */
 const fetchApp = `import { defineApp, object, string, query, router } from "apps";
 const answer = async (response) => ({ status: response.status, unreachable: response.headers.get("x-executor-unreachable"), text: await response.text() });
 const input = { input: object({ url: string() }) };
@@ -95,7 +81,6 @@ export default defineApp({}, {
   }),
 });`;
 
-/** One OpenAPI operation per path, named `service.<path>`. */
 const document = (paths: ReadonlyArray<string>) => ({
   openapi: "3.1.0",
   info: { title: "Egress fixture", version: "1" },
@@ -192,7 +177,6 @@ layer(HostedLive, { excludeTestServices: true })("App egress failures", (it) => 
           }),
         );
 
-        // A service's own answers reach the app unchanged, including its server errors.
         const real500 = yield* answered(
           yield* fetching("global", { url: `${upstream.origin}/fail` }),
         );
@@ -207,19 +191,15 @@ layer(HostedLive, { excludeTestServices: true })("App egress failures", (it) => 
         expect(provider.message).toMatch(
           /^The connected service returned a server error \(HTTP 500\)/,
         );
-        // A service cannot make the app's fetch fail by sending Executor's mark.
         expect(
           yield* answered(yield* fetching("global", { url: `${upstream.origin}/forged` })),
         ).toEqual({ status: 502, unreachable: null, text: "service answer" });
 
-        // A send that fails before any answer rejects the app's fetch: never a status. The
-        // message cannot claim the request was not sent: the connection may fail after it was.
         const networkMessage =
           "Executor's connection to the service failed before it answered. The request may have reached the service.";
         const rejected = { source: "app", errorName: "TypeError", message: networkMessage };
         const fetches: Record<string, unknown> = {};
         const fetchedTraces: Array<string> = [];
-        // Every request that reached the closed port, for the telemetry checked below.
         const unsentTraces: Array<string> = [];
         for (const [isolate, call] of [
           ["rpc", fetching],
@@ -234,7 +214,6 @@ layer(HostedLive, { excludeTestServices: true })("App egress failures", (it) => 
             fetches[`${isolate}.${tool}`] = result;
             expect(result.failure, `${isolate}.${tool}`).toEqual(rejected);
           }
-          // ctx.fetch's HTTP client names the transport failure and keeps the rejection as its cause.
           const fetched = yield* failed(
             ToolFailed,
             yield* call("fetched", { url: `${upstream.closedOrigin}/` }),
@@ -247,7 +226,6 @@ layer(HostedLive, { excludeTestServices: true })("App egress failures", (it) => 
             message: `Transport error (GET ${upstream.closedOrigin}/) (caused by TypeError: ${networkMessage})`,
           });
         }
-        // The isolates still answer with the service's own responses afterwards.
         expect(
           yield* answered(yield* facet("tampered", { url: `${upstream.origin}/fail` })),
         ).toMatchObject({ status: 500, unreachable: null });
@@ -261,23 +239,16 @@ layer(HostedLive, { excludeTestServices: true })("App egress failures", (it) => 
         });
         expect(operation.failure.message).toContain("failed before a response arrived");
 
-        // An MCP server that never answered is not reached, never a server error.
         const server = yield* failed(EvaluationFailed, yield* mcp("anything", {}));
         expect(server.mcp).toEqual({ phase: "transport", reason: "request" });
         expect(server.message).not.toMatch(/HTTP/);
         unsentTraces.push(yield* latestTrace);
 
-        // The destination appears nowhere Executor records the failure: not in any exception a
-        // trace records, nor in any Sentry event. The apps framework's HTTP client, used by ctx.fetch
-        // and the OpenAPI helper, quotes the URL the app requested in its own error. Only that exact
-        // text, in the records of those requests, is the app's; every other record, including any
-        // AppEgressFailed report, is read whole.
         const transport = (path: string) => `Transport error (GET ${upstream.closedOrigin}${path})`;
         const appText = new Map([
           ...fetchedTraces.map((trace) => [trace, transport("/")] as const),
           [operationTrace, transport("/ping")],
         ]);
-        /** `quotes`: the record is a failure the framework's HTTP client may have described. */
         type Recorded = { trace: string | undefined; quotes: boolean; text: string };
         const naming = (records: ReadonlyArray<Recorded>) =>
           records
@@ -288,7 +259,6 @@ layer(HostedLive, { excludeTestServices: true })("App egress failures", (it) => 
               );
             })
             .map(({ text }) => text);
-        // The check still finds the host beside the app's text, in a report, or outside those traces.
         const [ownTrace, ownText] = [operationTrace, transport("/ping")];
         expect(
           naming([
@@ -337,13 +307,9 @@ layer(HostedLive, { excludeTestServices: true })("App egress failures", (it) => 
           ),
         );
 
-        // On Cloud a fetch the network rejects is Executor's failure, reported with a fixed
-        // category; answers from the service's side are not. ctx.fetch and the protocol helpers
-        // carry the app request's trace, so their reports are found by it (the platform's global
-        // fetch starts its own). Local workerd rejects a closed port where Cloudflare answers 521.
         const closedTraces = [...fetchedTraces, operationTrace];
         const egress = cloud
-          ? (yield* sentryExceptions.pipe(
+          ? (yield* sentryExceptions([...closedTraces, providerTrace]).pipe(
               Effect.repeat({
                 schedule: Schedule.spaced("100 millis"),
                 until: (exceptions) =>
@@ -371,8 +337,6 @@ layer(HostedLive, { excludeTestServices: true })("App egress failures", (it) => 
         });
         expect(tracedNaming).toEqual([]);
         if (!cloud) return;
-        // On Cloud each app request reaches Executor's outbound as a request of its own. The path is
-        // the app's, so that request's span records only its route's template.
         const served = traced.flatMap((result) =>
           result.data
             .map(({ span }) => span)
@@ -392,7 +356,7 @@ layer(HostedLive, { excludeTestServices: true })("App egress failures", (it) => 
         );
         expect(
           naming(
-            (yield* sentryEventText).map((text) => {
+            (yield* sentryEventTextWholeEnvironment).map((text) => {
               const event = Schema.decodeUnknownSync(SentryRecord)(text);
               return {
                 trace: event.contexts?.trace?.trace_id,
@@ -409,8 +373,7 @@ layer(HostedLive, { excludeTestServices: true })("App egress failures", (it) => 
             "Executor's app network could not send an app's request (connection_lost).",
           ]);
         expect(reported[providerTrace]).toEqual([]);
-        // The report names no user or organization; its message above names no host or app.
-        for (const event of (yield* sentryEvents).filter((event) =>
+        for (const event of (yield* sentryEventsWholeEnvironment).filter((event) =>
           event.exception?.values.some((value) => value.type === egressFailure),
         )) {
           expect(event.user).toBeUndefined();

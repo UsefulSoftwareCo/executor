@@ -3,7 +3,6 @@ import "effect/http-api";
 import { MessageField } from "./api-error.ts";
 import { RecordedMessage } from "./recorded-message.ts";
 
-/** Curated explanation and recovery. Never include raw diagnostics, credentials, or form values. */
 export interface ErrorPresentation {
   readonly title: string;
   readonly description: string;
@@ -11,16 +10,9 @@ export interface ErrorPresentation {
     readonly action: string;
     readonly instructions: string;
   };
-  /** Repeating the failed operation can help. Configuration changes are not retries. */
   readonly retryable?: boolean;
-  /** False when the user's agent cannot act on the fix prompt, so hosts do not offer it. */
   readonly agentFixable?: boolean;
-  /** One safe value the user needs for recovery, such as a URL to send to the service. */
   readonly detail?: { readonly label: string; readonly value: string };
-  /**
-   * Present only when the Executor team must fix the problem. Safe evidence for a public
-   * report: fixed codes and statuses, never user data, URLs, or upstream text.
-   */
   readonly report?: string;
 }
 
@@ -33,7 +25,6 @@ type PresentationProperties = Required<Omit<ErrorPresentation, "detail" | "repor
 
 const TypeId = Symbol.for("@executor-js/utils/UserFacingError");
 
-/** A yieldable error that owns its safe user explanation and agent recovery task. */
 export interface UserFacingError extends Cause.YieldableError, PresentationProperties {
   readonly _tag: string;
 }
@@ -46,12 +37,6 @@ type Definition<Tag extends string, Fields extends Schema.Struct.Fields> = Heade
   readonly fields: Fields & {
     readonly [Key in keyof PresentationProperties | "_tag" | "message"]?: never;
   };
-  /**
-   * What traces and error reports record beside the tag. A fixed description is recorded as is; a
-   * presentation derived from fields is recorded only through this, from fixed text and closed
-   * fields, never a value the caller chose, an app's text or a service's reply. Without it the
-   * error is recorded by its tag alone.
-   */
   readonly recorded?: (fields: Schema.Struct.Type<Fields>) => string;
 } & (
     | ErrorPresentation
@@ -59,9 +44,6 @@ type Definition<Tag extends string, Fields extends Schema.Struct.Fields> = Heade
         readonly presentation: (fields: Schema.Struct.Type<Fields>) => ErrorPresentation;
       }
   );
-// The message getter is encoded as a required string, as for every API error. Decoding
-// validates the wire field, then omits it so the class restores its own presentation.
-// Recovery follows the same rule, so API and MCP callers receive the curated recovery.
 const Recovery = Schema.Struct({ action: Schema.String, instructions: Schema.String });
 const RecoveryField = Recovery.pipe(
   Schema.decodeTo(Schema.optionalKey(Recovery), {
@@ -73,7 +55,6 @@ type DerivedFields = {
   readonly message: typeof MessageField;
   readonly recovery: typeof RecoveryField;
 };
-// Derived presentation cannot be supplied by constructor callers.
 type ErrorFields<Tag extends string, Fields extends Schema.Struct.Fields> = Omit<
   Schema.TaggedStruct<Tag, Fields & DerivedFields>,
   "~type.make.in"
@@ -91,8 +72,6 @@ function withFields<const Tag extends string, const Fields extends Schema.Struct
 ): ErrorClass<Tag, Fields> {
   type Self = Schema.Struct.Type<Fields> & UserFacingError;
   const fields: Fields = definition.fields;
-  // TaggedError's mapFields drops struct annotations. Build the same tagged Error
-  // from its native parts so each encoded OpenAPI variant retains its own copy.
   const documentation =
     "presentation" in definition
       ? {}
@@ -188,19 +167,12 @@ function withFields<const Tag extends string, const Fields extends Schema.Struct
           },
         }),
   });
-  // SAFETY: Schema.Error and TaggedStruct construct and decode the fields and literal tag.
-  // The complete, type-checked descriptor set above supplies the presentation on
-  // that same constructor before it escapes. This narrows its generic Self type;
-  // message and recovery are derived, omitted on decode, and required on encode. Narrowing
-  // the constructor input to payload fields prevents callers from replacing the getters.
   return DefinedError as unknown as ErrorClass<Tag, Fields>;
 }
 
-/** Define a schema-backed error with no payload. Its tag becomes its public error code. */
 function define<const Tag extends string>(
   definition: Header<Tag> & ErrorPresentation,
 ): ErrorClass<Tag, {}>;
-/** Define a schema-backed error whose safe presentation can depend on its parsed fields. */
 function define<const Tag extends string, const Fields extends Schema.Struct.Fields>(
   definition: Definition<Tag, Fields>,
 ): ErrorClass<Tag, Fields>;
@@ -212,14 +184,11 @@ function define<Tag extends string, Fields extends Schema.Struct.Fields>(
     : withFields({ ...definition, fields: {} });
 }
 
-/** Recognize any defined error, including one decoded from an API response. */
 const is = (value: unknown): value is UserFacingError =>
   typeof value === "object" && value !== null && TypeId in value;
 
-/** Define the schema, error constructor, user copy, and agent recovery together. */
 export const UserFacingError = { define, is };
 
-/** Defects get a safe explanation without exposing an arbitrary cause. */
 export const UnexpectedError = define({
   tag: "UnexpectedError",
   status: 500,

@@ -14,7 +14,6 @@ const privateHeaders = {
   "x-frame-options": "DENY",
 };
 
-/** Resolve sign-in and first-team entry using the current request's verified session. */
 export const resolveCloudEntry = (
   session: (headers: Headers) => Effect.Effect<BrowserSession, AuthenticationUnavailable>,
   page: "login" | "login/sso" | "create",
@@ -33,7 +32,6 @@ export const resolveCloudEntry = (
             passkeyEnrollment: false,
           })
         : { kind: "redirect" as const, location: "/login?redirect=%2Fcreate" };
-    // The page cannot read this browser's cookie while the server renders it, so it gets the answer.
     const enrollment = (headers.get("cookie") ?? "")
       .split(";")
       .some(
@@ -85,10 +83,6 @@ export const resolveCloudEntry = (
     });
   });
 
-/**
- * Redirect before any HTML, or render the selected page with its resolved setup data. A page
- * resolved for another address, such as team setup after sign-in, is opened at that address.
- */
 export const cloudEntryDocument = <E, R, E2, R2>(
   entry: Effect.Effect<CloudEntry, E, R>,
   render: (entry: CloudEntryPage) => Effect.Effect<HttpServerResponse.HttpServerResponse, E2, R2>,
@@ -120,7 +114,6 @@ export const cloudEntryDocument = <E, R, E2, R2>(
     ),
   );
 
-/** The development document adapter shares the Worker's resolver through this private HTTP response. */
 export const cloudEntryApi = (session: Parameters<typeof resolveCloudEntry>[0]) =>
   Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;

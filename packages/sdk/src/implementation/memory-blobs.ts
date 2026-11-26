@@ -2,7 +2,6 @@ import { Effect, Option } from "effect";
 import type { BlobKey, BlobStorage } from "../contracts/blobs.ts";
 import { bufferedBody, pageOf } from "./blob-streams.ts";
 
-/** Explicit ephemeral storage for tests and disposable hosts. Returned bytes never alias retained bytes. */
 export const memoryBlobStore = (): BlobStorage => {
   const objects = new Map<BlobKey, Uint8Array>();
   return {
@@ -15,6 +14,10 @@ export const memoryBlobStore = (): BlobStorage => {
     remove: (key) =>
       Effect.sync(() => {
         objects.delete(key);
+      }),
+    removeAll: (keys) =>
+      Effect.sync(() => {
+        for (const key of keys) objects.delete(key);
       }),
     list: (folder, options) =>
       Effect.sync(() =>

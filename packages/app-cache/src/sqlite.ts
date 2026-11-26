@@ -1,5 +1,3 @@
-/** SQLite-backed cache, separate from app tables and owned by the app's supervisor. */
-/** Minimal synchronous SQL adapter; implementations own the database handle. */
 export interface CacheSqlStorage {
   readonly sql: {
     readonly exec: (
@@ -25,11 +23,8 @@ const Row = Schema.Struct({
   bytes: Schema.Number,
 });
 const Usage = Schema.Struct({ bytes: Schema.Number, count: Schema.Number });
+const Count = Schema.Struct({ count: Schema.Number });
 
-/**
- * Totals are kept by triggers, so bounding a write reads one row instead of every entry.
- * Stores created before the usage table are counted once, in the transaction that adds it.
- */
 const initialize = (storage: CacheSqlStorage) =>
   storage.transactionSync(() => {
     storage.sql.exec(`CREATE TABLE IF NOT EXISTS executor_cache (
@@ -56,12 +51,16 @@ const initialize = (storage: CacheSqlStorage) =>
       BEGIN UPDATE executor_cache_usage SET bytes = bytes - OLD.bytes + NEW.bytes WHERE id = 0; END`);
   });
 
-/** Create a bounded, fenced cache store. All commands execute in a synchronous SQL transaction. */
+export interface SqliteCacheResult {
+  readonly reply: Schema.Json;
+  readonly replaced: boolean;
+}
+
 export const sqliteCache = (storage: CacheSqlStorage) => {
   let initialized = false;
   return (namespace: string, input: unknown) =>
     Effect.try({
-      try: (): Schema.Json => {
+      try: (): SqliteCacheResult => {
         const command = Schema.decodeUnknownSync(CacheCommand)(input);
         if (namespace.length > 256) throw new CacheError({ reason: "invalid" });
         if (!initialized) {
@@ -69,8 +68,18 @@ export const sqliteCache = (storage: CacheSqlStorage) => {
           initialized = true;
         }
         const now = Date.now();
-        return storage.transactionSync(() => {
-          // Expired entries are disposable. Active loaders keep their fencing row.
+        let replaced = false;
+        const reply = storage.transactionSync((): Schema.Json => {
+          const expired = Schema.decodeUnknownSync(Count)(
+            storage.sql
+              .exec(
+                "SELECT count(*) AS count FROM executor_cache WHERE stale < ? AND lease_until < ? AND value IS NOT NULL",
+                now,
+                now,
+              )
+              .one(),
+          );
+          if (expired.count > 0) replaced = true;
           storage.sql.exec(
             "DELETE FROM executor_cache WHERE stale < ? AND lease_until < ?",
             now,
@@ -101,9 +110,10 @@ export const sqliteCache = (storage: CacheSqlStorage) => {
             if (bytes > cacheLimits.entryBytes)
               throw new CacheError({ reason: "capacity", limit: "entryBytes" });
             if (entry.freshUntil > entry.staleUntil) throw new CacheError({ reason: "capacity" });
-            // Nothing is kept past the retention, whatever the caller's clock said.
             const staleUntil = Math.min(entry.staleUntil, now + cacheLimits.retentionMs);
             const freshUntil = Math.min(entry.freshUntil, staleUntil);
+            const previous = read(key)?.value ?? null;
+            if (previous !== null && previous !== value) replaced = true;
             storage.sql.exec(
               `INSERT INTO executor_cache VALUES (?, ?, ?, ?, ?, ?, NULL, 0, ?, ?)
             ON CONFLICT(namespace, key) DO UPDATE SET value=excluded.value, version=excluded.version,
@@ -167,8 +177,6 @@ export const sqliteCache = (storage: CacheSqlStorage) => {
                 wanted && (row === undefined || row.lease_until <= now) ? claim(command.key) : null;
               if (command.reads === undefined || command.reads.length > cacheLimits.batchEntries)
                 return { entry: current, lease };
-              // The same reads a `read` makes, in this transaction. Past the batch's byte bound the
-              // reply leaves them out and the caller reads them on its own, as it would without them.
               let bytes = 0;
               const reads: (CacheEntry | null)[] = [];
               for (const key of command.reads) {
@@ -212,7 +220,7 @@ export const sqliteCache = (storage: CacheSqlStorage) => {
               return null;
             }
             case "invalidate":
-              // Revoke an in-flight publication as well as the retained value.
+              if ((read(command.key)?.value ?? null) !== null) replaced = true;
               storage.sql.exec(
                 "DELETE FROM executor_cache WHERE namespace = ? AND key = ?",
                 namespace,
@@ -241,6 +249,7 @@ export const sqliteCache = (storage: CacheSqlStorage) => {
               return null;
           }
         });
+        return { reply, replaced };
       },
       catch: (error) =>
         error instanceof CacheError ? error : new CacheError({ reason: "storage" }),

@@ -1,8 +1,6 @@
-/** Shared authored workflow fixture and public wire projections for real product HTTP tests. */
 import { Schema } from "effect";
 import { withApps } from "./apps-release.ts";
 
-/** Each fixture tool's kind, as the app declares it. Calls must name it. */
 export const workflowToolKinds = {
   isolation: "query",
   rows: "query",

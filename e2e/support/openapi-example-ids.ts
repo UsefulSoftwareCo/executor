@@ -1,7 +1,3 @@
-/**
- * A loopback API whose schemas carry examples that repeat the same `id`, as generated API
- * descriptions often do, imported as a public live OpenAPI app.
- */
 import { expect } from "@effect/vitest";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Effect, Layer } from "effect";
@@ -13,10 +9,6 @@ import { Api, body } from "./api.ts";
 import { App } from "./contracts.ts";
 import { appsManifest } from "./apps-release.ts";
 
-/**
- * Both schemas hold an `x-examples` object with `id: "string"`, as PagerDuty's description does.
- * Extension values are data, not schemas, and name no schema resource.
- */
 const document = (origin: string) => ({
   openapi: "3.0.3",
   info: { title: "Alerts", version: "1" },
@@ -109,7 +101,6 @@ export default defineApp({}, async ctx => ({ tools: liveOpenapiRouter({cache:ctx
   expect(deployed.status).toBe(200);
   const path = `${prefix}/${(yield* body(App, deployed)).id}`;
   yield* Effect.addFinalizer(() => api.request(actors.owner, "DELETE", path).pipe(Effect.orDie));
-  // The app needs no account, so its tools run without any linked.
   return {
     tools: api.request(actors.owner, "GET", `${path}/tools`),
     call: (query: Readonly<Record<string, string>>) =>

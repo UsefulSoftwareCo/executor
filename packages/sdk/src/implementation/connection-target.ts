@@ -1,4 +1,3 @@
-/** Capture and apply one app requirement, independently of account authentication. */
 import { Effect } from "effect";
 import {
   AccountConnectionTargetChanged,
@@ -12,11 +11,6 @@ import type { StoredConnectionTarget } from "../contracts/storage.ts";
 import { lockApp, storedApp, storedVersion } from "./apps.ts";
 import { query, type Query } from "./database.ts";
 
-/**
- * Resolve a provider from the deployed requirement without evaluating account-dependent app code.
- * The requirement's scope is kept with the target. A caller that started the connection for a
- * scope finds the requirement moved if it has another one now.
- */
 export const captureConnectionTarget = (
   db: Query,
   target: typeof CreateAccountConnection.Type.target,
@@ -45,11 +39,6 @@ export const captureConnectionTarget = (
     return { provider: requirement.provider, snapshot };
   });
 
-/**
- * The provider as the target app declares it now, with the hosts connecting will grant. Undefined
- * when the app no longer requires this provider for the slot, or requires it in another scope; the
- * request can then never complete.
- */
 export const targetProvider = (db: Query, target: StoredConnectionTarget, provider: ProviderId) =>
   Effect.gen(function* () {
     const app = yield* storedApp(db, { app: target.app, owner: target.owner }).pipe(
@@ -71,10 +60,6 @@ export const targetProvider = (db: Query, target: StoredConnectionTarget, provid
       : undefined;
   });
 
-/**
- * A request whose app no longer requires its provider for the slot can never complete. Report that
- * before showing the old provider's sign-in, validating its fields or contacting its service.
- */
 export const requireTargetProvider = (
   db: Query,
   row: { readonly target: StoredConnectionTarget; readonly provider: ProviderId },
@@ -89,12 +74,6 @@ export const requireTargetProvider = (
     return shown;
   });
 
-/**
- * Run in the account-save transaction, under the app's lock. The product links the account to the
- * requirement in the scope the connection started for, in the same transaction. A changed target,
- * including a requirement that moved to the other scope since, rolls back the credentials and the
- * link together.
- */
 export const applyConnectionTarget = (
   db: Query,
   connection: AccountConnectionId,
@@ -125,7 +104,6 @@ export const applyConnectionTarget = (
       required.scope !== target.scope
     )
       return yield* changed();
-    // Connecting for this app grants the hosts it declares, replacing any earlier grant.
     yield* query(() =>
       db.updateMany("accounts", {
         where: (b) => b("id", "=", account.id),

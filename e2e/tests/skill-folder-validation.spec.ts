@@ -1,4 +1,3 @@
-/** Folder defaults and explicit overrides through packaged files and the real runtime. */
 import { expect, layer } from "@effect/vitest";
 import { Effect } from "effect";
 import { scenarios } from "../test-plan.ts";
@@ -11,7 +10,6 @@ layer(HostedLive, { excludeTestServices: true })("Skill folder validation", (it)
       context,
       Effect.gen(function* () {
         const { read, bundle, helper } = yield* skillFolderFixture;
-        // Every selected file source uses the same frontmatter and matching-name checks.
         yield* Effect.forEach(
           [
             { path: "skills/local-guide/SKILL.md", content: "No frontmatter" },

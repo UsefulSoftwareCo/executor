@@ -1,4 +1,3 @@
-/** Assertions read spans delivered to the collector, not internal instrumentation hooks. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -48,7 +47,6 @@ layer(HostedLive, { excludeTestServices: true })("Setup diagnostics", (it) => {
           ])
             expect(json).not.toContain(marker);
         };
-        // A server that rejects anonymous use without discoverable OAuth is set up by an agent.
         yield* issuer.configure({ challenge: false, postChallenge: true, discovery: "missing" });
         const rejected = yield* api.request(actors.owner, "POST", `${prefix}/apps/import`, {
           source: {
@@ -129,7 +127,6 @@ layer(HostedLive, { excludeTestServices: true })("Setup diagnostics", (it) => {
             ),
           ).toBe(true);
           assertPrivate(failed);
-          // The refusal's own words are returned as the service's response, and only there.
           const { serviceError, ...curated } = yield* Schema.decodeUnknownEffect(
             Schema.Record(Schema.String, Schema.Unknown),
           )(response.body);

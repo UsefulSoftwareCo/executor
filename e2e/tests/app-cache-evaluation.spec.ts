@@ -1,4 +1,3 @@
-/** A cache failure while an app evaluates keeps its safe reason for callers and traces. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -36,7 +35,6 @@ layer(HostedLive, { excludeTestServices: true })("App caching", (it) => {
           files: [
             {
               path: "index.ts",
-              // The key alone exceeds the cache's key limit, as a large credential once did.
               content: `import { defineApp, query, object, router } from "apps";
 export default defineApp({}, async (ctx) => {
   await ctx.cache.write([{ key: ${JSON.stringify(privateMarker)} + "x".repeat(9000), value: true }], "1 minute");
@@ -58,7 +56,6 @@ export default defineApp({}, async (ctx) => {
         );
         expect(failed.status).toBe(502);
         expect(JSON.stringify(failed.body)).not.toContain(privateMarker);
-        // The cache's reason is named; the app's code did not throw, so it is not blamed.
         expect((yield* body(EvaluationFailure, failed)).failure).toEqual({
           source: "storage",
           errorName: "CacheError",

@@ -1,4 +1,3 @@
-/** Typed app bindings share reconciliation; products supply their existing client and runtime. */
 import { revalidated } from "./refresh.ts";
 import { isTextFile, type App, type AppId } from "@executor-js/sdk";
 import { AppAccess, appManagementApi } from "@executor-js/app-management/contracts";
@@ -24,15 +23,12 @@ type Client<E> = {
     request: WithoutResponseMode<Parameters<WireClient[K]>[0]>,
   ) => Effect.Effect<Endpoints[K]["~Success"]["Type"], E>;
 };
-/** A read rendered on the server reaches the browser with the page, keyed by its request. */
 const hydrate = <K extends keyof Endpoints>(endpoint: K, request: object) =>
   hydratedResult({
     key: `app-management:${endpoint}:${requestKey(request)}`,
     success: Schema.Union([...api.groups.appManagement.endpoints[endpoint].success]),
   });
-/** Each host patches confirmed app metadata using its existing mutation conventions. */
 export type AppAcknowledgement = (get: Atom.FnContext, app: App) => void;
-/** Product client errors remain typed; the shared builder owns no transport or authentication. */
 export const makeAppManagementAtoms = <R, E>(
   runtime: Atom.AtomRuntime<R>,
   client: Effect.Effect<Client<E>, never, R>,
@@ -60,7 +56,6 @@ export const makeAppManagementAtoms = <R, E>(
         acknowledgedQuery(source, retainFailure),
       ),
   );
-  // A commit is immutable, so a loaded file never needs a refresh.
   const sourceFiles = Atom.family((key: SourceFileKey) =>
     runtime
       .atom(
@@ -86,10 +81,6 @@ export const makeAppManagementAtoms = <R, E>(
       .atom(Effect.flatMap(client, (api) => api.history({ params: { ...params, app } })))
       .pipe(hydrate("history", { ...params, app }), revalidated),
   );
-  /**
-   * Exact working bytes for an editor. The page's first read reaches the browser with the page;
-   * unmounted editors release it, so each later edit reads afresh.
-   */
   const workspace = Atom.family((app: AppId) =>
     runtime
       .atom(Effect.flatMap(client, (api) => api.source({ params: { ...params, app } })))
@@ -97,11 +88,6 @@ export const makeAppManagementAtoms = <R, E>(
         acknowledgedQuery(source, retainFailure),
       ),
   );
-  /**
-   * Commit one text file on top of the current working source; a null base creates a new file. Like a Git host's web
-   * editor. A commit never deploys. Other files may have changed since the editor opened; the file itself must not have.
-   * The server's `expected` check still rejects a commit that lands between this read and write.
-   */
   const commitFile = Atom.family((app: AppId) =>
     runtime.fn(
       (
@@ -115,7 +101,6 @@ export const makeAppManagementAtoms = <R, E>(
       ) =>
         Effect.gen(function* () {
           const api = yield* client;
-          // Publish the read, so a person who discards after a conflict loads the version it found.
           const current = yield* readInto(
             get,
             workspace(app),
@@ -209,7 +194,6 @@ export const makeAppManagementAtoms = <R, E>(
     publishing,
     authoring,
     source,
-    /** One display file of a listed revision, for files the listing does not inline. */
     sourceFile: (key: ConstructorParameters<typeof SourceFileKey>[0]) =>
       sourceFiles(new SourceFileKey(key)),
     history,
@@ -223,7 +207,6 @@ export const makeAppManagementAtoms = <R, E>(
 };
 export type AppManagementAtoms<E> = ReturnType<typeof makeAppManagementAtoms<never, E>>;
 
-/** Shared views keep the host's exact error renderer beside its typed atoms. */
 export interface AppManagementProps<E> {
   readonly atoms: AppManagementAtoms<E>;
   readonly Failure: import("react").ComponentType<

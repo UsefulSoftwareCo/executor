@@ -1,10 +1,3 @@
-/**
- * A session object's clock only advances on I/O, so its own spans cannot show its CPU or time a
- * request waits behind other work on its isolate. Each forward therefore records the gateway's
- * wait and the duration the object observed, each on its own clock, and their difference only
- * when the clocks agree. Each object request records how many other requests its object and every
- * session object in its isolate were answering when it started.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schedule, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
@@ -21,7 +14,6 @@ import { appsManifest } from "../support/apps-release.ts";
 
 type Span = (typeof SpanQuery.Type)["data"][number]["span"];
 
-/** How long the delayed tool waits before it answers. */
 const delayMs = 3000;
 
 const timingAppSource = `import { defineApp, query, object, string, number, boolean, router } from "apps";
@@ -39,10 +31,8 @@ const Completed = Schema.Struct({
   execution: Schema.Struct({ ok: Schema.Literal(true), value: Schema.Unknown }),
 });
 
-/** The object's timing header, which a client must neither see nor set. */
 const internal = "x-executor-session-handled-ms";
 
-/** A stateless request names its revision and capabilities in each request. */
 const revision = "2026-07-28";
 const requestMeta = {
   "io.modelcontextprotocol/protocolVersion": revision,
@@ -64,7 +54,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session timing", (it
             target = yield* Target,
             http = yield* HttpClient.HttpClient;
           const prefix = `/api/organizations/${actors.organization.id}`;
-          // Each key is its own grant, so its MCP sessions reach their own session object.
           const createKey = (name: string) =>
             Effect.gen(function* () {
               const key = yield* body(
@@ -91,7 +80,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session timing", (it
           );
           const tool = (name: string) => `tools[${JSON.stringify(app.slug)}].${name}`;
 
-          // Two MCP sessions over one key reach the same session object; the other key's, another.
           const organization = { organization: actors.organization.id };
           const first = yield* mcp.connect(key, "session-timing-first", organization);
           const second = yield* mcp.connect(key, "session-timing-second", organization);
@@ -123,11 +111,9 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session timing", (it
               `return (await ${tool("wait")}({ ms: ${delayMs} })).done;`,
               true,
             );
-          // Load the app's tools and start its Worker, so the timed calls below are warm.
           yield* echo(first, "Warm the session", "warm");
           yield* echo(other, "Warm the other session", "warm");
 
-          /** One raw request to /mcp under its own trace, for requests the MCP SDK cannot shape. */
           const raw = (
             credential: Redacted.Redacted<string>,
             message:
@@ -145,7 +131,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session timing", (it
                   "mcp-protocol-version": revision,
                   "x-executor-organization": actors.organization.id,
                   traceparent: `00-${traceId}-${randomBytes(8).toString("hex")}-01`,
-                  // Stateless requests repeat their method and name for routing.
                   ...(typeof message === "string"
                     ? {}
                     : {
@@ -172,7 +157,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session timing", (it
           const exposed = (headers: Readonly<Record<string, string>>) =>
             Object.keys(headers).filter((name) => name.toLowerCase() === internal);
 
-          // The gateway's forward and the object's request of one MCP request.
           const forwarded = (traces: ReadonlyArray<string>, method: string) =>
             Effect.forEach(traces, (trace) =>
               telemetry.query(trace).pipe(Effect.map((result) => ({ trace, result }))),
@@ -186,14 +170,13 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session timing", (it
                   const request = spans.find(
                     (span) => span.operationName === "mcp.session.request",
                   );
-                  const matches = spans.some((span) => span.operationName.endsWith(`/${method}`));
+                  const matches = spans.some((span) => span.operationName === method);
                   return forward === undefined || request === undefined || !matches
                     ? []
                     : [{ trace, forward, request }];
                 }),
               ),
             );
-          // Traces are read again on each attempt: a request is recorded when its response arrives.
           const located = (
             traces: Effect.Effect<ReadonlyArray<string>>,
             count: number,
@@ -204,7 +187,7 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session timing", (it
               Effect.flatMap((traces) => forwarded(traces, method)),
               Effect.flatMap((found) =>
                 found.length < count
-                  ? Effect.fail(new Error("The requests' spans have not reached Motel"))
+                  ? Effect.fail(new Error("The requests' spans have not reached the collector"))
                   : Effect.succeed(found),
               ),
               Effect.retry({ schedule: Schedule.spaced("500 millis"), times: attempts }),
@@ -239,7 +222,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session timing", (it
             };
           };
           type Timing = ReturnType<typeof timing>;
-          // Each duration sits inside the span on its own clock, and the residual is their difference.
           const accounted = (call: Timing | undefined) => {
             expect(call, "The request was traced").toBeDefined();
             if (call === undefined) return;
@@ -270,7 +252,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session timing", (it
             expect(call.unseenMs ?? 0, "No residual is negative").toBeGreaterThanOrEqual(0);
           };
 
-          // A call alone on its object.
           const beforeAlone = (yield* evidence.requests).length;
           yield* echo(first, "Call alone", "alone");
           const [aloneCall] = yield* located(since(beforeAlone), 1);
@@ -279,16 +260,12 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session timing", (it
           accounted(alone);
           expect(alone?.object, "Nothing else was being answered on the object").toBe(0);
 
-          // The call's spans name its organization by opaque ID, so their latency can be split by
-          // organization. Each authentication says whether it opened a database connection. The
-          // call is inside a session, so the gateway routes it by its session id and neither
-          // authenticates nor connects; the object authenticates it.
           const attributed = yield* telemetry.query(aloneCall?.trace ?? "").pipe(
             Effect.map((result) => result.data.map(({ span }) => span)),
             Effect.flatMap((spans) =>
               spans.some((span) => span.operationName === "mcp.tool.call")
                 ? Effect.succeed(spans)
-                : Effect.fail(new Error("The call's tool span has not reached Motel")),
+                : Effect.fail(new Error("The call's tool span has not reached the collector")),
             ),
             Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 40 }),
           );
@@ -322,9 +299,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session timing", (it
             spansNamed("sql.connect").filter((span) => span.parentSpanId === gateway?.parentSpanId),
             "The gateway opens no database connection for it",
           ).toEqual([]);
-          // The call's tool rechecks its grant on the session object, which the warm-up above and
-          // this call's own request have already connected. Nothing else runs on the object, so
-          // no other call's connection is counted either.
           const toolSpan = spansNamed("mcp.tool.call")[0];
           expect(
             authentications
@@ -333,9 +307,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session timing", (it
             "The warm session's recheck opens no connection",
           ).toEqual(["false"]);
 
-          // A call waiting on its app holds a request open on its object. Another call on the same
-          // object starts during it, and then a call on another object. Local Cloud runs every
-          // session object in one isolate; on Workers they spread across isolates and machines.
           const beforeOverlap = (yield* evidence.requests).length;
           yield* Effect.all(
             [
@@ -371,7 +342,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session timing", (it
             "The isolate was answering the first object's delayed call",
           ).toBeGreaterThanOrEqual(1);
 
-          // Requests that fail, are malformed, are cancelled or are abandoned each end their count.
           const traced = (trace: string) =>
             telemetry.query(trace).pipe(
               Effect.map((result) =>
@@ -403,15 +373,12 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session timing", (it
           expect(malformed.text, "The object rejects a malformed request").toContain(
             '"Parse error"',
           );
-          // An MCP client cancels its call, which interrupts the call on the object.
           const beforeCancelled = (yield* evidence.requests).length;
           const cancelled = yield* wait(first, "A call the client cancels").pipe(
             Effect.timeout("500 millis"),
             Effect.option,
           );
           expect(cancelled._tag, "The client cancelled the delayed call").toBe("None");
-          // Each request is recorded when its answer arrives: the call's once the object has ended
-          // it, and the cancellation's.
           const cancelledTraces = yield* since(beforeCancelled).pipe(
             Effect.flatMap((traces) =>
               traces.length < 2
@@ -420,7 +387,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session timing", (it
             ),
             Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 100 }),
           );
-          // A client that disconnects leaves the call running on the object until it answers.
           const abandoned = randomBytes(16).toString("hex");
           const disconnected = yield* Effect.scoped(
             raw(
@@ -435,24 +401,20 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session timing", (it
             ),
           );
           expect(disconnected._tag, "The client disconnected from the delayed call").toBe("None");
-          // The object's request span ends after the request leaves both counts.
           yield* telemetry.query(abandoned).pipe(
             Effect.flatMap((result) =>
               result.data.some(({ span }) => span.operationName === "mcp.session.request")
                 ? Effect.void
-                : Effect.fail(new Error("The abandoned call's object span has not reached Motel")),
+                : Effect.fail(
+                    new Error("The abandoned call's object span has not reached the collector"),
+                  ),
             ),
             Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 40 }),
           );
           const beforeAfter = (yield* evidence.requests).length;
           yield* echo(first, "Call after those requests", "after");
           const [after] = yield* found(since(beforeAfter), 1);
-          // A span leaves its isolate with the first flush after it ends, which may be a later
-          // request's (packages/telemetry/src/isolate.ts). The cancelled call's spans are read
-          // once the requests above have flushed both isolates.
           const [interrupted] = yield* located(Effect.succeed(cancelledTraces), 1);
-          // MCP withholds a cancelled request's response, so the object ends its POST with an empty
-          // stream when the cancellation arrives, and records the time it observed until then.
           const cancelledCall = interrupted === undefined ? undefined : timing(interrupted);
           accounted(cancelledCall);
           expect(cancelledCall?.status, "The object answers the cancelled call's POST").toBe("200");
@@ -470,11 +432,8 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session timing", (it
           accounted(failed);
           accounted(after);
           expect(after?.object, "Every earlier request on the object ended its count").toBe(0);
-          // The isolate's count covers every session object in it. CI runs this scenario alone on
-          // its own local Cloud (e2e/ci-selection.ts), so only its own requests can be counted.
           expect(after?.isolate, "Every earlier request on the isolate ended its count").toBe(0);
 
-          // An open stream counts only until its response is ready.
           const stream = yield* Effect.scoped(
             Effect.gen(function* () {
               const listen = yield* raw(key, {
@@ -494,7 +453,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session timing", (it
               return { traceId: listen.traceId, quiet };
             }),
           );
-          // A client cannot set the object's timing, and never sees it.
           const spoofed = yield* Effect.scoped(
             raw(key, toolCall(`return (await ${tool("echo")}({ text: "spoofed" })).text;`), {
               [internal]: "987654",
@@ -513,8 +471,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session timing", (it
           yield* evidence.json("spoofed.json", trusted);
           accounted(trusted);
           expect(trusted?.handledMs, "The object's own time is recorded").not.toBe(987654);
-          // The gateway's spans export once it notices the client left, at the stream's next
-          // heartbeat write. The object's request is not needed: its count is checked above.
           const listened = yield* telemetry.query(stream.traceId).pipe(
             Effect.map((result) =>
               result.data
@@ -523,7 +479,7 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session timing", (it
             ),
             Effect.flatMap((span) =>
               span === undefined
-                ? Effect.fail(new Error("The stream's forward has not reached Motel"))
+                ? Effect.fail(new Error("The stream's forward has not reached the collector"))
                 : Effect.succeed(span),
             ),
             Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 60 }),

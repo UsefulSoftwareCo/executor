@@ -1,7 +1,3 @@
-/**
- * Creates or updates `.reference/effect-v4/` at the Effect release tag for the npm version pinned
- * in the root package.json. See notes/coding-style.md.
- */
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -27,7 +23,6 @@ const versions = new Map<string, string[]>();
 for (const field of ["dependencies", "devDependencies", "overrides"]) {
   for (const [name, spec] of Object.entries<string>(manifest[field] ?? {})) {
     if (name !== "effect" && !name.startsWith("@effect/")) continue;
-    // @effect/tsgo is the language-service compiler, versioned separately from Effect.
     if (name === "@effect/tsgo") continue;
     if (!exact.test(spec)) fail(`${field}.${name} is not an exact npm version: ${spec}`);
     versions.set(spec, [...(versions.get(spec) ?? []), `${field}.${name}`]);
@@ -55,7 +50,6 @@ const refs = new Map(
       return [ref, sha] as const;
     }),
 );
-// An annotated tag names a tag object; its `^{}` entry is the tagged commit.
 const commit =
   refs.get(`refs/tags/${tag}^{}`) ??
   refs.get(`refs/tags/${tag}`) ??
@@ -68,7 +62,6 @@ if (!existsSync(join(dir, ".git"))) {
 } else {
   const changes = git("status", "--porcelain");
   if (changes) fail(`${dir} has local changes; leaving it untouched:\n${changes}`);
-  // An interrupted first run can leave a repository without a HEAD commit.
   const head = spawnSync("git", ["-C", dir, "rev-parse", "--verify", "--quiet", "HEAD"], {
     encoding: "utf8",
   }).stdout.trim();

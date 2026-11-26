@@ -5,7 +5,6 @@ import { CatalogPage as Catalog } from "@executor-js/ui/dashboard/catalog";
 import { useOrganizationRoute } from "../components/organization.tsx";
 import { MakeYourOwn, AddAppBack } from "../components/add-app.tsx";
 
-/** Catalog apps install into the same organization-owned app records. */
 export function AddAppPage() {
   const atoms = useDashboardAtoms();
   useAtomMount(atoms.catalog);

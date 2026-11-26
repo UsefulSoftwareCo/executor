@@ -194,6 +194,20 @@ The product host supplies authentication and binds the browser to one configured
 app. No app ID, account token or Executor API key belongs in UI code. New
 activations reload open app pages. The `live-inbox` example in `framework-reference.json` is a complete app with a UI.
 
+When the app is installed in the Executor desktop app, `ui/icon.svg` is its
+icon (one well-formed XML `<svg xmlns="http://www.w3.org/2000/svg">` element,
+at most 64 KiB, with no DOCTYPE, script, `<foreignObject>`, event attribute or
+link outside the icon)
+and `ui/menubar.html` is a menu-bar popover page, its own small entry served at
+`/_executor/menubar` that shares code by importing modules; size it with
+`<meta name="executor:menubar" content="width=320, height=360">`. `desktop` from
+`apps/client` sets the menu-bar title, holds global shortcuts and floats the
+window; `useDesktopShortcut` from `apps/react` holds a shortcut while mounted.
+Each capability asks the person once per app. Outside an installed window
+`desktop.available` is false, `desktop.permission` resolves `"unavailable"` and
+other calls reject with `DesktopUnavailable`. Notifications use the standard
+web `Notification` API.
+
 ## Webhooks
 
 Expose `webhooks: { issueOpened }` beside `tools`. Each definition

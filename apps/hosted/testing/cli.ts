@@ -1,7 +1,3 @@
-/**
- * Account provisioning for local dev stacks and running test stages. This command installs no HTTP
- * route or production plugin; production cannot be targeted.
- */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Pool } from "pg";
@@ -39,12 +35,6 @@ import {
   testAccountAuth,
 } from "./accounts.ts";
 
-/**
- * With --stage, every setting comes from that running test stage's shared Alchemy state.
- * With BETTER_AUTH_URL set, every target setting is explicit. Without it, the command targets this
- * checkout's zero-configuration dev stack: cloud's running session and generated secrets, or
- * self-host's data directory and the signing secret its first boot stored there.
- */
 const targetSettings = (host: "self-host" | "cloud", stage: Option.Option<string>) =>
   Effect.gen(function* () {
     if (Option.isSome(stage)) {
@@ -62,7 +52,6 @@ const targetSettings = (host: "self-host" | "cloud", stage: Option.Option<string
     if (Option.isSome(explicitOrigin)) {
       const secret = yield* Config.Redacted("BETTER_AUTH_SECRET");
       if (host === "self-host") {
-        // Do not silently select the shared preview's default directory.
         yield* Config.NonEmptyString("EXECUTOR_DATA_DIR");
         return { origin: explicitOrigin.value, secret, database: undefined, stage: Option.none() };
       }
@@ -73,7 +62,6 @@ const targetSettings = (host: "self-host" | "cloud", stage: Option.Option<string
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const directory = path.resolve(yield* dataDirectory);
-      // Self-host's first boot stores its generated signing secret beside the database.
       const secret = yield* fs.readFileString(path.join(directory, "auth-secret.key")).pipe(
         Effect.mapError(
           () =>
@@ -118,13 +106,11 @@ const command = Command.make("test-account", {
   Command.withHandler((args) =>
     Effect.scoped(
       Effect.gen(function* () {
-        // Check all target constraints before opening a database or writing a fixture.
         yield* Config.String("NODE_ENV").pipe(
           Config.withDefault("development"),
           Effect.flatMap(Schema.decodeUnknownEffect(Schema.Literals(["development", "test"]))),
         );
         const target = yield* targetSettings(args.host, args.stage);
-        // A stage origin is derived from its slug; every other target must be loopback.
         const origin = Option.isSome(target.stage)
           ? target.stage.value.origin
           : yield* Schema.decodeUnknownEffect(TestOrigin)(target.origin);
@@ -137,7 +123,6 @@ const command = Command.make("test-account", {
         const path = yield* Path.Path;
         const output = path.resolve(args.output);
         yield* fs.makeDirectory(path.dirname(output), { recursive: true, mode: 0o700 });
-        // Exclusive creation prevents following an existing symlink or overwriting a credential file.
         const file = yield* fs.open(output, { flag: "wx", mode: 0o600 });
         yield* Effect.addFinalizer((exit) =>
           Exit.isFailure(exit)
@@ -160,7 +145,6 @@ const command = Command.make("test-account", {
           ? Effect.flatMap(AuthDatabase, provision).pipe(
               Effect.provide(
                 selfHostDatabase.pipe(
-                  // The schema layer reads the host's auth settings; use the resolved target.
                   Layer.provide(
                     ConfigProvider.layerAdd(
                       ConfigProvider.fromUnknown({
@@ -184,8 +168,6 @@ const command = Command.make("test-account", {
                 }),
                 (pool) => Effect.promise(() => pool.end()),
               );
-              // Serialize cooperating CLI runs so retries cannot duplicate memberships.
-              // PGlite already owns an exclusive process lock in the self-host branch.
               const lock = yield* Effect.acquireRelease(
                 Effect.tryPromise({
                   try: () => pool.connect(),
@@ -206,7 +188,6 @@ const command = Command.make("test-account", {
                 if (current.rows[0]?.name !== target.stage.value.databaseName)
                   return yield* new TestAccountFailed({ stage: "database" });
               }
-              // The command owns this pool; closing it releases the session-level lock on every exit.
               return yield* provision(pool);
             });
         yield* file.writeAll(

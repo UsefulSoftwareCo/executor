@@ -54,7 +54,6 @@ export const mcpCatalog = (options: McpCatalogOptions, kinds: OperationKinds) =>
       signal: options.signal,
       timeoutMs: options.timeoutMs,
     }).pipe(Effect.mapError(invalid));
-    // The account's scope separates credentials, so the server alone identifies its catalog.
     const cache = yield* catalogScope(options, options.headers, invalid);
     const id = yield* cacheKey({ url: parsed.url });
     const key: JsonValue = ["mcp-catalog-v3", id, "current"];

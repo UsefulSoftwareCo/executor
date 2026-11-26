@@ -4,7 +4,6 @@ import type * as React from "react";
 import { cn } from "../lib/utils.ts";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 
-/** Configure tooltip timing for descendant triggers. */
 function TooltipProvider({
   delayDuration = 0,
   ...props
@@ -18,17 +17,14 @@ function TooltipProvider({
   );
 }
 
-/** Coordinate the open state of a tooltip and its trigger. */
 function Tooltip({ ...props }: React.ComponentProps<typeof TooltipPrimitive.Root>) {
   return <TooltipPrimitive.Root data-slot="tooltip" {...props} />;
 }
 
-/** Attach tooltip behavior to a control, or its focusable wrapper with asChild. */
 function TooltipTrigger({ ...props }: React.ComponentProps<typeof TooltipPrimitive.Trigger>) {
   return <TooltipPrimitive.Trigger data-slot="tooltip-trigger" {...props} />;
 }
 
-/** Render the shadcn tooltip surface and arrow in a portal. */
 function TooltipContent({
   className,
   sideOffset = 0,

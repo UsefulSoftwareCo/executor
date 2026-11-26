@@ -1,10 +1,3 @@
-/**
- * Builds of the router frameworks most live apps run keep working, unchanged, on the current host.
- * One app is pinned to the published `apps@0.0.1-beta.14` (protocol 5), another to the published
- * `apps@0.0.1-beta.22` (protocol 7), a third to the published `apps@0.0.1-beta.33` (protocol 8).
- * A fourth pairs a protocol-5 app with a current app of the same provider: the older bundle reads
- * real credential values, never the sealed handles the current app reads.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Layer, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -22,18 +15,11 @@ import { serverControl } from "../support/server-control.ts";
 import { McpClient } from "../support/mcp-client.ts";
 import { McpOAuth } from "../support/mcp-oauth.ts";
 
-/** A provider check that reads `${origin}/health` with the account's token. */
 const health = (origin: string) => `health: async ({ account, fetch }) => {
     const response = await fetch(${JSON.stringify(`${origin}/health`)}, { headers: { authorization: "Bearer " + account.fields.token } });
     if (!response.ok) throw new Error("Health check failed: " + response.status);
   },`;
 
-// app-user-accounts: keep, as source of an earlier `apps` release.
-/**
- * Notes in the document store every framework before SQL kept, a mutation that names the bundled
- * framework, and a workflow over both. `framework` tells the pinned release from a later one by an
- * export the later one added, or the pinned one dropped.
- */
 const notes = (
   framework: string,
 ) => `const database = defineDatabase({ notes: table({ text: string() }) });
@@ -45,17 +31,11 @@ const record = workflow({ input: object({ text: string() }) }, async (ctx, input
   return ctx.step.runQuery("read", notes, {});
 });`;
 
-/** Send the token as a bearer and return what the service echoed back. */
 const send = `const send = async (url, token) => {
   const response = await fetch(url, { headers: { authorization: "Bearer " + token } });
   return { status: response.status, echoed: response.headers.get("x-echo-authorization") ?? "" };
 };`;
 
-// app-user-accounts: keep, as source of an earlier `apps` release.
-/**
- * Single-file source written for `apps@0.0.1-beta.14`, protocol 5: a router, and a provider slot
- * whose check reads the service. `plain` arrived with credential hosts, two protocols later.
- */
 const checked = (revision: string, origin: string) => [
   {
     path: "index.ts",
@@ -75,12 +55,6 @@ export default defineApp({ accounts: { service }, database }, {
   },
 ];
 
-// app-user-accounts: keep, as source of an earlier `apps` release.
-/**
- * Single-file source written for `apps@0.0.1-beta.22`, protocol 7: a provider that declares the
- * host its token may go to, with a plain and a raw field, and tools that read and send the token.
- * `NetworkRefused` became an export one protocol later.
- */
 const sealed = (revision: string, name: string, host: string, origin: string) => [
   {
     path: "index.ts",
@@ -105,17 +79,9 @@ export default defineApp({ accounts: { service }, database }, {
   },
 ];
 
-/** The message a protocol-8 app's own error carries. */
 const appMarker = "Synthetic spec is missing its paths";
-/** The error a protocol-8 app reports a service stated. */
 const statedMarker = "Synthetic token belongs to another organization";
 
-// app-user-accounts: keep, as source of an earlier `apps` release.
-/**
- * Single-file source written for `apps@0.0.1-beta.33`, protocol 8: a query that throws the app's
- * own error with a code and scalar fields, one that throws the error a service stated, and a
- * workflow step over the first. The document store left the root export two protocols later.
- */
 const detailed = (revision: string) => [
   {
     path: "index.ts",
@@ -139,10 +105,6 @@ export default defineApp({ accounts: {}, database }, {
   },
 ];
 
-/**
- * Two apps of one provider: the current framework's declares the host its token may go to, the
- * protocol-5 framework's knows no hosts. Both read the token and send it as a bearer.
- */
 const credentialApp = (name: string, host: string | null, workflows: boolean) => {
   const source = credentialSource(name, host, workflows);
   return host === null ? unscopedAccounts(source) : source;
@@ -245,13 +207,11 @@ const Sent = Schema.Struct({ status: Schema.Number, echoed: Schema.String });
 const handle = /^exsec_[0-9a-f]+_$/;
 class Pending extends Schema.TaggedError<Pending>()("Pending", {}) {}
 
-/** The real API, with each app, account and key deleted when the case ends. */
 const harness = Effect.gen(function* () {
   const api = yield* Api,
     actors = yield* Actors,
     mcp = yield* McpClient;
   const prefix = `/api/organizations/${actors.organization.id}`;
-  /** A `package.json` pinning `apps` to a published release served on loopback, or by name. */
   const pinnedTo = (apps: string) => ({
     path: "package.json",
     content: JSON.stringify({ dependencies: { apps } }),
@@ -272,10 +232,6 @@ const harness = Effect.gen(function* () {
       );
       return { app, path: `${prefix}/apps/${app.id}` };
     });
-  /**
-   * Call a tool, naming its kind or leaving the host to find it. Each app links at most one
-   * account, so no call chooses one.
-   */
   const call = (
     path: string,
     tool: string,
@@ -287,7 +243,6 @@ const harness = Effect.gen(function* () {
       input,
       ...(options.kind === undefined ? {} : { kind: options.kind }),
     });
-  /** Call a tool that must succeed and decode its result. */
   const result = <A>(
     path: string,
     output: Schema.Decoder<A>,
@@ -304,7 +259,6 @@ const harness = Effect.gen(function* () {
     api
       .request(actors.owner, "GET", `${path}/tools`)
       .pipe(Effect.flatMap((response) => body(Catalog, response)));
-  /** Start a workflow run and wait until it settles. */
   const settled = (path: string, workflow: string, input: Record<string, string>) =>
     Effect.gen(function* () {
       const started = yield* api.request(actors.owner, "POST", `${path}/workflow-runs`, {
@@ -328,7 +282,6 @@ const harness = Effect.gen(function* () {
         Effect.timeout("20 seconds"),
       );
     });
-  /** Check credentials before they are saved, as the connect form's Validate button does. */
   const check = (path: string, provider: string, fields: Record<string, string>) =>
     Effect.gen(function* () {
       const response = yield* api.request(actors.owner, "POST", `${path}/credential-checks`, {
@@ -339,7 +292,6 @@ const harness = Effect.gen(function* () {
       expect(response.status, JSON.stringify(response.body)).toBe(200);
       return yield* body(CredentialCheck, response);
     });
-  /** Connect one account from the app, which links it to the app. */
   const connect = (path: string, label: string, fields: Record<string, string>) =>
     Effect.gen(function* () {
       const pending = yield* api.request(
@@ -362,10 +314,8 @@ const harness = Effect.gen(function* () {
       );
       return account;
     });
-  /** Link an existing account to another app. */
   const link = (path: string, account: string) =>
     linkAccount(actors.owner, path, "service", account);
-  /** Check a saved account with every app that can, and return the status this app reported. */
   const accountHealth = (account: string, app: string) =>
     Effect.gen(function* () {
       const response = yield* api.request(
@@ -378,10 +328,6 @@ const harness = Effect.gen(function* () {
       expect(entry, "The app checks the account").toMatchObject({ checkable: true });
       return entry?.check?.status;
     });
-  /**
-   * An agent searches and calls the app through MCP with a real API key. Each app is addressed
-   * once, under its slug, whatever accounts it links.
-   */
   const agent = (label: string, slug: string) =>
     Effect.gen(function* () {
       const key = yield* body(
@@ -436,7 +382,6 @@ const harness = Effect.gen(function* () {
   };
 });
 
-/** Deploy `files` pinned to a published release served on loopback, and record that it was read. */
 const deployPinned = (
   name: string,
   version: Release,
@@ -481,9 +426,6 @@ layer(HostedLive, { excludeTestServices: true })(
             "0.0.1-beta.14",
             checked("first", upstream.origin),
           );
-          // The host's account check runs against the protocol-5 bundle: before the credentials are
-          // saved, and again for the saved account. Protocol 5 knows no hosts, so the check sends
-          // the real token.
           const provider = app.requirements.accounts.service;
           expect(provider?.health).toBe(true);
           const token = `synthetic-token-${randomUUID()}`;
@@ -502,7 +444,6 @@ layer(HostedLive, { excludeTestServices: true })(
           ) => call(path, tool, input, kind === undefined ? {} : { kind });
           expect((yield* call5("save", { text: "before" }, "mutation")).body).toBe("protocol 5");
 
-          // The host restarts and loads the retained build again, without rebuilding it.
           yield* serverControl("restart");
 
           const listed = yield* catalog(path);
@@ -515,7 +456,6 @@ layer(HostedLive, { excludeTestServices: true })(
           expect((yield* call5("notes", {}, "query")).body).toEqual(["before"]);
           expect((yield* call5("save", { text: "inferred" })).body).toBe("protocol 5");
           expect((yield* call5("save", { text: "named" }, "mutation")).body).toBe("protocol 5");
-          // A wrong kind is refused before the bundle runs, so nothing is written.
           const mismatch = yield* call5("save", { text: "never" }, "query");
           expect(mismatch.status).toBe(409);
           expect(mismatch.body).toMatchObject({
@@ -525,23 +465,18 @@ layer(HostedLive, { excludeTestServices: true })(
           });
           expect((yield* call5("notes", {})).body).toEqual(["before", "inferred", "named"]);
 
-          // Workflow steps from the protocol-5 bundle carry their kind.
           expect(yield* settled(path, "record", { text: "workflow" })).toEqual({
             status: "complete",
             output: ["before", "inferred", "named", "workflow"],
           });
 
-          // The saved account is still checked by the retained build.
           expect(yield* accountHealth(account, app.id)).toBe("healthy");
 
-          // Agents search and call the app through MCP.
           expect((yield* agent("app-protocol-5", app.slug)).execution).toEqual({
             ok: true,
             value: "protocol 5",
           });
 
-          // Pinned to the bare published version, which hosts resolve from npm, the source rebuilds
-          // and runs unchanged, and its data is kept.
           const rebuilt = yield* saveAndDeploy(actors.owner, path, {
             files: [...checked("second", upstream.origin), pinnedTo("0.0.1-beta.14")],
           });
@@ -582,7 +517,6 @@ layer(HostedLive, { excludeTestServices: true })(
           const values = synthetic();
           const provider = app.requirements.accounts.service;
           expect(provider?.health).toBe(true);
-          // The account check runs before the account is saved, through the same outbound network.
           expect(yield* check(path, provider!.provider, values)).toEqual({ status: "healthy" });
           const account = yield* connect(path, name, values);
           const call7 = (
@@ -592,7 +526,6 @@ layer(HostedLive, { excludeTestServices: true })(
           ) => call(path, tool, input, kind === undefined ? {} : { kind });
           expect((yield* call7("save", { text: "before" }, "mutation")).body).toBe("protocol 7");
 
-          // The host restarts and loads the retained build again, without rebuilding it.
           yield* serverControl("restart");
 
           const listed = yield* catalog(path);
@@ -611,8 +544,6 @@ layer(HostedLive, { excludeTestServices: true })(
           expect(mismatch.status).toBe(409);
           expect(mismatch.body).toMatchObject({ _tag: "ToolKindMismatch", actual: "mutation" });
 
-          // Protocol 7 declared hosts, so the bundle reads handles: the secret field is sealed, the
-          // plain and raw fields keep their values, and a workflow step reads the same.
           const fields = yield* result(path, Fields, "fields", {});
           expect(fields.region).toBe(values.region);
           expect(fields.signing).toBe(values.signing);
@@ -620,12 +551,9 @@ layer(HostedLive, { excludeTestServices: true })(
           const stepped = yield* settled(path, "stepped", {});
           expect(stepped.status).toBe("complete");
           expect(Schema.decodeUnknownSync(Fields)(stepped.output).token).toMatch(handle);
-          // The outbound network replaces the handle on a request to the declared host, and the app
-          // reads the echoed value as its handle again.
           const sent = yield* result(path, Sent, "send", { url: `${upstream.origin}/sent` });
           expect(sent.status).toBe(200);
           expect(sent.echoed).toMatch(/^Bearer exsec_[0-9a-f]+_$/);
-          // A host the provider does not declare is refused before anything is sent.
           const refused = yield* result(path, Sent, "send", {
             url: `${upstream.undeclaredOrigin}/undeclared`,
           });
@@ -645,13 +573,11 @@ layer(HostedLive, { excludeTestServices: true })(
           });
           expect(yield* accountHealth(account, app.id)).toBe("healthy");
 
-          // Agents search and call the app through MCP.
           expect((yield* agent("app-protocol-7", app.slug)).execution).toEqual({
             ok: true,
             value: "protocol 7",
           });
 
-          // Pinned to the bare published version, the source rebuilds and runs unchanged.
           const rebuilt = yield* saveAndDeploy(actors.owner, path, {
             files: [...sealed("second", name, host, upstream.origin), pinnedTo("0.0.1-beta.22")],
           });
@@ -682,7 +608,6 @@ layer(HostedLive, { excludeTestServices: true })(
           ) => call(path, tool, input, kind === undefined ? {} : { kind });
           expect((yield* call8("save", { text: "before" }, "mutation")).body).toBe("protocol 8");
 
-          // The host restarts and loads the retained build again, without rebuilding it.
           yield* serverControl("restart");
 
           const listed = yield* catalog(path);
@@ -701,7 +626,6 @@ layer(HostedLive, { excludeTestServices: true })(
           expect(mismatch.status).toBe(409);
           expect(mismatch.body).toMatchObject({ _tag: "ToolKindMismatch", actual: "mutation" });
 
-          // Protocol 8 carries the thrown error's code and scalar fields to the caller.
           for (const kind of [undefined, "query"] as const) {
             const failed = yield* call8("fail", {}, kind);
             expect(failed.status, JSON.stringify(failed.body)).toBe(502);
@@ -717,7 +641,6 @@ layer(HostedLive, { excludeTestServices: true })(
               `The app threw SpecInvalid (spec_invalid): ${appMarker} Details: pointer: "/paths"; attempts: 2.`,
             );
           }
-          // And the error a service stated, with the phase the app named.
           const stated = yield* call8("stated", {}, "query");
           expect(stated.status, JSON.stringify(stated.body)).toBe(502);
           expect(yield* body(ProviderFailed, stated)).toMatchObject({
@@ -727,7 +650,6 @@ layer(HostedLive, { excludeTestServices: true })(
             upstream: { code: "invalid_token", message: statedMarker },
           });
 
-          // Workflow steps carry their kind, and a failing step keeps the app's error.
           expect(yield* settled(path, "record", { text: "workflow" })).toEqual({
             status: "complete",
             output: ["before", "inferred", "named", "workflow"],
@@ -737,13 +659,11 @@ layer(HostedLive, { excludeTestServices: true })(
             failure: { step: "explode", errorName: "SpecInvalid", message: appMarker },
           });
 
-          // Agents search and call the app through MCP.
           expect((yield* agent("app-protocol-8", app.slug)).execution).toEqual({
             ok: true,
             value: "protocol 8",
           });
 
-          // Pinned to the bare published version, the source rebuilds and runs unchanged.
           const rebuilt = yield* saveAndDeploy(actors.owner, path, {
             files: [...detailed("second"), pinnedTo("0.0.1-beta.33")],
           });
@@ -769,8 +689,6 @@ layer(HostedLive, { excludeTestServices: true })(
           const { deploy, result, settled, connect, link } = yield* harness;
           const upstream = yield* credentialUpstream;
           const name = `Shared service ${randomUUID().slice(0, 8)}`;
-          // One provider in two apps: the current framework's declares the host its token may go
-          // to; the protocol-5 framework's knows no hosts.
           const current = yield* deploy("Current credentials", [
             { path: "index.ts", content: credentialApp(name, `127.0.0.1:${upstream.port}`, false) },
             appsManifest,
@@ -782,7 +700,6 @@ layer(HostedLive, { excludeTestServices: true })(
           expect(provider).toBeDefined();
           expect(older.app.requirements.accounts.service?.provider).toBe(provider);
 
-          // Connected through the current app, the account records the hosts it may be sent to.
           const token = `synthetic-token-${randomUUID()}`;
           const account = yield* connect(current.path, name, { token });
           const sealedToken = (yield* result(current.path, Token, "fields", {})).token;
@@ -793,8 +710,6 @@ layer(HostedLive, { excludeTestServices: true })(
           expect(fromCurrent.status).toBe(200);
           expect(fromCurrent.echoed).toMatch(/^Bearer exsec_[0-9a-f]+_$/);
 
-          // The same account linked to the protocol-5 app reaches its code as the real value:
-          // a bundle from before credential hosts would read a handle as the secret.
           yield* link(older.path, account);
           const read = yield* result(older.path, Token, "fields", {});
           expect(read.token).toBe(token);
@@ -807,7 +722,6 @@ layer(HostedLive, { excludeTestServices: true })(
           expect(fromOlder.status).toBe(200);
           expect(fromOlder.echoed).toBe(`Bearer ${token}`);
 
-          // Both apps sent the real value to the declared host.
           expect(
             (yield* upstream.received)
               .filter((entry) => /\/current|\/older/.test(entry.url))

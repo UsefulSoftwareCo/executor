@@ -6,7 +6,6 @@ import {
 } from "./source-display.ts";
 import { ApiError } from "@executor-js/utils/api-error";
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
-/** Shared app wire contracts; browser imports never load HTTP route or Git adapters. */
 import { Context, Schema } from "effect";
 import {
   AppNameTaken,
@@ -19,6 +18,7 @@ import {
   AccountSelectionInvalid,
   VersionBuildFailed,
   BuildMemoryExceeded,
+  MarkdownUnavailable,
   CommittedSource,
   sourceErrors,
   SourceSnapshot,
@@ -29,7 +29,6 @@ import {
 } from "@executor-js/sdk/core";
 export * from "./framework.ts";
 
-/** Authentication failures never expose whether another owner's app exists. */
 export const AppAccessDenied = ApiError.define({
   tag: "AppAccessDenied",
   status: 403,
@@ -44,12 +43,6 @@ export const AppAccessDenied = ApiError.define({
       : "This caller may not perform this app operation, or cannot access this app.",
 });
 export type AppAccessDenied = typeof AppAccessDenied.Type;
-/**
- * A client released before wire revisions asked to remove a listing by the short name it is shown,
- * `@acme/notes` for `@acme.executor.community/notes`. It states no commit, so the name cannot be
- * bound to the listing it was shown. Those clients print an error their contract lacks as the host
- * states it.
- */
 export const FullListingNameRequired = UserFacingError.define({
   tag: "FullListingNameRequired",
   status: 400,
@@ -66,7 +59,6 @@ export const FullListingNameRequired = UserFacingError.define({
   }),
 });
 export type FullListingNameRequired = typeof FullListingNameRequired.Type;
-/** Expected operation failures are shared unchanged across the product transports. */
 export const appOperationErrors = [
   StorageError,
   ...sourceErrors,
@@ -82,30 +74,24 @@ export const appOperationErrors = [
   AccountSelectionInvalid,
   VersionBuildFailed,
   BuildMemoryExceeded,
+  MarkdownUnavailable,
 ] as const;
-/** Wire errors remain typed in browser, CLI, and agent clients. */
 export const AppOperationError = Schema.Union(appOperationErrors);
-/** Authoring controls need product permissions and clone metadata, without reading Git contents. */
 const authoringFields = {
   namespace: Schema.NullOr(Schema.String),
-  /** The remote's path. Clients released before `gitUrl` add it to the host they called. */
   gitPath: Schema.String,
-  /** The absolute clone URL, on the origin where the host serves Git. */
   gitUrl: Schema.String,
   canEdit: Schema.Boolean,
 };
-/** Permissions and clone location for controls that do not need a source snapshot. */
 export const AppAuthoringMetadata = Schema.Struct({
   ...authoringFields,
   canPublish: Schema.Boolean,
 });
-/** Working source and authoring metadata, with exact stored file contents for editing. */
 export const AppSourceView = Schema.Struct({
   ...SourceSnapshot.fields,
   ...authoringFields,
   publication: Schema.NullOr(PublicationReadiness),
 });
-/** Working source for read-only inspection. Large files are listed without contents. */
 export const AppSourceDisplay = Schema.Struct({
   ...AppSourceView.fields,
   files: SourceDisplayEntries,
@@ -132,39 +118,32 @@ import {
   PackageName,
   PublicationReference,
 } from "@executor-js/sdk/core";
-/** Both public and owned copies use this one request and result contract. */
 export const CopyApp = Schema.Struct({
   from: Schema.Union([Schema.Struct({ app: AppId }), PublicationReference]),
   name: AppName,
 });
-/** Hosts choose owners from verified credentials and membership, never caller payloads. */
 export class AppIdentity extends Context.Service<
   AppIdentity,
   {
     readonly owner: OwnerId;
-    /** null is the explicitly authorized local root scope; hosted callers always supply an owner. */
     readonly readOwner: OwnerId | null;
     readonly scope: string;
     readonly namespace: string | null;
     readonly canWrite: boolean;
     readonly appIds?: ReadonlyArray<AppId> | undefined;
     readonly protectedApps: ReadonlyArray<AppId>;
-    /** Hosted principals are individual users; local pairing may omit an actor. */
     readonly actor?: string | undefined;
   }
 >()("apps/Identity") {}
-/** Product policy separates discovery, source management, execution-sensitive edits, and credential metadata. */
 export interface AppCapabilities {
   readonly visible: boolean;
   readonly manage: boolean;
   readonly edit: boolean;
 }
-/** App UI and API access reuse the host's current pairing or organization boundary. */
 export class AppAccess extends HttpApiMiddleware.Service<AppAccess, { provides: AppIdentity }>()(
   "apps/Access",
   { error: AppAccessDenied },
 ) {}
-/** Shared app IDs and operation contracts across native and hosted products. */
 export const appManagementApi = <I extends HttpApiMiddleware.AnyId, S>(
   prefix: "/api" | "/api/organizations/:organization",
   access: Context.Key<I, S>,
@@ -266,7 +245,6 @@ export const appManagementApi = <I extends HttpApiMiddleware.AnyId, S>(
         ),
         HttpApiEndpoint.get("git", "/apps/:app/git", {
           params: app,
-          // `path` stays for clients released before `url`, which add it to the host they called.
           success: Schema.Struct({ path: Schema.String, url: Schema.String }),
           error: appOperationErrors,
         }).annotate(
