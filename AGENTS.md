@@ -1,6 +1,6 @@
 # Working on Executor
 
-Read [coding style](notes/coding-style.md) before changing code, and [test accounts](notes/test-accounts.md) for authenticated local/stage/production testing.
+Read [coding style](notes/coding-style.md) before changing code, and [test accounts](apps/hosted/testing/cli.ts) for authenticated local/stage/production testing.
 
 ## Boundaries & architecture
 
