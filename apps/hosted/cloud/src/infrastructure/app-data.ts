@@ -3,6 +3,7 @@ import type { Effect } from "effect";
 import type { makeFacetSupervisor } from "@executor-js/app-data/cloudflare";
 import type { RemoteCapabilities } from "@executor-js/sdk/workerd";
 import { AppData } from "./app-data-worker.ts";
+import { inJurisdiction } from "./jurisdiction.ts";
 
 type FacetSupervisor = Effect.Success<ReturnType<typeof makeFacetSupervisor>>;
 type Supervisor = Pick<FacetSupervisor, "invoke" | "cancel" | "evaluated" | "wake"> & {
@@ -19,4 +20,4 @@ export class AppDataSupervisor extends Cloudflare.DurableObject<AppDataSuperviso
   { transferredFrom: "Api" },
 ) {}
 
-export const appDataSupervisors = AppDataSupervisor.from(AppData);
+export const appDataSupervisors = inJurisdiction(AppDataSupervisor.from(AppData));

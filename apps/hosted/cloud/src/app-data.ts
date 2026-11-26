@@ -1,5 +1,5 @@
 import * as Cloudflare from "alchemy/Cloudflare";
-import type { DurableObjectNamespace, WorkerLoader } from "@cloudflare/workers-types";
+import type { WorkerLoader } from "@cloudflare/workers-types";
 import { Effect, Layer, Option, Schema } from "effect";
 import { EvaluatedSupervisor } from "@executor-js/app-data/evaluated";
 import { coloOf } from "./infrastructure/colo.ts";
@@ -11,6 +11,7 @@ import {
 import { AppData, runnerReadsBuilds } from "./infrastructure/app-data-worker.ts";
 import { AppDataSupervisor, appDataSupervisors } from "./infrastructure/app-data.ts";
 import { AppCluster } from "./infrastructure/app-cluster.ts";
+import { durableNamespace, inJurisdiction } from "./infrastructure/jurisdiction.ts";
 import { RuntimeContext } from "alchemy";
 import { CacheCommand } from "@executor-js/app-cache/contracts";
 import { BlobStore } from "@executor-js/sdk/core";
@@ -43,13 +44,6 @@ const NativeLoader = Schema.declare(
     value !== null &&
     "get" in value &&
     typeof value.get === "function",
-);
-const NativeSupervisors = Schema.declare(
-  (value): value is Pick<DurableObjectNamespace, "idFromName"> =>
-    typeof value === "object" &&
-    value !== null &&
-    "idFromName" in value &&
-    typeof value.idFromName === "function",
 );
 
 const CacheAnswered = Schema.Struct({
@@ -160,13 +154,12 @@ const AppDataSupervisorLive = AppDataSupervisor.make(
     const environment = yield* Cloudflare.WorkerEnvironment;
     const credentials = yield* appCredentialOutbound;
     const runnerFor = yield* runnerBindings;
+    const namespace = yield* durableNamespace("AppDataSupervisor");
     return Effect.gen(function* () {
       const loader = yield* Schema.decodeUnknownEffect(NativeLoader)(
         environment.AppDataLoader,
       ).pipe(Effect.orDie);
-      const supervisors = yield* Schema.decodeUnknownEffect(NativeSupervisors)(
-        environment.AppDataSupervisor,
-      ).pipe(Effect.orDie);
+      const supervisors = yield* namespace;
       const serves = (app: string) => state.raw.id.equals(supervisors.idFromName(app));
       const supervisor = yield* makeFacetSupervisor(
         state.raw,
@@ -268,7 +261,7 @@ export default AppData.make(
     const credentials = yield* appCredentialOutbound;
     const databases = yield* appDataSupervisors;
     // external: a binding naming this Worker's own script is checked against the live version, which lacks the class on the deploy that adds it, and Cloudflare refuses that deploy.
-    yield* AppCluster;
+    yield* inJurisdiction(AppCluster);
     const runnerFor = yield* runnerBindings;
     const runner = Effect.gen(function* () {
       const { waitUntil } = yield* Effect.promise(() => import("cloudflare:workers"));

@@ -1,10 +1,11 @@
 import { AlchemyContext } from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
-import { Effect, Layer, Schema } from "effect";
+import { Effect, Layer } from "effect";
 import { Api } from "./infrastructure/api-worker.ts";
 import { appDataSupervisors } from "./infrastructure/app-data.ts";
 import { cloudAuthDatabase } from "./infrastructure/auth-database.ts";
-import { McpSession, SessionNamespace } from "./infrastructure/mcp.ts";
+import { McpSession } from "./infrastructure/mcp.ts";
+import { durableNamespace } from "./infrastructure/jurisdiction.ts";
 import { cloudMcpIdentity } from "./infrastructure/mcp-auth.ts";
 import { McpServer } from "./infrastructure/mcp-server-worker.ts";
 import { makeMcpSession } from "./infrastructure/mcp-session.ts";
@@ -21,10 +22,10 @@ import { workerBuild } from "./infrastructure/worker-build.ts";
 
 const mcpSession = Effect.gen(function* () {
   const executor = yield* cloudServingProduct(yield* appDataSupervisors);
-  const environment = yield* Cloudflare.WorkerEnvironment;
-  const idFromName = Schema.decodeUnknownEffect(SessionNamespace)(environment.McpSession).pipe(
-    Effect.map((namespace) => (name: string) => namespace.idFromName(name)),
-    Effect.orDie,
+  const sessions = yield* durableNamespace("McpSession");
+  const idFromName = Effect.map(
+    sessions,
+    (namespace) => (name: string) => namespace.idFromName(name),
   );
   return yield* makeMcpSession({
     executor,

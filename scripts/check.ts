@@ -16,6 +16,7 @@ const steps: ReadonlyArray<readonly [name: string, command: string]> = [
   ["API errors", "bun run api:errors"],
   ["client families", "node scripts/check-client-families.ts"],
   ["auth rate limit", "bun run auth:rate-limit"],
+  ["cloud jurisdiction", "bun run cloud:jurisdiction"],
   ["browser scripts", "node packages/apps/scripts/browser-scripts.mjs --check"],
   ["Executor skill texts", "node packages/app-templates/scripts/executor-intro.ts --check"],
   ["no tests outside e2e", "node scripts/check-no-unit-tests.ts"],

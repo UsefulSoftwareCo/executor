@@ -9,6 +9,7 @@ import { RuntimeContext } from "alchemy";
 import { retain } from "alchemy/RemovalPolicy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { Effect, Option, Stream } from "effect";
+import { bucketJurisdiction } from "./jurisdiction.ts";
 import { testStage } from "./stage.ts";
 import { providerFailureCode } from "../implementation/provider-failure.ts";
 import { readR2Object } from "../implementation/r2-read.ts";
@@ -17,9 +18,11 @@ import type { WorkspaceObjects } from "../implementation/workspace-cache.ts";
 
 export const AppBuilds = Cloudflare.R2.Bucket(
   "AppBuilds",
-  testStage.pipe(
-    Effect.map((stage) => ({ forceDestroy: Option.isSome(stage) })),
-    Effect.orDie,
+  Effect.all([testStage.pipe(Effect.orDie), bucketJurisdiction]).pipe(
+    Effect.map(([stage, jurisdiction]) => ({
+      forceDestroy: Option.isSome(stage),
+      ...jurisdiction,
+    })),
   ),
 ).pipe(retain(testStage.pipe(Effect.map(Option.isNone), Effect.orDie)));
 

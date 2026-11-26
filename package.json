@@ -178,6 +178,7 @@
     "apps:telemetry": "node scripts/check-app-telemetry.ts",
     "api:errors": "node scripts/check-api-errors.ts",
     "auth:rate-limit": "node apps/hosted/cloud/scripts/check-auth-rate-limit.ts",
+    "cloud:jurisdiction": "node apps/hosted/cloud/scripts/check-jurisdiction.ts",
     "patches:check": "node scripts/check-patches.ts",
     "versions:check": "node scripts/check-exact-versions.ts",
     "lockfile:check": "node scripts/check-lockfile.ts",

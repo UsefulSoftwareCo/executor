@@ -14,6 +14,7 @@ import {
 import { SqlClient } from "effect/sql";
 import { cloudProduct } from "./product.ts";
 import { appDataSupervisors } from "./app-data.ts";
+import { inJurisdiction } from "./jurisdiction.ts";
 import { cloudEmail } from "./email.ts";
 import { cloudWelcomeEmails } from "./welcome-email.ts";
 import { AppDomainCoordinator } from "./app-domains.ts";
@@ -32,7 +33,7 @@ export class Provisioning extends Cloudflare.Workflow<Provisioning>()(
       yield* cloudArtifactsTokensLive,
     );
     const emails = yield* cloudWelcomeEmails((yield* cloudEmail.pipe(Effect.orDie)).welcome);
-    const domains = yield* AppDomainCoordinator.from(AppDomainController);
+    const domains = yield* inJurisdiction(AppDomainCoordinator.from(AppDomainController));
     const meter = yield* BillingMeter.pipe(Effect.provide(yield* billingLive.pipe(Effect.orDie)));
     const analytics = yield* cloudAnalytics;
     const jobs = yield* cloudBackgroundJobs;

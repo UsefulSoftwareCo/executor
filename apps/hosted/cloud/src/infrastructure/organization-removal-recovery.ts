@@ -4,6 +4,7 @@ import { Clock, Context, Effect, Exit, Layer, Schema } from "effect";
 import type { OrganizationId } from "@executor-js/hosted-server";
 import { cloudBackgroundJobs } from "./background-jobs.ts";
 import { previewLifetime } from "./test-stage-expiry.ts";
+import { inJurisdiction } from "./jurisdiction.ts";
 
 const recoveryName = "pending";
 
@@ -77,7 +78,7 @@ export class OrganizationRemovalRecovery extends Context.Service<
 >()("executor/cloud/OrganizationRemovalRecovery") {}
 
 export const cloudOrganizationRemovalRecovery = Effect.gen(function* () {
-  const recovery = yield* OrganizationRemovalRecoveryObject;
+  const recovery = yield* inJurisdiction(OrganizationRemovalRecoveryObject);
   return Layer.succeed(OrganizationRemovalRecovery, (organization: OrganizationId) =>
     Effect.suspend(() => recovery.getByName(recoveryName).arm(organization)).pipe(
       Effect.provide(RuntimeContext.phantom),

@@ -22,6 +22,7 @@ import { defaultScheduleWorkerOptions } from "@executor-js/sdk/scheduling";
 import { cloudProduct } from "./product.ts";
 import { lookupColo } from "./colo.ts";
 import { appDataSupervisors } from "./app-data.ts";
+import { inJurisdiction } from "./jurisdiction.ts";
 import { cloudAuthDatabase } from "./auth-database.ts";
 import { cloudBackgroundJobs } from "./background-jobs.ts";
 import { cloudDirectDatabaseConnection } from "./database.ts";
@@ -48,7 +49,7 @@ const makePlacedScheduleCoordinator = Effect.gen(function* () {
   const report = yield* cloudSentry;
   const resources = yield* cloudProduct(yield* appDataSupervisors, yield* cloudArtifactsTokensLive);
   const objectDatabase = yield* cloudObjectDatabase(cloudDirectDatabaseConnection);
-  const retired = yield* ScheduleCoordinator;
+  const retired = yield* inJurisdiction(ScheduleCoordinator);
   const activity = yield* previewActivity;
   return Effect.gen(function* () {
     const state = yield* Cloudflare.DurableObjectState;
@@ -354,7 +355,7 @@ export const PlacedScheduleCoordinatorLive = PlacedScheduleCoordinator.make(
 );
 
 export const cloudSchedules = Effect.gen(function* () {
-  const coordinator = yield* PlacedScheduleCoordinator;
+  const coordinator = yield* inJurisdiction(PlacedScheduleCoordinator);
   const report = yield* cloudSentry;
   const lifetime = yield* previewLifetime;
   const cleanup = yield* EventCleanup;

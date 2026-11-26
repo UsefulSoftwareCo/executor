@@ -11,6 +11,7 @@ import { appDomainControlSecret } from "./app-domain-control.ts";
 import { cloudAppUiBase } from "../contracts/app-ui.ts";
 import { jobCompleted, jobFailedWith } from "../contracts/job-outcome.ts";
 import { readAppDomainRecord } from "../implementation/app-domain-records.ts";
+import { inJurisdiction } from "./jurisdiction.ts";
 
 export const Team = Schema.Struct({ id: OrganizationId, slug: OrganizationSlug });
 
@@ -35,7 +36,7 @@ export class AppDomainCoordinator extends Cloudflare.DurableObject<
 const staleAfter = 15 * 60_000;
 
 export const cloudAppDomains = Effect.gen(function* () {
-  const coordinator = yield* AppDomainCoordinator.from(AppDomainController);
+  const coordinator = yield* inJurisdiction(AppDomainCoordinator.from(AppDomainController));
   const base = yield* cloudAppUiBase.pipe(Effect.orDie);
   const suffix =
     base === undefined || new URL(base).protocol !== "https:" ? undefined : new URL(base).hostname;

@@ -21,11 +21,11 @@ import {
 import { HostRequirementsError, DeclaredRequirements, HostResponse } from "apps/contracts";
 import { RuntimeContext } from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
-import { Effect, FiberSet, Schema } from "effect";
+import { Effect, FiberSet, Schema, Stream } from "effect";
 import { dataChanges } from "../implementation/data-changes.ts";
 import { runtimeActor } from "../implementation/runtime-actor.ts";
+import { durableNamespace } from "./jurisdiction.ts";
 import { cacheRuntimeBuild, cachedRuntimeBuilds } from "../implementation/runtime-build-cache.ts";
-import type { DurableObjectNamespace } from "@cloudflare/workers-types";
 import { CloudCompileResult } from "../contracts/builds.ts";
 import { AppCompiler } from "./compiler.ts";
 import { AppData } from "./app-data-worker.ts";
@@ -57,13 +57,6 @@ const compilerDidNotAnswer = Effect.annotateCurrentSpan(
 );
 const withActor = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   Effect.flatMap(runtimeActor, (actor) => Effect.annotateSpans(effect, actor));
-const NativeNamespace = Schema.declare(
-  (value): value is Pick<DurableObjectNamespace, "getByName"> =>
-    typeof value === "object" &&
-    value !== null &&
-    "getByName" in value &&
-    typeof value.getByName === "function",
-);
 
 const SupervisorRun = Schema.UndefinedOr(Schema.String);
 
@@ -84,7 +77,7 @@ export const cloudRuntime = Effect.fn(function* (
 ) {
   const compiler = yield* Cloudflare.Workers.bindWorker(AppCompiler);
   const appData = yield* Cloudflare.Workers.bindWorker(AppData);
-  const environment = yield* Cloudflare.WorkerEnvironment;
+  const supervisors = yield* durableNamespace("AppDataSupervisor");
   return Effect.gen(function* () {
     const runner = remoteAppRunner({
       invoke: (invocation, capabilities) => appData.invoke(invocation, capabilities),
@@ -222,7 +215,7 @@ export const cloudRuntime = Effect.fn(function* (
       asset: ({ build, path }) =>
         cloudBuildAsset(build, path).pipe(Effect.provide(RuntimeContext.phantom)),
       changes: (app) =>
-        dataChanges(Schema.decodeUnknownSync(NativeNamespace)(environment.AppDataSupervisor), app),
+        Stream.unwrap(Effect.map(supervisors, (namespace) => dataChanges(namespace, app))),
     });
     return runtimeAdapter(runtime);
   });

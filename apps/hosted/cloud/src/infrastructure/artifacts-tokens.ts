@@ -9,6 +9,7 @@ import { ArtifactsCredentials } from "./artifacts-credentials-worker.ts";
 import { cloudEncryptionKey } from "./secrets.ts";
 import { sourceNamespace } from "../contracts/artifacts-namespace.ts";
 import { providerFailureCode } from "../implementation/provider-failure.ts";
+import { inJurisdiction } from "./jurisdiction.ts";
 
 export const creation = Schema.Struct({
   repository: AppCodeId,
@@ -201,6 +202,6 @@ export const cloudArtifactsTokens = (
     } satisfies ArtifactsTokens;
   }).pipe(Effect.orDie);
 
-export const cloudArtifactsTokensLive = ArtifactsTokenCoordinator.from(ArtifactsCredentials).pipe(
-  Effect.flatMap(cloudArtifactsTokens),
-);
+export const cloudArtifactsTokensLive = inJurisdiction(
+  ArtifactsTokenCoordinator.from(ArtifactsCredentials),
+).pipe(Effect.flatMap(cloudArtifactsTokens));

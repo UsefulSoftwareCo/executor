@@ -1,4 +1,3 @@
-import type { DurableObjectNamespace } from "@cloudflare/workers-types";
 import { traceHeaders } from "@executor-js/telemetry";
 import {
   McpAuthentication,
@@ -9,7 +8,7 @@ import {
   mcpSessionKey,
 } from "@executor-js/hosted-server";
 import * as Cloudflare from "alchemy/Cloudflare";
-import { Effect, Option, Schema } from "effect";
+import { Effect, Option } from "effect";
 import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import type { HttpServerError } from "effect/http/HttpServerError";
 import {
@@ -32,26 +31,15 @@ import { observeMcpStream } from "../implementation/mcp-stream-observability.ts"
 import type { McpSessionObject } from "./mcp-session.ts";
 import { mcpSessionKeys } from "./mcp-session-keys.ts";
 import { McpServer } from "./mcp-server-worker.ts";
+import { durableNamespace, inJurisdiction } from "./jurisdiction.ts";
 
 export class McpSession extends Cloudflare.DurableObject<McpSession, McpSessionObject>()(
   "McpSession",
 ) {}
 
-export const SessionNamespace = Schema.declare(
-  (value): value is Pick<DurableObjectNamespace, "get" | "idFromName" | "idFromString"> =>
-    typeof value === "object" &&
-    value !== null &&
-    "get" in value &&
-    typeof value.get === "function" &&
-    "idFromName" in value &&
-    typeof value.idFromName === "function" &&
-    "idFromString" in value &&
-    typeof value.idFromString === "function",
-);
-
 export const cloudMcp = Effect.gen(function* () {
-  const sessions = yield* McpSession.from(McpServer);
-  const environment = yield* Cloudflare.WorkerEnvironment;
+  const sessions = yield* inJurisdiction(McpSession.from(McpServer));
+  const sessionNamespace = yield* durableNamespace("McpSession");
   const keys = yield* mcpSessionKeys;
   const send = (
     route:
@@ -137,9 +125,7 @@ export const cloudMcp = Effect.gen(function* () {
         yield* Effect.annotateCurrentSpan("executor.mcp.session_id", "refused");
         return mcpSessionNotFound();
       }
-      const namespace = yield* Schema.decodeUnknownEffect(SessionNamespace)(
-        environment.McpSession,
-      ).pipe(Effect.orDie);
+      const namespace = yield* sessionNamespace;
       const id = yield* Effect.try(() => namespace.idFromString(address.value.objectId)).pipe(
         Effect.option,
       );
