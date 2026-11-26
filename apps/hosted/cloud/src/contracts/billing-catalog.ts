@@ -1,14 +1,9 @@
 import { organizationOwner, type OrganizationId } from "@executor-js/hosted-server";
 import { Schema } from "effect";
 
-/**
- * The Autumn environment a catalog belongs to. Sandbox subscriptions are never paid ones, so a
- * stage's key must belong to the same environment as its catalog.
- */
 export const BillingEnvironment = Schema.Literals(["sandbox", "live"]);
 export type BillingEnvironment = typeof BillingEnvironment.Type;
 
-/** The catalog stack exports identities, never management credentials or customer data. */
 export const BillingCatalog = Schema.Struct({
   environment: BillingEnvironment,
   namespace: Schema.NonEmptyString,
@@ -18,18 +13,14 @@ export const BillingCatalog = Schema.Struct({
   team: Schema.NonEmptyString,
   enterprise: Schema.NonEmptyString,
 });
-/** One catalog is shared by the API and MCP runtime in the same deployment stage. */
 export type BillingCatalog = typeof BillingCatalog.Type;
 
-/** An organization's Autumn customer: namespaced by stage, so stages never share a customer. */
 export const billingCustomerId = (catalog: BillingCatalog, organization: OrganizationId) =>
   `${catalog.namespace}:${organizationOwner(organization)}`;
 
-/** Free includes three members; Team costs USD 15 per active member per month. */
 export const freeMembers = 3;
 export const teamMemberPrice = 15;
 
-/** An immutable metered or boolean feature. Changing a meaning requires a new ID. */
 export type BillingFeatureDeclaration = {
   readonly featureId: string;
   readonly name: string;
@@ -37,7 +28,6 @@ export type BillingFeatureDeclaration = {
   | { readonly type: "metered"; readonly consumable: boolean }
   | { readonly type: "boolean"; readonly consumable: false }
 );
-/** One mutually exclusive plan. Never a global default: customers select it explicitly. */
 export interface BillingPlanDeclaration {
   readonly planId: string;
   readonly group: string;
@@ -60,7 +50,6 @@ export interface BillingPlanDeclaration {
     };
   }>;
 }
-/** The catalog a stage declares, independent of the endpoint it is provisioned against. */
 export interface BillingCatalogDeclaration {
   readonly catalog: BillingCatalog;
   readonly features: {
@@ -74,10 +63,6 @@ export interface BillingCatalogDeclaration {
   };
 }
 
-/**
- * Every catalog identity is namespaced by stage, so one Autumn account can hold several of them
- * and a customer ID from one stage never selects another stage's plan.
- */
 export const billingCatalogDeclaration = (
   stage: string,
   environment: BillingEnvironment,
@@ -142,7 +127,6 @@ export const billingCatalogDeclaration = (
         group: namespace,
         name: `Enterprise (${stage})`,
         freeTrial: null,
-        // V1's Enterprise plan is assigned manually; each contract sets its own price.
         items: [
           { featureId: members, included: 0, unlimited: true },
           { featureId: domainVerification, included: 0, unlimited: false },

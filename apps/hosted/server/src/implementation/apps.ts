@@ -1,6 +1,5 @@
 import { sourceDisplay, sourceDisplayFile } from "@executor-js/app-management/source-display";
 import { policyDatabase, requireAppAccess } from "./resource-policy.ts";
-/** App use cases and routes. Hosts supply an SDK; they do not enumerate these operations. */
 import { CatalogImportFailed, deployedCopy, type CustomAppInput } from "@executor-js/catalog";
 import {
   scopeGeneratedPackage,
@@ -20,13 +19,11 @@ import { appManagerOwner, currentOwner } from "./access.ts";
 import { applyCatalogAppOffer, catalogAppOffer } from "./catalog-app-offers.ts";
 import { SqlClient } from "effect/sql";
 
-/** Install a catalog entry as a new app without replacing an existing name. */
 export const installApp = (owner: OwnerId, input: typeof InstallApp.Type) =>
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
     const catalog = yield* HostedCatalog;
     const generated = yield* catalog.prepare(input);
-    // An official app keeps its own package name, as an installed published app does.
     if (generated.origin !== undefined)
       return yield* executor.apps
         .copy({
@@ -35,7 +32,6 @@ export const installApp = (owner: OwnerId, input: typeof InstallApp.Type) =>
           name: input.name,
         })
         .pipe(
-          // A snapshot reads no registry or earlier app; those failures belong to other copy sources.
           Effect.catchTags({
             RegistryError: Effect.die,
             VersionNotFound: Effect.die,
@@ -58,10 +54,6 @@ export const installApp = (owner: OwnerId, input: typeof InstallApp.Type) =>
     const { app } = yield* executor.apps.deploy({ owner, name: input.name, files });
     return app;
   });
-/**
- * Confirm a tenant-supplied MCP server and create an organization app without replacing a name.
- * The URL is checked by the host, so it stays on public destinations.
- */
 export const importCustomApp = (owner: OwnerId, input: CustomAppInput) =>
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
@@ -82,13 +74,11 @@ export const importCustomApp = (owner: OwnerId, input: CustomAppInput) =>
     const { app } = yield* executor.apps.deploy({ owner, name: input.name, files });
     return app;
   });
-/** Deploying source directly uses the same create-only operation as a catalog install. */
 export const deployApp = (owner: OwnerId, input: typeof DeployApp.Type) =>
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
     return (yield* executor.apps.deploy({ ...input, owner })).app;
   });
-/** Read a configured app only within its authenticated organization. */
 export const getApp = (owner: OwnerId, input: { readonly app: AppId }) =>
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
@@ -96,13 +86,11 @@ export const getApp = (owner: OwnerId, input: { readonly app: AppId }) =>
     const app = yield* executor.apps.get({ ...input, owner });
     return app;
   });
-/** Retained source is administrative data; versions from other owners stay private. */
 export const appVersions = (owner: OwnerId, app: AppId) =>
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
     return yield* executor.apps.versions({ owner, app, versionOwner: owner });
   });
-/** An explicit app and optional version select source, never a free-standing version ID. */
 export const appSource = (owner: OwnerId, app: AppId, version?: VersionId) =>
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
@@ -113,7 +101,6 @@ export const appSource = (owner: OwnerId, app: AppId, version?: VersionId) =>
       ...(version === undefined ? {} : { version }),
     });
   });
-/** A catalog update held back for this app, which a manager may apply. */
 export const catalogUpdate = (owner: OwnerId, app: AppId) =>
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
@@ -123,7 +110,6 @@ export const catalogUpdate = (owner: OwnerId, app: AppId) =>
       Effect.provideService(SqlClient.SqlClient, yield* policyDatabase),
     );
   });
-/** Deploy the held-back catalog source as the app's active version. */
 export const applyCatalogUpdate = (app: AppId) =>
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
@@ -133,7 +119,6 @@ export const applyCatalogUpdate = (app: AppId) =>
       Effect.provideService(SqlClient.SqlClient, yield* policyDatabase),
     );
   });
-/** Activation moves a pointer; it never rewinds app data or upstream side effects. */
 export const activateApp = (
   owner: OwnerId,
   app: AppId,
@@ -147,7 +132,6 @@ export const activateApp = (
     const saved = yield* executor.apps.activate({ owner, app, version, expectedVersion });
     return saved;
   });
-/** Keep the configured identity and selections while changing its organization-local name. */
 export const renameApp = (owner: OwnerId, app: AppId, name: string) =>
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
@@ -158,15 +142,12 @@ export const renameApp = (owner: OwnerId, app: AppId, name: string) =>
     });
     return saved;
   });
-/** Delete one configured copy while preserving its reusable accounts. */
 export const removeApp = (owner: OwnerId, input: { readonly app: AppId }) =>
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
     return yield* executor.apps.remove({ ...input, owner });
   });
 
-/** Resolve current authority before running app operations. */
-/** One file of a version's source, rendered for display. */
 const versionDisplayFile = (
   params: { readonly app: AppId; readonly version: VersionId },
   path: SourceFilePath,

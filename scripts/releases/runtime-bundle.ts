@@ -1,4 +1,3 @@
-/** Assemble the reachable local server code and its portable native resources. */
 import { bundleWorkerdHost } from "@executor-js/sdk/node/build";
 import { Effect, FileSystem, Path, Schema } from "effect";
 import { build, type Plugin } from "esbuild";
@@ -16,10 +15,6 @@ const Manifest = Schema.Struct({
   optionalDependencies: Schema.optional(Schema.Record(Schema.String, Schema.String)),
 });
 
-/**
- * Packages the runtime loads from its install directory instead of bundling: native bindings,
- * WebAssembly, executables, and a TypeScript compiler that reads its own files.
- */
 const installedPackages = [
   "ws",
   "@electric-sql/pglite",
@@ -29,15 +24,6 @@ const installedPackages = [
   "typescript",
 ] as const;
 
-/**
- * The files of dugite's Git distribution the runtime keeps, by path relative to it. The bundled Git
- * serves app repositories on this machine, through plumbing commands and `git http-backend`, and
- * never reaches a remote. So the Git Credential Manager, Git LFS, network transports and scripted
- * tools dugite also ships are left out. What stays is the `git` executable, `git http-backend`
- * (which windows-git.ts adds on Windows after staging), the libraries they load, the templates
- * `git init` copies and the licenses of what remains. Symbolic links to `git`, its argv[0]
- * aliases such as `git-upload-pack`, stay as well.
- */
 const keptGit = (platform: string): ReadonlyArray<RegExp> =>
   platform === "win32"
     ? [
@@ -54,7 +40,6 @@ const keptGit = (platform: string): ReadonlyArray<RegExp> =>
         /^share\/git-core\/templates\//u,
       ];
 
-/** Remove everything from the Git distribution at `directory` that `keptGit` does not keep. */
 const pruneGit = (directory: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -82,7 +67,6 @@ const pruneGit = (directory: string) =>
     yield* prune(directory);
   });
 
-/** The source substitutions both runtime builds share. */
 const sourcePlugin = (root: string) =>
   Effect.gen(function* () {
     const path = yield* Path.Path;
@@ -97,8 +81,6 @@ const sourcePlugin = (root: string) =>
     const plugin: Plugin = {
       name: "local-runtime-resources",
       setup(builder) {
-        // jsonc-parser's `main` is a UMD build that requires ./impl/* at runtime,
-        // which bundling leaves unresolvable. Its ESM build bundles statically.
         builder.onResolve({ filter: /^jsonc-parser$/ }, (args) =>
           builder.resolve("jsonc-parser/lib/esm/main.js", {
             kind: args.kind,
@@ -113,8 +95,6 @@ const sourcePlugin = (root: string) =>
             resolveDir: path.join(root, "packages/sdk"),
           }),
         );
-        // These modules locate static resources relative to their original source URL.
-        // Every generated chunk lives in runtime/, so preserve those URLs after bundling.
         builder.onLoad(
           {
             filter:
@@ -137,13 +117,6 @@ const sourcePlugin = (root: string) =>
     return plugin;
   });
 
-/**
- * What the release executable's code reads in place of its own module URL. A module compiled
- * into an executable has a URL inside it, so the bundle instead takes `runtime/cli.mjs` in the
- * install directory as every module's location, as in the npm package where every chunk lives in
- * runtime/. Resources, `require` and `import.meta.resolve` then find the same files from the
- * executable, through any launcher symlink, as from the npm package.
- */
 const standaloneBanner = [
   'import { createRequire as __runtimeRequire } from "node:module";',
   'import { pathToFileURL as __runtimeUrl } from "node:url";',
@@ -158,17 +131,11 @@ const standaloneBanner = [
   "const __executorResolve = (specifier) => __runtimeUrl(Bun.resolveSync(specifier, __dirname)).href;",
 ].join(" ");
 
-/** The values the release executable's entry reads; see standalone-entry.ts. */
 export interface StandaloneRelease {
   readonly version: string;
   readonly analytics: { readonly key: string; readonly host: string } | undefined;
 }
 
-/**
- * Bundle the release executable's entry into one module for `bun build --compile`. The packages
- * the runtime keeps on disk load from runtime/node_modules in the install directory, and
- * Alchemy's internal Workers, which its package resolves through package imports, are bundled.
- */
 export const bundleStandaloneRuntime = (
   root: string,
   outfile: string,
@@ -191,7 +158,6 @@ export const bundleStandaloneRuntime = (
     const installed: Plugin = {
       name: "standalone-install",
       setup(builder) {
-        // esbuild matches filters with Go's RegExp, which has no u flag.
         const names = new RegExp(
           `^(?:${installedPackages.map((name) => name.replace("/", "\\/")).join("|")})$`,
         );
@@ -199,14 +165,10 @@ export const bundleStandaloneRuntime = (
           path: args.path,
           namespace: "installed-package",
         }));
-        // The banner's require, rooted at runtime/ in the install directory. A plain `require`
-        // here would resolve to this module again.
         builder.onLoad({ filter: /.*/, namespace: "installed-package" }, (args) => ({
           contents: `module.exports = __executorRequire(${JSON.stringify(args.path)});`,
           loader: "js",
         }));
-        // Alchemy loads each internal Worker through its package's imports map, which only a
-        // package directory on disk has. Every one it can name is bundled here instead.
         builder.onLoad(
           {
             filter:
@@ -265,7 +227,6 @@ export const bundleStandaloneRuntime = (
     return bundled.metafile;
   });
 
-/** Every module Alchemy's package imports map names, as specifier and absolute file. */
 const internalWorkers = (directory: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -299,7 +260,6 @@ const internalWorkers = (directory: string) =>
     return workers;
   });
 
-/** Bundle the CLI entry point; copy only locked native dependencies and resource files. */
 export const bundleLocalRuntime = (root: string, stage: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -311,7 +271,6 @@ export const bundleLocalRuntime = (root: string, stage: string) =>
     const resolvePackage = (name: string, from: string) =>
       Effect.gen(function* () {
         const resolve = createRequire(path.join(from, "package.json"));
-        // Assembly needs the manifest itself, including packages that do not export package.json.
         for (const modules of resolve.resolve.paths(name) ?? []) {
           const directory = path.join(modules, name);
           if (yield* fs.exists(path.join(directory, "package.json")))
@@ -417,15 +376,12 @@ export const bundleLocalRuntime = (root: string, stage: string) =>
       ["sharp", alchemy],
       ["@electric-sql/pglite", yield* requiredPackage("@effect/sql-pglite", sdk)],
       ["@napi-rs/keyring", root],
-      // Codemode transpiles with its own TypeScript; the workspace compiler has no JS API.
       ["typescript", codemode],
       ["dugite", root],
     ] as const) {
       yield* copyPackage(yield* requiredPackage(name, owner));
     }
     yield* pruneGit(path.join(stage, "node_modules/dugite/git"));
-    // npm deliberately omits symbolic and hard links. Git uses argv[0] aliases;
-    // preserve those commands with shell builtins instead of duplicating its binary.
     const materializeLinks = (
       directory: string,
     ): Effect.Effect<void, never, FileSystem.FileSystem> =>
@@ -455,15 +411,12 @@ export const bundleLocalRuntime = (root: string, stage: string) =>
             );
             yield* fs.chmod(file, 0o755);
           } else {
-            // Non-Git aliases are small resources or individual protocol helpers.
             yield* fs.copyFile(target, file);
           }
         }
       }).pipe(Effect.orDie);
     yield* materializeLinks(path.join(stage, "node_modules"));
     if (process.platform === "win32") {
-      // The upstream executable has no application manifest. Its SQLite storage
-      // needs this declaration to use the host's enabled Windows long-path support.
       const workerd = yield* Effect.try(() =>
         createRequire(path.join(stage, "package.json"))("workerd"),
       ).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.Struct({ default: Schema.String }))));
@@ -474,8 +427,6 @@ export const bundleLocalRuntime = (root: string, stage: string) =>
         `${workerd.default}.manifest`,
       );
     }
-    // workerd's Unix postinstall duplicates the executable in its CLI path. Its
-    // public Node API already resolves the pinned platform binary, so share that path.
     if (process.platform !== "win32") {
       const executable = path.join(stage, "node_modules/workerd/bin/workerd");
       yield* fs.writeFileString(
@@ -492,20 +443,25 @@ else process.exitCode = result.status ?? 1;
       yield* fs.chmod(executable, 0o755);
     }
     yield* fs.copy(path.join(alchemy, "dist/core/workers"), path.join(stage, "alchemy-workers"));
-    // The runtime bundles the document renderer; only browser files are read from disk.
     yield* fs.copy(
       path.join(root, "apps/local/web/dist/client"),
       path.join(stage, "apps/local/web/dist/client"),
     );
-    yield* fs.copy(
-      path.join(root, "packages/telemetry/dist/motel"),
-      path.join(stage, "packages/telemetry/dist/motel"),
-    );
-    // Keep build diagnostics beside the artifact, without making every npm user
-    // download external source maps. These files are not executable runtime assets.
+    const telemetry = path.join(root, "packages/telemetry/dist");
+    const collectorName =
+      process.platform === "win32" ? "executor-collector.exe" : "executor-collector";
+    const stagedCollector = path.join(stage, "packages/telemetry/dist/collector", collectorName);
+    yield* fs.makeDirectory(path.dirname(stagedCollector), { recursive: true });
+    yield* fs.copyFile(path.join(telemetry, "collector", collectorName), stagedCollector);
+    if (process.platform !== "win32") yield* fs.chmod(stagedCollector, 0o755);
+    for (const file of ["index.html", "assets"])
+      yield* fs.copy(
+        path.join(telemetry, "viewer", file),
+        path.join(stage, "packages/telemetry/dist/viewer", file),
+      );
     for (const [directory, name] of [
       [output, "runtime"],
-      [path.join(stage, "packages/telemetry/dist/motel"), "motel"],
+      [path.join(stage, "packages/telemetry/dist/viewer"), "viewer"],
     ] as const) {
       for (const file of yield* fs.readDirectory(directory, { recursive: true })) {
         if (!file.endsWith(".map")) continue;
@@ -514,9 +470,6 @@ else process.exitCode = result.status ?? 1;
         yield* fs.rename(path.join(directory, file), destination);
       }
     }
-    // Bundled dependencies must also be published: bun and yarn resolve them from the
-    // registry. Private resources sit beside the bundle instead, where resolution from
-    // runtime/*.mjs finds them first, and are never declared as dependencies.
     for (const [name, directory, resource, published] of [
       ["@executor-js/app-templates", path.join(root, "packages/app-templates"), "executor", false],
       ["apps", path.join(root, "packages/apps/dist"), "framework-reference.json", true],
@@ -542,7 +495,6 @@ else process.exitCode = result.status ?? 1;
       if (published) dependencies[name] = version;
       licenseDirectories.add(directory);
     }
-    // Keep full license files for bundled code, as well as esbuild's inline/external notices.
     for (const input of Object.keys(bundled.metafile.inputs)) {
       if (input.startsWith("(disabled):")) continue;
       const absolute = path.resolve(root, input).split(path.sep).join("/");
@@ -557,7 +509,6 @@ else process.exitCode = result.status ?? 1;
         ),
       );
     }
-    // The prepared Worker source is embedded in the host bundle; retain its SDK dependency notices too.
     const visited = new Set<string>();
     const collectNotices = (directory: string): Effect.Effect<void, never, FileSystem.FileSystem> =>
       Effect.gen(function* () {
@@ -584,6 +535,25 @@ else process.exitCode = result.status ?? 1;
             overwrite: true,
           });
     }
+    yield* fs.copy(
+      path.join(telemetry, "collector/NOTICE"),
+      path.join(stage, "licenses/executor-collector/NOTICE"),
+    );
+    yield* fs.copy(path.join(telemetry, "collector/licenses"), path.join(stage, "licenses"), {
+      overwrite: true,
+    });
+    inventory.push("executor-collector");
+    for (const line of (yield* fs.readFileString(
+      path.join(telemetry, "collector/cargo-packages.txt"),
+    )).split("\n"))
+      if (line !== "") inventory.push(`cargo:${line}`);
+    yield* fs.copy(path.join(telemetry, "viewer/licenses"), path.join(stage, "licenses"), {
+      overwrite: true,
+    });
+    for (const line of (yield* fs.readFileString(
+      path.join(telemetry, "viewer/runtime-packages.txt"),
+    )).split("\n"))
+      if (line !== "") inventory.push(line);
     yield* fs.writeFileString(
       path.join(stage, "runtime-packages.txt"),
       [...new Set(inventory)].sort().join("\n") + "\n",

@@ -81,7 +81,6 @@ const mcpMessage = ({ phase, reason, status }: McpError) => {
         `The MCP server returned a response Executor could not use while ${stage}, such as an unreadable message or an address on another origin.`,
     ),
     Match.when("invalid_input", () => "The MCP server URL or connection settings are invalid."),
-    // Only a transport failure has no answer from the server; a JSON-RPC error is an answer.
     Match.when("request", () =>
       status !== undefined
         ? `The MCP server answered HTTP ${status} while ${stage}.`
@@ -477,8 +476,6 @@ export const failureDetail = (error: unknown, secrets: readonly string[]): Failu
       code: error.anonymous === "answered" ? "anonymous_access" : error.anonymous.reason,
       message: unverifiedMessage(error),
     };
-  // The OpenAPI helper runs in the app and reads a definition the app chose, so its compile
-  // failures are the app's: their code and message say what to change.
   if (Schema.is(OpenapiCompileError)(error))
     return {
       source: "app",
@@ -486,8 +483,6 @@ export const failureDetail = (error: unknown, secrets: readonly string[]): Failu
       code: error.code,
       message: boundFailureMessage(error.message, secrets),
     };
-  // Executor's own refusal of the app's request, and a fetch option the app runtime rejects.
-  // Their messages name hosts, providers and options, never credentials.
   if (Schema.is(NetworkRefused)(error))
     return {
       source: "app",

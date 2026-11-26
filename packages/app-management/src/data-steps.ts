@@ -1,8 +1,8 @@
-/** Operator-free data steps, including the pin of existing apps to an explicit `apps` framework. */
 export * from "./contracts/data-steps.ts";
 export * from "./contracts/framework-pin.ts";
 export * from "./contracts/executor-app-redeploy.ts";
 export * from "./contracts/local-owners.ts";
+export * from "./contracts/catalog-copy-rebuild.ts";
 export { createDataStepJournal, runDataSteps } from "./implementation/data-steps.ts";
 export type { DataStepRunOptions } from "./implementation/data-steps.ts";
 export { frameworkPinStep, pinnedOnly, withFrameworkPin } from "./implementation/framework-pin.ts";
@@ -20,6 +20,10 @@ export {
   idleAgentGrantsStep,
   idleAgentGrantsStepName,
 } from "./implementation/idle-agent-grants.ts";
+export {
+  agentGrantModesStep,
+  agentGrantModesStepName,
+} from "./implementation/agent-grant-modes.ts";
 export { executorAppRedeployStep } from "./implementation/executor-app-redeploy.ts";
 export type { ExecutorAppRedeployHost } from "./implementation/executor-app-redeploy.ts";
 export { localOwnersStepName, localOwnersStorage } from "./implementation/local-owners.ts";
@@ -28,5 +32,11 @@ export type { AgentGrantExpiry, AgentGrantHost } from "./implementation/idle-age
 export {
   hostDataSteps,
   runStartupDataSteps,
+  startupCatalogCopyRebuild,
   startupDataStepMode,
 } from "./implementation/host-data-steps.ts";
+export {
+  catalogCopyRebuildScope,
+  catalogCopyRebuildStep,
+} from "./implementation/catalog-copy-rebuild.ts";
+export type { CatalogCopyRebuildHost } from "./implementation/catalog-copy-rebuild.ts";

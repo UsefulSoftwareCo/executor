@@ -19,7 +19,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP empty state", (it) => {
           api = yield* Api,
           browser = yield* Browser,
           target = yield* Target;
-        // A real account whose only membership was removed; the server reads its organizations.
         const email = `former-${randomUUID()}@example.test`;
         const invitation = yield* body(
           Resource,
@@ -46,7 +45,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP empty state", (it) => {
         ).toBe(200);
         yield* browser.login(former);
         yield* browser.use("Use dark theme", (page) => page.emulateMedia({ colorScheme: "dark" }));
-        // The consent page reads the registered client while it renders on the server.
         const client = yield* body(
           Schema.Struct({ client_id: Schema.String }),
           yield* api.request(yield* api.session(), "POST", "/api/auth/oauth2/register", {

@@ -1,4 +1,3 @@
-/** Native page measurements. Observers and reporting fibers belong to the browser Layer. */
 import { Effect, FiberSet, Option, Schedule, Schema } from "effect";
 import { browserRequestTiming } from "./browser-request-timing.ts";
 import { traceLinks } from "./trace-context.ts";
@@ -15,7 +14,6 @@ const eventTiming = Schema.decodeUnknownOption(
 );
 const eventDurationThreshold = 104;
 
-/** Collect page measurements without making them parents of unrelated API calls. */
 export const observeBrowserPerformance = Effect.gen(function* () {
   const clock = window.performance;
   if (clock === undefined || typeof PerformanceObserver === "undefined") {
@@ -34,7 +32,6 @@ export const observeBrowserPerformance = Effect.gen(function* () {
   const supported = new Set<string>();
   let path = pagePath;
   let generation = 0;
-  // Buffered startup entries can predate acquisition of this Layer.
   let since = 0;
   let pageStart = 0;
   let active = document.visibilityState !== "hidden";
@@ -97,7 +94,6 @@ export const observeBrowserPerformance = Effect.gen(function* () {
           if (!active || Option.isNone(parsed) || parsed.value.hadRecentInput) break;
           const value = parsed.value.value;
           if (!Number.isFinite(value) || value < 0) break;
-          // CLS is the largest session window: gaps under one second, length under five.
           if (
             shiftWindowValue > 0 &&
             entry.startTime - shiftWindowEnd < 1_000 &&
@@ -165,7 +161,6 @@ export const observeBrowserPerformance = Effect.gen(function* () {
         supported.add(type);
         observers.set(type, observer);
       } catch {
-        // A browser can advertise an entry type but reject its observer options.
         observer.disconnect();
       }
     }
@@ -279,7 +274,6 @@ export const observeBrowserPerformance = Effect.gen(function* () {
       active = false;
     }),
     resume: Effect.sync(() => {
-      // Discard background entries before counting the next foreground interval.
       drain();
       active = connected;
       since = clock.now();
@@ -305,7 +299,6 @@ export const observeBrowserPerformance = Effect.gen(function* () {
       firstHidden = active ? Infinity : pageStart;
       longTasks = { count: 0, duration: 0, blocking: 0, max: 0 };
       interactions = { count: 0, duration: 0, inputDelay: 0, processing: 0 };
-      // Buffered paint entries belong to the original navigation, not this restoration.
       observe(false);
     }),
     navigation: (nextPath: string) =>

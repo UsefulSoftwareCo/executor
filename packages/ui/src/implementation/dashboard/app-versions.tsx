@@ -5,7 +5,6 @@ import { VersionSourceLoading } from "./app-loading.tsx";
 import { SourceBrowser } from "./source-browser.tsx";
 import { cn } from "../lib/utils.ts";
 
-/** Version history and retained files occupy a full page; selection never changes the running app. */
 export function AppVersions<E>({
   app,
   versions,

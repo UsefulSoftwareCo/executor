@@ -20,17 +20,7 @@ import {
 import { testimonials } from "../content/testimonials";
 import { appStructure } from "../content/app-structure";
 import { appOrigin, siteOrigin } from "../content/site-origin.ts";
-
-// ---------------------------------------------------------------------------
-// `/index.md` — the homepage as Markdown, for agents.
-//
-// Same content as src/pages/index.astro, without the layout, scripts, or
-// interactive demos: an agent that fetches this gets the whole product in one
-// read, plus links to the other machine-readable surfaces.
-//
-// The copy comes from src/content/site-copy.ts so the HTML page and this page
-// cannot drift apart.
-// ---------------------------------------------------------------------------
+import { docsOverviewMarkdown, setupLinksMarkdown } from "../content/docs-overview.ts";
 
 const machineSummaries = [
   ["Docs", `${siteOrigin}/docs`],
@@ -62,9 +52,11 @@ const pricingLines = pricingTiers(appOrigin).map(
 
 const faqLines = faqs.map(({ question, answer }) => `### ${question}\n\n${answer}`);
 
-const body = `# Executor
+const body = (overview: string) => `# Executor
 
 > ${tagline}
+
+${setupLinksMarkdown}
 
 ## Machine summaries
 
@@ -75,6 +67,8 @@ ${taglineBuild}
 ${introduction}
 
 ${heroSubhead}
+
+${overview}
 
 ## ${homepageStory.everything.title}
 
@@ -161,4 +155,4 @@ ${faqLines.join("\n\n")}
 The existing Executor project: ${GITHUB_URL}
 `;
 
-export const GET: APIRoute = () => markdownResponse(body);
+export const GET: APIRoute = async () => markdownResponse(body(await docsOverviewMarkdown()));

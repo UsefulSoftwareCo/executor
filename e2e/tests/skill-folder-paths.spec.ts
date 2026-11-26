@@ -1,4 +1,3 @@
-/** Folder defaults and explicit overrides through packaged files and the real runtime. */
 import { expect, layer } from "@effect/vitest";
 import { Effect } from "effect";
 import { scenarios } from "../test-plan.ts";

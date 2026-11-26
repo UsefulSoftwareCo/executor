@@ -1,4 +1,3 @@
-/** The default management app is assembled only when its owning organization needs it. */
 import {
   organizationDefaults,
   withCatalogAppUpdates,
@@ -9,7 +8,6 @@ import type { Executor } from "@executor-js/sdk/core";
 import { Effect } from "effect";
 export { executorCloudApiDocument } from "../contracts/api.ts";
 
-/** Load the management contract behind this feature's module boundary. */
 export const defaultApp = (
   executor: Executor,
   origin: string,

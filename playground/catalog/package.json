@@ -9,6 +9,6 @@
   "dependencies": {
     "@executor-js/catalog": "workspace:*",
     "@executor-js/utils": "workspace:*",
-    "effect": "4.0.1"
+    "effect": "4.1.4"
   }
 }

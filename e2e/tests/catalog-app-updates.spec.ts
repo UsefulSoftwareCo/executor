@@ -1,12 +1,3 @@
-/**
- * Installed catalog apps follow the catalog. Self-host queues a sweep at startup and daily; each
- * restart here runs one. The scenario installs its own catalog entry three times, links an account
- * to one copy, deploys an edit to another and saves an undeployed edit to the third. A source that
- * keeps every linked account working updates the untouched copy and its workspace; one whose
- * provider changes is only built and offered, and a manager's Update in the Versions tab applies
- * it. The edited copy is only ever offered the catalog's source; the one with unsaved work is left
- * alone.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -38,7 +29,6 @@ const Offer = Schema.NullOr(
 );
 
 const packageName = "@executor.sh/synthetic-notes";
-/** The app's source, with `marker` in its tool's description and `provider` naming its provider. */
 const notes = (marker: string, provider = "Synthetic Notes") => ({
   package: packageName,
   files: [
@@ -124,7 +114,6 @@ layer(HostedLive, { excludeTestServices: true })("Catalog app updates", (it) => 
         const untouched = yield* install(`Notes ${suffix}`);
         const edited = yield* install(`Edited notes ${suffix}`);
         const dirty = yield* install(`Dirty notes ${suffix}`);
-        // Connecting from the app links the account to its requirement.
         const connection = yield* api.request(
           actors.owner,
           "POST",
@@ -142,14 +131,12 @@ layer(HostedLive, { excludeTestServices: true })("Catalog app updates", (it) => 
         expect(
           yield* linkedAccountIds(actors.owner, `${prefix}/apps/${untouched.id}`),
         ).toHaveLength(1);
-        // Someone edits the other copy through its workspace and deploys the edit.
         const edit = notes("Edited by hand").files;
         const deployed = yield* saveAndDeploy(actors.owner, `${prefix}/apps/${edited.id}`, {
           files: edit,
         });
         expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
         const editedVersion = (yield* read(edited.id)).activeVersion;
-        // Someone saves an edit to the third copy's workspace without deploying it.
         const before = yield* body(
           Workspace,
           yield* api.request(actors.owner, "GET", `${prefix}/apps/${dirty.id}/workspace`),
@@ -163,7 +150,6 @@ layer(HostedLive, { excludeTestServices: true })("Catalog app updates", (it) => 
           }),
         );
 
-        // A new description keeps every account working: the untouched copy updates by itself.
         yield* publishScenarioApp(`notes-${suffix}`, notes("Notes 2"));
         yield* serverControl("restart");
         const updated = yield* eventually(
@@ -172,31 +158,26 @@ layer(HostedLive, { excludeTestServices: true })("Catalog app updates", (it) => 
           "20 seconds",
         );
         expect(yield* index(untouched.id)).toContain('"Notes 2"');
-        // The workspace shows what now runs, once the sweep commits it after the deploy.
         yield* eventually(
           workspaceIndex(untouched.id),
           (content) => content?.includes('"Notes 2"') === true,
           "20 seconds",
         );
         expect(yield* offer(untouched.id)).toBeNull();
-        // The edited copy is offered the catalog's source as replacing someone's version.
         expect(
           yield* eventually(offer(edited.id), (found) => found !== null, "20 seconds"),
         ).toEqual({ reconnect: 0, reasons: [], touched: true });
         expect((yield* read(edited.id)).activeVersion).toBe(editedVersion);
         expect(yield* index(edited.id)).toContain('"Edited by hand"');
 
-        // A new provider would orphan the linked account: the update is offered, never deployed.
         yield* publishScenarioApp(`notes-${suffix}`, notes("Notes 3", "Synthetic Notes Two"));
         yield* serverControl("restart");
         expect(
           yield* eventually(offer(untouched.id), (found) => found !== null, "20 seconds"),
         ).toEqual({ reconnect: 1, reasons: ["provider"], touched: false });
-        // The source was only built: no version was saved.
         expect((yield* read(untouched.id)).activeVersion).toBe(updated.activeVersion);
         expect(yield* versions(untouched.id)).toBe(2);
         expect(yield* index(untouched.id)).toContain('"Notes 2"');
-        // Only managers apply it.
         const refused = yield* api.request(
           actors.member,
           "POST",
@@ -210,7 +191,6 @@ layer(HostedLive, { excludeTestServices: true })("Catalog app updates", (it) => 
         );
         expect(hidden.status, JSON.stringify(hidden.body)).toBe(403);
 
-        // A manager applies it from the Versions tab, after confirming the broken account.
         yield* browser.login(actors.owner);
         yield* browser.use("Open the app's versions", (page) =>
           page.goto(`/org/${actors.organization.slug}/apps/${untouched.id}?view=versions`),
@@ -238,7 +218,6 @@ layer(HostedLive, { excludeTestServices: true })("Catalog app updates", (it) => 
             .getByRole("button", { name: "Update", exact: true })
             .click(),
         );
-        // The open dialog hides the page from the accessibility tree, so wait for it to close.
         yield* browser.use("The dialog closes once applied", (page) =>
           page.getByRole("dialog", { name: "Update this app?" }).waitFor({ state: "detached" }),
         );
@@ -251,11 +230,7 @@ layer(HostedLive, { excludeTestServices: true })("Catalog app updates", (it) => 
         expect(yield* workspaceIndex(untouched.id)).toContain('"Notes 3"');
         expect(yield* versions(untouched.id)).toBe(3);
         expect(yield* offer(untouched.id)).toBeNull();
-        // The edited copy still runs its own version.
         expect((yield* read(edited.id)).activeVersion).toBe(editedVersion);
-        // The copy with a saved, undeployed edit was skipped: nothing deployed, nothing offered,
-        // and its edit is still in the workspace. Both sweeps finished their other copies first,
-        // but sweeps visit copies in no fixed order, so this cannot prove the visit happened.
         expect(yield* versions(dirty.id)).toBe(1);
         expect(yield* offer(dirty.id)).toBeNull();
         expect(yield* workspaceIndex(dirty.id)).toContain('"Saved, not deployed"');

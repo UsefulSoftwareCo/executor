@@ -1,14 +1,3 @@
-/**
- * Many MCP session objects active at once. A session object is chosen by the caller's grant, so
- * each API key here addresses its own object, and each object holds its own PgBouncer client
- * connections while it is active (notes/database-pool.md). The run keeps `objects` sessions busy
- * for `seconds`: every `interval` seconds each makes `parallel` concurrent `execute` calls. It
- * reports every call that failed, by the text the product returned, so a run that exhausts the
- * database's client connections shows the `StorageError` agents saw in production.
- *
- * The keys belong to one fixture organization and are kept in the private `keys` file (mode
- * 0600), so later runs reuse them instead of creating more.
- */
 import { Clock, Console, Effect, FileSystem, Schedule, Schema } from "effect";
 import { cookieHeader, mcpSession, PerfRequestFailed, productClient } from "./client.ts";
 import { fixtureId } from "./seed.ts";
@@ -26,13 +15,11 @@ export interface FanoutCall {
   readonly object: number;
   readonly at: string;
   readonly ok: boolean;
-  /** The product's text for a failed call, or the client error; empty for a success. */
   readonly failure: string;
   readonly clientMs: number;
   readonly traceId: string | undefined;
 }
 
-/** Collapse ids and numbers so failures with the same cause count together. */
 const failureKind = (text: string) =>
   text
     .replace(/[0-9a-f]{8,}/g, "<id>")
@@ -68,7 +55,6 @@ const ensureKeys = (control: StageControl, file: string, count: number) =>
       ),
     );
     while (keys.length < count) {
-      // Sign-in rate limits apply to key creation; wait them out instead of failing the run.
       const response = yield* client
         .request("POST", "/api/auth/api-key/create", { name: `Perf fanout ${keys.length}` })
         .pipe(
@@ -143,7 +129,6 @@ export const runSessionFanout = (input: {
       keys,
       (key, object) =>
         Effect.gen(function* () {
-          // Spread session starts over the first interval, as independent agents arrive.
           yield* Effect.sleep(Math.floor((object / keys.length) * input.interval * 1000));
           const opened = yield* mcpSession(input.control.origin, key, organization).pipe(
             Effect.map((session) => ({ session, failure: "" })),

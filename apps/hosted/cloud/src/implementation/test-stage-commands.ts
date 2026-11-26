@@ -1,9 +1,20 @@
-/** Deploy isolated previews with explicit database, retention and background policies. */
 import { createHash } from "node:crypto";
-import { Clock, Config, Console, Effect, FileSystem, Option, Path, Result, Schema } from "effect";
+import {
+  Clock,
+  Config,
+  Console,
+  Duration,
+  Effect,
+  FileSystem,
+  Option,
+  Path,
+  Result,
+  Schema,
+  Stream,
+} from "effect";
 import { Argument, Command, Flag } from "effect/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
-import { TestStageSlug, testStagePrefix } from "../infrastructure/stage.ts";
+import { testStagePrefix } from "../infrastructure/stage.ts";
 import {
   canDeployTestStage,
   isTestStageDue,
@@ -13,11 +24,23 @@ import {
   testStageDeployMilliseconds,
   testStageLifetimeMilliseconds,
   TestStageFailed,
+  TestStageSlug,
 } from "../contracts/test-stage-lifetime.ts";
 import { ReleaseRefusal, releaseRefusalReport } from "../contracts/release-guard.ts";
 import { withStageAdmin } from "./test-stage-inventory.ts";
 import { discoverTestStages } from "./test-stage-discovery.ts";
+import { accountLimits, accountUsage, capacityCheck } from "./test-stage-capacity.ts";
+import { findOrphanBranches } from "./test-stage-orphans.ts";
+import { branchGone, branchOutcomeMessage, removeStageBranch } from "./test-stage-branch.ts";
 import { awaitStageRollout } from "./test-stage-rollout.ts";
+import { isDeployOutcomeLine, retrySignature } from "./test-stage-deploy-retry.ts";
+import {
+  destroyUnreadableStage,
+  inventoryCount,
+  recordBlockers,
+  stageInventory,
+  stageRecords,
+} from "./test-stage-unreadable.ts";
 
 const slug = Argument.String("slug").pipe(Argument.withSchema(TestStageSlug));
 const owner = Flag.String("owner").pipe(Flag.withSchema(Schema.NonEmptyString), Flag.optional);
@@ -48,7 +71,48 @@ const runChild = (command: ChildProcess.Command) =>
     const code = Number(yield* spawner.exitCode(command));
     if (code !== 0) return yield* failure(`The child command exited with status ${code}.`);
   });
-/** A release guard's refusal recorded by the Alchemy process, if it stopped the deploy. */
+const runChildReading = (command: ChildProcess.Command) =>
+  Effect.gen(function* () {
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const child = yield* spawner.spawn(command);
+    const pass = <E>(stream: Stream.Stream<Uint8Array, E>, to: NodeJS.WriteStream) =>
+      stream.pipe(
+        Stream.tap((chunk) => Effect.sync(() => to.write(chunk))),
+        Stream.decodeText(),
+        Stream.splitLines,
+        Stream.filter(isDeployOutcomeLine),
+        Stream.runCollect,
+      );
+    const [out, err, code] = yield* Effect.all(
+      [pass(child.stdout, process.stdout), pass(child.stderr, process.stderr), child.exitCode],
+      { concurrency: "unbounded" },
+    );
+    return { code: Number(code), lines: [...out, ...err] };
+  }).pipe(Effect.scoped);
+const deployNewStage = (command: ChildProcess.Command, report: string) =>
+  Effect.gen(function* () {
+    const stopped = (code: number) =>
+      Effect.gen(function* () {
+        const refusal = yield* releaseRefusal(report);
+        return yield* Option.isSome(refusal)
+          ? refusal.value
+          : failure(`The child command exited with status ${code}.`);
+      });
+    const first = yield* runChildReading(command);
+    if (first.code === 0) return;
+    const signature = retrySignature(first.lines);
+    if (signature === undefined || Option.isSome(yield* releaseRefusal(report)))
+      return yield* stopped(first.code);
+    const wait = yield* Config.Duration("TEST_STAGE_DEPLOY_RETRY_WAIT").pipe(
+      Config.withDefault(Duration.seconds(60)),
+    );
+    yield* Console.log(
+      `Retrying the deploy once (${signature.name}): its first attempt failed only because ${signature.description}; waiting ${Duration.format(wait)} first.`,
+    );
+    yield* Effect.sleep(wait);
+    const second = yield* runChildReading(command);
+    if (second.code !== 0) return yield* stopped(second.code);
+  });
 const releaseRefusal = (report: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -58,11 +122,6 @@ const releaseRefusal = (report: string) =>
     );
   });
 const PackedApps = Schema.fromJsonString(Schema.Struct({ version: Schema.NonEmptyString }));
-/**
- * Build and pack this checkout's `apps` package for the stage's compiler, which serves the package
- * files as its own assets and uses them wherever an app declares the same version. Apps on the
- * stage then run the unpublished framework. The directory is named by the package's content.
- */
 const stageAppsFramework = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -95,23 +154,46 @@ const stageAppsFramework = Effect.gen(function* () {
   yield* Console.log(`Apps on this stage that declare apps@${version} use this checkout's build.`);
   return { EXECUTOR_APPS_FRAMEWORK: directory, EXECUTOR_APPS_VERSION: version };
 }).pipe(Effect.scoped);
-/**
- * `expectedOwner` destroys the stage only while the registry names exactly that owner. It is
- * checked under the stage lock, so no deploy can reassign the stage between the check and removal.
- */
-const destroy = (stageSlug: string, automatic: boolean, expectedOwner: Option.Option<string>) =>
+interface DestroyOptions {
+  readonly automatic: boolean;
+  readonly expectedOwner: Option.Option<string>;
+  readonly byName: boolean;
+}
+const destroy = (stageSlug: string, options: DestroyOptions) =>
   withStageAdmin((admin) =>
     Effect.gen(function* () {
       yield* admin.lock(stageSlug);
       const lease = yield* admin.get(stageSlug);
       if (
-        automatic &&
+        options.automatic &&
         (lease === undefined || !isTestStageDue(lease, yield* Clock.currentTimeMillis))
       )
         return;
-      if (Option.isSome(expectedOwner) && lease?.owner !== expectedOwner.value)
+      if (Option.isSome(options.expectedOwner) && lease?.owner !== options.expectedOwner.value)
         return yield* failure(
-          `test-${stageSlug} is not registered to ${expectedOwner.value}. It was not destroyed.`,
+          `test-${stageSlug} is not registered to ${options.expectedOwner.value}. It was not destroyed.`,
+        );
+      const records = yield* stageRecords(stageSlug);
+      if (!records.readable) {
+        if (!options.byName)
+          return yield* failure(
+            `test-${stageSlug}'s Alchemy records predate the state store's current key, so Alchemy cannot destroy it. Run \`bun run test-stage inventory ${stageSlug}\`, then \`bun run test-stage destroy ${stageSlug} --by-name --yes\` to remove it by name.`,
+          );
+        if (lease === undefined)
+          return yield* failure(
+            `test-${stageSlug} has no record in the registry, so its database kind is unknown and removal by name does not start.`,
+          );
+        if (lease.database === "planetscale")
+          return yield* failure(
+            `test-${stageSlug} uses PlanetScale, which removal by name does not cover. It was not destroyed.`,
+          );
+        yield* destroyUnreadableStage(stageSlug, records.fqns);
+        yield* admin.remove(stageSlug);
+        return;
+      }
+      if (options.byName)
+        return yield* failure(
+          `test-${stageSlug}'s Alchemy records are readable; destroy it without --by-name.`,
         );
       yield* Console.log(`Removing test-${stageSlug} and its database branch.`);
       yield* runChild(
@@ -126,10 +208,46 @@ const destroy = (stageSlug: string, automatic: boolean, expectedOwner: Option.Op
           },
         ),
       ).pipe(Effect.timeout("10 minutes"));
-      // Failed destruction retains the lease, so the next scheduled run retries it.
+      if (lease?.database === "planetscale") {
+        const outcome = yield* removeStageBranch(stageSlug).pipe(
+          Effect.catch((error) =>
+            Effect.fail(
+              failure(
+                `Could not check PlanetScale branch test-${stageSlug} after the destroy (${"message" in error ? error.message : "configuration or request failed"}). No delete was sent. Its stage lease is kept, so scheduled cleanup tries again.`,
+              ),
+            ),
+          ),
+        );
+        if (Option.isSome(outcome)) {
+          const message = branchOutcomeMessage(`test-${stageSlug}`, outcome.value);
+          if (!branchGone(outcome.value)) return yield* failure(message);
+          yield* Console.log(message);
+        }
+      }
       yield* admin.remove(stageSlug);
     }),
   );
+const oneLine = (text: string) => text.replaceAll(/[\r\n]+/gu, " ");
+const annotation = (text: string) =>
+  text.replaceAll("%", "%25").replaceAll("\r", "%0D").replaceAll("\n", "%0A");
+const withoutIds = (text: string) =>
+  text.replaceAll(/\/(accounts|zones|projects)\/[^/\s]+/gu, "/$1/…");
+const reportEvictionFailure = (stage: TestStageLease, reason: string, total: number) =>
+  Effect.gen(function* () {
+    const message = `Could not evict ${stage.slug} (${stage.owner}): ${reason.replace(/\.?$/u, ".")} Its record remains, so a later destroy retries it, and this deploy continues with ${total} test stages, over the limit of ${testStageLimit}.`;
+    const line = oneLine(withoutIds(message));
+    yield* Console.error(line);
+    const actions = yield* Config.String("GITHUB_ACTIONS").pipe(Config.withDefault(""));
+    if (actions !== "true") return;
+    yield* Console.log(
+      `::warning title=Test stage not evicted::${annotation(withoutIds(message))}`,
+    );
+    const summary = yield* Config.String("GITHUB_STEP_SUMMARY").pipe(Config.withDefault(""));
+    if (summary !== "")
+      yield* (yield* FileSystem.FileSystem)
+        .writeFileString(summary, `- **Test stage not evicted:** ${line}\n`, { flag: "a" })
+        .pipe(Effect.ignore);
+  });
 const operation = (name: "deploy" | "plan") =>
   Command.make(
     name,
@@ -139,10 +257,12 @@ const operation = (name: "deploy" | "plan") =>
       database: Flag.Literals("database", ["neon", "planetscale"]).pipe(Flag.optional),
       retention: Flag.Literals("retention", ["retained", "temporary"]).pipe(Flag.optional),
       background: Flag.Literals("background", ["active", "paused"]).pipe(Flag.optional),
-      // Each deploy chooses again; a redeploy without the flag stops the export.
       telemetry: Flag.Literals("telemetry", ["export", "off"]).pipe(Flag.withDefault("off")),
       noInput: Flag.Boolean("no-input").pipe(Flag.withDefault(false)),
       yes: Flag.Boolean("yes").pipe(Flag.withDefault(false)),
+      ...(name === "deploy"
+        ? { noEvict: Flag.Boolean("no-evict").pipe(Flag.withDefault(false)) }
+        : {}),
     },
     (input) =>
       withStageAdmin((admin) =>
@@ -171,19 +291,55 @@ const operation = (name: "deploy" | "plan") =>
             return yield* failure(
               "A preview's database and retention cannot change on redeploy. Use a new slug.",
             );
-          // A new stage replaces the oldest ones beyond the limit, before it creates resources.
+          const evictions =
+            existing === undefined ? stagesToEvict(yield* admin.list, input.slug) : [];
+          if ("noEvict" in input && input.noEvict === true && evictions.length > 0)
+            return yield* failure(
+              `Deploying ${input.slug} would evict ${evictions.length} test stage${evictions.length === 1 ? "" : "s"} to stay within ${testStageLimit}: ${evictions.map((stage) => `${stage.slug} (${oneLine(stage.owner)})`).join(", ")}. --no-evict refuses it, so nothing was reserved, deployed or destroyed. Destroy test stages you own, then deploy again.`,
+            );
+          const usage = existing === undefined ? yield* accountUsage : undefined;
+          const limits = yield* accountLimits;
+          const capacity =
+            usage === undefined
+              ? undefined
+              : capacityCheck(
+                  usage,
+                  limits,
+                  input.slug,
+                  evictions.map((stage) => stage.slug),
+                );
+          if (capacity?.refusal !== undefined) return yield* failure(capacity.refusal);
+          if (capacity?.warning !== undefined) yield* Console.error(capacity.warning);
+          const evicted: string[] = [];
           if (existing === undefined)
-            for (const stage of stagesToEvict(yield* admin.list, input.slug)) {
+            for (const stage of evictions) {
               yield* Console.log(
-                `${name === "deploy" ? "Removing" : "Deploying will remove"} the oldest test stage, ${stage.slug} (${stage.owner}), to stay within ${testStageLimit}.`,
+                `${name === "deploy" ? "Evicting" : "Deploying will evict"} the oldest test stage, ${stage.slug} (${oneLine(stage.owner)}), to stay within ${testStageLimit}.`,
               );
-              if (name === "deploy")
-                yield* destroy(stage.slug, false, Option.none()).pipe(
-                  Effect.catch(() =>
-                    Console.error(`Could not remove ${stage.slug}; deploying anyway.`),
-                  ),
+              if (name !== "deploy") continue;
+              const outcome = yield* destroy(stage.slug, {
+                automatic: false,
+                expectedOwner: Option.none(),
+                byName: false,
+              }).pipe(Effect.result);
+              if (Result.isSuccess(outcome)) {
+                evicted.push(stage.slug);
+                yield* Console.log(`Evicted ${stage.slug}.`);
+              } else
+                yield* reportEvictionFailure(
+                  stage,
+                  Schema.is(TestStageFailed)(outcome.failure)
+                    ? outcome.failure.message
+                    : "its teardown failed",
+                  (yield* admin.list).length + 1,
                 );
             }
+          if (name === "deploy" && usage !== undefined && evicted.length < evictions.length) {
+            const again = capacityCheck(usage, limits, input.slug, evicted, true);
+            if (again.refusal !== undefined) return yield* failure(again.refusal);
+            if (again.warning !== undefined && capacity?.warning === undefined)
+              yield* Console.error(again.warning);
+          }
           const lease =
             name === "deploy"
               ? yield* admin.reserve(metadata)
@@ -230,7 +386,7 @@ const operation = (name: "deploy" | "plan") =>
               yield* (yield* FileSystem.FileSystem).makeTempDirectoryScoped(),
               "release-refusal.json",
             );
-            yield* runChild(
+            const alchemy = (output: "inherit" | "pipe") =>
               ChildProcess.make(
                 "alchemy",
                 [name, ...(input.noInput ? ["--no-input"] : []), ...(input.yes ? ["--yes"] : [])],
@@ -238,18 +394,21 @@ const operation = (name: "deploy" | "plan") =>
                   env: { ...env, ...apps, [releaseRefusalReport]: report },
                   extendEnv: true,
                   stdin: "inherit",
-                  stdout: "inherit",
-                  stderr: "inherit",
+                  stdout: output,
+                  stderr: output,
                 },
-              ),
-            ).pipe(
-              Effect.catchTag("TestStageFailed", (failed) =>
-                Effect.gen(function* () {
-                  const refusal = yield* releaseRefusal(report);
-                  return yield* Option.isSome(refusal) ? refusal.value : failed;
-                }),
-              ),
-            );
+              );
+            if (name === "deploy" && existing === undefined && process.stdout.isTTY !== true)
+              yield* deployNewStage(alchemy("pipe"), report);
+            else
+              yield* runChild(alchemy("inherit")).pipe(
+                Effect.catchTag("TestStageFailed", (failed) =>
+                  Effect.gen(function* () {
+                    const refusal = yield* releaseRefusal(report);
+                    return yield* Option.isSome(refusal) ? refusal.value : failed;
+                  }),
+                ),
+              );
           }).pipe(Effect.scoped, Effect.timeout(testStageDeployMilliseconds));
           if (name === "deploy") {
             const domain = yield* Config.String("TEST_STAGE_DOMAIN").pipe(
@@ -308,7 +467,6 @@ const cleanup = Command.make("cleanup", {}, () =>
     const discovery = yield* discoverTestStages.pipe(Effect.result);
     const stages = yield* withStageAdmin((admin) =>
       Effect.gen(function* () {
-        // A failed discovery must not prevent known expired leases from being removed.
         if (Result.isSuccess(discovery))
           yield* Effect.forEach(discovery.success, (stage) => admin.observe(stage), {
             discard: true,
@@ -324,26 +482,33 @@ const cleanup = Command.make("cleanup", {}, () =>
     const results = yield* Effect.forEach(
       stages.filter((stage) => isTestStageDue(stage, now)),
       (stage) =>
-        destroy(stage.slug, true, Option.none()).pipe(
+        destroy(stage.slug, { automatic: true, expectedOwner: Option.none(), byName: false }).pipe(
           Effect.as(true),
-          Effect.catch(() =>
-            Console.error(`Cleanup failed for ${stage.slug}; its lease remains for retry.`).pipe(
-              Effect.as(false),
-            ),
+          Effect.catch((error) =>
+            Console.error(
+              `Cleanup failed for ${stage.slug}; its lease remains for retry.${Schema.is(TestStageFailed)(error) ? ` ${error.message}` : ""}`,
+            ).pipe(Effect.as(false)),
           ),
         ),
       { concurrency: 4 },
     );
     const failures = results.filter((success) => !success).length;
+    const orphans = yield* findOrphanBranches(new Set(stages.map((stage) => stage.slug)), now).pipe(
+      Effect.result,
+    );
     if (failures > 0)
       return yield* failure(
         `Could not remove ${failures} preview(s). Other due previews were still processed.`,
       );
     if (Result.isFailure(discovery)) return yield* discovery.failure;
+    if (Result.isFailure(orphans)) return yield* failure(orphans.failure.message);
+    if (Option.isSome(orphans.success) && orphans.success.value.length > 0)
+      return yield* failure(
+        `PlanetScale branches of deployed E2E runs with no stage lease, older than the 3-hour lease: ${orphans.success.value.join(", ")}. Nothing was deleted. Their stages are gone from the registry and \`destroy --by-name\` refuses PlanetScale stages; check that nothing uses them, then delete them in PlanetScale.`,
+      );
     yield* Console.log("Preview cleanup complete.");
   }),
 );
-/** Ordinary previews use Neon and remain until deleted; CI explicitly requests a temporary lease. */
 export const testStageCommand = Command.make("test-stage").pipe(
   Command.withDescription(
     "Deploy isolated Neon previews or disposable PlanetScale release checks.",
@@ -354,6 +519,25 @@ export const testStageCommand = Command.make("test-stage").pipe(
     operation("plan"),
     operation("deploy"),
     cleanup,
+    Command.make("inventory", { slug }, ({ slug }) =>
+      Effect.gen(function* () {
+        const records = yield* stageRecords(slug);
+        const found = yield* stageInventory(slug);
+        yield* Console.log(
+          JSON.stringify(
+            {
+              stage: `test-${slug}`,
+              state: { records: records.fqns.length, readable: records.readable },
+              count: inventoryCount(found),
+              ...found,
+              blockers: [...recordBlockers(slug, records.fqns), ...found.blockers],
+            },
+            null,
+            2,
+          ),
+        );
+      }),
+    ),
     Command.make(
       "destroy",
       {
@@ -362,12 +546,17 @@ export const testStageCommand = Command.make("test-stage").pipe(
           Flag.withSchema(Schema.NonEmptyString),
           Flag.optional,
         ),
+        byName: Flag.Boolean("by-name").pipe(Flag.withDefault(false)),
         noInput: Flag.Boolean("no-input").pipe(Flag.withDefault(false)),
         yes: Flag.Boolean("yes").pipe(Flag.withDefault(false)),
       },
       (input) =>
         input.yes
-          ? destroy(input.slug, false, input.expectedOwner)
+          ? destroy(input.slug, {
+              automatic: false,
+              expectedOwner: input.expectedOwner,
+              byName: input.byName,
+            })
           : Effect.fail(
               failure("Destruction removes this preview and its data. Pass --yes to proceed."),
             ),

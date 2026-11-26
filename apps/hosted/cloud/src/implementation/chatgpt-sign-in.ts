@@ -1,4 +1,3 @@
-/** Optional ChatGPT identity provider; credentials stay in the API Worker. */
 import type { BetterAuthPlugin } from "better-auth";
 import { genericOAuth } from "better-auth/plugins/generic-oauth";
 import { validateAuthorizationCode } from "@better-auth/core/oauth2";
@@ -25,7 +24,6 @@ const Settings = Schema.Struct({
   redirectUri: Schema.Option(RedirectUri),
 });
 
-/** An absent client disables ChatGPT; incomplete credentials fail configuration. */
 export const chatGptSettings = Effect.gen(function* () {
   const clientId = yield* Config.String("CHATGPT_CLIENT_ID").pipe(Config.option);
   const clientSecret = yield* Config.Redacted("CHATGPT_CLIENT_SECRET").pipe(Config.option);
@@ -53,10 +51,7 @@ const Identity = Schema.Struct({
   name: Schema.optional(Schema.String),
 });
 
-/** The stable social callback returns through the edge to the browser's state cookie. */
 export const chatGptSignIn = (settings: typeof Settings.Type, callbackOrigin: string) => {
-  // Existing clients can retain their registered deployment callback through a host move.
-  // Both the deployment and edge callbacks route to the browser origin holding the state cookie.
   const redirectURI = Option.getOrElse(
     settings.redirectUri,
     () => `${callbackOrigin}/api/auth/callback/openai`,

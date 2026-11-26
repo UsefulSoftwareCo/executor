@@ -1,16 +1,11 @@
-/** Whether an installed catalog app rolls forward to the feed's current source. No I/O. */
-
-/** Why the catalog's current source would leave a linked account or slot unusable. */
 export type CatalogBreak = "removed" | "provider" | "scope" | "added" | "cardinality";
 
-/** One account requirement, as a version declares it. */
 export interface CatalogSlot {
   readonly provider: string;
   readonly scope: string;
   readonly cardinality: string;
 }
 
-/** One link to the app; `subject` is the linking member for a user requirement, else null. */
 export interface CatalogLink {
   readonly requirement: string;
   readonly scope: string;
@@ -19,10 +14,6 @@ export interface CatalogLink {
   readonly provider: string;
 }
 
-/**
- * The feed entry an app was copied from, or undefined when its origin is anything else. The
- * reference format is the catalog source's own: `apps/<encoded id>.json` beside the index.
- */
 export const catalogEntryId = (reference: string | undefined, feedUrl: string) => {
   const apps = new URL("apps/", feedUrl).href;
   if (reference === undefined || !reference.startsWith(apps) || !reference.endsWith(".json"))
@@ -39,20 +30,11 @@ export const catalogEntryId = (reference: string | undefined, feedUrl: string) =
   }
 };
 
-/**
- * Before building: `record` when the active source already is the catalog's, `skip` for unsaved
- * workspace edits, otherwise `evaluate` the catalog source's requirements.
- */
 export const decideCatalogUpdate = (input: {
   readonly unchanged: boolean;
   readonly clean: boolean;
 }) => (input.unchanged ? "record" : input.clean ? "evaluate" : "skip");
 
-/**
- * After building: deploy only an untouched copy no linked account breaks on. An install is
- * untouched while it has one version, or its active version is the one this feature recorded.
- * Anything else is an offer, and nothing is deployed, so no catalog migration runs on it.
- */
 export const decideCatalogOffer = (input: {
   readonly versions: number;
   readonly active: string;
@@ -66,11 +48,6 @@ export const decideCatalogOffer = (input: {
 const slotOf = (slots: Readonly<Record<string, CatalogSlot>>, name: string) =>
   Object.hasOwn(slots, name) ? slots[name] : undefined;
 
-/**
- * Linked accounts the catalog source can no longer use, and why. A slot that is gone, needs
- * another provider or links in the other scope breaks its accounts. A new slot nobody linked
- * breaks the app until someone does. A slot that becomes single keeps one account per linker.
- */
 export const breakingChanges = (
   links: ReadonlyArray<CatalogLink>,
   before: Readonly<Record<string, CatalogSlot>>,

@@ -3,7 +3,7 @@ import { ApiError } from "@executor-js/utils/api-error";
 import { withLegacyKeys } from "@executor-js/utils/legacy-keys";
 import { DeclaredRequirements } from "apps/contracts";
 import { AppSlug } from "./app-slug.ts";
-export { AppSlug, appSlug } from "./app-slug.ts";
+export { AppSlug, appSlug, appSlugFits } from "./app-slug.ts";
 /** Apps own deployed code and declared requirements. Callers choose accounts for each operation. */
 import { Effect, Schema } from "effect";
 import { StorageError } from "./shared.ts";
@@ -24,6 +24,7 @@ import {
   SourceSnapshot,
 } from "./source.ts";
 import { PublicationReference, RegistryError } from "./registry.ts";
+import { MarkdownUnavailable } from "./markdown.ts";
 import {
   AppVersionChanged,
   Version,
@@ -149,11 +150,29 @@ export const sameAccounts = (left: AppAccounts, right: AppAccounts) => {
 /** AppAccounts in a GET query: JSON text, so an empty requirement survives as []. */
 export const AppAccountsQuery = Schema.optional(Schema.fromJsonString(AppAccounts));
 
-/** Display names are nonblank and bounded; they do not replace stable app identities. */
+/** Control characters and line or paragraph separators. */
+const breaks = "\\u0000-\\u001F\\u007F-\\u009F\\u2028\\u2029";
+/** Spaces that are not line breaks. */
+const blanks = " \\u00A0\\u1680\\u2000-\\u200A\\u202F\\u205F\\u3000";
+/** Format characters, which render as nothing, such as zero-width spaces and joiners. */
+const invisible =
+  "\\u00AD\\u0600-\\u0605\\u061C\\u06DD\\u070F\\u0890\\u0891\\u08E2\\u180E\\u200B-\\u200F\\u202A-\\u202E\\u2060-\\u2064\\u2066-\\u206F\\uFEFF\\uFFF9-\\uFFFB";
+/** Blanks and invisible characters, then a visible one, then anything on the same line. */
+const oneVisibleLine = new RegExp(
+  `^[${blanks}${invisible}]*[^${breaks}${blanks}${invisible}][^${breaks}]*$`,
+  "u",
+);
+
+/**
+ * Display names are one bounded line with a visible character; they do not replace stable app
+ * identities. Control characters are refused because storage cannot hold NUL, and names made only
+ * of invisible characters would list as blank. Names already stored are read with `NonEmptyString`,
+ * so this only narrows what new writes accept.
+ */
 export const AppName = Schema.String.check(
   Schema.isMinLength(1),
   Schema.isMaxLength(120),
-  Schema.isPattern(/\S/u),
+  Schema.isPattern(oneVisibleLine),
 );
 
 /**
@@ -315,8 +334,6 @@ export const AccountSelectionInvalid = UserFacingError.define({
     ]),
   },
   recorded: ({ reason }) => `Account selection does not match the app's requirements: ${reason}`,
-  // Every reason except unknown_slot names a slot the app's current version declares, so the
-  // slot is the app's own requirement name, not a value the caller chose.
   presentation: ({ slot, reason }) =>
     (
       ({
@@ -476,7 +493,6 @@ export const AppInputs = {
   revision: Schema.Struct({ app: AppId, owner: Schema.optional(OwnerId), commit: SourceCommit }),
   deploy: DeployAppInput,
   get: Schema.Struct({ app: AppId, owner: Schema.optional(OwnerId) }),
-  // Omitted IDs select all apps for the owner; an empty list selects none.
   list: Schema.Struct({
     owner: Schema.optional(OwnerId),
     ids: Schema.optional(Schema.Array(AppId)),
@@ -500,7 +516,6 @@ export const AppInputs = {
     versionOwner: Schema.optional(OwnerId),
     version: Schema.optional(VersionId),
   }),
-  // `versionOwner` is separate from `owner`: owner selects the configured app.
   versions: Schema.Struct({
     app: AppId,
     owner: Schema.optional(OwnerId),
@@ -509,8 +524,6 @@ export const AppInputs = {
 };
 const appParams = { app: AppInputs.get.fields.app };
 const ownerQuery = { owner: AppInputs.get.fields.owner };
-// Versions were called deployments. Requests may still use those field names and responses repeat
-// them, so callers written before the rename keep working.
 const versionQuery = Schema.Struct({
   owner: AppInputs.source.fields.owner,
   versionOwner: AppInputs.source.fields.versionOwner,
@@ -609,6 +622,7 @@ export const AppsGroup = HttpApiGroup.make("apps")
         AppNotDeployed,
         VersionBuildFailed,
         BuildMemoryExceeded,
+        MarkdownUnavailable,
         AccountNotFound,
         AccountSelectionInvalid,
       ],
@@ -624,6 +638,7 @@ export const AppsGroup = HttpApiGroup.make("apps")
         AppVersionChanged,
         VersionBuildFailed,
         BuildMemoryExceeded,
+        MarkdownUnavailable,
         AppNameTaken,
         AppSlugTaken,
         AppNotFound,
@@ -649,7 +664,6 @@ export const AppsGroup = HttpApiGroup.make("apps")
         owner: AppInputs.list.fields.owner,
         name: AppInputs.list.fields.name,
         slug: AppInputs.list.fields.slug,
-        // A JSON query value preserves [] instead of dropping it as an absent query parameter.
         ids: Schema.optional(Schema.fromJsonString(Schema.Array(AppId))),
       },
       success: Schema.Array(App),
@@ -659,7 +673,6 @@ export const AppsGroup = HttpApiGroup.make("apps")
       "List apps and their requirements. Owner is an optional lookup filter.",
     ),
   )
-  // Idempotent removal of one configured copy; accounts and retained code are independent.
   .add(
     HttpApiEndpoint.delete("remove", "/v1/apps/:app", {
       params: appParams,
@@ -694,7 +707,6 @@ export const AppsGroup = HttpApiGroup.make("apps")
         expectedVersion: AppInputs.activate.fields.expectedVersion,
       }).pipe(withLegacyKeys({ version: "deployment", expectedVersion: "expectedDeployment" })),
       success: App,
-      // Same code lineage only. Managed webhooks re-register for the new version.
       error: [
         StorageError,
         AppNotFound,

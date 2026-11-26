@@ -1,4 +1,3 @@
-/** OpenAPI definitions the live importer must explain or read, deployed as public apps. */
 import { expect } from "@effect/vitest";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Effect, Layer, Ref } from "effect";
@@ -14,10 +13,6 @@ const ok = {
   "200": { description: "OK", content: { "application/json": { schema: { type: "object" } } } },
 };
 
-/**
- * Every operation overrides the document server with another host, as Google's definitions do,
- * so an allowed origin taken from the document server matches none of them.
- */
 export const otherHostDocument = {
   openapi: "3.0.3",
   info: { title: "Mail", version: "1" },
@@ -42,11 +37,6 @@ export const otherHostDocument = {
   },
 };
 
-/**
- * `getTeam` returns a component whose nested `items` is an array holding a reference, which
- * OpenAPI 3.1 schemas forbid, so it is left out. `listTeams` imports; its `properties: []` is
- * just as invalid, but holds no reference that would go unresolved.
- */
 export const invalidSchemaDocument = {
   openapi: "3.1.0",
   info: { title: "Teams", version: "1" },
@@ -101,7 +91,6 @@ export const invalidSchemaDocument = {
   },
 };
 
-/** A Swagger 2.0 definition with a null response, which the 2.0 to 3.0 upgrader cannot read. */
 export const malformedSwaggerDocument = {
   swagger: "2.0",
   info: { title: "Status", version: "1" },
@@ -110,10 +99,6 @@ export const malformedSwaggerDocument = {
   paths: { "/status": { get: { responses: { "200": null } } } },
 };
 
-/**
- * Every operation needs an OAuth client credentials grant, which Executor cannot sign in with, or
- * streams its response.
- */
 export const unsupportedAuthDocument = {
   openapi: "3.1.0",
   info: { title: "Jobs", version: "1" },
@@ -136,13 +121,8 @@ export const clientCredentialsScheme = {
   },
 };
 
-/** The events every project's `/events` returns, one JSON value per line. */
 export const jsonLines = '{"step":"build"}\n{"step":"test"}\n';
 
-/**
- * An OpenAPI 3.2 API whose paths omit the project segment its routes need. It records each
- * request: method, path with query, and body.
- */
 export const openapi32Upstream = Effect.gen(function* () {
   const requests = yield* Ref.make<
     readonly { readonly method: string; readonly url: string; readonly body: string }[]
@@ -153,7 +133,6 @@ export const openapi32Upstream = Effect.gen(function* () {
     info: { title: "Builds", version: "1" },
     servers: [{ url: origin }],
     paths: {
-      // Neither operation has an operationId, and both are `GET` in the `builds` group.
       "/builds": {
         get: { summary: "List builds", responses: ok },
         query: {
@@ -184,7 +163,6 @@ export const openapi32Upstream = Effect.gen(function* () {
           responses: ok,
         },
       },
-      // A JSON Lines response, whose items OpenAPI 3.2 describes with `itemSchema`.
       "/events": {
         get: {
           summary: "Read build events",
@@ -265,7 +243,6 @@ export const openapi32Upstream = Effect.gen(function* () {
   return { origin, requests: Ref.get(requests) };
 });
 
-/** An API that answers every request with its method, path with query, and Authorization header. */
 export const credentialEchoUpstream = Effect.gen(function* () {
   const services = yield* Layer.build(
     HttpRouter.serve(
@@ -289,7 +266,6 @@ export const credentialEchoUpstream = Effect.gen(function* () {
   return { origin: `http://127.0.0.1:${server.address.port}` };
 });
 
-/** An API that answers every request with its method, path with query, Accept header and body. */
 export const requestEchoUpstream = Effect.gen(function* () {
   const services = yield* Layer.build(
     HttpRouter.serve(
@@ -314,14 +290,118 @@ export const requestEchoUpstream = Effect.gen(function* () {
   return { origin: `http://127.0.0.1:${server.address.port}` };
 });
 
-/**
- * Shapes Executor v1 imported that the OpenAPI specification forbids or leaves unclear: schema
- * references to a component whose name is not URI-encoded, into another component's properties,
- * into an operation under `paths` and into a Parameter Object; a request body whose schema is
- * another operation's; an operation that can answer with an event stream or JSON; paths that
- * carry a fixed query or a fragment; an operationId left empty; a parameter in `body`, which
- * OpenAPI 3 does not have; and a request body without media types.
- */
+export const hujsonPolicy = `// Engineers reach CI runners.
+{
+  "grants": [
+    { "src": ["group:eng"], "dst": ["tag:ci"], "ip": ["*"], },
+  ],
+}
+`;
+
+export const jsonAnswers = {
+  "/aws/json-1.0": {
+    contentType: "application/x-amz-json-1.0",
+    body: { TableNames: ["synthetic-table"] },
+  },
+  "/aws/json-1.1": {
+    contentType: "application/x-amz-json-1.1",
+    body: { StreamNames: ["synthetic-stream"] },
+  },
+  "/scene": { contentType: "model/gltf+json", body: { asset: { version: "2.0" } } },
+} as const;
+
+export const mediaTypeUpstream = Effect.gen(function* () {
+  const requests = yield* Ref.make<
+    readonly {
+      readonly method: string;
+      readonly url: string;
+      readonly contentType: string | null;
+      readonly body: string;
+    }[]
+  >([]);
+  const services = yield* Layer.build(
+    HttpRouter.serve(
+      Layer.mergeAll(
+        HttpRouter.add(
+          "GET",
+          "/policy",
+          Effect.succeed(
+            HttpServerResponse.text(hujsonPolicy, { contentType: "application/hujson" }),
+          ),
+        ),
+        HttpRouter.add(
+          "POST",
+          "/*",
+          Effect.gen(function* () {
+            const request = yield* HttpServerRequest.HttpServerRequest;
+            const observed = {
+              method: request.method,
+              url: request.url,
+              contentType: request.headers["content-type"] ?? null,
+              body: yield* request.text,
+            };
+            yield* Ref.update(requests, (previous) => [...previous, observed]);
+            const answer = Object.entries(jsonAnswers).find(([path]) => path === request.url)?.[1];
+            return answer === undefined
+              ? yield* HttpServerResponse.json({})
+              : HttpServerResponse.text(JSON.stringify(answer.body), {
+                  contentType: answer.contentType,
+                });
+          }),
+        ),
+      ),
+      { disableLogger: true, disableListenLog: true },
+    ).pipe(Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 }))),
+  );
+  const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(services));
+  if (!("port" in server.address)) return yield* Effect.die("Fixture must listen on TCP");
+  const origin = `http://127.0.0.1:${server.address.port}`;
+  const object = { type: "object" };
+  const jsonOperation = (operationId: string, type: string) => ({
+    post: {
+      operationId,
+      requestBody: { required: true, content: { [type]: { schema: object } } },
+      responses: { "200": { description: "OK", content: { [type]: { schema: object } } } },
+    },
+  });
+  const document = {
+    openapi: "3.1.0",
+    info: { title: "Media types", version: "1" },
+    servers: [{ url: origin }],
+    paths: {
+      "/policy": {
+        get: {
+          operationId: "getPolicyFile",
+          responses: {
+            "200": {
+              description: "The policy file",
+              content: { "application/hujson": { schema: { type: "string" } } },
+            },
+          },
+        },
+        post: {
+          operationId: "setPolicyFile",
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: { type: "object", properties: { grants: { type: "array" } } },
+              },
+              "application/hujson": { schema: { type: "string" } },
+              "application/merge-patch+json": { schema: { type: "object" } },
+            },
+          },
+          responses: ok,
+        },
+      },
+      "/aws/json-1.0": jsonOperation("listTables", "application/x-amz-json-1.0"),
+      "/aws/json-1.1": jsonOperation("listStreams", "application/x-amz-json-1.1"),
+      "/scene": jsonOperation("putScene", "model/gltf+json"),
+    },
+  };
+  return { origin, document, requests: Ref.get(requests) };
+});
+
 export const v1Document = (origin: string) => {
   const json = (schema: unknown) => ({ "application/json": { schema } });
   const ok = { "200": { description: "OK", content: json({ type: "object" }) } };
@@ -408,7 +488,6 @@ export const v1Document = (origin: string) => {
           },
         },
       },
-      // Only an event stream, which a tool still cannot return.
       "/items/events": {
         get: {
           operationId: "watchItems",
@@ -430,7 +509,6 @@ export const v1Document = (origin: string) => {
           responses: ok,
         },
       },
-      // Two paths told apart only by their fragments, as some documents name one path's hosts.
       "/docs#latest": { get: { operationId: "readDocs", responses: ok } },
       "/docs#archive": { get: { operationId: "readDocs", responses: ok } },
       "/legacy": {
@@ -449,7 +527,6 @@ export const v1Document = (origin: string) => {
   };
 };
 
-/** Deploy an app with the given `index.ts`; it is deleted when the scenario ends. */
 export const deployPublicApp = (index: string) =>
   Effect.gen(function* () {
     const api = yield* Api;
@@ -462,7 +539,6 @@ export const deployPublicApp = (index: string) =>
     expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
     const path = `${prefix}/${(yield* body(App, deployed)).id}`;
     yield* Effect.addFinalizer(() => api.request(actors.owner, "DELETE", path).pipe(Effect.orDie));
-    // Its tools run with the caller's linked accounts; an app without requirements needs none.
     return {
       api,
       actors,

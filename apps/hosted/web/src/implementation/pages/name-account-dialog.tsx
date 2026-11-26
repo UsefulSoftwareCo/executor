@@ -19,9 +19,6 @@ import {
 import { useOrganizationRoute } from "../components/organization.tsx";
 import { HostedFailure } from "../components/dashboard-bindings.tsx";
 
-// The organization layout mounts this on every page, so it imports only what the prompt needs.
-
-/** Prompt for a name for the organization's newly connected account, over whatever page follows. */
 export function NameAccountDialog() {
   const { organization } = useOrganizationRoute();
   const pending = useAtomValue(accountToNameAtom);
@@ -53,7 +50,6 @@ export function NameAccountDialog() {
   );
 }
 
-/** After an OAuth return the prompt has only the account ID, so it reads the account first. */
 function LoadedNameAccount({
   accountId,
   onPendingChange,
@@ -92,7 +88,6 @@ function LoadedNameAccount({
   );
 }
 
-/** Name a just-connected account through the organization's account API. */
 function HostedNameAccount({
   account,
   providerName,
@@ -111,7 +106,6 @@ function HostedNameAccount({
   const check = useAtomSet(checkAccountAtom({ organization, account: account.id }), {
     mode: "promiseExit",
   });
-  // A targeted connection is selected before this prompt opens, so one check can name it.
   const [identity, setIdentity] = useState<
     { readonly resolving: true } | { readonly resolving: false; readonly name: string | undefined }
   >({ resolving: true });

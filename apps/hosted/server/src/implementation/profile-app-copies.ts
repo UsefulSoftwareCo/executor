@@ -1,7 +1,3 @@
-/**
- * Hosted's part of data step `10_profile_app_copies`: a copy is shared exactly as its app is, and
- * links the accounts of the profiles it replaces for their member only.
- */
 import type { ProfileAppCopiesHost } from "@executor-js/app-management/data-steps";
 import {
   StorageError,
@@ -24,11 +20,8 @@ export const hostedAppCopies = (executor: Executor): ProfileAppCopiesHost["appCo
       const config = Schema.decodeUnknownOption(WebhookSourceConfig)(webhookConfig);
       yield* executor[StorageHost].transaction(
         Effect.gen(function* () {
-          // The lock links take; webhook source changes take it too.
           yield* sql`select id from executor_apps where id = ${app} for no key update`;
           for (const [index, { requirement, account }] of links.entries()) {
-            // As step 9: only existing accounts of the app's owner, for an existing user. Links
-            // keep the profiles' order.
             const inserted = yield* sql`insert into hosted_app_account_links
                 (app, requirement, subject, account, linked_by, created_at)
               select ${app}, ${requirement}, u.id, a.id, u.id,

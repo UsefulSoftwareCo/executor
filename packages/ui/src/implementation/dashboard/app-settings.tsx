@@ -1,7 +1,6 @@
 import type { App } from "@executor-js/sdk";
 import type { ReactNode } from "react";
 
-/** App metadata and removal live together; products supply only the actions they authorize. */
 export function AppSettings({
   app,
   renameAction,

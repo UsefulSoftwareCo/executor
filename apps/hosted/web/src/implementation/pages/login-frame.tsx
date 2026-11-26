@@ -1,6 +1,5 @@
 import type { ReactNode } from "react";
 
-/** Shared themed card for sign-in, SSO, credential enrollment, and invitations. */
 export function LoginFrame({
   title,
   children,

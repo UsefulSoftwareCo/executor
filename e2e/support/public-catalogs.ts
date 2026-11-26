@@ -1,13 +1,3 @@
-/**
- * The public catalogs self-host and local products read, served on loopback for a whole run: the
- * official app feed the Add app catalog lists, in the shape the integrations repository's
- * `scripts/feed.ts` writes, and the hosted Executor registry of published apps. Scenarios then
- * never depend on either live service. The feed holds synthetic apps: one with an API key, one with
- * OAuth beside a key, and one whose source names a different package than its listing. The
- * registry publishes nothing; registry-failures.spec.ts points a product at its own registry fixture.
- * A scenario can serve the source of its own unlisted entry with {@link publishScenarioApp} and
- * replace it later, as the feed changes an app it already lists.
- */
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Config, Effect, Layer } from "effect";
 import {
@@ -20,11 +10,11 @@ import {
 } from "effect/http";
 import { createServer } from "node:http";
 import { appsVersion } from "./apps-release.ts";
+import snapshots from "./catalog-snapshots.json" with { type: "json" };
 
 const icon = (fill: string) =>
   `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><rect width="24" height="24" rx="6" fill="${fill}"/></svg>`;
 
-/** Icons are files beside the index; the index names them relative to itself. */
 const catalogIcons: Readonly<Record<string, string>> = {
   "mail-light.svg": icon("#111111"),
   "mail-dark.svg": icon("#ffffff"),
@@ -47,7 +37,6 @@ const manifest = (name: string, title: string, description: string) => ({
   )}\n`,
 });
 
-/** Synthetic official apps. Neither calls a service: listing and installing read only the feed. */
 export const officialApps = {
   mail: {
     id: "synthetic-mail",
@@ -120,8 +109,45 @@ export default defineApp({ user: { accounts: { tracker: tracker.many() } } }, as
 }));
 `;
 
-/** Each app's complete source, as the feed serves it. */
+type SnapshotFile = { readonly path: string; readonly content: string };
+
+export const catalogSnapshots = {
+  october: { id: "popupsmart-2026-10-13", package: "@executor.sh/popupsmart" },
+  november: { id: "popupsmart-2026-11-17", package: "@executor.sh/popupsmart" },
+  altered: { id: "popupsmart-altered", package: "@executor.sh/popupsmart" },
+  held: { id: "netsapiens-stand-in", package: "@executor.sh/netsapiens" },
+} as const;
+const october: ReadonlyArray<SnapshotFile> = snapshots["popupsmart-2026-10-13"].files;
+export const catalogSnapshotFiles = (
+  id: (typeof catalogSnapshots)[keyof typeof catalogSnapshots]["id"],
+): ReadonlyArray<SnapshotFile> =>
+  id === catalogSnapshots.october.id
+    ? october
+    : id === catalogSnapshots.november.id
+      ? snapshots["popupsmart-2026-11-17"].files
+      : id === catalogSnapshots.altered.id
+        ? october.map((file) =>
+            file.path === "README.md" ? { ...file, content: `${file.content}\nEdited.\n` } : file,
+          )
+        : october.map((file) =>
+            file.path === "package.json"
+              ? {
+                  ...file,
+                  content: file.content.replace(
+                    `"${catalogSnapshots.october.package}"`,
+                    `"${catalogSnapshots.held.package}"`,
+                  ),
+                }
+              : file,
+          );
+
 const catalogSources: Readonly<Record<string, unknown>> = {
+  ...Object.fromEntries(
+    Object.values(catalogSnapshots).map((snapshot) => [
+      `apps/${snapshot.id}.json`,
+      { package: snapshot.package, files: catalogSnapshotFiles(snapshot.id) },
+    ]),
+  ),
   [officialApps.mail.source]: {
     package: officialApps.mail.package,
     files: [
@@ -149,13 +175,8 @@ const catalogSources: Readonly<Record<string, unknown>> = {
   },
 };
 
-/** Scenario-owned entries, which the index never lists; their IDs start with `scenario-`. */
 const scenarioPath = /^apps\/scenario-[a-z0-9-]+\.json$/;
 
-/**
- * Serve `source` as the run's feed source of the unlisted entry `scenario-<name>`, replacing what
- * it served before. Installing the entry by its ID reads this source, as for a listed one.
- */
 export const publishScenarioApp = (
   name: string,
   source: {
@@ -177,7 +198,6 @@ export const publishScenarioApp = (
     return id;
   }).pipe(Effect.scoped);
 
-/** Start the catalogs for the scope on loopback and return their origin. */
 export const publicCatalogs = Effect.gen(function* () {
   const scenarioSources = new Map<string, unknown>();
   const services = yield* Layer.build(

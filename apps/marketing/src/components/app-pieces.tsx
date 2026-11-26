@@ -15,11 +15,9 @@ import { DurableWorkflow } from "./workflow-durable";
 
 type ClockProps = { readonly clock: MotionValue<number> };
 
-// Motion can't interpolate theme variables, so blend two tones by progress.
 const mixTones = (rest: string, active: string) => (amount: number) =>
   `color-mix(in oklab, var(${active}) ${amount * 100}%, var(${rest}))`;
 
-// A short move followed by a reading pause. The count never rewinds.
 function useStep(clock: MotionValue<number>, period: number) {
   return useTransform(clock, (time) => {
     const cycle = time / period;
@@ -138,8 +136,6 @@ function SkillDocument({
   readonly step: MotionValue<number>;
 }) {
   const depth = useTransform(step, (value) => (((index - value) % 3) + 3) % 3);
-  // The front sheet fades as it slips aside, then returns behind the deck.
-  // Both ends of the wrap are the same front pose; stacking changes only at zero opacity.
   const positions = [0, 1, 2, 2.35, 2.65, 3];
   const x = useTransform(depth, positions, [0, 4, 8, 12, -24, 0]);
   const y = useTransform(depth, positions, [0, -5, -10, -12, -4, 0]);
@@ -174,7 +170,6 @@ function SkillsPicture({ clock }: ClockProps) {
   const shuffle = useRef<ReturnType<typeof animate> | null>(null);
   useEffect(() => () => shuffle.current?.stop(), []);
   const next = () => {
-    // Continue from the current position even when clicks arrive during a shuffle.
     shuffle.current?.stop();
     const target = Math.floor(extraSteps.get()) + 1;
     if (reducedMotion) extraSteps.set(target);
@@ -271,7 +266,6 @@ function StorageRow({
   readonly index: number;
   readonly step: MotionValue<number>;
 }) {
-  // Recycle below the clipped window, never while a row is visible.
   const y = useTransform(
     step,
     (value) => `${(((index + value) % storageEntries.length) - 1) * 100}%`,
@@ -405,7 +399,6 @@ function TriggersPicture({ clock }: ClockProps) {
   );
 }
 
-/** A persistent clock drives seamless capability loops and holds their positions while offscreen. */
 export function AppPieces() {
   const [tools, skills, ui, storage, triggers, workflows] = appParts;
   const ref = useRef<HTMLDivElement>(null);

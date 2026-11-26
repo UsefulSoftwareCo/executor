@@ -1,7 +1,5 @@
-/** Freeze the interpreter's scheduled work while human approval is pending. */
 import type { Scheduler } from "effect";
 
-/** Delegate normal scheduling and yielding to Effect; hold only this program's tasks when parked. */
 export function programScheduler(parent: Scheduler.Scheduler) {
   let paused = false;
   const held: Array<() => void> = [];

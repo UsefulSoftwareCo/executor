@@ -1,4 +1,3 @@
-/** Cookie-only setup is documented in OpenAPI; bearer accounts cannot satisfy its session requirement. */
 import { HttpApiGroup, HttpApiEndpoint } from "effect/http-api";
 import {
   CompleteWebhookSetup,
@@ -8,10 +7,9 @@ import {
   WebhookTarget,
 } from "@executor-js/sdk/core";
 import { OrganizationReference, OrganizationForbidden } from "./organization.ts";
-import { RequireUser } from "./auth.ts";
+import { RequireBrowserSession } from "./auth.ts";
 const params = { organization: OrganizationReference, ...WebhookTarget.fields };
 const path = "/api/organizations/:organization/webhook-setup/:app/:subscription";
-/** Current browser identity, organization membership, and admin role are checked before accessing secrets. */
 export const HostedWebhookSetup = HttpApiGroup.make("webhookSetup")
   .add(
     HttpApiEndpoint.get("read", path, {
@@ -44,4 +42,4 @@ export const HostedWebhookSetup = HttpApiGroup.make("webhookSetup")
       error: [...WebhookErrors, OrganizationForbidden],
     }),
   )
-  .middleware(RequireUser);
+  .middleware(RequireBrowserSession);

@@ -21,12 +21,18 @@ import { Button } from "@executor-js/ui/components/button";
 import { Failure } from "./components/common.tsx";
 import { LocalDashboard } from "./dashboard-bindings.tsx";
 import { DashboardShell } from "@executor-js/ui/dashboard/shell";
+import { DesktopAccountMenu } from "@executor-js/ui/dashboard/desktop-accounts";
 import { publicDocsBaseUrl } from "@executor-js/ui/contracts/documentation";
 import { documentBuild } from "@executor-js/dashboard-start/document-build";
 import { NameAccountDialog } from "./pages/name-account-dialog.tsx";
 import { OwnerMigrationBanner } from "./owner-migration.tsx";
+import {
+  DesktopUpdateAnnouncement,
+  DesktopUpdateBlock,
+  desktopUpdateMark,
+  useDesktopUpdate,
+} from "./desktop-update.tsx";
 
-/** Finish pairing and session checks before mounting any dashboard data consumers. */
 export function AuthenticationGate({
   children,
   loading = <Connect pending />,
@@ -54,7 +60,6 @@ function SessionGate({
   return session.value.authenticated ? children : <Connect />;
 }
 
-/** Only dashboard pages load inventory and navigation after authentication. */
 export function DashboardLayout() {
   return (
     <AuthenticationGate>
@@ -74,7 +79,6 @@ function Connect({
   expired?: boolean;
   unavailable?: boolean;
 }) {
-  // A pairing link arrives in the URL fragment, which the server never sees; show it once hydrated.
   const connecting = useHydrated() && pending;
   return (
     <div className="connect-page min-h-dvh flex flex-col">
@@ -114,7 +118,6 @@ function Connect({
   );
 }
 
-/** A release names its version; a server started without one, such as development, names none. */
 const buildLabel = (build: string | undefined) =>
   build === undefined || build === "development" ? "Development" : `v${build}`;
 
@@ -124,11 +127,14 @@ function Dashboard() {
   const refresh = useAtomRefresh(overviewAtom);
   const data = AsyncResult.value(result);
   const error = AsyncResult.isFailure(result) ? Cause.findErrorOption(result.cause) : Option.none();
+  const update = useDesktopUpdate();
   if (Option.isSome(error) && Schema.is(DashboardUnauthorized)(error.value))
     return <Connect expired />;
   return (
     <DashboardShell
       docsUrl={publicDocsBaseUrl}
+      notice={Option.isSome(update) && <DesktopUpdateBlock update={update.value} />}
+      noticeMark={Option.isSome(update) ? desktopUpdateMark(update.value) : undefined}
       brand={
         <Link
           to="/apps"
@@ -184,11 +190,14 @@ function Dashboard() {
         </>
       }
       footer={
-        <div className="sidebar-build flex items-center justify-between gap-1.5 py-0 px-[10px] max-[740px]:p-0">
-          <span className="sidebar-version text-[10px] opacity-75 max-[740px]:hidden">
-            {buildLabel(documentBuild())}
-          </span>
-        </div>
+        <>
+          <DesktopAccountMenu fallback={null} />
+          <div className="sidebar-build flex items-center justify-between gap-1.5 py-0 px-[10px] max-[740px]:p-0">
+            <span className="sidebar-version text-[10px] opacity-75 max-[740px]:hidden">
+              {buildLabel(documentBuild())}
+            </span>
+          </div>
+        </>
       }
     >
       {AsyncResult.isFailure(result) && (
@@ -199,6 +208,7 @@ function Dashboard() {
       <OwnerMigrationBanner />
       <Outlet />
       <NameAccountDialog />
+      <DesktopUpdateAnnouncement update={update} />
     </DashboardShell>
   );
 }

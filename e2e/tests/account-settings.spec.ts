@@ -30,7 +30,6 @@ layer(HostedLive, { excludeTestServices: true })("Account settings", (it) => {
           Effect.forEach(sessions, current).pipe(
             Effect.map((results) => results.filter((result) => result !== null).length),
           );
-        // This scenario owns both sessions, so revoking them cannot disturb shared fixtures.
         const mine = yield* freshOwnerSession;
         const other = yield* freshOwnerSession;
         const identity = yield* current(mine);
@@ -88,7 +87,6 @@ layer(HostedLive, { excludeTestServices: true })("Account settings", (it) => {
               ),
           ),
         ).toEqual([identity.user.name, identity.user.email]);
-        // Fixture names can be long; the new one must fit the field on every target.
         const newName = `Renamed ${randomBytes(3).toString("hex")}`;
         yield* browser.use("Save is unavailable until the name changes", (page) =>
           page.getByRole("button", { name: "Save", exact: true }).isDisabled(),
@@ -131,7 +129,6 @@ layer(HostedLive, { excludeTestServices: true })("Account settings", (it) => {
         const listed = yield* browser.use("Count the listed sessions", (page) =>
           rows(page).count(),
         );
-        // This browser, the other fresh session and the shared owner fixture are all signed in.
         expect(listed).toBeGreaterThanOrEqual(3);
         expect(yield* alive([other, actors.owner])).toBe(2);
         yield* browser.use("Sign out one other session", (page) =>
@@ -187,7 +184,6 @@ layer(HostedLive, { excludeTestServices: true })("Account settings", (it) => {
                 password: secret,
               }),
             );
-          // Sign-in is rate limited, so the old password's rejection is checked in the page.
           expect((yield* signIn(rotated)).status).toBe(200);
           yield* browser.use("A wrong current password is rejected", (page) =>
             page

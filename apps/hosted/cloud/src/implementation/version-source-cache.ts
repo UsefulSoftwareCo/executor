@@ -1,4 +1,3 @@
-/** Colo cache of retained version inputs. Each object is written once before its version exists. */
 import type { BlobKey, BlobStorage } from "@executor-js/sdk/core";
 import { Effect, FiberSet, Option, Schema } from "effect";
 
@@ -6,15 +5,9 @@ class SourceCacheFailed extends Schema.TaggedError<SourceCacheFailed>()("SourceC
 const cached = <A>(read: () => Promise<A>) =>
   Effect.tryPromise({ try: read, catch: () => new SourceCacheFailed() });
 
-/** `deployments/<id>/source.json` never changes; the version row still gates every read. */
-/**
- * Entries are immutable, but nothing purges them when an app is removed, so they expire after
- * a day rather than living as long as the object they copy.
- */
 const retentionSeconds = 24 * 60 * 60;
 const immutable = (key: BlobKey) => /^deployments\/[^/]+\/source\.json$/.test(key);
 
-/** Own cache writes in the event scope; other keys and every write go to authoritative storage. */
 export const cachedVersionSources = (origin: string, blobs: BlobStorage) =>
   Effect.gen(function* () {
     const writes = yield* FiberSet.make();
@@ -23,7 +16,6 @@ export const cachedVersionSources = (origin: string, blobs: BlobStorage) =>
     );
     const retained = (key: BlobKey) =>
       Effect.gen(function* () {
-        // Separate from browser assets. No route serves this synthetic URL.
         const url = new URL(`/_executor/deployment-source-cache/${encodeURIComponent(key)}`, origin)
           .href;
         const cache = yield* cached(() =>

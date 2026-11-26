@@ -1,9 +1,3 @@
-/**
- * A deploy to an existing app can name the active version it expects. When another version is
- * active by then, as after someone else's deploy, it fails with AppVersionChanged before building,
- * saves no version and leaves the active one as it was. Without `expectedVersion` a deploy does
- * not check, as before.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -60,7 +54,6 @@ layer(TestLive, { excludeTestServices: true })("Deploys that expect a version", 
         yield* Effect.addFinalizer(() =>
           api.request(agent, "DELETE", `/v1/apps/${app}`).pipe(Effect.orDie),
         );
-        // Someone else deploys after the first version was read.
         const second = yield* body(
           Deployed,
           yield* deploy({ owner: "local", app, files: [source("second"), appsManifest] }),
@@ -86,7 +79,6 @@ layer(TestLive, { excludeTestServices: true })("Deploys that expect a version", 
           yield* api.request(agent, "GET", `/v1/apps/${app}`),
         );
         expect(current.activeVersion).toBe(second.version.id);
-        // The version that is active deploys.
         const fresh = yield* body(
           Deployed,
           yield* deploy({

@@ -8,10 +8,6 @@ const failureMessage: Record<AppSignInFailure, string> = {
   unavailable: "The app is not deployed or is unavailable.",
 };
 
-/**
- * The server answers `/app-auth` with a redirect once it sees this browser's login. The page renders
- * only after pairing, which reloads it so the server can finish, or to explain a failure.
- */
 export function AppSignInPage({
   request,
   failure,

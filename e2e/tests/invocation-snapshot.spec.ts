@@ -1,8 +1,3 @@
-/**
- * Tool invocations resolve their linked accounts once per call. Calls running while an account is
- * linked and unlinked keep succeeding, each use exactly one committed set of linked accounts, and
- * observe the changes as they commit. A link is one row, so this cannot detect a torn read.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Ref } from "effect";
 import { randomUUID } from "node:crypto";
@@ -59,7 +54,6 @@ layer(HostedLive, { excludeTestServices: true })("Invocation snapshot", (it) => 
           }).pipe(Effect.orDie),
         );
 
-        // Connecting from the app links each account to it.
         for (const label of ["first", "second"]) {
           const pending = yield* api.request(
             actors.owner,
@@ -79,7 +73,6 @@ layer(HostedLive, { excludeTestServices: true })("Invocation snapshot", (it) => 
           accounts.push((yield* body(Resource, saved)).id);
         }
         const [first, second] = accounts as [string, string];
-        // With no choice, the account array uses every account linked when the call resolves.
         const call = api.request(actors.owner, "POST", `${path}/tools/call`, {
           tool: "selected",
           kind: "query",
@@ -91,9 +84,6 @@ layer(HostedLive, { excludeTestServices: true })("Invocation snapshot", (it) => 
         expect(called.status).toBe(200);
         expect(called.body).toEqual(["token-first"]);
 
-        // Start the calls only after linking the second account commits, then keep unlinking and
-        // linking it until the calls have observed both sets. Seeing the first set again proves
-        // the calls overlapped with the updates.
         yield* linkAccount(actors.owner, path, "workspaces", second);
         const flipping = yield* Ref.make(true);
         const updates = yield* Ref.make<ReadonlyArray<{ status: number; at: number }>>([]);
@@ -147,8 +137,6 @@ layer(HostedLive, { excludeTestServices: true })("Invocation snapshot", (it) => 
           "Calls running during the updates must observe both committed sets of links",
         ).toBe(2);
 
-        // After the updates stop, the next call sees the last committed links. Linking is
-        // idempotent, so the second account is linked whichever update came last.
         yield* linkAccount(actors.owner, path, "workspaces", second);
         yield* unlinkAccount(actors.owner, path, "workspaces", first);
         expect(yield* linkedAccountIds(actors.owner, path)).toEqual([second]);

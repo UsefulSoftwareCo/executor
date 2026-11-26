@@ -1,4 +1,3 @@
-/** Real hosted account setup, including host config parsing and the SDK's URL policy. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";

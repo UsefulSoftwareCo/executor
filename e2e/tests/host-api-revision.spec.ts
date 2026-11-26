@@ -1,17 +1,3 @@
-/**
- * The Executor app reads this server's API through an app cache and kept tool listings named by
- * the API's revision, the SHA-256 of the document the server generated. While a deployment rolls
- * out, the API can serve another revision to the Workers that call apps, in either order: after a
- * Cloud deploy, a new MCP Worker read the previous API's document and kept its tools under the new
- * revision for a day. The app's network refuses a document whose SHA-256 is not the bound revision,
- * so nothing is kept under the wrong name, the agent is told to retry shortly, and the next read
- * fetches the document again.
- *
- * Only the self-host test entry point serves another revision, while its fixture is armed (see
- * `apps/hosted/testing/api-document-fixture.ts`); the product binds the revision it generated. The
- * scenario checks the app Worker's read during discovery, then, once the Executor app owns a
- * database, the read of a tool call, which runs in the app's data facet.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Layer, Schedule, Schema } from "effect";
 import { scenarios } from "../test-plan.ts";
@@ -22,11 +8,8 @@ import { startDevelopmentServer } from "../support/managed-server.ts";
 import { McpClient } from "../support/mcp-client.ts";
 import { Target } from "../support/platform.ts";
 
-/** The test host's fixture; see `apps/hosted/testing/api-document-fixture.ts`. */
 const apiDocument = "/api/devtools/api-document";
-/** The suffix every operation of the fixture's revision carries. */
 const otherRevisionSuffix = "OtherRevision";
-/** What an agent is told while the app's network refuses the document. */
 const changing =
   "The app reported that Executor’s API is changing (a deploy is in progress), so it could not load its tools.";
 
@@ -47,7 +30,6 @@ const Operation = Schema.Struct({ operationId: Schema.String });
 const Source = Schema.Struct({
   files: Schema.Array(Schema.Struct({ path: Schema.String, content: Schema.String })),
 });
-/** An unavailable app's reason, as MCP reports it to the agent. */
 const Reason = Schema.fromJsonString(
   Schema.Struct({
     code: Schema.String,
@@ -94,7 +76,6 @@ layer(HostedLive, { excludeTestServices: true })("Host API revision", (it) => {
         ))[0];
         if (!organization) return yield* Effect.die("Development organization is missing");
         const prefix = `/api/organizations/${organization.id}`;
-        // The organization's Executor app and its key are provisioned in the background.
         const executor = yield* Effect.gen(function* () {
           const inventory = yield* body(Inventory, yield* send("GET", `${prefix}/inventory`));
           const app = inventory.apps.find((app) => app.slug === "executor");
@@ -106,7 +87,6 @@ layer(HostedLive, { excludeTestServices: true })("Host API revision", (it) => {
           send(other ? "POST" : "DELETE", apiDocument).pipe(
             Effect.map((response) => expect(response.status).toBe(200)),
           );
-        // A failed assertion must not leave the other revision served.
         yield* Effect.addFinalizer(() => serve(false).pipe(Effect.orDie));
         const key = yield* body(
           Schema.Struct({ id: Schema.String, key: Schema.RedactedFromValue(Schema.String) }),
@@ -116,7 +96,6 @@ layer(HostedLive, { excludeTestServices: true })("Host API revision", (it) => {
           organization: organization.id,
           origin,
         });
-        /** Every tool the Executor app lists, and the apps search could not load. */
         const list = (label: string) =>
           Effect.gen(function* () {
             const paths: string[] = [];
@@ -141,8 +120,6 @@ layer(HostedLive, { excludeTestServices: true })("Host API revision", (it) => {
         const otherRevision = (paths: ReadonlyArray<string>) =>
           paths.filter((path) => path.endsWith(otherRevisionSuffix));
 
-        // Served another revision from the first read, the app's document load is refused: it
-        // lists none of that revision's tools and the agent is told to retry shortly.
         yield* serve(true);
         const refused = yield* list("List the Executor app while another revision is served");
         expect(refused.paths, JSON.stringify(refused)).toEqual([]);
@@ -158,8 +135,6 @@ layer(HostedLive, { excludeTestServices: true })("Host API revision", (it) => {
           retryable: true,
         });
 
-        // Served its own revision, the first read lists the API's tools and none of the other
-        // revision's: the refused read kept nothing that stands in for them.
         yield* serve(false);
         const listed = yield* list("List the Executor app while its own revision is served");
         expect(listed.unavailable, JSON.stringify(listed)).toEqual([]);
@@ -168,8 +143,6 @@ layer(HostedLive, { excludeTestServices: true })("Host API revision", (it) => {
         );
         expect(otherRevision(listed.paths)).toEqual([]);
 
-        // An Executor app that owns a database runs its tool calls in its data facet, whose network
-        // is bound to the revision as the app Worker's is.
         const appPath = `${prefix}/apps/${executor.id}`;
         const source = yield* body(Source, yield* send("GET", `${appPath}/source`));
         const deployed = yield* send("POST", `${appPath}/deploy`, {
@@ -182,7 +155,6 @@ layer(HostedLive, { excludeTestServices: true })("Host API revision", (it) => {
           ],
         });
         expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
-        // A read the served document declares, which the app lists as a query.
         const document = yield* body(Document, yield* send("GET", "/openapi.json"));
         const reads = new Set(
           Object.values(document.paths).flatMap((methods) =>
@@ -194,9 +166,6 @@ layer(HostedLive, { excludeTestServices: true })("Host API revision", (it) => {
           .find((name) => reads.has(name));
         if (tool === undefined) return yield* Effect.die("The Executor app lists no read");
 
-        // Its new version's cache is empty, so the call's facet reads the document, and refuses
-        // the other revision. No kept listing confirms the tool only reads, so the call may have
-        // written before it failed: it says the API is changing but is not offered as a retry.
         yield* serve(true);
         const call = yield* send("POST", `${appPath}/tools/call`, {
           tool,
@@ -214,7 +183,6 @@ layer(HostedLive, { excludeTestServices: true })("Host API revision", (it) => {
           },
         });
 
-        // The facet kept nothing either: the first listing of its own revision is the API's.
         yield* serve(false);
         const after = yield* list("List the database-owning Executor app");
         expect(after.unavailable, JSON.stringify(after)).toEqual([]);

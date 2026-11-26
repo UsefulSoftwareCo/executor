@@ -1,4 +1,3 @@
-/** One-use process-owned pairing grants, exchanged for persistent browser sessions. */
 import { Clock, Effect, Redacted, Ref } from "effect";
 import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import { HttpApiBuilder } from "effect/http-api";
@@ -23,7 +22,6 @@ const matches = (access: SessionAccess, target: SessionTarget) =>
     ? access === target
     : access.app === target.app && access.origin === target.origin;
 
-/** One token lifecycle for dashboard and app sessions; app access always checks its parent login. */
 export const makeLocalAuth = (crypto: Crypto, directory: string) =>
   Effect.gen(function* () {
     const grants = yield* Ref.make<ReadonlyMap<SessionHash, Grant>>(new Map());
@@ -81,7 +79,6 @@ export const makeLocalAuth = (crypto: Crypto, directory: string) =>
         const grant = yield* Ref.modify(grants, (entries) => {
           const next = new Map([...entries].filter(([, grant]) => grant.expiresAt.getTime() > now));
           const found = next.get(key);
-          // Wrong audiences cannot consume a grant intended for another receiver.
           if (found === undefined || !matches(found.access, target))
             return [undefined, next] as const;
           next.delete(key);
@@ -141,21 +138,14 @@ export const makeLocalAuth = (crypto: Crypto, directory: string) =>
         }).pipe(Effect.withSpan("auth.local.revoke")),
     };
   });
-/** The local auth store is shared by HTTP access checks and the startup handoff. */
 export type LocalAuth = Effect.Success<ReturnType<typeof makeLocalAuth>>;
-/**
- * Cookies are shared across ports on one host, so the name carries the browser-facing port.
- * Behind a configured origin that port is stable, so sessions survive a new listening port.
- */
 export const sessionCookie = (config: Pick<ServerConfig, "port" | "browserOrigin">) =>
   `executor_session_${
     config.browserOrigin === undefined ? config.port : new URL(config.browserOrigin).port || "443"
   }`;
-/** Bootstrap credentials remain in URL fragments, outside HTTP logs and referrers. */
 export const pairingUrl = (base: string, token: Redacted.Redacted<string>) =>
   Redacted.make(`${base}/#pair=${Redacted.value(token)}`);
 
-/** Compare every byte, so the time taken does not reveal how much of a secret matched. */
 const sameSecret = (supplied: string, secret: Redacted.Redacted<string>) => {
   const left = new TextEncoder().encode(supplied);
   const right = new TextEncoder().encode(Redacted.value(secret));
@@ -168,27 +158,20 @@ const oneOf = (supplied: string | undefined, secrets: Secrets) =>
   supplied !== undefined &&
   secrets.some((secret) => secret !== undefined && sameSecret(supplied, secret));
 
-/** Whether an `Authorization` header's bearer token is one of `secrets`. */
 export const bearerMatches = (authorization: string | undefined, secrets: Secrets) =>
   authorization?.startsWith("Bearer ") === true &&
   oneOf(authorization.slice("Bearer ".length), secrets);
 
-/**
- * Whether a programmatic client sent a local credential: the API key, or this process's background
- * service password, which local clients read from the service registration.
- */
 export const localCredential = (
   config: Pick<ServerConfig, "apiKey" | "password">,
   supplied: string | undefined,
 ) => oneOf(supplied, [config.apiKey, config.password]);
 
-/** Whether an `Authorization` header carries a local credential as its bearer token. */
 export const localBearer = (
   config: Pick<ServerConfig, "apiKey" | "password">,
   authorization: string | undefined,
 ) => bearerMatches(authorization, [config.apiKey, config.password]);
 
-/** Reject foreign browser requests and DNS rebinding; allow only top-level OAuth authorization navigation. */
 export const localRequest = (port: number, browserOrigin?: string) =>
   Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
@@ -212,12 +195,6 @@ export const localRequest = (port: number, browserOrigin?: string) =>
     return request;
   });
 
-/**
- * Choose only a configured origin; proxy forwarding headers never establish trust.
- * A loopback proxy speaking HTTP/2 sends the listener address as Host and the public host in
- * X-Forwarded-Host. That header only selects the configured origin, and only on a request
- * whose Host is this loopback listener, which a foreign or rebinding page cannot send.
- */
 export const requestOrigin = (
   config: ServerConfig,
   request: HttpServerRequest.HttpServerRequest,
@@ -233,7 +210,6 @@ export const requestOrigin = (
     : `http://127.0.0.1:${config.port}`;
 };
 
-/** Pair another browser from an authenticated dashboard or a programmatic bearer client. */
 export const authHandlers = (auth: LocalAuth, config: ServerConfig) => {
   const name = sessionCookie(config);
   const options = { httpOnly: true, sameSite: "strict" as const, path: "/" };

@@ -1,4 +1,3 @@
-/** Agent-visible account descriptions, set while naming a new account and edited from its row. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -95,7 +94,6 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
         accounts.push(created.id);
         expect(created.description).toBeNull();
 
-        // The naming prompt also takes the description agents read.
         const description = (page: Parameters<typeof nameAccountDialog>[0]) =>
           nameAccountDialog(page).getByRole("textbox", {
             name: "Description for agents",
@@ -119,7 +117,6 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
           description: "Reads only; use the sandbox account for writes.",
         });
 
-        // The account list shows the description under the name.
         yield* browser.use("Open the account list", (page) =>
           page.goto(`/org/${actors.organization.slug}/accounts?account=${created.id}`),
         );
@@ -173,7 +170,6 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
             .waitFor({ state: "visible" }),
         );
 
-        // Clearing the field removes the description.
         yield* openEdit;
         yield* browser.use("Clear the description", (page) => editDescription(page).fill(""));
         yield* save;

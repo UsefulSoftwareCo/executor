@@ -48,7 +48,6 @@ export const routerDeclaration = (node: AppRouter | DynamicRouter): RouterDeclar
 /** Accept only framework-created routers. */
 export const nativeRouter = (value: unknown): AppRouter | DynamicRouter | undefined => {
   if (typeof value !== "object" || value === null || !(NativeRouter in value)) return undefined;
-  // SAFETY: only routerDeclaration installs this private symbol, always with a native router.
   return value[NativeRouter] as AppRouter | DynamicRouter;
 };
 

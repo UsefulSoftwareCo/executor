@@ -6,7 +6,6 @@ import { CurrentOrganization } from "../contracts/organization.ts";
 import { ProductAnalytics } from "../contracts/product-analytics.ts";
 import { FeedbackUnavailable } from "@executor-js/telemetry/product-analytics";
 
-/** Send only the declared text, with identity from the authenticated request, and await ingestion. */
 export const hostedFeedbackHandlers = HttpApiBuilder.group(HostedApi, "feedback", (handlers) =>
   Effect.succeed(
     handlers.handle("submit", ({ payload }) =>

@@ -13,12 +13,6 @@ import { appsManifest } from "../support/apps-release.ts";
 import { releasedServer } from "../support/docker-release-server.ts";
 import { connectionsPath } from "../support/app-accounts.ts";
 
-/**
- * A credential handle as the outbound reads it: `exsec_`, the hex of a 12-byte IV and the
- * AES-256-GCM ciphertext of its JSON contents, then `_`. The key is HKDF-SHA256 of a secret. The
- * image derives that secret from the instance's encryption key; earlier images used the constant
- * `service-binding` for every instance.
- */
 const handleData = Buffer.from("executor.credential-handle.v1");
 const handleKey = (secret: string) =>
   Buffer.from(hkdfSync("sha256", secret, Buffer.alloc(0), "executor credential handles", 32));
@@ -27,7 +21,6 @@ const derivedHandleKey = (encryptionKey: string) =>
     createHmac("sha256", encryptionKey).update("executor credential handles").digest("hex"),
   );
 const formerHandleKey = handleKey("service-binding");
-/** A handle's contents. Throws when `key` did not seal it. */
 const openHandle = (key: Buffer, handle: string) => {
   const bytes = Buffer.from(handle.slice("exsec_".length, -1), "hex");
   const decipher = createDecipheriv("aes-256-gcm", key, bytes.subarray(0, 12));
@@ -43,11 +36,6 @@ const sealHandle = (key: Buffer, contents: string) => {
   return `exsec_${Buffer.concat([iv, sealed]).toString("hex")}_`;
 };
 
-// The image's Go host derives the apps Worker's credential handle secret from the instance's
-// encryption key. A handle app code keeps opens again after a restart with the same key. The
-// kept handle is sent to an undeclared name under the reserved `.invalid` suffix: the outbound
-// refuses it as `credential_host` only after opening it, and as `credential_app` when it cannot.
-// A handle sealed under the constant earlier images used is refused.
 it.live(
   "released image keeps a credential handle app code kept usable across a restart",
   () =>
@@ -78,7 +66,6 @@ export default defineApp({ user: { accounts: { service } } }, {
         const Id = Schema.Struct({ id: Schema.String });
         const connection = yield* server.json(Id, connectionsPath(path, "user", "service"), {});
         const value = `synthetic-release-token-${randomUUID()}`;
-        // Connecting from the app links the account to it; calls use it.
         yield* server.json(Id, `${server.prefix}/connections/${connection.id}/submit`, {
           method: "key",
           label: "Release handles",
@@ -108,9 +95,6 @@ export default defineApp({ user: { accounts: { service } } }, {
           text: { refusal: { reason: "credential_host" } },
         };
         expect(yield* replay).toMatchObject(opened);
-        // The handle was sealed under the key derived from this instance's encryption key, not
-        // the former constant. Its contents sealed again under the derived key open; sealed under
-        // the constant, they are refused as not this app's.
         const derived = derivedHandleKey(server.encryptionKey);
         const contents = yield* Effect.try(() => openHandle(derived, kept));
         expect(Result.isFailure(Result.try(() => openHandle(formerHandleKey, kept)))).toBe(true);
