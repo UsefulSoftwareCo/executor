@@ -163,7 +163,6 @@ export const cloudExecutor = Effect.fn(function* (
         hostApi: hostedApi(resourceOrigins.api, apiRevision),
         oauth: {
           httpClient: egress.client,
-          // Read from settings: App UI, MCP and workflow runs build this outside the API request.
           clientName: (yield* productBrandConfig.pipe(Effect.orDie)).name,
           urlPolicy: egress.policy,
           ...(Option.isSome(clientMetadata)

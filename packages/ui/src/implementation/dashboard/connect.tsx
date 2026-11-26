@@ -31,7 +31,6 @@ import devinScreenshot from "./assistant-screenshots/devin.webp";
 import grokScreenshot from "./assistant-screenshots/grok.webp";
 import museScreenshot from "./assistant-screenshots/muse.webp";
 
-/** The agent installs the product itself; the prompt carries everything it needs to start. */
 export const mcpSetupPrompt = (endpoint: string, docs: string, next: string, product: string) =>
   `Help me connect to ${product} over MCP at ${endpoint}.\n\nRead the docs to understand the product at ${docs}, then ${next}.`;
 
@@ -47,7 +46,6 @@ const OtherLogo = ({ className }: SVGProps<SVGSVGElement>) => (
 interface AssistantGuide {
   readonly name: string;
   readonly logo: ComponentType<SVGProps<SVGSVGElement>>;
-  /** How the product gets into this assistant, shown under its name. */
   readonly method: string;
   readonly link?: { readonly href: string; readonly label: string };
   readonly steps: readonly ReactNode[];
@@ -56,10 +54,8 @@ interface AssistantGuide {
         readonly src: string;
         readonly alt: string;
         readonly caption: string;
-        /** The capture's pixel size, so its space is reserved before it loads. */
         readonly width: number;
         readonly height: number;
-        /** A short, wide capture sits under the steps instead of beside them. */
         readonly wide?: boolean;
       }
     | undefined;
@@ -211,11 +207,9 @@ const openAiPluginGuide = (name: "ChatGPT" | "Codex"): AssistantGuide => ({
     ),
 });
 
-/** The screenshots show Executor's name, so they apply only while the deployment presents it. */
 const shot = (executor: boolean, screenshot: NonNullable<AssistantGuide["screenshot"]>) =>
   executor ? screenshot : undefined;
 
-/** Executor's plugins and screenshots apply only while the deployment presents Executor. */
 const assistantGuides = (endpoint: string, brand: ProductBrand) =>
   guides(endpoint, brand.name, productServerName(brand), isDefaultProductBrand(brand));
 

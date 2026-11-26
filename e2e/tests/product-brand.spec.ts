@@ -1,4 +1,3 @@
-/** A deployment started with its own product name and logo presents them instead of Executor's. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { Api, body } from "../support/api.ts";
@@ -30,7 +29,6 @@ layer(HostedLive, { excludeTestServices: true })("Product brand", (it) => {
             page.locator(`${scope} img[src="${productBrand.logo}"]`).count(),
           );
 
-        // The server-rendered document already carries the brand, before any script runs.
         const document = yield* browser.use("Open sign-in signed out", (page) =>
           page.goto(`${origin}/login`).then((response) => response?.text() ?? ""),
         );
@@ -93,7 +91,6 @@ layer(HostedLive, { excludeTestServices: true })("Product brand", (it) => {
         expect(claudeCode).toContain(`claude mcp add --transport http ${productBrand.server} `);
         expect(claudeCode).not.toMatch(executorName);
 
-        // Authorization servers and MCP clients show these names when a person connects.
         for (const [path, name] of [
           ["/.well-known/oauth-protected-resource/mcp", productBrand.name],
           ["/.well-known/oauth-protected-resource/api", `${productBrand.name} API`],
@@ -126,7 +123,6 @@ layer(HostedLive, { excludeTestServices: true })("Product brand", (it) => {
           resource: `${origin}/mcp`,
           state: "brand-check",
         }).toString();
-        // The consent is only read, never approved, so the client gets no grant.
         yield* browser.use("Open the client's MCP consent", (page) =>
           page.goto(authorization.href),
         );

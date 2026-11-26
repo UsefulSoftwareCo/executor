@@ -46,7 +46,6 @@ export interface HostedDocumentContext {
   readonly session: BrowserSession;
   readonly lastOrganization: LastOrganization | null;
   readonly resourceOrigins: ResourceOrigins;
-  /** The name and logo the pages present. */
   readonly brand: ProductBrand;
 }
 

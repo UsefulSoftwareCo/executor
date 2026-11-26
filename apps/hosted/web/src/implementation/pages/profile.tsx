@@ -40,10 +40,6 @@ const inputClass =
 
 const suggestedName = (email: string) => email.split("@")[0] ?? "";
 
-/**
- * The signed-in person's identity; it belongs to them, not to any organization. A host that can
- * verify a new address renders its own email setting; otherwise the email is read-only.
- */
 export function ProfilePage({
   email,
   footer,

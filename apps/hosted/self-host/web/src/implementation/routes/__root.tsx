@@ -16,7 +16,6 @@ import { requireSession, restoreLastOrganization } from "@executor-js/hosted-web
 import { serverDocument } from "../document.ts";
 
 export const Route = createRootRoute({
-  // The configured product names the document; the browser keeps the name it was served with.
   loader: () => (import.meta.env.SSR ? serverDocument().brand.name : undefined),
   shouldReload: false,
   head: ({ loaderData }) => ({

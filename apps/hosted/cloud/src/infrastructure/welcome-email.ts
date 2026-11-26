@@ -22,7 +22,6 @@ export const cloudWelcomeEmails = (send: SendWelcomeEmail) =>
         Effect.map((url) => PgClient.layer({ url, maxConnections: 1, prepare: false })),
       ),
     );
-    // The welcome is a personal note from Executor's founder, so another brand sends none.
     const welcomes = isDefaultProductBrand(yield* CurrentProductBrand);
     const deliverUser = (user?: string) =>
       Effect.gen(function* () {

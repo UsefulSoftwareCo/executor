@@ -31,7 +31,6 @@ const escapeHtml = (value: string) =>
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;");
 
-/** The plain page shown when a document cannot render, which hosts' entry pages share. */
 export const unavailablePage = (productName: string) => {
   const name = escapeHtml(productName);
   return `<!doctype html><title>Unable to open ${name}</title><main><h1>Unable to open ${name}</h1><p>Please try again.</p><a href="">Try again</a></main>`;

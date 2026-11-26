@@ -45,7 +45,6 @@ export const BrowserMcpToolkit = Toolkit.make(
 );
 
 export interface McpOptions {
-  /** The server name clients show for this connection; Executor when unset. */
   readonly name?: string;
   readonly backend: McpBackend<Error>;
   readonly beforeExecute?: Effect.Effect<void, ExecutionRejected>;

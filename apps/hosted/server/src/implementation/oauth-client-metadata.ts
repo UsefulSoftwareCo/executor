@@ -74,7 +74,6 @@ export const clientMetadataDocument = (setting: Option.Option<ClientMetadataSett
   Effect.gen(function* () {
     if (Option.isNone(setting) || !setting.value.served)
       return HttpServerResponse.empty({ status: 404 });
-    // Services show the product's name and logo when asking a person to connect an account.
     const brand = yield* CurrentProductBrand;
     const url = new URL(setting.value.url);
     const callback = setting.value.redirectUri;

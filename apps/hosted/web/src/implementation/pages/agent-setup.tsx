@@ -718,7 +718,6 @@ function connectedAccounts(inventory: Inventory) {
 
 const list = new Intl.ListFormat("en", { style: "long", type: "conjunction" });
 
-/** The prompt's first paragraph, which names only the MCP URL. */
 const promptOpening = (endpoint: string, product: string) =>
   `Use ${product}, which I connected over MCP at ${endpoint}. If you cannot see its tools yet, connect to that server first.`;
 

@@ -53,7 +53,6 @@ export const invitationEmailMessage = ({
   readonly brand: ProductBrand;
 }): AuthEmail => {
   const product = escapeHtml(brand.name);
-  // Executor's own logo comes from its site, so every stage's mail shows the same image.
   const logo = escapeHtml(
     brand.logo === defaultProductBrand.logo
       ? "https://executor.sh/favicon-192.png"

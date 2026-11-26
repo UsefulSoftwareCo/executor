@@ -41,7 +41,6 @@ const nameTask = (reason: PublicationIssue["reason"], suggestedName: string | nu
       ? `Add a package.json file whose "name" is "${suggestedName}".`
       : `Set "name" in package.json to "${suggestedName}" and leave the other fields unchanged.`;
 
-/** A self-contained request an agent with this app's source tools can act on. */
 const agentPrompt = (app: App, repair: ReturnType<typeof publicationRepair>, product: string) =>
   `The ${product} app "${app.name}" (${app.id}) can't be published yet. ${repair.title}: ${repair.detail}
 

@@ -1,6 +1,5 @@
 import { CopyButton } from "./code.tsx";
 
-/** Hands a custom app's description to the user's agent, which writes and deploys it. */
 export const newAppPrompt = (product: string, description: string, endpoint?: string) =>
   [
     `Help me build a new ${product} app.`,

@@ -1,5 +1,4 @@
 import { LocalTime, timeOfDay } from "../components/local-time.tsx";
-/** A shared review page for tool consent and standard MCP form input. */
 import { productWordmark } from "../../contracts/product-brand.ts";
 import { useProductBrand } from "../hooks/product-brand.ts";
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
@@ -39,7 +38,6 @@ const defaults = (request: PendingInteraction) =>
       ],
     ),
   );
-/** The product accepted the answer, so the form must not offer it again. */
 const unreadableReply = (product: string) =>
   `${product} received your answer, but this page could not read its reply. If you approved, the tool may have run and made changes. Reload the page, and check before running it again.`;
 const failureMessage = (cause: Cause.Cause<BrowserApprovalFailure>, product: string) => {

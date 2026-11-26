@@ -95,11 +95,6 @@ export const runningAs = <A extends AccountSummary>(
   );
 };
 
-/**
- * What happened after the person answered their own call's review. App code reported that the call
- * needs approval and may already have made changes, so this states only what Executor did with the
- * saved call: never that the tool did not run.
- */
 const answered = (result: ToolResumeResultReceived, product: string) =>
   Match.value(result).pipe(
     Match.discriminatorsExhaustive("status")({

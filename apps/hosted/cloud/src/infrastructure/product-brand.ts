@@ -1,9 +1,7 @@
-/** The operator's brand reaches each Worker that presents it as plain Worker settings. */
 import { Config, Effect, Option } from "effect";
 
 const settings = ["EXECUTOR_PRODUCT_NAME", "EXECUTOR_PRODUCT_LOGO_URL"] as const;
 
-/** Only the settings the deploy sets are bound; an unset one keeps Executor's own. */
 export const productBrandBindings = Effect.gen(function* () {
   const bindings: Partial<Record<(typeof settings)[number], string>> = {};
   for (const name of settings) {

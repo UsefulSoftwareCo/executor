@@ -751,7 +751,6 @@ export default Api.make(
       ),
     };
   }).pipe(
-    // Read once per isolate: setup such as sign-in and email senders presents it too.
     Effect.provideServiceEffect(CurrentProductBrand, productBrandConfig.pipe(Effect.orDie)),
     Effect.provide(
       Layer.mergeAll(

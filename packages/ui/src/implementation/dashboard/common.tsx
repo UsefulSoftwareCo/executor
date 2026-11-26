@@ -64,7 +64,6 @@ export function ProviderIcon({
   const fetchSize = 64;
   const catalog = icons ?? catalogIcons.byName.get(normalized) ?? undefined;
   const domain = url ?? (/^[a-z\d-]+(?:\.[a-z\d-]+)+$/i.test(normalized) ? normalized : null);
-  // The built-in app keeps the name Executor and shows the deployment's logo.
   const source = normalized === "executor" ? logo : faviconUrl(domain, fetchSize);
   const sources = declared ?? catalogIconSources(catalog);
   const waiting = sources === null && (pending || (icons === undefined && !catalogIcons.settled));

@@ -69,7 +69,6 @@ export const authOptions = (
   settings: Pick<Effect.Success<typeof authSettings>, "url" | "oauthRedirectUri"> & {
     readonly resourceOrigins: ResourceOrigins;
     readonly issuer: string;
-    /** The name sign-in presents, such as in authenticator apps; Executor when unset. */
     readonly brand?: ProductBrand;
   },
   ipAddressHeaders: string[],
