@@ -8,6 +8,22 @@ import {
   type UsageProperties,
 } from "../contracts/product-analytics.ts";
 
+export const observeToolSearch = <E, R>(
+  input: Parameters<Executor["tools"]["search"]>[0],
+  work: Effect.Effect<Effect.Success<ReturnType<Executor["tools"]["search"]>>, E, R>,
+) =>
+  work.pipe(
+    Effect.tap((page) =>
+      input.query.trim() !== "" &&
+      input.offset === 0 &&
+      page.items.length === 0 &&
+      page.remaining === 0 &&
+      page.missing.length === 0
+        ? recordUsage("tool_search_empty", { result_count: 0 })
+        : Effect.void,
+    ),
+  );
+
 const observeTool = <A extends ToolCallResult | ToolResumeResult, E, R>(
   properties: UsageProperties,
   work: Effect.Effect<A, E, R>,

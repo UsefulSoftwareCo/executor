@@ -51,6 +51,7 @@ import type { ToolCallCaller } from "../contracts/tool-call-log.ts";
 import { loggedToolCall, loggedToolResume, recordCallDetails } from "./tool-call-log.ts";
 import { patGrantOf } from "./mcp-oauth.ts";
 import { listTools, searchableTools, searchTools } from "./tools.ts";
+import { observeToolSearch } from "./product-analytics.ts";
 import { bundleAppSkills, listAppSkills, readAppSkill } from "./skills.ts";
 
 const requestClient = Effect.map(Effect.serviceOption(McpSchema.McpRequestContext), (request) =>
@@ -365,7 +366,8 @@ export const hostedMcpBackend = Effect.gen(function* () {
               Effect.provideService(SearchablePrefetch, reads.prefetched),
             );
       }).pipe((work) => observe("searchableTools", grantRefusal(work), "read")),
-    searchTools: (input) => observe("searchTools", searchTools(input), "read"),
+    searchTools: (input) =>
+      observe("searchTools", observeToolSearch(input, searchTools(input)), "read"),
     callTool: (input, options?: ToolInvocationOptions) =>
       Effect.gen(function* () {
         const execution = yield* CurrentMcpExecution;
