@@ -107,9 +107,9 @@ export const checkCredentials = (
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
     yield* requireAppAccess(input.app, "use");
-    return yield* executor.apps.checkCredentials({ ...input, owner }).pipe(
-      Effect.tapError(() => recordUsage("account_connection_failed")),
-    );
+    return yield* executor.apps
+      .checkCredentials({ ...input, owner })
+      .pipe(Effect.tapError(() => recordUsage("account_connection_failed")));
   });
 export const checkAccount = Effect.gen(function* () {
   const { owner, account } = yield* AccountGrants.use;
