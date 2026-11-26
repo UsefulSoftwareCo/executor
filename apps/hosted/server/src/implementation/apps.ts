@@ -13,8 +13,9 @@ import { CurrentOrganizationNamespace } from "../contracts/organization.ts";
 import { HttpApiBuilder } from "effect/http-api";
 import { HostedApi } from "../contracts/api.ts";
 import type { DeployApp, InstallApp } from "../contracts/apps.ts";
-import { HostedCatalog } from "../contracts/catalog.ts";
+import { executorCatalogPackage, HostedCatalog } from "../contracts/catalog.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
+import { recordUsage } from "../contracts/product-analytics.ts";
 import { appManagerOwner, currentOwner } from "./access.ts";
 
 export const installApp = (owner: OwnerId, input: typeof InstallApp.Type) =>
@@ -22,8 +23,8 @@ export const installApp = (owner: OwnerId, input: typeof InstallApp.Type) =>
     const executor = yield* Effect.flatten(HostedExecutor);
     const catalog = yield* HostedCatalog;
     const generated = yield* catalog.prepare(input);
-    if (generated.origin !== undefined)
-      return yield* executor.apps
+    if (generated.origin !== undefined) {
+      const app = yield* executor.apps
         .copy({
           from: { files: generated.files, origin: generated.origin, activation: "deploy" },
           owner,
@@ -37,6 +38,10 @@ export const installApp = (owner: OwnerId, input: typeof InstallApp.Type) =>
           }),
           Effect.flatMap(deployedCopy),
         );
+      if (input.entry !== executorCatalogPackage)
+        yield* recordUsage("app_installed", { app_id: input.entry });
+      return app;
+    }
     const namespace = yield* Effect.flatten(CurrentOrganizationNamespace);
     const files = yield* scopeGeneratedPackage(generated.files, namespace, input.name).pipe(
       Effect.mapError(

@@ -48,6 +48,7 @@ import {
   organizationOwner,
 } from "../contracts/organization.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
+import { recordUsage } from "../contracts/product-analytics.ts";
 import { currentOrganizationSlug, currentOwner, ownedConnection } from "./access.ts";
 import { appLinkApps, appLinkedAccounts, callerLinkedAccounts } from "./app-accounts.ts";
 import { AccountLinkedToApp, ExecutorKeyRefused } from "../contracts/accounts.ts";
@@ -106,7 +107,9 @@ export const checkCredentials = (
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
     yield* requireAppAccess(input.app, "use");
-    return yield* executor.apps.checkCredentials({ ...input, owner });
+    return yield* executor.apps
+      .checkCredentials({ ...input, owner })
+      .pipe(Effect.tapError(() => recordUsage("account_connection_failed")));
   });
 export const checkAccount = Effect.gen(function* () {
   const { owner, account } = yield* AccountGrants.use;
@@ -287,12 +290,15 @@ export const submitConnection = (
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
     const connection = yield* ownedConnection(executor, owner, input.connection);
-    yield* checkConnection(connection);
+    const intent = yield* checkConnection(connection);
     if (input.method === "apiKey")
       yield* checkExecutorKey(owner, connection.target.app, input.fields);
-    return yield* executor.accountConnections
-      .submit({ ...input, owner })
-      .pipe(Effect.tap(() => Effect.flatten(ScheduleWakeup)));
+    return yield* executor.accountConnections.submit({ ...input, owner }).pipe(
+      Effect.tapError(() =>
+        recordUsage("account_connection_failed", { app_id: intent.target.app }),
+      ),
+      Effect.tap(() => Effect.flatten(ScheduleWakeup)),
+    );
   });
 export const startOAuth = (
   owner: OwnerId,
@@ -317,10 +323,15 @@ export const completeOAuth = (
 ) =>
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
-    yield* checkConnection(yield* ownedConnection(executor, owner, input.connection));
-    return yield* executor.accountConnections
-      .completeOAuth({ ...input, owner })
-      .pipe(Effect.tap(() => Effect.flatten(ScheduleWakeup)));
+    const intent = yield* checkConnection(
+      yield* ownedConnection(executor, owner, input.connection),
+    );
+    return yield* executor.accountConnections.completeOAuth({ ...input, owner }).pipe(
+      Effect.tapError(() =>
+        recordUsage("account_connection_failed", { app_id: intent.target.app }),
+      ),
+      Effect.tap(() => Effect.flatten(ScheduleWakeup)),
+    );
   });
 
 export const hostedAccountHandlers = HttpApiBuilder.group(HostedApi, "accounts", (handlers) =>

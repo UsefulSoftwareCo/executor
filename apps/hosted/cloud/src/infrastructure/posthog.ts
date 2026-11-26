@@ -6,8 +6,47 @@ import type { PostHogOutput } from "./posthog-output.ts";
 import { productionSiteTelemetry } from "../contracts/edge-paths.ts";
 import { pinnedInProduction } from "./site-telemetry.ts";
 
+const telemetryRelayBindings = (dev: boolean) =>
+  Effect.gen(function* () {
+    const configuredUrl = yield* Config.String("EXECUTOR_TELEMETRY_RELAY_URL").pipe(Config.option);
+    const configuredToken = yield* Config.Redacted("EXECUTOR_TELEMETRY_RELAY_TOKEN").pipe(
+      Config.option,
+    );
+    const urlText = Option.getOrElse(configuredUrl, () => "").trim();
+    const tokenText = Option.match(configuredToken, {
+      onNone: () => "",
+      onSome: Redacted.value,
+    }).trim();
+    if (urlText === "" && tokenText === "") return {};
+    if (urlText === "" || tokenText === "")
+      return yield* Effect.die("Telemetry relay requires both URL and token");
+    const url = URL.parse(urlText);
+    const local =
+      url !== null && url.protocol === "http:" && ["127.0.0.1", "localhost"].includes(url.hostname);
+    if (
+      url === null ||
+      (url.protocol !== "https:" && !(dev && local)) ||
+      url.username !== "" ||
+      url.password !== "" ||
+      url.search !== "" ||
+      url.hash !== ""
+    )
+      return yield* Effect.die("Telemetry relay URL must be HTTPS without credentials or query");
+    const doNotTrack = yield* Config.String("DO_NOT_TRACK").pipe(Config.option);
+    const disableAnalytics = yield* Config.String("EXECUTOR_DISABLE_ANALYTICS").pipe(Config.option);
+    return {
+      EXECUTOR_TELEMETRY_RELAY_URL: Output.asOutput(url.href.replace(/\/+$/u, "")),
+      EXECUTOR_TELEMETRY_RELAY_TOKEN: Output.asOutput(Redacted.make(tokenText)),
+      ...(Option.isSome(doNotTrack) ? { DO_NOT_TRACK: Output.asOutput(doNotTrack.value) } : {}),
+      ...(Option.isSome(disableAnalytics)
+        ? { EXECUTOR_DISABLE_ANALYTICS: Output.asOutput(disableAnalytics.value) }
+        : {}),
+    };
+  });
+
 export const postHogBindings = Effect.gen(function* () {
   const dev = (yield* AlchemyContext).dev;
+  const relay = yield* telemetryRelayBindings(dev);
   const localPort = dev
     ? yield* Config.Number("POSTHOG_LOCAL_TEST_PORT").pipe(Config.option)
     : Option.none();
@@ -18,6 +57,7 @@ export const postHogBindings = Effect.gen(function* () {
     const host = `http://127.0.0.1:${port}`;
     return {
       env: {
+        ...relay,
         EXECUTOR_POSTHOG: Output.asOutput(
           Redacted.make(
             JSON.stringify({
@@ -38,7 +78,7 @@ export const postHogBindings = Effect.gen(function* () {
     !dev && (yield* Config.Boolean("POSTHOG_ENABLED").pipe(Config.withDefault(false)));
   if (!enabled)
     return {
-      env: { EXECUTOR_POSTHOG: Output.asOutput(null) },
+      env: { ...relay, EXECUTOR_POSTHOG: Output.asOutput(null) },
       build: {},
       analyticsProxy: Output.asOutput<string | null>(null),
     };
@@ -63,6 +103,7 @@ export const postHogBindings = Effect.gen(function* () {
   );
   return {
     env: {
+      ...relay,
       EXECUTOR_POSTHOG: Output.all(
         output.pipe(Output.map((value) => value.apiToken)),
         output.pipe(Output.map((value) => value.apiHost)),

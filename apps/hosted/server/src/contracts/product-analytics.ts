@@ -16,6 +16,7 @@ export interface UsageProperties {
   readonly area?: string;
   readonly operation?: string;
   readonly app_id?: string;
+  readonly service_id?: string;
   readonly version_id?: string;
   readonly account_id?: string;
   readonly provider_id?: string;
@@ -43,12 +44,16 @@ export type UsageEvent =
   | "tool_execution_completed"
   | "tool_approval_requested"
   | "account_connected"
+  | "account_connection_failed"
   | "agent_connected"
+  | "app_installed"
   | "app_deployed"
   | "app_viewed"
   | "app_query_completed"
   | "app_mutation_completed"
   | "app_subscription_started"
+  | "invitation_sent"
+  | "invitation_accepted"
   | "workflow_attempt_completed"
   | "schedule_run_completed";
 
