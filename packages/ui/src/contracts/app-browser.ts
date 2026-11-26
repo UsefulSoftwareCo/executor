@@ -2,6 +2,7 @@ import type {
   AppSkillCatalog,
   AppSkillBundle,
   HostedWorkflow,
+  Version,
   WorkflowRunPage,
   WorkflowRunId,
 } from "@executor-js/sdk";
@@ -17,4 +18,6 @@ export interface WorkflowBindings<E> {
     workflow: string | undefined,
     cursor: WorkflowRunId | undefined,
   ) => Query<WorkflowRunPage, E>;
+
+  readonly source?: Query<Version, E> | undefined;
 }

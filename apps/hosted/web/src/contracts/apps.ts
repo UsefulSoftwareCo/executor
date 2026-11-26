@@ -94,6 +94,16 @@ const sourceQuery = Atom.family((key: SourceKey) =>
     }),
   ).pipe(Atom.setIdleTTL("5 minutes")),
 );
+const versionSourceQuery = Atom.family((key: SourceKey) =>
+  HostedClient.query(
+    "apps",
+    "source",
+    hydrated({
+      params: { organization: key.organization, app: key.app },
+      query: { version: key.version },
+    }),
+  ).pipe(Atom.setIdleTTL("5 minutes")),
+);
 const sourceFileQuery = Atom.family((key: SourceFileKey) =>
   HostedClient.query(
     "apps",
@@ -410,6 +420,12 @@ export const sourceAtom = (key: {
   readonly app: AppId;
   readonly version: VersionId;
 }) => sourceQuery(new SourceKey(key));
+
+export const versionSourceAtom = (key: {
+  readonly organization: OrganizationReference;
+  readonly app: AppId;
+  readonly version: VersionId;
+}) => versionSourceQuery(new SourceKey(key));
 export const sourceFileAtom = (key: {
   readonly organization: OrganizationReference;
   readonly app: AppId;

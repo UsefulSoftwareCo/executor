@@ -8,6 +8,8 @@ import type { FailureProps } from "../../contracts/dashboard.ts";
 import { QueryView, QueryResult, useQuery } from "./context.tsx";
 import { WorkflowNamesLoading, WorkflowRunsLoading } from "./app-browser-loading.tsx";
 import { Button } from "../components/button.tsx";
+import type { Crumb } from "./workflow-diagram.tsx";
+import { preloadWorkflowDiagram, WorkflowDiagramSection } from "./workflow-diagram-section.tsx";
 
 const statuses: Record<WorkflowRun["status"], string> = {
   queued: "Queued",
@@ -51,19 +53,33 @@ export function AppWorkflows<E>({
       </section>
     );
   return (
-    <WorkflowBrowser bindings={bindings} Failure={Failure} start={start} runAction={runAction} />
+    <WorkflowBrowser
+      app={app}
+      bindings={bindings}
+      Failure={Failure}
+      start={start}
+      runAction={runAction}
+    />
   );
 }
 function WorkflowBrowser<E>({
+  app,
   bindings,
   Failure,
   start,
   runAction,
 }: WorkflowActions & {
+  readonly app: App;
   readonly bindings: WorkflowBindings<E>;
   readonly Failure: ComponentType<FailureProps<E>>;
 }) {
   const [workflow, setWorkflow] = useState<string>();
+  const [trail, setTrail] = useState<readonly Crumb[]>([]);
+  const select = (name: string | undefined) => {
+    if (name !== undefined && bindings.source) void preloadWorkflowDiagram().catch(() => undefined);
+    setWorkflow(name);
+    setTrail([]);
+  };
   const definitions = useQuery(bindings.workflows);
   const workflows = Option.isSome(definitions.data) ? definitions.data.value : [];
   const selected = workflows.find((item) => item.name === workflow);
@@ -77,7 +93,7 @@ function WorkflowBrowser<E>({
           <button
             type="button"
             aria-current={workflow === undefined ? "true" : undefined}
-            onClick={() => setWorkflow(undefined)}
+            onClick={() => select(undefined)}
             className="mb-2 w-full rounded-md px-3 py-2.5 text-left text-sm font-medium hover:bg-muted aria-[current=true]:bg-muted"
           >
             All runs
@@ -99,7 +115,7 @@ function WorkflowBrowser<E>({
                     type="button"
                     key={item.name}
                     aria-current={workflow === item.name ? "true" : undefined}
-                    onClick={() => setWorkflow(item.name)}
+                    onClick={() => select(item.name)}
                     className="w-full rounded-md px-3 py-2.5 text-left hover:bg-muted aria-[current=true]:bg-muted"
                   >
                     <span className="block break-words text-sm font-medium">{item.name}</span>
@@ -121,6 +137,30 @@ function WorkflowBrowser<E>({
               <p className="mt-1 text-sm text-muted-foreground">{selected.description}</p>
             )}
           </div>
+          {workflow !== undefined && bindings.source && (
+            <WorkflowDiagramSection
+              app={app}
+              source={bindings.source}
+              workflow={workflow}
+              trail={trail}
+              onOpenWorkflow={(name, step) => {
+                setTrail([...trail, { workflow, step }]);
+                setWorkflow(name);
+              }}
+              onShowWorkflow={(name) => {
+                const index = trail.findIndex((crumb) => crumb.workflow === name);
+                setTrail(index >= 0 ? trail.slice(0, index) : [...trail, { workflow }]);
+                setWorkflow(name);
+              }}
+              onCrumb={(index) => {
+                const crumb = trail[index];
+                if (!crumb) return;
+                setWorkflow(crumb.workflow);
+                setTrail(trail.slice(0, index));
+              }}
+              Failure={Failure}
+            />
+          )}
           <WorkflowRuns
             key={workflow === undefined ? "all-workflows" : `workflow:${workflow}`}
             workflow={workflow}
