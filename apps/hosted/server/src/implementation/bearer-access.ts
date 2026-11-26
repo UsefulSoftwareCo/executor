@@ -1,9 +1,5 @@
 import { defaultKeyHasher } from "@better-auth/api-key";
-import {
-  fullAuthority,
-  selectedAuthority,
-  type AuthorizationPolicy,
-} from "@executor-js/authorization";
+import { selectedAuthority, type AuthorizationPolicy } from "@executor-js/authorization";
 import {
   ApprovalMode,
   ConnectionId,

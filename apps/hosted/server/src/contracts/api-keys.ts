@@ -8,12 +8,7 @@ export const isManagedKey = (key: {
     | undefined;
 }) => key.metadata?.executorApp === true && key.metadata.organization !== undefined;
 export const ApiKeyId = Schema.NonEmptyString.pipe(Schema.brand("ApiKeyId"));
-/** Restrict a native key to tool discovery and execution without account administration. */
 export const ApiKeyScope = Schema.Literal("tools");
-/**
- * Stored key scope. A recorded organization pins the key to that organization;
- * a key without one authorizes every organization the user belongs to.
- */
 export const ApiKeyMetadata = Schema.Struct({
   organization: Schema.optional(OrganizationId),
   scope: Schema.optional(ApiKeyScope),

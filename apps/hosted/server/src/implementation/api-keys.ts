@@ -28,13 +28,10 @@ export const apiKeys = apiKey({
 
 const KeyMetadata = Schema.NullOr(ApiKeyMetadata);
 
-// Older hosts reject this prefix instead of ignoring a scope they do not understand.
 const toolsKeyPrefix = "ext_";
 
-/** An omitted scope preserves existing keys; tools keys cannot manage the account or app source. */
 export const apiKeyAuthorization = (scope: typeof ApiKeyScope.Type | undefined) =>
   scope === "tools" ? selectedAuthority(["discover", "run"], { kind: "all" }) : fullAuthority;
-/** Pin a key to one organization; the auto-minted Executor app key always uses this. */
 export const pinnedKeyMetadata = (organization: OrganizationId) => ({ organization });
 
 export const apiKeyManagement = createAuthMiddleware(async (ctx) => {
@@ -73,11 +70,9 @@ export const apiKeyManagement = createAuthMiddleware(async (ctx) => {
     throw new APIError("NOT_FOUND");
 });
 
-/** Native PATs select key authentication instead of the OAuth bearer path. */
 export const isApiKey = (token: string) =>
   token.startsWith("exp_") || token.startsWith("sk_") || token.startsWith(toolsKeyPrefix);
 
-/** A scoped key cannot become unrestricted if its metadata is missing or damaged. */
 export const apiKeyScopeMatches = (token: string, scope: typeof ApiKeyScope.Type | undefined) =>
   token.startsWith(toolsKeyPrefix) === (scope === "tools");
 
