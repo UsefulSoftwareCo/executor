@@ -9,7 +9,7 @@ Executor API keys are personal access tokens (PATs). A token authenticates as yo
 and uses your current permissions in the organization targeted by each request.
 Tokens created in Account settings use your full current permissions. To select
 which apps and tools an agent reaches, use a
-[scoped connection](/mcp#scoped-connections).
+[scoped connection](/docs/mcp#scoped-connections).
 
 Tokens belong to your account, not to an organization. They live under
 **Account settings → Tokens** (`/account/tokens`), reached from your avatar menu,
