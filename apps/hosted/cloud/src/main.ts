@@ -10,7 +10,11 @@ import { ExecutorCloudApi, executorCloudApiDocument } from "./contracts/api.ts";
 import { hostedAppUi, appAddresses } from "@executor-js/hosted-server/app-ui";
 import { cloudAppUiBase } from "./contracts/app-ui.ts";
 import { cloudAppDomains } from "./infrastructure/app-domains.ts";
-import { AppRepositoryRecovery, WorkflowHost } from "@executor-js/sdk/core";
+import {
+  AppRepositoryRecovery,
+  PersonalDataReportingHost,
+  WorkflowHost,
+} from "@executor-js/sdk/core";
 import { AppWorkflows } from "./infrastructure/workflows.ts";
 import { cloudDataSteps } from "./infrastructure/data-steps.ts";
 import { expireIdleAgentGrants } from "@executor-js/app-management/data-steps";
@@ -87,6 +91,7 @@ import {
 } from "./infrastructure/background-jobs.ts";
 import { handledJob, jobCompleted, jobFailed } from "./contracts/job-outcome.ts";
 import { cloudEgress } from "./infrastructure/executor.ts";
+import { cloudEmulators } from "./infrastructure/emulators.ts";
 import { servedRequest } from "./infrastructure/served-request.ts";
 import { cloudProduct } from "./infrastructure/product.ts";
 import { cloudAuthDatabase } from "./infrastructure/auth-database.ts";
@@ -369,6 +374,14 @@ export default Api.make(
       Effect.as(jobCompleted),
       handledJob(Effect.logWarning("Idle agent grant expiry failed")),
     );
+    const personalDataReporting = Effect.flatten(HostedExecutor).pipe(
+      Effect.flatMap((sdk) => sdk[PersonalDataReportingHost].run),
+      Effect.provide(executor),
+      reportErrors,
+      Effect.scoped,
+      Effect.as(jobCompleted),
+      handledJob(Effect.logWarning("Personal-data reporting failed")),
+    );
     const toolCallLog = Effect.gen(function* () {
       const sql = yield* Effect.flatten(GroupDatabase);
       yield* pruneToolCallLog.pipe(Effect.provideService(SqlClient.SqlClient, sql));
@@ -397,6 +410,22 @@ export default Api.make(
       "tool-call-log",
     );
     yield* jobs.schedule("17 4 * * *", "billing-reconcile", "agent-grant-expiry");
+    const testReportingCron = yield* Config.String(
+      "EXECUTOR_TEST_PERSONAL_DATA_REPORTING_CRON",
+    ).pipe(Config.option);
+    if (Option.isSome(testReportingCron)) {
+      const environment = yield* Config.String("EXECUTOR_ENVIRONMENT").pipe(Config.withDefault(""));
+      if (environment !== "test-local" || Option.isNone(yield* cloudEmulators.pipe(Effect.orDie)))
+        return yield* Effect.die(
+          new Error(
+            "EXECUTOR_TEST_PERSONAL_DATA_REPORTING_CRON is only available to emulated local tests",
+          ),
+        );
+    }
+    yield* jobs.schedule(
+      Option.getOrElse(testReportingCron, () => "7,22,37,52 * * * *"),
+      "personal-data-reporting",
+    );
     const backgroundJobs = {
       "organization-removal": organizationRemovals,
       provisioning: dispatch,
@@ -409,6 +438,7 @@ export default Api.make(
       "workflow-reconcile": workflowReconcile,
       "billing-reconcile": billingReconcile,
       "agent-grant-expiry": agentGrantExpiry,
+      "personal-data-reporting": personalDataReporting,
       "tool-call-log": toolCallLog,
     } satisfies Record<BackgroundJob, unknown>;
 

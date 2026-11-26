@@ -2932,6 +2932,48 @@ export const makeOAuth = (
         rejected === undefined ? undefined : { fields: rejected },
       ),
     ).pipe(Effect.catchTag("AccountUseRefused", () => Effect.fail(new StorageError())));
+  const resolveOwnedFirstParty = (
+    account: StoredAccount,
+    provider: ProviderDefinition,
+    owner: OwnerId,
+    firstParty: FirstPartyOAuthClientId,
+  ) =>
+    Effect.gen(function* () {
+      if (account.owner !== owner || !firstPartyClients.has(firstParty))
+        return yield* new StorageError();
+      const verifyOwner = () =>
+        query(() =>
+          db.findFirst("accounts", {
+            where: (b) => b.and(b("id", "=", account.id), b("owner", "=", owner)),
+          }),
+        ).pipe(
+          Effect.flatMap((row) =>
+            row === null
+              ? Effect.fail(new StorageError())
+              : Schema.decodeUnknownEffect(StoredAccount)(row).pipe(
+                  Effect.mapError(() => new StorageError()),
+                ),
+          ),
+          Effect.flatMap((current) =>
+            current.credentialGeneration === account.credentialGeneration
+              ? Effect.void
+              : Effect.fail(new StorageError()),
+          ),
+        );
+      yield* verifyOwner();
+      const credential = yield* resolveAuthorized(
+        "resolve",
+        account,
+        provider,
+        undefined,
+        { contested: false },
+        undefined,
+        verifyOwner(),
+      );
+      yield* verifyOwner();
+      if (credential.firstParty !== firstParty) return yield* new StorageError();
+      return credential;
+    });
   const authorizedFor = (
     use: CredentialUse,
     accounts: readonly StoredAccount[],
@@ -3171,6 +3213,7 @@ export const makeOAuth = (
     connections: { oauthSetup, startOAuth, completeOAuth },
     findOAuth,
     resolve: (account: StoredAccount, provider: ProviderDefinition) => resolve(account, provider),
+    resolveOwnedFirstParty,
     resolveSelected,
     renewRejected,
     usableAll,

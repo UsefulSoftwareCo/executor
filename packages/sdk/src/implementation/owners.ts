@@ -205,6 +205,9 @@ export const makeOwners = (
               tx.deleteMany("accountConnections", { where: (b) => b("owner", "=", owner) }),
             );
           yield* query(() =>
+            tx.deleteMany("accountReports", { where: (b) => b("owner", "=", owner) }),
+          );
+          yield* query(() =>
             tx.deleteMany("toolApprovals", { where: (b) => b("owner", "=", owner) }),
           );
           yield* query(() =>

@@ -51,6 +51,7 @@ type CheckRow = {
   readonly infoCheckedAt: Date | null;
   readonly message: string | null;
 };
+type ReportState = { readonly status: string };
 
 const checkedSlot = (app: App, account: Pick<HealthAccount, "provider">) =>
   Object.entries(app.requirements.accounts)
@@ -102,7 +103,12 @@ export const makeAccountHealth = (
   listApps: ListApps,
   hostApi: HostApi | undefined,
 ) => {
-  const project = (account: HealthAccount, apps: readonly App[], rows: readonly CheckRow[]) =>
+  const project = (
+    account: HealthAccount,
+    apps: readonly App[],
+    rows: readonly CheckRow[],
+    report: ReportState | undefined,
+  ) =>
     Effect.gen(function* () {
       const latest = rows
         .filter((row) => row.info !== null && row.infoCheckedAt !== null)
@@ -113,6 +119,7 @@ export const makeAccountHealth = (
         account: account.id,
         info: Option.getOrNull(info),
         infoCheckedAt: Option.isSome(info) ? (latest?.infoCheckedAt ?? null) : null,
+        ...(report?.status === "closed" ? { personalDataStatus: "account_closed" as const } : {}),
         apps: yield* Effect.forEach(apps, (app) =>
           Effect.gen(function* () {
             const row = rows.find((item) => item.app === app.id);
@@ -141,14 +148,22 @@ export const makeAccountHealth = (
     ids: readonly AppId[],
   ) =>
     Effect.gen(function* () {
-      const [stored, [apps, rows]] = yield* inOrder(
+      const [stored, [[apps, rows], report]] = yield* inOrder(
         account,
         inOrder(
-          ids.length === 0 ? Effect.succeed<readonly App[]>([]) : listApps({ ids }),
-          query(() => db.findMany("accountChecks", { where: (b) => b("account", "=", id) })),
+          inOrder(
+            ids.length === 0 ? Effect.succeed<readonly App[]>([]) : listApps({ ids }),
+            query(() => db.findMany("accountChecks", { where: (b) => b("account", "=", id) })),
+          ),
+          query(() => db.findFirst("accountReports", { where: (b) => b("id", "=", id) })),
         ),
       );
-      return yield* project(stored, apps, rows);
+      return yield* project(
+        stored,
+        apps,
+        rows,
+        report === null ? undefined : { status: report.status },
+      );
     });
 
   const listHealth = (input: Parameters<Executor["accounts"]["listHealth"]>[0]) =>
@@ -163,10 +178,14 @@ export const makeAccountHealth = (
       if (accounts.length === 0) return [];
       const ids = accounts.map((account) => account.id);
       const linked = [...new Set(input.links.map((link) => link.app))];
-      const [rows, apps] = yield* inOrder(
-        query(() => db.findMany("accountChecks", { where: (b) => b("account", "in", ids) })),
+      const [[rows, reportRows], apps] = yield* inOrder(
+        inOrder(
+          query(() => db.findMany("accountChecks", { where: (b) => b("account", "in", ids) })),
+          query(() => db.findMany("accountReports", { where: (b) => b("id", "in", ids) })),
+        ),
         linked.length === 0 ? Effect.succeed<readonly App[]>([]) : listApps({ ids: linked }),
       );
+      const reports = new Map(reportRows.map((row) => [row.id, row.status]));
       return yield* Effect.forEach(accounts, (account) =>
         project(
           account,
@@ -174,6 +193,7 @@ export const makeAccountHealth = (
             input.links.some((link) => link.app === app.id && link.account === account.id),
           ),
           rows.filter((row) => row.account === account.id),
+          reports.has(account.id) ? { status: reports.get(account.id)! } : undefined,
         ),
       );
     }).pipe(Effect.withSpan("sdk.accounts.listHealth"));

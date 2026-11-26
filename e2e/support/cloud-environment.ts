@@ -35,12 +35,18 @@ import {
 import { startFixtureControl, fixtureRequest } from "../sdk/fixtures.ts";
 import { roleHost } from "./role-hosts.ts";
 import { freePort } from "./ports.ts";
-import { OperatorOAuthFixture, operatorOAuthFile, syntheticCloudGoogle } from "./operator-oauth.ts";
+import {
+  OperatorOAuthFixture,
+  operatorOAuthFile,
+  syntheticCloudGoogle,
+  syntheticReportingClient,
+} from "./operator-oauth.ts";
 import { reveal, secret } from "./failure-text.ts";
 import { cloudNotesFile, type CloudNotesSource } from "./cloud-release-notes.ts";
 
 const operatorOAuthClients = (fixture: typeof OperatorOAuthFixture.Type) => {
   const origin = `http://127.0.0.1:${fixture.port}`;
+  const reportingOrigin = `http://127.0.0.1:${fixture.reportingPort}`;
   return {
     EXECUTOR_TEST_OAUTH_CLIENT_DEFINITIONS: JSON.stringify([
       {
@@ -55,11 +61,31 @@ const operatorOAuthClients = (fixture: typeof OperatorOAuthFixture.Type) => {
         defaultScopes: ["mail.read"],
         placement: { hosts: [`127.0.0.1:${fixture.port}`] },
       },
+      {
+        id: syntheticReportingClient.id,
+        label: "Executor for Synthetic Cloud Reporting",
+        server: {
+          issuer: reportingOrigin,
+          authorizationUrl: `${reportingOrigin}/authorize`,
+          tokenUrl: `${reportingOrigin}/token`,
+        },
+        tokenEndpointAuthMethod: "client_secret_basic",
+        defaultScopes: ["mail.read", "offline_access", "read:me"],
+        allowedScopes: ["mail.read", "offline_access", "read:me"],
+        placement: { hosts: [`127.0.0.1:${fixture.reportingPort}`] },
+        personalDataReporting: {
+          identityUrl: `${reportingOrigin}/me`,
+          reportUrl: `${reportingOrigin}/report-accounts`,
+          accountIdField: "accountId",
+        },
+      },
     ]),
     EXECUTOR_OAUTH_SYNTHETIC_CLOUD_MAIL_CLIENT_ID: fixture.clientId,
     EXECUTOR_OAUTH_SYNTHETIC_CLOUD_MAIL_CLIENT_SECRET: fixture.clientSecret,
     EXECUTOR_OAUTH_GOOGLE_CLIENT_ID: syntheticCloudGoogle.clientId,
     EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET: syntheticCloudGoogle.clientSecret,
+    EXECUTOR_OAUTH_SYNTHETIC_CLOUD_REPORTING_CLIENT_ID: syntheticReportingClient.clientId,
+    EXECUTOR_OAUTH_SYNTHETIC_CLOUD_REPORTING_CLIENT_SECRET: syntheticReportingClient.clientSecret,
   };
 };
 
@@ -143,6 +169,7 @@ export const startCloudEnvironment = (input: {
       port: yield* freePort,
       clientId: "first-party-client",
       clientSecret: randomBytes(16).toString("hex"),
+      reportingPort: yield* freePort,
     });
     const operatorOAuthPath = `${directory}/${operatorOAuthFile}`;
     yield* fs.writeFileString(operatorOAuthPath, JSON.stringify(operatorOAuth), { mode: 0o600 });
@@ -217,6 +244,7 @@ export const startCloudEnvironment = (input: {
       CLOUD_DEV_DATABASE_PASSWORD: databasePassword,
       CLOUD_DEV_EXTERNAL_DATABASE: "true",
       EXECUTOR_EMULATORS: JSON.stringify(reveal(fixture).services),
+      EXECUTOR_TEST_PERSONAL_DATA_REPORTING_CRON: "* * * * *",
       EXECUTOR_CLOUD_RELEASE_NOTES: notes,
       EXECUTOR_TEST_WORKFLOW_ENGINE_FAULTS: JSON.stringify(engineCallFaults),
       V1_MCP_FORWARD_SECRET: v1ForwardSecret,

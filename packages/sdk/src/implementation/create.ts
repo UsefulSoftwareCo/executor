@@ -3,6 +3,7 @@ import { makeWebhookSources } from "./webhook-sources.ts";
 import { WorkflowHost } from "../contracts/workflow-runtime.ts";
 import { RepositoryHost } from "../contracts/source.ts";
 import { StorageHost } from "../contracts/storage.ts";
+import { PersonalDataReportingHost } from "../contracts/executor.ts";
 import { PrefetchHost } from "../contracts/tools.ts";
 import { gitSourceStorage } from "./git-sources.ts";
 import { makeRegistry } from "./registry.ts";
@@ -40,6 +41,7 @@ import { makeDeclarationCache, makeDeclarations } from "./declarations.ts";
 import { makeListings } from "./listings.ts";
 import { makeToolSearch } from "./tool-search.ts";
 import { makeEvents } from "./events.ts";
+import { makePersonalDataReporting } from "./personal-data-reporting.ts";
 import { AppEventSink, RuntimeProtocolFailed, type Runtime } from "../contracts/runtime.ts";
 
 export const createExecutor = (
@@ -95,6 +97,15 @@ export const createExecutor = (
       options.hooks,
       options.background,
     );
+    const personalDataReporting = makePersonalDataReporting({
+      db,
+      credentials,
+      crypto,
+      oauth,
+      clients: options.oauth?.firstPartyClients ?? [],
+      httpClient: options.oauth?.httpClient,
+      urlPolicy: options.oauth?.urlPolicy,
+    });
     const declarations = makeDeclarations({
       cache,
       durable: options.cache?.durable,
@@ -228,6 +239,7 @@ export const createExecutor = (
         read: options.database.reactivity.read,
         write: options.database.reactivity.write,
       },
+      [PersonalDataReportingHost]: personalDataReporting,
       [PrefetchHost]: {
         invocation: tools.prefetchInvocation,
         searchable: tools.prefetchSearchable,

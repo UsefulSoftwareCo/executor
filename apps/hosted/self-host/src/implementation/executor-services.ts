@@ -12,6 +12,7 @@ import {
   createExecutor,
   toEffectRuntime,
   makeExecutorStorage,
+  PersonalDataReportingHost,
   WorkflowHost,
   RepositoryHost,
   makeDeclarationCache,
@@ -184,6 +185,12 @@ export const selfHostExecutorServices = <E, R>(
         executor[WorkflowHost].reconcile.pipe(
           Effect.catch(() => Effect.logWarning("Workflow queue reconciliation failed")),
           Effect.repeat(Schedule.spaced("5 seconds")),
+        ),
+      );
+      yield* Effect.forkScoped(
+        executor[PersonalDataReportingHost].run.pipe(
+          Effect.catch(() => Effect.logWarning("Personal-data reporting failed")),
+          Effect.repeat(Schedule.spaced("15 minutes")),
         ),
       );
       yield* Effect.forkScoped(

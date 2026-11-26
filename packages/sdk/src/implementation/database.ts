@@ -5,7 +5,7 @@ import { StorageError } from "../contracts/shared.ts";
 import type { ExecutorDatabase } from "./storage.ts";
 
 export type Query = ReturnType<typeof database>;
-export const database = (storage: ExecutorDatabase) => storage.orm("4.0.17");
+export const database = (storage: ExecutorDatabase) => storage.orm("4.0.18");
 export const query = <A, E, R>(work: () => Effect.Effect<A, E, R>) =>
   Effect.suspend(work).pipe(
     Effect.mapError((error) => withFailureAttributes(new StorageError(), failureAttributes(error))),

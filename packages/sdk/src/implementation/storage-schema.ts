@@ -665,3 +665,35 @@ export const version4017Tables = {
 export const eventSelectionIndexes = [
   "CREATE INDEX IF NOT EXISTS executor_event_subscriptions_owner_selection ON executor_event_subscriptions (owner, status) WHERE app IS NULL",
 ] as const;
+
+const accountReports = table("executor_account_reports", {
+  id: idColumn("id", AccountId, { type: "varchar(255)" }),
+  owner: column("owner", OwnerId, { type: "varchar(255)" }),
+  clientFingerprint: column("client_fingerprint", Schema.String, { type: "varchar(64)" }),
+  credentialGeneration: column("credential_generation", Schema.Int),
+  status: column("status", Schema.Literals(["active", "refresh_pending", "closed"])),
+  encryptedExternalId: column("encrypted_external_id", Schema.NullOr(Schema.Uint8Array)),
+  externalIdFingerprint: column("external_id_fingerprint", Schema.NullOr(Schema.String), {
+    type: "varchar(64)",
+  }),
+  retrievedAt: column("retrieved_at", Schema.NullOr(Schema.Date)),
+  reportedAt: column("reported_at", Schema.NullOr(Schema.Date)),
+  cycleDays: column("cycle_days", Schema.Number).default(7),
+  nextReportAt: column("next_report_at", Schema.NullOr(Schema.Date)),
+  retryAt: column("retry_at", Schema.NullOr(Schema.Date)),
+  retries: column("retries", Schema.Int).default(0),
+  lease: column("lease", Schema.NullOr(Schema.String)),
+  leaseUntil: column("lease_until", Schema.NullOr(Schema.Date)),
+});
+
+export const version4018Tables = {
+  ...version4017Tables,
+  accountReports,
+};
+
+export const accountReportIndexes = [
+  "CREATE INDEX IF NOT EXISTS executor_account_reports_due ON executor_account_reports (owner, client_fingerprint, next_report_at) WHERE status <> 'closed'",
+  "CREATE INDEX IF NOT EXISTS executor_account_reports_retry ON executor_account_reports (retry_at) WHERE status <> 'closed' AND retry_at IS NOT NULL",
+  "CREATE INDEX IF NOT EXISTS executor_account_reports_subject ON executor_account_reports (client_fingerprint, external_id_fingerprint) WHERE external_id_fingerprint IS NOT NULL",
+  "CREATE INDEX IF NOT EXISTS executor_account_reports_registration ON executor_account_reports (client_fingerprint, owner, id)",
+] as const;
