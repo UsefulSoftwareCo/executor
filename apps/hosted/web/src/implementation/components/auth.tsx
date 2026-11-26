@@ -1,17 +1,18 @@
 import { usePageUrl } from "@executor-js/dashboard-start/page";
 import { McpConsentLoading } from "@executor-js/ui/dashboard/mcp-consent";
 import { AsyncResult } from "effect/reactivity";
-import { Avatar, AvatarFallback, AvatarImage } from "@executor-js/ui/components/avatar";
+import { MemberAvatar } from "./member-avatar.tsx";
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
 // oxlint-disable-next-line no-restricted-imports -- AuthBoundary renders it only away from /login, and its own navigation there unmounts it
-import { Link, Navigate, useLocation } from "@tanstack/react-router";
+import { Link, Navigate, useLocation, useNavigate } from "@tanstack/react-router";
 import { Cause, Exit, Option, Schema } from "effect";
 import { OrganizationResume } from "../../contracts/navigation.ts";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { Logout01Icon, Settings05Icon, UnfoldMoreIcon, UserIcon } from "@hugeicons/core-free-icons";
+import { Logout01Icon, Settings05Icon, UnfoldMoreIcon } from "@hugeicons/core-free-icons";
 import { useEffect, useState, type ReactNode } from "react";
 import { AuthFailed, sessionAtom, signOutAtom } from "../../contracts/auth.ts";
 import { Button } from "@executor-js/ui/components/button";
+import { DesktopAccountMenu } from "@executor-js/ui/dashboard/desktop-accounts";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -21,7 +22,6 @@ import {
   DropdownMenuTrigger,
 } from "@executor-js/ui/components/dropdown-menu";
 
-/** Gate page rendering on a live session. The server independently protects API access. */
 export function AuthBoundary({ children }: { readonly children: ReactNode }) {
   const session = useAtomValue(sessionAtom);
   const refresh = useAtomRefresh(sessionAtom);
@@ -65,7 +65,6 @@ export function AuthBoundary({ children }: { readonly children: ReactNode }) {
       <div className="min-h-dvh" aria-busy="true" aria-label="Opening Executor" />
     );
   }
-  // Keep signed OAuth queries intact instead of using the router's reserialized href.
   if (current === null)
     return (
       <Navigate
@@ -94,40 +93,26 @@ export function AuthBoundary({ children }: { readonly children: ReactNode }) {
   );
 }
 
-/**
- * The signed-in identity. In the dashboard sidebar it opens a menu with the personal settings
- * and sign-out; entry pages pass a label and get a plain sign-out control instead.
- */
 export function SessionMenu({
   signOutLabel,
   organization,
   onSignOut,
 }: {
   readonly signOutLabel?: string;
-  /** The organization the visitor is in, so account pages know where to return. */
   readonly organization?: string | undefined;
-  /** Called as the person chooses to sign out, before the session ends. */
   readonly onSignOut?: (() => void) | undefined;
 } = {}) {
   const session = AsyncResult.value(useAtomValue(sessionAtom));
   const signOut = useAtomSet(signOutAtom, { mode: "promiseExit" });
   const state = useAtomValue(signOutAtom);
   const [error, setError] = useState<string | null>(null);
+  const navigate = useNavigate();
   if (Option.isNone(session) || session.value === null) return null;
-  // Email-code accounts can have no personal display name. Their email still
-  // identifies the signed-in account independently of the selected team.
   const name = session.value.user.name.trim();
   const email = session.value.user.email;
   const identity = name.length > 0 ? name : email;
   const image = session.value.user.image;
-  const avatar = (
-    <Avatar className="size-7 border" aria-hidden>
-      {image && <AvatarImage src={image} alt="" referrerPolicy="no-referrer" />}
-      <AvatarFallback>
-        <HugeiconsIcon icon={UserIcon} strokeWidth={2} aria-hidden size={14} />
-      </AvatarFallback>
-    </Avatar>
-  );
+  const avatar = <MemberAvatar name={identity} image={image ?? null} className="size-7" />;
   const leave = async () => {
     setError(null);
     onSignOut?.();
@@ -161,7 +146,15 @@ export function SessionMenu({
         {error && <p role="alert">{error}</p>}
       </div>
     );
-  return (
+  const settings = (
+    <DropdownMenuItem asChild className="min-h-9 cursor-pointer p-2 text-[13px]">
+      <Link to="/account/profile" search={{ organization }}>
+        <HugeiconsIcon icon={Settings05Icon} strokeWidth={2} size={16} aria-hidden />
+        Account settings
+      </Link>
+    </DropdownMenuItem>
+  );
+  const browserMenu = (
     <div className="session-menu [&_p]:text-destructive [&_p]:text-[13px] flex flex-wrap items-center gap-2 [padding:10px_4px_0] text-[12px] [&_>_p]:basis-[100%]">
       <DropdownMenu>
         <DropdownMenuTrigger
@@ -196,12 +189,7 @@ export function SessionMenu({
             </div>
           </DropdownMenuLabel>
           <DropdownMenuSeparator />
-          <DropdownMenuItem asChild className="min-h-9 cursor-pointer p-2 text-[13px]">
-            <Link to="/account/profile" search={{ organization }}>
-              <HugeiconsIcon icon={Settings05Icon} strokeWidth={2} size={16} aria-hidden />
-              Account settings
-            </Link>
-          </DropdownMenuItem>
+          {settings}
           <DropdownMenuItem className="min-h-9 cursor-pointer p-2 text-[13px]" onSelect={leave}>
             <HugeiconsIcon icon={Logout01Icon} strokeWidth={2} size={16} aria-hidden />
             Sign out
@@ -210,5 +198,13 @@ export function SessionMenu({
       </DropdownMenu>
       {error && <p role="alert">{error}</p>}
     </div>
+  );
+  return (
+    <DesktopAccountMenu
+      fallback={browserMenu}
+      person={{ name, email }}
+      avatar={avatar}
+      onSettings={() => void navigate({ to: "/account/profile", search: { organization } })}
+    />
   );
 }

@@ -17,14 +17,12 @@ import {
 
 const byteSize = (content: string) => new TextEncoder().encode(content).byteLength;
 
-/** Format the given files and return each formatted text by path. */
 const formatted = (files: ReadonlyArray<SourceTextFile>) =>
   (files.length === 0
     ? Effect.succeed(files)
     : Effect.flatMap(SourceFormatter, (formatter) => formatter.format(files))
   ).pipe(Effect.map((files) => new Map(files.map((file) => [file.path, file.content]))));
 
-/** A formatter returns every file it was given; anything else is a host defect. */
 const formattedContent = (contents: ReadonlyMap<string, string>, file: SourceTextFile) => {
   const content = contents.get(file.path);
   return content === undefined
@@ -32,12 +30,6 @@ const formattedContent = (contents: ReadonlyMap<string, string>, file: SourceTex
     : Effect.succeed(content);
 };
 
-/**
- * List an authorized source response for read-only display. Never write it back.
- * Every file keeps its path and stored size. Only files within the inline budget carry
- * contents, and only those are formatted. The inline budget bounds parser work;
- * sequential files bound parser memory.
- */
 export const sourceDisplay = <A extends { readonly files: SourceFiles }>(
   source: A,
 ): Effect.Effect<
@@ -73,10 +65,6 @@ export const sourceDisplay = <A extends { readonly files: SourceFiles }>(
     };
   });
 
-/**
- * Display one file from an immutable source. Invalid, unsupported, and over-budget files
- * retain their exact original contents.
- */
 export const sourceDisplayFile = (
   files: SourceFiles,
   path: string,

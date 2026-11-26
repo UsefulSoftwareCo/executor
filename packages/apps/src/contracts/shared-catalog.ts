@@ -71,7 +71,6 @@ export const shareCatalog = (catalog: {
   };
   const share = (schema: JsonObject | undefined) => {
     const own = schemaDefinitions(schema);
-    // Spreading keeps `$defs` where the schema had it.
     return schema === undefined || own === undefined
       ? undefined
       : { ...schema, $defs: defsOf(own) };
@@ -103,7 +102,6 @@ export const restoreSharedCatalog = (catalog: HostedSharedCatalog): HostedCatalo
   for (const named of catalog.defs) {
     const restored: Record<string, JsonValue> = {};
     for (const [name, at] of Object.entries(named)) {
-      // A JSON value is never undefined, so a position out of range is the only way to get it.
       const definition = definitions[at];
       if (definition === undefined) return undefined;
       putEntry(restored, name, definition);

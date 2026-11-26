@@ -1,7 +1,3 @@
-/**
- * Skill reads record which Executor skill an agent read, and nothing that names a customer's skill:
- * the request's span records the route's template, not the skill's name from its path.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schedule, Schema } from "effect";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -31,7 +27,6 @@ const SkillDocument = Schema.Struct({
 type Tags = Readonly<Record<string, string>>;
 type Connection = Effect.Success<ReturnType<Effect.Success<typeof McpClient>["connect"]>>;
 
-/** A customer's skill that reuses the Executor app's skill and file names with its own text. */
 const customerFiles = (marker: string) => [
   {
     path: "index.ts",
@@ -42,7 +37,6 @@ const customerFiles = (marker: string) => [
     content: `---\nname: executor\ndescription: Synthetic ${marker} guide.\n---\n# ${marker}\n`,
   },
   { path: "skills/executor/feedback.md", content: `Synthetic ${marker} notes.\n` },
-  // A skill named after the marker, whose name is in the read's path.
   {
     path: `skills/${marker}/SKILL.md`,
     content: `---\nname: ${marker}\ndescription: Synthetic ${marker} skill.\n---\n# ${marker}\n`,
@@ -57,7 +51,6 @@ const executorRead = (name: string, file: string) => ({
   "executor.skill.file": file,
 });
 
-/** A customer read records its source only: no app, skill or file name, and no text of its own. */
 const expectCustomerRead = (tags: Tags, privateValues: ReadonlyArray<string>) => {
   expect(tags).toMatchObject({
     "executor.skill.operation": "read",
@@ -68,13 +61,11 @@ const expectCustomerRead = (tags: Tags, privateValues: ReadonlyArray<string>) =>
   for (const value of privateValues) expect(JSON.stringify(tags)).not.toContain(value);
 };
 
-/** A read's request span names its route by template only, with none of the path's values. */
 const expectTemplatedPath = (tags: Tags, route: string, privateValues: ReadonlyArray<string>) => {
   expect({ path: tags["url.path"], route: tags["http.route"] }).toEqual({ path: route, route });
   for (const value of privateValues) expect(JSON.stringify(tags)).not.toContain(value);
 };
 
-/** The tags of one delivered span in a trace, waiting until the collector has it. */
 const deliveredSpan = (traceId: string, operation: string, matches: (tags: Tags) => boolean) =>
   Effect.gen(function* () {
     const telemetry = yield* Telemetry;
@@ -97,7 +88,6 @@ const latestTrace = Effect.gen(function* () {
   return id;
 });
 
-/** Read skills through the MCP skills tool and return the mcp.skills span of each call. */
 const mcpSkills = (client: Connection) => ({
   list: Effect.gen(function* () {
     const index = yield* client.use("List every visible skill", (client, signal) =>
@@ -169,16 +159,13 @@ layer(HostedLive, { excludeTestServices: true })("Skill read telemetry", (it) =>
           return yield* Effect.die("The Executor app's entry skill must be listed");
         const privateValues = [marker, customer.slug];
 
-        // The Executor app's own skill is named by skill and file.
         const own = yield* skills.read(guide.app.slug, "executor", "feedback.md");
         expect(own.document.content).toContain("feedback.submit");
         expect(own.tags).toMatchObject(executorRead("executor", "feedback.md"));
-        // A customer skill with the same names is only counted.
         const theirs = yield* skills.read(customer.slug, "executor", "feedback.md");
         expect(theirs.document.content).toContain(marker);
         expectCustomerRead(theirs.tags, privateValues);
 
-        // The Executor app's skills.read tool reads through the organization API.
         const viaApi = (app: string, name: string, query: string) =>
           Effect.gen(function* () {
             const response = yield* api.request(
@@ -195,13 +182,10 @@ layer(HostedLive, { excludeTestServices: true })("Skill read telemetry", (it) =>
                 tags["executor.product.operation"] === "read",
             );
           });
-        // The Executor app's skills read with its linked accounts; none needs choosing.
         const ownViaApi = yield* viaApi(guide.app.id, "app-authoring", "");
         expect(ownViaApi).toMatchObject(executorRead("app-authoring", "SKILL.md"));
         const theirsViaApi = yield* viaApi(customer.id, "executor", "file=feedback.md");
         expectCustomerRead(theirsViaApi, privateValues);
-        // The skill's name is in the path; the request's span records the route instead, and the
-        // organization by its ID.
         const named = yield* api.request(
           actors.owner,
           "GET",
@@ -269,8 +253,6 @@ layer(HostedLive, { excludeTestServices: true })("Skill read telemetry", (it) =>
         expect(theirs.document.content).toContain(marker);
         expectCustomerRead(theirs.tags, privateValues);
 
-        // The Executor app's skills.read tool reads through the local management API, which
-        // takes no Origin header, so this request carries its own trace context.
         const viaApi = (app: string, name: string, query: string) =>
           Effect.gen(function* () {
             const trace = randomBytes(16).toString("hex");
@@ -285,12 +267,10 @@ layer(HostedLive, { excludeTestServices: true })("Skill read telemetry", (it) =>
               Object.hasOwn(tags, "executor.skill.operation"),
             );
           });
-        // The Executor app's skills read with its linked accounts; none needs choosing.
         const ownViaApi = yield* viaApi(guide.app.id, "app-authoring", "");
         expect(ownViaApi).toMatchObject(executorRead("app-authoring", "SKILL.md"));
         const theirsViaApi = yield* viaApi(customer.id, "executor", "file=feedback.md");
         expectCustomerRead(theirsViaApi, privateValues);
-        // The skill's name is in the path; the request's span records the route instead.
         const namedRequest = yield* viaApi(customer.id, marker, "");
         expectTemplatedPath(namedRequest, "/v1/apps/:app/skills/:name", privateValues);
         yield* evidence.json("skill-read-spans.json", {

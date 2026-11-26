@@ -26,7 +26,6 @@ import {
 import type { HostedError } from "../../contracts/errors.ts";
 import { useOrganizationRoute } from "../components/organization.tsx";
 
-/** Discover and run tools with the accounts linked to the app. */
 export function AppTools({
   app,
   requirements,
@@ -103,7 +102,6 @@ export function AppTools({
   );
 }
 
-/** Tool discovery keeps each expected error's explanation and safe recovery prompt. */
 function ToolsFailure<E extends UserFacingError>({ cause, retry, retrying }: FailureProps<E>) {
   const href = useRouterState({ select: (state) => state.location.href });
   const error = Option.getOrElse(Cause.findErrorOption(cause), () => undeclaredError(cause));
@@ -131,7 +129,6 @@ function ToolsFailure<E extends UserFacingError>({ cause, retry, retrying }: Fai
     </div>
   );
 }
-/** Tool failures keep the hosted API's safe copy; provider failures are shared by the runner. */
 function ToolCallFailure({ cause }: FailureProps<HostedError>) {
   return (
     <p role="alert" className="text-destructive text-[13px]">

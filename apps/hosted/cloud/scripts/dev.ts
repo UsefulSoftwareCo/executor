@@ -1,4 +1,3 @@
-/** Trust the existing local HTTPS CA before Alchemy starts workerd and its sidecars. */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Config, Effect, FileSystem, Option, Path, Schema } from "effect";
@@ -19,10 +18,7 @@ NodeRuntime.runMain(
       const certificate = yield* Config.String("NODE_EXTRA_CA_CERTS").pipe(
         Config.withDefault(path.join(userDirectory, ".portless", "ca.pem")),
       );
-      // OAuth clients use the existing HTTP loopback listener for their callback;
-      // that endpoint returns to the HTTPS dashboard with its browser session intact.
       const configuration = yield* cloudDevelopment;
-      // With role hosts the Worker derives the callback from them; it takes no relay.
       const roleHosts = yield* Config.String("EXECUTOR_ROLE_HOSTS_DOMAIN").pipe(Config.option);
       const callback = yield* Config.String("EXECUTOR_OAUTH_CALLBACK_URL").pipe(
         Config.withDefault(`http://127.0.0.1:${configuration.apiPort}/api/oauth/callback`),
@@ -41,6 +37,7 @@ NodeRuntime.runMain(
           stdin: "inherit",
           stdout: "inherit",
           stderr: "inherit",
+          forceKillAfter: "10 seconds",
         }),
       );
       process.exitCode = Number(yield* child.exitCode);

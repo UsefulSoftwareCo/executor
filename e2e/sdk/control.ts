@@ -1,4 +1,3 @@
-/** Loopback control for a foreground environment; each retained scenario owns a child scope. */
 import { createServer } from "node:http";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
@@ -9,7 +8,6 @@ import {
   Exit,
   FileSystem,
   Layer,
-  Redacted,
   Schema,
   Scope,
   Semaphore,
@@ -19,6 +17,7 @@ import { startEnvironment } from "./environment.ts";
 import { createScenario, ScenarioFailed } from "./session.ts";
 import { DataShape } from "./data.ts";
 import { FixtureControl, ScenarioId } from "./contracts.ts";
+import { reveal, secret } from "../support/failure-text.ts";
 
 const Identity = Schema.Struct({ id: ScenarioId });
 const Role = Schema.Literals(["owner", "admin", "member"]);
@@ -33,7 +32,6 @@ const Request = Schema.Struct({
   body: Schema.optional(Schema.Unknown),
 });
 
-/** Keep this process alive while exploring. Closing its scope releases all product resources. */
 export const serveEnvironment = (input: {
   readonly target: "local" | "self-host" | "cloud" | "deployed";
   readonly database: "neon" | "planetscale";
@@ -47,7 +45,6 @@ export const serveEnvironment = (input: {
         operation: "Handle already exists; stop its environment or choose another path",
       });
     let written = false;
-    // This finalizer runs last, so disappearance of the handle confirms all teardown finished.
     yield* Effect.addFinalizer(() =>
       written ? fs.remove(input.handle).pipe(Effect.orDie) : Effect.void,
     );
@@ -55,7 +52,7 @@ export const serveEnvironment = (input: {
     const parent = yield* Effect.scope;
     const stopped = yield* Deferred.make<void>();
     const gate = yield* Semaphore.make(4);
-    const token = Redacted.make(randomBytes(32).toString("hex"));
+    const token = secret(randomBytes(32).toString("hex"));
     type Scenario = Effect.Success<ReturnType<typeof createScenario>>;
     const sessions = new Map<
       string,
@@ -115,7 +112,7 @@ export const serveEnvironment = (input: {
       Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest;
         const actual = Buffer.from(request.headers.authorization ?? ""),
-          expected = Buffer.from(`Bearer ${Redacted.value(token)}`);
+          expected = Buffer.from(`Bearer ${reveal(token)}`);
         if (actual.length !== expected.length || !timingSafeEqual(actual, expected))
           return HttpServerResponse.empty({ status: 401 });
         return yield* gate

@@ -1,10 +1,8 @@
-/** Account-dependent discovery is exercised through real app factories and public routes. */
 import { expect } from "@effect/vitest";
 import { Effect } from "effect";
 import { Browser } from "./browser.ts";
 import { holdQuery, refreshVisiblePage } from "./query-transition.ts";
 
-/** Distinct synthetic credentials expose different tools; a collection exposes their combined catalog. */
 export const accountToolSource = `import { defineApp, defineProvider, secrets, object, string, query, router } from "apps";
 const service = defineProvider({ name: "Workspace fixture", auth: { key: secrets({ label: "API key", fields: object({ token: string() }) }) } });
 export default defineApp({ user: { accounts: { workspaces: service.many() } } }, async ctx => {
@@ -16,13 +14,13 @@ export default defineApp({ user: { accounts: { workspaces: service.many() } } },
  }) };
 });`;
 
-/** A held replacement catalog must never display tools from the previous account under the new label. */
 export const checkToolAccountContext = <E, R>(input: {
   readonly url: string;
   readonly catalogs: readonly string[];
   readonly work: string;
   readonly personal: string;
   readonly select: (ids: readonly string[]) => Effect.Effect<unknown, E, R>;
+  readonly renderedCatalog?: boolean;
 }) =>
   Effect.gen(function* () {
     const browser = yield* Browser;
@@ -32,25 +30,30 @@ export const checkToolAccountContext = <E, R>(input: {
     yield* browser.use("Work account is shown as linked", (page) =>
       page.getByText("Work GitHub", { exact: true }).waitFor({ state: "visible" }),
     );
-    yield* browser.use("Open work tools", (page) => page.goto(url("tools")));
-    yield* browser.use("Work account exposes its own tools", (page) =>
-      page
-        .getByRole("navigation", { name: "App tools" })
-        .getByRole("button", { name: "work", exact: true })
-        .waitFor({ state: "visible" }),
-    );
-    expect(
-      yield* browser.use("Personal tools are absent from the work catalog", (page) =>
-        page
-          .getByRole("navigation", { name: "App tools" })
-          .getByRole("button", { name: "personal", exact: true })
-          .count(),
-      ),
-    ).toBe(0);
-    yield* browser.checkpoint("Tools for the work account");
     yield* Effect.scoped(
       Effect.gen(function* () {
-        const held = yield* holdQuery(input.catalogs, "continue", { allRequests: true });
+        const rendered = input.renderedCatalog
+          ? yield* holdQuery(input.catalogs, "continue", { allRequests: true })
+          : undefined;
+        yield* browser.use("Open work tools", (page) => page.goto(url("tools")));
+        if (rendered) yield* rendered.requested;
+        yield* browser.use("Work account exposes its own tools", (page) =>
+          page
+            .getByRole("navigation", { name: "App tools" })
+            .getByRole("button", { name: "work", exact: true })
+            .waitFor({ state: "visible" }),
+        );
+        expect(
+          yield* browser.use("Personal tools are absent from the work catalog", (page) =>
+            page
+              .getByRole("navigation", { name: "App tools" })
+              .getByRole("button", { name: "personal", exact: true })
+              .count(),
+          ),
+        ).toBe(0);
+        yield* browser.checkpoint("Tools for the work account");
+        const held =
+          rendered ?? (yield* holdQuery(input.catalogs, "continue", { allRequests: true }));
         yield* input.select([input.personal]);
         yield* refreshVisiblePage;
         yield* held.requested;

@@ -120,8 +120,6 @@ layer(HostedLive, { excludeTestServices: true })("Organization API keys", (it) =
         removed = true;
         yield* evidence.step(
           "Wait for durable removal to delete the organization's keys",
-          // The organization list hides tombstones immediately. It cannot prove that
-          // the durable deletion workflow has reached its auth-record step.
           list.pipe(
             Effect.flatMap((remaining) =>
               remaining.apiKeys.some((item) => item.metadata?.organization === organization.id)

@@ -29,7 +29,6 @@ const KnownError = Schema.Literals([
   "unable_to_create_session",
   "signup_disabled",
 ]);
-/** Grant types a client may name; Executor serves authorization codes and refresh tokens. */
 const GrantType = Schema.Literals(["authorization_code", "refresh_token", "client_credentials"]);
 /** RFC 6749 token errors, and RFC 8707's for a resource the grant does not cover. */
 const TokenError = Schema.Literals([
@@ -52,10 +51,11 @@ const RegistrationError = Schema.Literals([
   "invalid_target",
   "access_denied",
 ]);
-/**
- * Why Better Auth refused a registration, matched against the fixed opening of its own
- * `error_description`. The description itself names client input and is never recorded.
- */
+export const oauthErrorCodes: ReadonlyArray<string> = [
+  ...KnownError.literals,
+  ...TokenError.literals,
+  ...RegistrationError.literals,
+];
 const registrationRejections = [
   ["redirect_uri_not_absolute", /^redirect URI must be an absolute URI/u],
   ["redirect_uri_credentials_or_fragment", /^redirect URI must not include credentials/u],
@@ -74,7 +74,6 @@ const registrationRejections = [
   ["authentication_required", /^Authentication required for client registration/u],
   ["registration_disabled", /^Client registration is disabled/u],
 ] as const;
-/** Fields a registration names; a schema refusal's description starts with the field's path. */
 const RegistrationField = Schema.Literals([
   "redirect_uris",
   "scope",
@@ -113,32 +112,20 @@ const OAuthErrorBody = Schema.fromJsonString(
 );
 const JsonTokenRequest = Schema.fromJsonString(Schema.Struct({ grant_type: Schema.String }));
 const JsonRefreshRequest = Schema.fromJsonString(Schema.Struct({ refresh_token: Schema.String }));
-/** Token requests are a few hundred bytes; a larger body is not read a second time. */
 const tokenBodyLimit = 16_384;
 const formType = "application/x-www-form-urlencoded";
-/** better-call's test for a JSON body, applied before its form one. */
 const jsonType = /^application\/([a-z0-9.+-]*\+)?json/i;
-/**
- * A copy of the body Better Auth will parse, taken before it reads the original. None when it
- * would not parse one: its token endpoint answers any type but a form 415 without reading.
- */
 const tokenBody = (request: HttpServerRequest.HttpServerRequest) =>
   Effect.gen(function* () {
     if (Number(request.headers["content-length"]) > tokenBodyLimit) return Option.none();
     const type = request.headers["content-type"]?.toLowerCase() ?? "";
     const essence = type.split(";")[0]!.trim();
     const json = jsonType.test(type);
-    // `formData()` refuses any other form type.
     if (!essence.includes(formType) || (!json && essence !== formType)) return Option.none();
     const body = (yield* HttpServerRequest.toWeb(request)).clone().body;
     return body === null ? Option.none() : Option.some({ json, body });
   }).pipe(Effect.orElseSucceed(() => Option.none()));
 
-/**
- * Read the copy as its bytes arrive, at most `tokenBodyLimit`, beside Better Auth's own read. A
- * promise rather than a fiber, so the read keeps pace with Better Auth's and its answer never
- * waits for it. `text` stays undefined until the whole copy is read.
- */
 const readBody = (body: ReadableStream<Uint8Array>) => {
   const reader = body.getReader();
   const chunks: Uint8Array[] = [];
@@ -161,12 +148,10 @@ const readBody = (body: ReadableStream<Uint8Array>) => {
       chunks.push(value);
       return next();
     });
-  // A body the client stopped sending stays unread.
   next().catch(() => undefined);
   return read;
 };
 
-/** The grant type Better Auth reads from the body: the last value named, trimmed, case kept. */
 const grantType = (json: boolean, text: string) => {
   const value = json
     ? Option.getOrUndefined(
@@ -174,12 +159,10 @@ const grantType = (json: boolean, text: string) => {
       )
     : new URLSearchParams(text).getAll("grant_type").at(-1);
   const trimmed = value?.trim() ?? "";
-  // Better Auth answers an empty grant type as a missing one.
   if (trimmed === "") return "unknown";
   return Option.getOrElse(Schema.decodeUnknownOption(GrantType)(trimmed), () => "other" as const);
 };
 
-/** The refresh token the body presents, read the way its grant type is. */
 const presentedRefreshToken = (json: boolean, text: string) => {
   const value = json
     ? Option.getOrUndefined(
@@ -192,11 +175,6 @@ const presentedRefreshToken = (json: boolean, text: string) => {
   return value === undefined || value === "" ? undefined : value;
 };
 
-/**
- * A short one-way reference to a presented refresh token, so repeated attempts with the same
- * token can be told apart from distinct ones. Domain-separated so it never equals the hash
- * Better Auth stores.
- */
 const refreshTokenRef = (token: string) =>
   Effect.promise(() =>
     crypto.subtle.digest(
@@ -211,13 +189,11 @@ const refreshTokenRef = (token: string) =>
     ),
   );
 
-/** The endpoint's own JSON error answer, if it gave one. */
 const errorBody = (response: HttpServerResponse.HttpServerResponse) =>
   response.body._tag === "Uint8Array"
     ? Schema.decodeUnknownOption(OAuthErrorBody)(new TextDecoder().decode(response.body.body))
     : Option.none();
 
-/** The `error` of the endpoint's own JSON answer when it is a known code; never its description. */
 const tokenError = (response: HttpServerResponse.HttpServerResponse) => {
   if (response.status < 400) return "none";
   return Option.getOrElse(
@@ -228,7 +204,6 @@ const tokenError = (response: HttpServerResponse.HttpServerResponse) => {
   );
 };
 
-/** A refused registration's OAuth error and the rule it broke, from closed vocabularies. */
 const registrationOutcome = (response: HttpServerResponse.HttpServerResponse) => {
   if (response.status < 400) return { error: "none", rejection: "none" };
   const body = Option.getOrUndefined(errorBody(response));
@@ -238,24 +213,16 @@ const registrationOutcome = (response: HttpServerResponse.HttpServerResponse) =>
   const description = body?.error_description ?? "";
   const rule = registrationRejections.find(([, pattern]) => pattern.test(description));
   if (rule !== undefined) return { error, rejection: rule[0] };
-  // A schema refusal opens with the path of the field it refused, such as `redirect_uris[0]`.
   const field = Schema.decodeUnknownOption(RegistrationField)(
     /^([a-z_]+)(?:[.:[ ]|$)/u.exec(description)?.[1],
   );
   return { error, rejection: Option.getOrElse(field, () => "other" as const) };
 };
 
-/**
- * The MCP client a registration names, from a closed set. Each pattern is matched, in order,
- * against the registration's `client_name` and then its `software_id`, ignoring case. Both are
- * self-declared, so this says what a client calls itself, never who it is.
- */
 const clientFamilies = [
   ["executor-cli", /\bexecutor cli\b/iu],
-  // "Claude Code (<server name>)".
   ["claude-code", /\bclaude[ -]?code\b/iu],
   ["claude-desktop", /\bclaude desktop\b/iu],
-  // Claude's connectors register as "claudeai" for the web and desktop apps alike.
   ["claude-ai", /\bclaude(?:\.?ai)?\b/iu],
   ["codex", /\bcodex\b/iu],
   ["chatgpt", /\bchatgpt\b/iu],
@@ -263,7 +230,6 @@ const clientFamilies = [
   ["vscode", /\b(?:visual studio code|vs ?code)\b/iu],
   ["windsurf", /\b(?:windsurf|codeium)\b/iu],
 ] as const;
-/** Callbacks only one client can receive, for a registration whose name says nothing known. */
 const clientCallbacks = [
   ["claude-ai", /^https:\/\/(?:claude\.ai|claude\.com)\//iu],
   ["chatgpt", /^https:\/\/(?:chatgpt\.com|chat\.openai\.com)\//iu],
@@ -276,7 +242,6 @@ const RegisteredClient = Schema.Struct({
   softwareId: Schema.optionalKey(Schema.NullOr(Schema.String)),
   redirectUris: Schema.optionalKey(Schema.NullOr(Schema.Array(Schema.String))),
 });
-/** `unknown` when no registration was found; `other` for one that names no known client. */
 const clientFamily = (row: unknown): ClientFamily => {
   const client = Schema.decodeUnknownOption(RegisteredClient)(row);
   if (Option.isNone(client)) return "unknown";
@@ -291,7 +256,6 @@ const clientFamily = (row: unknown): ClientFamily => {
   );
   return callback === undefined ? "other" : callback[0];
 };
-/** The naming fields of a registration body; any that are malformed name no client. */
 const RegistrationRequest = Schema.Struct({
   client_name: Schema.optionalKey(Schema.Unknown),
   software_id: Schema.optionalKey(Schema.Unknown),
@@ -299,10 +263,6 @@ const RegistrationRequest = Schema.Struct({
 });
 const OAuthClientRequest = Schema.Struct({ client_id: Schema.NonEmptyString });
 const ConsentRequest = Schema.Struct({ oauth_query: Schema.String });
-/**
- * The client ID an OAuth request names, where Better Auth reads it: the token request's body or
- * Basic credentials, the authorization request's query or body, or the consent's signed query.
- */
 const requestedClientId = (ctx: {
   readonly path?: string | undefined;
   readonly body?: unknown;
@@ -332,16 +292,23 @@ const requestedClientId = (ctx: {
 };
 const clientPaths = new Set(["/oauth2/token", "/oauth2/authorize", "/oauth2/consent"]);
 interface OAuthRequest {
-  /** Why Better Auth refused this request's refresh grant, if it did. */
   rejection: RefreshRejection | undefined;
-  /** Set once the request's client registration has been read, found or not. */
   client: ClientFamily | undefined;
 }
 
 type Stage = "callback_validation" | "token_exchange" | "user_info" | "account_session";
+export type ProviderPhotoRefresh =
+  | "new_user"
+  | "absent"
+  | "unchanged"
+  | "updated"
+  | "user_missing"
+  | "failed";
 interface Progress {
   stage: Stage;
   sessionCreated: boolean;
+  photo: "present" | "absent" | "unknown";
+  photoRefresh: ProviderPhotoRefresh | "none";
 }
 interface Observation {
   readonly provider: "github" | "google" | "other";
@@ -349,14 +316,9 @@ interface Observation {
   readonly run: <A>(effect: Effect.Effect<A>) => Promise<A>;
 }
 
-/**
- * Observe social callbacks and OAuth token, registration, authorization and consent requests without
- * exporting URLs, tokens, client IDs or names, provider payloads or thrown errors.
- */
 export const authObservability = () => {
   const requests = new AsyncLocalStorage<Observation>();
   const oauthRequests = new AsyncLocalStorage<OAuthRequest>();
-  /** Run an OAuth request, then record the family of the client it named. */
   const observeClient = <E, R>(
     handler: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
     observed: OAuthRequest = { rejection: undefined, client: undefined },
@@ -371,14 +333,11 @@ export const authObservability = () => {
       yield* Effect.annotateCurrentSpan("auth.token.client_family", observed.client ?? "unknown");
       return exit;
     });
-  /** Record the grant, the answer's OAuth error, rate limiting and why a refresh was refused. */
   const observeToken = <E, R>(
     handler: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
   ) =>
     Effect.gen(function* () {
       const request = yield* HttpServerRequest.HttpServerRequest;
-      // Read the copy beside Better Auth, never before it: its rate limit answers without the
-      // body, and telemetry must not delay that answer.
       const copy = Option.map(yield* tokenBody(request), ({ json, body }) => ({
         json,
         read: readBody(body),
@@ -386,7 +345,6 @@ export const authObservability = () => {
       const span = yield* Effect.currentSpan.pipe(Effect.option);
       const observed: OAuthRequest = { rejection: undefined, client: undefined };
       const exit = yield* observeClient(handler, observed);
-      // A body still arriving when the answer is ready stays unknown.
       let grant: ReturnType<typeof grantType> = "unknown";
       let presented: string | undefined;
       if (Option.isSome(copy)) {
@@ -413,8 +371,6 @@ export const authObservability = () => {
           "auth.token.refresh_token_ref",
           yield* refreshTokenRef(presented),
         );
-      // How long ago the presented token stopped being current: reuse within the replay window
-      // is a sibling instance, while reuse long after it is a copy kept since then.
       if (rejection?.revokedAt !== undefined)
         yield* Effect.annotateCurrentSpan({
           "auth.token.refresh_revoked_age_seconds": Math.max(
@@ -425,7 +381,6 @@ export const authObservability = () => {
         });
       return yield* exit;
     });
-  /** Record the OAuth error a registration was refused with and which rule refused it. */
   const observeRegistration = <E, R>(
     handler: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
   ) =>
@@ -446,8 +401,6 @@ export const authObservability = () => {
     observation.progress.stage = name;
     const result = await observation.run(
       Effect.gen(function* () {
-        // Better Auth owns these Promise errors. Keep the original rejection for it,
-        // but never let a provider payload become an Effect span's error cause.
         const result = yield* Effect.promise(() =>
           Promise.resolve()
             .then(task)
@@ -471,14 +424,10 @@ export const authObservability = () => {
   };
   const plugin: BetterAuthPlugin = {
     id: "executor-auth-observability",
-    // Register last so emulator and other provider plugins have finished initialization.
     init: (context) => {
-      // Better Auth assigns the returned context onto this one, so keep the adapter it replaces.
       const adapter = context.adapter;
       return {
         context: {
-          // Better Auth reads the client of most OAuth requests by its ID. Classify that row
-          // as it passes, so a request that loads its client costs no further query.
           adapter: {
             ...adapter,
             findOne: async <T>(query: Parameters<typeof adapter.findOne>[0]) => {
@@ -497,12 +446,20 @@ export const authObservability = () => {
                 () => provider.validateAuthorizationCode(...args),
                 (value) => value != null,
               ),
-            getUserInfo: (...args) =>
-              stage(
+            getUserInfo: async (...args) => {
+              const info = await stage(
                 "user_info",
                 () => provider.getUserInfo(...args),
                 (value) => value?.user != null,
-              ),
+              );
+              const observation = requests.getStore();
+              if (observation !== undefined && info?.user != null) {
+                const { image } = info.user;
+                observation.progress.photo =
+                  typeof image === "string" && image.length > 0 ? "present" : "absent";
+              }
+              return info;
+            },
           })),
         },
       };
@@ -511,8 +468,6 @@ export const authObservability = () => {
       before: [
         {
           matcher: (ctx) => ctx.path === "/oauth2/register",
-          // A registration is not stored yet, refused or not: name its client from the body,
-          // before Better Auth validates it.
           handler: createAuthMiddleware(async (ctx) => {
             const observed = oauthRequests.getStore();
             if (observed === undefined) return;
@@ -533,8 +488,6 @@ export const authObservability = () => {
       after: [
         {
           matcher: (ctx) => ctx.path !== undefined && clientPaths.has(ctx.path),
-          // Requests that fail before Better Auth reads their client, such as a refresh token
-          // that no longer exists, read it here by its ID. Telemetry never fails the request.
           handler: createAuthMiddleware(async (ctx) => {
             const observed = oauthRequests.getStore();
             if (observed === undefined || observed.client !== undefined) return;
@@ -550,7 +503,6 @@ export const authObservability = () => {
   };
   return {
     plugin,
-    /** Better Auth refused the current token request's refresh grant. */
     refreshRejected: (rejection: RefreshRejection) => {
       const observed = oauthRequests.getStore();
       if (observed !== undefined) observed.rejection = rejection;
@@ -558,6 +510,10 @@ export const authObservability = () => {
     sessionCreated: () => {
       const observation = requests.getStore();
       if (observation !== undefined) observation.progress.sessionCreated = true;
+    },
+    providerPhoto: (refresh: ProviderPhotoRefresh) => {
+      const observation = requests.getStore();
+      if (observation !== undefined) observation.progress.photoRefresh = refresh;
     },
     observe: <E, R>(handler: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>) =>
       Effect.gen(function* () {
@@ -576,7 +532,6 @@ export const authObservability = () => {
         const record = (attributes: Record<string, string | number | boolean>) =>
           Effect.gen(function* () {
             yield* Effect.annotateCurrentSpan(attributes);
-            // Retain HTTP 302 while marking the enclosing request's logical failure too.
             if (Option.isSome(requestSpan))
               for (const [key, value] of Object.entries(attributes))
                 requestSpan.value.attribute(key, value);
@@ -586,7 +541,12 @@ export const authObservability = () => {
           });
         return yield* Effect.gen(function* () {
           const context = yield* Effect.context<R>();
-          const progress: Progress = { stage: "callback_validation", sessionCreated: false };
+          const progress: Progress = {
+            stage: "callback_validation",
+            sessionCreated: false,
+            photo: "unknown",
+            photoRefresh: "none",
+          };
           const exit = yield* Effect.promise((signal) =>
             requests.run(
               {
@@ -605,13 +565,14 @@ export const authObservability = () => {
               "auth.error_code": "internal_error",
               "auth.stage": progress.stage,
               "auth.session_created": progress.sessionCreated,
+              "auth.profile.photo": progress.photo,
+              "auth.photo.refresh": progress.photoRefresh,
               "executor.outcome": "failed",
             };
             yield* record(attributes);
             return exit;
           }
           const response = exit.value;
-          // Inspect only to project a bounded code. Never retain the URL or description.
           let error: string | null = null;
           const location = response.headers.location;
           if (location !== undefined) {
@@ -638,6 +599,8 @@ export const authObservability = () => {
             "auth.error_code": code,
             "auth.stage": progress.stage,
             "auth.session_created": progress.sessionCreated,
+            "auth.profile.photo": progress.photo,
+            "auth.photo.refresh": progress.photoRefresh,
             "http.response.status_code": response.status,
             "executor.outcome": outcome === "failure" ? "failed" : outcome,
           };

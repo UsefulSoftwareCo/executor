@@ -1,4 +1,3 @@
-/** Auth setup runs in a scoped Node deployment job, never in a Worker request. */
 import { Pool } from "pg";
 import { betterAuth } from "better-auth";
 import { provisionHostedOAuthResources } from "@executor-js/hosted-server";
@@ -8,7 +7,6 @@ import { Config, Effect, Redacted } from "effect";
 import { unavailableAuthEmail } from "../contracts/email.ts";
 import { cloudAuthOptions, cloudAuthSettings } from "./auth-options.ts";
 
-/** The caller's scope owns the setup pool; migrations and provisioning use the same options. */
 export const cloudAuthSetup = Effect.gen(function* () {
   const url = yield* databaseUrl;
   const settings = yield* cloudAuthSettings;
@@ -20,7 +18,6 @@ export const cloudAuthSetup = Effect.gen(function* () {
     }),
     (pool) => Effect.promise(() => pool.end()),
   );
-  // Setup serves no requests; the limit stays at its default.
   const base = cloudAuthOptions({ ...settings, rateLimitEnabled: true }, [], unavailableAuthEmail);
   const options = {
     ...base,

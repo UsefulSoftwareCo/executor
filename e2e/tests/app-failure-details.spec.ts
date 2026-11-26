@@ -1,4 +1,3 @@
-/** Build, operation and evaluation failures reach the app's caller with their own details. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Layer, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -101,7 +100,6 @@ layer(HostedLive, { excludeTestServices: true })("App failure details", (it) => 
             files: [...files, appsManifest],
           });
 
-        // The compiler's own error and location reach the deployer, with 1-based columns.
         const compile = yield* deploy([
           {
             path: "index.ts",
@@ -118,8 +116,6 @@ export default defineApp({}, { tools: router({ broken: ) }) });`,
         });
         expect(compiled.message).toContain('index.ts:2:56: Unexpected ")"');
 
-        // Columns count UTF-16 code units, as editors do, after non-ASCII text on the same line:
-        // "é" is one unit and "🙂" two, though they take two and four bytes.
         const unicode = yield* deploy([
           {
             path: "index.ts",
@@ -136,7 +132,6 @@ export default defineApp({}, { tools: router({ "café 🙂": ) }) });`,
         });
         expect(counted.message).toContain('index.ts:2:59: Unexpected ")"');
 
-        // An import that no deployed file satisfies fails where it is written.
         const missing = yield* deploy([
           {
             path: "index.ts",
@@ -154,7 +149,6 @@ export default defineApp({}, { tools: router({ value }) });`,
         });
         expect(unloaded.message).toContain('index.ts:2:23: Cannot find "./not-there.ts"');
 
-        // An imported JSON file that is not JSON fails at its first invalid character.
         const json = yield* deploy([
           {
             path: "index.ts",
@@ -175,8 +169,6 @@ export default defineApp({}, { tools: router({
         });
         expect(parsed.message).toContain("settings.json:3:18: Invalid JSON");
 
-        // A declaration that throws while the Worker loads is located in its own file, and a
-        // value passed where a schema belongs is named.
         const invalid = yield* deploy([
           {
             path: "index.ts",
@@ -203,8 +195,6 @@ export const tools = router({
         expect(located.message).toContain("Call it, as in string().");
         expect(located.message).toContain("at lib/tools.ts:3:26");
 
-        // An OAuth declaration that does not match its schema names the failing option and why,
-        // leaving out the forms the author did not mean (here, discovery's missing `discover`).
         const oauth = yield* deploy([
           {
             path: "index.ts",
@@ -226,8 +216,6 @@ export default defineApp({ user: { accounts: { service } } }, {});`,
         );
         expect(oauthFailure.message).not.toContain("discover");
 
-        // A client credentials declaration is read as one, so the option it lacks is named rather
-        // than the authorization code forms' objections to its grant.
         const machine = yield* deploy([
           {
             path: "index.ts",
@@ -249,7 +237,6 @@ export default defineApp({ user: { accounts: { service } } }, {});`,
         );
         expect(machineFailure.message).not.toContain("grant");
 
-        // An app that throws while its module loads reports its own message at declaration.
         const declaration = yield* deploy([
           {
             path: "index.ts",
@@ -264,7 +251,6 @@ export default defineApp({}, {});`,
         expect(declared.stage).toBe("declaration");
         expect(declared.message).toContain(declarationMarker);
 
-        // A frozen error keeps its own name, message and location: reporting it changes nothing on it.
         const frozen = yield* deploy([
           {
             path: "index.ts",
@@ -284,7 +270,6 @@ export default defineApp({}, {});`,
         expect(kept.message).toContain("at index.ts:2:21");
         expect(kept.message).not.toContain("read only");
 
-        // The Executor app's deploy tool carries the same detail to an MCP caller.
         const { client, queries } = yield* frameworkSession;
         const deployed = yield* client.use("Deploy a failing app through MCP", (client, signal) =>
           client.callTool(
@@ -345,13 +330,10 @@ export default defineApp({}, {});`,
             kind,
             input: {},
           });
-        // The caller lists the tools first: only a kept listing confirms that a query only reads,
-        // so its failures keep a read's advice.
         expect((yield* api.request(actors.owner, "GET", `${prefix}/${app.id}/tools`)).status).toBe(
           200,
         );
 
-        // The app's own error name and message pass through, not a fixed SDK reason.
         const query = yield* body(ToolFailed, yield* call("fail", "query"));
         expect(query.failure).toEqual({
           source: "app",
@@ -362,8 +344,6 @@ export default defineApp({}, {});`,
         const mutation = yield* body(ToolFailed, yield* call("failWrite", "mutation"));
         expect(mutation.failure).toMatchObject({ source: "app", errorName: "TypeError" });
 
-        // A cache that was unavailable for the operation, as when another load took over its
-        // lease, is temporary; a request over the cache's limits fails the same way again.
         const unavailable = yield* call("cacheUnavailable", "query");
         expect(unavailable.body).toMatchObject({
           _tag: "ToolCallFailed",
@@ -387,7 +367,6 @@ export default defineApp({}, {});`,
           },
         });
 
-        // MCP callers receive the same message with recovery guidance.
         const { client } = yield* frameworkSession;
         const executed = yield* client.use("Call a failing app query", (client, signal) =>
           client.callTool(
@@ -405,7 +384,6 @@ export default defineApp({}, {});`,
         const failure = (yield* Schema.decodeUnknownEffect(ExecutionFailed)(
           executed.structuredContent,
         )).execution.error;
-        // Executor cannot tell whether the app's error is temporary, so a read may be tried once more.
         expect(failure.response).toMatchObject({
           code: "ToolCallFailed",
           message: `The app threw ConversationMissing: ${appMarker}`,
@@ -444,8 +422,6 @@ export default defineApp({}, {});`,
         expect(yield* cacheRetryable("cacheUnavailable")).toBe(true);
         expect(yield* cacheRetryable("cacheOverLimit")).toBe(false);
 
-        // A mutation's error may follow changes it made outside app data, so the agent is told
-        // not to repeat it automatically; the cause's advice for a read follows only as a quote.
         const wrote = yield* client.use("Call a failing app mutation", (client, signal) =>
           client.callTool(
             {

@@ -1,52 +1,44 @@
-/** Effect owns the bundled Motel workerd process and restarts it after unexpected exits. */
-import { createRequire } from "node:module";
 import { Deferred, Effect, FileSystem, Path, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
-/** workerd's control message once the collector socket accepts connections. */
 const Listening = Schema.Struct({
-  event: Schema.Literal("listen"),
-  socket: Schema.Literal("motel"),
+  event: Schema.Literal("listening"),
   port: Schema.Number.check(
     Schema.makeFilter((port) => Number.isInteger(port) && port > 0 && port < 65_536),
   ),
 });
 
-const WorkerdPackage = Schema.Struct({ default: Schema.String });
+const bounds = [
+  "--retention-hours=168",
+  "--max-store-mb=1024",
+  "--max-export-bytes=16777216",
+  "--max-pending=4",
+];
 
-/**
- * Serve the Motel bundle with the workerd executable the runtime already ships. The bundle's
- * config names its data and asset directories; the host supplies their paths and the port.
- * Port 0 binds any free port, which workerd reports on descriptor 3.
- */
-const serveMotel = (bundle: string, data: string, port: number) =>
+export interface CollectorFiles {
+  readonly executable: string;
+  readonly viewer: string;
+}
+
+const serveCollector = (files: CollectorFiles, data: string, port: number) =>
   Effect.gen(function* () {
     const path = yield* Path.Path;
     const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
-    const workerd = yield* Effect.try(() => createRequire(import.meta.url)("workerd")).pipe(
-      Effect.flatMap(Schema.decodeUnknownEffect(WorkerdPackage)),
-    );
     const child = yield* processes.spawn(
       ChildProcess.make(
-        workerd.default,
+        files.executable,
         [
           "serve",
-          "--control-fd=3",
-          `--directory-path=motel-data=${data}`,
-          `--directory-path=motel-assets=${path.join(bundle, "web/dist")}`,
-          `--socket-addr=motel=127.0.0.1:${port}`,
-          path.join(bundle, "motel.capnp"),
+          `--data=${data}`,
+          `--listen=127.0.0.1:${port}`,
+          `--viewer=${files.viewer}`,
+          ...bounds,
         ],
         {
-          // A process's working directory cannot be removed or renamed on Windows. workerd can
-          // outlive the parent's reported exit while it terminates, so it never runs inside data.
-          cwd: bundle,
+          cwd: path.dirname(files.executable),
           stdin: "ignore",
           stdout: "pipe",
           stderr: "pipe",
-          additionalFds: { fd3: { type: "output" } },
-          // workerd does not watch its parent. It shares the parent's process group on POSIX and
-          // Node's kill-on-close job on Windows, so stopping the parent also stops workerd.
           detached: false,
           killSignal: "SIGTERM",
           forceKillAfter: 3_000,
@@ -54,7 +46,7 @@ const serveMotel = (bundle: string, data: string, port: number) =>
       ),
     );
     const listening = yield* Deferred.make<number>();
-    yield* child.getOutputFd(3).pipe(
+    yield* child.stdout.pipe(
       Stream.decodeText,
       Stream.splitLines,
       Stream.runForEach((line) =>
@@ -68,20 +60,17 @@ const serveMotel = (bundle: string, data: string, port: number) =>
     return { child, listening: Deferred.await(listening) };
   });
 
-/** Start supervision immediately; only exports await the collector's first ready address. */
-export const startCollector = (directory: string, bundle: string) =>
+export const startCollector = (directory: string, files: CollectorFiles) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const initial = yield* Deferred.make<string>();
     const statusPath = path.join(directory, "collector.json");
-    const data = path.join(directory, "motel");
+    const data = path.join(directory, "collector");
     yield* fs.makeDirectory(data, { recursive: true, mode: 0o700 });
     let pid: number | undefined;
-    // A restart keeps the first bound port, so exporters keep one address.
     let port = 0;
     const url = () => `http://127.0.0.1:${port}`;
-    // Read the process and port when the write runs, not when the pipeline is built.
     const status = (state: "starting" | "running" | "restarting" | "stopped") =>
       Effect.suspend(() =>
         fs.writeFileString(
@@ -98,20 +87,15 @@ export const startCollector = (directory: string, bundle: string) =>
     yield* Effect.addFinalizer(() => status("stopped").pipe(Effect.orDie));
     const run = Effect.scoped(
       Effect.gen(function* () {
-        const { child, listening } = yield* serveMotel(bundle, data, port);
+        const { child, listening } = yield* serveCollector(files, data, port);
         pid = child.pid;
-        yield* Effect.forEach(
-          [child.stdout, child.stderr],
-          (output) =>
-            output.pipe(
-              Stream.decodeText,
-              Stream.splitLines,
-              Stream.runForEach((line) =>
-                Effect.logInfo(line).pipe(Effect.annotateLogs({ process: "motel" })),
-              ),
-              Effect.forkScoped,
-            ),
-          { discard: true },
+        yield* child.stderr.pipe(
+          Stream.decodeText,
+          Stream.splitLines,
+          Stream.runForEach((line) =>
+            Effect.logInfo(line).pipe(Effect.annotateLogs({ process: "collector" })),
+          ),
+          Effect.forkScoped,
         );
         yield* listening.pipe(
           Effect.tap((bound) =>

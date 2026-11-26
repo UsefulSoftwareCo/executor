@@ -1,4 +1,3 @@
-/** Local custom MCP imports generate app source; the source generators load on first use. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -48,7 +47,6 @@ layer(TestLive, { excludeTestServices: true })("Local custom import", (it) => {
             )).files;
           });
 
-        // Two imports start together, so neither relies on the other having loaded the generators.
         const imports = yield* Effect.forEach(
           ["first", "second"],
           (label) => importApp(`Local MCP ${label} ${suffix}`),
@@ -58,7 +56,6 @@ layer(TestLive, { excludeTestServices: true })("Local custom import", (it) => {
           const index = files.find((file) => file.path === "index.ts");
           if (index === undefined) return yield* Effect.die("The import has no entry point");
           expect(index.content).toContain(JSON.stringify(`${origin}/mcp`));
-          // A public server needs no account, so no provider is generated.
           expect(files.map((file) => file.path)).not.toContain("provider.ts");
         }
       }),

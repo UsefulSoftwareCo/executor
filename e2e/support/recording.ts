@@ -1,4 +1,3 @@
-/** Effect post-processing adds readable URL chrome without changing the tested page. */
 import { Effect, FileSystem, Path, Schema } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { BrowserDriver } from "./browser.ts";
@@ -11,7 +10,6 @@ const Probe = Schema.Struct({
   streams: Schema.Array(Schema.Struct({ width: Schema.Number, height: Schema.Number })),
   format: Schema.Struct({ duration: Schema.String }),
 });
-/** Inspect the dimensions and duration of an actual captured video. */
 export const probeRecording = (input: string) =>
   Effect.gen(function* () {
     const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -36,7 +34,6 @@ export const probeRecording = (input: string) =>
       return yield* Effect.die(new Error("Recording has no video stream"));
     return { ...stream, duration };
   });
-/** Run an owned ffmpeg export and reject unsuccessful output. */
 export const runFFmpeg = (args: ReadonlyArray<string>) =>
   Effect.gen(function* () {
     const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -48,7 +45,6 @@ export const runFFmpeg = (args: ReadonlyArray<string>) =>
     );
     if (code !== 0) return yield* Effect.die(new Error("Recording export failed"));
   });
-/** Own a rendering page and ffmpeg processes within a scope. No Promise orchestration. */
 export const renderRecording = (input: string, navigationPath: string, directory: string) =>
   Effect.scoped(
     Effect.gen(function* () {

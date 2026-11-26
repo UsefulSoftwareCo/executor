@@ -1,8 +1,3 @@
-/**
- * Each member has at most one copy of a declared schedule. It runs as that member, with the
- * accounts they link to the app when it runs: the one link of each plain requirement and every
- * link of a many() requirement.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -13,11 +8,7 @@ import { App, Resource } from "../support/contracts.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Browser } from "../support/browser.ts";
 import { Evidence } from "../support/evidence.ts";
-import {
-  Access,
-  appAccountsFixture,
-  sharedAccountFixture,
-} from "../support/hosted-app-accounts.ts";
+import { Access, appAccountsFixture } from "../support/hosted-app-accounts.ts";
 import {
   connectionsPath,
   linkAccount,
@@ -57,12 +48,10 @@ const Runs = Schema.Array(
 );
 const Failure = Schema.Struct({ _tag: Schema.String });
 const Ticks = Schema.Array(Schema.String);
-/** More than the schedule's one-minute interval, so each restart makes it due once. */
 const occurrence = 61_000;
 const introduction =
   "Your schedules run as you, with the accounts you linked to this app. Change them in the app’s Accounts tab.";
 
-/** Schedule reads and controls for an app's `tick` schedule and its copies. */
 const tickSchedule = (fixture: {
   readonly api: Effect.Success<typeof Api>;
   readonly actors: typeof Actors.Service;
@@ -71,19 +60,16 @@ const tickSchedule = (fixture: {
   readonly path: string;
 }) => {
   const { api, actors, prefix, app, path } = fixture;
-  /** Every member's copies of `tick`, as `reader` lists them. */
   const copies = (reader: Session) =>
     api.request(reader, "GET", `${path}/schedules`).pipe(
       Effect.flatMap((response) => body(Schema.Array(Settings), response)),
       Effect.map((rows) => rows.filter((row) => row.name === "tick")),
     );
-  /** One copy, as `reader` lists it. */
   const copy = (reader: Session, id: string) =>
     copies(reader).pipe(Effect.map((rows) => rows.find((row) => row.id === id)));
   const runs = api
     .request(actors.owner, "GET", `${prefix}/scheduled-runs?app=${app.id}`)
     .pipe(Effect.flatMap((response) => body(Runs, response)));
-  /** Wait until the scheduler records this many runs with this outcome. */
   const runsWith = (status: string, count: number) =>
     runs.pipe(
       Effect.flatMap((rows) =>
@@ -93,7 +79,6 @@ const tickSchedule = (fixture: {
       ),
       Effect.retry({ schedule: Schedule.spaced("200 millis"), times: 100 }),
     );
-  /** The accounts the schedule's runs wrote, read as `reader` with the accounts they link. */
   const ticks = (reader: Session) =>
     api
       .request(reader, "POST", `${path}/tools/call`, { tool: "ticks", kind: "query", input: {} })
@@ -103,19 +88,15 @@ const tickSchedule = (fixture: {
         ),
         Effect.flatMap((response) => body(Ticks, response)),
       );
-  /** Configure the caller's own copy, adding it when they have none. */
   const configure = (actor: Session, payload: { enabled: boolean }) =>
     api.request(actor, "PATCH", `${path}/schedules/tick`, payload);
-  /** Run the caller's own copy. */
   const runNow = (actor: Session) => api.request(actor, "POST", `${path}/schedules/tick/run`);
-  /** Control one copy by its address. */
   const pause = (actor: Session, id: string, enabled = false) =>
     api.request(actor, "PATCH", `${path}/schedules/tick/copies/${id}`, { enabled });
   const runCopy = (actor: Session, id: string) =>
     api.request(actor, "POST", `${path}/schedules/tick/copies/${id}/run`);
   const remove = (actor: Session, id: string) =>
     api.request(actor, "DELETE", `${path}/schedules/tick/copies/${id}`);
-  /** Require a successful response and decode the copy it returns. */
   const saved = (response: Effect.Success<ReturnType<typeof configure>>) =>
     Effect.gen(function* () {
       expect(response.status, JSON.stringify(response.body)).toBe(200);
@@ -135,7 +116,6 @@ const tickSchedule = (fixture: {
     saved,
   };
 };
-/** An app everyone may use with one plain requirement, so a member's newer link replaces their older one. */
 const plainTickApp = Effect.gen(function* () {
   const api = yield* Api,
     actors = yield* Actors;
@@ -162,16 +142,13 @@ const plainTickApp = Effect.gen(function* () {
       audience: { kind: "everyone" },
     })).status,
   ).toBe(200);
-  /** Connect a personal account from the app, which links it for `actor`. */
   const connect = (actor: Session, label: string) =>
     Effect.gen(function* () {
       const connection = yield* api.request(
         actor,
         "POST",
         connectionsPath(path, "user", "service"),
-        {
-          destination: { kind: "personal" },
-        },
+        {},
       );
       expect(connection.status, JSON.stringify(connection.body)).toBe(200);
       const submitted = yield* api.request(
@@ -187,13 +164,11 @@ const plainTickApp = Effect.gen(function* () {
     });
   return { api, actors, prefix, app, path, connect };
 });
-/** Let one occurrence fall due while the product is stopped, then start it again. */
 const nextOccurrence = Effect.gen(function* () {
   yield* serverControl("stop");
   yield* serverControl("clock/advance", 200, { milliseconds: occurrence });
   yield* serverControl("start");
 });
-/** Wait until `read` reports a copy whose due occurrence was handled since `before`. */
 const handled = (read: Effect.Effect<Settings | undefined, unknown>, before: Settings) =>
   read.pipe(
     Effect.flatMap((current) =>
@@ -206,7 +181,6 @@ const handled = (read: Effect.Effect<Settings | undefined, unknown>, before: Set
     ),
     Effect.retry({ schedule: Schedule.spaced("200 millis"), times: 100 }),
   );
-/** The signed-in member's row for `tick` on the Schedules tab. */
 const row = (page: Page) => page.locator('[aria-label="tick"]');
 
 layer(HostedLive, { excludeTestServices: true })("Hosted account scheduling", (it) => {
@@ -214,16 +188,13 @@ layer(HostedLive, { excludeTestServices: true })("Hosted account scheduling", (i
     withHostedCase(
       context,
       Effect.gen(function* () {
-        const fixture = yield* sharedAccountFixture;
-        const { api, actors, path, aliceId, bobId, shared } = fixture;
+        const fixture = yield* appAccountsFixture;
+        const { api, actors, path, aliceId, bobId, mailB } = fixture;
         const { copies, runsWith, ticks, configure, pause, runCopy, remove, saved } =
           tickSchedule(fixture);
-        // Bob connected the shared account for the plain requirement, which replaced his personal
-        // one there. His copy runs as Bob, with that link.
         const bob = yield* saved(yield* configure(actors.admin, { enabled: true }));
         expect(bob).toMatchObject({ actor: bobId, enabled: true });
         expect(bob.accountRequired).toBeUndefined();
-        // Alice can neither control Bob's copy nor reach it by name: by name she configures her own.
         expect((yield* pause(actors.member, bob.id)).status).toBe(403);
         expect((yield* runCopy(actors.member, bob.id)).status).toBe(403);
         expect((yield* remove(actors.member, bob.id)).status).toBe(403);
@@ -241,14 +212,14 @@ layer(HostedLive, { excludeTestServices: true })("Hosted account scheduling", (i
         const started = yield* runCopy(actors.admin, bob.id);
         expect(started.status, JSON.stringify(started.body)).toBe(200);
         yield* runsWith("succeeded", 1);
-        expect(yield* ticks(actors.admin)).toEqual([shared]);
+        expect(yield* ticks(actors.admin)).toEqual([mailB]);
 
         const run = yield* Effect.acquireRelease(
           api
             .request(actors.admin, "POST", `${path}/workflow-runs`, {
               workflow: "capture",
               input: {},
-              key: "shared-context",
+              key: "actor-context",
             })
             .pipe(
               Effect.tap((response) =>
@@ -256,8 +227,6 @@ layer(HostedLive, { excludeTestServices: true })("Hosted account scheduling", (i
               ),
               Effect.flatMap((response) => body(Resource, response)),
             ),
-          // The forbidden termination below must leave the run untouched. Its
-          // actual actor releases it before accounts and the app.
           (run) =>
             Effect.gen(function* () {
               const stopped = yield* api.request(
@@ -269,7 +238,6 @@ layer(HostedLive, { excludeTestServices: true })("Hosted account scheduling", (i
               expect(stopped.body).toMatchObject({ id: run.id });
             }).pipe(Effect.orDie),
         );
-        // Alice links the same shared account, yet Bob's run stays Bob's.
         expect(
           (yield* api.request(actors.member, "GET", `${path}/workflow-runs/${run.id}`)).status,
         ).toBe(403);
@@ -283,8 +251,6 @@ layer(HostedLive, { excludeTestServices: true })("Hosted account scheduling", (i
       }),
     ),
   );
-  // Schedules only target declared mutations. Schedule controls must not wait on, or fail with,
-  // a dynamic catalog that is slow or unavailable.
   it.effect(scenarios.hostedStaticSchedules.title, (context) =>
     withHostedCase(
       context,
@@ -318,8 +284,6 @@ export default defineApp({}, async () => ({
         yield* Effect.addFinalizer(() =>
           api.request(actors.owner, "DELETE", path).pipe(Effect.orDie),
         );
-        // The dynamic catalog really fails. Its router reports the failure while the declared
-        // mutation still lists.
         const catalog = yield* api.request(actors.owner, "GET", `${path}/tools`);
         expect(catalog.status, JSON.stringify(catalog.body)).toBe(200);
         expect(catalog.body).toMatchObject({
@@ -364,15 +328,12 @@ export default defineApp({}, async () => ({
         } = tickSchedule(fixture);
         const browser = yield* Browser,
           evidence = yield* Evidence;
-        // Alice and Bob each link one personal account. Each enables the same declaration and gets
-        // their own copy, which runs as them.
         const alice = yield* saved(yield* configure(actors.member, { enabled: true }));
         const bob = yield* saved(yield* configure(actors.admin, { enabled: true }));
         expect(alice).toMatchObject({ actor: aliceId, enabled: true });
         expect(bob).toMatchObject({ actor: bobId, enabled: true });
         expect([alice.accountRequired, bob.accountRequired]).toEqual([undefined, undefined]);
         expect(alice.id).not.toBe(bob.id);
-        // Configuring again updates the member's one copy; it never adds a second.
         const again = yield* saved(yield* configure(actors.member, { enabled: true }));
         expect(again.id).toBe(alice.id);
         expect((yield* copies(actors.owner)).map((row) => [row.id, row.actor]).toSorted()).toEqual(
@@ -382,7 +343,6 @@ export default defineApp({}, async () => ({
           ].toSorted(),
         );
 
-        // Each copy runs with its own member's account: only Alice links mailA, only Bob mailB.
         expect((yield* runNow(actors.member)).status).toBe(200);
         yield* runsWith("succeeded", 1);
         expect(yield* ticks(actors.member)).toEqual([mailA]);
@@ -390,7 +350,6 @@ export default defineApp({}, async () => ({
         yield* runsWith("succeeded", 2);
         expect(yield* ticks(actors.member)).toEqual([mailA, mailB]);
 
-        // Alice's Schedules tab shows only her own copy, with its controls and no account choice.
         yield* browser.login(actors.member);
         yield* browser.use("Open Alice's schedules", (page) =>
           page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=schedules`),
@@ -416,12 +375,10 @@ export default defineApp({}, async () => ({
         const single = yield* browser.use("Capture Alice's schedule", (page) => page.screenshot());
         yield* evidence.attach("schedule-member-copy.png", "image/png", single);
 
-        // Bob manages the app: he may pause Alice's copy, but only Alice may make it run again.
         expect((yield* pause(actors.admin, alice.id)).status).toBe(200);
         expect((yield* pause(actors.admin, alice.id, true)).status).toBe(403);
         expect((yield* copy(actors.owner, alice.id))?.enabled).toBe(false);
         expect((yield* pause(actors.member, alice.id, true)).status).toBe(200);
-        // Pausing her copy by name leaves Bob's enabled and runnable; hers no longer runs.
         expect((yield* configure(actors.member, { enabled: false })).status).toBe(200);
         expect(
           (yield* copies(actors.owner)).map((row) => [row.actor, row.enabled]).toSorted(),
@@ -437,7 +394,6 @@ export default defineApp({}, async () => ({
         yield* runsWith("succeeded", 3);
         expect(yield* ticks(actors.member)).toEqual([mailA, mailB, mailB]);
 
-        // Alice removes her copy in the dashboard. Only it goes, with its run history.
         yield* browser.use("Reload Alice's schedules", (page) => page.reload());
         yield* browser.use("Alice's copy is paused", (page) =>
           row(page).getByRole("button", { name: "Enable", exact: true }).waitFor(),
@@ -464,7 +420,6 @@ export default defineApp({}, async () => ({
           [bob.id, "succeeded"],
           [bob.id, "succeeded"],
         ]);
-        // The owner manages the app and may remove Bob's copy too.
         expect((yield* remove(actors.owner, bob.id)).status).toBe(200);
         expect(yield* copies(actors.owner)).toEqual([]);
       }),
@@ -486,8 +441,6 @@ export default defineApp({}, async () => ({
         yield* runsWith("succeeded", 1);
         expect(yield* ticks(actors.member)).toEqual([one]);
 
-        // Alice connects another account from the app, which replaces `one` there; `one` stays
-        // saved. Her copy saved no account: its next run uses the one she links now.
         const two = yield* connect(actors.member, "Mail two");
         expect(yield* linkedAccountIds(actors.member, path)).toEqual([two]);
         expect((yield* api.request(actors.member, "GET", `${prefix}/accounts/${one}`)).status).toBe(
@@ -499,8 +452,6 @@ export default defineApp({}, async () => ({
         yield* runsWith("succeeded", 2);
         expect(yield* ticks(actors.member)).toEqual([one, two]);
 
-        // With no account linked, the copy stays enabled but reports which requirement needs one.
-        // It does not run.
         yield* unlinkAccount(actors.member, path, "service", two);
         expect(yield* copy(actors.member, enabled.id)).toMatchObject({
           enabled: true,
@@ -533,7 +484,6 @@ export default defineApp({}, async () => ({
         expect(accountsLink).toContain("view=accounts");
         yield* browser.checkpoint("Schedule copy without a linked account");
 
-        // Linking `one` again: the same copy runs with it.
         yield* linkAccount(actors.member, path, "service", one);
         expect((yield* copy(actors.member, enabled.id))?.accountRequired).toBeUndefined();
         expect((yield* runCopy(actors.member, enabled.id)).status).toBe(200);
@@ -555,12 +505,10 @@ export default defineApp({}, async () => ({
         yield* runsWith("succeeded", 1);
         expect(yield* ticks(actors.member)).toEqual([mailA]);
 
-        // Alice unlinks her only account. Her copy stays enabled and reports the requirement.
         yield* unlinkAccount(actors.member, path, "service", mailA);
         const before = yield* read;
         expect(before).toMatchObject({ enabled: true, accountRequired: "service" });
         if (before?.nextAt == null) return yield* Effect.die("The schedule has no next run");
-        // A due occurrence is skipped: no run is recorded and nothing is written.
         yield* nextOccurrence;
         const skipped = yield* handled(read, before);
         expect(skipped).toMatchObject({ enabled: true, accountRequired: "service" });
@@ -570,7 +518,6 @@ export default defineApp({}, async () => ({
         expect((yield* runs).map((run) => run.status)).toEqual(["succeeded"]);
         expect(yield* ticks(actors.admin)).toEqual([mailA]);
 
-        // Once she links an account again, the next occurrence runs with it.
         yield* linkAccount(actors.member, path, "service", mailA);
         expect((yield* read)?.accountRequired).toBeUndefined();
         yield* nextOccurrence;
@@ -599,14 +546,11 @@ export default defineApp({}, async () => ({
             });
             expect(changed.status, JSON.stringify(changed.body)).toBe(200);
           });
-        // Alice enables the schedule; its first due occurrence runs as her.
         expect((yield* configure(actors.member, { enabled: true })).status).toBe(200);
         yield* nextOccurrence;
         yield* runsWith("succeeded", 1);
         expect(yield* ticks(actors.member)).toEqual([mailA]);
 
-        // The owner makes the app private: Alice, the saved actor, can no longer use it. The
-        // dispatcher refuses her next due occurrence and records why, without running the tool.
         yield* audience("private");
         yield* nextOccurrence;
         const recorded = yield* runsWith("failed", 1);
@@ -615,7 +559,6 @@ export default defineApp({}, async () => ({
         expect(refused[0]?.failure).toBe("OrganizationForbidden");
         expect(recorded.filter((run) => run.status === "succeeded")).toHaveLength(1);
 
-        // Once Alice can read the app again, its data shows only the first run's write.
         yield* audience("everyone");
         expect((yield* configure(actors.member, { enabled: false })).status).toBe(200);
         expect(yield* ticks(actors.member)).toEqual([mailA]);
@@ -680,7 +623,6 @@ export default defineApp({}, async () => ({ tools: router({ tick }),
               ),
             );
         for (const name of names) {
-          // Two members configure the same schedule at once: each gets their own copy.
           yield* Effect.all([configure(actors.member, name), configure(actors.admin, name)], {
             concurrency: 2,
           });
@@ -688,7 +630,6 @@ export default defineApp({}, async () => ({ tools: router({ tick }),
             (yield* saved(name)).map((row) => row.actor).toSorted(),
             `${name}: one copy for each member`,
           ).toEqual([member, admin].toSorted());
-          // One member's concurrent requests share their one copy.
           const [first, second] = yield* Effect.all(
             [configure(actors.member, name), configure(actors.member, name)],
             { concurrency: 2 },
@@ -699,8 +640,6 @@ export default defineApp({}, async () => ({ tools: router({ tick }),
       }),
     ),
   );
-  // Declarations can depend on accounts. An activation checks each saved schedule against the
-  // app evaluated as its own actor, so one member's evaluation never removes another's schedule.
   it.effect(scenarios.hostedScheduleReconcilePerActor.title, (context) =>
     withHostedCase(
       context,
@@ -733,14 +672,13 @@ export default defineApp({}, async () => ({ tools: router({ tick }),
             audience: { kind: "everyone" },
           })).status,
         ).toBe(200);
-        /** Connect an account from the app, which links it for `actor`. */
         const connect = (actor: Session, job: string) =>
           Effect.gen(function* () {
             const connection = yield* api.request(
               actor,
               "POST",
               connectionsPath(path, "user", "service"),
-              { destination: { kind: "personal" } },
+              {},
             );
             expect(connection.status, JSON.stringify(connection.body)).toBe(200);
             const submitted = yield* api.request(
@@ -756,7 +694,6 @@ export default defineApp({}, async () => ({ tools: router({ tick }),
           });
         yield* connect(actors.member, "aliceJob");
         yield* connect(actors.admin, "bobJob");
-        // Each member sees, and enables, the schedule their own account declares.
         for (const [actor, job] of [
           [actors.member, "aliceJob"],
           [actors.admin, "bobJob"],
@@ -772,7 +709,6 @@ export default defineApp({}, async () => ({ tools: router({ tick }),
         const runs = api
           .request(actors.owner, "GET", `${prefix}/scheduled-runs?app=${app.id}`)
           .pipe(Effect.flatMap((response) => body(Runs, response)));
-        // Bob's schedule has run history that a redeploy must keep.
         expect(
           (yield* api.request(actors.admin, "POST", `${path}/schedules/bobJob/run`)).status,
         ).toBe(200);
@@ -794,7 +730,6 @@ export default defineApp({}, async () => ({ tools: router({ tick }),
             expect(response.status, JSON.stringify(response.body)).toBe(200);
           });
 
-        // Redeploying the same declarations keeps both members' schedules and Bob's history.
         yield* redeploy(jobFiles(`${declaresEachJob} /* redeployed */`));
         expect(yield* saved, "Each schedule is checked with its own actor's accounts").toEqual([
           "aliceJob",
@@ -804,11 +739,9 @@ export default defineApp({}, async () => ({ tools: router({ tick }),
           ["bobJob", "succeeded"],
         ]);
 
-        // An evaluation that fails for Bob's accounts proves nothing about his schedule.
         yield* redeploy(jobFiles(failsFor("bobJob")));
         expect(yield* saved).toEqual(["aliceJob", "bobJob"]);
 
-        // Once Bob's own evaluation no longer declares it, his schedule and history go.
         yield* redeploy(jobFiles(declaresOnly("aliceJob")));
         expect(yield* saved).toEqual(["aliceJob"]);
         expect(yield* runs).toEqual([]);

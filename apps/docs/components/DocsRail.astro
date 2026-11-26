@@ -1,16 +1,4 @@
 ---
-// Blume's `layout.Header` slot: the marketing rail.
-//
-// Blume's RootLayout still builds the page — the document, the article header,
-// the code blocks, the "On this page" outline and the page actions are all
-// Blume's. This replaces its top header alone, with the same rail the
-// marketing site shows, so `/` and `/docs` read as one site.
-//
-// The rail is `rail-b.astro` itself, not a copy of it: a full-height column
-// from 1024px and a bar below that. The documentation tree goes in the rail's
-// secondary slot, and the same tree becomes a "Documentation" menu under the
-// bar on small screens. styles.css positions the two and takes Blume's own
-// navigation column out of the grid.
 import type { Navigation } from "blume";
 import Search from "blume/components/layout/Search.astro";
 import type { UIStrings } from "blume/core/i18n-ui.ts";
@@ -31,8 +19,6 @@ interface Props {
 const { navigation, route, searchEnabled, searchLocale, searchStrings, searchVersion = null } =
   Astro.props;
 
-// Prerendered, so the star count resolves once at build time — the same call
-// the marketing rail makes, memoized in the module for the whole build.
 const stars = await getStars();
 ---
 

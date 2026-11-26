@@ -1,4 +1,3 @@
-/** A failing app query backs off, shows its failure and recovers when the app does. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schedule } from "effect";
 import { randomUUID } from "node:crypto";
@@ -59,7 +58,6 @@ createRoot(document.getElementById("root")).render(<App />);`,
   },
 ];
 
-/** Minimum waits before the first three retries: 1, 2 and 4 seconds, less 20% jitter. */
 const minimumGaps = [800, 1_600, 3_200];
 
 layer(HostedLive, { excludeTestServices: true })("App query failure", (it) => {
@@ -108,14 +106,12 @@ layer(HostedLive, { excludeTestServices: true })("App query failure", (it) => {
             : Effect.succeed({ retry: index + 1, gap: after - before, minimum });
         });
         yield* evidence.json("failing-subscription-gaps.json", { gaps });
-        // The former fixed one-second retry left about the same short gap after every failure.
         for (const { retry, gap, minimum } of gaps)
           expect(gap, `wait before retry ${retry}`).toBeGreaterThanOrEqual(minimum);
         yield* browser.use("The failure stays visible while retrying", (page) =>
           page.getByRole("status").filter({ hasText: "Could not load app data." }).waitFor(),
         );
 
-        // Repair through the API, so only a new subscription can show it on the watching page.
         const repaired = yield* api.request(
           actors.owner,
           "POST",
@@ -123,7 +119,6 @@ layer(HostedLive, { excludeTestServices: true })("App query failure", (it) => {
           { tool: "repair", kind: "mutation", input: {} },
         );
         expect(repaired.status, "repair").toBe(200);
-        // The next retry, at most 9.6 seconds after the fourth attempt, reads the repaired app.
         yield* browser.use("The watching page recovers by subscribing again", (page) =>
           page.getByRole("status").filter({ hasText: "Repaired" }).waitFor({ timeout: 20_000 }),
         );

@@ -114,6 +114,374 @@ index ef34e17191b3f93e3d3f11058d4a7d414e662cd3..55e25efbab1b58aca6f31f1b2bd360b8
  import { platform_proxy_exports } from "./platform-proxy/index.mjs";
 -export { ApiError, ConfigError, platform_proxy_exports as PlatformProxy, PluginContext, Runtime, RuntimeError, RuntimeLive, SystemError, isRuntimeError, layerLocalBindings, layerLoopback, layerProxy, layerRegistry, layerRemoteBindings, layerRuntime, layerStorage, make, pickPluginsFromContext, registerHttpServer, use, useSync };
 +export { ApiError, ConfigError, platform_proxy_exports as PlatformProxy, PluginContext, Runtime, RuntimeError, RuntimeLive, SystemError, isRuntimeError, layerLocalRuntime, layerLocalBindings, layerLoopback, layerProxy, layerRegistry, layerRemoteBindings, layerRuntime, layerStorage, make, pickPluginsFromContext, registerHttpServer, use, useSync };
+diff --git a/dist/core/node/proxy/KeepAlive.mjs b/dist/core/node/proxy/KeepAlive.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..8582919988fef9065810e747396029b902672958
+--- /dev/null
++++ b/dist/core/node/proxy/KeepAlive.mjs
+@@ -0,0 +1,323 @@
++//#region src/core/proxy/KeepAlive.ts
++import * as NodeNet from "node:net";
++const MAX_HEAD_BYTES = 64 * 1024;
++const MAX_CHUNK_LINE_BYTES = 4 * 1024;
++const HOLD_LIMIT = 1024 * 1024;
++const CRLF = Buffer.from(`\r
++`);
++const HEAD_END = Buffer.from(`\r
++\r
++`);
++const latin1 = new TextDecoder("latin1");
++const parseHead = (raw, kind) => {
++  const lines = latin1.decode(raw).split(`\r
++`);
++  const start = kind === "request" ? /^([!#$%&'*+.^_`|~0-9A-Za-z-]+) \S+ HTTP\/\d\.\d$/.exec(lines[0] ?? "") : /^HTTP\/\d\.\d (\d{3})(?: .*)?$/.exec(lines[0] ?? "");
++  if (start === null)
++    return;
++  const headers = new Map;
++  for (const line of lines.slice(1)) {
++    if (line === "")
++      continue;
++    const colon = line.indexOf(":");
++    if (colon <= 0)
++      return;
++    const name = line.slice(0, colon).trim().toLowerCase();
++    const value = line.slice(colon + 1).trim();
++    const existing = headers.get(name);
++    headers.set(name, existing === undefined ? value : `${existing}, ${value}`);
++  }
++  return { start: start[1], headers };
++};
++const makeFramer = (kind, requestMethod = () => {
++  return;
++}) => {
++  let state = { _tag: "Head", buffer: Buffer.alloc(0) };
++  const off = () => {
++    state = { _tag: "Off" };
++    return [{ _tag: "Off" }];
++  };
++  const bodyAfter = (head, events) => {
++    const transferEncoding = head.headers.get("transfer-encoding");
++    if (transferEncoding !== undefined) {
++      if (transferEncoding.toLowerCase().split(",").at(-1)?.trim() !== "chunked")
++        return [...events, ...off()];
++      state = { _tag: "ChunkSize", buffer: Buffer.alloc(0) };
++      return events;
++    }
++    const contentLength = head.headers.get("content-length");
++    if (contentLength === undefined) {
++      if (kind === "response")
++        return [...events, ...off()];
++      state = { _tag: "Head", buffer: Buffer.alloc(0) };
++      return [...events, { _tag: "End" }];
++    }
++    if (!/^\d+$/.test(contentLength))
++      return [...events, ...off()];
++    const length = Number(contentLength);
++    if (length === 0) {
++      state = { _tag: "Head", buffer: Buffer.alloc(0) };
++      return [...events, { _tag: "End" }];
++    }
++    state = { _tag: "Body", remaining: length };
++    return events;
++  };
++  const afterHead = (raw) => {
++    const head = parseHead(raw, kind);
++    if (head === undefined)
++      return off();
++    if (kind === "request") {
++      if (head.start === "CONNECT" || head.headers.has("upgrade"))
++        return [{ _tag: "Head", head }, ...off()];
++      return bodyAfter(head, [{ _tag: "Head", head }]);
++    }
++    const status = Number(head.start);
++    if (status === 101)
++      return [{ _tag: "Head", head }, ...off()];
++    if (status < 200) {
++      state = { _tag: "Head", buffer: Buffer.alloc(0) };
++      return [{ _tag: "Interim" }];
++    }
++    if (requestMethod() === "HEAD" || status === 204 || status === 304) {
++      state = { _tag: "Head", buffer: Buffer.alloc(0) };
++      return [{ _tag: "Head", head }, { _tag: "End" }];
++    }
++    return bodyAfter(head, [{ _tag: "Head", head }]);
++  };
++  const joined = (buffer, chunk) => buffer.length === 0 ? chunk : Buffer.concat([buffer, chunk]);
++  const next = (chunk) => {
++    switch (state._tag) {
++      case "Off":
++        return { used: chunk.length, events: [] };
++      case "Head": {
++        const before = state.buffer.length;
++        const buffer = joined(state.buffer, chunk);
++        let start = 0;
++        while (buffer.subarray(start, start + 2).equals(CRLF))
++          start += 2;
++        const end = buffer.indexOf(HEAD_END, start);
++        if (end === -1) {
++          if (buffer.length - start > MAX_HEAD_BYTES)
++            return { used: chunk.length, events: off() };
++          state = { _tag: "Head", buffer: buffer.subarray(start) };
++          return { used: chunk.length, events: [] };
++        }
++        const used = end + HEAD_END.length - before;
++        return { used, events: afterHead(buffer.subarray(start, end)) };
++      }
++      case "Body": {
++        const used = Math.min(state.remaining, chunk.length);
++        state.remaining -= used;
++        if (state.remaining > 0)
++          return { used, events: [] };
++        state = { _tag: "Head", buffer: Buffer.alloc(0) };
++        return { used, events: [{ _tag: "End" }] };
++      }
++      case "ChunkSize": {
++        const before = state.buffer.length;
++        const buffer = joined(state.buffer, chunk);
++        const end = buffer.indexOf(CRLF);
++        if (end === -1) {
++          if (buffer.length > MAX_CHUNK_LINE_BYTES)
++            return { used: chunk.length, events: off() };
++          state = { _tag: "ChunkSize", buffer };
++          return { used: chunk.length, events: [] };
++        }
++        const used = end + CRLF.length - before;
++        const size = latin1.decode(buffer.subarray(0, end)).split(";")[0].trim();
++        if (!/^[0-9a-fA-F]+$/.test(size))
++          return { used, events: off() };
++        const length = Number.parseInt(size, 16);
++        state = length === 0 ? { _tag: "Trailers", buffer: Buffer.alloc(0) } : { _tag: "ChunkData", remaining: length + CRLF.length };
++        return { used, events: [] };
++      }
++      case "ChunkData": {
++        const used = Math.min(state.remaining, chunk.length);
++        state.remaining -= used;
++        if (state.remaining === 0)
++          state = { _tag: "ChunkSize", buffer: Buffer.alloc(0) };
++        return { used, events: [] };
++      }
++      case "Trailers": {
++        const before = state.buffer.length;
++        const buffer = joined(state.buffer, chunk);
++        let offset = 0;
++        for (;; ) {
++          const end = buffer.indexOf(CRLF, offset);
++          if (end === -1) {
++            const rest = buffer.subarray(offset);
++            if (rest.length > MAX_HEAD_BYTES)
++              return { used: chunk.length, events: off() };
++            state = { _tag: "Trailers", buffer: rest };
++            return { used: chunk.length, events: [] };
++          }
++          if (end === offset) {
++            state = { _tag: "Head", buffer: Buffer.alloc(0) };
++            return {
++              used: end + CRLF.length - before,
++              events: [{ _tag: "End" }]
++            };
++          }
++          offset = end + CRLF.length;
++        }
++      }
++    }
++  };
++  return { next };
++};
++export const relay = (options) => {
++  const { client, observe, connect } = options;
++  const exchanges = [];
++  let reading;
++  let held = [];
++  let heldBytes = 0;
++  let waiting = false;
++  let draining;
++  let plain = false;
++  const requests = makeFramer("request");
++  const responses = makeFramer("response", () => exchanges[0]?.method);
++  let upstream;
++  let full;
++  const flow = () => {
++    if (full !== undefined && full === upstream || heldBytes > HOLD_LIMIT)
++      client.pause();
++    else
++      client.resume();
++  };
++  const toUpstream = (bytes) => {
++    if (bytes.length === 0)
++      return;
++    upstream ??= attach(connect());
++    if (!upstream.write(bytes)) {
++      full = upstream;
++      flow();
++    }
++  };
++  const stopTracking = () => {
++    plain = true;
++    waiting = false;
++    const pending = held;
++    held = [];
++    heldBytes = 0;
++    for (const chunk of pending)
++      toUpstream(chunk);
++    flow();
++  };
++  const fromClient = (chunk) => {
++    let rest = chunk;
++    while (rest.length > 0) {
++      if (plain)
++        return toUpstream(rest);
++      if (waiting) {
++        held.push(rest);
++        heldBytes += rest.length;
++        flow();
++        return;
++      }
++      const { used, events } = requests.next(rest);
++      const bytes = rest.subarray(0, used);
++      rest = rest.subarray(used);
++      if (draining === undefined)
++        toUpstream(bytes);
++      for (const event of events) {
++        if (event._tag === "Off")
++          stopTracking();
++        else if (event._tag === "Head") {
++          const { headers } = event.head;
++          reading = {
++            method: event.head.start,
++            hasBody: headers.has("transfer-encoding") || (headers.get("content-length") ?? "0") !== "0",
++            sent: false
++          };
++          exchanges.push(reading);
++        } else if (event._tag === "End" && reading !== undefined) {
++          reading.sent = true;
++          if (draining === reading) {
++            draining = undefined;
++            retire();
++          } else if (reading.hasBody)
++            waiting = true;
++          reading = undefined;
++        }
++      }
++    }
++  };
++  const retire = () => {
++    const done = upstream;
++    upstream = undefined;
++    full = undefined;
++    if (done !== undefined) {
++      done.removeAllListeners("data");
++      done.removeAllListeners("close");
++      done.removeAllListeners("drain");
++      done.removeAllListeners("end");
++      done.on("error", () => {});
++      done.destroy();
++    }
++    waiting = false;
++    const pending = held;
++    held = [];
++    heldBytes = 0;
++    flow();
++    for (const chunk of pending)
++      fromClient(chunk);
++  };
++  const fromUpstream = (socket) => (chunk) => {
++    if (socket !== upstream)
++      return;
++    if (!client.write(chunk)) {
++      socket.pause();
++      client.once("drain", () => socket.resume());
++    }
++    let rest = plain ? Buffer.alloc(0) : chunk;
++    while (rest.length > 0 && !plain) {
++      const { used, events } = responses.next(rest);
++      rest = rest.subarray(used);
++      for (const event of events) {
++        if (event._tag === "Off")
++          stopTracking();
++        else if (event._tag === "End") {
++          const answered = exchanges.shift();
++          if (answered?.hasBody !== true)
++            continue;
++          if (answered.sent)
++            retire();
++          else {
++            draining = answered;
++            full = undefined;
++            flow();
++          }
++          return;
++        }
++      }
++    }
++  };
++  function attach(socket) {
++    socket.on("error", () => {});
++    socket.on("data", fromUpstream(socket));
++    socket.on("drain", () => {
++      if (full !== socket)
++        return;
++      full = undefined;
++      flow();
++    });
++    socket.on("close", () => {
++      if (socket !== upstream)
++        return;
++      upstream = undefined;
++      full = undefined;
++      if (plain || exchanges.length > 0)
++        client.destroy();
++      else
++        flow();
++    });
++    return socket;
++  }
++  upstream = attach(options.first);
++  client.on("close", () => upstream?.destroy());
++  return (chunk) => {
++    observe(chunk);
++    fromClient(chunk);
++  };
++};
++//#endregion
+diff --git a/dist/core/node/proxy/WorkerProxy.mjs b/dist/core/node/proxy/WorkerProxy.mjs
+index beb1f94bcbba212a524df23f9dae4062820da9be..cfb0075b80b77e1f90eaba7e3999418577e8ae47 100644
+--- a/dist/core/node/proxy/WorkerProxy.mjs
++++ b/dist/core/node/proxy/WorkerProxy.mjs
+@@ -2,6 +2,7 @@ import { __exportAll } from "../_virtual/_rolldown/runtime.mjs";
+ import { ConfigError, SystemError } from "../RuntimeError.shared.mjs";
+ import { make } from "../internal/Port.mjs";
+ import { CONTINUE_RESPONSE, makeExpectContinueObserver } from "./ExpectContinue.mjs";
++import { relay } from "./KeepAlive.mjs";
+ import * as Context from "effect/Context";
+ import * as Effect from "effect/Effect";
+ import * as Fiber from "effect/Fiber";
+@@ -160,15 +161,19 @@ const makeRelay = (pendingTimeout) => {
+ 			const expectContinue = makeExpectContinueObserver(() => {
+ 				socket.write(CONTINUE_RESPONSE);
+ 			});
+-			for (const chunk of held) expectContinue.observe(chunk);
+-			socket.on("data", expectContinue.observe);
+-			for (const chunk of held) upstream.write(chunk);
++			const forward = relay({
++				client: socket,
++				first: upstream,
++				observe: expectContinue.observe,
++				connect: () => NodeNet.connect({
++					host: target.host,
++					port: target.port
++				})
++			});
++			for (const chunk of held) forward(chunk);
+ 			held.length = 0;
+-			socket.pipe(upstream);
++			socket.on("data", forward);
+ 			socket.resume();
+-			upstream.pipe(socket);
+-			upstream.on("error", () => socket.destroy());
+-			upstream.on("close", () => socket.destroy());
+ 		}
+ 		yield* Effect.never;
+ 	});
 diff --git a/dist/core/node/workerd/Workerd.mjs b/dist/core/node/workerd/Workerd.mjs
 index 3c74fb382403ee1a908216dfd7915c97e27725c7..c48e1561f42961dbeffd9616e798c4b7f8bb9ea6 100644
 --- a/dist/core/node/workerd/Workerd.mjs
@@ -287,6 +655,515 @@ index 0e5d93a1e1fa9888eb99a14046700dea6d8c41fc..e319db77152f7d8c2954e257d79652ca
        },
      ],
      durableObjectStorage: {
+diff --git a/src/core/proxy/KeepAlive.ts b/src/core/proxy/KeepAlive.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..49202e8a3d5c131a205b2af4292ed373643053dd
+--- /dev/null
++++ b/src/core/proxy/KeepAlive.ts
+@@ -0,0 +1,450 @@
++/**
++ * Keeps a client's kept-alive connection usable after workerd closes its
++ * end, as Cloudflare's edge does.
++ *
++ * When a Worker answers a request without reading its whole body and the
++ * request reached that Worker over a binding (a router in front of an API
++ * Worker, for example), workerd closes the connection right after the
++ * answer, without `Connection: close`. A plain byte pipe passes that close
++ * on, so a client that keeps its connection loses whichever request it sends
++ * next on it. Behind Cloudflare's edge the client never sees it: the edge
++ * owns the client's connection, reads what is left of the body and keeps the
++ * connection.
++ *
++ * So the proxy follows HTTP/1.1 message framing in both directions, without
++ * changing a forwarded byte. Once the answer to a request that carried a body
++ * is complete, it reads (and discards) whatever is left of that body, closes
++ * that upstream connection, and sends the client's next request on a new one.
++ * A request the client sends meanwhile is held until then. Requests without
++ * a body keep using their upstream connection, and a client whose upstream
++ * goes away between exchanges keeps its own connection: its next request
++ * opens a new one.
++ *
++ * Tracking stops for good, and the connection is a plain pipe again, at an
++ * upgrade (WebSocket), `CONNECT`, a response delimited by the connection's
++ * close, or anything it cannot frame (an oversized or malformed head or
++ * chunk line). Held bytes go to the current upstream first, so it sees what
++ * a plain pipe would have sent it; then the upstream closing ends the
++ * client, as before.
++ *
++ * A Worker that reads a request's body after answering it (in `waitUntil`,
++ * say) never gets the part that arrives after the answer: that is the part
++ * discarded. A client whose upstream closes between exchanges is sent to
++ * the address it was first given; if that workerd died rather than being
++ * replaced (a replacement resets the client, see `WorkerProxy.ts`), its
++ * next request is reset instead of answered with the proxy's 502.
++ */
++import * as NodeNet from "node:net";
++
++/** Largest message head (start line + headers) the framer will buffer. */
++const MAX_HEAD_BYTES = 64 * 1024;
++
++/** Largest chunk-size line (hex size + extensions) accepted. */
++const MAX_CHUNK_LINE_BYTES = 4 * 1024;
++
++/** Client bytes held for the next upstream before the proxy stops reading. */
++const HOLD_LIMIT = 1024 * 1024;
++
++const CRLF = Buffer.from("\r\n");
++const HEAD_END = Buffer.from("\r\n\r\n");
++// Header bytes are opaque octets; decode 1:1 so framing offsets hold.
++const latin1 = new TextDecoder("latin1");
++
++interface Head {
++  /** The request method, or the response status as a string. */
++  readonly start: string;
++  readonly headers: ReadonlyMap<string, string>;
++}
++
++type Event =
++  /** A complete request head, or a final response head. */
++  | { readonly _tag: "Head"; readonly head: Head }
++  /** A `1xx` response other than `101`: another head follows. */
++  | { readonly _tag: "Interim" }
++  /** The message, its body included, is complete. */
++  | { readonly _tag: "End" }
++  /** Not HTTP the framer follows from here on. */
++  | { readonly _tag: "Off" };
++
++type State =
++  | { readonly _tag: "Head"; buffer: Buffer }
++  | { readonly _tag: "Body"; remaining: number }
++  | { readonly _tag: "ChunkSize"; buffer: Buffer }
++  | { readonly _tag: "ChunkData"; remaining: number }
++  | { readonly _tag: "Trailers"; buffer: Buffer }
++  | { readonly _tag: "Off" };
++
++const parseHead = (
++  raw: Buffer,
++  kind: "request" | "response",
++): Head | undefined => {
++  const lines = latin1.decode(raw).split("\r\n");
++  const start =
++    kind === "request"
++      ? /^([!#$%&'*+.^_`|~0-9A-Za-z-]+) \S+ HTTP\/\d\.\d$/.exec(lines[0] ?? "")
++      : /^HTTP\/\d\.\d (\d{3})(?: .*)?$/.exec(lines[0] ?? "");
++  if (start === null) return undefined;
++  const headers = new Map<string, string>();
++  for (const line of lines.slice(1)) {
++    if (line === "") continue;
++    const colon = line.indexOf(":");
++    if (colon <= 0) return undefined;
++    const name = line.slice(0, colon).trim().toLowerCase();
++    const value = line.slice(colon + 1).trim();
++    const existing = headers.get(name);
++    headers.set(name, existing === undefined ? value : `${existing}, ${value}`);
++  }
++  return { start: start[1]!, headers };
++};
++
++/**
++ * Follows one direction's messages. `next` consumes bytes up to and
++ * including the next events and reports how many it used; the caller
++ * forwards exactly those bytes before acting on the events. A response
++ * framer asks `requestMethod` for the method its next final head answers.
++ */
++const makeFramer = (
++  kind: "request" | "response",
++  requestMethod: () => string | undefined = () => undefined,
++) => {
++  let state: State = { _tag: "Head", buffer: Buffer.alloc(0) };
++  const off = (): Array<Event> => {
++    state = { _tag: "Off" };
++    return [{ _tag: "Off" }];
++  };
++  const bodyAfter = (head: Head, events: Array<Event>): Array<Event> => {
++    const transferEncoding = head.headers.get("transfer-encoding");
++    if (transferEncoding !== undefined) {
++      // Only a final `chunked` coding has self-delimiting framing.
++      if (transferEncoding.toLowerCase().split(",").at(-1)?.trim() !== "chunked")
++        return [...events, ...off()];
++      state = { _tag: "ChunkSize", buffer: Buffer.alloc(0) };
++      return events;
++    }
++    const contentLength = head.headers.get("content-length");
++    if (contentLength === undefined) {
++      // A request without either has no body; a response runs to the close.
++      if (kind === "response") return [...events, ...off()];
++      state = { _tag: "Head", buffer: Buffer.alloc(0) };
++      return [...events, { _tag: "End" }];
++    }
++    if (!/^\d+$/.test(contentLength)) return [...events, ...off()];
++    const length = Number(contentLength);
++    if (length === 0) {
++      state = { _tag: "Head", buffer: Buffer.alloc(0) };
++      return [...events, { _tag: "End" }];
++    }
++    state = { _tag: "Body", remaining: length };
++    return events;
++  };
++  const afterHead = (raw: Buffer): Array<Event> => {
++    const head = parseHead(raw, kind);
++    if (head === undefined) return off();
++    if (kind === "request") {
++      // A tunnel follows: nothing after this head is HTTP framing.
++      if (head.start === "CONNECT" || head.headers.has("upgrade"))
++        return [{ _tag: "Head", head }, ...off()];
++      return bodyAfter(head, [{ _tag: "Head", head }]);
++    }
++    const status = Number(head.start);
++    if (status === 101) return [{ _tag: "Head", head }, ...off()];
++    if (status < 200) {
++      state = { _tag: "Head", buffer: Buffer.alloc(0) };
++      return [{ _tag: "Interim" }];
++    }
++    if (requestMethod() === "HEAD" || status === 204 || status === 304) {
++      state = { _tag: "Head", buffer: Buffer.alloc(0) };
++      return [{ _tag: "Head", head }, { _tag: "End" }];
++    }
++    return bodyAfter(head, [{ _tag: "Head", head }]);
++  };
++
++  /**
++   * `chunk` after what an unfinished line or head left buffered. Without
++   * that, the read itself, so a dense chunked body is not copied once per
++   * chunk-size line.
++   */
++  const joined = (buffer: Buffer, chunk: Buffer) =>
++    buffer.length === 0 ? chunk : Buffer.concat([buffer, chunk]);
++
++  const next = (
++    chunk: Buffer,
++  ): { readonly used: number; readonly events: Array<Event> } => {
++    switch (state._tag) {
++      case "Off":
++        return { used: chunk.length, events: [] };
++      case "Head": {
++        const before = state.buffer.length;
++        const buffer = joined(state.buffer, chunk);
++        // Tolerate CRLFs between messages (RFC 9112 §2.2).
++        let start = 0;
++        while (buffer.subarray(start, start + 2).equals(CRLF)) start += 2;
++        const end = buffer.indexOf(HEAD_END, start);
++        if (end === -1) {
++          if (buffer.length - start > MAX_HEAD_BYTES)
++            return { used: chunk.length, events: off() };
++          state = { _tag: "Head", buffer: buffer.subarray(start) };
++          return { used: chunk.length, events: [] };
++        }
++        const used = end + HEAD_END.length - before;
++        return { used, events: afterHead(buffer.subarray(start, end)) };
++      }
++      case "Body": {
++        const used = Math.min(state.remaining, chunk.length);
++        state.remaining -= used;
++        if (state.remaining > 0) return { used, events: [] };
++        state = { _tag: "Head", buffer: Buffer.alloc(0) };
++        return { used, events: [{ _tag: "End" }] };
++      }
++      case "ChunkSize": {
++        const before = state.buffer.length;
++        const buffer = joined(state.buffer, chunk);
++        const end = buffer.indexOf(CRLF);
++        if (end === -1) {
++          if (buffer.length > MAX_CHUNK_LINE_BYTES)
++            return { used: chunk.length, events: off() };
++          state = { _tag: "ChunkSize", buffer };
++          return { used: chunk.length, events: [] };
++        }
++        const used = end + CRLF.length - before;
++        const size = latin1.decode(buffer.subarray(0, end)).split(";")[0]!.trim();
++        if (!/^[0-9a-fA-F]+$/.test(size)) return { used, events: off() };
++        const length = Number.parseInt(size, 16);
++        state =
++          length === 0
++            ? { _tag: "Trailers", buffer: Buffer.alloc(0) }
++            : { _tag: "ChunkData", remaining: length + CRLF.length };
++        return { used, events: [] };
++      }
++      case "ChunkData": {
++        const used = Math.min(state.remaining, chunk.length);
++        state.remaining -= used;
++        if (state.remaining === 0)
++          state = { _tag: "ChunkSize", buffer: Buffer.alloc(0) };
++        return { used, events: [] };
++      }
++      case "Trailers": {
++        const before = state.buffer.length;
++        const buffer = joined(state.buffer, chunk);
++        let offset = 0;
++        for (;;) {
++          const end = buffer.indexOf(CRLF, offset);
++          if (end === -1) {
++            const rest = buffer.subarray(offset);
++            if (rest.length > MAX_HEAD_BYTES)
++              return { used: chunk.length, events: off() };
++            state = { _tag: "Trailers", buffer: rest };
++            return { used: chunk.length, events: [] };
++          }
++          if (end === offset) {
++            state = { _tag: "Head", buffer: Buffer.alloc(0) };
++            return {
++              used: end + CRLF.length - before,
++              events: [{ _tag: "End" }],
++            };
++          }
++          offset = end + CRLF.length;
++        }
++      }
++    }
++  };
++  return { next };
++};
++
++/** A request the client has started sending whose answer is not complete. */
++interface Exchange {
++  readonly method: string;
++  readonly hasBody: boolean;
++  /** The client has sent the whole request. */
++  sent: boolean;
++}
++
++/**
++ * Relays one client connection, starting on `first`, an upstream connection
++ * already open. `observe` sees every client byte, in order, before it is
++ * forwarded or held (the `Expect: 100-continue` observer). `connect` opens
++ * another upstream connection. The caller destroys `client` and `first`
++ * when the connection ends; this destroys the upstream connections it opens.
++ */
++export const relay = (options: {
++  readonly client: NodeNet.Socket;
++  readonly first: NodeNet.Socket;
++  readonly observe: (chunk: Buffer) => void;
++  readonly connect: () => NodeNet.Socket;
++}) => {
++  const { client, observe, connect } = options;
++  /** Requests in the order the client sent them; the first is being answered. */
++  const exchanges: Array<Exchange> = [];
++  let reading: Exchange | undefined;
++  /** Client bytes waiting for the answer to a request with a body. */
++  let held: Array<Buffer> = [];
++  let heldBytes = 0;
++  let waiting = false;
++  /** Discard the rest of this request's body, then switch upstream. */
++  let draining: Exchange | undefined;
++  /** Framing stopped: a plain pipe from here on. */
++  let plain = false;
++
++  const requests = makeFramer("request");
++  const responses = makeFramer("response", () => exchanges[0]?.method);
++
++  let upstream: NodeNet.Socket | undefined;
++  /** The upstream whose write buffer was full when last written; its `drain` clears it. */
++  let full: NodeNet.Socket | undefined;
++
++  /**
++   * The one place that decides whether the client is read: not while the
++   * current upstream is full, nor while more than the hold limit waits. A
++   * full upstream that is retired, closes, or is no longer written to (its
++   * request's body is being discarded) stops counting, so the client is
++   * read again even though that socket never drains.
++   */
++  const flow = () => {
++    if ((full !== undefined && full === upstream) || heldBytes > HOLD_LIMIT)
++      client.pause();
++    else client.resume();
++  };
++
++  const toUpstream = (bytes: Buffer) => {
++    if (bytes.length === 0) return;
++    upstream ??= attach(connect());
++    if (!upstream.write(bytes)) {
++      full = upstream;
++      flow();
++    }
++  };
++
++  /**
++   * Tracking stops: everything from here goes straight to the current
++   * upstream. Bytes held behind an answer go first, in the order the client
++   * sent them, so that upstream sees exactly what a plain pipe would have
++   * sent it.
++   */
++  const stopTracking = () => {
++    plain = true;
++    waiting = false;
++    const pending = held;
++    held = [];
++    heldBytes = 0;
++    for (const chunk of pending) toUpstream(chunk);
++    flow();
++  };
++
++  /** Forwards client bytes that `observe` has already seen. */
++  const fromClient = (chunk: Buffer) => {
++    let rest = chunk;
++    while (rest.length > 0) {
++      if (plain) return toUpstream(rest);
++      if (waiting) {
++        held.push(rest);
++        heldBytes += rest.length;
++        flow();
++        return;
++      }
++      const { used, events } = requests.next(rest);
++      const bytes = rest.subarray(0, used);
++      rest = rest.subarray(used);
++      if (draining === undefined) toUpstream(bytes);
++      for (const event of events) {
++        if (event._tag === "Off") stopTracking();
++        else if (event._tag === "Head") {
++          const { headers } = event.head;
++          reading = {
++            method: event.head.start,
++            hasBody:
++              headers.has("transfer-encoding") ||
++              (headers.get("content-length") ?? "0") !== "0",
++            sent: false,
++          };
++          exchanges.push(reading);
++        } else if (event._tag === "End" && reading !== undefined) {
++          reading.sent = true;
++          if (draining === reading) {
++            draining = undefined;
++            retire();
++          } else if (reading.hasBody) waiting = true;
++          reading = undefined;
++        }
++      }
++    }
++  };
++
++  /** Closes the current upstream and sends what the client sent meanwhile on a new one. */
++  const retire = () => {
++    const done = upstream;
++    upstream = undefined;
++    full = undefined;
++    if (done !== undefined) {
++      done.removeAllListeners("data");
++      done.removeAllListeners("close");
++      done.removeAllListeners("drain");
++      done.removeAllListeners("end");
++      done.on("error", () => {});
++      done.destroy();
++    }
++    waiting = false;
++    const pending = held;
++    held = [];
++    heldBytes = 0;
++    flow();
++    for (const chunk of pending) fromClient(chunk);
++  };
++
++  const fromUpstream = (socket: NodeNet.Socket) => (chunk: Buffer) => {
++    if (socket !== upstream) return;
++    if (!client.write(chunk)) {
++      socket.pause();
++      client.once("drain", () => socket.resume());
++    }
++    let rest = plain ? Buffer.alloc(0) : chunk;
++    while (rest.length > 0 && !plain) {
++      const { used, events } = responses.next(rest);
++      rest = rest.subarray(used);
++      for (const event of events) {
++        if (event._tag === "Off") stopTracking();
++        else if (event._tag === "End") {
++          const answered = exchanges.shift();
++          if (answered?.hasBody !== true) continue;
++          if (answered.sent) retire();
++          else {
++            // Nothing more is written to this upstream, so its full buffer
++            // no longer holds the client back: the rest of the body is read
++            // and discarded even if workerd never reads again.
++            draining = answered;
++            full = undefined;
++            flow();
++          }
++          return;
++        }
++      }
++    }
++  };
++
++  /** Listens to one upstream connection; only the current one is heard. */
++  function attach(socket: NodeNet.Socket) {
++    socket.on("error", () => {});
++    socket.on("data", fromUpstream(socket));
++    socket.on("drain", () => {
++      if (full !== socket) return;
++      full = undefined;
++      flow();
++    });
++    socket.on("close", () => {
++      if (socket !== upstream) return;
++      upstream = undefined;
++      full = undefined;
++      // Between exchanges the client keeps its connection; its next request
++      // opens a new one. Otherwise the answer it waits for is gone.
++      if (plain || exchanges.length > 0) client.destroy();
++      else flow();
++    });
++    return socket;
++  }
++
++  upstream = attach(options.first);
++  client.on("close", () => upstream?.destroy());
++  return (chunk: Buffer) => {
++    observe(chunk);
++    fromClient(chunk);
++  };
++};
+diff --git a/src/core/proxy/WorkerProxy.ts b/src/core/proxy/WorkerProxy.ts
+index 763f6b8b2414eb5caf19c2d64f7599a4f4b55b46..9716a72601a42568d39e4a924574092c4b834711 100644
+--- a/src/core/proxy/WorkerProxy.ts
++++ b/src/core/proxy/WorkerProxy.ts
+@@ -9,6 +9,7 @@ import * as Layer from "effect/Layer";
+ import * as Scope from "effect/Scope";
+ import * as NodeNet from "node:net";
+ import * as Port from "../internal/Port.ts";
++import * as KeepAlive from "./KeepAlive.ts";
+ import {
+   CONTINUE_RESPONSE,
+   makeExpectContinueObserver,
+@@ -22,9 +23,9 @@ import { ConfigError, SystemError } from "../RuntimeError.shared.ts";
+  * A dev Worker's workerd is replaced on every code change (make-before-break),
+  * so its own port moves. The proxy owns the port the user sees and relays each
+  * accepted connection to whatever upstream is currently {@link
+- * WorkerProxyInstance.set}: a plain byte pipe over `node:net`. Forwarded
+- * bytes are never rewritten; the only HTTP the proxy speaks is a 502 when
+- * no upstream comes, and `100 Continue` for requests that expect it (see
++ * WorkerProxyInstance.set}: a byte pipe over `node:net` that follows
++ * HTTP/1.1 framing (see `KeepAlive.ts`). Forwarded bytes are never
++ * rewritten; the only HTTP the proxy speaks is a 502 when no upstream comes, and `100 Continue` for requests that expect it (see
+  * `ExpectContinue.ts`), which workerd never sends. HTTP/1.1, streaming bodies and WebSocket upgrades all
+  * pass through untouched, and the Worker receives the client's real `Host`
+  * header, so `request.url` inside it is the public URL.
+@@ -273,16 +274,19 @@ const makeRelay = (pendingTimeout: Duration.Duration): Relay => {
+       const expectContinue = makeExpectContinueObserver(() => {
+         socket.write(CONTINUE_RESPONSE);
+       });
+-      for (const chunk of held) expectContinue.observe(chunk);
+-      socket.on("data", expectContinue.observe);
+-      for (const chunk of held) upstream.write(chunk);
++      // Not a plain pipe: workerd closes its end after an answer that left
++      // the request's body unread, and the client must keep its connection,
++      // as it does behind the edge (see `KeepAlive.ts`).
++      const forward = KeepAlive.relay({
++        client: socket,
++        first: upstream,
++        observe: expectContinue.observe,
++        connect: () => NodeNet.connect({ host: target.host, port: target.port }),
++      });
++      for (const chunk of held) forward(chunk);
+       held.length = 0;
+-      socket.pipe(upstream);
++      socket.on("data", forward);
+       socket.resume();
+-      upstream.pipe(socket);
+-      // The upstream going away ends the client; the finalizers do the rest.
+-      upstream.on("error", () => socket.destroy());
+-      upstream.on("close", () => socket.destroy());
+     }
+     // From here the socket does the talking; the client closing ends the
+     // fiber (see `accept`), and the finalizers destroy both ends.
 diff --git a/src/core/workerd/Workerd.ts b/src/core/workerd/Workerd.ts
 index 065c7171802d3a22028f6d07280ea59144e11072..491b61ca3cf3aa264e4471e2b88dc6ff724ce01f 100644
 --- a/src/core/workerd/Workerd.ts

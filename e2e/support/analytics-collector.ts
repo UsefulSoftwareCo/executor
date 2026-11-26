@@ -1,10 +1,8 @@
-/** A loopback ingestion service; synthetic events never leave the test machine. */
 import { createServer } from "node:http";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Effect, FileSystem, Layer, Schema } from "effect";
 import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
 
-/** Own the receiver for one managed product process and retain JSON batches as evidence. */
 export const startAnalyticsCollector = (directory: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -21,16 +19,16 @@ export const startAnalyticsCollector = (directory: string) =>
       });
       return HttpServerResponse.jsonUnsafe({}, { headers: { "access-control-allow-origin": "*" } });
     }).pipe(Effect.orDie);
-    // A scenario can answer flag evaluations for one person by writing `flags/<distinct id>.json`
-    // as `{ status, body }`. Everyone else gets no flags, so experiments serve their control.
     yield* fs.makeDirectory(`${directory}/flags`, { recursive: true, mode: 0o700 });
     const flagsFile = `${directory}/flags.ndjson`;
     yield* fs.writeFileString(flagsFile, "", { mode: 0o600 });
-    const FlagRequest = Schema.Struct({ distinct_id: Schema.String });
+    const FlagRequest = Schema.Struct({
+      distinct_id: Schema.String,
+      flag_keys_to_evaluate: Schema.optionalKey(Schema.Array(Schema.String)),
+    });
     const FlagStub = Schema.Struct({ status: Schema.Number, body: Schema.Json });
     const flags = Effect.gen(function* () {
       const request = yield* HttpServerRequest.HttpServerRequest;
-      // The browser SDK may compress its body; only plain JSON names a person to answer for.
       const text = yield* request.text;
       const person = Schema.decodeUnknownOption(Schema.fromJsonString(FlagRequest))(text);
       if (person._tag === "None")
@@ -40,7 +38,7 @@ export const startAnalyticsCollector = (directory: string) =>
           errorsWhileComputingFlags: false,
         });
       const distinct = person.value.distinct_id;
-      yield* fs.writeFileString(flagsFile, `${JSON.stringify({ distinct_id: distinct })}\n`, {
+      yield* fs.writeFileString(flagsFile, `${JSON.stringify(person.value)}\n`, {
         flag: "a",
         mode: 0o600,
       });
@@ -65,7 +63,6 @@ export const startAnalyticsCollector = (directory: string) =>
       yield* fs.writeFileString(file, `${JSON.stringify(batch)}\n`, { flag: "a", mode: 0o600 });
       return HttpServerResponse.jsonUnsafe({ status: 1 });
     }).pipe(Effect.orDie);
-    // A fresh router per collector: one process can own several products, each with its own.
     const services = yield* Layer.build(
       Layer.fresh(
         HttpRouter.serve(
