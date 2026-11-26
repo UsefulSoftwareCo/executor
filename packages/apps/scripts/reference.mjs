@@ -20,6 +20,8 @@ const hostModules = new Set([
   "./contracts",
   "./host",
   "./effect",
+  "./check",
+  "./oxlint",
   "./mcp/effect",
   "./ui/contracts",
   "./ui/auth",

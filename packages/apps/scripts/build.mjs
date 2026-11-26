@@ -62,6 +62,7 @@ const compilerOptions = {
   skipLibCheck: true,
   declaration: true,
   emitDeclarationOnly: true,
+  allowJs: true,
   allowImportingTsExtensions: true,
   rootDir: packages,
   outDir: join(out, "types"),
