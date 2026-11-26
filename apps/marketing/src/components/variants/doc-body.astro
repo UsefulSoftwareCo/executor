@@ -14,7 +14,9 @@ import { appStructure } from "../../content/app-structure";
 import { AppPieces } from "../app-pieces";
 import rhysAvatar from "../../assets/rhys-sullivan.jpg";
 import { appHref } from "../../content/site-origin.ts";
+import { desktopAppsPath, docsIndexPath, docsOverview, overviewNote } from "../../content/docs-overview.ts";
 const X_URL = "https://x.com/RhysSullivan";
+const overview = await docsOverview();
 
 interface Props {
   gh: string;
@@ -46,7 +48,7 @@ interface Props {
         <CopyPrompt />
       </div>
       <p class="doc__subhead doc__subhead--fine mb-[1.5rem] max-[719.98px]:text-[16px] text-[15px] [color:var(--color-ink-3)] max-w-[52ch] [&_a]:[color:var(--color-ink-2)] [&_a]:underline [&_a]:underline-offset-[3px] [&_a]:[text-decoration-color:var(--color-rule-strong)] [&_a:hover]:text-ink max-[1023.98px]:mx-auto">
-        Rather keep it on your machine? <a href="#install">Desktop, CLI, or self-hosted ↓</a>
+        Rather keep it on your machine? <a href="#install">Desktop, CLI, or self-hosted ↓</a> · <a href={desktopAppsPath}>Desktop apps</a>
       </p>
     </header>
 
@@ -122,6 +124,26 @@ interface Props {
         <span class="doc__way-d text-[14px] leading-[1.55] [color:var(--color-ink-2)] flex-1">Run the hosted server on infrastructure you control.</span>
         <span class="doc__way-a flex flex-wrap items-center gap-[0.5rem_0.75rem] mt-[0.6rem]"><a href="/docs/run/self-host" class="btn-secondary inline-flex items-center gap-[0.4rem] bg-surface text-ink border border-rule rounded-[8px] py-[0.7rem] px-[1.25rem] [font-family:inherit] font-medium text-[14.5px] tracking-[-0.005em] cursor-pointer [transition:background_0.15s_ease,_border-color_0.15s_ease] hover:[background:var(--color-surface-2)] hover:[border-color:var(--color-ink-3)] [.doc\_\_way-a_&]:text-[13.5px] [.doc\_\_way-a_&]:py-[0.55rem] [.doc\_\_way-a_&]:px-[0.95rem] [.doc\_\_section_a&]:no-underline max-[719.98px]:[.doc\_\_way-a_&]:w-full max-[719.98px]:[.doc\_\_way-a_&]:justify-center max-[719.98px]:[.doc\_\_way-a_&]:text-center [.pricing\_\_card_>_&]:self-start [.pricing\_\_card_>_&]:mb-[1.4rem]">Self-hosting docs</a></span>
       </div>
+    </div>
+  </section>
+
+  <section id="docs-overview" class="max-w-180 border-t border-rule mt-[3.25rem] pt-[2.25rem]">
+    <h2 class="text-[22px] font-semibold text-ink">What you can do with Executor</h2>
+    <p class="mt-2 text-tone-47">{overviewNote} See the <a href={docsIndexPath} class="underline underline-offset-3">full docs index</a>.</p>
+    <div class="mt-6 grid gap-6 min-[720px]:grid-cols-2">
+      {overview.map(({ title, pages }) => (
+        <div>
+          <h3 class="font-semibold text-ink">{title}</h3>
+          <ul class="mt-2 space-y-3">
+            {pages.map(({ title, description, href }) => (
+              <li>
+                <a href={href} class="text-ink underline underline-offset-3">{title}</a>
+                {description && <p class="mt-1 text-sm leading-relaxed text-tone-47">{description}</p>}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))}
     </div>
   </section>
 

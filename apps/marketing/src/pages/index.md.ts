@@ -20,6 +20,7 @@ import {
 import { testimonials } from "../content/testimonials";
 import { appStructure } from "../content/app-structure";
 import { appOrigin, siteOrigin } from "../content/site-origin.ts";
+import { docsOverviewMarkdown, setupLinksMarkdown } from "../content/docs-overview.ts";
 
 const machineSummaries = [
   ["Docs", `${siteOrigin}/docs`],
@@ -51,9 +52,11 @@ const pricingLines = pricingTiers(appOrigin).map(
 
 const faqLines = faqs.map(({ question, answer }) => `### ${question}\n\n${answer}`);
 
-const body = `# Executor
+const body = (overview: string) => `# Executor
 
 > ${tagline}
+
+${setupLinksMarkdown}
 
 ## Machine summaries
 
@@ -64,6 +67,8 @@ ${taglineBuild}
 ${introduction}
 
 ${heroSubhead}
+
+${overview}
 
 ## ${homepageStory.everything.title}
 
@@ -150,4 +155,4 @@ ${faqLines.join("\n\n")}
 The existing Executor project: ${GITHUB_URL}
 `;
 
-export const GET: APIRoute = () => markdownResponse(body);
+export const GET: APIRoute = async () => markdownResponse(body(await docsOverviewMarkdown()));

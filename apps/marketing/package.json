@@ -38,7 +38,8 @@
   "devDependencies": {
     "@sentry/vite-plugin": "5.4.0",
     "@types/react": "19.3.0",
-    "@types/react-dom": "19.3.0"
+    "@types/react-dom": "19.3.0",
+    "jiti": "2.7.0"
   },
   "engines": {
     "node": ">=22.12.0"

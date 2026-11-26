@@ -11,6 +11,7 @@ export default defineConfig({
   output: "static",
   integrations: [react()],
   vite: {
+    ssr: { external: ["jiti"] },
     define: { "import.meta.env.PUBLIC_EXECUTOR_API_ORIGIN": JSON.stringify(apiOrigin) },
     build: { sourcemap: "hidden", assetsInlineLimit },
     plugins: [
