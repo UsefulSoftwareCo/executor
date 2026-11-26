@@ -170,7 +170,7 @@ export default defineConfig({
           "/apps/executor-app",
         ],
       },
-      { label: "Automation", items: ["/workflows", "/schedules", "/webhooks"] },
+      { label: "Automation", items: ["/workflows", "/schedules", "/webhooks", "/approvals"] },
       { label: "Skills", items: ["/skills"] },
       {
         label: "Concepts",
@@ -181,7 +181,21 @@ export default defineConfig({
           "/concepts/organizations-and-access",
         ],
       },
-      { label: "Build", items: ["/author-an-app", "/desktop-apps"] },
+      {
+        label: "Build an app",
+        items: [
+          "/build",
+          "/build/tools",
+          "/build/accounts",
+          "/build/import",
+          "/build/storage",
+          "/build/ui",
+          "/build/input-and-approvals",
+          "/build/skills",
+          "/build/upgrades",
+          "/desktop-apps",
+        ],
+      },
       { label: "Desktop app", items: ["/desktop"] },
       { label: "Cloud", items: ["/cloud/sso"] },
       {

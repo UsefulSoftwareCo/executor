@@ -1,0 +1,111 @@
+---
+title: Import MCP, OpenAPI, and GraphQL
+description: "Wrap a remote MCP server, OpenAPI specification, or GraphQL endpoint inside an Executor app with mcpRouter, liveOpenapiRouter, and graphqlRouter."
+slug: "/build/import"
+---
+
+Executor turns remote MCP servers, OpenAPI documents, and GraphQL endpoints into app routers with `mcpRouter` (`apps/mcp`), `liveOpenapiRouter` (`apps/openapi`), and `graphqlRouter` (`apps/graphql`). All three mount inside `tools`, compose with `withApprovals`, and cache with `ctx.cache` on **Local**, **Self-host**, and **Cloud**.
+
+**The step that matters most:** call the router helper inside `defineApp(requirements, async (ctx) => ({ tools: ... }))`, pass `cache: ctx.cache` and `signal: ctx.signal`, and declare required peer packages in `package.json`.
+
+**Prerequisites:** an app you can edit and deploy, pinned to the version from `executor apps framework` ([Build an app](/docs/build)), plus `@modelcontextprotocol/sdk` for MCP or `graphql` for GraphQL.
+
+**You'll know it worked when…** after deploying and linking any required account, upstream operations appear on the **Tools** tab and in `tools.search`, and calling one returns an upstream result.
+
+## How to use it
+
+The code is the same across **Local**, **Self-host**, and **Cloud**. For authenticated services, declare a provider as in [Accounts and providers](/docs/build/accounts). When you pass an account and a cache to `mcpRouter` or `graphqlRouter`, the helper uses an account-scoped cache for the discovered catalog. With the OpenAPI configuration below, `liveOpenapiRouter` compiles the definition without credentials and applies each call's selected account at runtime.
+
+### Remote MCP server (`apps/mcp`)
+
+1. Add `"@modelcontextprotocol/sdk": "1.32.1"` (peer range `^1.31.0`) to `dependencies` in `package.json`.
+2. Call `await mcpRouter({ url, account?, headers?, cache: ctx.cache, signal: ctx.signal }, kinds?)` inside your `defineApp` factory.
+3. For authenticated MCP servers, write one `headers(account)` helper and use it in both `mcpHealth(check, { url, headers: headers(check.account) })` and `mcpRouter`. For a method with declared `request` placements, that helper can return `account.headers()`. Put credentials in headers so `mcpHealth` can probe the same URL with and without them. It initializes the MCP connection and lists tools to check that the server accepts the account and refuses unauthenticated access. It runs no tools.
+4. Override upstream read-only guesses with the optional `kinds` map (`{ toolName: "query" | "mutation" }`), and attach approvals with `withApprovals`.
+
+### OpenAPI specification (`apps/openapi`)
+
+No extra peer dependency is needed beyond `apps`.
+
+1. Call `liveOpenapiRouter({ source, allowedOrigin, securitySchemes, methods, oauth, cache: ctx.cache, fetch: ctx.fetch, signal: ctx.signal, account?, baseUrl?, kinds? })` synchronously.
+2. Pass `source: { url: "https://..." }` for a public OpenAPI document, or `source: { document }` for an inline or imported JSON/YAML object, and set `allowedOrigin` to the API origin (or list of origins).
+3. For an anonymous API, pass `securitySchemes: {}, methods: {}, oauth: []`. For an authenticated API, also pass the selected `account` and map its fields in `methods`, or list the matching OAuth method names in `oauth`.
+4. `GET`, `HEAD`, `OPTIONS`, and `QUERY` operations become queries; other HTTP methods become mutations unless overridden in `kinds` (keyed by `operationId`, falling back to generated names for operations without an `operationId`).
+5. Use `openapiOperationNames(document)` or `openapiToolNames(options)` when inspecting how operations map to tool names, and `renameTools` to adjust generated names.
+
+### GraphQL endpoint (`apps/graphql`)
+
+1. Add `"graphql": "16.11.0"` (peer range `^16.11.0`) to `dependencies` in `package.json`.
+2. Call `await graphqlRouter({ url, account?, headers?, cache: ctx.cache, signal: ctx.signal }, kinds?)`.
+3. GraphQL queries map to Executor queries and GraphQL mutations map to Executor mutations via introspection.
+
+### Combining multiple sources or accounts
+
+- Mount multiple imported sources under named keys in `router({ docs: ..., api: ... })`. If one lazy source fails to discover, that failure is reported alongside the app's other tools (an uncaught error thrown by the `defineApp` factory fails evaluation as a whole).
+- Override an imported router's title, description, or instructions with `router(imported, { title, description, instructions })`.
+- For `provider.many()` user requirements, set `tools: await accountRouter(ctx.user?.accounts.service ?? [], discover, { signal: ctx.signal })`, where `discover(account)` returns that account's router. Same-name tools are merged and select an account via `{ accountId, input }`.
+
+## Example
+
+This app wraps a public MCP server and adds an approval rule for any tool the server marks destructive. Save these files in `./deepwiki`, replacing `0.0.1-beta.148` with your host's `executor apps framework` version if it differs:
+
+<CodeGroup>
+
+```json deepwiki/package.json
+{
+  "name": "deepwiki-mcp-app",
+  "private": true,
+  "dependencies": {
+    "apps": "0.0.1-beta.148",
+    "@modelcontextprotocol/sdk": "1.32.1"
+  }
+}
+```
+
+```ts deepwiki/index.ts
+import { defineApp, toolAnnotations, withApprovals } from "apps";
+import { mcpRouter } from "apps/mcp";
+import { always } from "apps/operations/approval";
+
+export default defineApp({}, async ({ cache, signal }) => {
+  const server = await mcpRouter({
+    url: "https://mcp.deepwiki.com/mcp",
+    cache,
+    signal,
+  });
+
+  return {
+    tools: withApprovals(server, (tool) =>
+      toolAnnotations(tool)?.destructiveHint === true ? always() : undefined,
+    ),
+  };
+});
+```
+
+</CodeGroup>
+
+Deploy `./deepwiki` as **DeepWiki review** (following [Build an app](/docs/build)), discover its tools, and call `read_wiki_structure`:
+
+```bash
+APP_ID=$(executor apps create --name "DeepWiki review" --files ./deepwiki | node -pe 'JSON.parse(require("fs").readFileSync(0, "utf8")).id')
+executor apps deploy --app "$APP_ID" --files ./deepwiki
+executor search --namespace deepwiki-review
+executor execute --code 'return await tools["deepwiki-review"].read_wiki_structure({ repoName: "jqlang/jq" })'
+```
+
+Check that `executor search` lists `read_wiki_structure` and that the call returns the jq documentation topics. An upstream `isError: true` signals a tool error.
+
+## Limits
+
+- **Peer dependencies must be declared:** importing `apps/mcp` without `@modelcontextprotocol/sdk` (`^1.31.0`) or `apps/graphql` without `graphql` (`^16.11.0`) in `package.json` fails the deploy and names the missing package.
+- **OpenAPI document and response bounds:** public `source: { url }` OpenAPI definitions are limited to 40,000,000 bytes (40 MB). OpenAPI tool success bodies are read up to 16 MiB with a 30-second body-read timeout. SSE operations are skipped by the tool importer; write a subscription to consume an event stream.
+- **Binary payloads in OpenAPI:** binary request bodies and multipart binary fields take base64 strings; binary responses return `{ base64, contentType }`.
+- **MCP token scoping:** follow the upstream server's token requirements.
+- **Cache entry size:** each cached catalog entry is bounded to 2,000,000 bytes (2 MB). Always pass `cache: ctx.cache` so listing tools reuses metadata without re-introspecting on every call.
+
+## Related
+
+- [Tools, routers, and schemas](/docs/build/tools)
+- [Accounts and providers](/docs/build/accounts)
+- [Input prompts and tool approvals](/docs/build/input-and-approvals)
+- [Build an app](/docs/build)
