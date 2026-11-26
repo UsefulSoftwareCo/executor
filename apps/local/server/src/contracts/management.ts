@@ -1,18 +1,11 @@
 import { DashboardApi } from "./dashboard.ts";
 import { LocalAppManagementApi, LocalFrameworkApi } from "./app-management.ts";
-/** The local agent-facing API, projected from the contracts that serve its requests. */
 import { ExecutorApi, RequestRejection } from "@executor-js/sdk/core";
 import { HttpApi, HttpApiGroup, OpenApi } from "effect/http-api";
 import { AccountConnectApi } from "./account-connections.ts";
 import { LocalWebhookSetupApi } from "./webhook-setup.ts";
 import { LocalFeedbackApi } from "./feedback.ts";
 
-/**
- * The SDK routes local serves: every group but the owner lifecycle. Local's owners are fixed,
- * `local` for the user's records and `executor-local` for the server's own Executor app, so
- * removing an owner would only ever delete all of the user's data or that app. Hosted removes an
- * organization's owner in process, never through these routes.
- */
 export const LocalExecutorApi = HttpApi.make("executor").add(
   ExecutorApi.groups.accounts,
   ExecutorApi.groups.accountConnections,
@@ -32,11 +25,6 @@ export const LocalExecutorApi = HttpApi.make("executor").add(
 
 const dashboard = DashboardApi.groups.dashboard.endpoints;
 const connect = AccountConnectApi.groups.accountConnect.endpoints;
-/**
- * Each app's account links, named `appAccounts.<scope>.<action>` for tools as on hosted: `app`
- * routes link for every call, `user` routes for the local user. `connect` returns a browser link
- * whose completion links the new account to the requirement.
- */
 const api = HttpApi.make("local-management")
   .add(ExecutorApi.groups.apps)
   .add(ExecutorApi.groups.skills)
@@ -86,9 +74,7 @@ const api = HttpApi.make("local-management")
   .addHttpApi(LocalFrameworkApi)
   .addHttpApi(LocalFeedbackApi);
 
-/** Browser secret exchange, raw delivery, subscriptions and approval protocols are not management tools. */
 export const localManagementDocument = (): OpenApi.OpenAPISpec => {
-  // Agents read each operation's declared errors; an undeclared 400 reaches them without its cause.
   HttpApi.reflect(api, {
     onGroup: () => {},
     onEndpoint: ({ endpoint, group, middleware }) => {

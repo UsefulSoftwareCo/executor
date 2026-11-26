@@ -1,16 +1,12 @@
-/** Public Apps uses the registry reader without importing dashboard authentication or data. */
 import { PackageName, remoteRegistry } from "@executor-js/sdk/core";
 import { Data, Effect, Layer, Option, Schema } from "effect";
 import { Atom } from "effect/reactivity";
 
 const runtime = Atom.runtime(Layer.empty);
-// The registry is served by the API host, not the site's origin (`api.executor.sh` in production).
 const registry = () => remoteRegistry(import.meta.env.PUBLIC_EXECUTOR_API_ORIGIN);
-/** Published metadata is refreshed when a visitor returns to the page. */
 export const publicApps = runtime
   .atom(Effect.suspend(() => registry().list()))
   .pipe(Atom.refreshOnWindowFocus);
-/** Look up only the publication named by the public URL. */
 export const publicApp = Atom.family((name: string) =>
   runtime.atom(Effect.suspend(() => registry().list(name))).pipe(Atom.refreshOnWindowFocus),
 );
@@ -18,10 +14,8 @@ class SnapshotReference extends Data.Class<{ readonly name: string; readonly com
 const snapshots = Atom.family((reference: SnapshotReference) =>
   runtime.atom(Effect.suspend(() => registry().snapshot(reference.name, reference.commit))),
 );
-/** Files are pinned to the displayed publication, never the author's working source. */
 export const publicAppFiles = (name: string, commit: string) =>
   snapshots(new SnapshotReference({ name, commit }));
-/** The static Apps shell handles fresh package URLs without a site rebuild. */
 export function publicAppsLocation(
   pathname: string,
 ):

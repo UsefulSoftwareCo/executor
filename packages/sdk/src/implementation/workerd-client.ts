@@ -1,7 +1,5 @@
-import { WorkflowInput } from "apps/contracts";
-/** Portable app protocol. Runtime adapters own processes, sockets and storage bindings. */
 import { RpcTarget, type RpcStub } from "capnweb";
-import { Cause, Effect, Redacted, Schema, Stream } from "effect";
+import { Cause, Config, Effect, Option, Redacted, Schema, Stream } from "effect";
 import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import {
   DeclaredRequirements,
@@ -42,13 +40,25 @@ import { ownsDatabase } from "../contracts/apps.ts";
 import type { EvaluatedCommand } from "@executor-js/app-data/evaluated";
 import { evaluatedDeclarations } from "./evaluated-declarations.ts";
 
+const compilerOutage = Effect.gen(function* () {
+  const environment = yield* Config.option(Config.String("EXECUTOR_ENVIRONMENT"));
+  if (Option.getOrUndefined(environment) !== "e2e") return undefined;
+  const configured = yield* Config.option(Config.String("EXECUTOR_TEST_COMPILER_UNAVAILABLE"));
+  return Option.isNone(configured) || configured.value === ""
+    ? undefined
+    : yield* Schema.decodeUnknownEffect(Schema.Literals(["all", "retained"]))(configured.value);
+}).pipe(Effect.orDie);
 const engineFailure = () => new WorkflowFailure({ reason: "engine", retryable: true });
 const protocolFailure = () => new RuntimeProtocolFailed();
+export const TransportClosed = Symbol("executor/workerd-transport-closed");
+const sessionFailure = (signal: AbortSignal) => (cause: unknown) =>
+  signal.aborted && signal.reason === TransportClosed
+    ? new RuntimeProtocolFailed({ reason: "disconnected" })
+    : cause;
 const json = Schema.decodeUnknownSync(Schema.Json);
 type Callback = (input: unknown) => Promise<unknown>;
 
 const encodedJson = Schema.fromJsonString(Schema.Json);
-/** App-facing callbacks are scoped to the already-authorized invocation, never looked up by arbitrary IDs. */
 class HostCallbacks extends RpcTarget implements AppHostCallbacks {
   readonly #elicit: Callback | null;
   readonly #control: Callback | null;
@@ -72,7 +82,6 @@ class HostCallbacks extends RpcTarget implements AppHostCallbacks {
   }
 }
 
-/** Authorized workflow callbacks shared by native loopback and Worker service bindings. */
 export const workerdHostHandler = (options: {
   readonly executor: Effect.Effect<Executor>;
   readonly blobs: BlobStorage;
@@ -85,10 +94,6 @@ export const workerdHostHandler = (options: {
         const executor = yield* options.executor,
           host = executor[WorkflowHost];
         switch (command.operation) {
-          case "input":
-            return yield* executor[WorkflowHost]
-              .input(command.run, command.command)
-              .pipe(Effect.flatMap(Schema.encodeEffect(WorkflowInput)));
           case "prepare": {
             const current = yield* host.get(command.run);
             if (current.status === "complete") return { state: "complete", output: current.output };
@@ -154,7 +159,6 @@ export const workerdHostHandler = (options: {
               context.workflowControls,
               new AbortController().signal,
             );
-            // This adapter returns the shared encoded reply, which the Worker forwards unchanged.
             return yield* Effect.tryPromise({
               try: () => control(command.command),
               catch: engineFailure,
@@ -183,13 +187,15 @@ export const workerdHostHandler = (options: {
     );
   });
 
-/** Transport lifetime belongs to the host; each RPC scope owns its cancellation. */
+export type RegistryRead = (
+  path: `/${string}`,
+) => Effect.Effect<{ readonly status: number; readonly body: string }, RuntimeProtocolFailed>;
+
 export interface WorkerdTransport {
   readonly rpc: <A, E>(
     work: (api: RpcStub<WorkerdAppApi>, signal: AbortSignal) => Effect.Effect<A, E>,
   ) => Effect.Effect<A, E | RuntimeProtocolFailed>;
   readonly changes: (app: string) => Stream.Stream<number, RuntimeProtocolFailed>;
-  /** One command to the app's store of evaluated results, answered with its reply. */
   readonly evaluated: (
     app: string,
     command: EvaluatedCommand,
@@ -201,14 +207,11 @@ export interface WorkerdTransport {
   ) => Effect.Effect<typeof WorkflowBackendState.Type, WorkflowFailure>;
 }
 
-/**
- * App execution for hosts whose runner lives in the trusted apps Worker. The product sends each
- * invocation there with its callbacks, and the runner asks for the build only on a cold start.
- */
 export const connectedWorkerdApps = (blobs: BlobStorage, transport: WorkerdTransport) =>
   Effect.gen(function* () {
     const provideBlobs = Effect.provideService(BlobStore, blobs);
     const rpc = transport.rpc;
+    const outage = yield* compilerOutage;
     const runtime = yield* appRuntime({
       name: "runtime.workerd",
       loadBuild: (build) =>
@@ -218,7 +221,6 @@ export const connectedWorkerdApps = (blobs: BlobStorage, transport: WorkerdTrans
         ),
       invoke: (invocation, capabilities) =>
         Effect.gen(function* () {
-          // A workflow body runs in the apps Worker's own workflow engine, never through a call.
           if (capabilities.workflow !== undefined) return yield* protocolFailure();
           const encoded = yield* Schema.encodeEffect(Schema.fromJsonString(WorkerInvocation))({
             ...invocation,
@@ -230,11 +232,11 @@ export const connectedWorkerdApps = (blobs: BlobStorage, transport: WorkerdTrans
             capabilities.controls,
             async () => encodeLoadedBuild(await capabilities.load()),
           );
-          return yield* rpc((api) =>
+          return yield* rpc((api, signal) =>
             runnerResult(
               Effect.tryPromise({
                 try: () => api.invoke(encoded, callbacks),
-                catch: (cause) => cause,
+                catch: sessionFailure(signal),
               }),
             ),
           );
@@ -250,16 +252,33 @@ export const connectedWorkerdApps = (blobs: BlobStorage, transport: WorkerdTrans
                 new RuntimeBuildFailed({ stage: "source", message: describeBuildCause(cause) }),
             ),
           );
-          const result = yield* rpc((api) =>
+          const result = yield* rpc((api, signal) =>
             Effect.tryPromise({
-              try: async () => await api.compile(encoded),
-              catch: protocolFailure,
+              try: async () =>
+                outage === "all" || (outage === "retained" && retain)
+                  ? await Promise.reject(new Error("Network connection lost."))
+                  : await api.compile(encoded),
+              catch: sessionFailure(signal),
             }),
           ).pipe(
-            Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(CompileWorkerResult))),
             Effect.mapError(
               (cause) =>
-                new RuntimeBuildFailed({ stage: "compile", message: describeBuildCause(cause) }),
+                new RuntimeBuildFailed({
+                  stage: "compile",
+                  message: describeBuildCause(cause),
+                  unanswered: true,
+                }),
+            ),
+            Effect.flatMap((reply) =>
+              Schema.decodeUnknownEffect(Schema.fromJsonString(CompileWorkerResult))(reply).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new RuntimeBuildFailed({
+                      stage: "compile",
+                      message: describeBuildCause(cause),
+                    }),
+                ),
+              ),
             ),
           );
           if (!result.ok) return yield* Effect.fail(result.error);
@@ -276,7 +295,6 @@ export const connectedWorkerdApps = (blobs: BlobStorage, transport: WorkerdTrans
             ),
           );
           const build = BuildId.make(`bld_${crypto.randomUUID()}`);
-          // A check keeps nothing; its build id names no stored build.
           if (!retain) return { build, requirements };
           const { record } = yield* retainWorkerBuild(
             build,
@@ -302,7 +320,10 @@ export const connectedWorkerdApps = (blobs: BlobStorage, transport: WorkerdTrans
           transport.backend("input", run, id).pipe(Effect.asVoid),
         terminate: (run: WorkflowRunId) => transport.backend("terminate", run).pipe(Effect.asVoid),
       } satisfies WorkflowRuntime,
-      /** Evaluated results kept in each app's supervisor, so they outlive this process. */
       declarations: evaluatedDeclarations(transport.evaluated),
+      readRegistry: ((path) =>
+        rpc((api) =>
+          Effect.tryPromise({ try: () => api.readRegistry(path), catch: protocolFailure }),
+        )) satisfies RegistryRead,
     };
   });

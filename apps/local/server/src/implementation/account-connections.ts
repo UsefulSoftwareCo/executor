@@ -1,4 +1,3 @@
-/** Host-owned signed browser links over the reusable SDK lifecycle. */
 import { Effect, Layer, Redacted } from "effect";
 import { Hex } from "effect/encoding";
 import { HttpApiBuilder } from "effect/http-api";
@@ -23,11 +22,6 @@ import { connectOptions, connectionClient } from "./oauth-clients.ts";
 import { executorAppOwner, localOwner } from "./owners.ts";
 import { requireScopedRequirement } from "./app-accounts.ts";
 
-/**
- * A connected account belongs to the owner local gives the app it is connected for: `local`, or
- * `executor-local` for the server's own Executor app. Neither the caller's owner nor the app's
- * stored one is trusted; an app stored under another owner is not found.
- */
 export const connectForApp = (
   executor: Executor,
   managedApp: AppId | undefined,
@@ -39,7 +33,6 @@ export const connectForApp = (
     .pipe(Effect.andThen(executor.accountConnections.create({ ...input, owner })));
 };
 
-/** Sign only this purpose and connection ID. Existing links survive server restarts with the same key. */
 export const accountConnectHandlers = (
   executor: Executor,
   config: ServerConfig,
@@ -80,10 +73,6 @@ export const accountConnectHandlers = (
           if (!valid) return yield* new ConnectionLinkRejected();
           return request;
         });
-      /**
-       * Issue a signed browser link for an app requirement, for the agent's own API key only. The
-       * local server's own app and account are never connected this way.
-       */
       const issue = (payload: Omit<typeof CreateAccountConnection.Type, "owner">) =>
         Effect.gen(function* () {
           const request = yield* localRequest(config.port, config.browserOrigin);
@@ -108,11 +97,6 @@ export const accountConnectHandlers = (
             expiresAt: connection.expiresAt,
           };
         });
-      /**
-       * A scope's connect route, as `appAccounts.<scope>.connect`: the app must declare the
-       * requirement in that scope. The connection keeps that scope, so completing it refuses a
-       * requirement redeployed into the other one instead of linking in a scope nobody chose.
-       */
       const scopeConnect =
         (scope: AccountScope) =>
         ({

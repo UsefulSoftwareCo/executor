@@ -1,9 +1,3 @@
-/**
- * Cloud's one schedule coordinator runs every organization's scheduled runs. A run holds its slot
- * while its mutation waits on the services it calls, so slow runs must not keep other due runs
- * from starting. With the Node hosts' 8 slots, nine slow runs left one of them, and every later
- * due run, waiting until a slow run finished.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -14,13 +8,10 @@ import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
 import { appsManifest } from "../support/apps-release.ts";
 
-/** More slow runs than the 8 slots Cloud used to share between organizations. */
 const slowCount = 9;
-/** How long each slow run waits, standing in for a slow service. */
 const slowMs = 15_000;
 
 const slowNames = Array.from({ length: slowCount }, (_, index) => `slow${index + 1}`);
-/** Hourly schedules never fall due during the scenario; Run Now makes each one due. */
 const source = `import { defineApp, mutation, userInterval, object, router } from "apps";
 const slow = mutation({ input: object({}) }, async () => {
   await new Promise((resolve) => setTimeout(resolve, ${slowMs}));
@@ -70,14 +61,11 @@ layer(HostedLive, { excludeTestServices: true })("Cloud schedule capacity", (it)
                 approvalMode: "automatic",
               })).status,
             ).toBe(200);
-          // Every slow run is due before the quick one, so a full pool admits the slow runs first.
           for (const name of names)
             expect(
               (yield* api.request(actors.owner, "POST", `${path}/schedules/${name}/run`)).status,
             ).toBe(200);
 
-          // Each slow run finishes about 15 s after it starts. Waiting for all of them bounds the
-          // poll by the slow runs' own duration, not by a guess at the coordinator's speed.
           const runs = yield* api
             .request(actors.owner, "GET", `${prefix}/scheduled-runs?app=${app.id}`)
             .pipe(
@@ -99,8 +87,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud schedule capacity", (it)
           const slow = runs.filter((run) => run.name !== "quick");
           const quick = runs.find((run) => run.name === "quick")!;
           const firstSlowEnd = Math.min(...slow.map((run) => at(run.finishedAt!)));
-          // All nine slow runs were in flight together, and the quick run started and finished
-          // while they were: none of them waited for a slow run to free its slot.
           expect(Math.max(...slow.map((run) => at(run.startedAt)))).toBeLessThan(firstSlowEnd);
           expect(at(quick.finishedAt!)).toBeLessThan(firstSlowEnd);
         }),

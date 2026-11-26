@@ -62,8 +62,6 @@ export const mcpJsonSchemaValidator: jsonSchemaValidator = {
           data: undefined,
           errorMessage: "Value does not match the supported JSON Schema",
         };
-      // SAFETY: the MCP SDK associates T with this schema; decoding validates the
-      // unknown wire value before returning it through that library contract.
       return { valid: true, data: result.value as T, errorMessage: undefined };
     };
   },
@@ -94,8 +92,6 @@ export function mcpClient(
       do {
         // oxlint-disable-next-line executor/authored-code-through-adapter -- MCP SDK
         const page = yield* Effect.tryPromise({
-          // This session only reads metadata. listTools() also eagerly compiles
-          // every output validator; mcpRouter validates the selected tool on call.
           try: (signal) =>
             client.request(
               { method: "tools/list", params: cursor === undefined ? {} : { cursor } },
@@ -128,8 +124,6 @@ export function mcpClient(
       } while (cursor !== undefined);
       const info = client.getServerVersion();
       const instructions = client.getInstructions();
-      // The SDK has validated these fields. Icons are display-only, so one that does not fit
-      // is dropped; a header that still does not fit is omitted. Tools stay usable either way.
       const icons = info?.icons?.flatMap((icon) =>
         Option.toArray(Schema.decodeUnknownOption(RouterIcon)(icon)),
       );

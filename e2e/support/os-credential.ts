@@ -1,4 +1,3 @@
-/** Observe and remove only the OS credential created by a disposable first-launch scenario. */
 import { createHash } from "node:crypto";
 import { AsyncEntry } from "@napi-rs/keyring";
 import { Effect, Stream } from "effect";
@@ -7,13 +6,6 @@ import { driver } from "./platform.ts";
 
 const service = "com.usefulsoftware.executor.v2";
 
-/**
- * Keys stay inside this adapter; the scenario receives only their fingerprint or absence.
- *
- * A macOS Keychain item opens only to the program that created it, and the release executable is
- * not this test process, so on macOS the fingerprint covers the item's attributes, including when
- * it was last modified, and never its secret. Linux and Windows stores have no per-program access.
- */
 export const testCredential = (id: string) =>
   process.platform === "darwin" ? keychainCredential(id) : storeCredential(id);
 

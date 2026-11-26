@@ -1,4 +1,3 @@
-/** GraphQL metadata caching through real app deploys and an external introspection server. */
 import { expect, layer } from "@effect/vitest";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Effect, Layer, Schema } from "effect";
@@ -183,8 +182,6 @@ const deploy = (url: string, cached: boolean, accounts = false) =>
     expect(response.status).toBe(200);
     const path = `${prefix}/apps/${(yield* body(App, response)).id}`;
     yield* Effect.addFinalizer(() => api.request(actors.owner, "DELETE", path).pipe(Effect.orDie));
-    // Introspected operations are mounted under "upstream" beside the app's own refresh query.
-    // A call runs as the owner unless another caller is named, with the caller's linked accounts.
     const call = (
       name: string,
       input: Schema.Json = {},
@@ -209,7 +206,6 @@ layer(HostedLive, { excludeTestServices: true })("GraphQL cache", (it) => {
         expect(first.status).toBe(200);
         expect(yield* body(Schema.Json, first)).toBe("revision 1");
         expect((yield* upstream.stats).discover).toBe(1);
-        // Another member calls the shared app.
         const access = yield* body(
           Schema.Struct({ revision: Schema.String }),
           yield* app.api.request(app.actors.owner, "GET", `${app.path}/access`),
@@ -221,7 +217,6 @@ layer(HostedLive, { excludeTestServices: true })("GraphQL cache", (it) => {
           })).status,
         ).toBe(200);
         yield* upstream.configure({ version: 2, fail: true });
-        // Only introspection fails; execution still runs live using the shared metadata.
         const next = yield* app.call("query_public_fixture_0", {}, { actor: app.actors.member });
         expect(next.status).toBe(200);
         expect(yield* body(Schema.Json, next)).toBe("revision 2");
@@ -247,7 +242,6 @@ layer(HostedLive, { excludeTestServices: true })("GraphQL cache", (it) => {
           Effect.gen(function* () {
             const connection = yield* body(
               Resource,
-              // Connecting from the app links the account; the account array uses every linked one.
               yield* app.api.request(
                 app.actors.owner,
                 "POST",
@@ -342,7 +336,6 @@ layer(HostedLive, { excludeTestServices: true })("GraphQL cache", (it) => {
         expect((yield* upstream.stats).discover).toBe(3);
         yield* upstream.configure({ version: 2, fail: false });
         const bravo = yield* connect("bravo");
-        // With the first account unlinked, calls use only the second and see only its catalog.
         yield* unlinkAccount(app.actors.owner, app.path, "service", alpha);
         expect(yield* linkedAccountIds(app.actors.owner, app.path)).toEqual([bravo]);
         expect(

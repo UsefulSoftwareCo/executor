@@ -1,4 +1,3 @@
-/** Cache immutable, manifest-checked build bytes, never an HTTP authorization result. */
 import {
   BlobKey,
   RuntimeBuildUnavailable,
@@ -10,10 +9,6 @@ import {
 } from "@executor-js/sdk/core";
 import { Effect, FiberSet, Option, Schema, Stream } from "effect";
 
-/**
- * A public file is cached as its listing only: the response is empty and this header holds its
- * store key, blob and size. Its bytes always come from the store, in the range a request asks for.
- */
 const publicHeader = "x-executor-public-file";
 const PublicListing = Schema.fromJsonString(
   Schema.Struct({ key: BlobKey, object: Schema.String, size: Schema.Int }),
@@ -23,7 +18,6 @@ class AssetCacheFailed extends Schema.TaggedError<AssetCacheFailed>()("AssetCach
 const cached = <A>(read: () => Promise<A>) =>
   Effect.tryPromise({ try: read, catch: () => new AssetCacheFailed() });
 
-/** The caller authorizes every request before this reader runs, including cache hits. */
 export const cachedBuildAssets = (
   origin: string,
   load: (
@@ -36,8 +30,6 @@ export const cachedBuildAssets = (
   ) => Effect.Effect<Option.Option<BlobBody>, BlobStoreError>,
 ) =>
   Effect.gen(function* () {
-    // Alchemy closes the event scope through waitUntil after sending the response.
-    // Own cache writes there, without retaining an init-time Worker context.
     const writes = yield* FiberSet.make();
     yield* Effect.addFinalizer(() =>
       FiberSet.awaitEmpty(writes).pipe(Effect.timeoutOption("2 seconds"), Effect.asVoid),
@@ -63,8 +55,6 @@ export const cachedBuildAssets = (
       Effect.gen(function* () {
         if (Option.isNone(Schema.decodeUnknownOption(BlobKey)(`${build}/ui/${path}`)))
           return undefined;
-        // A named Cache API store has no public HTTP route. The configured stage origin
-        // isolates deployments; neither request headers nor query strings select a key.
         const key = new URL(
           `/_executor/build-cache/${encodeURIComponent(build)}/${encodeURIComponent(path)}`,
           origin,
@@ -99,8 +89,6 @@ export const cachedBuildAssets = (
         if (hit !== undefined) return hit;
         const asset = yield* load(build, path);
         if (asset !== undefined && cache !== undefined) {
-          // Only a successful manifest-checked read enters the cache. No sessions,
-          // injected HTML, errors, missing files or browser response headers do.
           yield* FiberSet.run(
             writes,
             cached(() =>

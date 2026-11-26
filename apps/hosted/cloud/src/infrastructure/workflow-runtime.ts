@@ -1,4 +1,3 @@
-/** The executor's client for the native app workflow: start, inspect and stop runs. */
 import * as Cloudflare from "alchemy/Cloudflare";
 import type { Workflow } from "@cloudflare/workers-types";
 import { Cause, Effect, Result, Schema } from "effect";
@@ -13,7 +12,6 @@ import { providerFailureCode } from "../implementation/provider-failure.ts";
 
 const failure = () => new WorkflowFailure({ reason: "engine", retryable: true });
 const recover = decodeWorkflowFailure;
-/** Settle a native engine call as the workflow failure it reports. */
 export const safe = <A, R>(
   effect: Effect.Effect<A, unknown, R>,
 ): Effect.Effect<A, WorkflowFailure, R> =>
@@ -35,11 +33,9 @@ const NativeWorkflow = Schema.declare(
 const native = <A>(work: () => Promise<A>) =>
   Effect.tryPromise({ try: work, catch: (error) => error });
 
-/** Use the API-owned binding. App-page Workers bind the same workflow through their env. */
 export const cloudWorkflows: Effect.Effect<WorkflowRuntime, never, Cloudflare.WorkerEnvironment> =
   Effect.gen(function* () {
     const environment = yield* Cloudflare.WorkerEnvironment;
-    // Resolve native handles only during invocation, after Alchemy has installed bindings.
     const binding = Effect.suspend(() =>
       Schema.decodeUnknownEffect(NativeWorkflow)(environment.AppWorkflows),
     ).pipe(Effect.mapError(failure));
@@ -110,8 +106,6 @@ export const cloudWorkflows: Effect.Effect<WorkflowRuntime, never, Cloudflare.Wo
           const terminated = yield* safe(
             native(async () => (await namespace.get(run)).terminate()),
           ).pipe(Effect.result);
-          // The run can finish between the status read and the native call, which then refuses
-          // to terminate the finished instance. Only a run that is still active failed to stop.
           if (Result.isFailure(terminated) && !finished(yield* status(run)))
             return yield* terminated.failure;
         }),

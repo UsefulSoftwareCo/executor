@@ -2,7 +2,6 @@ import type { ComponentProps } from "react";
 import { DisabledTooltip } from "./disabled-tooltip.tsx";
 import { cn } from "../lib/utils.ts";
 
-/** Multiline input using the same field styles and focus treatment as Input. */
 export function Textarea({
   className,
   disabledReason,

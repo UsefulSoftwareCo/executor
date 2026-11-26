@@ -13,7 +13,6 @@ import {
   ListWorkflowRuns,
 } from "../contracts/workflows.ts";
 import { CompleteWebhookSetup } from "../contracts/webhook-setup.ts";
-/** Promise facade parses plain inputs before calling native operations. */
 import {
   CreateWebhook,
   DeliverWebhook,
@@ -75,7 +74,6 @@ const invocationOptions = (
   };
 };
 
-/** Adapt an existing native client; each Promise call runs one decoded operation. */
 export const promiseExecutor = (executor: Executor): PromiseExecutor => {
   return {
     skills: {
@@ -222,7 +220,6 @@ export const promiseExecutor = (executor: Executor): PromiseExecutor => {
         run(ToolInputs.call, input, (value) =>
           executor.tools.call(value, invocationOptions(options)),
         ),
-      // Native resume rejects excess fields before lookup; do not strip them at this boundary.
       resume: (input, options) =>
         Effect.runPromise(executor.tools.resume(input, invocationOptions(options))),
       pruneApprovals: (input = {}) =>

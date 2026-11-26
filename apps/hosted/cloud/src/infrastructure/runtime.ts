@@ -1,6 +1,6 @@
-/** Cloud's app runtime: the shared runner in the AppData Worker, with R2 and the Cache API as build store. */
 import { traceHeaders } from "@executor-js/telemetry";
 import {
+  BlobStoreError,
   BuildId,
   RuntimeBuildFailed,
   BuildMemoryExceeded,
@@ -15,6 +15,7 @@ import {
   assembleWorkerBundle,
   declarationFailed,
   remoteAppRunner,
+  RunnerUnanswered,
   runsInFacet,
 } from "@executor-js/sdk/workerd";
 import { HostRequirementsError, DeclaredRequirements, HostResponse } from "apps/contracts";
@@ -28,6 +29,7 @@ import type { DurableObjectNamespace } from "@cloudflare/workers-types";
 import { CloudCompileResult } from "../contracts/builds.ts";
 import { AppCompiler } from "./compiler.ts";
 import { AppData } from "./app-data-worker.ts";
+import { CurrentRequest } from "./served-request.ts";
 import type { AppDataSupervisor } from "./app-data.ts";
 import {
   loadCloudBuildRecord,
@@ -36,17 +38,8 @@ import {
   cloudBuildAsset,
 } from "../implementation/build-storage.ts";
 
-/** The deployer sees the underlying failure; builds bind no accounts, so it holds no credentials. */
 const failed = (stage: RuntimeBuildFailed["stage"], cause: unknown) =>
   new RuntimeBuildFailed({ stage, message: describeBuildCause(cause) });
-/**
- * How long a deploy waits for the compiler Worker to answer. A lost compiler isolate otherwise
- * leaves the binding call open until the platform reports a lost connection, 100-230s later.
- * Over September 2026, the slowest successful compiler requests took 16.5s in production and
- * 34s on test stages (a cold default-app provision), and compiler memory failures surfaced within
- * 37s, so they still report as such. The bound leaves the whole deploy room to answer within the
- * 60s that MCP clients and the deployed scenarios commonly wait.
- */
 const compilerDeadline = "50 seconds";
 const compilerDidNotAnswer = Effect.annotateCurrentSpan(
   "build.compiler_deadline_exceeded",
@@ -62,10 +55,6 @@ const compilerDidNotAnswer = Effect.annotateCurrentSpan(
     ),
   ),
 );
-/**
- * Attribute Worker Loader use to the caller. Cloudflare bills each unique loaded Worker per day,
- * and its own usage data cannot be split by user or organization.
- */
 const withActor = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   Effect.flatMap(runtimeActor, (actor) => Effect.annotateSpans(effect, actor));
 const NativeNamespace = Schema.declare(
@@ -76,14 +65,19 @@ const NativeNamespace = Schema.declare(
     typeof value.getByName === "function",
 );
 
-/**
- * What a supervisor's `run` answers: the call's encoded result. The Durable Object bridge answers a
- * method its object does not define with `undefined`, before and instead of running anything, so
- * `undefined` comes only from an AppData deployment older than `run`.
- */
 const SupervisorRun = Schema.UndefinedOr(Schema.String);
 
-/** Native Alchemy bindings are resolved once; actual work belongs to the current invocation. */
+const outboundGroups = new WeakMap<object, string>();
+const outboundGroup = (unserved: object) =>
+  Effect.map(CurrentRequest, (request) => {
+    const key = request ?? unserved;
+    const known = outboundGroups.get(key);
+    if (known !== undefined) return known;
+    const named = crypto.randomUUID();
+    outboundGroups.set(key, named);
+    return named;
+  });
+
 export const cloudRuntime = Effect.fn(function* (
   origin: string,
   databases: Cloudflare.DurableObject<AppDataSupervisor>,
@@ -92,21 +86,10 @@ export const cloudRuntime = Effect.fn(function* (
   const appData = yield* Cloudflare.Workers.bindWorker(AppData);
   const environment = yield* Cloudflare.WorkerEnvironment;
   return Effect.gen(function* () {
-    // App Workers run in AppData, whose own entrypoint can be their outbound network.
     const runner = remoteAppRunner({
       invoke: (invocation, capabilities) => appData.invoke(invocation, capabilities),
       declare: (bundle, headers) => appData.declare(bundle, headers),
     });
-    /**
-     * A call that uses the app's database runs in the app's data facet, which only its supervisor
-     * can reach, so it goes to the supervisor directly, which runs its runner. Through the shared
-     * runner it would wait for a runner isolate to start only to forward the call there.
-     *
-     * An AppData deployment from before `run` (a partial deploy, or AppData rolled back alone)
-     * answers `undefined` without running anything (see `SupervisorRun`); only then does the call
-     * take the shared runner, which every AppData deployment serves. A failure is never retried
-     * there: it may have run part of the call.
-     */
     const supervised = (app: string) =>
       remoteAppRunner({
         invoke: (invocation, capabilities) =>
@@ -127,13 +110,11 @@ export const cloudRuntime = Effect.fn(function* (
             ),
         declare: (bundle, headers) => appData.declare(bundle, headers),
       });
-    // Cache writes run in this event scope, bounded when it closes.
+    const unserved = {};
     const warming = yield* FiberSet.make();
     yield* Effect.addFinalizer(() =>
       FiberSet.awaitEmpty(warming).pipe(Effect.timeoutOption("2 seconds"), Effect.asVoid),
     );
-    // Only a runner from before AppData read builds itself calls this loader; it stays until
-    // callers stop sending it, so such a runner keeps working through a rollback.
     const load = cachedRuntimeBuilds(
       origin,
       {
@@ -149,10 +130,11 @@ export const cloudRuntime = Effect.fn(function* (
       loadBuild: load,
       invoke: (invocation, capabilities) =>
         withActor(
-          (runsInFacet(invocation) ? supervised(invocation.app) : runner).invoke(
-            invocation,
-            capabilities,
-          ),
+          runsInFacet(invocation)
+            ? supervised(invocation.app).invoke(invocation, capabilities)
+            : Effect.flatMap(outboundGroup(unserved), (group) =>
+                runner.invoke({ ...invocation, outboundGroup: group }, capabilities),
+              ),
         ),
       build: ({ files, public: publicPaths = [], retain = true }) =>
         withActor(
@@ -168,12 +150,13 @@ export const cloudRuntime = Effect.fn(function* (
                 return Effect.fail(
                   cause instanceof Error && /^Worker exceeded memory limit\.?$/.test(cause.message)
                     ? new BuildMemoryExceeded()
-                    : failed("compile", cause instanceof Error ? cause : error),
+                    : new RuntimeBuildFailed({
+                        stage: "compile",
+                        message: describeBuildCause(cause instanceof Error ? cause : error),
+                        unanswered: true,
+                      }),
                 );
               }),
-              // Builds share a compiler isolate, so another build can exhaust its memory. The
-              // runtime discards that isolate: one retry compiles alone on a fresh one, and a
-              // build that cannot fit fails again.
               Effect.tapError((error) =>
                 Schema.is(BuildMemoryExceeded)(error)
                   ? Effect.annotateCurrentSpan("build.memory_retry", true)
@@ -199,11 +182,16 @@ export const cloudRuntime = Effect.fn(function* (
                       ),
                 ),
                 Effect.mapError((cause) =>
-                  declarationFailed(cause, { mainModule: bundle.mainModule, sourceMap, files }),
+                  cause instanceof RunnerUnanswered
+                    ? declarationFailed(
+                        cause.failure,
+                        { mainModule: bundle.mainModule, sourceMap, files },
+                        true,
+                      )
+                    : declarationFailed(cause, { mainModule: bundle.mainModule, sourceMap, files }),
                 ),
                 Effect.withSpan("runtime.cloud.requirements"),
               );
-            // A check keeps nothing: no R2 object, no cache entry. Its build id names nothing.
             if (!retain) return { build, requirements };
             const stored = yield* retainCloudBuild(
               build,
@@ -211,23 +199,21 @@ export const cloudRuntime = Effect.fn(function* (
               framework,
               ui,
             ).pipe(Effect.provide(RuntimeContext.phantom));
-            // Only after R2 holds the build: the runner's first read of it can then skip R2 in this
-            // data centre. The Cache API is per data centre, so other colos still read R2 once.
             yield* cacheRuntimeBuild(warming, origin, build, stored);
             const assets = stored.record.ui;
             return { build, requirements, ...(assets === undefined ? {} : { ui: assets }) };
           }).pipe(
             Effect.tapError((error) =>
               Effect.annotateCurrentSpan({
-                "build.stage": Schema.is(BuildMemoryExceeded)(error)
-                  ? "compile"
-                  : Schema.is(RuntimeProtocolUnsupported)(error)
-                    ? "protocol"
-                    : Schema.is(RuntimeAppsDependencyMissing)(error)
-                      ? "dependencies"
-                      : error.stage,
-                // The message quotes the deployer's source and its compiler errors, which only the
-                // deployer receives; the span records which failure it was.
+                "build.stage": Schema.is(BlobStoreError)(error)
+                  ? "retain"
+                  : Schema.is(BuildMemoryExceeded)(error)
+                    ? "compile"
+                    : Schema.is(RuntimeProtocolUnsupported)(error)
+                      ? "protocol"
+                      : Schema.is(RuntimeAppsDependencyMissing)(error)
+                        ? "dependencies"
+                        : error.stage,
                 "build.error": error._tag,
               }),
             ),
@@ -235,7 +221,6 @@ export const cloudRuntime = Effect.fn(function* (
         ),
       asset: ({ build, path }) =>
         cloudBuildAsset(build, path).pipe(Effect.provide(RuntimeContext.phantom)),
-      // Native fetch retains the upgrade response; Alchemy's typed HTTP stub omits it.
       changes: (app) =>
         dataChanges(Schema.decodeUnknownSync(NativeNamespace)(environment.AppDataSupervisor), app),
     });

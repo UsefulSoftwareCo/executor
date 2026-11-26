@@ -1,4 +1,3 @@
-/** Named performance scenarios over one seeded perf target (a stage plus its receipt). */
 import { Clock, Effect, Option, Schema } from "effect";
 import type { HttpClient } from "effect/http";
 import { randomBytes } from "node:crypto";
@@ -36,18 +35,15 @@ export interface Scenario {
   readonly group: Group;
   readonly description: string;
   readonly target: string;
-  /** Samples discarded before measuring; zero for cold scenarios. */
   readonly warmup: number;
   readonly run: (target: PerfTarget) => Effect.Effect<Sample, PerfRequestFailed, never>;
 }
 
-/** Everything a scenario needs for one origin. Sessions refresh before their one-hour expiry. */
 export interface PerfTarget {
   readonly label: string;
   readonly control: StageControl;
   readonly receipt: Receipt;
   readonly owner: (org: string) => Effect.Effect<ProductClient, PerfRequestFailed>;
-  /** Owner of an extra fixture organization that is not in the receipt, created on first use. */
   readonly fixtureOwner: (
     id: string,
     label: string,
@@ -57,7 +53,6 @@ export interface PerfTarget {
   >;
   readonly cookies: (org: string) => Effect.Effect<BrowserCookies, PerfRequestFailed>;
   readonly mcp: (org: string) => Effect.Effect<McpSession, PerfRequestFailed>;
-  /** One browser per target, signed in as the dashboard org owner. */
   readonly browser: Effect.Effect<BrowserSession, PerfRequestFailed>;
   readonly org: (key: string) => OrgReceipt;
   readonly close: Effect.Effect<void>;
@@ -114,7 +109,6 @@ export const makeTarget = (label: string, control: StageControl, receipt: Receip
         Effect.gen(function* () {
           const cached = mcps.get(key);
           if (cached !== undefined && !cached.lost()) return cached;
-          // A lost session failed its sample; later samples reconnect like a spec client.
           if (cached !== undefined) yield* cached.close.pipe(Effect.ignore);
           const entry = org(key);
           const opened = yield* mcpSession(control.origin, entry.pat, entry.organization.id);
@@ -155,10 +149,8 @@ export const primaryAccount = (entry: OrgReceipt) =>
 
 const org = (o: OrgReceipt) => `/api/organizations/${o.organization.id}`;
 const app = (o: OrgReceipt) => `${org(o)}/apps/${primaryApp(o).id}`;
-/** The emulator's first tool. OpenAPI groups `/ops/list_account_0000` under `ops`. */
 const probeTool = (entry: AppReceipt) =>
   entry.kind === "openapi" ? "ops.listAccount0000" : "list_account_0000";
-/** Dashboard reads observed in production traffic, parameterised by the dashboard org. */
 const apiRoutes: readonly (readonly [string, string, (o: OrgReceipt) => string])[] = [
   ["inventory", "{org}/inventory", (o) => `${org(o)}/inventory`],
   ["resources", "{org}/resources", (o) => `${org(o)}/resources`],
@@ -195,11 +187,6 @@ const apiRoutes: readonly (readonly [string, string, (o: OrgReceipt) => string])
     (o) => `${app(o)}/schedules/definitions`,
   ],
   ["account", "{org}/accounts/{account}", (o) => `${org(o)}/accounts/${primaryAccount(o)}`],
-  [
-    "account.access",
-    "{org}/accounts/{account}/access",
-    (o) => `${org(o)}/accounts/${primaryAccount(o)}/access`,
-  ],
   ["catalog", "/api/catalog", () => `/api/catalog`],
   ["registry.apps", "/api/registry/apps", () => `/api/registry/apps`],
   ["auth.get-session", "/api/auth/get-session", () => `/api/auth/get-session`],
@@ -230,11 +217,6 @@ const apiScenarios: Scenario[] = apiRoutes.map(([name, shown, path]) => ({
     ),
 }));
 
-/**
- * App-detail tabs backed by app evaluation, on an account-linked MCP app from the org whose
- * upstreams have production latency. The imported app's factory does not wait on its upstream,
- * so these reads measure evaluation of an app in that org, not a slow factory.
- */
 const slowOrg = "a8s";
 const slowApp = (o: OrgReceipt) =>
   o.apps.find((entry) => entry.kind === "mcp" && entry.accounts.length > 0) ?? primaryApp(o);
@@ -255,12 +237,6 @@ const slowTabScenarios: Scenario[] = slowTabs.map((name) => ({
     ),
 }));
 
-/**
- * An app whose factory awaits a remote catalog before it declares skills and workflows, as
- * generated catalogs do in production. The emulated document takes the production p50
- * discovery latency (512 ms) on every load. Its own fixture organization keeps it out of the
- * seeded orgs; setup (deploy, connect a linked account) runs once per target and is not measured.
- */
 const factoryOrg = "decl";
 const factoryAppName = "Perf slow factory";
 const factorySource = (emulator: string) => {
@@ -333,11 +309,8 @@ const slowFactory = (target: PerfTarget) =>
         })
         .pipe(Effect.flatMap(ok("deploy slow factory")), decode(Identified)));
     const path = `${root}/apps/${deployed.id}`;
-    // Connecting from the app links the new account to it, so calls need no account choice.
     const connection = yield* client
-      .request("POST", `${path}/accounts/user/service/connections`, {
-        destination: { kind: "personal" },
-      })
+      .request("POST", `${path}/accounts/user/service/connections`, {})
       .pipe(Effect.flatMap(ok("slow factory connection")), decode(Identified));
     yield* client
       .request("POST", `${root}/connections/${connection.id}/submit`, {
@@ -389,7 +362,6 @@ const actionScenarios: Scenario[] = [
   },
 ];
 
-/** Pull the emulator-reported processing time out of any tool result shape. */
 const upstreamOf = (value: unknown): number | undefined => {
   if (value === null || typeof value !== "object") return undefined;
   const record = value as Record<string, unknown>;
@@ -411,7 +383,6 @@ const toolInput = (entry: AppReceipt) =>
     ? `{ accountId: ${JSON.stringify(entry.accounts[0])}, input: {} }`
     : "{}";
 
-/** Execute code: search the whole catalog, then call one tool and time it inside the sandbox. */
 export const executeCode = (entry: AppReceipt, calls: number) => `
 const found = await tools.search({ query: "list account", limit: 5 });
 const timings = [];
@@ -553,7 +524,6 @@ const sessionScenarios: Scenario[] = [
           .slice(before)
           .find((candidate) => candidate.httpMethod === "DELETE");
         return {
-          // Recorded as served when the product answers without a server error (this build: 405).
           ok: exchange !== undefined && exchange.status < 500,
           status: exchange?.status ?? 0,
           clientMs: ms,
@@ -814,7 +784,6 @@ const FailedExecution = Schema.Struct({
   ),
 });
 
-/** Run one execute whose failure is the expected outcome and score what it reported. */
 const failureSample = (
   target: PerfTarget,
   program: Effect.Effect<string, PerfRequestFailed>,
@@ -941,7 +910,6 @@ return "unreachable";`,
           Effect.map(([refresh, slow]) => {
             const app = `tools[${JSON.stringify(refresh.slug)}]`;
             const key = JSON.stringify(randomBytes(8).toString("hex"));
-            // The pause makes the 30 s refresh end more than a second after the budget.
             return `await ${app}.pause({});
 await ${app}.seed({ key: ${key} });
 await ${app}.stale({ key: ${key} });
@@ -986,7 +954,6 @@ return value;`;
 
 const Parked = Schema.Struct({ status: Schema.String, requestId: Schema.optional(Schema.String) });
 
-/** Ask for an approval after a cached read left a refresh running, then decline it unmeasured. */
 const approvalAfterRefresh: Scenario = {
   id: "exec.approval.refresh",
   group: "mcp",
@@ -1009,7 +976,6 @@ return await ${app}.approved({});`,
       const parked = Schema.decodeUnknownOption(Parked)(call.result.structuredContent);
       const failed = Schema.decodeUnknownOption(FailedExecution)(call.result.structuredContent);
       const kind = Option.isSome(failed) ? failed.value.execution.error?.kind : undefined;
-      // Parked runs hold an execution slot until they expire; release this one.
       if (Option.isSome(parked) && parked.value.requestId !== undefined)
         yield* session.callTool("resume", {
           requestId: parked.value.requestId,

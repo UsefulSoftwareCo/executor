@@ -3,10 +3,6 @@ import type { Frame, Request, Route } from "playwright";
 import { Browser } from "./browser.ts";
 import { driver } from "./platform.ts";
 
-/**
- * Wait for the browser's last-organization memory, written after the foreground organization's
- * access check. The server reads the same cookie to choose where `/` opens.
- */
 export const waitForLastOrganization = (organization: string) =>
   Effect.flatMap(Browser, (browser) =>
     browser.use("The foreground organization is remembered", (page) =>
@@ -30,7 +26,6 @@ export const waitForLastOrganization = (organization: string) =>
     ),
   );
 
-/** Hold real organization reads so the pending view can be inspected before a destination exists. */
 export const holdOrganizationEntry = Effect.gen(function* () {
   const browser = yield* Browser;
   const arrived = yield* Deferred.make<void>();
@@ -66,13 +61,11 @@ export const holdOrganizationEntry = Effect.gen(function* () {
   );
   return {
     requested: Deferred.await(arrived).pipe(Effect.timeout("30 seconds")),
-    /** Whether the browser has asked for the organization list since the hold was installed. */
     wasRequested: Deferred.isDone(arrived),
     release: Deferred.succeed(released, undefined),
   };
 });
 
-/** Observe real resource reads across root restoration and canonical URL replacement. */
 export const trackOrganizationResources = Effect.gen(function* () {
   const browser = yield* Browser;
   const paths: string[] = [];
@@ -94,7 +87,6 @@ export const trackOrganizationResources = Effect.gen(function* () {
   return paths;
 });
 
-/** Observe browser destinations, including SPA navigation, without changing any response. */
 export const trackEntryNavigations = Effect.gen(function* () {
   const browser = yield* Browser;
   const paths: string[] = [];

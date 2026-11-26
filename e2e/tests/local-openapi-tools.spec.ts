@@ -1,9 +1,3 @@
-/**
- * The local Tools tab lists an OpenAPI app whose resources expand into one another, as Stripe's
- * do, and shows a selected tool's schemas. Every tool's schema reaches all of the document's
- * definitions, so the catalog with every tool's schemas is larger than any string: the tab's live
- * list carries no schemas, and the tab reads the selected tool's alone.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -22,11 +16,6 @@ export default defineApp({}, async ({ cache, fetch, signal }) => ({
   tools: liveOpenapiRouter({ ...configuration, cache, fetch, ...(signal === undefined ? {} : { signal }) }),
 }));`;
 
-/**
- * Sixty resources of about ten thousand characters each and 1,100 operations: each tool's output
- * schema holds all sixty definitions, so the tools with their schemas are about 700 million
- * characters, more than a JavaScript string holds.
- */
 const resources = 60;
 const operations = 1100;
 
@@ -83,7 +72,6 @@ layer(TestLive, { excludeTestServices: true })("Local OpenAPI tools", (it) => {
         yield* browser.use("Open a tool of the expandable app", (page) =>
           page.goto(`/apps/${app.id}?view=tools&tool=${encodeURIComponent(tool)}`),
         );
-        // The list loaded, with every tool, and the selected tool's schemas after it.
         yield* browser.use("The selected tool's output schema shows", (page) =>
           page.getByRole("region", { name: "Returns", exact: true }).waitFor(),
         );

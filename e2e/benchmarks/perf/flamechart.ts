@@ -1,10 +1,3 @@
-/**
- * Waterfall flamecharts from delivered test-stage traces.
- *
- * Spans come from the Axiom dataset executor-next-test-traces, filtered to one `test-*` stage and one
- * trace ID. Only span names, services, timings and status are rendered; attributes are not.
- * Output is an SVG plus a PNG rendered by Playwright's Chromium.
- */
 import {
   Config,
   Console,
@@ -54,7 +47,6 @@ const Row = Schema.Struct({
 
 export const dataset = "executor-next-test-traces";
 
-/** Read one trace from a test stage. The window should bracket the request (minutes, not days). */
 export const fetchTrace = (input: {
   readonly slug: string;
   readonly traceId: string;
@@ -133,7 +125,6 @@ interface Row {
   readonly depth: number;
 }
 
-/** Depth-first order with children by start time; spans below `minMs` beyond `maxRows` are folded. */
 const order = (spans: readonly Span[], maxRows: number) => {
   const ids = new Set(spans.map((span) => span.spanId));
   const children = new Map<string, Span[]>();
@@ -157,7 +148,6 @@ const order = (spans: readonly Span[], maxRows: number) => {
 
 const rowHeight = 18;
 
-/** Render one waterfall. `scaleMs` lets side-by-side charts share the same time axis. */
 export const waterfall = (input: {
   readonly title: string;
   readonly spans: readonly Span[];
@@ -219,7 +209,6 @@ export const waterfall = (input: {
   };
 };
 
-/** Two waterfalls side by side on a shared time scale. */
 export const sideBySide = (
   left: { readonly title: string; readonly spans: readonly Span[] },
   right: { readonly title: string; readonly spans: readonly Span[] },
@@ -235,7 +224,6 @@ export const sideBySide = (
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${width * 2 + 20}" height="${height}" font-family="Helvetica, Arial, sans-serif"><rect width="100%" height="100%" fill="white"/>\n<g>${a.body}</g>\n<line x1="${width + 10}" y1="0" x2="${width + 10}" y2="${height}" stroke="#ccc"/>\n<g transform="translate(${width + 20},0)">${b.body}</g>\n</svg>`;
 };
 
-/** Write `<base>.svg` and `<base>.png` (Chromium screenshot of the SVG). */
 export const writeChart = (base: string, svg: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem,
@@ -301,7 +289,6 @@ const pick = (
     : { traceId: chosen.traceId!, at: chosen.at, clientMs: chosen.clientMs };
 };
 
-/** Fetch with a bounded wait for ingestion; the window brackets the sample time. */
 export const spansFor = (slug: string, traceId: string, at: Date, minutes = 15) =>
   fetchTrace({
     slug,
@@ -319,7 +306,6 @@ export const spansFor = (slug: string, traceId: string, at: Date, minutes = 15) 
 
 const fileSafe = (value: string) => value.replace(/[^a-zA-Z0-9._-]+/g, "_");
 
-/** Render median and slowest samples of every scenario in a run or comparison file. */
 export const renderResults = (input: {
   readonly file: string;
   readonly output: string;

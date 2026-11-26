@@ -34,7 +34,6 @@ function Review() {
     />
   );
 }
-/** Local pairing stays independent of MCP bearer credentials. */
 export function McpApprovePage() {
   return (
     <AuthenticationGate>

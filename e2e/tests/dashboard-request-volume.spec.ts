@@ -14,7 +14,6 @@ import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
 import { batchedReads, batchPath, type BatchedRead } from "../support/read-batches.ts";
 
-/** Reads mounted on every app tab; each one used to repeat every five seconds. */
 const shared = ["app", "links", "inventory"] as const;
 const tabs = [
   "Accounts",
@@ -26,17 +25,9 @@ const tabs = [
   "Settings",
   "Overview",
 ];
-/** Simulated idle time, advanced with the browser's clock in small steps. */
 const idleMinutes = 3;
 const step = 10_000;
-/**
- * Advances past the 4-millisecond window in which the dashboard collects reads into one batch,
- * well short of any poll interval and not a multiple of `step`, so the reads a visible page
- * decided at the end of its idle time are sent before it hides. See `batchWindow` in
- * packages/dashboard-start/src/implementation/batch-browser.ts.
- */
 const flush = 1_000;
-/** Freshness allows periodic reconciliation, but no more than one read per 20 seconds idle. */
 const idleReadLimit = (idleMinutes * 60) / 20;
 
 layer(HostedLive, { excludeTestServices: true })("Dashboard request volume", (it) => {
@@ -74,20 +65,17 @@ export default defineApp({}, async () => ({
             Effect.orDie,
           ),
         );
-        // Reads may use the URL slug or the verified organization ID.
         const references = [actors.organization.slug, actors.organization.id];
         type Kind = (typeof shared)[number];
         const classify = (pathname: string): Kind | undefined => {
           for (const reference of references) {
             const base = `/api/organizations/${reference}`;
             if (pathname === `${base}/apps/${app.id}`) return "app";
-            // The caller's links, which the page reconciles; app links are read on refresh only.
             if (pathname === `${base}/apps/${app.id}/accounts/user`) return "links";
             if (pathname === `${base}/inventory`) return "inventory";
           }
           return undefined;
         };
-        /** A batched read names its endpoint instead of a path. */
         const classifyRead = (read: BatchedRead): Kind | undefined => {
           if (read.group === "apps" && read.endpoint === "get" && read.params.app === app.id)
             return "app";
@@ -101,7 +89,6 @@ export default defineApp({}, async () => ({
           return undefined;
         };
         const reads = { app: 0, links: 0, inventory: 0 };
-        /** The shell's organization list; it is not polled, so it reads only on return. */
         let organizationLists = 0;
         let inFlight = 0;
         const observe = (page: Page) => {
@@ -111,11 +98,9 @@ export default defineApp({}, async () => ({
             const organizationList =
               request.method() === "GET" && url.pathname === "/api/auth/organization/list";
             if (organizationList) organizationLists += 1;
-            // The session's revalidation can start another organization list read after it ends.
             const shell =
               organizationList ||
               (request.method() === "GET" && url.pathname === "/api/auth/get-session");
-            // The dashboard sends reads that start together as one batch; each counts as a read.
             const kinds: ReadonlyArray<Kind> =
               request.method() === "POST" && url.pathname === batchPath
                 ? batchedReads(request.postData()).flatMap((read) => classifyRead(read) ?? [])
@@ -143,7 +128,6 @@ export default defineApp({}, async () => ({
             yield* evidence.json(`reads-${name}.json`, counts);
             return counts;
           });
-        /** Wait for an observed browser condition, bounded by the scenario deadline. */
         const until = (condition: () => boolean) =>
           Effect.suspend(() => (condition() ? Effect.void : Effect.fail("pending" as const))).pipe(
             Effect.retry({ schedule: Schedule.spaced("50 millis"), times: 400 }),
@@ -204,14 +188,9 @@ export default defineApp({}, async () => ({
             { discard: true },
           ).pipe(Effect.andThen(settled)),
         );
-        // Switching tabs keeps the app page mounted; shared reads are not repeated per tab.
         for (const kind of shared)
           expect(navigation[kind], `${kind} during tab navigation`).toBe(0);
 
-        // From here page time moves only when the scenario advances it, so a poll fires inside an
-        // idle step and never beside the visibility change. With the clock running on its own, a
-        // poll could fire just before the page hid, decide to read while visible, and send that
-        // read after the hidden count began.
         yield* browser.use("Pause the page clock", (page) =>
           page.evaluate(() => Date.now()).then((now) => page.clock.pauseAt(now + step)),
         );
@@ -219,7 +198,6 @@ export default defineApp({}, async () => ({
         const visible = yield* measure(
           "visible-idle",
           idle("Visible idle").pipe(
-            // A poll at the end of the last step has decided to read but not yet sent the read.
             Effect.andThen(
               browser.use("Send the reads the visible page started", (page) =>
                 page.clock.runFor(flush),
@@ -245,8 +223,6 @@ export default defineApp({}, async () => ({
         const hidden = yield* measure("hidden-idle", idle("Hidden idle"));
         for (const kind of shared) expect(hidden[kind], `${kind} reads while hidden`).toBe(0);
 
-        // Membership made elsewhere, such as in another tab, appears after the next return.
-        // Self-host has a single organization, so only Cloud can gain one.
         const elsewhere =
           target.metadata.target === "cloud" ? `Elsewhere ${randomUUID().slice(0, 8)}` : undefined;
         if (elsewhere !== undefined) {
@@ -266,9 +242,7 @@ export default defineApp({}, async () => ({
           );
         }
 
-        // The page clock runs on its own again; the hidden page still decides no read.
         yield* browser.use("Resume the page clock", (page) => page.clock.resume());
-        // Returning to the tab reconciles every shared read once.
         const returned = yield* measure(
           "return",
           Effect.gen(function* () {
@@ -286,7 +260,6 @@ export default defineApp({}, async () => ({
               page.waitForTimeout(1_000),
             );
             yield* settled;
-            // Revalidating the same session must not read the organizations a second time.
             yield* evidence.json("organization-lists-return.json", {
               reads: organizationLists - listsBefore,
             });

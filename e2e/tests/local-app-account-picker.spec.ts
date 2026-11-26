@@ -1,4 +1,3 @@
-/** A local authored app's deep link opens straight in the app with the account linked to it. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -48,7 +47,6 @@ layer(TestLive, { excludeTestServices: true })("Local app deep links", (it) => {
           target = yield* Target,
           session = yield* api.session();
         const headers = { authorization: `Bearer ${Redacted.value(target.apiKey)}` };
-        // Agent calls carry the API key and no browser origin.
         const agent: Session = {
           ...session,
           send: (method, path, data, extra = {}) => {
@@ -67,7 +65,6 @@ layer(TestLive, { excludeTestServices: true })("Local app deep links", (it) => {
         yield* Effect.addFinalizer(() =>
           Effect.forEach(owned, (path) => send("DELETE", path)).pipe(Effect.orDie),
         );
-        // Connecting from the app links the account; the newest replaces the one before.
         const create = (label: string) =>
           Effect.gen(function* () {
             const account = yield* connectLocalAccount(
@@ -126,9 +123,7 @@ layer(TestLive, { excludeTestServices: true })("Local app deep links", (it) => {
         expect(landed.pathname).toBe("/inbox");
         expect(landed.searchParams.get("folder")).toBe("unread");
         expect(landed.searchParams.has("accounts")).toBe(false);
-        // The browser carries the bookmark's fragment through every sign-in redirect.
         expect(landed.hash).toBe("#message");
-        // No dashboard page, such as an account picker, opened on the way.
         expect(visited.filter((url) => new URL(url).origin === dashboard)).toEqual([]);
         expect(
           yield* browser.use("Read the account the page ran with", (page) =>

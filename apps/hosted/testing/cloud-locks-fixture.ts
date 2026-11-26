@@ -1,18 +1,3 @@
-/**
- * Local-only lock holder for scenarios that pause one of the managed Cloud's own statements at a
- * chosen moment. Reads one JSON command per line on stdin and answers each with one JSON line of
- * rows: `{"hold": statement}` runs a statement in a transaction it keeps open, such as a
- * `select ... for update` of a row the scenario created; `{"run": statement}` runs one on a second
- * connection, outside that transaction; `{"release": true}` commits; `{"signal": {"pid", "stop"}}`
- * stops (`true`) or resumes (`false`) one database backend process, so its connection stops
- * answering, as a stalled server or network would. Resuming a backend the fixture did not stop
- * does nothing. `{"connections": false}` makes the database refuse new connections (`true` allows
- * them again), as a server that cannot be reached would; open connections, the fixture's own
- * included, stay. Closing stdin rolls back what is still held, resumes every backend still
- * stopped and allows connections again, as does any other exit of the fixture.
- * Never installed in the HTTP server; scenarios must scope their statements to rows they created
- * and signal only backends serving their own requests.
- */
 import { createInterface } from "node:readline";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -108,9 +93,6 @@ const command = Command.make("cloud-locks-fixture", {
               client.release();
             }),
         );
-        // Each stopped backend with its stop signal, tracked before the signal is sent, so an exit
-        // at any point resumes the backend once that signal has finished. Acquired last, so it is
-        // released first.
         const stopped = yield* Effect.acquireRelease(
           Effect.sync(() => new Map<number, Promise<void>>()),
           (pids) =>
@@ -122,8 +104,6 @@ const command = Command.make("cloud-locks-fixture", {
               ).then(() => pids.clear()),
             ),
         );
-        // A database's own connections cannot change whether it takes connections: the switch is
-        // made from the server's maintenance database.
         const target = new URL(Redacted.value(database));
         const name = decodeURIComponent(target.pathname.slice(1));
         const maintenance = new URL(target.toString());

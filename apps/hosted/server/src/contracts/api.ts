@@ -5,8 +5,7 @@ import { HostedOAuthClients } from "./oauth-clients.ts";
 import { HostedSchedules } from "./schedules.ts";
 import { HostedAppAccess, HostedAppManagementApi, HostedFrameworkApi } from "./app-management.ts";
 export { HostedAppManagementApi } from "./app-management.ts";
-/** Common hosted contracts. Product reads require a hosted session. */
-import { CatalogEntry, CatalogQuery, CatalogUnavailable } from "@executor-js/catalog/contracts";
+import { CatalogListing, CatalogQuery } from "@executor-js/catalog/contracts";
 import { RequestRejection } from "@executor-js/sdk/core";
 import { Context, Schema } from "effect";
 import { HostedGroups } from "./groups.ts";
@@ -15,9 +14,9 @@ import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api
 import {
   AuthenticationUnavailable,
   BrowserSessionOnly,
-  Principal,
-  RequireUser,
+  RequireBrowserSession,
   Unauthorized,
+  Viewer,
 } from "./auth.ts";
 import {
   HostedOrganization,
@@ -35,11 +34,10 @@ import { HostedWebhooks } from "./webhooks.ts";
 import { HostedTools } from "./tools.ts";
 import { HostedSkills } from "./skills.ts";
 import { HostedFeedback } from "./feedback.ts";
+import { HostedToolCalls } from "./tool-call-log.ts";
 
-/** Process liveness only; this does not probe the app catalog or future storage. */
 export const Health = Schema.Struct({ status: Schema.Literal("ok") });
 
-/** The Effect snapshot's OpenAPI types omit OAuth2; hosted documents retain that standard scheme explicitly. */
 export interface HostedApiDocument extends Omit<OpenApi.OpenAPISpec, "components"> {
   readonly components: Omit<OpenApi.OpenAPISpec["components"], "securitySchemes"> & {
     readonly securitySchemes: Record<
@@ -59,11 +57,9 @@ export interface HostedApiDocument extends Omit<OpenApi.OpenAPISpec, "components
   };
 }
 
-/** Tool schemas keep parameter schemas, not parameter descriptions, so this rides on the schema. */
 const organizationDescription =
   "Organization ID or slug. Call context.get (GET /api/context) to read the organization for the current credential.";
 
-/** Generate the complete product document; security follows the middleware that serves each endpoint. */
 export const hostedApiDocument = <Id extends string, Groups extends HttpApiGroup.Constraint>(
   api: HttpApi.HttpApi<Id, Groups>,
   origin: string,
@@ -75,7 +71,6 @@ export const hostedApiDocument = <Id extends string, Groups extends HttpApiGroup
     onEndpoint: ({ endpoint, group, middleware, mergedAnnotations }) => {
       if (Context.get(mergedAnnotations, OpenApi.Exclude))
         throw new Error("Product API endpoints must appear in OpenAPI.");
-      // Agents read each operation's declared errors; an undeclared 400 reaches them without its cause.
       if (![...middleware].some((service) => service.key === RequestRejection.key))
         throw new Error(
           `Product API endpoint ${group.identifier}.${endpoint.identifier} must declare request rejections.`,
@@ -86,7 +81,7 @@ export const hostedApiDocument = <Id extends string, Groups extends HttpApiGroup
       if (security.has(id)) throw new Error(`Duplicate product API operation: ${id}`);
       security.set(
         id,
-        [...middleware].some((service) => service.key === RequireUser.key) ||
+        [...middleware].some((service) => service.key === RequireBrowserSession.key) ||
           Context.get(mergedAnnotations, BrowserSessionOnly)
           ? [{ browserSession: [] }]
           : [...middleware].some(
@@ -167,7 +162,6 @@ export const hostedApiDocument = <Id extends string, Groups extends HttpApiGroup
   };
 };
 
-/** Common API contract; each host extends it with its own groups. */
 export const HostedApi = HttpApi.make("executor-hosted")
   .add(
     HostedAppAccounts,
@@ -188,6 +182,7 @@ export const HostedApi = HttpApi.make("executor-hosted")
     HostedAppData,
     HostedMcpConnections,
     HostedFeedback,
+    HostedToolCalls,
   )
   .add(
     HttpApiGroup.make("context").add(
@@ -196,10 +191,6 @@ export const HostedApi = HttpApi.make("executor-hosted")
           organization: OrganizationId,
           slug: Schema.NonEmptyString,
           role: OrganizationRole,
-          /**
-           * Where this host serves app Git remotes, canonical first. They may be on other origins
-           * than this API; a client signed in here uses its session for remotes on each of them.
-           */
           gitOrigins: Schema.NonEmptyArray(Schema.String),
         }),
         error: [Unauthorized, OrganizationForbidden, AuthenticationUnavailable],
@@ -209,19 +200,18 @@ export const HostedApi = HttpApi.make("executor-hosted")
   .add(HttpApiGroup.make("health").add(HttpApiEndpoint.get("get", "/health", { success: Health })))
   .add(
     HttpApiGroup.make("viewer")
-      .add(HttpApiEndpoint.get("get", "/api/viewer", { success: Principal }))
-      .middleware(RequireUser),
+      .add(HttpApiEndpoint.get("get", "/api/viewer", { success: Viewer }))
+      .middleware(RequireBrowserSession),
   )
   .add(
     HttpApiGroup.make("catalog")
       .add(
         HttpApiEndpoint.get("list", "/api/catalog", {
           query: CatalogQuery,
-          success: Schema.Array(CatalogEntry),
-          error: CatalogUnavailable,
+          success: CatalogListing,
         }),
       )
-      .middleware(RequireUser),
+      .middleware(RequireBrowserSession),
   )
   .addHttpApi(HostedAppManagementApi)
   .addHttpApi(HostedFrameworkApi)

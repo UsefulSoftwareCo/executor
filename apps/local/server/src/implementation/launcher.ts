@@ -1,10 +1,3 @@
-/**
- * `executor`: start or join the background server, pair a browser with it, print where Executor
- * runs, open the dashboard and exit. `--standalone`, or the service's `disabled` setting, runs a
- * private server that stays in the foreground until interrupted, or fails once that server stops,
- * instead; `--server` uses a server that is already running elsewhere. Runtime process APIs are
- * supplied only at entry points.
- */
 import { Console, Duration, Effect, Fiber, Option, Redacted } from "effect";
 import { CliError } from "effect/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
@@ -16,7 +9,6 @@ import { ensure, standalone } from "./service-client.ts";
 import { readSettings, serviceDirectory } from "./service-files.ts";
 import { updateNotice } from "./update-notice.ts";
 
-/** How long a finished command still waits for the daily release check before it exits. */
 const noticeWait = Duration.seconds(2);
 
 const openBrowser = (url: Redacted.Redacted<string>, platform: string) =>
@@ -32,10 +24,6 @@ const openBrowser = (url: Redacted.Redacted<string>, platform: string) =>
     if (code !== 0) return yield* new StartupFailed({ stage: "browser" });
   }).pipe(Effect.mapError(() => new StartupFailed({ stage: "browser" })));
 
-/**
- * `--server`: a connection link from a server that runs elsewhere, sent EXECUTOR_API_KEY or the
- * key saved in the data directory.
- */
 const viaServer = (server: string, platform: string) =>
   Effect.gen(function* () {
     if (!/^https?:\/\//u.test(server) || !URL.canParse(server))
@@ -52,11 +40,6 @@ const viaServer = (server: string, platform: string) =>
     );
   });
 
-/**
- * A connection link from this data directory's background server, started or replaced by this
- * version if needed, or from a private server for this command, with what fails once that private
- * server stops. The link must point at that server or its HTTPS browser origin.
- */
 const ownServer = (directory: string, foreground: boolean) =>
   Effect.gen(function* () {
     const server = foreground
@@ -80,16 +63,11 @@ export interface LaunchOptions {
   readonly server: Option.Option<string>;
 }
 
-/**
- * Pair a browser with the server this invocation uses. `entry` is the file that started the CLI,
- * which tells the update notice how it was installed.
- */
 export const launch = (options: LaunchOptions, platform: string, entry: string | undefined) =>
   Effect.gen(function* () {
     if (options.standalone && Option.isSome(options.server))
       return yield* new CliError.UserError({ cause: "Use --standalone or --server, not both." });
     const directory = yield* serviceDirectory;
-    // The daily release check runs beside startup; it never fails or holds the command for long.
     const notice = yield* Effect.forkScoped(updateNotice(directory, entry));
     const foreground =
       Option.isNone(options.server) &&
@@ -106,8 +84,6 @@ export const launch = (options: LaunchOptions, platform: string, entry: string |
     yield* openBrowser(link.url, platform).pipe(
       Effect.catch(() => Console.log("Open the connection link above in your browser.")),
     );
-    // A private server lives as long as this command, which fails if it stops first; the
-    // background server outlives it.
     if (exited !== undefined) return yield* exited;
     yield* Fiber.join(notice).pipe(Effect.timeout(noticeWait), Effect.ignore);
   });

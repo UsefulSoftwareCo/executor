@@ -1,4 +1,3 @@
-/** Read complete provider inventories without requesting a page beyond the reported end. */
 import { listRecords } from "@distilled.cloud/cloudflare/dns";
 import { listCertificatePacks } from "@distilled.cloud/cloudflare/ssl";
 import { Clock, Effect, Stream } from "effect";
@@ -14,7 +13,6 @@ const lastPage = (response: {
   return typeof page === "number" && typeof total === "number" && page >= total;
 };
 
-/** A fresh, complete DNS scan scoped to this stage, including every returned page. */
 export const appDomainDnsRecords = (zoneId: string, suffix: string) =>
   listRecords.pages({ zoneId, type: "AAAA", name: { endswith: `.${suffix}` }, perPage: 5000 }).pipe(
     Stream.takeUntil(lastPage),
@@ -22,33 +20,15 @@ export const appDomainDnsRecords = (zoneId: string, suffix: string) =>
     Stream.runCollect,
   );
 
-/**
- * Cloudflare lists certificate packs at about 15 to 30 milliseconds per pack. Read one page after
- * another, a zone of a few thousand teams outlasted the time a pass allows for the whole inventory.
- * Half-size pages answer in about 15 seconds and keep the pages held at once to a few megabytes.
- */
 const certificatePageSize = 500;
 
-/** Pages requested at once: 6,000 packs in the time of one page. */
 const certificatePageConcurrency = 12;
 
-/** What the zone's certificate packs say about one host. */
 export interface HostCertificates {
-  /** An active pack holds an active, unexpired certificate for the host. */
   readonly ready: boolean;
-  /** A pack for the host timed out waiting for validation. */
   readonly failed: boolean;
 }
 
-/**
- * Every certificate pack of every status, reduced to each host's certificates. A small request
- * reports the pack count, then the pages are requested several at a time instead of one after
- * another. Each page is reduced as it arrives, so the isolate never holds every pack. The list
- * changes while it is read: a pack can be counted twice, which changes nothing, and a page added
- * meanwhile is read before returning. A pack deleted ahead of a page boundary between two page
- * requests moves the next pack onto the earlier page, so that host can be missed and read as
- * pending until the next pass. Requesting the pages together keeps that window short.
- */
 export const appDomainCertificates = (zoneId: string) =>
   Effect.gen(function* () {
     const now = yield* Clock.currentTimeMillis;

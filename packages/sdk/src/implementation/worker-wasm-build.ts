@@ -1,9 +1,7 @@
-/** Retain npm WASM assets for static compilation by Worker Loader. */
 import type { InMemoryFileSystem } from "@cloudflare/worker-bundler";
 import { Path } from "effect";
 import type { Plugin } from "esbuild";
 
-/** The bundler installs binary assets before running this plugin. Browser builds use their own asset policy. */
 export const wasmBuild = (filesystem: InMemoryFileSystem, path: Path.Path) => {
   const modules: Record<string, { wasm: Uint8Array }> = {};
   const plugin: Plugin = {

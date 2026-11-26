@@ -393,7 +393,6 @@ function conversationPlayback(elapsed: number): ConversationPlayback {
   return { phase: "complete", turn: stages[4] };
 }
 
-/** Example conversation that plays while its send control is visible and owns its timers. */
 export function ChatThreadComposer() {
   const [elapsed, setElapsed] = useState(0);
   const [run, setRun] = useState(0);

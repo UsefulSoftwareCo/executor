@@ -1,4 +1,3 @@
-/** A broad tools.search stays inside its page budget; describe returns full detail. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -11,16 +10,10 @@ import { connectLocalAccount } from "../support/app-accounts.ts";
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
 
-/** UTF-8 bytes of JSON one search page holds at most. */
 const pageBytes = 25_000;
 const records = 100;
 const kinds = 300;
 
-/**
- * A hundred tools whose descriptions carry the same upstream instructions after their first line and
- * whose output types are large unions, the shape that made broad searches overflow, and one tool
- * whose input type alone is longer than a search item keeps.
- */
 const source = `
 import { defineApp, defineProvider, jsonSchema, object, query, router, secrets, string } from "apps";
 const service = defineProvider({ name: "Concise fixture", auth: {
@@ -131,9 +124,6 @@ layer(TestLive, { excludeTestServices: true })("MCP search concise", (it) => {
               expect((yield* agent.send("DELETE", `/v1/accounts/${account}`)).status).toBe(200);
           }).pipe(Effect.orDie),
         );
-        // Two accounts connected from the app for its one plain requirement, the newer with a
-        // description. Connecting from the app links the account in place of the one linked before,
-        // which stays saved.
         for (const [label, description] of [
           ["Sandbox key", null],
           ["Work key", "Reads only."],
@@ -174,8 +164,6 @@ layer(TestLive, { excludeTestServices: true })("MCP search concise", (it) => {
         const namespace = JSON.stringify(app.slug);
         const tools = records + 1;
 
-        // A broad search asks for more items than fit: the page stops at its byte budget, says how
-        // many matches remain and how to continue, and is never truncated by execute.
         const first = yield* execute(
           "Search every tool of the app at once",
           `return await tools.search({ namespace: ${namespace}, limit: 100 });`,
@@ -190,20 +178,15 @@ layer(TestLive, { excludeTestServices: true })("MCP search concise", (it) => {
         expect(page.items.length).toBeLessThan(tools);
         expect(page.remaining).toBe(tools - page.items.length);
         expect(page.next).toEqual({ namespace: app.slug, limit: 100, offset: page.items.length });
-        // Items are concise: a one-line description and the input type, never the output type or
-        // the instructions after the first line.
         expect(text).not.toContain("outputOnlyField");
         expect(text).not.toContain("Upstream instructions");
         expect(text).not.toContain('"signature"');
-        // Calls never choose accounts: the input is the tool's own, without `$accounts`.
         const record = page.items.find((item) => item.path.endsWith(".record0"));
         expect(record).toMatchObject({
           description: "Read synthetic concise record 0.",
           input: "{ id: string }",
         });
         expect(text).not.toContain("$accounts");
-        // Each tool is one item at the app's path, and the app is listed once with the account
-        // each requirement uses: the plain requirement's one linked account, not the replaced one.
         expect(page.namespaces).toEqual([
           {
             path: `tools[${namespace}]`,
@@ -214,7 +197,6 @@ layer(TestLive, { excludeTestServices: true })("MCP search concise", (it) => {
         expect(text).not.toContain(sandbox);
         expect(text.split("Work key: Reads only.").length - 1).toBe(1);
 
-        // Following `next` lists every tool exactly once.
         const all = yield* execute(
           "Page through every match",
           `const items = [];
@@ -234,8 +216,6 @@ return { items, namespaces: [], remaining: 0, next: null };`,
         if (record === undefined || wide === undefined)
           return yield* Effect.die("Search did not list the fixture tools");
 
-        // Describe returns what search leaves out: the whole description and input, and the
-        // output type. A path that names no tool comes back with the closest paths.
         const unknown = record.path.replace(/record0$/, "recrod0");
         const described = yield* execute(
           "Describe exact paths",

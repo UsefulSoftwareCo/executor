@@ -1,4 +1,3 @@
-/** Release credentials have their own lifecycle, separate from production and repository policy. */
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as GitHub from "alchemy/GitHub";
@@ -26,8 +25,6 @@ export default Alchemy.Stack(
   Effect.gen(function* () {
     const owner = "UsefulSoftwareCo";
     const repository = "executor-next";
-    // The release environment already exists. Managing its secrets requires only
-    // Environments write; creating or changing its policy requires broader access.
     const name = "release";
     yield* Effect.forEach(releaseSecrets, (secret) =>
       Config.Redacted(secret).pipe(
