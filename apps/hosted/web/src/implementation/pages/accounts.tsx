@@ -17,12 +17,11 @@ import {
   useOrganizationRoute,
 } from "../components/organization.tsx";
 import { OAuthClientsDialog } from "./oauth-clients.tsx";
-import { resourceInventoryAtom } from "../../contracts/resource-access.ts";
+import { resourceDirectoryAtom, resourceInventoryAtom } from "../../contracts/resource-access.ts";
 
 export const accountsPageReads: OrganizationPageReads = (organization) => [
-  resourceInventoryAtom(organization),
+  resourceDirectoryAtom(organization),
 ];
-
 export function AccountsPage({
   highlight,
   oauthClients,

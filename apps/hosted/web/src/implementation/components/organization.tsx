@@ -1,5 +1,5 @@
 import { usePreload } from "@executor-js/ui/dashboard/context";
-import { useGuardedPreload } from "@executor-js/dashboard-start/registry";
+import { type RouteReads, useGuardedPreload } from "@executor-js/dashboard-start/registry";
 import { PageFrame, PageHeader } from "@executor-js/ui/dashboard/page";
 import {
   OrganizationSlug,
@@ -8,7 +8,7 @@ import {
   organizationSlugMaxLength,
 } from "@executor-js/hosted-server/organization";
 import { organizationTargetAtom } from "../../contracts/organization-reference.ts";
-import { type Atom, AsyncResult } from "effect/reactivity";
+import { Atom, AsyncResult } from "effect/reactivity";
 import { EmptyState } from "@executor-js/ui/dashboard/empty-state";
 import { RegistryContext, useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
 import type { OrganizationId, OrganizationAccess } from "@executor-js/hosted-server/organization";
@@ -242,14 +242,33 @@ function ResumeOrganization({
   );
 }
 
+const queryReferenceAtom = Atom.make<OrganizationReference | undefined>(undefined).pipe(
+  Atom.keepAlive,
+);
+
+const queryReference = (
+  route: OrganizationReference,
+  retained: OrganizationReference | undefined,
+  target: (reference: OrganizationReference) => OrganizationId | undefined,
+) => {
+  if (retained === undefined || retained === route) return route;
+  const retainedTarget = target(retained);
+  return retainedTarget !== undefined && retainedTarget === target(route) ? retained : route;
+};
+
 function useOrganizationQueryReference(routeReference: OrganizationReference) {
   const [retained, setRetained] = useState(routeReference);
   const retainedTarget = useAtomValue(organizationTargetAtom(retained));
   const routeTarget = useAtomValue(organizationTargetAtom(routeReference));
-  const sameOrganization =
-    routeReference === retained || (retainedTarget !== undefined && retainedTarget === routeTarget);
-  const reference = sameOrganization ? retained : routeReference;
+  const reference = queryReference(routeReference, retained, (candidate) =>
+    candidate === retained ? retainedTarget : routeTarget,
+  );
   if (reference !== retained) setRetained(reference);
+  const setQueryReference = useAtomSet(queryReferenceAtom);
+  useEffect(() => {
+    setQueryReference(reference);
+    return () => setQueryReference(undefined);
+  }, [reference, setQueryReference]);
   return reference;
 }
 
@@ -264,6 +283,20 @@ declare module "@tanstack/react-router" {
     readonly organizationReads?: OrganizationPageReads;
   }
 }
+
+export const organizationRouteReads: RouteReads = ({ staticData, params }, get) => {
+  if (staticData.organizationReads === undefined) return [];
+  return Option.match(Schema.decodeUnknownOption(OrganizationReference)(params.organizationSlug), {
+    onNone: () => [],
+    onSome: (route) =>
+      staticData.organizationReads?.(
+        queryReference(route, get(queryReferenceAtom), (reference) =>
+          get(organizationTargetAtom(reference)),
+        ),
+        params,
+      ) ?? [],
+  });
+};
 
 const refused = (access: Atom.Type<ReturnType<typeof accessAtom>>) =>
   AsyncResult.isFailure(access) &&

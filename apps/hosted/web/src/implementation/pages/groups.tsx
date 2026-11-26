@@ -38,7 +38,6 @@ export const groupsPageReads: OrganizationPageReads = (organization, params) => 
   groupsAtom(organization),
   ...(typeof params.groupId === "string" ? [resourceDirectoryAtom(organization)] : []),
 ];
-
 export function GroupsPage({ id }: { readonly id?: string }) {
   const { organization } = useOrganizationRoute();
   usePreload(...groupsPageReads(organization, { groupId: id }));

@@ -25,7 +25,7 @@ import { scheduleBindings } from "../../contracts/schedules.ts";
 import { sessionAtom } from "../../contracts/auth.ts";
 import { AppDetailLoading, OverviewCardLoading } from "@executor-js/ui/dashboard/app-loading";
 import { Exit, Option, Schema } from "effect";
-import { AsyncResult } from "effect/reactivity";
+import { Atom, AsyncResult } from "effect/reactivity";
 import { HostedFailure, useDashboardAtoms } from "../components/dashboard-bindings.tsx";
 import { dashboardAtoms } from "../../contracts/dashboard-bindings.ts";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
@@ -67,6 +67,7 @@ import {
   removeAppAtom,
   renameAppAtom,
 } from "../../contracts/apps.ts";
+import type { OrganizationReference } from "@executor-js/hosted-server/organization";
 import { type OrganizationPageReads, useOrganizationRoute } from "../components/organization.tsx";
 import { AppTools } from "./app-tools.tsx";
 import { AppSource, AppVersions } from "./app-source.tsx";
@@ -81,9 +82,38 @@ export const appDetailPageReads: OrganizationPageReads = (organization, params) 
       appLinksAtom({ organization, app }),
       userLinksAtom({ organization, app }),
       appAccessAtom({ organization, app }),
+      listedAppReads(organization)(app),
     ],
   });
 
+const listedAppReads = Atom.family((organization: OrganizationReference) =>
+  Atom.family((app: AppId) =>
+    Atom.readable((get) => {
+      const listed = get(listedAppAtom(organization)(app));
+      if (listed === undefined) return;
+      const { entry, accounts } = listed;
+      const user = Object.entries(entry.app.requirements.accounts).flatMap(([slot, requirement]) =>
+        requirement.scope === "user"
+          ? accounts.flatMap(({ account }) =>
+              entry.linkedAccounts.includes(account.id) && account.provider === requirement.provider
+                ? [{ requirement: slot, account }]
+                : [],
+            )
+          : [],
+      );
+      const requirements = requirementAccounts(entry.app, { user });
+      if (entry.access.canUse) {
+        const bindings = appBrowserBindings(organization, entry.app);
+        get(bindings.skills);
+        if (missingRequirements(requirements).length === 0) {
+          get(toolsAtom({ organization, app, version: entry.app.activeVersion ?? undefined }));
+          get(bindings.workflows);
+        }
+      }
+      if (entry.access.canManage) get(appManagement(organization).authoring(app));
+    }),
+  ),
+);
 const appWideViews: ReadonlySet<AppView> = new Set(["settings", "versions", "source", "history"]);
 
 const withSummaries = (
@@ -137,7 +167,8 @@ export function AppDetailPage({
     canUse = access?.canUse === true;
   const listed = useAtomValue(listedAppAtom(organization)(appId))?.entry;
   const screenRecord = app ?? (AsyncResult.isFailure(query.result) ? undefined : listed?.app);
-  const screenAccess = access ?? (AsyncResult.isFailure(authority.result) ? undefined : listed?.access);
+  const screenAccess =
+    access ?? (AsyncResult.isFailure(authority.result) ? undefined : listed?.access);
   const screenTab = appScreenTab(screenRecord, screenAccess, {
     app: AsyncResult.isFailure(query.result),
     access: AsyncResult.isFailure(authority.result),

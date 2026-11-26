@@ -12,7 +12,7 @@ const pageFocus = Atom.readable((get) => {
   return count;
 });
 
-const retention: Duration.Input = "5 minutes";
+const retention: Duration.Input = "30 minutes";
 const freshness: Duration.Input = "30 seconds";
 
 export const revalidated = <A extends Atom.Atom<AsyncResult.AsyncResult<unknown, unknown>>>(

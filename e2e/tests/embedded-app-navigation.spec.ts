@@ -273,8 +273,6 @@ layer(HostedLive, { excludeTestServices: true })("Embedded app navigation", (it)
             .goto(`/org/${actors.organization.slug}/apps`)
             .then(() => link(page).getByText("App screen").waitFor()),
         );
-        // Every read that could name the app or its access waits, including the organization's
-        // inventory, so only the list can answer what the page shows.
         const reads = yield* browser.use("Hold the app's own reads", (page) =>
           hold(
             page,
