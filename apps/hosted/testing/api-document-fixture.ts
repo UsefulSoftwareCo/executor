@@ -1,24 +1,15 @@
-/**
- * Test host only: while armed, /openapi.json serves another revision of the product's API, as an
- * API deployed apart from the Workers that call apps can for a few seconds of a rollout. Every
- * operation of that revision has `otherRevisionSuffix` on its operationId, so a listing read from
- * it is told apart from the product's own. The server still binds its apps to the SHA-256 of the
- * document it generated, so the served one is not of that revision. Production entry points never
- * provide it.
- */
 import { Effect, Layer, Option, Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 
 const path = "/api/devtools/api-document";
-/** The suffix another revision's operations carry. */
 export const otherRevisionSuffix = "OtherRevision";
+const slowMillis = 1_500;
 
 const Operation = Schema.Struct({ operationId: Schema.String });
 const Document = Schema.Struct({
   paths: Schema.Record(Schema.String, Schema.Record(Schema.String, Schema.Unknown)),
 });
 
-/** The product's document with every operation renamed. */
 const otherRevision = (served: string) => {
   const document: unknown = JSON.parse(served);
   for (const methods of Object.values(Schema.decodeUnknownSync(Document)(document).paths))
@@ -52,6 +43,7 @@ export const apiDocumentFixture = Effect.sync(() => {
             return yield* app;
           const served = yield* app;
           if (served.status !== 200 || served.body._tag !== "Uint8Array") return served;
+          yield* Effect.sleep(slowMillis);
           return HttpServerResponse.text(
             otherRevision(new TextDecoder().decode(served.body.body)),
             { contentType: "application/json" },

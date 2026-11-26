@@ -2,7 +2,6 @@ import { Context, Effect, Stream } from "effect";
 import * as Reactivity from "effect/reactivity/Reactivity";
 import type { QuerySnapshot, ReactiveStore, StoreChange } from "../contracts/store.ts";
 
-// Sets are invocation-owned and shared only with structured child fibers.
 const Reads = Context.Reference<ReadonlyMap<symbol, Set<string>>>("executor/reactivity/Reads", {
   defaultValue: () => new Map(),
 });
@@ -10,10 +9,6 @@ const Writes = Context.Reference<ReadonlyMap<symbol, Set<string>>>("executor/rea
   defaultValue: () => new Map(),
 });
 
-/**
- * Make one local subscription coordinator. It owns no database or transport.
- * SQL adapters wrap their reads/writes and transaction boundaries with it.
- */
 export const makeReactiveStore = (options: {
   readonly namespace: string;
 }): Effect.Effect<ReactiveStore> =>
@@ -101,9 +96,6 @@ export const makeReactiveStore = (options: {
               ) {
                 return [];
               }
-              // Registration precedes the first run (Effect Reactivity). Reads that
-              // race commits are retried with a new dependency set, including when
-              // a conditional query starts reading a previously unrelated table.
               const result = yield* evaluate(effect);
               dependencies = new Set(result.tables);
               observedRevision = result.revision;

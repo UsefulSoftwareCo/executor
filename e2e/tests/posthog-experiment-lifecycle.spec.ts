@@ -1,11 +1,3 @@
-/**
- * Deploys move a code-managed PostHog experiment through its lifecycle. Each case runs the real
- * `alchemy deploy` on a small stack that declares the Cloud experiment resource, against a local
- * stand-in for PostHog's experiment API that enforces PostHog's own preconditions for launch, pause,
- * resume and end. A deploy may launch, pause, resume and end the experiment as its declared status
- * says; it never returns one to draft, restarts a stopped one, changes a launched definition, adopts
- * an experiment it does not own, or deletes anything.
- */
 import { expect, layer } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, FileSystem, Path, Stream } from "effect";
@@ -34,7 +26,6 @@ interface Experiment {
   fields: Record<string, unknown>;
 }
 
-/** PostHog's experiment, flag and event definition endpoints for one project, in memory. */
 const fakePostHog = () => {
   const flags = new Map<number, Flag>();
   const experiments = new Map<number, Experiment>();
@@ -72,7 +63,6 @@ const fakePostHog = () => {
     experiments.set(experiment.id, experiment);
     return experiment;
   };
-  /** PostHog's preconditions for each action (products/experiments experiment_service.py). */
   const act = (experiment: Experiment, action: string): string | undefined => {
     const flag = flags.get(experiment.flag)!;
     if (action === "launch") {
@@ -222,11 +212,6 @@ const server = Effect.acquireRelease(
   ({ close }) => Effect.sync(close),
 );
 
-/**
- * The stack under test: the Cloud experiment resource as alchemy.posthog.ts declares it, with the
- * declared status and an optional definition override read from the environment. `null` declares
- * nothing, as a stack that stopped declaring the experiment does.
- */
 const stack = `import * as Alchemy from "alchemy";
 import { retain } from "alchemy/RemovalPolicy";
 import { Effect } from "effect";
@@ -258,13 +243,11 @@ type Declared = {
   readonly definition?: { readonly name: string };
 } | null;
 
-/** A fresh stack directory with its own Alchemy state, and a deploy that runs the real CLI. */
 const deployer = (origin: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
-    // Inside the Cloud package so the stack resolves its dependencies and implementation.
     const parent = path.resolve("apps/hosted/cloud/.local");
     yield* fs.makeDirectory(parent, { recursive: true });
     const dir = yield* fs.makeTempDirectoryScoped({
@@ -312,7 +295,6 @@ const deployer = (origin: string) =>
       }).pipe(Effect.scoped);
   });
 
-/** Runs a deploy that must succeed and returns the writes it made. */
 const applied = (
   deploy: Effect.Success<ReturnType<typeof deployer>>,
   posthog: ReturnType<typeof fakePostHog>,
@@ -325,7 +307,6 @@ const applied = (
     return posthog.writes.slice(before);
   });
 
-/** Runs a deploy that must fail with `message` and change nothing in PostHog. */
 const refused = (
   deploy: Effect.Success<ReturnType<typeof deployer>>,
   posthog: ReturnType<typeof fakePostHog>,
@@ -365,7 +346,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("PostHog experiment lif
         ]);
         expect(posthog.state()).toEqual([{ name, started: true, ended: false, flagActive: true }]);
 
-        // An unchanged declaration makes no request that writes.
         expect(yield* applied(deploy, posthog, { status: "running" })).toEqual([]);
 
         yield* refused(
@@ -391,7 +371,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("PostHog experiment lif
         ]);
         expect(posthog.state()).toEqual([{ name, started: true, ended: false, flagActive: true }]);
 
-        // Ending keeps the flag serving the assigned variants, as PostHog's end does.
         expect(yield* applied(deploy, posthog, { status: "stopped" })).toEqual([
           `POST experiments/${id}/end/`,
         ]);
@@ -404,7 +383,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("PostHog experiment lif
           `The ${flagKey} experiment cannot move from stopped to running`,
         );
 
-        // No longer declaring it orphans the state and leaves the experiment and results in place.
         expect(yield* applied(deploy, posthog, null)).toEqual([]);
         expect(posthog.state()).toEqual([{ name, started: true, ended: true, flagActive: true }]);
       }).pipe(Effect.scoped),

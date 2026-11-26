@@ -1,14 +1,9 @@
-/**
- * Git client pieces for the apps CLI: push a directory's files to an app's remote, sending only
- * the blobs the remote lacks in batches under a push's size bound, and read stored files back.
- */
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as nodePath from "node:path";
 import { Effect, Schema, type Stream } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 import * as Git from "isomorphic-git";
-// The fetch client: the Node one parses URLs with the deprecated url.parse, which Bun reports.
 import http from "isomorphic-git/http/web";
 import { SourceError } from "@executor-js/sdk/core";
 import {
@@ -19,11 +14,11 @@ import {
   pushObjects,
   type PackObject,
   type PushReport,
+  type RefUpdate,
 } from "./implementation/git-pack.ts";
 
 export { objectId, packBlobBytes } from "./implementation/git-pack.ts";
 
-/** One file of the commit to push. Its bytes are read only if the remote lacks its blob. */
 export interface PushFile {
   readonly path: string;
   readonly object: string;
@@ -31,14 +26,14 @@ export interface PushFile {
   readonly read: Effect.Effect<Uint8Array, SourceError>;
 }
 
-/** Why a push did not move the branch. */
 export class GitPushRefused extends Schema.TaggedError<GitPushRefused>()("GitPushRefused", {
   reason: Schema.Literals(["conflict", "refused", "transport"]),
   detail: Schema.String,
 }) {}
 
 const send =
-  (url: string, authorization: string) => (body: Stream.Stream<Uint8Array, SourceError>) =>
+  (url: string, authorization: string) =>
+  (_updates: ReadonlyArray<RefUpdate>, body: Stream.Stream<Uint8Array, SourceError>) =>
     Effect.gen(function* () {
       const client = yield* HttpClient.HttpClient;
       const response = yield* client
@@ -56,19 +51,19 @@ const send =
         .pipe(Effect.mapError(() => new SourceError({ reason: "git" })));
       if (response.status !== 200)
         return yield* new SourceError({ reason: response.status === 413 ? "limit" : "git" });
-      return new Uint8Array(
-        yield* response.arrayBuffer.pipe(Effect.mapError(() => new SourceError({ reason: "git" }))),
-      );
+      return yield* parseReport(
+        new Uint8Array(
+          yield* response.arrayBuffer.pipe(
+            Effect.mapError(() => new SourceError({ reason: "git" })),
+          ),
+        ),
+      ).pipe(Effect.catchTag("ReceivePackRefused", () => new SourceError({ reason: "git" })));
     }).pipe(
       Effect.scoped,
       Effect.provideService(FetchHttpClient.RequestInit, { redirect: "error" }),
       Effect.provide(FetchHttpClient.layer),
     );
 
-/**
- * Push `files` as the complete tree of a commit on `main` after `expected`. Blobs in `present`,
- * the object IDs of the files the remote already has, are named but not sent.
- */
 export const pushTree = (input: {
   readonly url: string;
   readonly authorization: string;
@@ -108,7 +103,6 @@ export const pushTree = (input: {
         read: Effect.succeed(entry.bytes),
       })),
       blobs: [...blobs.values()].toSorted((left, right) => left.size - right.size),
-      // Protected `__executor/` refs cannot be pushed; this one is deleted by the final push.
       staging: `refs/heads/executor-upload/${crypto.randomUUID()}`,
       seconds,
     }).pipe(
@@ -132,13 +126,8 @@ export const pushTree = (input: {
     });
   });
 
-/** Parse a push report; exported for callers that send their own requests. */
 export { parseReport };
 
-/**
- * Read blobs of one commit through a shallow clone into a temporary directory, which is removed
- * afterwards. Returns each requested blob's bytes by object ID.
- */
 export const readCommitBlobs = (input: {
   readonly url: string;
   readonly authorization: string;
@@ -173,7 +162,6 @@ export const readCommitBlobs = (input: {
           try: () => Git.resolveRef({ fs, dir, ref: "refs/remotes/origin/main" }),
           catch: () => new SourceError({ reason: "git" }),
         });
-        // The working branch moved after the listing was read; read it again.
         if (head !== input.commit) return yield* new SourceError({ reason: "conflict" });
         for (const object of input.objects) {
           const { blob } = yield* Effect.tryPromise({

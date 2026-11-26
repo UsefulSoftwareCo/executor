@@ -3,7 +3,6 @@ import { revalidated } from "@executor-js/ui/contracts/refresh";
 import { protectedQuery } from "./protected-query.ts";
 import { browserApproval } from "@executor-js/ui/contracts/browser-approval";
 import { BrowserAtoms } from "./telemetry.ts";
-/** Product transport owns schedule atoms; each mutation belongs to one app and schedule. */
 import type { AccountScope, AppId, ScheduleId, ScheduleSettings } from "@executor-js/sdk";
 import { Data, Effect } from "effect";
 import { Atom } from "effect/reactivity";
@@ -22,7 +21,6 @@ class ScheduleKey extends Data.Class<{
   readonly organization: OrganizationReference;
   readonly app: AppId;
   readonly name: string;
-  /** `app` configures the app declaration's one schedule; `user` the caller's own copy. */
   readonly scope: AccountScope;
 }> {}
 const settings = Atom.family((key: AppKey) =>
@@ -37,10 +35,6 @@ const polledSettings = Atom.family((key: AppKey) =>
 const definitions = Atom.family((key: AppKey) =>
   HostedClient.query("schedules", "definitions", hydrated({ params: key })).pipe(revalidated),
 );
-/**
- * Read the app's schedules again, as after the caller links or unlinks an account: the app's
- * declarations are evaluated with its linked accounts.
- */
 export const refreshScheduleDiscovery = (
   get: Atom.FnContext,
   key: { readonly organization: OrganizationReference; readonly app: AppId },
@@ -109,14 +103,12 @@ const copyControls = Atom.family((key: CopyKey) => ({
     ),
   ),
 }));
-/** Bind saved settings independently from account-dependent definition discovery. */
 export const scheduleBindings = (
   key: {
     readonly organization: OrganizationReference;
     readonly app: AppId;
   },
   editable = true,
-  /** Whether the caller manages the app, and so controls its app schedules. */
   manageApp = false,
 ) => {
   const app = { organization: key.organization, app: key.app };
@@ -147,14 +139,11 @@ const runsSource = Atom.family((organization: OrganizationReference) =>
   ).pipe(revalidated, protectedQuery),
 );
 const runsQuery = Atom.family((organization: OrganizationReference) =>
-  // Approval requests expire, and this queue exists to receive them.
   pollingQuery(runsSource(organization), steadyPolling),
 );
-/** Join safe run metadata with app names; keep either read failure visible. */
 export const pendingApprovalsAtom = Atom.family((organization: OrganizationReference) =>
   HostedClient.runtime.atom((get) =>
     Effect.gen(function* () {
-      // App names come from the inventory; read it alongside the runs rather than after them.
       const [runs, inventory] = yield* Effect.all(
         [get.result(runsQuery(organization)), get.result(inventoryAtom(organization))],
         { concurrency: "unbounded" },
@@ -184,7 +173,6 @@ const review = Atom.family((key: ReviewKey) =>
       ),
   ),
 );
-/** An answered request leaves the shared queue before the page reports success. */
 export const scheduledReviewAtoms = (key: {
   readonly organization: OrganizationReference;
   readonly run: string;

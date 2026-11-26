@@ -1,14 +1,18 @@
-/**
- * A managed local Cloud writes `alchemy dev`'s stdout and stderr to cloud.log line by line, and its
- * readiness wait fails as soon as alchemy prints that it gave up on starting a resource
- * (e2e/support/cloud-environment.ts). These cases run a child that writes lines in pieces to both
- * pipes, and check the lines and failures the harness reads from it.
- */
-import { expect, layer } from "@effect/vitest";
+import { expect, it, layer } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
-import { isAlchemyDevFailure, outputLines } from "../support/alchemy-dev-output.ts";
+import {
+  followAlchemyDev,
+  isAlchemyDevFailure,
+  outputLines,
+} from "../support/alchemy-dev-output.ts";
+import {
+  runtimeCrashNote,
+  runtimeCrashNotesFor,
+  trackRuntimeCrash,
+  type RuntimeCrash,
+} from "../support/runtime-crashes.ts";
 
 const applyFailed =
   "alchemy dev: apply failed; keeping dev alive so healthy resources keep serving.";
@@ -18,10 +22,6 @@ const runFailed = "alchemy dev: run failed; waiting for the next file change to 
 const runInterrupted =
   "alchemy dev: run was interrupted internally (a bug in a provider or the engine — please report it with the trace below); waiting for the next file change to retry.";
 
-/**
- * Writes each piece after the one before has left the process, alternating pipes mid-line. The
- * interrupted message is cut inside the UTF-8 bytes of its dash.
- */
 const writer = `
 const pieces = JSON.parse(process.argv[1]);
 for (const [pipe, base64] of pieces) {
@@ -72,6 +72,34 @@ layer(NodeServices.layer, { excludeTestServices: true })("alchemy dev output", (
     }).pipe(Effect.scoped),
   );
 
+  it.effect(
+    "a run that gives up while planning is reported with the cause alchemy prints after it",
+    () =>
+      Effect.gen(function* () {
+        const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const report = [
+          runFailed,
+          "Error: synthetic plan failure",
+          "    at computePlan (file:///synthetic/Plan.js:1:1)",
+        ];
+        const child = yield* processes.spawn(
+          ChildProcess.make("node", [
+            "--input-type=module",
+            "--eval",
+            `process.stdout.write("Computing plan\\n");
+process.stderr.write(${JSON.stringify(`${report.join("\n")}\n`)});
+setInterval(() => {}, 1000);`,
+          ]),
+        );
+        const seen: Array<string> = [];
+        const dev = yield* followAlchemyDev(child, (line) => Effect.sync(() => seen.push(line)));
+        yield* dev.failed;
+        expect(yield* dev.report).toBe(report.join("\n"));
+        expect(seen.toSorted()).toEqual(["Computing plan", ...report].toSorted());
+        expect(yield* child.isRunning).toBe(false);
+      }).pipe(Effect.scoped),
+  );
+
   it.effect("each way alchemy dev reports giving up is a failure, and nothing else is", () =>
     Effect.sync(() => {
       for (const line of [applyFailed, applyInterrupted, runFailed, runInterrupted]) {
@@ -87,4 +115,128 @@ layer(NodeServices.layer, { excludeTestServices: true })("alchemy dev output", (
       }
     }),
   );
+});
+
+const at = (time: string) => Date.parse(`2026-11-13T${time}Z`);
+const gcs = "[AppData] <--- Last few GCs --->";
+const scavenger =
+  "workerd/jsg/setup.c++:38: fatal: V8 fatal error; location = Scavenger: semi-space copy; message = : allocation failed: JavaScript heap out of memory";
+const promotion =
+  "workerd/jsg/setup.c++:38: fatal: V8 fatal error; location = MarkCompactCollector: young object promotion failed; message = : allocation failed: JavaScript heap out of memory";
+const runs = [
+  {
+    lines: [
+      [gcs, "17:54:09.480"],
+      [`[AppData] ${scavenger}`, "17:54:09.480"],
+      [`[AppData] ${scavenger}`, "17:54:09.481"],
+      [
+        '[17:54:50.664] WARN (#1044): The Workers runtime for "executor-next-hosted-appdata-ekf4q2rqbwcfqm3sbp2kdluw6" exited unexpectedly (exit code null, signal SIGABRT); starting a replacement on the same ports.',
+        "17:54:50.664",
+      ],
+      [scavenger, "17:54:50.670"],
+      [scavenger, "17:54:50.671"],
+    ],
+    crash: {
+      runtime: "appdata",
+      cause: "V8 heap out of memory (Scavenger: semi-space copy)",
+      crashedAt: at("17:54:09.480"),
+      replacedAt: at("17:54:50.664"),
+    },
+    cases: [
+      {
+        title: "brotli",
+        status: "failed",
+        startedAt: at("17:54:15.637"),
+        duration: 32411,
+        noted: true,
+      },
+      {
+        title: "assistant_first",
+        status: "failed",
+        startedAt: at("17:54:17.122"),
+        duration: 49391,
+        noted: true,
+      },
+      {
+        title: "phone guide",
+        status: "passed",
+        startedAt: at("17:54:16.049"),
+        duration: 33100,
+        noted: false,
+      },
+      {
+        title: "far before",
+        status: "failed",
+        startedAt: at("17:50:00.000"),
+        duration: 10000,
+        noted: false,
+      },
+      {
+        title: "just after",
+        status: "failed",
+        startedAt: at("17:54:56.000"),
+        duration: 4000,
+        noted: false,
+      },
+    ],
+  },
+  {
+    lines: [
+      [`[AppData] ${promotion}`, "18:01:39.074"],
+      [`[AppData] ${promotion}`, "18:01:39.075"],
+      [
+        '[18:02:00.038] WARN (#1044): The Workers runtime for "executor-next-hosted-appdata-eiqwyaylhysfechbb3ywxith4" exited unexpectedly (exit code null, signal SIGABRT); starting a replacement on the same ports.',
+        "18:02:00.038",
+      ],
+      [promotion, "18:02:00.050"],
+      [promotion, "18:02:00.051"],
+    ],
+    crash: {
+      runtime: "appdata",
+      cause: "V8 heap out of memory (MarkCompactCollector: young object promotion failed)",
+      crashedAt: at("18:01:39.074"),
+      replacedAt: at("18:02:00.038"),
+    },
+    cases: [
+      {
+        title: "assistant_first",
+        status: "failed",
+        startedAt: at("18:01:35.325"),
+        duration: 43143,
+        noted: true,
+      },
+      {
+        title: "brotli",
+        status: "passed",
+        startedAt: at("18:01:40.000"),
+        duration: 2000,
+        noted: false,
+      },
+    ],
+  },
+] as const;
+
+it.each(runs.map((run, index) => [index + 1, run] as const))(
+  "run %i: one AppData crash, named on each case that failed while it lasted",
+  (_, run) => {
+    const crashes = run.lines.reduce<ReadonlyArray<RuntimeCrash>>(
+      (crashes, [line, time]) => trackRuntimeCrash(crashes, line, at(time)) ?? crashes,
+      [],
+    );
+    expect(crashes).toEqual([run.crash]);
+    for (const entry of run.cases)
+      expect(runtimeCrashNotesFor(entry, crashes), entry.title).toEqual(
+        entry.noted ? [runtimeCrashNote(run.crash)] : [],
+      );
+    expect(runtimeCrashNote(run.crash)).toContain("Local Cloud's appdata runtime crashed");
+  },
+);
+
+it("an ordinary log line is no crash", () => {
+  for (const line of [
+    "[17:54:00.830] ERROR (#11786): CredentialsUnavailable: Cloudflare CI credentials not found.",
+    '[AppData] {"message":"The app\'s request failed unexpectedly","level":"ERROR"}',
+    gcs,
+  ])
+    expect(trackRuntimeCrash([], line, at("17:54:00.000")), line).toBeUndefined();
 });

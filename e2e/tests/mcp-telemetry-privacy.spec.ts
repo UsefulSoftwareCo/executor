@@ -1,16 +1,12 @@
-/**
- * MCP tool calls deliver their tool name and outcome, never what the caller supplied: arguments,
- * results, form answers, slugs, skill names, tool names, argument keys, or an app error that
- * quotes them. Neither do the errors app management returns about a name the user chose: an app's
- * name, a data operation's name, or a failed build's source. The caller still receives each
- * detailed message; Executor's spans, logs and incident reports record the error's tag and fixed
- * text.
- */
 import { expect, layer } from "@effect/vitest";
-import { Effect, FileSystem, Redacted, Schedule, Schema } from "effect";
+import { Effect, Redacted, Schedule, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
 import { randomBytes, randomUUID } from "node:crypto";
-import { awaitSentryEvents, traceEvents } from "../support/sentry-events.ts";
+import {
+  awaitSentryEvents,
+  sentryEventTextWholeEnvironment,
+  traceEvents,
+} from "../support/sentry-events.ts";
 import { scenarios } from "../test-plan.ts";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
@@ -22,35 +18,23 @@ import { McpClient } from "../support/mcp-client.ts";
 import { Target } from "../support/platform.ts";
 
 const private_ = (label: string) => `PRIVATE_${label}_${randomUUID().replaceAll("-", "")}`;
-/** Synthetic caller content: program text, a returned value and a form answer. */
 const programMarker = private_("PROGRAM");
 const resultMarker = private_("RESULT");
 const answerMarker = private_("ANSWER");
-/** Not a valid app slug, so the skills call is rejected while decoding its arguments. */
 const invalidSlugMarker = private_("APP");
-/** A valid slug no app has, so the skills handler itself fails. */
 const slugMarker = `private-${randomUUID().replaceAll("-", "")}`;
-/** A valid skill name and file the app does not have. */
 const skillMarker = `private-skill-${randomUUID().replaceAll("-", "")}`;
 const fileMarker = `PRIVATE_FILE_${randomUUID().replaceAll("-", "")}.md`;
-/** The name, a file and the text of a skill the app publishes. */
 const publishedSkillMarker = `private-guide-${randomUUID().replaceAll("-", "")}`;
 const publishedFileMarker = `PRIVATE_NOTES_${randomUUID().replaceAll("-", "")}.md`;
 const skillTextMarker = private_("SKILL_TEXT");
-/** Text a backend tool echoes in the error it throws. */
 const crashMarker = private_("CRASH");
-/** A tool name no app or MCP server exposes. */
 const toolMarker = private_("TOOL");
-/** A form field the resume tool does not accept. */
 const fieldMarker = private_("FIELD");
-/** A key of a record-valued tool input whose value has the wrong type. */
 const recordKeyMarker = private_("RECORD_KEY");
-/** An app name the user chose, deployed twice. */
 const nameMarker = private_("NAME");
-/** The name and source of an app whose build fails. */
 const buildNameMarker = private_("BUILD_NAME");
 const sourceMarker = private_("SOURCE");
-/** A data operation name the app does not define, and one it defines that fails. */
 const operationMarker = private_("OPERATION");
 const failingOperation = `private_op_${randomUUID().replaceAll("-", "")}`;
 const markers = [
@@ -75,11 +59,6 @@ const markers = [
   failingOperation,
 ];
 
-/**
- * An app whose tool throws the caller's text, as app code often does; a tool whose input is a
- * record, so its validation errors name the caller's keys; an operation whose name is the
- * app's own, which fails; and a skill whose name, files and text are the app's own.
- */
 const crashing = [
   {
     path: "index.ts",
@@ -108,7 +87,6 @@ export default defineApp({}, {
   appsManifest,
 ];
 
-/** An app whose source does not compile; the compiler's error quotes the line. */
 const broken = [{ path: "index.ts", content: `export default 1 ${sourceMarker};\n` }, appsManifest];
 
 const RpcReply = Schema.Struct({
@@ -117,7 +95,6 @@ const RpcReply = Schema.Struct({
 });
 
 type Delivered = typeof SpanQuery.Type;
-/** Where a marker appears in a delivered trace, by span name and field; never the value. */
 const located = (trace: Delivered, marker: string) => {
   const found = trace.data.flatMap(({ span }) => [
     ...(span.operationName.includes(marker) ? ["span name"] : []),
@@ -134,8 +111,7 @@ const located = (trace: Delivered, marker: string) => {
   return found.length === 0 && JSON.stringify(trace).includes(marker) ? ["elsewhere"] : found;
 };
 
-const toolCall = (operation: string) =>
-  operation.startsWith("McpServer.") && operation.endsWith("/tools/call");
+const toolCall = (operation: string) => operation === "tools/call";
 
 layer(HostedLive, { excludeTestServices: true })("MCP telemetry privacy", (it) => {
   it.effect(scenarios.mcpTelemetryPrivacy.title, (context) =>
@@ -147,8 +123,7 @@ layer(HostedLive, { excludeTestServices: true })("MCP telemetry privacy", (it) =
           evidence = yield* Evidence,
           telemetry = yield* Telemetry,
           target = yield* Target,
-          http = yield* HttpClient.HttpClient,
-          fs = yield* FileSystem.FileSystem;
+          http = yield* HttpClient.HttpClient;
         const key = yield* body(
           Schema.Struct({ key: Schema.RedactedFromValue(Schema.String), id: Schema.String }),
           yield* api.request(actors.owner, "POST", "/api/auth/api-key/create", {
@@ -175,7 +150,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP telemetry privacy", (it) =
           "telemetry-privacy",
           { organization: actors.organization.id },
         );
-        // The client's standalone GET stream can open after a call, so take the last POST.
         const latestTrace = evidence.requests.pipe(
           Effect.map((requests) => {
             const id = requests.findLast(({ method }) => method === "POST")?.traceId;
@@ -184,10 +158,8 @@ layer(HostedLive, { excludeTestServices: true })("MCP telemetry privacy", (it) =
           }),
         );
 
-        /** Each path's trace and every place its delivered telemetry holds a marker. */
         const leaks: Record<string, ReadonlyArray<string>> = {};
         const traces: Record<string, string> = {};
-        /** Wait until the trace holds every named span, then record where markers appear. */
         const delivered = (path: string, trace: string, spans: ReadonlyArray<string>) =>
           Effect.gen(function* () {
             const found = yield* telemetry.query(trace).pipe(
@@ -204,14 +176,15 @@ layer(HostedLive, { excludeTestServices: true })("MCP telemetry privacy", (it) =
             );
             yield* evidence.json(`${path}-trace.json`, found);
             traces[path] = trace;
-            // The trace's own log records, and any record whose body holds a marker's prefix. An
-            // unreadable collector fails the scenario: absence is only evidence when it was read.
-            const logs = yield* telemetry
-              .logs(trace, "PRIVATE_")
-              .pipe(Effect.map((records) => records.join("\n")));
+            const logs = [
+              yield* telemetry.logs(trace),
+              yield* telemetry.logsWholeEnvironment("PRIVATE_"),
+            ].join("\n");
             const rpc = found.data.find(({ span }) => toolCall(span.operationName))?.span;
             leaks[path] = [
-              ...(rpc?.tags.parameters === undefined ? [] : ["tools/call parameters"]),
+              ...(rpc?.tags["gen_ai.tool.call.arguments"] === undefined
+                ? []
+                : ["tools/call arguments"]),
               ...markers.flatMap((marker) => [
                 ...located(found, marker),
                 ...(logs.includes(marker) ? ["logs"] : []),
@@ -219,11 +192,9 @@ layer(HostedLive, { excludeTestServices: true })("MCP telemetry privacy", (it) =
             ];
             return found;
           });
-        /** The delivered tools/call span of a trace. */
         const rpcSpan = (trace: Delivered) =>
           trace.data.find(({ span }) => toolCall(span.operationName))?.span;
 
-        /** One JSON-RPC message over raw Streamable HTTP, in its own trace. */
         const raw = (message: object, headers: Readonly<Record<string, string>> = {}) =>
           Effect.gen(function* () {
             const trace = randomBytes(16).toString("hex");
@@ -241,7 +212,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP telemetry privacy", (it) =
               )
               .pipe(Effect.timeout("30 seconds"));
             const text = yield* response.text;
-            // A streamed reply ends with the request's response after any notifications.
             const data = response.headers["content-type"]?.startsWith("text/event-stream")
               ? text
                   .split("\n")
@@ -255,7 +225,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP telemetry privacy", (it) =
                 : yield* Schema.decodeUnknownEffect(Schema.fromJsonString(RpcReply))(data);
             return { trace, session: response.headers["mcp-session-id"], reply };
           }).pipe(Effect.scoped, Effect.provideService(HttpClient.TracerPropagationEnabled, false));
-        /** A session on one revision, as an older client opens it. */
         const session = (protocolVersion: string) =>
           Effect.gen(function* () {
             const opened = yield* raw({
@@ -291,12 +260,13 @@ layer(HostedLive, { excludeTestServices: true })("MCP telemetry privacy", (it) =
                   { signal },
                 ),
             );
-            // The marker reaches the caller, so its absence from telemetry is not an empty result.
             expect(JSON.stringify(executed.structuredContent)).toContain(resultMarker);
             const execute = rpcSpan(
               yield* delivered("execute", yield* latestTrace, ["tools/call", "mcp.execute"]),
             );
-            expect(execute?.tags.tool, "execute: tools/call names its tool").toBe("execute");
+            expect(execute?.tags["gen_ai.tool.name"], "execute: tools/call names its tool").toBe(
+              "execute",
+            );
             expect(execute?.status).toBe("ok");
 
             const resumed = yield* client.use(
@@ -318,7 +288,7 @@ layer(HostedLive, { excludeTestServices: true })("MCP telemetry privacy", (it) =
             const resume = rpcSpan(
               yield* delivered("resume", yield* latestTrace, ["tools/call", "mcp.resume"]),
             );
-            expect(resume?.tags.tool).toBe("resume");
+            expect(resume?.tags["gen_ai.tool.name"]).toBe("resume");
 
             const rejected = yield* client.use(
               "read a skill with an invalid private slug",
@@ -336,7 +306,7 @@ layer(HostedLive, { excludeTestServices: true })("MCP telemetry privacy", (it) =
             const skills = rpcSpan(
               yield* delivered("skills-invalid", yield* latestTrace, ["tools/call"]),
             );
-            expect(skills?.tags.tool).toBe("skills");
+            expect(skills?.tags["gen_ai.tool.name"]).toBe("skills");
           }),
         );
 
@@ -395,7 +365,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP telemetry privacy", (it) =
                   { signal },
                 ),
             );
-            // The caller receives the failing key with the error's code.
             const keyedReply = JSON.stringify(keyed.structuredContent);
             expect(keyedReply).toContain("InputInvalid");
             expect(keyedReply).toContain(recordKeyMarker);
@@ -433,7 +402,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP telemetry privacy", (it) =
                 { signal },
               ),
             );
-            // The caller receives the failure's code; the SDK error's message names the skill.
             expect(skill).toMatchObject({ isError: true });
             expect(JSON.stringify(skill.content)).toContain("AppSkillNotFound");
             yield* delivered("skill-missing", yield* latestTrace, [
@@ -511,7 +479,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP telemetry privacy", (it) =
               name: operationMarker,
               input: {},
             });
-            // The hosted data route answers this error with HTTP 500, whatever its declared status.
             expect(JSON.stringify(unknown.body)).toContain("AppDataNotFound");
             expect(JSON.stringify(unknown.body)).toContain(operationMarker);
             yield* delivered("data-operation-missing", yield* latestTrace, ["sdk.data.query"]);
@@ -520,7 +487,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP telemetry privacy", (it) =
               name: failingOperation,
               input: {},
             });
-            // The hosted data route answers this error with HTTP 500, whatever its declared status.
             expect(JSON.stringify(failing.body)).toContain("AppDataFailed");
             expect(JSON.stringify(failing.body)).toContain(failingOperation);
             yield* delivered("data-operation-failed", yield* latestTrace, ["sdk.data.query"]);
@@ -540,7 +506,7 @@ layer(HostedLive, { excludeTestServices: true })("MCP telemetry privacy", (it) =
               const refused = rpcSpan(
                 yield* delivered(`unknown-tool-${protocolVersion}`, unknown.trace, ["tools/call"]),
               );
-              expect(refused?.status).toBe("error");
+              expect(refused?.tags["rpc.status_code"]).toBe("-32602");
 
               const malformed = yield* call({
                 method: "tools/call",
@@ -552,7 +518,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP telemetry privacy", (it) =
                   },
                 },
               });
-              // The newest revisions answer a tool's invalid arguments as a tool error result.
               expect(JSON.stringify(malformed.reply?.error ?? malformed.reply?.result)).toContain(
                 fieldMarker,
               );
@@ -562,20 +527,20 @@ layer(HostedLive, { excludeTestServices: true })("MCP telemetry privacy", (it) =
             }),
           );
 
-        // Managed Cloud reports incidents to its loopback Sentry collector. Read what it holds once each
-        // unknown tool's refusal has arrived, so an unread or empty collector fails the check.
         const reported = Object.entries(traces)
           .filter(([path]) => path.startsWith("unknown-tool-"))
           .map(([, trace]) => trace);
         expect(reported).toHaveLength(3);
         const incidents =
           target.metadata.target === "cloud" && target.metadata.mode === "managed"
-            ? yield* awaitSentryEvents((events) =>
+            ? yield* awaitSentryEvents(reported, (events) =>
                 reported.every((trace) => traceEvents(events, trace).length > 0),
-              ).pipe(Effect.flatMap(() => fs.readFileString(`${target.directory}/sentry.ndjson`)))
+              ).pipe(
+                Effect.flatMap(() => sentryEventTextWholeEnvironment),
+                Effect.map((events) => events.join("\n")),
+              )
             : "";
         yield* evidence.json("leaks.json", { leaks, traces });
-        // Every path in one comparison, so a failure names each path and where it leaked.
         expect(leaks).toEqual(Object.fromEntries(Object.keys(leaks).map((path) => [path, []])));
         expect(
           markers.filter((marker) => incidents.includes(marker)),

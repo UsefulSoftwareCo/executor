@@ -1,4 +1,3 @@
-/** Cloud publishers are organizations; a scope is read from the organization's current slug. */
 import type { Publishers } from "@executor-js/app-registry";
 import {
   OrganizationId,
@@ -13,10 +12,6 @@ import { SqlClient } from "effect/sql";
 const Organization = Schema.Struct({ id: OrganizationId, slug: Schema.String });
 const ownerPrefix = "organization:";
 
-/**
- * Capture the host client. Every call reads the slug as it is now, never a cached one. An
- * organization being removed publishes nothing: its tombstone hides its scope and listings.
- */
 export const organizationPublishers = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const read = <A, E>(work: Effect.Effect<A, E>) =>

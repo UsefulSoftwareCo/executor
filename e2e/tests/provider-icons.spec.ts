@@ -1,4 +1,3 @@
-/** Renamed secret providers can use a public host without guessing from private grants. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { Actors } from "../support/actors.ts";
@@ -10,7 +9,15 @@ import { scenarios } from "../test-plan.ts";
 
 const App = Schema.Struct({ id: Schema.String, name: Schema.String });
 const cases = [
-  { name: "Renamed public service", hosts: ["api.example.com:8443"], logo: true },
+  { name: "Renamed public service", hosts: ["example.com:8443"], logo: true },
+  { name: "Renamed www service", hosts: ["www.example.com"], logo: true },
+  { name: "Country domain service", hosts: ["example.co.uk"], logo: true },
+  { name: "Subdomain service", hosts: ["sub.example.com"], logo: false },
+  { name: "Country subdomain service", hosts: ["sub.example.co.uk"], logo: false },
+  { name: "Vercel project service", hosts: ["foo.vercel.app"], logo: false },
+  { name: "Pages project service", hosts: ["foo.github.io"], logo: false },
+  { name: "Address service", hosts: ["203.0.113.5"], logo: false },
+  { name: "Localhost service", hosts: ["localhost"], logo: false },
   { name: "Private service", hosts: ["service.internal"], logo: false },
   { name: "Wildcard service", hosts: ["*.example.com"], logo: false },
   { name: "Ambiguous service", hosts: ["api.example.com", "api.example.org"], logo: false },
@@ -77,10 +84,12 @@ layer(HostedLive, { excludeTestServices: true })("Provider icons", (it) => {
           });
           expect(count).toBe(item.logo ? 1 : 0);
         }
-        expect(requested.length).toBeGreaterThan(0);
-        expect(requested.every((url) => new URL(url).pathname === "/logo/example.com")).toBe(true);
+        expect([...new Set(requested.map((url) => new URL(url).pathname))].sort()).toEqual([
+          "/logo/example.co.uk",
+          "/logo/example.com",
+        ]);
         yield* browser.checkpoint(
-          "Public logo and neutral private, wildcard and ambiguous providers",
+          "Public logo and neutral subdomain, private, wildcard and ambiguous providers",
         );
       }),
     ),

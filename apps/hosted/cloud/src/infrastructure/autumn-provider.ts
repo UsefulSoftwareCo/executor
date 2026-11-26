@@ -1,4 +1,3 @@
-/** Alchemy owns the V2 catalog; Autumn owns its Stripe products and prices. */
 import { isDeepStrictEqual } from "node:util";
 import {
   Autumn,
@@ -13,13 +12,11 @@ import * as Provider from "alchemy/Provider";
 import { Config, Effect, Layer, Redacted, Schema } from "effect";
 import type { BillingFeatureDeclaration } from "../contracts/billing-catalog.ts";
 
-/** Credential-bearing provider errors remain redacted in deployment diagnostics. */
 export class AutumnProvisioningFailed extends Schema.TaggedError<AutumnProvisioningFailed>()(
   "AutumnProvisioningFailed",
   { operation: Schema.String, status: Schema.Number, detail: Schema.Redacted(Schema.Unknown) },
 ) {}
 
-/** Management credentials are resolved outside resource props and never saved in outputs. */
 const client = Effect.gen(function* () {
   const environment = yield* Config.Literals(["sandbox", "live"], "AUTUMN_ENVIRONMENT");
   const key = yield* Config.Redacted("AUTUMN_SECRET_KEY");
@@ -67,20 +64,16 @@ const reserved = (id: string) => {
     throw new Error("Managed Autumn IDs must use the executor-next- prefix");
 };
 
-/** An immutable feature identity. Changing its meaning requires a new ID. */
 export type AutumnFeatureProps = BillingFeatureDeclaration;
-/** Only catalog metadata is stored in Alchemy state. */
 export type AutumnFeatureAttributes = AutumnFeatureProps & {
   readonly archived: boolean;
   readonly account: string;
 };
-/** Declare a metered usage, seat, or boolean feature. */
 export type AutumnFeature = Resource<
   "Executor.AutumnFeature",
   AutumnFeatureProps,
   AutumnFeatureAttributes
 >;
-/** Feature lifetime is retained by the catalog stack. */
 export const AutumnFeature = Resource<AutumnFeature>("Executor.AutumnFeature");
 const featureIdentity = {
   account: Schema.String,
@@ -110,7 +103,6 @@ const featureProjection = (value: GetFeatureResponse, account: string) =>
     archived: value.archived,
   }).pipe(Effect.orDie);
 
-/** Read drift, recover interrupted creates, and archive only on explicit destruction. */
 export const autumnFeatureProvider = () =>
   Provider.effect(
     AutumnFeature,
@@ -127,7 +119,6 @@ export const autumnFeatureProvider = () =>
               "Use a new billing stage for a different Autumn account or environment",
             );
           if (!isResolved(news) || !output) return undefined;
-          // Compare provider metadata, including types absent from older Alchemy state.
           const current = yield* get(output.featureId);
           if (
             current === undefined ||
@@ -206,7 +197,6 @@ const PlanProps = Schema.Struct({
   items: Schema.Array(PlanItem),
   freeTrial: Schema.NullOr(Trial),
 });
-/** The catalog owns only these plan fields, never customer subscriptions or migrations. */
 export type AutumnPlanProps = typeof PlanProps.Type;
 const PlanAttributes = Schema.Struct({
   ...PlanProps.fields,
@@ -217,11 +207,8 @@ const PlanAttributes = Schema.Struct({
   hasBasePrice: Schema.Boolean,
   account: Schema.String,
 });
-/** Current provider version and the owned projection used to detect drift. */
 export type AutumnPlanAttributes = typeof PlanAttributes.Type;
-/** Declare a mutually exclusive V2 plan without making it a global default. */
 export type AutumnPlan = Resource<"Executor.AutumnPlan", AutumnPlanProps, AutumnPlanAttributes>;
-/** Plan lifetime is retained by the catalog stack. */
 export const AutumnPlan = Resource<AutumnPlan>("Executor.AutumnPlan");
 const planProjection = (value: GetPlanResponse, account: string) =>
   Schema.decodeUnknownEffect(PlanAttributes)({
@@ -271,7 +258,6 @@ const samePlan = (props: AutumnPlanProps, current: AutumnPlanAttributes) =>
   !current.addOn &&
   !current.hasBasePrice;
 
-/** Updates create a new catalog version; existing customers are never migrated. */
 export const autumnPlanProvider = () =>
   Provider.effect(
     AutumnPlan,
@@ -339,5 +325,4 @@ export const autumnPlanProvider = () =>
     }),
   );
 
-/** Both providers resolve the same explicitly selected Autumn environment. */
 export const autumnProviders = () => Layer.mergeAll(autumnFeatureProvider(), autumnPlanProvider());

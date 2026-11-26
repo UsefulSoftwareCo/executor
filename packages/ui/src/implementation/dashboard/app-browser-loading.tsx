@@ -1,6 +1,5 @@
 import { Skeleton } from "../components/skeleton.tsx";
 
-/** The same horizontal skill navigation becomes a vertical list on desktop. */
 export function SkillBrowserLoading() {
   return (
     <div
@@ -43,7 +42,6 @@ export function SkillBrowserLoading() {
   );
 }
 
-/** Workflow rows reserve the same names, descriptions, status pills, and timestamps as real runs. */
 export function WorkflowRunsLoading() {
   return (
     <div role="status" aria-label="Loading workflow runs">
@@ -75,7 +73,6 @@ export function WorkflowRunsLoading() {
   );
 }
 
-/** Match workflow selection rows while their independent description read is pending. */
 export function WorkflowNamesLoading() {
   return (
     <div role="status" aria-label="Loading workflow descriptions">
@@ -90,7 +87,6 @@ export function WorkflowNamesLoading() {
   );
 }
 
-/** Match the complete workflow page before app metadata resolves. */
 export function WorkflowBrowserLoading() {
   return (
     <section

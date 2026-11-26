@@ -1,4 +1,3 @@
-/** Catalog rows point to retained Git source. Installed copies do not depend on these rows. */
 import { Effect, Option, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import { fumadb } from "fumadb-effect";
@@ -18,16 +17,9 @@ import {
   type RegistryStorage as RegistryStorageContract,
 } from "@executor-js/sdk/core";
 
-/**
- * The host's publishers. A scope belongs to whichever owner holds it now and is never stored, so
- * an owner's new scope renames its listings and the scope it held is free for the next holder.
- */
 export interface Publishers {
-  /** The owner currently holding a scope, if any. */
   readonly owner: (scope: string) => Effect.Effect<OwnerId | null, RegistryError>;
-  /** Like `owner`, and the scope cannot change hands until the current transaction ends. */
   readonly hold: (scope: string) => Effect.Effect<OwnerId | null, RegistryError>;
-  /** The current scopes of these owners. Owners without one, such as removed ones, are absent. */
   readonly scopes: (
     owners: ReadonlyArray<OwnerId>,
   ) => Effect.Effect<ReadonlyMap<OwnerId, string>, RegistryError>;
@@ -64,7 +56,6 @@ const layout = schema({
 });
 const factory = fumadb({ namespace: "executor_public_apps", schemas: [legacy, layout] });
 
-/** A listing's selected commit, without its name: that follows the owner's current scope. */
 const Release = Schema.Struct({
   commit: SourceCommit,
   description: Schema.String,
@@ -99,17 +90,11 @@ const named = (listing: Listing, scope: string): StoredPublication => {
 const byName = (left: Publication, right: Publication) =>
   left.name < right.name ? -1 : left.name > right.name ? 1 : 0;
 
-/** Move version 1 rows, keyed by the name they were published under, to their owner and label. */
 const moveLegacyListings = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  // Workers still on version 1 serve until the deploy finishes. A publish of theirs either
-  // commits before this lock and is moved, or waits for it and then fails on the dropped tables;
-  // none is lost.
   yield* sql`lock table executor_public_apps, executor_public_scopes in access exclusive mode`;
   const rows = yield* sql`select name, owner, app, publication, source from executor_public_apps`;
   const listings = yield* Schema.decodeUnknownEffect(Schema.Array(LegacyListing))(rows);
-  // An owner that renamed may have published one label under two scopes. Neither may be dropped
-  // silently, so the migration stops and names them.
   const keys = listings.map((legacy) => `${legacy.owner}/${packageLabel(legacy.name)}`);
   const collisions = keys.filter((key, index) => keys.indexOf(key) !== index);
   if (collisions.length > 0) {
@@ -130,7 +115,6 @@ const moveLegacyListings = Effect.gen(function* () {
   yield* sql`drop table executor_public_scopes`;
 });
 
-/** Capture SQL and bring the catalog layout to the current version. */
 export const makeRegistryStorage = (publishers: Publishers) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -150,7 +134,6 @@ export const makeRegistryStorage = (publishers: Publishers) =>
           where: (b) => b.and(b("owner", "=", owner), b("label", "=", label)),
         })
         .pipe(Effect.flatMap((row) => (row === null ? Effect.succeed(null) : decode(row))));
-    /** The listing a public name selects: its scope's current owner and its label. */
     const get = (name: string) =>
       Effect.gen(function* () {
         if (!Schema.is(PackageName)(name)) return yield* new RegistryError({ reason: "not-found" });
@@ -185,7 +168,6 @@ export const makeRegistryStorage = (publishers: Publishers) =>
           }
           yield* sql.withTransaction(
             Effect.gen(function* () {
-              // Never drops: the version 1 tables are read, then removed, below.
               yield* (yield* migrator.migrateToLatest()).execute;
               if (Option.isSome(version)) yield* moveLegacyListings;
             }),
@@ -215,8 +197,6 @@ export const makeRegistryStorage = (publishers: Publishers) =>
           sql.withTransaction(
             Effect.gen(function* () {
               const label = packageLabel(input.name);
-              // Publishing checked the scope. Hold it, so a rename waits for this listing and its
-              // name stays the one returned.
               if ((yield* publishers.hold(packageScope(input.name))) !== input.owner)
                 return yield* new RegistryError({ reason: "forbidden" });
               yield* sql`select pg_advisory_xact_lock(hashtextextended(${`${input.owner}/${label}`},0))`;
@@ -261,6 +241,5 @@ export const makeRegistryStorage = (publishers: Publishers) =>
         ),
     };
   });
-/** The SDK contract plus this host's migration step. */
 export type RegistryStorage = Effect.Success<ReturnType<typeof makeRegistryStorage>> &
   RegistryStorageContract;

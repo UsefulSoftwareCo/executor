@@ -1,10 +1,3 @@
-/**
- * MCP and API bearer authentication accepts exactly the stored states Better Auth's token and
- * key verification and the hosted grant rules accept. Each case changes one stored field of
- * an otherwise valid credential, in the shape a current, older or operator-edited row could
- * hold, and checks the request is refused or accepted. Every changed row is a copy this
- * scenario owns: the Cloud database is shared, so shared OAuth resources are never edited.
- */
 import { createHash, randomBytes } from "node:crypto";
 import { expect, layer } from "@effect/vitest";
 import { Effect, FileSystem, Redacted, Schema } from "effect";
@@ -25,10 +18,8 @@ interface Statement {
   readonly sql: string;
   readonly params?: ReadonlyArray<Param>;
 }
-/** Better Auth stores opaque tokens and keys as the unpadded base64url SHA-256. */
 const hashed = (credential: string) => createHash("sha256").update(credential).digest("base64url");
 const unique = (prefix: string) => `${prefix}${randomBytes(8).toString("hex")}`;
-/** Copy a row, replacing the given columns, so a case owns every row it changes. */
 const copy = (
   table: string,
   where: string,
@@ -57,7 +48,6 @@ layer(HostedLive, { excludeTestServices: true })("Bearer authentication refusals
         const origin = target.metadata.origin;
         const organization = actors.organization.id;
 
-        /** Apply statements in one transaction against the managed Cloud's own database. */
         const rows = (statements: ReadonlyArray<Statement>) =>
           Effect.gen(function* () {
             const file = `${target.directory}/bearer-rows-${randomBytes(6).toString("hex")}.json`;
@@ -84,7 +74,6 @@ layer(HostedLive, { excludeTestServices: true })("Bearer authentication refusals
             )(output);
           });
 
-        /** Only the status: an accepted MCP response may be a stream. */
         const status = (path: string, bearer: string, headers: Record<string, string> = {}) =>
           Effect.scoped(
             Effect.gen(function* () {
@@ -129,6 +118,10 @@ layer(HostedLive, { excludeTestServices: true })("Bearer authentication refusals
           rows([
             {
               sql: `delete from "oauthAccessToken" where "referenceId" = any($1::text[])`,
+              params: [`{${owned.grants.join(",")}}`],
+            },
+            {
+              sql: `delete from "oauthRefreshToken" where "referenceId" = any($1::text[])`,
               params: [`{${owned.grants.join(",")}}`],
             },
             {
@@ -197,8 +190,6 @@ layer(HostedLive, { excludeTestServices: true })("Bearer authentication refusals
         });
         const source = yield* Schema.decodeUnknownEffect(Issued)(issued);
 
-        // Organizations this scenario owns: one where the owner holds an unknown role, one the
-        // owner is not a member of, and two whose ID and slug make one reference ambiguous.
         const unknownRole = unique("org-role-"),
           notMember = unique("org-none-"),
           ambiguous = unique("amb-"),
@@ -222,10 +213,6 @@ layer(HostedLive, { excludeTestServices: true })("Bearer authentication refusals
           ),
         ]);
 
-        /**
-         * A copy of the issued token with its own grant and consent (and connection, client or
-         * session when the case needs one), then the case's change to that copy.
-         */
         const oauthCase = (
           change: (ids: {
             readonly token: string;
@@ -357,7 +344,6 @@ layer(HostedLive, { excludeTestServices: true })("Bearer authentication refusals
           readonly status: number;
           readonly expected: ReadonlyArray<number>;
         }> = [];
-        // Every case runs before the assertion, so a failure lists the whole table.
         const expectStatus = (name: string, observed: number, expected: ReadonlyArray<number>) =>
           Effect.sync(() => {
             outcomes.push({ name, status: observed, expected });
@@ -455,6 +441,151 @@ layer(HostedLive, { excludeTestServices: true })("Bearer authentication refusals
         );
 
         yield* evidence.step(
+          "A token refreshed after its approving session ended names no session and is refused only for its own reasons",
+          Effect.gen(function* () {
+            const withoutSession =
+              (
+                change: (ids: {
+                  readonly token: string;
+                  readonly grant: string;
+                }) => ReadonlyArray<Statement>,
+              ) =>
+              (ids: {
+                readonly token: string;
+                readonly grant: string;
+                readonly connection: string;
+              }) => [...tokenUpdate(`"sessionId" = null`)(ids), ...change(ids)];
+            const cases: ReadonlyArray<
+              readonly [
+                string,
+                Effect.Effect<{ token: string; path: string }>,
+                ReadonlyArray<number>,
+              ]
+            > = [
+              ["no session", oauthCase(withoutSession(() => [])).pipe(Effect.orDie), accepted],
+              [
+                "no session, expired one second ago",
+                oauthCase(
+                  withoutSession(tokenUpdate(`"expiresAt" = now() - interval '1 second'`)),
+                ).pipe(Effect.orDie),
+                unauthorized,
+              ],
+              [
+                "no session, revoked",
+                oauthCase(withoutSession(tokenUpdate(`revoked = now()`))).pipe(Effect.orDie),
+                unauthorized,
+              ],
+              [
+                "no session, client disabled",
+                oauthCase(
+                  withoutSession((ids) => [
+                    {
+                      sql: `update "oauthClient" set disabled = true where "clientId" =
+                        (select "clientId" from "mcpGrant" where id = $1)`,
+                      params: [ids.grant],
+                    },
+                  ]),
+                  { client: true },
+                ).pipe(Effect.orDie),
+                unauthorized,
+              ],
+              [
+                "no session, grant revoked",
+                oauthCase(withoutSession(grantUpdate(`revoked = true`))).pipe(Effect.orDie),
+                unauthorized,
+              ],
+              [
+                "no session, grant in an organization without membership",
+                oauthCase(withoutSession(grantUpdate(`resource = $2`, notMember))).pipe(
+                  Effect.orDie,
+                ),
+                forbidden,
+              ],
+            ];
+            for (const [name, create, expected] of cases) {
+              const { token, path } = yield* create;
+              yield* expectStatus(name, yield* status(path, token), expected);
+            }
+          }),
+        );
+
+        yield* evidence.step(
+          "A client whose last refresh named an expired session recovers on its next refresh",
+          Effect.gen(function* () {
+            const expiredGrant = (scopes: ReadonlyArray<string>) =>
+              Effect.gen(function* () {
+                const refresh = unique("synthetic-refresh-");
+                const created = yield* oauthCase(
+                  (ids) => [
+                    {
+                      sql: `update session set "expiresAt" = now() - interval '1 second' where id =
+                        (select "sessionId" from "oauthAccessToken" where token = $1)`,
+                      params: [ids.token],
+                    },
+                    {
+                      sql: `insert into "oauthRefreshToken" select (jsonb_populate_record(
+                          null::"oauthRefreshToken", to_jsonb(r) || jsonb_build_object(
+                            'id', $2::text, 'token', $3::text, 'referenceId', $4::text,
+                            'scopes', $5::jsonb, 'sessionId',
+                            (select "sessionId" from "oauthAccessToken" where token = $1)))).*
+                        from "oauthRefreshToken" r where r."referenceId" = $6 and r.revoked is null`,
+                      params: [
+                        ids.token,
+                        unique("refresh-row-"),
+                        hashed(refresh),
+                        ids.grant,
+                        JSON.stringify(scopes),
+                        source.grant,
+                      ],
+                    },
+                  ],
+                  { session: true },
+                ).pipe(Effect.orDie);
+                const tokens = Redacted.value(mcpGrant.tokens);
+                return {
+                  ...created,
+                  grant: {
+                    ...mcpGrant,
+                    tokens: Redacted.make({
+                      ...tokens,
+                      access_token: created.token,
+                      refresh_token: refresh,
+                    }),
+                  },
+                };
+              });
+            const broken = yield* expiredGrant(["mcp", "offline_access"]);
+            yield* expectStatus(
+              "access token naming the expired session",
+              yield* status(broken.path, broken.token),
+              unauthorized,
+            );
+            let current = broken.grant;
+            for (const attempt of ["first refresh", "second refresh"]) {
+              const refreshed = yield* oauth.refresh(current).pipe(Effect.option);
+              yield* expectStatus(
+                `${attempt} after the session expired`,
+                refreshed._tag === "Some" ? 200 : 400,
+                accepted,
+              );
+              if (refreshed._tag === "None") break;
+              current = refreshed.value;
+              yield* expectStatus(
+                `access token from the ${attempt} after the session expired`,
+                yield* status(broken.path, Redacted.value(current.tokens).access_token),
+                accepted,
+              );
+            }
+            const narrowed = yield* expiredGrant(["mcp"]);
+            yield* expectStatus(
+              "refresh token without offline access after its session expired",
+              yield* oauth.refreshStatus(narrowed.grant),
+              [400],
+            );
+          }),
+        );
+
+        yield* evidence.step(
           "OAuth tokens are refused when their grant, consent or membership no longer allows them",
           Effect.gen(function* () {
             const cases: ReadonlyArray<
@@ -508,10 +639,22 @@ layer(HostedLive, { excludeTestServices: true })("Bearer authentication refusals
                 forbidden,
               ],
               [
-                "MCP grant on the Executor API",
+                "MCP grant on the Executor API's context",
+                oauthCase(() => []).pipe(Effect.orDie),
+                accepted,
+                "/api/context",
+              ],
+              [
+                "MCP grant on the Executor API's apps",
+                oauthCase(() => []).pipe(Effect.orDie),
+                accepted,
+                `/api/organizations/${organization}/apps`,
+              ],
+              [
+                "MCP grant on another Executor API route",
                 oauthCase(() => []).pipe(Effect.orDie),
                 unauthorized,
-                "/api/context",
+                `/api/organizations/${organization}/inventory`,
               ],
             ];
             for (const [name, create, expected, path] of cases) {
@@ -644,8 +787,6 @@ layer(HostedLive, { excludeTestServices: true })("Bearer authentication refusals
         yield* evidence.step(
           "Stored JSON fields decode as Better Auth decodes them",
           Effect.gen(function* () {
-            // A `jsonb` string holding JSON reads as its contents: the driver decodes the
-            // `jsonb`, and Better Auth's adapter parses a string `string[]` field again.
             const twice = (value: unknown) => JSON.stringify(JSON.stringify(value));
             const cases: ReadonlyArray<
               readonly [
@@ -706,7 +847,6 @@ layer(HostedLive, { excludeTestServices: true })("Bearer authentication refusals
         expect(created.status).toBe(200);
         const key = yield* body(Token, created);
         owned.keys.push(key.id);
-        /** A copy of the PAT with its own secret, then the case's change to that copy. */
         const patCase = (set: string, ...params: Param[]) =>
           Effect.gen(function* () {
             const secret = unique("exp_"),
@@ -796,7 +936,6 @@ layer(HostedLive, { excludeTestServices: true })("Bearer authentication refusals
           outcomes.filter(({ status, expected }) => !expected.includes(status)),
           "every case is accepted or refused as Better Auth decides",
         ).toEqual([]);
-        // Better Auth deletes an enabled key that is presented after its expiry.
         expect(expiredKeys, "an expired PAT is deleted on use").toEqual([{ keys: 0 }]);
       }).pipe(Effect.provide(McpOAuth.layer)),
     ),

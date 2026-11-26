@@ -1,9 +1,3 @@
-/**
- * A provider that declares hosts never gives app code its secret values. App code reads handles,
- * the app's outbound network substitutes the real values only on requests to those hosts, and a
- * value the service echoes is returned to the app as its handle. `plain()` and `raw()` fields
- * keep their real values.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -62,10 +56,6 @@ const Refusal = Schema.fromJsonString(
 );
 const handle = /^exsec_[0-9a-f]+_$/;
 
-/**
- * An app whose provider sends its token only to `host`. Its tools return the fields as app code
- * sees them, send the token in every placement the outbound rewrites, and send it to any URL.
- */
 const credentialApp = (options: {
   readonly name: string;
   readonly host: string | readonly string[] | null;
@@ -128,10 +118,6 @@ export default defineApp({ user: { accounts: { service } } }, {
   }),
 });`;
 
-/**
- * An app whose tools come from an MCP server at `url`, sent the provider's token. Its provider
- * declares `host` only.
- */
 const mcpApp = (options: { readonly name: string; readonly host: string; readonly url: string }) =>
   `import { defineApp, defineProvider, secrets, object, string, plain, raw } from "apps";
 import { mcpRouter } from "apps/mcp";
@@ -154,7 +140,6 @@ export default defineApp({ user: { accounts: { service } } }, async (ctx) => ({
   }),
 }));`;
 
-/** An app with no accounts that sends whatever credential it is given. */
 const replayApp = `import { defineApp, object, string, query, router } from "apps";
 export default defineApp({}, {
   tools: router({
@@ -182,7 +167,6 @@ const scenario = Effect.gen(function* () {
       );
       return { path: `${prefix}/apps/${app.id}`, app };
     });
-  /** Check credentials before they are saved, as the connect form's Validate button does. */
   const check = (path: string, provider: string, fields: typeof Fields.Type) =>
     api
       .request(actors.owner, "POST", `${path}/credential-checks`, {
@@ -196,10 +180,8 @@ const scenario = Effect.gen(function* () {
         ),
         Effect.flatMap((response) => body(CredentialCheck, response)),
       );
-  /** Link an existing account to another app. */
   const select = (path: string, account: string) =>
     linkAccount(actors.owner, path, "service", account);
-  /** Connect one account from the app, which links it as the app's only account. */
   const connect = (path: string, label: string, fields: typeof Fields.Type) =>
     Effect.gen(function* () {
       const pending = yield* api.request(
@@ -222,7 +204,6 @@ const scenario = Effect.gen(function* () {
       );
       return { account };
     });
-  /** Call a tool with the app's one linked account. */
   const call = <A>(path: string, output: Schema.Decoder<A>, tool: string, input: object) =>
     Effect.gen(function* () {
       const response = yield* api.request(actors.owner, "POST", `${path}/tools/call`, {
@@ -232,7 +213,6 @@ const scenario = Effect.gen(function* () {
       expect(response.status, JSON.stringify(response.body)).toBe(200);
       return yield* body(output, response);
     });
-  /** Call a tool that must fail with the app's one linked account, and return the failure. */
   const callFailure = (path: string, tool: string, input: object) =>
     Effect.gen(function* () {
       const response = yield* api.request(actors.owner, "POST", `${path}/tools/call`, {
@@ -242,7 +222,6 @@ const scenario = Effect.gen(function* () {
       expect(response.status, JSON.stringify(response.body)).not.toBe(200);
       return yield* body(ToolFailed, response);
     });
-  /** Run a workflow to completion and return its output. */
   const runWorkflow = (path: string, workflow: string) =>
     Effect.gen(function* () {
       const started = yield* api.request(actors.owner, "POST", `${path}/workflow-runs`, {
@@ -264,7 +243,6 @@ const scenario = Effect.gen(function* () {
         Effect.retry({ schedule: Schedule.spaced("200 millis"), times: 150 }),
       );
     });
-  /** A real API key for the owner, deleted with the case. */
   const apiKey = Effect.gen(function* () {
     const created = yield* api.request(actors.owner, "POST", "/api/auth/api-key/create", {
       name: "Credential hosts",
@@ -287,13 +265,6 @@ const synthetic = () => ({
   signing: `synthetic-signing-${randomUUID()}`,
 });
 
-/**
- * The hosts the refusal checks name. On self-host the declared and the undeclared name both reach
- * a loopback receiver, which shows that a refused request sends nothing. Cloud app Workers refuse
- * private addresses before the credential check, so there the hosts are under the reserved
- * `.invalid` suffix: Executor treats them as public, and nothing could answer a request that
- * escaped the checks.
- */
 const refusalHosts = Effect.gen(function* () {
   if ((yield* Target).metadata.target === "cloud")
     return {
@@ -312,10 +283,6 @@ const refusalHosts = Effect.gen(function* () {
 });
 
 layer(HostedLive, { excludeTestServices: true })("Credential hosts", (it) => {
-  /**
-   * Deploy an app whose provider `name` declares one of `hosts`, connect an account, and check that
-   * app code reads handles and that an undeclared host is refused.
-   */
   const sealedApp = (
     database: boolean,
     hosts: Effect.Success<typeof refusalHosts>,
@@ -333,14 +300,12 @@ layer(HostedLive, { excludeTestServices: true })("Credential hosts", (it) => {
       );
       const { account } = yield* connect(path, name, values);
 
-      // Secret fields are handles; plain and raw fields keep their values.
       const fields = yield* call(path, Fields, "fields", {});
       expect(fields.region).toBe(values.region);
       expect(fields.signing).toBe(values.signing);
       expect(fields.token).toMatch(handle);
       expect(JSON.stringify(fields)).not.toContain(values.token);
 
-      // A host the provider does not declare is refused before anything is sent.
       const undeclared = yield* call(path, Sent, "send", {
         url: `${undeclaredOrigin}/undeclared`,
       });
@@ -356,7 +321,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential hosts", (it) => {
         },
         message: refusal,
       });
-      // ctx.fetch rejects with the refusal, and the caller reads why: no service answered.
       const fetched = yield* callFailure(path, "fetchSend", {
         url: `${undeclaredOrigin}/fetched`,
       });
@@ -379,7 +343,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential hosts", (it) => {
           actors = yield* Actors;
         const hosts = yield* refusalHosts;
         const name = `Credential hosts ${randomUUID().slice(0, 8)}`;
-        // The replay and MCP apps do not depend on the sealed app, so all three deploy together.
         const [{ values, path, account, refusal, sealed }, replay, mcp] = yield* Effect.all(
           [
             sealedApp(false, hosts, name),
@@ -404,13 +367,11 @@ layer(HostedLive, { excludeTestServices: true })("Credential hosts", (it) => {
 
         yield* Effect.all(
           [
-            // Workflow steps receive the same handles, never the stored value.
             Effect.gen(function* () {
               const stepped = Schema.decodeUnknownSync(Fields)(yield* runWorkflow(path, "fields"));
               expect(stepped.token).toMatch(handle);
               expect(stepped.signing).toBe(values.signing);
             }),
-            // Another app cannot send this app's handle, even to the declared host.
             Effect.gen(function* () {
               const replayed = yield* call(replay.path, Sent, "send", {
                 url: `${hosts.declaredOrigin}/replayed`,
@@ -419,7 +380,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential hosts", (it) => {
               expect(replayed.status).toBe(421);
               expect(replayed.text).toContain("not valid for this app");
             }),
-            // A protocol helper reports the same refusal when its server is on an undeclared host.
             Effect.gen(function* () {
               yield* select(mcp.path, account);
               const listed = yield* api.request(actors.owner, "GET", `${mcp.path}/tools`);
@@ -453,7 +413,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential hosts", (it) => {
     withHostedCase(
       context,
       Effect.gen(function* () {
-        // Queries of an app with a database run in its data facet, which has its own outbound.
         const hosts = yield* refusalHosts;
         const { values } = yield* sealedApp(true, hosts);
         if (hosts.received !== null) {
@@ -485,42 +444,78 @@ layer(HostedLive, { excludeTestServices: true })("Credential hosts", (it) => {
             const dialog = page.getByRole("dialog", { name: `Connect ${name}`, exact: true });
             return dialog.waitFor({ state: "visible" }).then(() => dialog);
           });
-          // A field's hint is part of its label, so read the inputs in declaration order.
           const types = yield* browser.use("Read each field's input type", () =>
             form
               .locator("input")
               .evaluateAll((inputs) => inputs.map((input) => input.getAttribute("type"))),
           );
-          // A plain field is not secret, so it is shown; secret fields stay masked.
           expect(types).toEqual(["text", "password", "password"]);
-          const { explained, destination, access } = yield* browser.use(
-            "Read what the app gets",
-            () =>
-              Promise.all([
-                form
-                  .locator("[data-credential-access]")
-                  .evaluateAll((lines) =>
-                    lines.map((line) => line.getAttribute("data-credential-access")),
+          const { lines, placement } = yield* browser.use("Read what the app gets", () =>
+            Promise.all([
+              form
+                .locator("[data-credential-access]")
+                .evaluateAll((all) =>
+                  all.map((line) => [
+                    line.getAttribute("data-credential-access"),
+                    line.textContent,
+                  ]),
+                ),
+              form.evaluate((element) => {
+                const notice = element.querySelector("[data-credential-hosts]");
+                const follows = (earlier: Element | null | undefined) =>
+                  earlier != null &&
+                  notice !== null &&
+                  (earlier.compareDocumentPosition(notice) & Node.DOCUMENT_POSITION_FOLLOWING) !==
+                    0;
+                const submit = element.querySelector("button[type=submit]");
+                return {
+                  afterFields: follows([...element.querySelectorAll("input")].at(-1)),
+                  beforeSubmit:
+                    notice !== null &&
+                    submit !== null &&
+                    (notice.compareDocumentPosition(submit) & Node.DOCUMENT_POSITION_FOLLOWING) !==
+                      0,
+                  marks: [...element.querySelectorAll("[data-field-access]")].map((mark) =>
+                    mark.getAttribute("data-field-access"),
                   ),
-                form.locator("[data-credential-hosts]").textContent(),
-                form
-                  .locator("[data-field-access]")
-                  .evaluateAll((marks) =>
-                    marks.map((mark) => mark.getAttribute("data-field-access")),
-                  ),
-              ]).then(([explained, destination, access]) => ({ explained, destination, access })),
+                };
+              }),
+            ]).then(([lines, placement]) => ({ lines, placement })),
           );
           if (host === null) {
-            // Without hosts the app reads every secret: only that explainer shows, asking for hosts.
-            expect(explained).toEqual(["readable"]);
-            expect(destination).toContain("ask your agent to use stubbed secrets");
-            expect(access).toEqual(["readable", "readable"]);
+            expect(lines).toEqual([
+              [
+                "readable",
+                "The app can read these values and send them anywhere. You can ask your agent to limit where they are sent.",
+              ],
+            ]);
           } else {
-            // Each tag the form shows is explained once: the hidden token and the raw field.
-            expect(explained).toEqual(["hidden", "readable"]);
-            expect(destination).toContain("The app and your agent only get a placeholder");
-            expect(destination).toContain(`real value on requests to ${host}.`);
-            expect(access).toEqual(["hidden", "readable"]);
+            expect(lines).toEqual([
+              [
+                "hidden",
+                `Hidden values are only sent to ${host}. The app and your agent get a placeholder.`,
+              ],
+              ["readable", "The app can read the other values and send them anywhere."],
+            ]);
+          }
+          expect(placement).toEqual({
+            afterFields: true,
+            beforeSubmit: true,
+            marks: host === null ? ["readable", "readable"] : ["hidden", "readable"],
+          });
+          yield* browser.use("Wait for the dialog to settle", () =>
+            form.evaluate((dialog) =>
+              Promise.allSettled(
+                dialog.getAnimations({ subtree: true }).map((animation) => animation.finished),
+              ).then(() => undefined),
+            ),
+          );
+          yield* browser.checkpoint(
+            host === null
+              ? "Connect form for a provider without hosts"
+              : "Connect form for a provider with hosts and a raw field",
+          );
+          if (host !== null) {
             const tooltip = yield* browser.use("Hover the hidden field's mark", (page) =>
               form
                 .getByRole("img", { name: "Hidden from app" })
@@ -546,7 +541,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential hosts", (it) => {
         const original = yield* deploy(name, credentialApp({ name, host: declared, health: null }));
         const values = synthetic();
         const { account } = yield* connect(original.path, name, values);
-        // The same provider declared with more hosts, and with none.
         const others = [
           yield* deploy(
             `${name} wider`,
@@ -556,11 +550,9 @@ layer(HostedLive, { excludeTestServices: true })("Credential hosts", (it) => {
         ];
         const provider = (deployed: (typeof others)[number]) =>
           deployed.app.requirements.accounts.service!.provider;
-        // Hosts are not part of the provider's identity, so the account fills every slot.
         expect(others.map(provider)).toEqual([provider(original), provider(original)]);
         for (const other of others) {
           yield* select(other.path, account);
-          // Connected for one host, the account is sealed even where the app declares none.
           const fields = yield* call(other.path, Fields, "fields", {});
           expect(fields.token).toMatch(handle);
           const widened = yield* call(other.path, Sent, "send", {
@@ -602,8 +594,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential hosts", (it) => {
         });
         const fields = yield* call(path, Fields, "fields", {});
         expect(fields.token).toMatch(handle);
-        // The product accepts only the real key, so a success proves Executor substituted it on
-        // the app's outbound request; the handle itself would be refused.
         const inventory = yield* call(path, Sent, "send", {
           url: `${origin}/api/organizations/${actors.organization.id}/inventory`,
         });
@@ -625,7 +615,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential hosts", (it) => {
           credentialApp({ name, host: `127.0.0.1:${upstream.port}`, health: upstream.origin }),
         );
         const values = synthetic();
-        // The account check runs before the account is saved, through the same network.
         const checked = yield* check(path, app.requirements.accounts.service!.provider, values);
         expect(checked.status).toBe("healthy");
         yield* connect(path, name, values);
@@ -646,7 +635,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential hosts", (it) => {
         };
 
         expect(at("/health").authorization).toBe(`Bearer ${values.token}`);
-        // Each placement reached the service with the real value.
         const query = at("/query");
         expect(query.authorization).toBe(`Bearer ${values.token}`);
         expect(query.headers["x-api-key"]).toBe(values.token);
@@ -660,14 +648,37 @@ layer(HostedLive, { excludeTestServices: true })("Credential hosts", (it) => {
           ).toString(),
         ).toBe(`user:${values.token}`);
 
-        // The service echoed the value in headers and bodies; app code read the handle instead.
         for (const reply of replies.slice(0, 3)) expect(reply.text).not.toContain(values.token);
-        // Every invocation seals afresh, so the echo carries this call's handle, not the one above.
         const echoed = /^Bearer (exsec_[0-9a-f]+_)$/;
         expect(replies[0]!.echoed).toMatch(echoed);
         expect(
           Schema.decodeUnknownSync(Schema.fromJsonString(ReceivedRequest))(replies[0]!.text),
         ).toMatchObject({ authorization: replies[0]!.echoed });
+      }),
+    ),
+  );
+
+  it.effect(scenarios.credentialHostsUnderscore.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const { deploy, connect, call } = yield* scenario;
+        const upstream = yield* credentialUpstream;
+        const host = `n8n_server_1.localhost:${upstream.port}`;
+        const name = `Credential hosts ${randomUUID().slice(0, 8)}`;
+        const { path, app } = yield* deploy(name, credentialApp({ name, host, health: null }));
+        expect(app.requirements.accounts.service).toBeDefined();
+        const values = synthetic();
+        yield* connect(path, name, values);
+        const { token } = yield* call(path, Fields, "fields", {});
+        expect(token).toMatch(handle);
+
+        const sent = yield* call(path, Sent, "send", { url: `http://${host}/underscore` });
+        expect(sent.status, sent.text).toBe(200);
+        const received = (yield* upstream.received).find(
+          (entry) => new URL(entry.url, upstream.origin).pathname === "/underscore",
+        );
+        expect(received?.authorization).toBe(`Bearer ${values.token}`);
       }),
     ),
   );
@@ -691,8 +702,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential hosts", (it) => {
           call(path, Sent, "sendKept", { url: `${upstream.origin}${pathname}`, token: kept });
         expect((yield* replay("/before")).status).toBe(200);
 
-        // The handle key comes from the instance's encryption key, which the restart keeps, so the
-        // kept handle still opens and the service receives the real value.
         yield* serverControl("restart");
         const after = yield* replay("/after");
         expect(after.status, after.text).toBe(200);

@@ -1,10 +1,3 @@
-/**
- * Search and the skills index read every app's kept tool listing and skill catalog. Self-host and
- * local keep them in each app's data supervisor as well as in memory, so after a restart neither
- * evaluates an app again, and an aged result is served as it is rather than refreshed by loading
- * every app's Worker. Each probe app counts its evaluations in module state: a Worker the restart
- * left unloaded reports one evaluation for the call that loads it, unless a read loaded it first.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -19,10 +12,8 @@ import { Target } from "../support/platform.ts";
 import { serverControl } from "../support/server-control.ts";
 
 const apps = 3;
-/** Past the tool listing's 30 s and the skill catalog's 10 s freshness, within their 24 h bound. */
 const aged = 60_000;
 
-/** Every evaluation names itself in the probe's description; a call reports the isolate's count. */
 const probeSource = `import { defineApp, query, object, router } from "apps";
 let evaluations = 0;
 export default defineApp({}, async () => {
@@ -52,7 +43,6 @@ interface Deployed {
 
 type Connection = Effect.Success<ReturnType<McpClient["Service"]["connect"]>>;
 
-/** Search and the skills index over one MCP connection. */
 const session = (client: Connection) => ({
   execute: (step: string, code: string) =>
     client
@@ -79,19 +69,11 @@ const session = (client: Connection) => ({
       ),
 });
 
-/**
- * Search, then index skills, so each probe app's supervisor keeps both results; then restart the
- * product with its clock moved past their freshness. After it, search and the skills
- * index serve the same evaluations, recalled from the supervisor and then from memory, and a call
- * of each app finds its Worker unloaded since the restart.
- */
 const keptAcrossRestart = <E, R>(
   deployed: ReadonlyArray<Deployed>,
-  /** Opens a new connection; a restart ends the previous one's session. */
   connect: Effect.Effect<Connection, E, R>,
 ) =>
   Effect.gen(function* () {
-    /** Each probe app's evaluation id, as search describes its tool. */
     const search = (execute: ReturnType<typeof session>["execute"], step: string) =>
       Effect.gen(function* () {
         const found = yield* Schema.decodeUnknownEffect(Search)(
@@ -123,10 +105,8 @@ const keptAcrossRestart = <E, R>(
     yield* Effect.scoped(
       Effect.gen(function* () {
         const { execute, skills } = session(yield* connect);
-        // Recalled from each app's supervisor, not evaluated again: an evaluation names itself.
         expect(yield* search(execute, "Search after the restart")).toEqual(evaluated);
         yield* skills("Index skills after the restart");
-        // Now served from memory, still past its freshness.
         expect(yield* search(execute, "Search again")).toEqual(evaluated);
         yield* skills("Index skills again");
         for (const app of deployed) {

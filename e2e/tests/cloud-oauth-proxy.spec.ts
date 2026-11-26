@@ -1,19 +1,3 @@
-/**
- * Better Auth's OAuth proxy with Cloud's role hosts (`notes/hosted-auth.md`). Production is the
- * proxy's production URL, the edge (`executor.sh`), but its own sign-ins start on its browser
- * origin: `app.`, or the deployment origin under the rollback switch. They must return through the
- * edge's callback without the proxy. A test stage signs in through production instead: the
- * provider returns to production's edge, production exchanges the code and sends the profile to
- * the stage, which keeps the session on its own origin.
- *
- * Every managed local Cloud runs with the proxy on as its production, as production does. A
- * rolled-back run (`e2e:cloud --rollback`) checks its own sign-ins under the switch, and
- * `e2e:cloud --oauth-proxy-preview` runs a test stage beside a second local Cloud, its production.
- *
- * A test stage's connected-account sign-ins name production's callback too, the one services that
- * approve their callbacks accept. Production sends the browser back to the stage the state names,
- * when it trusts that origin, and the stage completes the sign-in itself.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { Actors } from "../support/actors.ts";
@@ -42,16 +26,8 @@ const Connection = Schema.Struct({
   }),
 });
 
-/**
- * The state of a connected-account sign-in that production returns to `origin`: v2's prefix, the
- * origin in base64url, and a random part (`apps/hosted/cloud/src/contracts/stage-account-state.ts`).
- */
 const stageStatePrefix = (origin: string) => `x2.${Buffer.from(origin).toString("base64url")}.`;
 
-/**
- * A Google sign-in through the browser, with every top-level navigation it made, redirects
- * included: the provider's authorization request and each callback the browser passed through.
- */
 const recordedGoogleSignIn = Effect.gen(function* () {
   const browser = yield* Browser,
     onboarding = yield* Onboarding;
@@ -77,28 +53,22 @@ const recordedGoogleSignIn = Effect.gen(function* () {
     identity,
     redirectUri: authorization.searchParams.get("redirect_uri"),
     prompt: authorization.searchParams.get("prompt"),
-    // Each Better Auth callback the browser passed through, without its query.
     callbacks: visited
       .filter((url) => url.pathname.startsWith("/api/auth/callback/"))
       .map((url) => `${url.origin}${url.pathname}`),
   };
 });
 
-/** Production's own Google sign-in, from its browser origin, with the proxy on. */
 const ownSignIn = Effect.gen(function* () {
   const target = yield* Target;
   const { browser, edge } = targetHosts(target);
   const signIn = yield* recordedGoogleSignIn;
-  // The provider returns to the edge's registered callback, which sends the browser to the same
-  // path on the browser origin. The proxy's completion endpoint is never reached.
   expect(signIn.redirectUri).toBe(`${edge}/api/auth/callback/google`);
-  // Google lets the person choose among their signed-in accounts instead of reusing one.
   expect(signIn.prompt).toBe("select_account");
   expect(signIn.callbacks).toEqual([
     `${edge}/api/auth/callback/google`,
     `${browser}/api/auth/callback/google`,
   ]);
-  // Production still refuses the completion endpoint, so the proxy secret cannot mint a session.
   const completion = yield* rawRequest(
     `${browser}/api/auth/callback/google/oauth-proxy?callbackURL=%2F&profile=forged`,
   );
@@ -122,7 +92,6 @@ layer(TestLive, { excludeTestServices: true })("Cloud OAuth proxy", (it) => {
       context,
       Effect.gen(function* () {
         const target = yield* Target;
-        // Under the switch the browser origin is the deployment origin.
         expect(targetHosts(target).browser).toBe(target.metadata.origin);
         yield* ownSignIn;
       }).pipe(Effect.provide(Onboarding.layer)),
@@ -143,16 +112,12 @@ layer(TestLive, { excludeTestServices: true })("Cloud OAuth proxy", (it) => {
         const stage = targetHosts(target).browser;
         const productionEdge = roleHost(production, "edge");
         const signIn = yield* recordedGoogleSignIn;
-        // The stage starts the sign-in with production's registered callback. Production's edge
-        // sends the browser to production's browser origin, which exchanges the code there and
-        // returns the encrypted profile to the stage's completion endpoint.
         expect(signIn.redirectUri).toBe(`${productionEdge}/api/auth/callback/google`);
         expect(signIn.callbacks).toEqual([
           `${productionEdge}/api/auth/callback/google`,
           `${roleHost(production, "app")}/api/auth/callback/google`,
           `${stage}/api/auth/callback/google/oauth-proxy`,
         ]);
-        // The session is the stage's own.
         const session = yield* browser.use("Read the stage's session", (page) =>
           page
             .context()
@@ -181,7 +146,6 @@ layer(TestLive, { excludeTestServices: true })("Cloud OAuth proxy", (it) => {
           });
         const stage = targetHosts(target).browser;
         const productionCallback = `${roleHost(production, "edge")}/api/oauth/callback`;
-        // The service registers only clients whose every callback it approved: production's.
         const issuer = yield* oauthSetupIssuer;
         yield* issuer.configure({ registrationRedirects: [productionCallback] });
         const prefix = `/api/organizations/${actors.organization.id}`;
@@ -218,7 +182,6 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools:router(
           { method: "oauth" },
         );
         expect(started.status, JSON.stringify(started.body)).toBe(200);
-        // The stage registered production's callback alone, which the service accepted.
         expect((yield* issuer.metrics).registeredRedirects).toEqual([[productionCallback]]);
         const authorization = new URL((yield* body(SignIn, started)).authorizationUrl);
         expect(authorization.searchParams.get("redirect_uri")).toBe(productionCallback);
@@ -226,8 +189,6 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools:router(
           new RegExp(`^${stageStatePrefix(stage).replace(/[.]/g, "\\.")}[A-Za-z0-9_-]+$`),
         );
 
-        // The browser follows the service's return through production to the stage's callback
-        // page, which completes the sign-in on the stage.
         yield* browser.omitNetworkTrace;
         yield* browser.login(actors.owner);
         const visited: URL[] = [];
@@ -274,7 +235,6 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools:router(
               .pipe(Effect.orDie),
           );
 
-        // Production returns only to origins it trusts; any other's sign-in is refused there.
         const untrusted = yield* rawRequest(
           `${productionCallback}?code=synthetic-code&state=${stageStatePrefix("https://evil.example")}synthetic`,
         );

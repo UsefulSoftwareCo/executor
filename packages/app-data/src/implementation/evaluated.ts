@@ -1,7 +1,3 @@
-/**
- * Evaluated results kept in the app supervisor's SQLite, beside and separate from the app cache.
- * App code never reaches this table: it holds what the host evaluated, keyed by the host.
- */
 import { Effect, Schema } from "effect";
 import { EvaluatedCommand, evaluatedLimits } from "../contracts/evaluated.ts";
 
@@ -10,7 +6,6 @@ class EvaluatedStoreFailed extends Schema.TaggedError<EvaluatedStoreFailed>()(
   {},
 ) {}
 
-/** The supervisor's synchronous SQL, which also binds and returns BLOBs as `ArrayBuffer`. */
 export interface EvaluatedSqlStorage {
   readonly sql: {
     readonly exec: (
@@ -40,11 +35,6 @@ const initialize = (storage: EvaluatedSqlStorage) =>
     )`);
   });
 
-/**
- * One app's store. `changed` records a change of the app's cached data: results evaluated no
- * later than then are neither served nor accepted. Each isolate also reads when it was (the
- * `changed` command) to forget the results it keeps in memory from before.
- */
 export const evaluatedStore = (storage: EvaluatedSqlStorage) => {
   let initialized = false;
   const ready = () => {
@@ -112,7 +102,6 @@ export const evaluatedStore = (storage: EvaluatedSqlStorage) => {
             }
             if (command.body.byteLength > evaluatedLimits.entryBytes) return false;
             if (command.at <= lastChange()) return false;
-            // A newer result of the same key, written by another isolate, stays.
             const current = storage.sql
               .exec("SELECT at FROM executor_evaluated WHERE key = ? LIMIT 1", command.key)
               .toArray()[0];
@@ -135,7 +124,6 @@ export const evaluatedStore = (storage: EvaluatedSqlStorage) => {
                 body.byteLength,
               );
             }
-            // Over the bound, the results evaluated longest ago leave first.
             for (;;) {
               const usage = Schema.decodeUnknownSync(Usage)(
                 storage.sql.exec("SELECT sum(bytes) AS bytes FROM executor_evaluated").one(),

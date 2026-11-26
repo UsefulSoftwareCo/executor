@@ -1,4 +1,3 @@
-/** A control registry survives failed builds, stopped terminals, and failed cloud deletion. */
 import { Client } from "pg";
 import { Config, Deferred, Effect, Redacted, Schema } from "effect";
 import {
@@ -42,7 +41,6 @@ const registry = (client: Client) => {
     readonly background: "active" | "paused";
   }) =>
     Effect.gen(function* () {
-      // Only the first insert sets the deadline. Retrying cannot renew it.
       yield* query(
         Schema.Unknown,
         `with started as (select clock_timestamp() as at)
@@ -98,7 +96,6 @@ const registry = (client: Client) => {
   return { list, get, reserve, remove, lock, observe };
 };
 
-/** Connect only to the shared staging control database, which holds leases and per-stage locks. */
 export const withStageAdmin = <A, E, R>(
   use: (admin: ReturnType<typeof registry>) => Effect.Effect<A, E, R>,
 ) =>
@@ -119,7 +116,6 @@ export const withStageAdmin = <A, E, R>(
         );
       const disconnected = yield* Deferred.make<never, TestStageFailed>();
       const lost = () => {
-        // Native socket events can arrive while scope finalizers are closing the client.
         Deferred.doneUnsafe(
           disconnected,
           Effect.fail(

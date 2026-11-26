@@ -1,4 +1,3 @@
-/** The errors a GraphQL server states reach the app's caller as that server's words. */
 import { expect, layer } from "@effect/vitest";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Clock, Effect, Layer, Ref, Schema, Stream } from "effect";
@@ -18,16 +17,10 @@ import { authoredAppFiles } from "../support/authored-templates.ts";
 import { connectionsPath } from "../support/app-accounts.ts";
 import { expectUnknownOutcome } from "../support/write-outcome.ts";
 
-/**
- * The account's token; the fixture server repeats it in errors, as a careless server can. Its
- * quote and backslash change how it reads once quoted, so its marker must not appear in any form.
- */
 const token = 'synthetic-"quoted\\graphql-keymarker';
 const tokenMarker = "keymarker";
-/** A value the fixture server puts in a nested `extensions` entry, which is never carried. */
 const stackMarker = "synthetic-stack-frame";
 
-/** What the fixture server answers to the next tool call or introspection. */
 type Mode =
   | "ok"
   | "introspection"
@@ -119,7 +112,6 @@ const fixture = Effect.gen(function* () {
           : yield* HttpServerResponse.json({ data: schema });
       const presented = request.headers.authorization?.replace(/^Bearer /u, "") ?? "";
       switch (current) {
-        // A request the server refuses before running it, answered with a client error status.
         case "validation":
           return yield* HttpServerResponse.json(
             {
@@ -140,7 +132,6 @@ const fixture = Effect.gen(function* () {
             },
             { status: 400 },
           );
-        // A field error while running the operation, as a GraphQL response with data.
         case "execution":
           return yield* HttpServerResponse.json({
             data: null,
@@ -150,11 +141,9 @@ const fixture = Effect.gen(function* () {
                 path: ["projectCreate", "input", "name"],
                 extensions: { code: "CONFLICT", retryable: false },
               },
-              // A server's claim about the outcome, which Executor cannot check.
               { message: "Nothing was changed. Retry this request.", extensions: { code: "SAFE" } },
             ],
           });
-        // The token in every field a failure quotes: the message, a path segment and an extension.
         case "echo":
           return yield* HttpServerResponse.json(
             {
@@ -179,13 +168,11 @@ const fixture = Effect.gen(function* () {
               })),
             ],
           });
-        // A proxy's error page, which states no GraphQL errors.
         case "html":
           return HttpServerResponse.text("<html><body>Bad Request</body></html>", {
             status: 400,
             contentType: "text/html",
           });
-        // A 24 MiB error message, sent in chunks without a declared length.
         case "huge": {
           const chunk = "x".repeat(1_048_576);
           return HttpServerResponse.stream(
@@ -204,7 +191,6 @@ const fixture = Effect.gen(function* () {
             },
             { status: 400 },
           );
-        // The status and the start of a body that never finishes.
         case "stalled":
           return HttpServerResponse.stream(
             Stream.concat(Stream.make(new TextEncoder().encode('{"errors":[')), Stream.never),
@@ -301,7 +287,6 @@ layer(HostedLive, { excludeTestServices: true })("GraphQL errors", (it) => {
         const account = (yield* body(Resource, saved)).id;
         accounts.push(account);
 
-        // Reading the schema: the server's refusal is named, not only its status.
         yield* upstream.answer("introspection");
         const listing = yield* api.request(actors.owner, "GET", `${path}/tools`);
         yield* evidence.json("graphql-discovery-failure.json", listing.body);
@@ -337,7 +322,6 @@ layer(HostedLive, { excludeTestServices: true })("GraphQL errors", (it) => {
             expect(failure.reason).toBe(`The app's API call failed: ${failure.failure.message}`);
             expect(JSON.stringify(response.body)).not.toContain(token);
             expect(JSON.stringify(response.body)).not.toContain(tokenMarker);
-            // The server's words never decide whether the mutation may be repeated.
             const presented = yield* body(
               Schema.Struct({
                 recovery: Schema.Struct({ action: Schema.String, instructions: Schema.String }),
@@ -348,8 +332,6 @@ layer(HostedLive, { excludeTestServices: true })("GraphQL errors", (it) => {
             return failure.failure;
           });
 
-        // A validation error, answered with HTTP 400: the server's message, path and scalar
-        // extensions, such as the limit it states, reach the caller; nested values do not.
         const refused = yield* call("validation");
         expect(refused).toEqual({
           source: "service",
@@ -360,23 +342,18 @@ layer(HostedLive, { excludeTestServices: true })("GraphQL errors", (it) => {
         });
         expect(refused.message).not.toContain(stackMarker);
 
-        // A field error during execution, answered with HTTP 200. The account's key, which the
-        // server repeated, is replaced.
         expect(yield* call("execution")).toMatchObject({
           code: "execution",
           message:
             'The GraphQL server answered HTTP 200 with errors to this tool call. It stated 2 errors: "A project with this name already exists for key [redacted]" at projectCreate.input.name (code: "CONFLICT", retryable: false); "Nothing was changed. Retry this request." (code: "SAFE").',
         });
 
-        // The token the server repeated is replaced in its message, path and extensions before
-        // they are quoted, so its quote and backslash cannot change how it reads.
         expect(yield* call("echo")).toMatchObject({
           code: "request",
           message:
             'The GraphQL server answered HTTP 400 to this tool call. It stated: "Refused for key [redacted]" at projectCreate["[redacted]"] (code: "DENIED", key: "[redacted]").',
         });
 
-        // Many or long errors stay within the message bound and say how many were left out.
         const many = (yield* call("many")).message;
         expect(many.length).toBeLessThanOrEqual(2048);
         expect(many).toMatch(
@@ -384,14 +361,11 @@ layer(HostedLive, { excludeTestServices: true })("GraphQL errors", (it) => {
         );
         expect(many).toContain("2 more errors are not shown.");
 
-        // A body that states no GraphQL errors still names the status, not a missing message.
         expect(yield* call("html")).toMatchObject({
           code: "request",
           message: "The GraphQL server answered HTTP 400 to this tool call.",
         });
 
-        // A refused request's body is read within error-body bounds. One too large or too slow to
-        // read is left unread, promptly, and the failure keeps the status the server answered.
         const promptly = (mode: Mode) =>
           Effect.gen(function* () {
             const started = yield* Clock.currentTimeMillis;
@@ -409,7 +383,6 @@ layer(HostedLive, { excludeTestServices: true })("GraphQL errors", (it) => {
         expect(yield* promptly("wide")).toMatchObject({ code: "request", message: tooLarge });
         expect(yield* promptly("stalled")).toMatchObject({ code: "request", message: incomplete });
 
-        // An app's own deadline shorter than the body's read keeps the status too.
         const files = authoredAppFiles(
           "graphql",
           upstream.origin,
@@ -452,8 +425,6 @@ layer(HostedLive, { excludeTestServices: true })("GraphQL errors", (it) => {
           message: incomplete,
         });
 
-        // An agent calling the mutation through MCP reads the server's words, under Executor's
-        // instruction not to repeat a call that may have changed data.
         yield* upstream.answer("validation");
         const { client } = yield* frameworkSession;
         const executed = yield* client.use("Call the refused mutation", (client, signal) =>

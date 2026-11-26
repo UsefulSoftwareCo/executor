@@ -1,4 +1,3 @@
-/** Revocation must be observed between calls within one execute request. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Fiber, Schema } from "effect";
 import { Api, body } from "../support/api.ts";

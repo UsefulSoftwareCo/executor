@@ -1,8 +1,3 @@
-/**
- * The accounts linked to an app's requirements: app links, for every call and the app's background
- * work, and the local user's links. Locally the owner changes both. Linking, unlinking or
- * connecting an account reads the app's discovery again.
- */
 import { hydrated } from "@executor-js/ui/contracts/http";
 import { acknowledge, acknowledgedQuery } from "@executor-js/ui/contracts/mutations";
 import { Data, Effect } from "effect";
@@ -12,7 +7,6 @@ import type { AccountHealth, AccountId, AccountScope, AppId, VersionId } from "@
 import { DashboardClient, overviewAtom } from "./api.ts";
 import { refreshAppDiscovery } from "./app-discovery.ts";
 
-/** Account changes arrive through the live inventory, so each update reads the source again. */
 const followInventory = <A>(source: Atom.Atom<A>) =>
   Atom.readable(
     (get) => {
@@ -33,9 +27,7 @@ const userLinks = Atom.family((app: AppId) =>
   ),
 );
 const lists = { app: appLinks, user: userLinks };
-/** The accounts linked to the app's own requirements, oldest first per requirement. */
 export const appLinksAtom = Atom.family((app: AppId) => followInventory(appLinks(app)));
-/** The accounts linked to the app's user requirements, oldest first per requirement. */
 export const userLinksAtom = Atom.family((app: AppId) => followInventory(userLinks(app)));
 
 class RequirementKey extends Data.Class<{
@@ -59,11 +51,9 @@ const userChoices = Atom.family((key: RequirementKey) =>
 );
 const choices = (key: RequirementKey) => (key.scope === "app" ? appChoices(key) : userChoices(key));
 const liveChoices = Atom.family((key: RequirementKey) => followInventory(choices(key)));
-/** One requirement's linked accounts, then the owner's other accounts of its provider. */
 export const requirementChoicesAtom = (key: ConstructorParameters<typeof RequirementKey>[0]) =>
   liveChoices(new RequirementKey({ app: key.app, scope: key.scope, requirement: key.requirement }));
 
-/** Show a check's results in the app's links as soon as it finishes, then read them again. */
 export const acknowledgeLinkChecks = (
   get: { readonly registry: AtomRegistry.AtomRegistry },
   app: AppId,
@@ -73,7 +63,6 @@ export const acknowledgeLinkChecks = (
     acknowledge(get, list, (rows) => rows.map((row) => withCheckedApps(row, health)));
 };
 
-/** Read an app's links again, as after a connection for one of its requirements links an account. */
 export const refreshAppLinks = (
   get: Atom.FnContext | Atom.AtomContext,
   app: AppId,
@@ -88,19 +77,13 @@ export const refreshAppLinks = (
 
 class LinkKey extends Data.Class<{
   readonly app: AppId;
-  /** The version whose discovery the page shows, read again after the change. */
   readonly version: VersionId | null;
   readonly scope: AccountScope;
   readonly requirement: string;
   readonly account: AccountId;
 }> {}
-/** One account linked to one of the app's requirements, with its checks by this app. */
 type AppAccountLink = Atom.Success<ReturnType<typeof appLinks>>[number];
 
-/**
- * Publish a confirmed link or unlink to the scope's list and the requirement's choices, which
- * reads both again for a plain requirement's replaced account, then read the app's discovery.
- */
 const linkChanged = (get: Atom.FnContext, key: LinkKey, saved: AppAccountLink | undefined) => {
   const requirement = new RequirementKey({
     app: key.app,
@@ -145,10 +128,6 @@ const unlink = Atom.family((key: LinkKey) =>
     }).pipe(Effect.tap(() => Effect.sync(() => linkChanged(get, key, undefined)))),
   ),
 );
-/**
- * Link an account to one requirement. For a plain requirement the server replaces the account
- * linked before. Each link is its own mutation, so linking one account cannot cancel another.
- */
 export const linkAccountAtom = (key: ConstructorParameters<typeof LinkKey>[0]) =>
   link(new LinkKey(key));
 export const unlinkAccountAtom = (key: ConstructorParameters<typeof LinkKey>[0]) =>

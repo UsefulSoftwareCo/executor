@@ -6,7 +6,6 @@ import { Exit } from "effect";
 import { useState } from "react";
 import { impersonateAtom, operatorUsersAtom } from "./auth.ts";
 
-/** Native Better Auth directory and impersonation controls shared by hosted environments. */
 export function UserPicker({
   currentUser,
   onSessionChange,

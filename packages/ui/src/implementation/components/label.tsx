@@ -4,7 +4,6 @@ import * as React from "react";
 import { cn } from "../lib/utils.ts";
 import { Label as LabelPrimitive } from "radix-ui";
 
-/** Label primitive; accepts native props and composes caller styles. */
 function Label({ className, ...props }: React.ComponentProps<typeof LabelPrimitive.Root>) {
   return (
     <LabelPrimitive.Root

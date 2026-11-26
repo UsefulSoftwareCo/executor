@@ -1,4 +1,3 @@
-/** Services whose OAuth deviates from the common shape still connect through the real APIs. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
@@ -34,13 +33,11 @@ const Echo = Schema.Struct({
   authorization: Schema.NullOr(Schema.String),
 });
 
-/** Deploy an app with one OAuth account, connect it, and drive sign-in through the service. */
 const oauthApp = Effect.gen(function* () {
   const api = yield* Api,
     actors = yield* Actors,
     http = yield* HttpClient.HttpClient;
   const prefix = `/api/organizations/${actors.organization.id}`;
-  /** With `resourceUrl`, the app's `read` query presents the account's token there. */
   const start = (
     config: object,
     client?: { clientId: string; clientSecret: string },
@@ -92,7 +89,6 @@ export default defineApp({user: { accounts:{service} }},async(${
       );
       return { app: app.id, connection: connection.id, started };
     });
-  /** Follow the service's consent redirect and return Executor's callback URL. */
   const consent = (authorizationUrl: string) =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -121,7 +117,6 @@ export default defineApp({user: { accounts:{service} }},async(${
       }
       return completed;
     });
-  /** Start, consent and complete; return the authorization URL Executor built. */
   const connect = (
     config: object,
     client?: { clientId: string; clientSecret: string },
@@ -135,7 +130,6 @@ export default defineApp({user: { accounts:{service} }},async(${
       const completed = yield* complete(connection, callbackUrl);
       return { app, authorizationUrl, callbackUrl, completed };
     });
-  /** Call the app's `read` query, which uses its one linked account's current access token. */
   const read = (app: string) =>
     api.request(actors.owner, "POST", `${prefix}/apps/${app}/tools/call`, {
       tool: "read",
@@ -164,8 +158,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth service interoperability
         expect(single.completed.status, JSON.stringify(single.completed.body)).toBe(200);
         expect((yield* tenant.metrics).tokenRequests).toEqual([{ resource: null, issued: true }]);
 
-        // Multi-tenant `common`: discovery names a `{tenantid}` issuer template that the metadata
-        // document's own location instantiates. `openid` is requested without a nonce.
         const common = yield* oauthInteropIssuer("entra-common");
         const multi = yield* app.connect({ discover: `${common.origin}/mcp` }, entraClient);
         expect(multi.authorizationUrl.searchParams.has("resource")).toBe(false);
@@ -176,7 +168,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth service interoperability
           "/common/v2.0/.well-known/openid-configuration",
         ]);
 
-        // A provider may declare the template Microsoft documents instead of discovering it.
         const declared = {
           issuer: `${common.origin}/{tenantid}/v2.0`,
           authorizationUrl: `${common.origin}/authorize`,
@@ -188,8 +179,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth service interoperability
           200,
         );
 
-        // Executor ignores ID tokens, so one whose `iss` names another tenant than its `tid`, or
-        // than a tenant-specific issuer, never fails the sign-in.
         yield* common.mismatchTenantIssuer(true);
         for (const config of [{ discover: `${common.origin}/mcp` }, declared]) {
           const mismatched = yield* app.connect(config, entraClient);
@@ -216,11 +205,9 @@ layer(HostedLive, { excludeTestServices: true })("OAuth service interoperability
       Effect.gen(function* () {
         const app = yield* oauthApp;
         const common = yield* oauthInteropIssuer("entra-common");
-        // Inside the host's refresh window, so each account's first tool call renews its grant.
         yield* common.exchangeExpiresIn(10);
         const discover = { discover: `${common.origin}/mcp` };
 
-        // A refreshed ID token from the tenant the user signed in to renews the grant.
         const same = yield* app.connect(discover, entraClient, `${common.origin}/resource`);
         expect(same.completed.status, JSON.stringify(same.completed.body)).toBe(200);
         const renewed = yield* app.read(same.app);
@@ -228,8 +215,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth service interoperability
         expect(yield* body(Echo, renewed)).toMatchObject({ refreshed: true });
         expect((yield* common.metrics).refreshes).toEqual([{ tenant: entraTenant, issued: true }]);
 
-        // Renewals never compare ID tokens: one whose `tid` and `iss` both name another tenant
-        // still renews the grant, and the renewed access token is used from then on.
         yield* common.refreshAsTenant(otherTenant);
         const switched = yield* app.connect(discover, entraClient, `${common.origin}/resource`);
         expect(switched.completed.status, JSON.stringify(switched.completed.body)).toBe(200);
@@ -286,14 +271,12 @@ layer(HostedLive, { excludeTestServices: true })("OAuth service interoperability
           ).toBe(200);
           const metrics = yield* issuer.metrics;
           expect(metrics.discoveryRequests, service).toEqual(requested);
-          // Servers without Microsoft's scope-selected audience still receive the resource.
           expect(signIn.authorizationUrl.searchParams.get("resource"), service).toBe(
             `${issuer.origin}/mcp`,
           );
           expect(metrics.tokenRequests, service).toEqual([
             { resource: `${issuer.origin}/mcp`, issued: true },
           ]);
-          // A server that advertises refresh tokens is still asked for them.
           expect(metrics.registrations, service).toEqual([
             { grantTypes: ["authorization_code", "refresh_token"], accepted: true },
           ]);
@@ -308,7 +291,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth service interoperability
       Effect.gen(function* () {
         const app = yield* oauthApp;
 
-        // Singular advertises only authorization_code and refuses a request for refresh tokens.
         const singular = yield* oauthInteropIssuer("singular");
         const signIn = yield* app.connect({ discover: `${singular.origin}/mcp` });
         expect(signIn.completed.status, JSON.stringify(signIn.completed.body)).toBe(200);
@@ -316,7 +298,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth service interoperability
           { grantTypes: ["authorization_code"], accepted: true },
         ]);
 
-        // Cloudflare Access refuses a callback outside its allowed redirect URIs.
         const access = yield* oauthInteropIssuer("cloudflare-access");
         const { started } = yield* app.start({ discover: `${access.origin}/mcp` });
         expect(started.status, JSON.stringify(started.body)).toBe(422);
@@ -329,7 +310,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth service interoperability
         expect(new URL(failure.callbackUrl ?? "http://missing").pathname).toBe(
           "/api/oauth/callback",
         );
-        // Its own words are shown as its response, apart from the curated explanation.
         expect(failure.serviceError).toEqual({
           error: "invalid_client_metadata",
           description: "PRIVATE_PROVIDER_ERROR",
@@ -357,9 +337,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth service interoperability
         );
         expect(signIn.completed.status, JSON.stringify(signIn.completed.body)).toBe(200);
         const metrics = yield* ahrefs.metrics;
-        // Ahrefs refuses `application/x-www-form-urlencoded;charset=UTF-8`.
         expect(metrics.tokenContentTypes).toEqual(["application/x-www-form-urlencoded"]);
-        // The trailing-slash resource is sent as published.
         expect(signIn.authorizationUrl.searchParams.get("resource")).toBe(`${ahrefs.origin}/`);
         expect(metrics.tokenRequests).toEqual([{ resource: `${ahrefs.origin}/`, issued: true }]);
         expect(metrics.registrations).toEqual([

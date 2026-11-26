@@ -1,6 +1,5 @@
 import { connectionsPath, linkedAccountIds } from "../support/app-accounts.ts";
 import { scenarios } from "../test-plan.ts";
-/** Cloud-only removal: a throwaway organization with real state is deleted by its owner alone. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -13,7 +12,6 @@ import { App, Inventory, Organization, Resource } from "../support/contracts.ts"
 import { managementApp } from "../support/management-app.ts";
 import { appsManifest } from "../support/apps-release.ts";
 
-/** Public projections owned by this scenario; no server or SDK implementation is imported. */
 const Access = Schema.Struct({ organization: Schema.String, role: Schema.String });
 const Members = Schema.Struct({
   members: Schema.Array(
@@ -25,11 +23,8 @@ const OrganizationRemoved = Schema.Struct({
   apps: Schema.Number,
   accounts: Schema.Number,
 });
-/** The danger-zone card counts what removal deletes, in the product's own wording. */
 const noun = (value: number, word: string) => `${value} ${word}${value === 1 ? "" : "s"}`;
-/** The organization row is deleted by a durable step, not by the request that accepts removal. */
 class StillListed extends Error {}
-/** A terminated run settles after its terminate request returns. */
 class StillRunning extends Error {}
 
 const files = [
@@ -81,7 +76,6 @@ layer(HostedLive, { excludeTestServices: true })("Organization removal", (it) =>
           }),
         );
         const prefix = `/api/organizations/${created.id}`;
-        // This scenario deletes the organization itself; the finalizer only covers an early failure.
         let removedByTest = false;
         yield* Effect.addFinalizer(() =>
           Effect.gen(function* () {
@@ -181,7 +175,6 @@ layer(HostedLive, { excludeTestServices: true })("Organization removal", (it) =>
             expect((yield* api.request(actors.member, "GET", `${prefix}/removal`)).status).toBe(
               403,
             );
-            // The admin is a real member here, so 403 is about the role and not the membership.
             expect((yield* api.request(actors.admin, "GET", `${prefix}/inventory`)).status).toBe(
               200,
             );
@@ -207,8 +200,6 @@ layer(HostedLive, { excludeTestServices: true })("Organization removal", (it) =>
         ).toBe(true);
         yield* browser.checkpoint("Admin organization settings with disabled removal");
 
-        // Each user sees only their usable resources. Removal must count both
-        // users' private accounts without exposing those accounts to the other.
         yield* Effect.all(
           [managementApp(actors.owner, created.id), managementApp(actors.admin, created.id)],
           { concurrency: 2 },
@@ -343,8 +334,6 @@ layer(HostedLive, { excludeTestServices: true })("Organization removal", (it) =>
         yield* evidence.step(
           "No organization record, access or inventory survives",
           Effect.gen(function* () {
-            // Access is refused the moment removal is accepted; the auth records
-            // are deleted by the workflow, so wait for the list to agree.
             expect((yield* api.request(actors.owner, "GET", `${prefix}/access`)).status).toBe(403);
             expect((yield* api.request(actors.admin, "GET", `${prefix}/access`)).status).toBe(403);
             expect((yield* api.request(actors.owner, "GET", `${prefix}/inventory`)).status).toBe(
@@ -377,8 +366,6 @@ layer(HostedLive, { excludeTestServices: true })("Organization removal", (it) =>
     ),
   );
 
-  // Owner removal is reached only through a Cloud organization's removal: local's owners are
-  // fixed, and self-host has one instance organization. A running workflow refuses it.
   it.effect(scenarios.organizationRemovalWorkflowRefusal.title, (context) =>
     withHostedCase(
       context,
@@ -428,7 +415,6 @@ export default defineApp({}, { tools: router({}), workflows: { slow } });`,
         const refused = yield* api.request(actors.owner, "DELETE", prefix);
         expect(refused.status).toBe(409);
         expect(refused.body).toMatchObject({ _tag: "AppWorkflowsActive", app: app.id });
-        // Nothing was hidden or deleted: the app is still there.
         expect((yield* api.request(actors.owner, "GET", path)).status).toBe(200);
 
         expect(

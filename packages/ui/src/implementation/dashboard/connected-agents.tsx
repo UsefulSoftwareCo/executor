@@ -16,6 +16,7 @@ import {
 } from "../components/dialog.tsx";
 import { LocalTime, RelativeTime, shortMoment } from "../components/local-time.tsx";
 import { Skeleton } from "../components/skeleton.tsx";
+import { AgentIcon } from "./agent-icon.tsx";
 import { QueryView } from "./context.tsx";
 
 const agentName = (agent: ConnectedAgent) => agent.name?.trim() || "Unnamed MCP client";
@@ -30,14 +31,11 @@ const accessLabel = (access: ConnectedAgentAccess) => {
       return `Scoped connection: ${access.name}`;
     case "api":
       return "Executor API";
+    case "desktop":
+      return "Executor desktop sign-in";
   }
 };
 
-/**
- * Agents the current user authorized over OAuth. Each row is one grant; revoking it ends the
- * agent's access at once and it must sign in again to reconnect. Only agents that can still reach
- * Executor are listed, most recently used first.
- */
 export function ConnectedAgents<E, EL extends E, ER extends E>({
   query,
   revoke,
@@ -46,7 +44,6 @@ export function ConnectedAgents<E, EL extends E, ER extends E>({
 }: {
   readonly query: Query<readonly ConnectedAgent[], EL>;
   readonly revoke: Atom.AtomResultFn<GrantId, void, ER>;
-  /** Renders list and revocation failures. */
   readonly Failure: ComponentType<FailureProps<E>>;
   /** More rows the host lists with its agents, as `<li>` elements in the same style. */
   readonly children?: ReactNode;
@@ -94,8 +91,9 @@ export function ConnectedAgents<E, EL extends E, ER extends E>({
           <DialogHeader>
             <DialogTitle>Revoke {revoking === undefined ? "" : agentName(revoking)}?</DialogTitle>
             <DialogDescription>
-              This agent loses access immediately. To use Executor again, it must sign in and be
-              approved again.
+              {revoking?.access.kind === "desktop"
+                ? "The Executor desktop app is signed out of your account, including the windows it opened. To use this server there again, sign in from the desktop app."
+                : "This agent loses access immediately. To use Executor again, it must sign in and be approved again."}
             </DialogDescription>
           </DialogHeader>
           {AsyncResult.isFailure(state) && <Failure cause={state.cause} />}
@@ -133,7 +131,10 @@ function AgentRow({
   readonly onRevoke: (agent: ConnectedAgent) => void;
 }) {
   return (
-    <li className="flex items-center gap-4 px-1 py-3">
+    <li className="flex items-center gap-3 px-1 py-3">
+      <span className="inline-flex size-8 shrink-0 items-center justify-center rounded-[8px] border border-border bg-background">
+        <AgentIcon name={agent.name} icon={agent.icon} className="size-4.5" />
+      </span>
       <div className="min-w-0 flex-1">
         <p className="truncate text-[13px] font-medium">{agentName(agent)}</p>
         <p className="mt-0.5 truncate text-xs text-muted-foreground">
@@ -157,11 +158,11 @@ function AgentRow({
 
 const hasRows = (rows: ReactNode) => Children.toArray(rows).length > 0;
 
-/** Matches one row of the loaded list so loading does not reflow the page. */
 function ConnectedAgentsSkeleton() {
   return (
     <div role="status" aria-label="Loading connected agents" className="divide-y border-y">
-      <div aria-hidden className="flex items-center gap-4 px-1 py-3">
+      <div aria-hidden className="flex items-center gap-3 px-1 py-3">
+        <Skeleton className="size-8 rounded-[8px]" />
         <div className="min-w-0 flex-1 space-y-2 py-px">
           <Skeleton className="h-3 w-32" />
           <Skeleton className="h-2.5 w-64 max-w-[70%]" />

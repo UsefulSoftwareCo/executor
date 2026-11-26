@@ -10,8 +10,6 @@ import {
   Timed,
 } from "../support/docker-workflows.ts";
 
-// An absolute sleep deadline can pass while the process is down. The resumed run must treat
-// that sleep as finished rather than as a deadline in the past.
 it.live(
   "released image finishes a workflow run whose sleep deadline passed while it was stopped",
   () =>
@@ -45,7 +43,6 @@ export default defineApp({}, {
   480_000,
 );
 
-// A terminated run's engine must neither resume after a restart nor stay loaded.
 it.live(
   "released image keeps a terminated sleeping workflow run stopped across a restart",
   () =>
@@ -74,7 +71,6 @@ export default defineApp({}, {
         );
         expect(terminated.status).toBe("terminated");
         yield* server.restart;
-        // Past the sleep's deadline, when a resumed run would have completed.
         yield* Effect.sleep("60 seconds");
         expect((yield* server.json(WorkflowRun, `${server.runs}/${started.id}`)).status).toBe(
           "terminated",

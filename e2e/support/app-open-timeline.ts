@@ -1,4 +1,3 @@
-/** Record every document, redirect, auth request and visible text change while an app opens. */
 import type { Page, Request, Response } from "playwright";
 import { Effect } from "effect";
 import { Browser } from "./browser.ts";
@@ -24,29 +23,24 @@ type Event =
       readonly durationMs: number;
     }
   | { readonly at: number; readonly kind: "text"; readonly url: string; readonly text: string };
-/** Tab 1 is the page that started the opening; later tabs are ones it opened, such as "Open app". */
 export type Entry = Event & { readonly tab: number };
 
 const marker = "__executor_app_open__";
 const instrumented = new WeakSet<object>();
 const captures = new WeakMap<Page, number>();
 
-/** Callback proofs travel in the hash and query; the timeline keeps only their names. */
 const safeUrl = (value: string) => {
   const url = new URL(value);
   if (url.origin === "null") return value;
-  // Proofs also appear nested and encoded, such as in a sign-in page's return path.
   const search = url.search.replace(/((?:request|code)(?:=|%3D))[^&#%]+/gi, "$1redacted");
   return `${url.origin}${url.pathname}${search}${url.hash === "" ? "" : "#…"}`;
 };
 
-/** Requests that decide where the next hop goes, as opposed to page assets. */
 const authStep = (url: URL) =>
   url.pathname.startsWith("/_executor/auth/") ||
   url.pathname.startsWith("/api/app-ui/") ||
   url.pathname.startsWith("/api/auth/get-session");
 
-/** Each document reports its settled text; the listener is attached only while opening an app. */
 const observeText = (key: string) => {
   let last = "";
   let queued = false;
@@ -102,10 +96,6 @@ const render = (entries: ReadonlyArray<Entry>) => {
   return `${[...legend, "", ...lines].join("\n")}\n`;
 };
 
-/**
- * Run `open` while recording the full sign-in chain, including tabs it opens; evidence is written
- * even when it fails. Opened tabs are closed afterwards so their recordings can be saved.
- */
 export const recordAppOpening = <A, E, R>(open: Effect.Effect<A, E, R>) =>
   Effect.gen(function* () {
     const browser = yield* Browser;
@@ -116,7 +106,6 @@ export const recordAppOpening = <A, E, R>(open: Effect.Effect<A, E, R>) =>
     const attach = (current: Page) => {
       const tab = tabs.push(current);
       const started = new Map<Request, number>();
-      // A main-frame navigation request means the next committed URL is a new document.
       let loading = false;
       const push = (event: Event) => entries.push({ ...event, tab });
       const receive = (message: { type(): string; text(): string }) => {
@@ -181,7 +170,6 @@ export const recordAppOpening = <A, E, R>(open: Effect.Effect<A, E, R>) =>
       attach(current);
       const at = Date.now();
       entries.push({ at, kind: "tab", tab: tabs.length });
-      // The opened tab's first document can commit before this listener is attached.
       if (current.url() !== "about:blank")
         entries.push({ at, kind: "document", url: safeUrl(current.url()), tab: tabs.length });
     };
@@ -223,11 +211,9 @@ export const recordAppOpening = <A, E, R>(open: Effect.Effect<A, E, R>) =>
     return { result, timeline: entries.toSorted((left, right) => left.at - right.at) };
   });
 
-/** Documents the browser committed while opening; redirects and same-document URL changes excluded. */
 export const committedDocuments = (timeline: ReadonlyArray<Entry>) =>
   timeline.flatMap((entry) =>
     entry.kind === "document" ? [new URL(entry.url.replace("#…", ""))] : [],
   );
-/** Every visible state of the pages, in order. */
 export const screens = (timeline: ReadonlyArray<Entry>) =>
   timeline.flatMap((entry) => (entry.kind === "text" ? [entry.text] : []));

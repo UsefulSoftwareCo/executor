@@ -1,8 +1,3 @@
-/**
- * Manifests check-exact-versions.ts must reject (`accepted: false`) or accept. `manifests` maps a
- * package.json path to its contents; `peers` is the fixture's published-peer allowlist, which
- * defaults to none.
- */
 export type Fixture = {
   readonly name: string;
   readonly accepted: boolean;
@@ -13,10 +8,8 @@ export type Fixture = {
 const file = "packages/lib/package.json";
 const peers = { [file]: { graphql: "published peer" } };
 
-/** One manifest with `field` set to `entries`. */
 const one = (field: string, entries: unknown) => ({ [file]: { [field]: entries } });
 
-/** A published peer allowlisted for graphql, declared as `spec`. */
 const peer = (name: string, accepted: boolean, spec: unknown): Fixture => ({
   name,
   accepted,
@@ -24,7 +17,6 @@ const peer = (name: string, accepted: boolean, spec: unknown): Fixture => ({
   peers,
 });
 
-/** `spec` as an ordinary dependency. */
 const dependency = (name: string, accepted: boolean, spec: unknown): Fixture => ({
   name,
   accepted,

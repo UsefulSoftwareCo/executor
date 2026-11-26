@@ -1,4 +1,3 @@
-/** A stopped real local process must coalesce missed intervals and retain browser approvals. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schedule, Schema } from "effect";
 import { Api, body } from "../support/api.ts";
@@ -79,8 +78,6 @@ layer(TestLive, { excludeTestServices: true })("Schedule persistence", (it) => {
           );
         yield* configure("tick", true);
         yield* serverControl("stop");
-        // Advance the stopped product's wall clock across a full interval. Persistence and
-        // scheduler recovery still run through the real process and public HTTP boundary.
         yield* serverControl("clock/advance", 200, { milliseconds: 100_000 });
         yield* serverControl("start");
         yield* waitFor("tick", "succeeded");

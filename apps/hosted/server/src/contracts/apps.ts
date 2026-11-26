@@ -6,7 +6,6 @@ import {
 import { RequiredAction } from "./authorization.ts";
 import { AppWorkflowsActive } from "@executor-js/sdk/core";
 import { AppWebhooksActive } from "@executor-js/sdk/core";
-/** App installation and configuration. Owners always come from authenticated organization context. */
 import {
   CatalogImport,
   CatalogImportFailed,
@@ -31,6 +30,7 @@ import {
   AppNotFound,
   VersionBuildFailed,
   BuildMemoryExceeded,
+  MarkdownUnavailable,
   SkillDefinitionInvalid,
   SourceFiles,
   sourceErrors,
@@ -45,9 +45,7 @@ import {
   RequireOrganization,
 } from "./organization.ts";
 
-/** Catalog installation is create-only: it cannot overwrite another app by name. */
 export const InstallApp = Schema.Struct({ ...CatalogImport.fields, name: Schema.NonEmptyString });
-/** Deploying source directly uses the same runtime as generated catalog apps. */
 export const DeployApp = Schema.Struct({ name: Schema.NonEmptyString, files: SourceFiles });
 const params = { organization: OrganizationReference };
 const app = { ...params, app: AppId };
@@ -57,6 +55,7 @@ const deployErrors = [
   StorageError,
   VersionBuildFailed,
   BuildMemoryExceeded,
+  MarkdownUnavailable,
   SkillDefinitionInvalid,
   ...sourceErrors,
   AppNameTaken,
@@ -66,8 +65,6 @@ const deployErrors = [
   OrganizationForbidden,
 ] as const;
 const prefix = "/api/organizations/:organization/apps";
-// Versions were called deployments. The former paths and field names stay accepted, and responses
-// repeat the former field names, so API callers written before the rename keep working.
 const versionsOptions = {
   params: app,
   success: Schema.Array(VersionSummary),
@@ -89,7 +86,6 @@ const sourceDisplayFileOptions = {
     ...sourceErrors,
   ],
 };
-/** Shared app routes; both hosts supply the same handlers. */
 export const HostedApps = HttpApiGroup.make("apps")
   .add(
     HttpApiEndpoint.post("install", `${prefix}/install`, {

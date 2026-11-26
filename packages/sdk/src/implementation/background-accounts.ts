@@ -1,9 +1,3 @@
-/**
- * The accounts background work runs with. Schedules, webhook callbacks and their reconciliation
- * have no caller to name accounts, so each run resolves them at that moment: app requirements
- * from the app links, and user requirements from its actor's user links. Work without an actor, an
- * app schedule or an app-account webhook, runs with the app's accounts only.
- */
 import { Effect, Schema } from "effect";
 import { AccountRequired, type AppAccounts } from "../contracts/apps.ts";
 import type { ResourceLifecycle } from "../contracts/executor.ts";
@@ -20,7 +14,6 @@ import { plainAccount } from "./linked-accounts.ts";
 
 const LinkedAccount = Schema.Struct({ id: AccountId, provider: ProviderId });
 
-/** The stored accounts of these IDs that still exist, in the IDs' order. */
 const readAccounts = (db: Query, ids: readonly AccountId[]) =>
   Effect.gen(function* () {
     const rows =
@@ -38,29 +31,12 @@ const readAccounts = (db: Query, ids: readonly AccountId[]) =>
     return ids.flatMap((id) => found.filter((account) => account.id === id));
   });
 
-/**
- * Resolve every requirement of the app's active version, or of `version` when pinned:
- *
- * - App requirements use the app links (`appLinks`), oldest first: a plain one the newest (see
- *   `plainAccount`), many() every one. A plain one with no link fails with `AccountRequired`.
- * - With an actor, user requirements use the actor's user links (`userLinks`) the same way. A plain
- *   requirement the actor links the `source` account to uses that account; user-account webhook
- *   subscriptions fix their source. A source serves only the requirements it is linked to, never
- *   another one of the same provider. Without an actor user requirements are not resolved, and the
- *   run has no `user`.
- *
- * Without a product lifecycle nothing is linked. With one, a user source its actor no longer links
- * is reported with `sourceActorLost`, so the product can hand the source to another subject; it
- * serves no requirement in this run. An app-account source serves its plain app requirement while
- * it stays linked to it.
- */
 export const backgroundAccounts = (
   db: Query,
   lifecycle: ResourceLifecycle | undefined,
   input: {
     readonly app: AppId;
     readonly version?: VersionId | undefined;
-    /** The subject a user-scope run is checked against; undefined for app-scope work. */
     readonly actor: string | undefined;
     readonly source?: AccountId | undefined;
   },
@@ -94,7 +70,6 @@ export const backgroundAccounts = (
           resolved.app[slot] = linked;
           continue;
         }
-        // An app-account webhook fixes its source while it stays linked.
         const account =
           input.source !== undefined && linked.includes(input.source)
             ? input.source
@@ -111,13 +86,9 @@ export const backgroundAccounts = (
       lifecycle === undefined
         ? []
         : yield* lifecycle.userLinks({ app: app.id, subject: input.actor });
-    // A source serving an app requirement is the app's own link, not the actor's.
     const appSource =
       input.source !== undefined &&
       Object.values(resolved.app).some((linked) => linked.includes(input.source as AccountId));
-    // A user source the actor no longer links serves none of their requirements. The product hands
-    // it to another member or removes it; its registrations are removed with the accounts they
-    // were registered with, not these.
     if (
       input.source !== undefined &&
       !appSource &&
@@ -132,7 +103,6 @@ export const backgroundAccounts = (
     const accounts = yield* readAccounts(db, [...new Set(links.map((link) => link.account))]);
     const found = new Map(accounts.map((account) => [account.id, account]));
     for (const [slot, requirement] of userRequirements) {
-      // In link order, so the newest link is last.
       const candidates = links.flatMap((link) => {
         const account = link.requirement === slot ? found.get(link.account) : undefined;
         return account === undefined ? [] : [account.id];
@@ -141,8 +111,6 @@ export const backgroundAccounts = (
         resolved.user[slot] = candidates;
         continue;
       }
-      // A user-account webhook fixes its source for the requirements it is linked to only; another
-      // requirement of the same provider keeps its own link.
       const account =
         input.source !== undefined && !appSource && candidates.includes(input.source)
           ? input.source

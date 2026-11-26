@@ -1,4 +1,3 @@
-/** Transfer test-stage fixture authority to the runner's local process; never persist credentials. */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import { Config, Effect, Redacted, Schema } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";

@@ -1,11 +1,3 @@
-/**
- * A tool call's Executor time is recorded apart from what it spent outside Executor: upstream
- * waits, a person's answers and the app's own code. Each instant belongs to the innermost boundary
- * in progress, so Executor's work inside an upstream session or the app's code stays Executor's, and
- * the app's code inside Executor's services stays the app's. Each isolate measures its part on its
- * own clock, so the parts must add up exactly, and a clock that disagrees with its caller's is
- * flagged.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schedule, Schema } from "effect";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -23,19 +15,12 @@ import { withApps, mcpSdkVersion } from "../support/apps-release.ts";
 type Span = (typeof SpanQuery.Type)["data"][number]["span"];
 type Tags = Readonly<Record<string, string>>;
 
-/** How long the test's MCP client takes to answer each question the call asks. */
 const answerMs = 500;
-/** How long each piece of the app's own code waits in the authored-code scenario. */
 const authoredStepMs = 150;
-/** How long the app's cache loader waits on its own, after its upstream request. */
 const loaderMs = 500;
-/** How long the app's own cache `read` waits before reading Executor's cache. */
 const authoredReadMs = 500;
-/** How long a slowed step of Executor's own work takes in the ownership scenarios. */
 const slowedMs = 300;
-/** Loop iterations that hold an app isolate's thread for a few hundred milliseconds. */
 const spinIterations = 20_000_000;
-/** Float rounding between a span's exported duration and a recorded millisecond value. */
 const roundingMs = 0.005;
 
 const milliseconds = (tags: Tags, key: string) => {
@@ -47,7 +32,6 @@ const milliseconds = (tags: Tags, key: string) => {
 
 const runtimeCall = /^runtime\.[a-z]+\.call$/;
 
-/** Spans named `name` below `root` in its trace. */
 const below = (spans: readonly Span[], root: Span, name: string | RegExp) => {
   const byId = new Map(spans.map((span) => [span.spanId, span]));
   const descends = (span: Span): boolean => {
@@ -64,10 +48,8 @@ const below = (spans: readonly Span[], root: Span, name: string | RegExp) => {
   );
 };
 
-/** Millisecond resolution of a delivered span's ISO start time, at each end of a window. */
 const startResolutionMs = 2;
 
-/** Milliseconds below `root` that a span owned by `owner` covers, read from the spans' windows. */
 const covered = (spans: readonly Span[], root: Span, owner: string) => {
   const windows = below(spans, root, /./)
     .filter(({ tags }) => tags["executor.owner"] === owner)
@@ -132,8 +114,6 @@ const fixture = Effect.gen(function* () {
       .request(actors.owner, "POST", "/api/auth/api-key/delete", { keyId: key.id })
       .pipe(Effect.orDie),
   );
-  // Native mode delivers approvals and elicitations to this client, which answers each after
-  // `answerMs`, like a person would.
   const client = yield* mcp.connect(Redacted.make(Redacted.value(key.key)), "overhead", {
     organization: actors.organization.id,
     mode: "native",
@@ -143,17 +123,13 @@ const fixture = Effect.gen(function* () {
     client.use(label, (client, signal) =>
       client.callTool({ name: "execute", arguments: { code } }, undefined, { signal }),
     );
-  /**
-   * The trace of `app`'s tool call span named `name` whose tool matches `tool`, once that span
-   * and, when `timed`, the runtime and app spans below it have arrived with their timing.
-   */
   const traced = (
     app: typeof App.Type,
     file: string,
     options: { readonly name?: string; readonly tool?: string; readonly timed?: boolean } = {},
   ) => {
     const name = options.name ?? "mcp.tool.call";
-    return telemetry.search(name, { "executor.app.id": app.id }).pipe(
+    return telemetry.search(name, { app: app.id }).pipe(
       Effect.flatMap((found) => {
         const match = found.data.find(
           ({ span }) =>
@@ -178,14 +154,12 @@ const fixture = Effect.gen(function* () {
           ? Effect.succeed(trace)
           : Effect.fail(new Error("The tool call's timing has not been delivered")),
       ),
-      // App and host spans arrive in separate export batches.
       Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 80 }),
       Effect.tap((trace) => evidence.json(file, trace.spans)),
     );
   };
-  /** The tags of `app`'s tool call spans for `tool`, once `count` of them have their timing. */
   const toolCalls = (app: typeof App.Type, tool: string, count: number) =>
-    telemetry.spans("mcp.tool.call", { "executor.app.id": app.id }).pipe(
+    telemetry.spans("mcp.tool.call", { app: app.id }).pipe(
       Effect.map((found) =>
         found.filter(
           (tags) =>
@@ -203,10 +177,6 @@ const fixture = Effect.gen(function* () {
   return { deploy, execute, traced, toolCalls };
 });
 
-/**
- * Check that a tool call's parts add up exactly and return them. The app's parts cover its span's
- * own window, and the tool call's Executor time is the sum of each isolate's own part.
- */
 const accounted = (trace: { readonly spans: readonly Span[]; readonly tool: Span }) => {
   const { spans, tool } = trace;
   const runtime = one(below(spans, tool, runtimeCall), "runtime call");
@@ -219,16 +189,12 @@ const accounted = (trace: { readonly spans: readonly Span[]; readonly tool: Span
     background: milliseconds(call.tags, "executor.background_ms"),
     overhead: milliseconds(call.tags, "executor.overhead_ms"),
   };
-  // The app measured its own span, from its start to its end, and divided all of it. Background
-  // work ran beside it and is not part of the division.
   expect(app.overhead + app.upstream + app.elicitation + app.authored + app.lease).toBeCloseTo(
     call.durationMs,
     2,
   );
   expect(app.background).toBeLessThanOrEqual(call.durationMs + roundingMs);
   expect(app.overhead).toBeGreaterThanOrEqual(0);
-  // Its isolate's whole dispatch covers the framework's work around that span, and the rest of the
-  // dispatch is Executor's.
   const dispatch = milliseconds(runtime.tags, "executor.app.elapsed_ms");
   expect(dispatch).toBeGreaterThanOrEqual(
     one(below(spans, tool, "app.dispatch"), "app dispatch").durationMs - roundingMs,
@@ -259,18 +225,15 @@ const accounted = (trace: { readonly spans: readonly Span[]; readonly tool: Span
     supervisor:
       supervisor === undefined ? 0 : milliseconds(runtime.tags, "executor.supervisor.own_ms"),
     app: appOwn,
-    // Start-up of an isolate that started for this call, before its own clock began.
     start: milliseconds(runtime.tags, "executor.start_ms"),
   };
   for (const part of Object.values(own)) expect(part).toBeGreaterThanOrEqual(0);
-  // Only a cold hop's gap counts, and never more than the hops' gaps.
   const gaps = ["runner", "supervisor", "app"].map((hop) =>
     runtime.tags[`executor.${hop}.gap_ms`] === undefined
       ? 0
       : milliseconds(runtime.tags, `executor.${hop}.gap_ms`),
   );
   expect(own.start).toBeLessThanOrEqual(gaps.reduce((total, gap) => total + gap, 0) + roundingMs);
-  // The rest of the gaps is time no clock attributes, reported apart from Executor's time.
   expect(milliseconds(runtime.tags, "executor.unclocked_ms")).toBeCloseTo(
     gaps.reduce((total, gap) => total + gap, 0) - own.start,
     3,
@@ -279,24 +242,17 @@ const accounted = (trace: { readonly spans: readonly Span[]; readonly tool: Span
     milliseconds(runtime.tags, "executor.unclocked_ms"),
   );
   expect(tool.tags["executor.runtime.cold"]).toBe(runtime.tags["executor.runtime.cold"]);
-  // What started for the call, from a bounded vocabulary, in a fixed order.
-  // Current runners and supervisors always say, so the call is known to be cold or warm.
   const started = runtime.tags["executor.runtime.started"];
   if (started === undefined) throw new Error("executor.runtime.started was not recorded");
   expect(tool.tags["executor.runtime.started"]).toBe(started);
   expect(started).toMatch(
     /^(runner)?,?(app)?,?(supervisor)?,?(supervisor-isolate)?,?(facet)?,?(facet-worker)?$/,
   );
-  // Start-up is exactly the gap of each hop whose child started inside its parent's wait: the
-  // runner's isolate, the supervisor's object, and the facet. Every other gap is unclocked. A
-  // runner inside the supervisor (Cloud database calls) is reached in the supervisor's object, so
-  // the caller's hop to it holds the supervisor's start.
   const parts = new Set(started.split(","));
   const runnerHost = runtime.tags["executor.runner.host"];
   expect(runnerHost === undefined || runnerHost === "supervisor").toBe(true);
   const runnerHopStarted =
     runnerHost === "supervisor" ? parts.has("supervisor") : parts.has("runner");
-  // Only the supervisor's runner can report no runner start on a call whose supervisor started.
   if (runnerHost === "supervisor") expect(parts.has("runner")).toBe(false);
   expect(own.start).toBeCloseTo(
     (runnerHopStarted ? gaps[0]! : 0) +
@@ -306,14 +262,11 @@ const accounted = (trace: { readonly spans: readonly Span[]; readonly tool: Span
   );
   expect(milliseconds(tool.tags, "executor.start_ms")).toBe(own.start);
   const overhead = milliseconds(tool.tags, "executor.overhead_ms");
-  // No isolate's duration is subtracted from another's: each part is on one clock, apart from a
-  // cold hop's start-up, which no clock inside the started isolate can see.
   expect(overhead).toBeCloseTo(own.caller + own.runner + own.supervisor + own.app + own.start, 3);
   expect(tool.tags["executor.runtime.calls"]).toBe("1");
   return { spans, tool, runtime, call, app, own, overhead };
 };
 
-/** With consistent clocks, Executor's time fits in what the call did not spend elsewhere. */
 const fits = ({ tool, app, overhead }: ReturnType<typeof accounted>) => {
   expect(tool.tags["executor.clock.stale"]).toBeUndefined();
   expect(overhead).toBeLessThanOrEqual(
@@ -330,11 +283,6 @@ export default defineApp({}, { tools: router({
   slow: query({ input: object({}), output: string() }, ${body}),
 }) });`;
 
-/**
- * App source that makes `crypto.subtle.digest` wait `slowedMs` on a real timer whenever `slowed`
- * returns true for the bytes it hashes. Executor's cache hashes every key, so this stands in for
- * slow Executor work at a point only Executor reaches.
- */
 const slowDigest = (slowed: string) => `const digest = crypto.subtle.digest.bind(crypto.subtle);
 const slowed = ${slowed};
 Object.defineProperty(crypto.subtle, "digest", { configurable: true, value: async (algorithm: AlgorithmIdentifier, data: BufferSource) => {
@@ -343,13 +291,11 @@ Object.defineProperty(crypto.subtle, "digest", { configurable: true, value: asyn
   return digest(algorithm, data);
 } });`;
 
-/** A migration that gives an app a database, so its calls run in its data facet. */
 const notesMigration = {
   path: "migrations/0001_notes.sql",
   content: "CREATE TABLE notes (body TEXT NOT NULL);\n",
 };
 
-/** Spans below `root` named `name` that carry `key: value`. */
 const tagged = (spans: readonly Span[], root: Span, name: string, key: string, value: string) =>
   below(spans, root, name).filter(({ tags }) => tags[key] === value);
 
@@ -373,7 +319,6 @@ layer(HostedLive, { excludeTestServices: true })("Tool-call overhead", (it) => {
         });
         const timing = accounted(yield* traced(app, "tool-call-trace.json"));
         fits(timing);
-        // The app measured the provider's wait on its own clock, and nothing else as upstream.
         expect(timing.app.upstream).toBeGreaterThanOrEqual(slowUpstreamMs);
         expect(timing.app.elicitation).toBe(0);
       }).pipe(Effect.provide(McpClient.layer)),
@@ -400,9 +345,6 @@ layer(HostedLive, { excludeTestServices: true })("Tool-call overhead", (it) => {
         const timing = accounted(trace);
         fits(timing);
         expect(timing.app.upstream).toBeGreaterThanOrEqual(slowUpstreamMs);
-        // Two overlapping waits count once: the upstream time is no more than the time the
-        // provider's spans cover, which is less than their durations added up. How long the
-        // fixture takes to answer on a busy machine changes neither side.
         const requests = below(trace.spans, timing.call, "provider.http.request");
         expect(requests).toHaveLength(2);
         const upstreamCovered = covered(trace.spans, timing.call, "upstream");
@@ -432,7 +374,6 @@ export default defineApp({}, async () => {
         );
         const timing = accounted(yield* traced(app, "authored-trace.json"));
         fits(timing);
-        // The factory, the approval policy and the handler are the app's own time.
         expect(timing.app.authored).toBeGreaterThanOrEqual(3 * authoredStepMs);
         expect(timing.overhead).toBeLessThan(timing.tool.durationMs - 3 * authoredStepMs);
       }).pipe(Effect.provide(McpClient.layer)),
@@ -444,7 +385,6 @@ export default defineApp({}, async () => {
       context,
       Effect.gen(function* () {
         const { deploy, execute, traced } = yield* fixture;
-        // The app asks through its Promise API.
         const asking =
           yield* deploy(`import { defineApp, query, object, string, router } from "apps";
 export default defineApp({}, { tools: router({
@@ -459,7 +399,6 @@ export default defineApp({}, { tools: router({
         fits(asked);
         expect(asked.app.elicitation).toBeGreaterThanOrEqual(answerMs);
 
-        // The app's MCP server asks inside its own call, so the provider's span contains the wait.
         const server = yield* mcpInCallFixture;
         const relaying = yield* deploy(
           `import { defineApp } from "apps";
@@ -476,7 +415,6 @@ export default defineApp({}, async () => ({ tools: await mcpRouter({ url: ${JSON
         fits(relayed);
         expect(relayed.app.elicitation).toBeGreaterThanOrEqual(answerMs);
         expect(below(relay.spans, relayed.call, "provider.mcp.elicitation").length).toBe(1);
-        // The answer is counted once, as the person's, even though the provider's span holds it.
         expect(relayed.app.upstream + relayed.app.elicitation).toBeLessThanOrEqual(
           relayed.call.durationMs,
         );
@@ -489,8 +427,6 @@ export default defineApp({}, async () => ({ tools: await mcpRouter({ url: ${JSON
       context,
       Effect.gen(function* () {
         const { deploy, execute, traced } = yield* fixture;
-        // The app's tool moves its isolate's clock ten seconds ahead while it runs, so that clock
-        // reads more time than the isolate that waited on it: what a stalled caller's clock shows.
         const ahead = (database: boolean) =>
           deploy(
             `import { defineApp, query, object, string, router } from "apps";
@@ -561,9 +497,6 @@ export default defineApp({}, { tools: router({
       Effect.gen(function* () {
         const { deploy, execute, traced } = yield* fixture;
         const upstream = yield* mcpOutcomeFixture;
-        // `stall` says it is running, then waits until its invocation is cancelled, holding no
-        // connection open. `quick` answers only once `stall` runs, so the program cannot finish
-        // and cancel `stall` before its app call starts, however long the host takes to start it.
         const app = yield* deploy(`import { defineApp, query, object, string, router } from "apps";
 export default defineApp({}, { tools: router({
   stall: query({ input: object({}), output: string() }, async ({ fetch, signal }) => {
@@ -576,7 +509,6 @@ export default defineApp({}, { tools: router({
   quick: query({ input: object({}), output: string() }, async ({ fetch }) =>
     (await fetch(${JSON.stringify(`${upstream}/after-arrival`)})).text()),
 }) });`);
-        // The program finishes while `stall` still waits, and finishing cancels it.
         const result = yield* execute(
           "Return before a waiting tool call finishes",
           `const slug = ${JSON.stringify(app.slug)};
@@ -590,7 +522,6 @@ return await Promise.race([tools[slug].stall({}), tools[slug].quick({})])`,
           tool: "stall",
           timed: false,
         });
-        // The app's part never came back, so its Executor time is unknown and none is recorded.
         expect(tool.tags["executor.runtime.calls"]).toBe("1");
         expect(tool.tags["executor.overhead_ms"]).toBeUndefined();
         expect(tool.tags["executor.caller.own_ms"]).toBeUndefined();
@@ -620,7 +551,6 @@ export default defineApp({}, { tools: router({
           status: "completed",
           execution: { ok: true },
         });
-        // The approved call runs when the answer arrives, and its span carries its timing.
         const timing = accounted(
           yield* traced(app, "approved-trace.json", { name: "mcp.tool.resume" }),
         );
@@ -635,9 +565,6 @@ export default defineApp({}, { tools: router({
       Effect.gen(function* () {
         const { deploy, execute, traced } = yield* fixture;
         const server = yield* mcpInCallFixture;
-        // Only Executor's cache hashes the catalog's current key: when it reads the catalog before
-        // the call, and when it invalidates the catalog inside the call's session because the server
-        // announced a changed tool list.
         const app = yield* deploy(
           `import { defineApp } from "apps";
 import { mcpRouter } from "apps/mcp";
@@ -663,9 +590,6 @@ export default defineApp({}, async ({ cache }) => ({ tools: await mcpRouter({ ur
         );
         expect(invalidation.tags["executor.owner"]).toBe("executor");
         expect(invalidation.durationMs).toBeGreaterThanOrEqual(slowedMs);
-        // The upstream session holds the invalidation, but the invalidation is Executor's work: the
-        // upstream time is no more than the time upstream spans cover less the invalidation inside
-        // them. A fixed bound failed whenever the fixture took longer to connect on a busy machine.
         expect(timing.app.upstream).toBeLessThanOrEqual(
           covered(trace.spans, timing.call, "upstream") -
             invalidation.durationMs +
@@ -682,7 +606,6 @@ export default defineApp({}, async ({ cache }) => ({ tools: await mcpRouter({ ur
       Effect.gen(function* () {
         const { deploy, execute, traced } = yield* fixture;
         const server = yield* mcpInCallFixture;
-        // `refresh` stores the server's current catalog without resolving a tool through it.
         const app = yield* deploy(
           `import { defineApp, object, query, router } from "apps";
 import { mcpRouter } from "apps/mcp";
@@ -696,15 +619,11 @@ export default defineApp({}, async ({ cache }) => {
           { "@modelcontextprotocol/sdk": "1.30.0" },
         );
         const tools = `tools[${JSON.stringify(app.slug)}]`;
-        // The first call loads and stores the server's catalog; the second finds it fresh.
         yield* execute(
           "Call an MCP tool twice in one Worker",
           `await ${tools}.upstream.answer({});
 return await ${tools}.upstream.answer({})`,
         );
-        // Each call's app spans arrive in their own batch; wait until the warm call's have. On
-        // Cloud, the first invocation of the new build (the tool listing) is cold, so it wakes the
-        // app's supervisor; the wake finishes in the background, after that invocation's reply.
         const { spans, warm, cloud } = yield* traced(app, "one-cache-trip-trace.json", {
           tool: "answer",
         }).pipe(
@@ -723,16 +642,11 @@ return await ${tools}.upstream.answer({})`,
           }),
           Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 40 }),
         );
-        // A cold invocation wakes its supervisor once, ahead of its Worker's start-up and first
-        // cache command, so the two starts overlap; an invocation that starts warm sends none.
-        // Self-host's supervisors run in the runner's own process, so it sends no wake at all.
         const invocations = spans.filter(
           ({ operationName }) => operationName === "runtime.app.invoke",
         );
         const woken = invocations.flatMap((invocation) => {
           const wakes = below(spans, invocation, "runtime.cloud.wake");
-          // The build is read in the serving span around the invocation, the Worker's cold start
-          // inside it.
           const serving = spans.find(({ spanId }) => spanId === invocation.parentSpanId);
           const cold =
             below(spans, serving ?? invocation, "runtime.app.build.load").length > 0 ||
@@ -743,10 +657,8 @@ return await ${tools}.upstream.answer({})`,
         expect(woken.length > 0).toBe(cloud);
         for (const { invocation, wake } of woken) {
           expect(["build", "app"]).toContain(wake.tags["executor.wake.reason"]);
-          // Nobody waits on it, so it is the background's time, not the call's.
           expect(wake.tags["executor.owner"]).toBe("background");
           const wokeAt = Date.parse(wake.startTime);
-          // It starts before the Worker's start-up ends and before the first cache command.
           const startup = one(below(spans, invocation, "runtime.app.rpc.start"), "Worker start");
           expect(wokeAt).toBeLessThanOrEqual(
             Date.parse(startup.startTime) + startup.durationMs + startResolutionMs,
@@ -757,30 +669,24 @@ return await ${tools}.upstream.answer({})`,
           const first = commands[0];
           if (first === undefined) throw new Error("The cold invocation sent no cache command");
           expect(wokeAt).toBeLessThanOrEqual(Date.parse(first.startTime) + startResolutionMs);
-          // The wake reports how it found the supervisor. The listing's read usually reaches it
-          // first; the wake-start scenario covers a wake that starts it.
           expect(["true", "false"]).toContain(wake.tags["executor.supervisor.cold"]);
           expect(["true", "false"]).toContain(wake.tags["executor.supervisor.isolate_cold"]);
           if (wake.tags["executor.supervisor.cold"] === "true")
             expect(first.tags["cache.supervisor.woke_by"]).toBe("wake");
           else expect(first.tags["cache.supervisor.woke_by"]).not.toBe("wake");
         }
-        // The warm call reads the catalog's manifest and the called tool's part in one command.
         const commands = below(spans, warm, "app.cache.command");
         expect(commands.map((span) => span.tags["cache.operation"])).toEqual(["acquire"]);
         expect(
           one(tagged(spans, warm, "app.cache.get", "cache.result", "fresh"), "fresh catalog read"),
         ).toBeDefined();
-        // Cloud also records the command where it reaches the app's supervisor.
         if (below(spans, warm, "runtime.cloud.call").length > 0) {
           const hop = one(below(spans, warm, "runtime.cloud.cache"), "supervisor command");
           expect(hop.tags["executor.app.id"]).toBe(app.id);
           expect(hop.tags["cache.operation"]).toBe("acquire");
           expect(hop.tags["cache.reads"]).toBe("1");
           expect(hop.tags["cache.command.index"]).toBe("1");
-          // An earlier call of the same request woke the supervisor if anything did.
           expect(["true", "false"]).toContain(hop.tags["cache.supervisor.woke"]);
-          // Only the invocation that sent a wake reports the start it made.
           expect(hop.tags["cache.supervisor.woke_by"]).toBe(
             hop.tags["cache.supervisor.woke"] === "true" ? "earlier" : undefined,
           );
@@ -788,10 +694,6 @@ return await ${tools}.upstream.answer({})`,
           expect(hop.tags["cache.caller.colo"]).toMatch(/^([A-Z]+|unknown|pending)$/);
           expect(Number(hop.tags["cache.supervisor.instance_ms"])).toBeGreaterThanOrEqual(0);
         }
-        // A part read with the manifest is used only when the manifest names the revision it was
-        // read under. Here the Worker last saw the catalog that lists `answer`; the refresh stores
-        // one without it and leaves the Worker's hint behind, so the warm call reads the old
-        // revision's part beside the new manifest. It must find no `answer` tool.
         const retired = yield* execute(
           "Call an MCP tool after its catalog dropped it",
           `await ${tools}.upstream.answer({});
@@ -815,17 +717,12 @@ try { await ${tools}.upstream.answer({}); return "called"; } catch { return "mis
           actors = yield* Actors,
           telemetry = yield* Telemetry,
           evidence = yield* Evidence;
-        // An API call that names its tool's kind skips the tool listing an MCP call reads first,
-        // so nothing reaches the new app's supervisor before the cold invocation's wake. The
-        // tool then reads the app's cache.
         const app = yield* deploy(`import { defineApp, object, query, router, string } from "apps";
 export default defineApp({}, {
   tools: router({
     probe: query({ input: object({}) }, async ({ cache }) => (await cache.read("probe", string())) ?? "missing"),
   }),
 });`);
-        // Two calls in one trace, as one client operation of several requests: the first loads
-        // the build and the Worker, the second finds both loaded.
         const traceparent = `00-${randomBytes(16).toString("hex")}-${randomBytes(8).toString("hex")}-01`;
         const traceId = traceparent.split("-")[1]!;
         for (let call = 0; call < 2; call++) {
@@ -839,7 +736,6 @@ export default defineApp({}, {
           expect(answered.status, JSON.stringify(answered.body)).toBe(200);
           expect(answered.body).toBe("missing");
         }
-        /** The host's span of the call that ran `invocation`, which reports what started for it. */
         const callOf = (spans: readonly Span[], invocation: Span) => {
           const byId = new Map(spans.map((span) => [span.spanId, span]));
           for (let parent = invocation.parentSpanId; parent !== null;) {
@@ -873,11 +769,9 @@ export default defineApp({}, {
         const startedFor = (invocation: Span) =>
           callOf(spans, invocation)!.tags["executor.runtime.started"]!.split(",");
         const [cold, ...warm] = invocations;
-        // The cold start's wake is the supervisor's first call, so the wake started it.
         const wake = one(below(spans, cold!, "runtime.cloud.wake"), "supervisor wake");
         expect(wake.tags["executor.supervisor.cold"]).toBe("true");
         const wokeIsolate = wake.tags["executor.supervisor.isolate_cold"] === "true";
-        // Every command of that invocation reports the start its wake made, and so does its call.
         for (const command of below(spans, cold!, "runtime.cloud.cache")) {
           expect(command.tags["executor.app.id"]).toBe(app.id);
           expect(command.tags["cache.supervisor.woke"]).toBe("true");
@@ -886,10 +780,6 @@ export default defineApp({}, {
         const coldStarted = startedFor(cold!);
         expect(coldStarted).toContain("supervisor");
         expect(coldStarted.includes("supervisor-isolate")).toBe(wokeIsolate);
-        // A later invocation of the same trace did not pay for that start: its commands report an
-        // earlier wake, and its call reports no supervisor start. It finds the build and the Worker
-        // loaded and sends no wake, unless it reached another runner isolate, whose wake then
-        // finds the supervisor running.
         for (const invocation of warm) {
           for (const wake of below(spans, invocation, "runtime.cloud.wake"))
             expect(wake.tags["executor.supervisor.cold"]).toBe("false");
@@ -940,8 +830,6 @@ export default defineApp({}, { tools: router({
         );
         expect(loader.tags["executor.owner"]).toBe("app");
         expect(below(trace.spans, get, "provider.http.request").length).toBe(1);
-        // The loader's own wait is the app's, and its request is the provider's, though both run
-        // inside Executor's cache.
         expect(timing.app.authored).toBeGreaterThanOrEqual(loaderMs);
         expect(timing.app.upstream).toBeGreaterThanOrEqual(slowUpstreamMs);
         expect(timing.app.overhead).toBeLessThan(loaderMs);
@@ -955,9 +843,6 @@ export default defineApp({}, { tools: router({
       Effect.gen(function* () {
         const { deploy, execute, traced } = yield* fixture;
         const upstream = yield* mcpOutcomeFixture;
-        // The loader's cache write hashes a key only it uses, which makes Executor's cache work
-        // in the refresh take `slowedMs`. `seed` stores the entry; `stale` finds it stale, hands
-        // its refresh to the background and waits on its own provider meanwhile.
         const app = yield* deploy(`import { defineApp, query, object, string, router } from "apps";
 ${slowDigest(`(bytes: Uint8Array) => new TextDecoder().decode(bytes).includes('"refreshed"')`)}
 const slow = ${JSON.stringify(`${upstream}/slow`)};
@@ -1004,8 +889,6 @@ export default defineApp({}, { tools: router({
           "write inside the refresh",
         );
         expect(write.durationMs).toBeGreaterThanOrEqual(slowedMs);
-        // The refresh's cache work ran while the tool waited on its provider. No caller waited on
-        // it, so it is neither Executor's time nor the provider's.
         expect(timing.app.upstream).toBeGreaterThanOrEqual(slowUpstreamMs);
         expect(timing.app.overhead).toBeLessThan(slowedMs);
         expect(timing.app.background).toBeGreaterThanOrEqual(slowedMs);
@@ -1025,7 +908,6 @@ export default defineApp({}, { tools: router({
   shared: query({ input: object({}), output: string() }, async ({ cache }) =>
     cache.get({ key: "shared", schema: string(), freshFor: "1 hour", load: async ({ fetch }) => (await fetch(slow)).text() })),
 }) });`);
-        // Both calls need the same missing entry: one loads it, the other waits for that load.
         const tools = `tools[${JSON.stringify(app.slug)}]`;
         yield* execute(
           "Call two tools that need the same missing cache entry",
@@ -1051,7 +933,6 @@ export default defineApp({}, { tools: router({
         fits(timing);
         const wait = one(below(spans, timing.call, "app.cache.lease.wait"), "lease wait");
         expect(wait.tags["executor.owner"]).toBe("lease");
-        // The polls inside the wait are part of it, not Executor's work.
         expect(below(spans, wait, "app.cache.command").length).toBeGreaterThan(0);
         expect(timing.app.lease).toBeCloseTo(wait.durationMs, 0);
         expect(timing.app.overhead).toBeLessThan(timing.app.lease);
@@ -1066,8 +947,6 @@ export default defineApp({}, { tools: router({
       Effect.gen(function* () {
         const { deploy, execute, traced } = yield* fixture;
         const server = yield* mcpInCallFixture;
-        // The app hands its MCP catalog a cache of its own, whose `read` waits before reading
-        // Executor's cache. Calling a tool reads that tool from the catalog through it.
         const app = yield* deploy(
           `import { defineApp } from "apps";
 import { mcpRouter } from "apps/mcp";
@@ -1093,7 +972,6 @@ export default defineApp({}, async ({ cache }) => ({ tools: await mcpRouter({ ur
         );
         expect(read.tags["executor.owner"]).toBe("app");
         expect(read.durationMs).toBeGreaterThanOrEqual(authoredReadMs);
-        // The catalog calls the app's method, so its wait is the app's, not Executor's.
         expect(timing.app.authored).toBeGreaterThanOrEqual(authoredReadMs);
         expect(timing.app.overhead).toBeLessThan(authoredReadMs);
       }).pipe(Effect.provide(McpClient.layer)),
@@ -1106,9 +984,6 @@ export default defineApp({}, async ({ cache }) => ({ tools: await mcpRouter({ ur
       Effect.gen(function* () {
         const { deploy, execute } = yield* fixture;
         const server = yield* mcpInCallFixture;
-        // The app's cache is a class: every method reaches the app's cache through `this`, and
-        // `revalidate` calls `this.get`. Its loads run with this cache, so the catalog's writes
-        // go through it too.
         const app = yield* deploy(
           `import { defineApp } from "apps";
 import { mcpRouter } from "apps/mcp";
@@ -1158,27 +1033,18 @@ export default defineApp({}, { tools: router({
           `return await tools[${JSON.stringify(app.slug)}].note({})`,
         );
         expect(JSON.stringify(result.structuredContent)).toContain("1 notes");
-        // The call runs in the app's data facet, so its supervisor reports its own part too. Its SQL
-        // is synchronous: it runs on the handler's own stack, where the isolate's clock does not
-        // move, so it leaves no wait for any owner.
         const trace = yield* traced(app, "database-trace.json");
         const timing = accounted(trace);
         fits(timing);
         expect(timing.runtime.tags["executor.supervisor.own_ms"]).toBeDefined();
-        // Whether the facet started for this call depends on what ran before it (the app's
-        // migrations may have started it); either way the call says so, and a facet that started
-        // inside the supervisor's wait counts that wait's gap as start-up.
         const facetStarted = (timing.runtime.tags["executor.runtime.started"] ?? "")
           .split(",")
           .includes("facet");
         expect(
           milliseconds(timing.runtime.tags, "executor.supervisor.wait_ms"),
         ).toBeGreaterThanOrEqual(milliseconds(timing.runtime.tags, "executor.app.gap_ms"));
-        // Cloud's supervisor joins the trace with its own span for the call.
         if (below(trace.spans, timing.tool, "runtime.cloud.call").length > 0) {
-          // Cloud sends a database call to the app's supervisor, which runs its runner itself.
           expect(timing.runtime.tags["executor.runner.host"]).toBe("supervisor");
-          // Only an AppData version older than `run` sends the call to the shared runner instead.
           expect(
             trace.spans.filter(({ tags }) => tags["executor.runner.fallback"] !== undefined),
           ).toEqual([]);
@@ -1207,9 +1073,6 @@ export default defineApp({}, { tools: router({
       Effect.gen(function* () {
         const { deploy, execute, toolCalls } = yield* fixture;
         const upstream = yield* mcpOutcomeFixture;
-        // `hold` keeps running until a note exists, and `note` waits on the upstream before it
-        // writes one, so whichever of the two reaches the facet first is still running when the
-        // other arrives.
         const app = yield* deploy(
           `import { defineApp, mutation, query, object, number, string, router } from "apps";
 const slow = ${JSON.stringify(`${upstream}/slow`)};
@@ -1235,8 +1098,6 @@ export default defineApp({}, { tools: router({
         );
         const startedFacet = (tags: Tags) =>
           (tags["executor.runtime.started"] ?? "").split(",").includes("facet");
-        // Cloudflare counts a facet's subrequests over its whole life, so each call that finds
-        // the facet idle runs in a fresh one: none inherits what earlier calls sent.
         for (let call = 1; call <= 3; call++) {
           const result = yield* execute(
             `Database call ${call} of 3`,
@@ -1249,8 +1110,6 @@ export default defineApp({}, { tools: router({
         }
         const sequential = yield* toolCalls(app, "count", 3);
         expect(sequential.map(startedFacet)).toEqual([true, true, true]);
-        // A call that arrives while another runs joins the running facet: a running call may be
-        // waiting on it, so it is never held back for a fresh one.
         const overlapping = yield* execute(
           "Two database calls that overlap",
           `const app = tools[${JSON.stringify(app.slug)}];
@@ -1275,11 +1134,6 @@ return [await held, await noted];`,
       Effect.gen(function* () {
         const { deploy, execute, traced } = yield* fixture;
         const upstream = yield* mcpOutcomeFixture;
-        // The app answers its dispatched request's body from the request it was built with, so its
-        // handler runs in the same turn the call is dispatched in. The handler starts its request,
-        // then holds the isolate's thread, which delays everything that turn would send, and its
-        // clock reads the hold only once the request completes. Were the app dispatched while the
-        // runner still waited for the call to start, the runner would count that time as its own.
         const app = yield* deploy(`import { defineApp, query, object, string, router } from "apps";
 const slow = ${JSON.stringify(`${upstream}/slow`)};
 const bodies = new WeakMap<Request, string>();
@@ -1319,8 +1173,6 @@ export default defineApp({}, { tools: router({
       context,
       Effect.gen(function* () {
         const { deploy, execute, traced } = yield* fixture;
-        // The framework reads the app's response after the call span ends. The app makes that read
-        // wait once, standing in for framework work outside every span.
         const app = yield* deploy(`import { defineApp, query, object, string, router } from "apps";
 let armed = false;
 const json = Response.prototype.json;
@@ -1345,7 +1197,6 @@ export default defineApp({}, { tools: router({
         expect(milliseconds(timing.runtime.tags, "executor.app.elapsed_ms")).toBeGreaterThanOrEqual(
           dispatch.durationMs + slowedMs,
         );
-        // The wait is outside the app's spans, so only the isolate's whole dispatch sees it.
         expect(timing.app.overhead).toBeLessThan(slowedMs);
         expect(timing.own.app).toBeGreaterThanOrEqual(slowedMs);
         expect(timing.overhead).toBeGreaterThanOrEqual(slowedMs);

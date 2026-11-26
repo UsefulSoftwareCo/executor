@@ -1,7 +1,3 @@
-/**
- * Trees check-local-data-steps.ts must reject or accept: the latest SDK storage version and the
- * data steps local lists. Local must list step 7 from storage 4.0.11 on, whatever comes after it.
- */
 export interface Fixture {
   readonly name: string;
   readonly storage: string;

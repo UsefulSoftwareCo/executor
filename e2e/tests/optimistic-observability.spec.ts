@@ -1,4 +1,3 @@
-/** A handled replay failure still leaves a safe, delivered diagnostic after a write starts. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
