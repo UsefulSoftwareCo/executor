@@ -1,4 +1,3 @@
-import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
 import { Context, Effect, Layer, Option, Scope } from "effect";
 import { SqlClient, type SqlError } from "effect/sql";
 import {
@@ -8,6 +7,7 @@ import {
   cloudDatabasePool,
 } from "./database.ts";
 import { ObjectDatabase, type SqlServices } from "./object-database.ts";
+import { makeBatchExecutionMemo } from "./batch-execution.ts";
 
 export const invocationConnectionLimit = 2;
 
@@ -20,7 +20,7 @@ export const cloudInvocationDatabase = Layer.effect(
   InvocationDatabase,
   Effect.gen(function* () {
     const connection = yield* cloudDatabaseConnection;
-    return yield* makeExecutionMemo(
+    return yield* makeBatchExecutionMemo(
       Effect.gen(function* () {
         const object = yield* Effect.serviceOption(ObjectDatabase);
         if (Option.isSome(object)) return yield* object.value.sql;

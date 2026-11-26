@@ -87,6 +87,7 @@ import {
 } from "./infrastructure/background-jobs.ts";
 import { handledJob, jobCompleted, jobFailed } from "./contracts/job-outcome.ts";
 import { cloudEgress } from "./infrastructure/executor.ts";
+import { withBatchExecution } from "./infrastructure/batch-execution.ts";
 import { servedRequest } from "./infrastructure/served-request.ts";
 import { cloudProduct } from "./infrastructure/product.ts";
 import { cloudAuthDatabase } from "./infrastructure/auth-database.ts";
@@ -718,6 +719,7 @@ export default Api.make(
     return {
       fetch: handle.pipe(
         roleHosts,
+        withBatchExecution,
         withNotFoundDocument,
         Effect.tapCause(reportCloudFailure),
         Effect.catchTag("AuthenticationUnavailable", () =>

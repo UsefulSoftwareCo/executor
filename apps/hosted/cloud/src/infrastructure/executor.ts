@@ -21,6 +21,7 @@ import {
 import { hostedEventAuthority } from "@executor-js/hosted-server/events";
 import { SqlClient } from "effect/sql";
 import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
+import { makeBatchExecutionMemo } from "./batch-execution.ts";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { Context, Effect, FiberSet, Option } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
@@ -133,7 +134,7 @@ export const cloudExecutor = Effect.fn(function* (
       Effect.flatMap((run) => run(work)),
       Effect.catchTag("StorageError", () => Effect.succeed(false)),
     );
-  const executor = yield* makeExecutionMemo(
+  const executor = yield* makeBatchExecutionMemo(
     Effect.gen(function* () {
       const key = yield* secrets.encryptionKey;
       const services = yield* database;
