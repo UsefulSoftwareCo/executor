@@ -10,7 +10,6 @@ import { App } from "../support/contracts.ts";
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
 
-/** Whether a request reads this app's record, batched with other reads or on its own. */
 const readsApp = (request: Request, app: string) => {
   const path = new URL(request.url()).pathname;
   if (request.method() === "GET")
@@ -23,7 +22,6 @@ const readsApp = (request: Request, app: string) => {
   );
 };
 
-/** Whether a dashboard read batch also asks for this app's tool index. */
 const readsTools = (request: Request, app: string) =>
   (request.postData() ?? "").includes(`"group":"tools","endpoint":"index"`) &&
   (request.postData() ?? "").includes(app);
@@ -73,8 +71,6 @@ export default defineApp({}, async () => ({
           });
           return Promise.resolve();
         });
-        // Hovering shows intent: the app is read while the list is still open. The list already
-        // names the app's version and accounts, so its tools are read in the same batch.
         const [hovered] = yield* browser.use("Hover the app's link", (page) =>
           Promise.all([
             page
@@ -90,10 +86,7 @@ export default defineApp({}, async () => ({
           ),
         ).toBe(appsPath);
         expect(reads).toHaveLength(1);
-        // Opening the app renders it from that read instead of reading it again.
         yield* browser.use("Open the app", (page) => link(page).click());
-        // The tools preview reads the app's tools after the page mounts, so any read of the app
-        // the page started itself has been sent by the time it shows.
         yield* browser.use("Wait for the app's tools", (page) =>
           page.getByRole("main").getByText("A simple greeting").first().waitFor(),
         );

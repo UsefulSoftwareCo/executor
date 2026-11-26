@@ -334,7 +334,6 @@ export const dashboardRegistry = (initialValues: InitialValues) => {
   const guards = import.meta.env.SSR ? documentGuards(registry) : undefined;
   return {
     registry,
-    /** A server render starts its reads with the document; `reads` starts them in the browser. */
     connect: <R extends AnyRouter>(router: R, reads?: RouteReads): R => {
       if (guards === undefined) {
         hydrateAtoms(router, registry);

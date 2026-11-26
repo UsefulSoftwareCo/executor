@@ -264,7 +264,6 @@ function useOrganizationQueryReference(routeReference: OrganizationReference) {
   );
   if (reference !== retained) setRetained(reference);
   const setQueryReference = useAtomSet(queryReferenceAtom);
-  // A boundary mounted later starts from its URL again, so the mirror lasts only as long as this one.
   useEffect(() => {
     setQueryReference(reference);
     return () => setQueryReference(undefined);
