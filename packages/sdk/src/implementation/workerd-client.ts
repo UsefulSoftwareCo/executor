@@ -94,6 +94,8 @@ export const workerdHostHandler = (options: {
         const executor = yield* options.executor,
           host = executor[WorkflowHost];
         switch (command.operation) {
+          case "input":
+            return yield* host.input(command.run, command.command);
           case "prepare": {
             const current = yield* host.get(command.run);
             if (current.status === "complete") return { state: "complete", output: current.output };

@@ -719,14 +719,20 @@ export default {
     }
     const input = Schema.decodeUnknownSync(
       Schema.Struct({
-        operation: Schema.Literals(["start", "status", "terminate"]),
+        operation: Schema.Literals(["start", "status", "terminate", "input"]),
         run: Schema.NonEmptyString,
+        id: Schema.optional(Schema.NonEmptyString),
       }),
     )(await request.json());
     try {
       const handle = await env.RUNS.get(input.run);
       let state = await handle.status();
       const finished = () => ["complete", "errored", "terminated"].includes(state.status);
+      if (input.operation === "input" && !finished()) {
+        if (input.id === undefined) return new Response(null, { status: 400 });
+        await handle.sendEvent({ type: input.id, payload: null });
+        state = await handle.status();
+      }
       if (input.operation === "terminate" && !finished()) {
         try {
           await handle.terminate();
