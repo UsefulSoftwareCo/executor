@@ -1053,7 +1053,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
           [
             signIn("calendar", [calendar]),
             signIn("defaults", []),
-            // A scope outside the client's allowed scopes.
             signIn("wider", [calendar, cloudPlatform]),
             signIn("modify", [gmailModify, drive, calendar]),
             signIn("gmail", [gmail, drive, calendar]),
@@ -1095,9 +1094,9 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         const adminUrl = new URL((yield* body(Redirect, admin.started)).authorizationUrl);
         expect(adminUrl.origin + adminUrl.pathname).toBe(google.authorizationUrl);
         expect(adminUrl.searchParams.get("client_id")).toBe(clientId);
-        expect(
-          new Set((adminUrl.searchParams.get("scope") ?? "").split(" ")),
-        ).toEqual(new Set(adminScopes));
+        expect(new Set((adminUrl.searchParams.get("scope") ?? "").split(" "))).toEqual(
+          new Set(adminScopes),
+        );
         expect(adminUrl.searchParams.get("access_type")).toBe("offline");
         expect(adminUrl.searchParams.get("prompt")).toBe("consent");
         for (const mismatch of [adminEndpointMismatch, adminScopeMismatch]) {
@@ -1105,7 +1104,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
           expect(mismatch.setup.firstParty).toBeUndefined();
           expect(mismatch.started.body).toMatchObject({ _tag: "OAuthClientUnavailable" });
         }
-        // Each approved product must offer the shared client and forward its exact scopes.
         for (const [key, scopes] of [
           ["youtube", ["youtube", "youtube.force-ssl"]],
           ["ads", ["adwords"]],

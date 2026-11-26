@@ -68,7 +68,6 @@ const googleSignInScopes = [
   "https://www.googleapis.com/auth/script.metrics",
 ];
 
-/** Admin SDK scopes requested by the official Google Admin app. */
 const googleAdminScopes = [
   "https://www.googleapis.com/auth/admin.directory.user",
   "https://www.googleapis.com/auth/admin.directory.user.alias",
