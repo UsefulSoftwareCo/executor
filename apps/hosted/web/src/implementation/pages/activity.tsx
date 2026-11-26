@@ -55,7 +55,7 @@ import { AgentIcon } from "@executor-js/ui/dashboard/agent-icon";
 import { AppIcon, SearchInput } from "@executor-js/ui/dashboard/common";
 import { usePreload } from "@executor-js/ui/dashboard/context";
 import { EmptyState } from "@executor-js/ui/dashboard/empty-state";
-import { productTitle, useDocumentTitle } from "@executor-js/ui/hooks/document-title";
+import { useDocumentTitle } from "@executor-js/ui/hooks/document-title";
 import { useMediaQuery } from "@executor-js/ui/hooks/media-query";
 import {
   activeFilters,
@@ -108,7 +108,7 @@ export function ActivityPage({
 }) {
   const { organization } = useOrganizationRoute();
   usePreload(...activityPageReads(organization, {}, search));
-  useDocumentTitle(productTitle(activityTitle));
+  useDocumentTitle(activityTitle);
   return (
     <ActivityFrame>
       <ToolCalls key={organization} search={search} onChange={onSearchChange} />
