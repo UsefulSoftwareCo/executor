@@ -1,4 +1,3 @@
-/** App authors opt in to member contributions; ordinary app requirements need management. */
 import { AccountId, AppId, StorageError, type AccountScope } from "@executor-js/sdk/core";
 import { Effect, Schema } from "effect";
 import type { SqlClient } from "effect/sql";
@@ -12,7 +11,6 @@ import {
   type ResourceAuthority,
 } from "./resource-policy.ts";
 
-/** Read the active deployment again under the link lock. Existing requirements opt out. */
 export const isContributed = (sql: SqlClient.SqlClient, app: AppId, requirement: string) =>
   sql`select 1 from executor_apps a
     join executor_deployments d on d.id = a.active_deployment
@@ -42,7 +40,6 @@ export const requireRequirementAccessAs = (
 export const requireRequirementAccess = (input: Parameters<typeof requireRequirementAccessAs>[1]) =>
   Effect.flatMap(currentResourceAuthority, (actor) => requireRequirementAccessAs(actor, input));
 
-/** Under the app's link lock, the linker or an editor can remove a contributed link. */
 export const requireLinkRemovalAs = (
   sql: SqlClient.SqlClient,
   actor: ResourceAuthority,
@@ -62,7 +59,6 @@ export const requireLinkRemovalAs = (
 
 const Contribution = Schema.Struct({ app: AppId, requirement: Schema.String, account: AccountId });
 
-/** Deleting saved credentials must pass the same checks as removing each contributed link. */
 export const checkContributedAccountRemoval = (sql: SqlClient.SqlClient, account: AccountId) =>
   Effect.gen(function* () {
     const links = yield* Schema.decodeUnknownEffect(Schema.Array(Contribution))(
@@ -75,8 +71,6 @@ export const checkContributedAccountRemoval = (sql: SqlClient.SqlClient, account
         order by l.app, l.requirement`,
     );
     if (links.length === 0) return;
-    // The SDK already holds the account row. Fail contention rather than deadlocking with a
-    // link writer holding the app row while waiting for this account.
     for (const link of links)
       yield* sql`select id from executor_apps where id = ${link.app} for no key update nowait`;
     const user = yield* CurrentUserId;
@@ -94,7 +88,6 @@ export const checkContributedAccountRemoval = (sql: SqlClient.SqlClient, account
     Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new StorageError() }),
   );
 
-/** Sharing an account for use does not make another member its holder. */
 export const accountHolders = (
   sql: SqlClient.SqlClient,
   organization: OrganizationId,

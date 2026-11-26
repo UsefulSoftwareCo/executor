@@ -55,13 +55,8 @@ export const migrateProvisioning = Effect.gen(function* () {
   yield* sql`create or replace trigger hosted_provision_user after insert or update of "emailVerified" on "user" for each row execute function hosted_queue_user()`;
 });
 
-/**
- * Additive outbox. Use the existing member job kind so a running old server can still parse its
- * queue. It may acknowledge the job without cleanup; retained snapshots let the new runner recover it.
- */
 export const migrateContributedDepartures = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  // Snapshot the links at departure, so a delayed retry cannot remove a later contribution.
   yield* sql`create table if not exists hosted_contributed_departures (
     job text not null references hosted_provisioning(id) on delete cascade,
     app text not null,

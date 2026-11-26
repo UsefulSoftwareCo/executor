@@ -1,4 +1,3 @@
-/** Shared app and public API reads used by contributed-account scenarios. */
 import { expect } from "@effect/vitest";
 import { Effect, Schedule, Schema } from "effect";
 import { body, type Session } from "./api.ts";

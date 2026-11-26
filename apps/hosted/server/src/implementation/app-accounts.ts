@@ -1,11 +1,4 @@
 import { requireLinkRemovalAs, requireRequirementAccessAs } from "./contributed-account-policy.ts";
-/**
- * The accounts linked to an app's requirements and the accounts every operation runs with. A
- * member's user accounts for an app are their user links intersected with the accounts they may
- * use now; missing or revoked accounts drop out and nothing is substituted. App requirements use
- * the app links instead, for every caller, through app access alone. A plain requirement uses its
- * one link, and linking another replaces it; many() uses every one.
- */
 import {
   AccountId,
   AccountNotFound,
@@ -189,21 +182,11 @@ const lockLinks = (sql: SqlClient.SqlClient, app: AppId) =>
 export const lockAppLinks = (sql: SqlClient.SqlClient, app: AppId) =>
   lockLinks(sql, app).pipe(Effect.catchTag("SqlError", () => new StorageError()));
 
-/* Account requirements opt in to contributor authority; ordinary slots keep management. */
 type LinkChangeAccess =
   | { readonly access: "manage" | "use"; readonly account?: AccountId }
   | { readonly access: "contribute"; readonly requirement: string; readonly account?: AccountId }
   | { readonly access: "remove"; readonly requirement: string; readonly account: AccountId };
 
-/**
- * Run a link change in one transaction under the app's link lock, after checking the caller's
- * access again there. The request checked it before, but the transaction can wait for the lock
- * while the caller's role, the app's audience or the account's audience changes; this check reads
- * what committed meanwhile. The caller's membership row stays share-locked until the change
- * commits, so a role change or removal waits for it. `access` is the access the change needs to the
- * app; `account`, when set, the account the change links, which the caller must still be able to
- * use. The change gets the checked actor, for any further check of its own under the lock.
- */
 export const lockedChange = <A, E, R>(
   executor: Executor,
   input: { readonly app: AppId } & LinkChangeAccess,
@@ -404,7 +387,6 @@ export const sourceActorLost = (
     );
   }).pipe(Effect.catchTags(sqlFailures));
 
-/** The apps an account is linked to for everyone, which must unlink it before it can be deleted. */
 const AppLinkRow = Schema.Struct({ app: AppId, requirement: Schema.String });
 export const removeAppLinksOf = (
   executor: Executor,
@@ -425,7 +407,6 @@ export const removeAppLinksOf = (
     }).pipe(Effect.catchTags(sqlFailures)),
   );
 
-/** The apps an account is linked to for everyone, which must unlink it before it can be deleted. */
 export const appLinkApps = (sql: SqlClient.SqlClient, account: AccountId, normalOnly = false) =>
   Effect.gen(function* () {
     const rows = yield* normalOnly

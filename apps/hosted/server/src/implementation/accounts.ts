@@ -156,12 +156,6 @@ export const oauthSetup = (
     return { ...setup, clients };
   });
 
-/**
- * Delete saved credentials and remove their user links through the transactional lifecycle hook.
- * An account linked to an app for everyone is refused until it is unlinked: the app uses it for
- * every caller. One a webhook subscription holds is refused naming only the holders the caller
- * may see.
- */
 export const removeAccount = ({
   owner,
   account,
@@ -186,7 +180,6 @@ export const removeAccount = ({
       );
   });
 export const disconnectAccount = Effect.flatMap(AccountGrants.delete, removeAccount);
-/** Update the label or description using the owner-filtered SDK primitive. */
 export const updateAccount = (metadata: {
   readonly label?: string | undefined;
   readonly description?: string | null | undefined;

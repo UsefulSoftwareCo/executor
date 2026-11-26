@@ -1,9 +1,7 @@
-/** Identity checks are private; ordinary account labels and descriptions stay as authored. */
 import type { Account, AccountHealth, AccountId } from "@executor-js/sdk/core";
 import { Effect } from "effect";
 import { accountHolders } from "./contributed-account-policy.ts";
 import {
-  accountAccesses,
   applicationAccesses,
   currentResourceAuthority,
   policyDatabase,
@@ -15,19 +13,17 @@ export const redactAccountHealth = (health: AccountHealth): AccountHealth => ({
   infoCheckedAt: null,
 });
 
-/** Account holders and account managers may see identity even without editing a linked app. */
 export const identityAccounts = (accounts: readonly AccountId[]) =>
   Effect.gen(function* () {
     const actor = yield* currentResourceAuthority;
     const holders = yield* accountHolders(yield* policyDatabase, actor.organization, accounts);
-    const accesses = yield* accountAccesses(accounts, actor);
-    return new Set([
-      ...holders.filter((row) => row.holder === actor.user).map((row) => row.account),
-      ...accesses.filter((access) => access.canManage).map((access) => access.account),
-    ]);
+    return new Set(
+      actor.role === "member"
+        ? holders.filter((row) => row.holder === actor.user).map((row) => row.account)
+        : accounts,
+    );
   });
 
-/** Batch the account and app checks for a whole directory or link list. */
 const visibleStatuses = (health: readonly AccountHealth[]) =>
   Effect.gen(function* () {
     const visible = yield* identityAccounts(health.map((entry) => entry.account));
@@ -50,7 +46,6 @@ const visibleStatuses = (health: readonly AccountHealth[]) =>
 export const visibleAccountHealth = (health: AccountHealth) =>
   visibleStatuses([health]).pipe(Effect.map(([entry]) => entry!));
 
-/** Upstream accounts have human-entered metadata, so only accountInfo needs redaction here. */
 export const visibleAccountStatuses = <
   A extends { readonly account: Account; readonly health?: AccountHealth },
 >(

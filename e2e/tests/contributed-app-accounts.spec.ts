@@ -1,4 +1,3 @@
-/** The Accounts tab offers member actions only on contributed requirements and their own links. */
 import { expect, layer } from "@effect/vitest";
 import { Effect } from "effect";
 import { ok } from "../support/app-links.ts";

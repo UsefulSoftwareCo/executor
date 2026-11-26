@@ -1,4 +1,3 @@
-/** Departure cleanup commits independently and uses the existing webhook-source removal path. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { body } from "../support/api.ts";
@@ -22,10 +21,7 @@ layer(HostedLive, { excludeTestServices: true })("Contributed departures", (it) 
           "shared",
           "Departing personal account",
         );
-        const shared = yield* f.connect(actors.admin, "app", "shared", "Departing shared account", {
-          kind: "shared",
-          audience: { kind: "everyone" },
-        });
+        const shared = yield* f.connect(actors.owner, "app", "shared", "Shared account");
         const ordinary = yield* f.connect(
           actors.admin,
           "app",
@@ -43,7 +39,6 @@ layer(HostedLive, { excludeTestServices: true })("Contributed departures", (it) 
           }),
         );
         yield* f.waitForLinks([shared, ordinary]);
-        // Removal unlinks the departed member's personal contribution, not saved credentials or shared accounts.
         expect(
           (yield* api.request(actors.owner, "GET", `${prefix}/accounts/${personal}`)).status,
         ).not.toBe(404);
@@ -76,8 +71,6 @@ layer(HostedLive, { excludeTestServices: true })("Contributed departures", (it) 
           "Rejoined member's new link",
         );
         const ordinary = yield* f.connect(actors.owner, "app", "ordinary", "Ordinary account");
-        // A running old server sees an ordinary member job. It can acknowledge it, leaving the durable
-        // snapshots for the replacement server. The stopped fixture writes that older-server outcome.
         const [departures] = yield* legacyStorage([
           {
             sql: 'DELETE FROM member WHERE "organizationId" = $1 AND "userId" = $2',
@@ -86,7 +79,6 @@ layer(HostedLive, { excludeTestServices: true })("Contributed departures", (it) 
           {
             sql: "UPDATE hosted_provisioning SET status = 'succeeded' WHERE id LIKE 'contributed-departure-%' RETURNING id, kind",
           },
-          // This contribution has since been replaced with a new link. A stale snapshot must not remove it.
           {
             sql: "UPDATE hosted_contributed_departures SET linked_at = linked_at - interval '1 second' WHERE account = $1",
             params: [retained],
@@ -99,7 +91,6 @@ layer(HostedLive, { excludeTestServices: true })("Contributed departures", (it) 
         );
         yield* serverControl("start");
         yield* f.waitForLinks([retained, ordinary]);
-        // Another restart does not replay completed cleanup or remove the preserved link.
         yield* serverControl("restart");
         yield* f.waitForLinks([retained, ordinary]);
         const [snapshots, oldJob, replacements, credentials] = yield* legacyStorage([

@@ -45,7 +45,6 @@ const protocol14: AppProtocol = {
   accounts: (accounts) => accounts,
 };
 
-/** Protocol 15 adds contributed app requirements. */
 const protocol15: AppProtocol = {
   ...protocol14,
   version: 15,

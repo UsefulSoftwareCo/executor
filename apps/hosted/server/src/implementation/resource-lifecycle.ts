@@ -1,5 +1,4 @@
 import { isContributed, checkContributedAccountRemoval } from "./contributed-account-policy.ts";
-/** Product metadata commits with SDK resources using the same SQL transaction context. */
 import {
   AccountConnectionRefused,
   AccountConnectionTargetChanged,
@@ -550,10 +549,6 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
           );
           if ((yield* appLinkApps(sql, account.id, true)).length > 0)
             return yield* new StorageError();
-          // Unlink the account's user links now, before the SDK removes its webhook sources: link,
-          // unlink and app removal all take links before sources, so leaving this to the account
-          // row's cascade would take them in the opposite order and deadlock with removing an app
-          // that links the account. Deleting the SDK account removes its access policy and grants.
           yield* sql`delete from hosted_app_account_links where account = ${account.id}`;
         }).pipe(Effect.catchTag("SqlError", () => new StorageError())),
       appRemoving: (app) =>
@@ -567,8 +562,6 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
           if (user === undefined) return yield* new StorageError();
           const target = { app: input.app, requirement: input.requirement };
           const organization = yield* organizationOf(input.account.owner);
-          // A system-created app has no creator, so the comparison is null; `is true` keeps the
-          // selected predicate a boolean.
           const contributed =
             input.scope === "app" && (yield* isContributed(sql, input.app, input.requirement));
           const authority =

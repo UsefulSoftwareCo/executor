@@ -3,7 +3,6 @@ import {
   removeContributedDeparture,
 } from "./contributed-account-departure.ts";
 export { recoverContributedDepartures };
-/** Host-owned lifecycle jobs. No browser session, secrets, or live request enters the queue. */
 import { StorageError } from "@executor-js/sdk/core";
 import { Effect, Exit, Schedule, Schema } from "effect";
 import { SqlClient } from "effect/sql";

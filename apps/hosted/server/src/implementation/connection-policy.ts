@@ -1,5 +1,4 @@
 import { requireRequirementAccess } from "./contributed-account-policy.ts";
-/** Pending connection ownership is persisted; knowing a connection ID grants no authority. */
 import {
   StorageError,
   type AccountConnection,

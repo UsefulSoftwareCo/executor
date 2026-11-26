@@ -322,7 +322,6 @@ const scoped = (app: App, scope: AccountScope): readonly RequirementEntry[] =>
     ([, requirement]) => requirement.scope === scope,
   );
 
-/** Per-requirement editing keeps ordinary requirements manager-only. */
 const editingFor = <E,>(data: ScopeAccounts<E>, requirement: AccountRequirement) =>
   data.edit ?? (requirement.contributed ? data.contribute : undefined);
 
@@ -339,7 +338,6 @@ function AddedBy({
   return <span className="block text-xs text-muted-foreground">Added by {who}</span>;
 }
 
-/** Changing the links of one scope. The host still authorizes every link and connection. */
 export interface LinkEditing<E> {
   readonly choices: (
     slot: string,
@@ -354,10 +352,8 @@ export interface LinkEditing<E> {
 export interface ScopeAccounts<E> {
   readonly links: readonly RequirementLink<AccountSummary>[];
   readonly edit?: LinkEditing<E> | undefined;
-  /** Member actions for contributed app requirements only. */
   readonly contribute?: LinkEditing<E> | undefined;
   readonly viewer?: string | undefined;
-  /** Why the caller cannot change these links, shown with the greyed-out list. */
   readonly readOnly?: string | undefined;
   readonly accountMenu?:
     | ((

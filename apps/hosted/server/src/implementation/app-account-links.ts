@@ -1,10 +1,5 @@
 import { identityAccounts, redactAccountHealth } from "./account-identity.ts";
 import { requireRequirementAccess } from "./contributed-account-policy.ts";
-/**
- * The routes that link accounts to an app's requirements, in either scope. App links need edit
- * access to the app and, to link, use of the account; reading them needs use of the app. User links
- * are the caller's own: linking another person's account is never possible.
- */
 import {
   AccountNotFound,
   StorageError,
@@ -68,11 +63,6 @@ const signIn = (executor: Executor, owner: OwnerId, account: AccountId) =>
       ),
     );
 
-/**
- * Links with each account, its sign-in and its checks by this app, in the records' order. A link
- * whose account no longer exists, or belongs to another owner, is left out. Ordinary app links
- * show upstream identity only to app editors; contributed links also permit holders and managers.
- */
 const linkViews = (
   executor: Executor,
   owner: OwnerId,
@@ -313,8 +303,6 @@ export const hostedAppAccountHandlers = HttpApiBuilder.group(HostedApi, "appAcco
       )
       .handle("appUnlink", ({ params }) =>
         Effect.gen(function* () {
-          // Unlinking needs edit access to the app, not use of the account: an editor can stop the
-          // app using an account they cannot use.
           const owner = yield* currentOwner;
           const executor = yield* Effect.flatten(HostedExecutor);
           yield* executor.apps.get({ owner, app: params.app });

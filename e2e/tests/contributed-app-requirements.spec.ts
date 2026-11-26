@@ -1,4 +1,3 @@
-/** Members contribute only to opted-in collections. Authorization is checked on every route. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { body } from "../support/api.ts";
@@ -21,14 +20,10 @@ layer(HostedLive, { excludeTestServices: true })("Contributed app requirements",
       Effect.gen(function* () {
         const f = yield* contributedApp;
         const { api, actors, prefix, ids, member, readLinks } = f;
-        // The second member can use the app but cannot edit it or remove someone else's link.
         yield* f.role(ids.admin, "member");
-        const account = yield* f.connect(actors.member, "app", "shared", "Member's typed label", {
-          kind: "shared",
-          audience: { kind: "everyone" },
-        });
+        const account = yield* f.connect(actors.member, "app", "shared", "Member's typed label");
         yield* refused(
-          yield* f.start(actors.member, "app", "ordinary", { kind: "personal" }),
+          yield* f.start(actors.member, "app", "ordinary"),
           403,
           "OrganizationForbidden",
         );
@@ -137,7 +132,6 @@ layer(HostedLive, { excludeTestServices: true })("Contributed app requirements",
             ),
           );
         }
-        // Account management alone permits identity even when no linked app is editable or visible.
         yield* f.role(ids.admin, "admin");
         yield* ok(yield* f.unlink(actors.owner, "shared", account));
         const managed = yield* api.request(actors.admin, "GET", `${prefix}/accounts/${account}`);
@@ -145,7 +139,6 @@ layer(HostedLive, { excludeTestServices: true })("Contributed app requirements",
           health: { info: { email: "upstream@example.test" } },
         });
 
-        // Deletion follows the linker's authority, independently of who holds the credentials.
         yield* ok(yield* f.link(actors.owner, "shared", account));
         yield* refused(
           yield* api.request(actors.member, "DELETE", `${prefix}/accounts/${account}`),
@@ -170,12 +163,7 @@ layer(HostedLive, { excludeTestServices: true })("Contributed app requirements",
           infoCheckedAt: expect.any(String),
         });
 
-        // Holding an account does not reveal its identity through an ordinary app link.
-        // The same holder can still see identity through a contributed requirement.
-        const held = yield* f.connect(actors.member, "user", "own", "Member's ordinary account", {
-          kind: "shared",
-          audience: { kind: "everyone" },
-        });
+        const held = yield* f.connect(actors.member, "user", "own", "Member's ordinary account");
         yield* ok(yield* f.link(actors.owner, "ordinary", held));
         yield* ok(yield* f.link(actors.member, "shared", held));
         yield* ok(yield* api.request(actors.member, "POST", `${prefix}/accounts/${held}/health`));
@@ -205,7 +193,7 @@ layer(HostedLive, { excludeTestServices: true })("Contributed app requirements",
       Effect.gen(function* () {
         const f = yield* contributedApp;
         const { api, actors, path, prefix } = f;
-        const started = yield* f.start(actors.member, "app", "shared", { kind: "personal" });
+        const started = yield* f.start(actors.member, "app", "shared");
         const pending = (yield* body(Resource, started)).id;
         const revision = yield* body(
           Schema.Struct({ revision: Schema.String }),

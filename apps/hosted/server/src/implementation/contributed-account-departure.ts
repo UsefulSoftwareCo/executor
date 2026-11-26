@@ -1,4 +1,3 @@
-/** Durable snapshots survive membership removal and old servers acknowledging member jobs. */
 import { AccountId, AppId, StorageError, StorageHost } from "@executor-js/sdk/core";
 import { Effect, Schema } from "effect";
 import { SqlClient } from "effect/sql";
@@ -8,7 +7,6 @@ import { organizationOwner, type OrganizationId } from "../contracts/organizatio
 import { lockAppLinks, removeLink } from "./app-accounts.ts";
 import { isContributed } from "./contributed-account-policy.ts";
 
-/** Old servers understand the member job but leave its snapshots. Recover their acknowledgements. */
 export const recoverContributedDepartures = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const acknowledged = yield* sql<{ readonly id: string }>`select p.id from hosted_provisioning p
@@ -25,7 +23,6 @@ export const recoverContributedDepartures = Effect.gen(function* () {
         for update`;
         const original = pending[0];
         if (original === undefined) return;
-        // A completed Cloud workflow cannot run again. A new job ID creates a new workflow.
         const [replacement] = yield* sql<{
           readonly id: string;
         }>`insert into hosted_provisioning (id, kind, organization_id, user_id)
@@ -55,7 +52,6 @@ export const removeContributedDeparture = (input: {
       yield* executor[StorageHost].transaction(
         Effect.gen(function* () {
           yield* lockAppLinks(sql, link.app);
-          // Compare the original link time: a rejoining member's new link is a different contribution.
           const live = yield* sql`select 1 from hosted_app_account_links l
             join executor_accounts a on a.id = l.account and a.owner = ${owner}
             join hosted_account_access p on p.account_id = a.id and p.organization_id = ${input.organization}
@@ -67,7 +63,6 @@ export const removeContributedDeparture = (input: {
               and p.kind = 'personal' and p.personal_user_id = ${input.user}`;
           if (live.length > 0 && (yield* isContributed(sql, link.app, link.requirement)))
             yield* removeLink(sql, executor.webhooks, { ...link, subject: null });
-          // Deleting the snapshot and unlinking commit together, including webhook source changes.
           yield* sql`delete from hosted_contributed_departures
             where job = ${input.id} and app = ${link.app} and requirement = ${link.requirement} and account = ${link.account}`;
         }),
