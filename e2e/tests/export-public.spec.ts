@@ -1,11 +1,3 @@
-/**
- * `.github/workflows/export-public.yml` runs `scripts/export-public.sh` on every push to main. It
- * snapshots the exported files onto the public repository's `v2` branch, and merges the public
- * pull requests that commits here port. These cases copy the script and its exclude list into a
- * scratch repository and export to a local bare repository laid out as
- * `UsefulSoftwareCo/executor.git`, whose `refs/pull/<n>/head` hold contributor commits, as
- * GitHub's do. A stub `gh` first on PATH answers the script's pull request reads.
- */
 import { expect, layer } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, FileSystem, Path, Stream } from "effect";
@@ -15,7 +7,6 @@ const repository = "UsefulSoftwareCo/executor";
 const maintainer = "Maintainer <maintainer@example.com>";
 const contributor = "Contributor <contributor@example.com>";
 
-/** What GitHub keeps of a pull request that the export reads. */
 interface PullRequest {
   readonly number: number;
   readonly state: "open" | "closed";
@@ -24,13 +15,6 @@ interface PullRequest {
   readonly head: string;
 }
 
-/**
- * Answers `gh api [--paginate] repos/<owner>/<name>/pulls?<query> --jq <filter>` as GitHub's list
- * endpoint does, from `$FAKE_GITHUB/pulls.json`: the pull requests in the query's state whose base
- * is its base, as full objects for the filter. Other repositories are not found, and while
- * `$FAKE_GITHUB/unavailable` exists GitHub answers nothing. Every call is appended to
- * `$FAKE_GITHUB/calls`.
- */
 const stubGh = `#!/bin/sh
 echo "$*" >> "$FAKE_GITHUB/calls"
 [ "$1" = api ] || { echo "stub gh: unsupported command: $*" >&2; exit 2; }
@@ -58,7 +42,6 @@ jq -c --arg state "$(param state)" --arg base "$(param base)" \\
   jq -r "$filter"
 `;
 
-/** Files in the scratch repository; the exclude list keeps the last two private. */
 const files: Readonly<Record<string, string>> = {
   "README.md": "# Executor\n",
   "src/greeting.ts": 'export const greeting = "hello";\n',
@@ -89,10 +72,6 @@ const author = (identity: string) => {
   return ["-c", `user.name=${name}`, "-c", `user.email=${email}`];
 };
 
-/**
- * The scratch repository with one commit, exported once to `v2` (and to `v2-releases` when
- * asked), and a contributor clone of `v2`. Git reads no user or system configuration.
- */
 const world = (options: { readonly releases?: boolean } = {}) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -112,7 +91,6 @@ const world = (options: { readonly releases?: boolean } = {}) =>
       GIT_CONFIG_NOSYSTEM: "1",
       PATH: `${bin}:${process.env.PATH ?? ""}`,
       FAKE_GITHUB: github,
-      // As in the export workflow, so warnings are annotations.
       GITHUB_ACTIONS: "true",
     };
     const git = (cwd: string, ...args: ReadonlyArray<string>) =>
@@ -124,7 +102,6 @@ const world = (options: { readonly releases?: boolean } = {}) =>
 
     const bare = path.join(root, `${repository}.git`);
     yield* git(root, "init", "--quiet", "--bare", bare);
-    // GitHub serves partial clones.
     yield* git(bare, "config", "uploadpack.allowFilter", "true");
     const url = `file://${bare}`;
 
@@ -141,7 +118,6 @@ const world = (options: { readonly releases?: boolean } = {}) =>
     yield* git(scratch, ...author(maintainer), "commit", "--quiet", "-m", "Start");
 
     const commitFile = path.join(root, "public-commit");
-    /** Runs the script in the scratch repository, or in this checkout of it, as the workflow does. */
     const exportPublic = (
       input: {
         readonly branch?: string;
@@ -175,10 +151,6 @@ const world = (options: { readonly releases?: boolean } = {}) =>
     const fork = path.join(root, "contributor");
     yield* git(root, "clone", "--quiet", "--branch", "v2", url, fork);
 
-    /**
-     * Commits these changes in the contributor's clone, on `v2` or on an earlier head of theirs,
-     * and publishes them as pull request `number`.
-     */
     const contribute = (
       number: number,
       commits: ReadonlyArray<Readonly<Record<string, string | null>>>,
@@ -209,7 +181,6 @@ const world = (options: { readonly releases?: boolean } = {}) =>
         return yield* git(fork, "rev-parse", "HEAD");
       });
 
-    /** Commits these changes here, as a port's squash merge, with this message. */
     const land = (changes: Readonly<Record<string, string>>, message: string) =>
       Effect.gen(function* () {
         for (const [file, text] of Object.entries(changes)) {
@@ -235,7 +206,6 @@ const world = (options: { readonly releases?: boolean } = {}) =>
         ),
       );
 
-    /** A public commit: its parents, tree, message, identities and files. */
     const commit = (revision: string) =>
       Effect.gen(function* () {
         const [sha, parents, tree, subject, authored, committed] = (yield* git(
@@ -256,10 +226,8 @@ const world = (options: { readonly releases?: boolean } = {}) =>
           files: files.split("\n"),
         };
       });
-    /** The public branch's tip. */
     const tip = (branch: string) => commit(`refs/heads/${branch}`);
 
-    /** A clone of the scratch repository with only its tip, as the release job checks it out. */
     const shallowCheckout = Effect.gen(function* () {
       const checkout = path.join(root, "release-checkout");
       yield* git(root, "clone", "--quiet", "--depth", "1", `file://${scratch}`, checkout);
@@ -270,14 +238,9 @@ const world = (options: { readonly releases?: boolean } = {}) =>
       .readFileString(path.join(github, "calls"))
       .pipe(Effect.orElseSucceed(() => ""));
 
-    /** GitHub stops answering the pulls API. */
     const unavailable = fs.writeFileString(path.join(github, "unavailable"), "");
 
     const hook = path.join(bare, "hooks", "pre-receive");
-    /**
-     * The public repository refuses pushes that bring a commit adding `file`, as GitHub's push
-     * protection refuses a pushed secret, until `accept`.
-     */
     const refuse = (file: string) =>
       Effect.gen(function* () {
         yield* fs.makeDirectory(path.dirname(hook), { recursive: true });
@@ -315,13 +278,11 @@ done
     };
   });
 
-/** A port's squash-merge message: the marker beside the contributor's trailer. */
 const ported = (title: string, number: number, head: string, named = repository) =>
   `${title}\n\nPublic-PR: ${named}#${number} ${head}\nCo-Authored-By: ${contributor}\n`;
 
 const greeted = 'export const greeting = "hello, world";\n';
 
-/** The workflow annotations an export printed, in order. */
 const warnings = (output: string) =>
   output.split("\n").filter((line) => line.startsWith("::warning"));
 const warning = (text: string) => `::warning title=Public export::${text}`;
@@ -347,8 +308,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Public export", (it) =
         const merged = yield* w.exportPublic();
         expect(merged.exitCode, merged.output).toBe(0);
         const after = yield* w.tip("v2");
-        // The previous export first, so the push is a fast-forward; then the contributor's head,
-        // which makes GitHub show the pull request as merged.
         expect(after.parents).toEqual([before.sha, head]);
         expect(after.subject).toBe(`Export ${exported}`);
         expect(after.authored).toBe(maintainer);
@@ -373,7 +332,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Public export", (it) =
         const merged = yield* w.tip("v2");
         expect(merged.parents).toHaveLength(2);
 
-        // GitHub has not marked it merged yet, so it still lists the pull request as open.
         const early = yield* w.exportPublic();
         expect(early.exitCode, early.output).toBe(0);
         expect(yield* w.tip("v2")).toEqual(merged);
@@ -389,7 +347,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Public export", (it) =
         expect(late.output).toContain("no changes since last export");
         expect(yield* w.tip("v2")).toEqual(merged);
 
-        // The next change exports on top of the merge, with no other parent.
         const exported = yield* w.land({ "README.md": "# Executor 2\n" }, "Rename the product");
         expect((yield* w.exportPublic()).exitCode).toBe(0);
         const next = yield* w.tip("v2");
@@ -412,18 +369,15 @@ layer(NodeServices.layer, { excludeTestServices: true })("Public export", (it) =
             { [`src/pull-${number}.ts`]: "\n" },
             ported(`Port ${number}`, number, heads.get(number)!),
           );
-        // A slip when porting from here: the private repository's name.
         const other = `Public-PR: UsefulSoftwareCo/executor-next#11 ${heads.get(11)}`;
         const slipped = yield* w.land(
           { "src/pull-11.ts": "\n" },
           ported("Port eleven", 11, heads.get(11)!, "UsefulSoftwareCo/executor-next"),
         );
-        // GitHub's names are case-insensitive, so this marker counts.
         yield* w.land(
           { "src/pull-12.ts": "\n" },
           ported("Port twelve", 12, heads.get(12)!, repository.toLowerCase()),
         );
-        // The contributor pushes again after #7's port landed.
         const moved = yield* w.contribute(7, [
           { "src/pull-7.ts": "\n" },
           { "src/pull-7.ts": "more\n" },
@@ -433,7 +387,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Public export", (it) =
           { number: 8, state: "closed", merged: false, base: "v2", head: heads.get(8)! },
           { number: 9, state: "closed", merged: true, base: "v2", head: heads.get(9)! },
           { number: 10, state: "open", merged: false, base: "main", head: heads.get(10)! },
-          // Open against v2 here, so only the repository in its marker keeps it out.
           { number: 11, state: "open", merged: false, base: "v2", head: heads.get(11)! },
           { number: 12, state: "open", merged: false, base: "v2", head: heads.get(12)! },
         ]);
@@ -456,7 +409,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Public export", (it) =
             `${repository}#7 moved to ${moved}, which no port records. Port its new commits and record Public-PR: ${repository}#7 ${moved}.`,
           ),
         ]);
-        // Only a dry run says why it skips the rest.
         for (const number of [8, 9, 10]) expect(exported.output).not.toContain(`#${number}`);
         expect(dry.output).toContain(`would merge ${repository}#12 ${heads.get(12)}`);
         for (const number of [8, 9, 10])
@@ -487,7 +439,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Public export", (it) =
       const after = yield* w.tip("v2-releases");
       expect(after.parents).toEqual([releases.sha]);
       expect(after.files).toEqual(["README.md", "src/greeting.ts"]);
-      // One read, of the pull requests open against v2-releases: none.
       const calls = (yield* w.calls).trim().split("\n");
       expect(calls).toHaveLength(1);
       expect(calls[0]).toContain(`repos/${repository}/pulls?state=open&base=v2-releases&`);
@@ -501,7 +452,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Public export", (it) =
       Effect.gen(function* () {
         const w = yield* world();
         const before = yield* w.tip("v2");
-        // The workflow is gone again from the head, but its first commit still carries it.
         const head = yield* w.contribute(7, [
           { ".github/workflows/fork.yml": "name: Fork\n" },
           { ".github/workflows/fork.yml": null, "src/greeting.ts": greeted },
@@ -548,12 +498,10 @@ layer(NodeServices.layer, { excludeTestServices: true })("Public export", (it) =
       Effect.gen(function* () {
         const w = yield* world();
         const head = yield* w.contribute(7, [{ "src/greeting.ts": greeted }]);
-        // The port landed without its marker, so its export merged nothing.
         yield* w.land({ "src/greeting.ts": greeted }, "Greet the world");
         expect((yield* w.exportPublic()).exitCode).toBe(0);
         const before = yield* w.tip("v2");
         expect(before.parents).toHaveLength(1);
-        // The marker follows in a commit that changes only an excluded path.
         yield* w.land({ "notes/greeting.md": "Ported.\n" }, ported("Record the port", 7, head));
         yield* w.pulls([{ number: 7, state: "open", merged: false, base: "v2", head }]);
 
@@ -586,7 +534,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Public export", (it) =
         const url = `Public-PR: https://github.com/${repository}/pull/11 ${head(11)}`;
         const unnamed = `Public-PR: #12 ${head(12)}`;
         const annotated = `Public-PR: ${repository}#14 ${head(14)}, 90% of it`;
-        // Both commits land before the next export, which reads both.
         const first = yield* w.land(
           Object.fromEntries([7, 8, 9, 13].map((number) => [`src/pull-${number}.ts`, "\n"])),
           `Port seven to nine\n\n${indented}\n${quoted}\n${lowercase}\n${short}\n`,
@@ -608,8 +555,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Public export", (it) =
         const exported = yield* w.exportPublic();
         expect(exported.exitCode, exported.output).toBe(0);
         expect((yield* w.tip("v2")).parents).toEqual([before.sha]);
-        // Newest commit first. A quoted line is not meant as a marker, and an annotation
-        // escapes `%` as `%25`.
         expect(warnings(exported.output)).toEqual(
           [
             [second, uppercase],
@@ -626,7 +571,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Public export", (it) =
           ),
         );
 
-        // The next export adds neither commit, so it does not warn again.
         yield* w.land({ "README.md": "# Executor 2\n" }, "Rename the product");
         const next = yield* w.exportPublic();
         expect(next.exitCode, next.output).toBe(0);
@@ -659,9 +603,7 @@ layer(NodeServices.layer, { excludeTestServices: true })("Public export", (it) =
             head: heads.get(number)!,
           })),
         );
-        // GitHub no longer serves #7's head.
         yield* w.git(w.bare, "update-ref", "-d", "refs/pull/7/head");
-        // #8's head arrives, but one of its trees cannot be fetched when the export reads it.
         const tree = yield* w.git(w.bare, "rev-parse", `${heads.get(8)}:src`);
         yield* fs.remove(path.join(w.bare, "objects", tree.slice(0, 2), tree.slice(2)));
 
@@ -693,7 +635,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Public export", (it) =
       Effect.gen(function* () {
         const w = yield* world();
         const before = yield* w.tip("v2");
-        // #7's first commit holds a secret, which GitHub refuses to receive. #8 is clean.
         const secret = yield* w.contribute(7, [
           { "src/secret.ts": "token\n" },
           { "src/secret.ts": null, "src/greeting.ts": greeted },
@@ -710,8 +651,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Public export", (it) =
           `${repository}#7 is not merged: the push that merges it failed (see its error above). The next export tries it again.`,
         );
 
-        // The push with both merges is refused. The export then goes without merges, and #8's
-        // merge goes on top of it with the same tree.
         const refused = yield* w.exportPublic();
         expect(refused.exitCode, refused.output).toBe(0);
         expect(refused.output).toContain("push declined: secret detected");
@@ -728,8 +667,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Public export", (it) =
         expect(after.files).toEqual(["README.md", "src/eight.ts", "src/greeting.ts"]);
         expect(refused.commit).toBe(after.sha);
 
-        // GitHub marks #8 merged. With nothing else to export, #7's merge is refused again and v2
-        // stays as it is.
         const listed = [
           { number: 7, state: "open", merged: false, base: "v2", head: secret },
           { number: 8, state: "closed", merged: true, base: "v2", head: clean },
@@ -742,7 +679,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Public export", (it) =
         expect(yield* w.tip("v2")).toEqual(after);
         expect(again.commit).toBe(after.sha);
 
-        // A later port still merges while #7 waits.
         const nine = yield* w.contribute(9, [{ "src/nine.ts": "\n" }]);
         yield* w.land({ "src/nine.ts": "\n" }, ported("Port nine", 9, nine));
         yield* w.pulls([
@@ -793,7 +729,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Public export", (it) =
       const seven = yield* w.contribute(7, [{ "src/pull-7.ts": "\n" }]);
       const eight = yield* w.contribute(8, [{ "src/pull-8.ts": "\n" }]);
       yield* w.land({ "src/pull-7.ts": "\n" }, ported("Port seven", 7, seven));
-      /** The contributor pushes another commit onto `from`, remade until its sha sorts as asked. */
       const pushMore = (number: number, from: string, sortsBefore: boolean) =>
         Effect.gen(function* () {
           for (let attempt = 0; ; attempt++) {
@@ -805,8 +740,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Public export", (it) =
             if (head < from === sortsBefore) return head;
           }
         });
-      // Both push again before the next export. One new head sorts before its old one and the
-      // other after it, so neither order of a pull request's markers decides what merges.
       const sevenMoved = yield* pushMore(7, seven, true);
       const eightMoved = yield* pushMore(8, eight, false);
       yield* w.pulls([
@@ -824,8 +757,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Public export", (it) =
       const before = yield* w.tip("v2");
       expect(before.parents).toHaveLength(1);
 
-      // #7's new commits land in a port of their own. #8's port took two rounds before it
-      // landed, so its squash body holds both of its markers, the old one first.
       yield* w.land(
         { "src/pull-7.ts": "more\n" },
         ported("Port seven's new commits", 7, sevenMoved),
@@ -866,7 +797,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Public export", (it) =
         const before = yield* w.tip("v2");
         const head = yield* w.contribute(7, [{ "src/greeting.ts": greeted }]);
         yield* w.land({ "src/greeting.ts": greeted }, ported("Greet the world", 7, head));
-        // GitHub lists the ported head, but the contributor pushes again before the export fetches it.
         yield* w.pulls([{ number: 7, state: "open", merged: false, base: "v2", head }]);
         yield* w.contribute(7, [{ "src/pull-7.ts": "\n" }], head);
 
@@ -891,7 +821,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Public export", (it) =
         const newer = `Public-PR: ${repository}#8 0123456789ab`;
         yield* w.land({ "src/pull-7.ts": "\n" }, `Port seven\n\n${older}\n`);
         const released = yield* w.land({ "src/pull-8.ts": "\n" }, `Port eight\n\n${newer}\n`);
-        // As the release job's checkout, it lacks the commit the last export names.
         const checkout = yield* w.shallowCheckout;
 
         const exported = yield* w.exportPublic({ branch: "v2-releases", checkout });

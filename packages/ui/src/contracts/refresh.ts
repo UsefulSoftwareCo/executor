@@ -1,11 +1,6 @@
-/** Retention and revalidation for dashboard reads that also render on the server. */
 import type { Duration } from "effect";
 import { type AsyncResult, Atom } from "effect/reactivity";
 
-/**
- * Counts returns to a visible page. A server render has no window, so its value never changes
- * there and each read starts once for that request.
- */
 const pageFocus = Atom.readable((get) => {
   if (typeof window === "undefined") return 0;
   let count = 0;
@@ -17,17 +12,9 @@ const pageFocus = Atom.readable((get) => {
   return count;
 });
 
-/** A page opened again within this time shows its retained value without another read. */
-const retention: Duration.Input = "30 minutes";
-/** Older retained values are shown while they are read again in the background. */
+const retention: Duration.Input = "5 minutes";
 const freshness: Duration.Input = "30 seconds";
 
-/**
- * Keep a read for a while after its last view closes, so returning to a page shows its data
- * instead of a skeleton. A page that opens with a value older than `freshness` reads it again in
- * the background, and every return to a visible tab reads it again. Hydrated values carry the
- * server's timestamp, so the first render after hydration does not repeat the server's read.
- */
 export const revalidated = <A extends Atom.Atom<AsyncResult.AsyncResult<unknown, unknown>>>(
   self: A,
 ) =>
@@ -38,9 +25,4 @@ export const revalidated = <A extends Atom.Atom<AsyncResult.AsyncResult<unknown,
     focusSignal: pageFocus,
   });
 
-/**
- * Read a live subscription again on every return to a visible page, the same refresh `revalidated`
- * gives a plain read. Its own updates still arrive as they happen; it is not retained after its last
- * view closes.
- */
 export const refreshedOnFocus = Atom.makeRefreshOnSignal(pageFocus);

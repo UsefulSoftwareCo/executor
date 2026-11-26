@@ -1,11 +1,3 @@
-/**
- * Versions before 4.0.10 saved OAuth clients under a digest of their owner, provider, method,
- * callback, issuer and scopes. `6_stored_oauth_clients` moves each to the one owner and provider
- * whose accounts signed in with it, and reports a client that accounts of several providers hold as
- * `ambiguous_owner`, filed under why: how many owners and providers hold it, whether it has a
- * secret, how it was saved, and whether exactly one holder's settings reproduce its key. The
- * product starts with data steps held in report mode, so each start reports the step again.
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
@@ -25,7 +17,6 @@ import { scenarios } from "../test-plan.ts";
 const step = "6_stored_oauth_clients";
 const scopes = ["read"];
 
-/** An MCP app whose provider declares its scopes, as most saved clients' providers did. */
 const appFiles = (name: string, url: string) => [
   {
     path: "index.ts",
@@ -97,13 +88,11 @@ layer(TestLive, { excludeTestServices: true })("Ambiguous saved OAuth clients", 
         const prefix = `/api/organizations/${actors.organization.id}`;
         const log = `${target.directory}/server.log`;
         yield* issuer.configure({ registration: false, tokenError: null });
-        // One client someone entered for two services: the same ID and secret.
         const entered = {
           clientId: `entered-${randomUUID().slice(0, 8)}`,
           clientSecret: "synthetic-entered-secret",
         };
 
-        // Registered once for the service's server, which both apps sign in at.
         const client = yield* body(
           Registered,
           yield* api.request(actors.owner, "POST", `${prefix}/oauth-clients`, {
@@ -112,7 +101,6 @@ layer(TestLive, { excludeTestServices: true })("Ambiguous saved OAuth clients", 
           }),
         );
 
-        /** Deploy an app of its own provider and sign in to it with the registered client. */
         const connect = (name: string) =>
           Effect.gen(function* () {
             const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
@@ -180,7 +168,6 @@ layer(TestLive, { excludeTestServices: true })("Ambiguous saved OAuth clients", 
           (row) => row.provider === first.provider,
         );
         if (holder === undefined) return yield* Effect.die("The first service has no account");
-        // The key an older version gave the client the first service's sign-in saved.
         const keyed = `client_${createHash("sha256")
           .update(
             JSON.stringify([
@@ -194,7 +181,6 @@ layer(TestLive, { excludeTestServices: true })("Ambiguous saved OAuth clients", 
             ]),
           )
           .digest("hex")}`;
-        // A key no holder's settings reproduce, saved before sources were recorded.
         const unkeyed = `client_${randomBytes(32).toString("hex")}`;
         const registration = {
           client_id: entered.clientId,

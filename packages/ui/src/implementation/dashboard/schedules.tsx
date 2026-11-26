@@ -19,7 +19,7 @@ import {
   type ScheduleControls,
   type ScheduleCopyControls,
 } from "../../contracts/schedules.ts";
-import { QueryView, useDashboard, useQuery } from "./context.tsx";
+import { QueryView, useDashboard, usePreload, useQuery } from "./context.tsx";
 import { Alert } from "../components/alert.tsx";
 import { DisabledTooltip } from "../components/disabled-tooltip.tsx";
 import { Button } from "../components/button.tsx";
@@ -33,14 +33,9 @@ import {
 
 type Declaration = {
   readonly name: string;
-  /** `app`: one schedule, run without a caller with the app's accounts, that its editors control. */
   readonly scope: AccountScope;
   readonly timing: AppSchedule["timing"];
   readonly declared: boolean;
-  /**
-   * The signed-in member's own copy, or the app schedule; without one the declaration is paused
-   * for them, or for the app.
-   */
   readonly copy: ScheduleSettings | undefined;
 };
 type ApprovalMode = ScheduleSettings["approvalMode"];
@@ -54,7 +49,6 @@ const timingText = (timing: Declaration["timing"]) => {
         : [timing.milliseconds / 1000, "second"];
   return `Every ${amount} ${unit}${amount === 1 ? "" : "s"}`;
 };
-/** Compact shared controls. No organization model or role checks enter this view. */
 export function AppSchedules<E>({
   app,
   canEdit,
@@ -62,7 +56,6 @@ export function AppSchedules<E>({
 }: {
   readonly app: App;
   readonly canEdit: boolean;
-  /** Whose copy the tab shows: the signed-in member's. Undefined when the host has one member. */
   readonly actor: string | undefined;
   readonly bindings: ScheduleBindings<E>;
   readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
@@ -105,6 +98,7 @@ type ListProps<E> = {
 };
 function LiveSchedules<E>(props: ListProps<E>) {
   const { bindings, Failure } = props;
+  usePreload(bindings.definitions, bindings.settings);
   const discovery = useQuery(bindings.definitions);
   return (
     <SchedulesLayout>
@@ -115,7 +109,6 @@ function LiveSchedules<E>(props: ListProps<E>) {
   );
 }
 
-/** Metadata and schedule reads share one frame and a neutral loading state. */
 export function AppSchedulesLoading() {
   return (
     <SchedulesLayout>
@@ -177,7 +170,6 @@ function ScheduleList<E>({
   const { AppLink } = useDashboard();
   const declarations = new Map<string, Declaration>();
   for (const setting of saved) {
-    // The app schedule has no actor; other members' copies are theirs.
     if (setting.actor !== null && actor !== undefined && setting.actor !== actor) continue;
     declarations.set(setting.name, {
       name: setting.name,
@@ -196,7 +188,6 @@ function ScheduleList<E>({
         scope,
         timing: definition.timing,
         declared: true,
-        // A copy saved in the other scope is not this declaration's.
         copy: saved?.scope === scope ? saved.copy : undefined,
       });
     }
@@ -277,7 +268,6 @@ function ScheduleList<E>({
 const noControls = "You need permission to use this app to change schedules.";
 const noAppControls = "Only people who can edit this app can change its app schedules.";
 
-/** The state a member's copy is in; a member without a copy has the declaration paused. */
 const copyState = (copy: ScheduleSettings | undefined) =>
   copy === undefined
     ? "Paused"
@@ -291,7 +281,6 @@ const copyState = (copy: ScheduleSettings | undefined) =>
             ? "Enabled"
             : "Paused";
 
-/** One declaration with the signed-in member's own copy of it. */
 function DeclarationRow<E>({
   app,
   declaration,
@@ -411,7 +400,6 @@ function DiscoveryFailure<E>({
   const { AppLink } = useDashboard();
   const error = Cause.findErrorOption(cause);
   if (Option.isSome(error) && Schema.is(AccountRequired)(error.value)) {
-    // An app requirement is filled by the accounts linked for everyone, not by the caller's links.
     const forEveryone = app.requirements.accounts[error.value.slot]?.scope === "app";
     return (
       <Alert className="flex flex-wrap items-center justify-between gap-4 p-6">
@@ -434,12 +422,6 @@ function DiscoveryFailure<E>({
   return <Failure cause={cause} {...(retry ? { retry } : {})} />;
 }
 
-/**
- * The member's controls for their copy, or an editor's for the app schedule. Enabling configures
- * the copy, adding it when there is none; pausing, running, changing approvals and removing act on
- * the existing copy. App schedules run only mutations without approval, so they have no approval
- * choice.
- */
 function ScheduleActions<E>({
   name,
   copy,

@@ -1,4 +1,3 @@
-/** Add app lists official catalog apps only and never reads the public registry. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Layer, Schema } from "effect";
 import { Api, body, SessionClients } from "../support/api.ts";

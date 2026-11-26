@@ -1,5 +1,4 @@
 import { appsManifest } from "./apps-release.ts";
-/** Authored app used through public HTTP to observe durable sleep and exactly-once step writes. */
 export const durabilityFiles = [
   {
     path: "index.ts",

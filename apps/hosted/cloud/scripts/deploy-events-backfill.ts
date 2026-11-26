@@ -1,15 +1,3 @@
-/**
- * One-off: builds the deploy events (`src/infrastructure/deploy-events.ts`) of the Deploy
- * workflow's past runs on `main`, one per run attempt whose deploy job reached its deploy step. It
- * builds each one with `deployEventOf`, as the recorder does, so an attempt the recorder also sent
- * gets the same event.
- *
- *   GITHUB_TOKEN="$(gh auth token)" node apps/hosted/cloud/scripts/deploy-events-backfill.ts --dry-run
- *
- * `--dry-run` prints the events as JSON lines and sends nothing. Without it the events go to
- * `AXIOM_DEPLOY_EVENTS_URL` with `AXIOM_TOKEN`, a short-lived API token (`notes/ci.md`).
- * `--days` sets how far back to read runs, by when they were created (90 by default).
- */
 import { parseArgs } from "node:util";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import { Array as Arr, Console, DateTime, Effect, Option } from "effect";

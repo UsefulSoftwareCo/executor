@@ -1,4 +1,3 @@
-/** Browser writes for the last-organization memory; the server reads it for `/`. */
 import {
   lastOrganizationCookie,
   type LastOrganization,
@@ -21,12 +20,10 @@ const current = (): Option.Option<LastOrganization> => {
     : Schema.decodeUnknownOption(Schema.fromJsonString(LastOrganizationSchema))(value);
 };
 
-/** Forget every destination, after sign-out or a change of user. */
 export const clearLastOrganization = (): void => {
   document.cookie = `${name()}=; Max-Age=0; ${attributes()}`;
 };
 
-/** Record a foreground organization only after the host has confirmed the user's access. */
 export const rememberOrganization = (user: string, organization: OrganizationId): void => {
   const saved = current();
   if (
@@ -39,7 +36,6 @@ export const rememberOrganization = (user: string, organization: OrganizationId)
   document.cookie = `${name()}=${value}; Max-Age=${lifetime}; ${attributes()}`;
 };
 
-/** Forget a rejected destination without removing a newer choice made in another tab. */
 export const forgetOrganization = (user: string, organization: OrganizationId): void => {
   const saved = current();
   if (

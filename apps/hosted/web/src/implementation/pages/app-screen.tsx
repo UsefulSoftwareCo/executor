@@ -7,7 +7,6 @@ import { useEffect, useRef, useState } from "react";
 import { appUiError, appUiLocationAtom } from "../../contracts/app-ui.ts";
 import { useOrganizationRoute } from "../components/organization.tsx";
 
-/** App metadata keeps the card label in the existing list request. */
 export function AppScreenBadge({ app }: { readonly app: App }) {
   const hasUi = "hasUi" in app ? app.hasUi : undefined;
   return app.activeVersion !== null && hasUi !== false ? (
@@ -15,10 +14,6 @@ export function AppScreenBadge({ app }: { readonly app: App }) {
   ) : null;
 }
 
-/**
- * The app's location, read again when its active version changes. The previous answer stays
- * while that read runs, so the screen and its controls never fall back to loading.
- */
 export function useAppUiLocation(app: App) {
   const { organization, slug } = useOrganizationRoute();
   const location = appUiLocationAtom({ organization, slug, app: app.id, appSlug: app.slug });
@@ -33,7 +28,6 @@ export function useAppUiLocation(app: App) {
   return { result, refresh };
 }
 
-/** `active` says whether the host shows the screen; a prewarmed one stays mounted while hidden. */
 export function AppScreen({ app, active }: { readonly app: App; readonly active: boolean }) {
   const { result, refresh } = useAppUiLocation(app);
   if (AsyncResult.isFailure(result))
@@ -61,7 +55,6 @@ export function AppScreen({ app, active }: { readonly app: App; readonly active:
   return <AppFrame key={result.value.url} url={result.value.url} name={app.name} active={active} />;
 }
 
-/** The App view of an app whose active version has no UI, or that has no active version. */
 export function NoAppScreen() {
   return <ScreenStatus message="This app has no screen." />;
 }
@@ -95,16 +88,9 @@ function AppSkeleton() {
   );
 }
 
-/** A document still loading has another origin, so the target origin drops the message to it. */
 const tell = (frame: HTMLIFrameElement | null, url: string, active: boolean) =>
   frame?.contentWindow?.postMessage({ type: "executor:app-active", active }, new URL(url).origin);
 
-/**
- * A host-owned readiness message catches blocked frames and HTTP errors, which do not fire onError.
- * Each document that reports ready, including one its version watcher reloaded, and each app client
- * that asks then hears whether the host shows it, so the client can pause its polling while the
- * frame sits behind other tabs.
- */
 function AppFrame({
   url,
   name,
@@ -127,7 +113,6 @@ function AppFrame({
     const ready = (event: MessageEvent) => {
       if (event.origin !== new URL(url).origin || event.source !== frame.current?.contentWindow)
         return;
-      // An app client asks when it starts, which may be after the document loaded.
       if (event.data?.type === "executor:app-client") tell(frame.current, url, shown.current);
       if (event.data?.type !== "executor:app-ready") return;
       window.clearTimeout(timer);

@@ -1,4 +1,3 @@
-/** Exercise domain readiness states at the browser's public HTTP boundary. */
 import { expect, layer } from "@effect/vitest";
 import { Effect } from "effect";
 import { randomUUID } from "node:crypto";
@@ -50,12 +49,13 @@ layer(HostedLive, { excludeTestServices: true })("App domain readiness", (it) =>
                 json:
                   status === "too_long"
                     ? { _tag: "AppUiAddressInvalid", reason: "too_long" }
-                    : { status, url: status === "ready" ? url : null },
+                    : status === "ready"
+                      ? { status, url, name: "Domain status", icon: false, menuBar: false }
+                      : { status, url: null },
               });
             },
           ),
         );
-        // The header's domain status is under test; the App view would show it a second time.
         yield* browser.use("Open the deployed app details", (page) =>
           page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=overview`),
         );

@@ -5,3 +5,5 @@ bun.lock text eol=lf
 packages/app-templates/executor/** text eol=lf
 # Host protocol snapshots are recorded by scripts/check-app-protocols.ts; review the diff summary, not the file.
 packages/apps/protocols/[0-9]*.json linguist-generated=true
+# Pinned runtime digests; fetch.sh matches whole lines, so a checkout must not add CR.
+scripts/releases/bun-runtime/SHA256SUMS text eol=lf

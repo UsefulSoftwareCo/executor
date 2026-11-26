@@ -1,8 +1,3 @@
-/**
- * A synthetic OpenAPI document as large as the biggest vendor APIs apps import: hundreds of
- * operations with deep inline request and response schemas, every field described. All of it is
- * generated; no real API's document is used.
- */
 const words = [
   "account",
   "project",
@@ -32,7 +27,6 @@ const sentence = (seed: number, length: number) => {
 
 type Json = { readonly [key: string]: unknown };
 
-/** An object schema `depth` levels deep with `width` described properties at each level. */
 const objectSchema = (seed: number, depth: number, width: number): Json => {
   const properties: Record<string, Json> = {};
   for (let index = 0; index < width; index++) {
@@ -52,11 +46,6 @@ const objectSchema = (seed: number, depth: number, width: number): Json => {
   return { type: "object", required: Object.keys(properties).slice(0, 2), properties };
 };
 
-/**
- * `operations` synthetic operations on `origin`, and `GET /health`, tagged `service` with the
- * operationId `health`, which the product itself answers with `{ "status": "ok" }`. `prose`, when
- * given, ends each operation's description.
- */
 export const largeOpenapiDocument = (origin: string, operations: number, prose?: string) => {
   const paths: Record<string, Record<string, Json>> = {
     "/health": {
@@ -125,14 +114,6 @@ export const largeOpenapiDocument = (origin: string, operations: number, prose?:
   };
 };
 
-/**
- * A synthetic OpenAPI document whose resources expand into one another, as payment APIs' do: one
- * field of each resource holds the next resource's ID or, expanded, that resource. Following those
- * fields from any resource reaches every other, so each operation's schema reaches every resource's
- * definition, and a tool listing that wrote every tool's definitions in full would hold the
- * definitions once for each of `operations` tools. Each operation returns one resource; `GET
- * /health` is as in `largeOpenapiDocument`. All of it is generated.
- */
 export const expandableOpenapiDocument = (
   origin: string,
   resources: number,

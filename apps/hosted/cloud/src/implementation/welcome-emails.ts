@@ -16,13 +16,6 @@ const Recipients = Schema.Array(
   }),
 );
 
-/**
- * Claim before sending, with no transaction held over the provider call. Only new,
- * verified users are eligible. Concurrent runs cannot claim the same recipient.
- * Cloudflare has no send idempotency key: an ambiguous attempt is held for review,
- * never retried automatically. A crash after claiming can therefore miss a welcome.
- * The outcome counts each attempt held for review as a failure.
- */
 export const deliverWelcomeEmails = (
   send: SendWelcomeEmail,
   links: (id: string, email: string) => Effect.Effect<UnsubscribeLinks, WelcomeEmailUnavailable>,

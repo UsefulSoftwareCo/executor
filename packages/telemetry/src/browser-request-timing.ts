@@ -1,4 +1,3 @@
-/** Correlated browser timings for same-origin Executor responses only. */
 import { Option, Schema } from "effect";
 
 const milliseconds = Schema.Number.check(Schema.isFinite(), Schema.isGreaterThanOrEqualTo(0));
@@ -27,7 +26,6 @@ const Entry = Schema.Struct({
 });
 const decode = Schema.decodeUnknownOption(Entry);
 
-/** Missing/restricted browser measurements stay absent instead of being labelled network or cold-start time. */
 export const browserRequestTiming = (
   entry: unknown,
   origin: string,
@@ -35,7 +33,6 @@ export const browserRequestTiming = (
   const parsed = decode(entry);
   if (Option.isNone(parsed)) return;
   const value = parsed.value;
-  // Cached Server-Timing IDs describe the original response, not this browser read.
   if (
     value.deliveryType === "cache" ||
     (value.transferSize === 0 && value.decodedBodySize !== undefined && value.decodedBodySize > 0)

@@ -1,5 +1,4 @@
 import { usePreload } from "@executor-js/ui/dashboard/context";
-import type { OrganizationReference } from "@executor-js/hosted-server/organization";
 import { AppResources } from "./app-resources.tsx";
 import { AppAccounts } from "./app-accounts.tsx";
 import { AppSkills } from "@executor-js/ui/dashboard/app-skills";
@@ -26,7 +25,7 @@ import { scheduleBindings } from "../../contracts/schedules.ts";
 import { sessionAtom } from "../../contracts/auth.ts";
 import { AppDetailLoading, OverviewCardLoading } from "@executor-js/ui/dashboard/app-loading";
 import { Exit, Option, Schema } from "effect";
-import { Atom, AsyncResult } from "effect/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import { HostedFailure, useDashboardAtoms } from "../components/dashboard-bindings.tsx";
 import { dashboardAtoms } from "../../contracts/dashboard-bindings.ts";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
@@ -71,8 +70,8 @@ import {
 import { type OrganizationPageReads, useOrganizationRoute } from "../components/organization.tsx";
 import { AppTools } from "./app-tools.tsx";
 import { AppSource, AppVersions } from "./app-source.tsx";
+import { AppDesktopSettings } from "./app-sign-in.tsx";
 
-/** The organization's inventory and the app, its linked accounts and its access, keyed by the URL. */
 export const appDetailPageReads: OrganizationPageReads = (organization, params) =>
   Option.match(Schema.decodeUnknownOption(AppId)(params.appId), {
     onNone: () => [],
@@ -82,54 +81,11 @@ export const appDetailPageReads: OrganizationPageReads = (organization, params) 
       appLinksAtom({ organization, app }),
       userLinksAtom({ organization, app }),
       appAccessAtom({ organization, app }),
-      listedAppReads(organization)(app),
     ],
   });
 
-/**
- * The overview's tools, skills, workflows and source reads wait for the app and its links. When
- * the Apps list already holds this app, its version, access and linked accounts start them with
- * the page's first reads instead. Opening an app without the list loaded reads nothing extra, and
- * a guess the page's own reads contradict costs one unused read: the page renders from its own.
- */
-const listedAppReads = Atom.family((organization: OrganizationReference) =>
-  Atom.family((app: AppId) =>
-    Atom.readable((get) => {
-      const listed = get(listedAppAtom(organization)(app));
-      if (listed === undefined) return;
-      const { entry, accounts } = listed;
-      // The list names no requirement per link, so a user requirement counts any linked account of
-      // its provider, as the app card does. App requirements stay unknown, so never missing.
-      const user = Object.entries(entry.app.requirements.accounts).flatMap(([slot, requirement]) =>
-        requirement.scope === "user"
-          ? accounts.flatMap(({ account }) =>
-              entry.linkedAccounts.includes(account.id) && account.provider === requirement.provider
-                ? [{ requirement: slot, account }]
-                : [],
-            )
-          : [],
-      );
-      const requirements = requirementAccounts(entry.app, { user });
-      if (entry.access.canUse) {
-        const bindings = appBrowserBindings(organization, entry.app);
-        get(bindings.skills);
-        if (missingRequirements(requirements).length === 0) {
-          get(toolsAtom({ organization, app, version: entry.app.activeVersion ?? undefined }));
-          get(bindings.workflows);
-        }
-      }
-      if (entry.access.canManage) get(appManagement(organization).authoring(app));
-    }),
-  ),
-);
-
-/** Views that read only the app. The others also read the inventory and the app's links. */
 const appWideViews: ReadonlySet<AppView> = new Set(["settings", "versions", "source", "history"]);
 
-/**
- * Links with their sign-in state and checks by this app. Accounts the caller can use show the
- * inventory's details, which renames keep current; others only the link's.
- */
 const withSummaries = (
   links: readonly AppAccountLink[],
   summaries: readonly AccountSummary[],
@@ -144,7 +100,6 @@ const withSummaries = (
     },
   }));
 
-/** Views that run app code use the accounts linked to the app. */
 export function AppDetailPage({
   appId,
   view,
@@ -180,22 +135,14 @@ export function AppDetailPage({
   const access = Option.getOrUndefined(authority.data);
   const canManage = access?.canManage === true,
     canUse = access?.canUse === true;
-  // The settled Apps list already answers whether this caller has a screen here, so a page opened
-  // from it shows its App tab on first paint. The page's own reads replace that answer as they land.
   const listed = useAtomValue(listedAppAtom(organization)(appId))?.entry;
-  // A read that failed means the list may be stale (the app was deleted or unshared since), so its
-  // entry stops answering for that read.
   const screenRecord = app ?? (AsyncResult.isFailure(query.result) ? undefined : listed?.app);
-  const screenAccess =
-    access ?? (AsyncResult.isFailure(authority.result) ? undefined : listed?.access);
+  const screenAccess = access ?? (AsyncResult.isFailure(authority.result) ? undefined : listed?.access);
   const screenTab = appScreenTab(screenRecord, screenAccess, {
     app: AsyncResult.isFailure(query.result),
     access: AsyncResult.isFailure(authority.result),
   });
-  // Only callers who can use the app get its tab and its prewarmed frame.
   const screenApp = screenTab === "present" ? screenRecord : undefined;
-  // Without a view in the URL, an app with a screen opens on it. The choice waits for that answer
-  // instead of showing Overview and switching once the screen turns up.
   const selectedView: AppView | undefined =
     view ??
     (tool !== undefined
@@ -240,12 +187,17 @@ export function AppDetailPage({
       </Button>
     </div>
   );
-  const pending = <AppDetailLoading view={selectedView} app={screenRecord} selectedTool={tool} />;
+  const pending = (
+    <AppDetailLoading
+      view={selectedView}
+      app={screenRecord}
+      selectedTool={tool}
+      canEdit={access === undefined ? undefined : canManage}
+    />
+  );
   return (
     <AppDetailLayout
       key={appId}
-      // The list entry names the app and makes its tabs links on the first frame; actions and
-      // content still wait for the page's own reads.
       app={screenRecord}
       view={selectedView}
       canInspectSource={canManage}
@@ -374,6 +326,7 @@ export function AppDetailPage({
                   <section className="rounded-lg border p-5">
                     <AppAccessSettings app={current.id} />
                   </section>
+                  {canUse && <AppDesktopSettings app={current} />}
                 </AppSettings>
               );
             if (
@@ -616,7 +569,6 @@ function DeleteApp({ app }: { readonly app: App }) {
   );
 }
 
-/** The mutation acknowledges shared metadata before the dialog closes. */
 function AppRename({ app }: { readonly app: App }) {
   const { organization } = useOrganizationRoute();
   const rename = useAtomSet(renameAppAtom({ organization, app: app.id }), { mode: "promiseExit" });

@@ -1,4 +1,3 @@
-/** Metadata overrides retain issuer checks; MCP challenge scopes avoid unnecessary OpenID. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
@@ -98,8 +97,6 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
             return { completed, url };
           });
 
-        // The resource advertises OpenID, but its root metadata omits signing algorithms. The
-        // ES256 ID token is ignored, so the RS256 default for unlisted algorithms never applies.
         yield* issuer.configure({
           scopes: ["openid", "profile", "email", "read"],
           includeIdToken: true,
@@ -118,7 +115,6 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
             .pipe(Effect.orDie),
         );
 
-        // An exact OIDC metadata location is used without changing the expected issuer.
         const overridden = yield* deploy("Explicit metadata", {
           discover: `${issuer.origin}/mcp`,
           authorizationServerMetadataUrl: metadataUrl,
@@ -155,14 +151,12 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
         });
         expect((yield* issuer.metrics).refreshes).toBeGreaterThan(0);
 
-        // Bad issuer, blocked address and missing explicit metadata never fall back to root metadata.
         yield* issuer.configure({ metadataOverrideIssuer: `${issuer.origin}/different` });
         const mismatch = yield* setup(overridden);
         expect(mismatch.status).toBe(422);
         expect((yield* body(Failure, mismatch)).reason).toBe("discovery_invalid");
         yield* issuer.configure({ metadataOverrideIssuer: null, metadataOverrideStatus: 404 });
         expect((yield* body(Failure, yield* setup(overridden))).reason).toBe("discovery_missing");
-        // An ID token with a nonce Executor never sent is ignored like any other.
         yield* issuer.configure({ metadataOverrideStatus: 200, invalidNonce: true });
         const foreignNonce = yield* connect(overridden);
         expect(foreignNonce.completed.status, JSON.stringify(foreignNonce.completed.body)).toBe(
@@ -180,7 +174,6 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
         });
         expect((yield* body(Failure, yield* setup(blocked))).reason).toBe("discovery_blocked");
 
-        // A narrower resource challenge selects access-only scopes; authored scopes win over it.
         yield* issuer.configure({
           includeIdToken: false,
           invalidNonce: false,
@@ -223,8 +216,6 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
         yield* issuer.configure({ postChallenge: true });
         expect((yield* body(Setup, yield* setup(automatic))).scopes).toEqual(["read"]);
 
-        // The advertised list never widens a challenge, even one inside it: the issuer grants
-        // `read` or `admin:read`, but refuses the two together.
         yield* issuer.configure({
           postChallenge: false,
           scopes: ["read", "admin:read"],
@@ -240,8 +231,6 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
             .request(actors.owner, "DELETE", `${prefix}/accounts/${challengedAccount.id}`)
             .pipe(Effect.orDie),
         );
-        // Wider access is the author's choice: declared scopes replace the challenge, and the
-        // issuer's refusal of an incompatible set reaches the user as it is, never narrowed.
         const declared = yield* deploy("Declared wider scopes", {
           discover: `${issuer.origin}/mcp`,
           scopes: ["read", "admin:read"],

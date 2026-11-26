@@ -1,4 +1,3 @@
-/** Revision storage over a host's Git backend. Each protected ref pins a complete snapshot. */
 import { Effect } from "effect";
 import {
   SourceError,
@@ -8,13 +7,11 @@ import {
   type SourceFiles,
 } from "../contracts/source.ts";
 
-/** Stable file ordering makes retries and migration comparisons independent of input order. */
 const encodeSource = (files: SourceFiles) =>
   new TextEncoder().encode(
     JSON.stringify([...files].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))),
   );
 
-/** Ordinary Git pushes cannot change a retained snapshot; only the protected ref names it. */
 export const gitSourceStorage = (repositories: RepositoryBackend): AppSourceStorage => ({
   workspace: (code) =>
     repositories.read(code, "main").pipe(

@@ -1,4 +1,3 @@
-/** An authored app may set site cookies, but cannot choose the dashboard's signed-in user. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { scenarios } from "../test-plan.ts";

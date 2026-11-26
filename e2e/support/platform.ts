@@ -1,14 +1,12 @@
-/** Shared test runtime: native services and a real clock, with no application imports. */
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Config, Context, Effect, FileSystem, Layer, Redacted, Schema } from "effect";
 import { FetchHttpClient } from "effect/http";
 import { RunMetadata } from "../report-model.ts";
 import { FixtureControl, PreparedScenarios } from "../sdk/contracts.ts";
+import { indented, keepCause, keptCauseText, secretConfig } from "./failure-text.ts";
 
-/** Per-action capture delay; zero keeps unattended runs at full speed. */
 export const RecordingPaceMs = Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 3000 }));
 
-/** Runtime facts supplied once by the scoped runner, not inferred by scenarios. */
 export class Target extends Context.Service<
   Target,
   {
@@ -36,14 +34,14 @@ export class Target extends Context.Service<
       const metadata = yield* fs
         .readFileString(`${directory}/run.json`)
         .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(RunMetadata))));
-      const apiKey = yield* Config.Redacted("EXECUTOR_E2E_API_KEY");
+      const apiKey = yield* secretConfig("EXECUTOR_E2E_API_KEY");
       const recordingPaceMs = yield* Config.Number("E2E_RECORDING_PACE_MS").pipe(
         Effect.flatMap(Schema.decodeUnknownEffect(RecordingPaceMs)),
       );
       const observeUI = yield* Config.Boolean("E2E_UI_OBSERVE").pipe(Config.withDefault(false));
       const fixtures = yield* Config.String("E2E_FIXTURES").pipe(Config.withDefault(""));
       const rows = yield* Config.Number("E2E_ROWS").pipe(
-        Config.withDefault(1000),
+        Config.withDefault(300),
         Effect.flatMap(
           Schema.decodeUnknownEffect(
             Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 10000 })),
@@ -53,9 +51,12 @@ export class Target extends Context.Service<
       return {
         metadata,
         directory,
-        preparedScenarios: yield* Config.String("E2E_PREPARED_SCENARIOS").pipe(
-          Config.withDefault("{}"),
-          Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(PreparedScenarios))),
+        preparedScenarios: yield* Schema.decodeUnknownEffect(
+          Schema.fromJsonString(PreparedScenarios),
+        )(
+          (yield* fs.exists(`${directory}/prepared-scenarios.json`))
+            ? yield* fs.readFileString(`${directory}/prepared-scenarios.json`)
+            : "{}",
         ),
         apiKey,
         rows,
@@ -72,26 +73,28 @@ export class Target extends Context.Service<
     }),
   );
 }
-/** Runtime shared by Effect Vitest layers; target resources belong to the runner. */
 export const RuntimeLive = Target.layer.pipe(
   Layer.provideMerge(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer)),
 );
-/** Boundary failure with a safe operation label; raw SDK errors stay redacted. */
 export class DriverFailed extends Schema.TaggedError<DriverFailed>()("DriverFailed", {
   operation: Schema.String,
   cause: Schema.Redacted(Schema.Unknown),
 }) {
   get message() {
-    return `Driver operation failed: ${this.operation}`;
+    return `Driver operation failed: ${this.operation}\n  ${indented(keptCauseText(this) ?? "A redacted value")}`;
   }
 }
-/** Lift exactly one third-party operation. Orchestration stays in Effect. */
+export const withCause = <E extends { readonly cause?: Redacted.Redacted<unknown> | undefined }>(
+  error: E,
+): E => {
+  keepCause(error, error.cause);
+  return error;
+};
 export const driver = <A>(operation: string, run: (signal: AbortSignal) => Promise<A>) =>
   Effect.tryPromise({
     try: run,
-    catch: (cause) => new DriverFailed({ operation, cause: Redacted.make(cause) }),
+    catch: (cause) => withCause(new DriverFailed({ operation, cause: Redacted.make(cause) })),
   });
-/** Public wire response, fully consumed inside the request scope. */
 export interface Response {
   readonly status: number;
   readonly body: unknown;

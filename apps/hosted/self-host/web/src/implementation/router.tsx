@@ -8,7 +8,6 @@ import { serverDocument } from "./document.ts";
 import { signInInitialValues } from "../contracts/auth.ts";
 import { routeTree } from "./routeTree.gen.ts";
 
-/** One router and atom registry per document request on the server, and one per page in the browser. */
 export const getRouter = () => {
   const { connect, Wrap } = dashboardRegistry(
     import.meta.env.SSR

@@ -1,0 +1,295 @@
+import { Clock, Duration, Effect, Option, Redacted, Result, Schema } from "effect";
+import type { HttpClientError, HttpClientResponse } from "effect/http";
+import { errorCode, nextCause } from "./failure-text.ts";
+import { platformSignatures } from "../platform-signatures.ts";
+import { sentFacts } from "./lost-connections.ts";
+
+export const RequestStage = Schema.Literals([
+  "before response",
+  "reading body",
+  "decoding body",
+  "timeout",
+]);
+export type RequestStage = typeof RequestStage.Type;
+
+export const RequestConnection = Schema.Literals([
+  "dns",
+  "connect",
+  "tls",
+  "reset",
+  "closed",
+  "timeout",
+  "other",
+]);
+export type RequestConnection = typeof RequestConnection.Type;
+
+export const RequestFailure = Schema.Struct({
+  stage: RequestStage,
+  status: Schema.optional(Schema.Number),
+  connection: Schema.optional(RequestConnection),
+  ray: Schema.optional(Schema.String),
+  colo: Schema.optional(Schema.String),
+  errors: Schema.optional(Schema.String),
+  code: Schema.optional(Schema.String),
+  elapsedMs: Schema.Number,
+  signature: Schema.optional(Schema.Literals(["runtime-502", "lost"])),
+  sent: Schema.optional(
+    Schema.Struct({
+      connection: Schema.optional(Schema.Literals(["new", "reused"])),
+      earlierRequests: Schema.optional(Schema.Number),
+      connectionAgeMs: Schema.optional(Schema.Number),
+      idleMs: Schema.optional(Schema.Number),
+      written: Schema.Literals(["nothing", "headers", "whole request"]),
+      responseStarted: Schema.Boolean,
+      attempts: Schema.optional(Schema.Number),
+      waitedMs: Schema.optional(Schema.Number),
+      stopped: Schema.optional(Schema.String),
+    }),
+  ),
+});
+export type RequestFailure = typeof RequestFailure.Type;
+
+const sentOf = (cause: unknown): RequestFailure["sent"] => {
+  let current: unknown = cause;
+  for (let level = 0; level < depth && typeof current === "object" && current !== null; level++) {
+    const facts = sentFacts(current);
+    if (facts !== undefined)
+      return {
+        ...(facts.connection !== undefined && { connection: facts.connection }),
+        ...(facts.earlierRequests !== undefined && { earlierRequests: facts.earlierRequests }),
+        ...(facts.connectionAgeMs !== undefined && { connectionAgeMs: facts.connectionAgeMs }),
+        ...(facts.idleMs !== undefined && { idleMs: facts.idleMs }),
+        written: facts.written,
+        responseStarted: facts.responseStarted,
+        ...(facts.repeats !== undefined && facts.repeats > 0 && { attempts: facts.repeats }),
+        ...(facts.waitedMs !== undefined && { waitedMs: facts.waitedMs }),
+        ...(facts.stopped !== undefined && { stopped: facts.stopped }),
+      };
+    current = nextCause(current);
+  }
+  return undefined;
+};
+
+const sentText = (sent: NonNullable<RequestFailure["sent"]>) =>
+  [
+    sent.connection === undefined
+      ? `never written to a connection${sent.attempts === undefined || sent.attempts < 2 ? "" : ` on any of ${sent.attempts} attempts over ${((sent.waitedMs ?? 0) / 1000).toFixed(1)} s`}${sent.stopped === undefined ? "" : `, not sent again: ${sent.stopped}`}`
+      : `on a ${sent.connection} connection${sent.connection === "reused" && sent.earlierRequests !== undefined ? ` (${sent.earlierRequests} earlier requests${sent.connectionAgeMs === undefined ? "" : `, ${(sent.connectionAgeMs / 1000).toFixed(1)} s old`})` : sent.connectionAgeMs === undefined ? "" : ` ${sent.connectionAgeMs} ms old`}${sent.idleMs === undefined ? "" : ` idle ${(sent.idleMs / 1000).toFixed(1)} s`}`,
+    sent.connection === undefined ? undefined : `${sent.written} written`,
+    sent.responseStarted ? "a response had begun" : "no response",
+  ]
+    .filter((part) => part !== undefined)
+    .join(", ");
+
+export { platformSignatures } from "../platform-signatures.ts";
+
+export const isRuntimeBadGateway = (input: {
+  readonly status: number;
+  readonly contentType: string | undefined;
+  readonly text: string;
+  readonly ray: string | undefined;
+}) =>
+  input.status === 502 &&
+  /^text\/plain(?:\s*;|$)/iu.test((input.contentType ?? "").trim()) &&
+  input.text === "Bad Gateway" &&
+  input.ray !== undefined;
+
+export const isLost = (failure: Omit<RequestFailure, "signature">) =>
+  failure.status === undefined &&
+  failure.stage === "before response" &&
+  (failure.connection === "reset" || failure.connection === "closed");
+
+export const signatureText = (failure: RequestFailure | undefined) => {
+  if (failure?.signature === "runtime-502")
+    return `${platformSignatures["runtime-502"]} (ray ${failure.ray}${failure.colo === undefined ? "" : `-${failure.colo}`}): `;
+  if (failure?.signature === "lost")
+    return `${platformSignatures.lost}: the client saw the connection ${failure.connection === "reset" ? "reset" : "closed"} with no response after ${failure.elapsedMs} ms: `;
+  return "";
+};
+
+const identifier = /^[A-Za-z][A-Za-z0-9]{0,39}$/u;
+const depth = 8;
+
+const field = (value: unknown, key: string): unknown =>
+  typeof value === "object" && value !== null && key in value
+    ? (value as Record<string, unknown>)[key]
+    : undefined;
+
+export const causeChain = (cause: unknown): { errors?: string; code?: string } => {
+  const errors: Array<string> = [];
+  const code = errorCode(cause);
+  let current: unknown = cause;
+  for (let level = 0; level < depth && typeof current === "object" && current !== null; level++) {
+    const tag = field(current, "_tag");
+    const name = typeof tag === "string" ? tag : field(current, "name");
+    if (typeof name === "string" && identifier.test(name) && errors.at(-1) !== name)
+      errors.push(name);
+    current = nextCause(current);
+  }
+  return {
+    ...(errors.length > 0 && { errors: errors.join(" > ") }),
+    ...(code !== undefined && { code }),
+  };
+};
+
+const rayShape = /^([0-9a-f]{16})(?:-([A-Z]{3}))?$/u;
+
+export const edgeOf = (
+  headers: Readonly<Record<string, string | undefined>> | undefined,
+): { ray?: string; colo?: string } => {
+  const [, ray, colo] = rayShape.exec(headers?.["cf-ray"]?.trim() ?? "") ?? [];
+  if (ray === undefined) return {};
+  return { ray, ...(colo !== undefined && { colo }) };
+};
+
+const connectionCodes: ReadonlyArray<readonly [RequestConnection, RegExp]> = [
+  ["dns", /^(?:ENOTFOUND|EAI_AGAIN|EAI_NONAME|EAI_FAIL)$/u],
+  [
+    "connect",
+    /^(?:ECONNREFUSED|EHOSTUNREACH|ENETUNREACH|EADDRNOTAVAIL|ETIMEDOUT|UND_ERR_CONNECT_TIMEOUT)$/u,
+  ],
+  [
+    "tls",
+    /^(?:EPROTO|ERR_TLS_\w+|ERR_SSL_[\w/]+|CERT_\w+|UNABLE_TO_\w+|DEPTH_ZERO_SELF_SIGNED_CERT|SELF_SIGNED_CERT_IN_CHAIN)$/u,
+  ],
+  ["reset", /^(?:ECONNRESET|EPIPE)$/u],
+  ["closed", /^(?:UND_ERR_SOCKET|UND_ERR_CLOSED|ECONNABORTED|ERR_STREAM_PREMATURE_CLOSE)$/u],
+  ["timeout", /^(?:UND_ERR_HEADERS_TIMEOUT|UND_ERR_BODY_TIMEOUT)$/u],
+];
+
+export const connectionOf = (
+  stage: RequestStage,
+  code: string | undefined,
+): RequestConnection | undefined => {
+  if (stage === "decoding body") return undefined;
+  if (stage === "timeout") return "timeout";
+  if (code === undefined) return "other";
+  if (code === "ETIMEDOUT" && stage !== "before response") return "timeout";
+  return connectionCodes.find(([, pattern]) => pattern.test(code))?.[0] ?? "other";
+};
+
+export const requestFailureText = (failure: RequestFailure) =>
+  [
+    (failure.status === undefined
+      ? failure.stage
+      : failure.stage === "timeout"
+        ? `timeout after the headers of HTTP ${failure.status}`
+        : `${failure.stage} of HTTP ${failure.status}`) +
+      (failure.connection === undefined || failure.connection === failure.stage
+        ? ""
+        : ` (${failure.connection})`),
+    [failure.errors, failure.code].filter((part) => part !== undefined).join(" ") || undefined,
+    `after ${failure.elapsedMs} ms`,
+    failure.ray === undefined
+      ? undefined
+      : `ray ${failure.ray}${failure.colo === undefined ? "" : `-${failure.colo}`}`,
+    failure.sent === undefined ? undefined : sentText(failure.sent),
+  ]
+    .filter((part) => part !== undefined)
+    .join(", ");
+
+export class CallFailed extends Schema.TaggedError<CallFailed>()("CallFailed", {
+  failure: RequestFailure,
+  cause: Schema.optional(Schema.Redacted(Schema.Unknown)),
+}) {}
+
+export const readResponse = <R>(
+  execute: Effect.Effect<HttpClientResponse.HttpClientResponse, HttpClientError.HttpClientError, R>,
+  timeout?: Duration.Input,
+) =>
+  Effect.suspend(() => {
+    let status: number | undefined;
+    let edge: { ray?: string; colo?: string } = {};
+    return Effect.gen(function* () {
+      const started = yield* Clock.currentTimeMillis;
+      const fail = (stage: RequestStage, cause: unknown) =>
+        Clock.currentTimeMillis.pipe(
+          Effect.flatMap((now) => {
+            const chain = causeChain(cause);
+            const connection = connectionOf(stage, chain.code);
+            const failure = {
+              stage,
+              ...(status !== undefined && { status }),
+              ...(connection !== undefined && { connection }),
+              ...edge,
+              ...chain,
+              elapsedMs: now - started,
+              ...(stage === "before response" &&
+                sentOf(cause) !== undefined && { sent: sentOf(cause) }),
+            };
+            return Effect.fail(
+              new CallFailed({
+                failure: { ...failure, ...(isLost(failure) && { signature: "lost" as const }) },
+                ...(cause !== undefined && { cause: Redacted.make(cause) }),
+              }),
+            );
+          }),
+        );
+      const read = Effect.gen(function* () {
+        const response = yield* execute.pipe(
+          Effect.catch((cause) => fail("before response", cause)),
+        );
+        status = response.status;
+        edge = edgeOf(response.headers);
+        const text = yield* response.text.pipe(
+          Effect.catch((cause) => fail("reading body", cause)),
+        );
+        return { response, text, started };
+      });
+      if (timeout === undefined) return yield* read;
+      return yield* read.pipe(
+        Effect.timeoutOption(timeout),
+        Effect.flatMap(
+          Option.match({
+            onNone: () => fail("timeout", undefined),
+            onSome: Effect.succeed,
+          }),
+        ),
+      );
+    });
+  });
+
+export const decodeFailure = (
+  status: number,
+  started: number,
+  cause: unknown,
+  headers?: Readonly<Record<string, string | undefined>>,
+  text?: string,
+) =>
+  Clock.currentTimeMillis.pipe(
+    Effect.map((now): RequestFailure => {
+      const edge = edgeOf(headers);
+      const runtime =
+        text !== undefined &&
+        isRuntimeBadGateway({
+          status,
+          contentType: headers?.["content-type"],
+          text,
+          ray: edge.ray,
+        });
+      return {
+        stage: "decoding body",
+        status,
+        ...edge,
+        ...causeChain(cause),
+        elapsedMs: now - started,
+        ...(runtime && { signature: "runtime-502" as const }),
+      };
+    }),
+  );
+
+export const parseJson = (
+  text: string,
+  status: number,
+  started: number,
+  headers?: Readonly<Record<string, string | undefined>>,
+) =>
+  Effect.suspend(() => {
+    if (text === "") return Effect.succeed(null as unknown);
+    const parsed = Result.try((): unknown => JSON.parse(text));
+    return Result.isSuccess(parsed)
+      ? Effect.succeed(parsed.success)
+      : decodeFailure(status, started, parsed.failure, headers, text).pipe(
+          Effect.flatMap((failure) => Effect.fail(new CallFailed({ failure }))),
+        );
+  });

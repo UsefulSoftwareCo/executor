@@ -5,12 +5,11 @@ import {
   HostedAccountDialog,
   type AccountDialogKind,
 } from "./account-actions.tsx";
-import { Option } from "effect";
 import { AccountsPage as SharedPage } from "@executor-js/ui/dashboard/accounts";
 import { EmptyState } from "@executor-js/ui/dashboard/empty-state";
 import { Button } from "@executor-js/ui/components/button";
 import { Link } from "@tanstack/react-router";
-import { useQuery } from "@executor-js/ui/dashboard/context";
+import { usePreload } from "@executor-js/ui/dashboard/context";
 import { HostedFailure } from "../components/dashboard-bindings.tsx";
 import {
   type OrganizationPageReads,
@@ -18,17 +17,12 @@ import {
   useOrganizationRoute,
 } from "../components/organization.tsx";
 import { OAuthClientsDialog } from "./oauth-clients.tsx";
-import { resourceDirectoryAtom, resourceInventoryAtom } from "../../contracts/resource-access.ts";
+import { resourceInventoryAtom } from "../../contracts/resource-access.ts";
 
-/** The organization's account directory. */
 export const accountsPageReads: OrganizationPageReads = (organization) => [
-  resourceDirectoryAtom(organization),
+  resourceInventoryAtom(organization),
 ];
 
-/**
- * Personal and shared credentials use one list. Administrators also manage the organization's
- * OAuth clients from here, since those clients only exist to connect accounts.
- */
 export function AccountsPage({
   highlight,
   oauthClients,
@@ -37,7 +31,7 @@ export function AccountsPage({
   readonly oauthClients: { readonly open: boolean; readonly onOpenChange: (open: boolean) => void };
 }) {
   const { organization, slug: organizationSlug } = useOrganizationRoute();
-  const directory = useQuery(resourceDirectoryAtom(organization));
+  usePreload(...accountsPageReads(organization, {}));
   const [dialog, setDialog] = useState<{ account: AccountId; kind: AccountDialogKind }>();
   const role = useOrganizationDetails()?.role;
   const admin = role !== undefined && role !== "member";
@@ -66,34 +60,16 @@ export function AccountsPage({
               </div>
             }
           >
-            Open an app to connect an account, or ask a teammate to share one.
+            Open an app to connect your own account.
           </EmptyState>
         }
         highlight={highlight}
-        accountActions={(account) => {
-          const entry = Option.isSome(directory.data)
-            ? directory.data.value.accounts.find((item) => item.account.id === account.id)
-            : undefined;
-          return (
-            <HostedAccountActions
-              account={account}
-              access={entry?.access}
-              open={(kind) => setDialog({ account: account.id, kind })}
-            />
-          );
-        }}
-        accountMeta={(account) => {
-          const access = Option.isSome(directory.data)
-            ? directory.data.value.accounts.find((item) => item.account.id === account.id)?.access
-            : undefined;
-          return (
-            access && (
-              <span className="rounded border px-1.5 py-0.5 text-[10px]">
-                {access.ownership.kind === "personal" ? "Personal" : "Shared"}
-              </span>
-            )
-          );
-        }}
+        accountActions={(account) => (
+          <HostedAccountActions
+            account={account}
+            open={(kind) => setDialog({ account: account.id, kind })}
+          />
+        )}
       />
       {dialog && (
         <HostedAccountDialog

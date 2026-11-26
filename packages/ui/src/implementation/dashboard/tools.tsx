@@ -22,12 +22,6 @@ import { Empty, SearchInput } from "./common.tsx";
 import { Skeleton } from "../components/skeleton.tsx";
 import { cn } from "../lib/utils.ts";
 
-/**
- * Stable list/inspector layout. Hosts choose navigation and any tool execution controls.
- * The list carries no schemas; the selected tool's schemas are read through detail.
- * A group that is a router, such as one MCP server, shows the router's title and description.
- * On phones the inspector fills the section and the list opens as a panel over it.
- */
 export function ToolBrowser<E>({
   query,
   detail,
@@ -37,12 +31,10 @@ export function ToolBrowser<E>({
   renderAction,
   empty,
 }: QueryProps<ToolCatalog, E> & {
-  /** Undefined when the tool left the catalog after the list was read. */
   readonly detail: (tool: ToolSummary) => Query<Tool | undefined, E>;
   readonly selected: string | undefined;
   readonly onSelect: (tool: string) => void;
   readonly renderAction?: (tool: ToolSummary) => ReactNode;
-  /** Replaces the empty catalog message when the host knows why the app listed nothing. */
   readonly empty?: ReactNode;
 }) {
   const { result, data, refresh } = useQuery(query);
@@ -71,7 +63,6 @@ export function ToolBrowser<E>({
     </Button>
   );
   const tree = buildTree(filtered, routers);
-  // Labels come from the whole catalog so searching does not change a tool's title.
   const { leafLabels } = treeIndex(buildTree(tools, routers));
   const groups = groupKeys(tree);
   const allCollapsed = groups.length > 0 && groups.every((key) => collapsed.has(key));
@@ -108,7 +99,6 @@ export function ToolBrowser<E>({
             nodes={tree}
             depth={0}
             current={current?.name}
-            // Searching reveals every match; the saved collapse state returns afterwards.
             collapsed={search ? new Set() : collapsed}
             onToggle={(key) =>
               setCollapsed((previous) => {
@@ -179,7 +169,6 @@ export function ToolBrowser<E>({
                   <>
                     <AppSectionHeader>
                       {listToggle}
-                      {/* Same heading as the pending header, so the row keeps its geometry. */}
                       <AppSectionTitle className="min-w-0 flex-1 truncate font-mono text-muted-foreground">
                         {current.name}
                       </AppSectionTitle>
@@ -190,7 +179,6 @@ export function ToolBrowser<E>({
                         inline
                       />
                     </AppSectionHeader>
-                    {/* One key per tool: every part of the inspector remounts together. */}
                     <div
                       key={current.name}
                       className="min-h-0 flex-1 overflow-auto px-8 pt-7 pb-10 max-[740px]:px-4 max-[740px]:pt-5"
@@ -220,7 +208,6 @@ export function ToolBrowser<E>({
   );
 }
 
-/** The selected tool's schemas, read on selection rather than with the list. */
 function ToolSchemas<E>({ query, Failure }: QueryProps<Tool | undefined, E>) {
   const { result, refresh } = useQuery(query);
   return (
@@ -284,7 +271,6 @@ function SchemaSkeleton() {
   );
 }
 
-/** Retain the tool browser's list and detail geometry while its reads are pending. */
 export function ToolBrowserLoading({
   label = "Loading tools",
   selected,
@@ -394,17 +380,8 @@ interface Entry {
   readonly segments: readonly string[];
 }
 
-/** Routers by path, which is the dotted prefix their tools' names share. */
 type Routers = ReadonlyMap<string, ToolRouter>;
 
-/**
- * Group tools by the dotted parts of their names, keeping catalog order. Within a level, a
- * `prefix_` shared by several tools becomes a group too, e.g. `accounts_connect` and
- * `accounts_rename` under Accounts. A tool that repeats its group's name as a prefix, like
- * MCP servers that namespace every tool (`planetscale.planetscale_list_databases`), drops the
- * repeat instead of nesting a second group with the same name. A dotted group is a router and
- * takes its metadata.
- */
 function buildTree(tools: readonly ToolSummary[], routers: Routers): readonly ToolNode[] {
   return nest(
     tools.map((tool) => ({ tool, segments: tool.name.split(".") })),
@@ -420,7 +397,6 @@ const underscorePrefix = (segment: string) => {
   return at > 0 && at < segment.length - 1 ? segment.slice(0, at) : undefined;
 };
 
-/** Removes a leading `name_` that only repeats the enclosing group's name. */
 const withoutGroupPrefix = (entry: Entry, group: string): Entry => {
   const [only, ...rest] = entry.segments;
   if (only === undefined || rest.length > 0) return entry;
@@ -430,7 +406,6 @@ const withoutGroupPrefix = (entry: Entry, group: string): Entry => {
     : entry;
 };
 
-/** `path` is the enclosing router's path, or undefined inside a `prefix_` group. */
 function nest(
   nested: readonly Entry[],
   parent: string,
@@ -497,7 +472,6 @@ function groupKeys(nodes: readonly ToolNode[]): readonly string[] {
   );
 }
 
-/** Each tool's short label in the tree. */
 function treeIndex(nodes: readonly ToolNode[]) {
   const leafLabels = new Map<string, string>();
   const walk = (level: readonly ToolNode[]) => {
@@ -600,7 +574,6 @@ function ToolTree({
 
 type Effect = "read" | "change" | "delete" | "unknown";
 
-/** What running the tool does, from its own read-only and destructive hints. */
 function toolEffect(tool: ToolSummary): Effect {
   const readOnly = tool.readOnly ?? tool.annotations?.readOnlyHint;
   if (readOnly === true) return "read";
@@ -608,7 +581,6 @@ function toolEffect(tool: ToolSummary): Effect {
   return readOnly === false ? "change" : "unknown";
 }
 
-/** Read at render: a module-level table can capture icons before their chunk initializes on the server. */
 const effectIcon = (effect: Effect) => {
   switch (effect) {
     case "read":
@@ -629,7 +601,6 @@ const effects: Record<Effect, { readonly label?: string; readonly badge?: string
   unknown: {},
 };
 
-/** A description that only repeats the title adds nothing. */
 const sameText = (a: string, b: string) =>
   a
     .trim()

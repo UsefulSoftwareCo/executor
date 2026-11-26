@@ -1,4 +1,3 @@
-/** Browser proof through a real self-host, including the existing browser-bound sign-in protocol. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import type { Page, Request, Route } from "playwright";
@@ -26,7 +25,6 @@ const files = [
   appsManifest,
 ];
 
-/** Location reads of one app, sent on their own or inside a dashboard read batch. */
 const locationReads = (app: string, request: Request) => {
   const path = new URL(request.url()).pathname;
   if (path.endsWith(`/apps/${app}/ui`)) return 1;
@@ -36,7 +34,6 @@ const locationReads = (app: string, request: Request) => {
   ).length;
 };
 
-/** Hold an app's location read until released, whether it travels alone or in a batch. */
 const holdLocation = (page: Page, organization: string, app: string) => {
   let release!: () => void;
   let requested!: () => void;
@@ -55,7 +52,6 @@ const holdLocation = (page: Page, organization: string, app: string) => {
     locationReads(app, route.request()) > 0 ? hold(route) : route.fallback();
   return Promise.all([page.route(direct, hold), page.route(batch, batched)]).then(() => ({
     requested: seen,
-    // Held reads continue before their routes are removed.
     release: () => {
       release();
       return Promise.all(held).then(() =>
@@ -65,7 +61,6 @@ const holdLocation = (page: Page, organization: string, app: string) => {
   }));
 };
 
-/** Count frames of `title` the page removes and app loading states it adds from now on. */
 const watchFrame = (page: Page, title: string) =>
   page.evaluate((title) => {
     const seen = { removed: 0, loading: 0 };
@@ -133,7 +128,6 @@ layer(HostedLive, { excludeTestServices: true })("Embedded app screens", (it) =>
         );
         expect([403, 404]).toContain(unknownApp.status());
         yield* browser.login(actors.owner);
-        // Cookies never enter retained network traces or screenshots.
         yield* browser.omitNetworkTrace;
         const detail = `/org/${actors.organization.slug}/apps/${first.app.id}`;
         let appListUiRequests = 0;
@@ -307,9 +301,6 @@ layer(HostedLive, { excludeTestServices: true })("Embedded app screens", (it) =>
             .waitFor({ timeout: 20_000 }),
         );
         yield* browser.use("The dashboard reads the activated version", (page) => {
-          // A returning tab reads the app and its location again; the activated version then reads
-          // the location once more. Chrome does not always keep streamed batch bodies, so either
-          // signal shows the dashboard has the new version.
           const appRead = page.waitForResponse((response) => {
             const url = new URL(response.url());
             return url.origin === target.metadata.origin &&
@@ -449,7 +440,6 @@ layer(HostedLive, { excludeTestServices: true })("Embedded app screens", (it) =>
               expect(response.headers()["content-security-policy"]).toBe("frame-ancestors 'none'"),
             ),
         );
-        // Hold both the location read and the app document, so tab switches land mid-load.
         let releaseDocument!: () => void;
         const documentHeld = new Promise<void>((resolve) => (releaseDocument = resolve));
         const heldDocuments: Array<Promise<void>> = [];
@@ -581,8 +571,6 @@ layer(HostedLive, { excludeTestServices: true })("Embedded app screens", (it) =>
           failures: ["net::ERR_BLOCKED_BY_RESPONSE"],
           appCommitted: false,
         });
-        // Network failure and time are controlled at the browser boundary.
-        // The held document fails before its route is removed, so it cannot load late.
         let failDocument!: () => void;
         const documentGate = new Promise<void>((resolve) => (failDocument = resolve));
         const failedDocuments: Array<Promise<void>> = [];

@@ -7,7 +7,6 @@ import { cloudServerValues, serverDocument } from "./document.ts";
 import { routeTree } from "./routeTree.gen.ts";
 import { UIObservation } from "./ui-observation.tsx";
 
-/** One router and atom registry per document request on the server, and one per page in the browser. */
 export const getRouter = () => {
   const { connect, Wrap: Registry } = dashboardRegistry(
     import.meta.env.SSR ? cloudServerValues(serverDocument()) : [],

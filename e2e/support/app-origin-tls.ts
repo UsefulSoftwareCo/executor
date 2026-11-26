@@ -1,4 +1,3 @@
-/** TLS terminates at this fixture; every HTTP handler still runs in the real self-host process. */
 import { createServer } from "node:https";
 import { request } from "node:http";
 import * as NodeHttpClient from "@effect/platform-node/NodeHttpClient";
@@ -87,7 +86,6 @@ export const appOriginTls = Effect.gen(function* () {
   };
 });
 
-/** Trust just this scenario's certificate and resolve only its loopback fixture hosts. */
 export const appOriginHttpClient = (certificate: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;

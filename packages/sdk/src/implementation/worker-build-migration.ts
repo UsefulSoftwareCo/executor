@@ -1,12 +1,3 @@
-/**
- * One-off migration of builds retained with their `apps` framework inlined in `<build>.json` to a
- * record, `<build>/worker.json`, that links a framework stored once. See
- * notes/build-framework-migration.md. `<build>.json` is never deleted or rewritten, so code that
- * predates the split can still load every build that existed before it.
- *
- * This module owns its own copy of the inlined schema: it is migration code, and stays after the
- * runtime reader of inlined builds is removed.
- */
 import { sourceText } from "../contracts/source.ts";
 import { Effect, Option, Schema } from "effect";
 import { type BlobKey, BlobStore } from "../contracts/blobs.ts";
@@ -34,23 +25,14 @@ import {
   loadWorkerFramework,
 } from "./worker-build-storage.ts";
 
-/** A build as every host retained it before frameworks were stored once. */
 const InlinedBuild = Schema.Struct({
   ...WorkerBundle.fields,
   database: Schema.Boolean,
   ui: Schema.optional(Schema.Array(UiAsset)),
-  /** Builds retained before protocols were recorded speak protocol 1, the only one then. */
   protocol: AppProtocolVersion.pipe(Schema.withDecodingDefaultKey(Effect.succeed(1))),
 });
 type InlinedBuild = typeof InlinedBuild.Type;
 
-/**
- * The published `apps` releases, by the SHA-256 of their `runtime.json` server modules as
- * `frameworkIdentity` computes it. Releases with identical server modules share a hash; they are
- * listed oldest first. Releases without `runtime.json` (before beta.0, and the unrelated `apps`
- * packages published from 0.5.0) never supplied a framework. Computed from the npm archives; the
- * step has shipped once this is merged, so this table never changes.
- */
 const publishedFrameworks: Readonly<Record<string, readonly [string, ...string[]]>> = {
   ac37ae3a48936a12ae82ef0c766b76fa522a253a2ad4885e564b49f26cf64f1a: ["0.0.1-beta.0"],
   dd50512f5b1ca9a2e031f32893eeea38952830c6ee8a0c552b16434910eced34: ["0.0.1-beta.1"],
@@ -75,7 +57,6 @@ const publishedFrameworks: Readonly<Record<string, readonly [string, ...string[]
   "0302e2436c4f8323ebaf028d62295778e9a3e47cbc67526902236d88f8a16a55": ["0.0.1-beta.16"],
 };
 
-/** An exact npm version: no range, tag or URL. */
 const exactVersion = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 const Manifest = Schema.fromJsonString(
   Schema.Struct({
@@ -83,7 +64,6 @@ const Manifest = Schema.fromJsonString(
   }),
 );
 
-/** The `apps` release an app version's retained source declares, if it can be read. */
 const declaredApps = (version: VersionId) =>
   Effect.gen(function* () {
     const files = yield* readVersionSource(yield* BlobStore, version);
@@ -96,17 +76,8 @@ const declaredApps = (version: VersionId) =>
     return typeof declared === "string" ? declared : undefined;
   }).pipe(Effect.orElseSucceed(() => undefined));
 
-/**
- * Where a framework's version label came from: the published release with its hash, the exact
- * version the app version declares, or neither. The hash alone decides which object a build links.
- */
 export type FrameworkLabelSource = "release" | "declared" | "unreleased";
 
-/**
- * Label a framework hash: the published release with that hash (the declared one when several
- * releases share it, otherwise the oldest); else the app version's declared `dependencies.apps`
- * when it is an exact version; else `unreleased`.
- */
 const frameworkLabel = (sha256: string, version: VersionId) =>
   Effect.gen(function* () {
     const releases = publishedFrameworks[sha256];
@@ -124,16 +95,6 @@ const frameworkLabel = (sha256: string, version: VersionId) =>
       : { version: "unreleased", source: "unreleased" as const };
   });
 
-/**
- * - `already-split`: `<build>/worker.json` exists and links a framework whose content matches its
- *   hash, identical to `<build>.json` when that exists too.
- * - `split`: apply wrote the record (and the framework when it was absent) and the read-back is
- *   byte-identical to the inlined build. In report mode, the in-memory split would be.
- * - `missing`: neither object exists. The build cannot load today.
- * - `invalid`: `<build>.json` does not decode, or holds no framework modules to split off.
- * - `failed`: storage failed, a stored framework does not match its hash, or the read-back
- *   differs. Retried.
- */
 export const BuildSplitOutcome = Schema.Literals([
   "already-split",
   "split",
@@ -158,7 +119,6 @@ const sameModule = (
   return left.wasm.every((byte, index) => byte === right.wasm[index]);
 };
 
-/** The linked build must be byte-identical to the inlined one, module by module. */
 const verify = (
   inlined: InlinedBuild,
   linked: LoadedWorkerBuild,
@@ -184,7 +144,6 @@ const read = (key: Effect.Effect<BlobKey, Schema.SchemaError>) =>
     return yield* (yield* BlobStore).get(yield* key);
   });
 
-/** A record that exists, links a framework whose content has its hash, and matches `inlined`. */
 const verifyStored = (build: BuildId, inlined: InlinedBuild | undefined) =>
   Effect.gen(function* () {
     const stored = yield* loadStoredWorkerBuild(build);
@@ -201,23 +160,16 @@ const verifyStored = (build: BuildId, inlined: InlinedBuild | undefined) =>
     if (reason !== undefined) return yield* new SplitMismatch({ reason });
   });
 
-/** What one item of the migration did or, in report mode, would do. Counts are bytes. */
 export interface BuildSplit {
   readonly outcome: BuildSplitOutcome;
   readonly reason?: string;
   readonly framework?: FrameworkIdentity & { readonly label: FrameworkLabelSource };
-  /** Whether the framework object already existed before this item. */
   readonly frameworkStored?: boolean;
   readonly inlinedBytes?: number;
   readonly recordBytes?: number;
   readonly frameworkBytes?: number;
 }
 
-/**
- * Split one build. Apply writes the framework if absent (checking an existing one's hash), then
- * the record last, and verifies the read-back. Report does the same reads and checks in memory and
- * writes nothing. `version` is any version of the build, for its declared `apps` version.
- */
 export const splitInlinedWorkerBuild = (
   build: BuildId,
   version: VersionId,
@@ -244,7 +196,6 @@ export const splitInlinedWorkerBuild = (
         ),
       );
       if (checked === undefined) return { outcome: "already-split", ...sizes } satisfies BuildSplit;
-      // A record the step wrote but whose check failed is rewritten from `<build>.json`.
       if (inlined === undefined || Option.isNone(inlined))
         return { outcome: "failed", reason: checked, ...sizes } satisfies BuildSplit;
     }
@@ -315,7 +266,6 @@ export const splitInlinedWorkerBuild = (
       ) satisfies BuildSplit;
     }
 
-    // The framework first and the record last: a reader uses `<build>.json` until the record exists.
     if (!frameworkStored) yield* blobs.put(frameworkLocation, frameworkBody);
     yield* blobs.put(yield* buildKey(build), recordBody);
     const reason = yield* verifyStored(build, source).pipe(
@@ -331,7 +281,6 @@ export const splitInlinedWorkerBuild = (
         : { outcome: "failed", reason, ...result }
     ) satisfies BuildSplit;
   }).pipe(
-    // Storage failures leave the item to retry; the next pass reads everything again.
     Effect.catch(() =>
       Effect.succeed({
         outcome: "failed",

@@ -17,7 +17,6 @@ layer(HostedLive, { excludeTestServices: true })("Warm request auth", (it) => {
         const api = yield* Api,
           actors = yield* Actors,
           evidence = yield* Evidence;
-        // The access route answers from the request checks alone, with no later membership read.
         const access = `/api/organizations/${actors.organization.id}/access`;
         const status = (actor: Session) =>
           api.request(actor, "GET", access).pipe(Effect.map((response) => response.status));
@@ -43,7 +42,6 @@ layer(HostedLive, { excludeTestServices: true })("Warm request auth", (it) => {
         yield* evidence.step(
           "A signed-out session is refused on its next request",
           Effect.gen(function* () {
-            // A second jar holds the same session token after the browser signs out.
             const copy = yield* api.session(yield* member.cookies);
             expect(yield* status(member)).toBe(200);
             expect(yield* status(copy)).toBe(200);

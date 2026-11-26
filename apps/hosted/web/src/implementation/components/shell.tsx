@@ -2,12 +2,12 @@ import type { ReactNode } from "react";
 import { OrganizationSwitcher, useOrganizationRoute } from "./organization.tsx";
 import { DashboardFrame } from "./dashboard-frame.tsx";
 
-/** Organization and session controls belong to the hosted product, outside the shared shell. */
 export function DashboardShell({
   navigation,
   banner,
   support,
   notice,
+  news,
   children,
   allowCreateOrganization = true,
 }: {
@@ -15,6 +15,7 @@ export function DashboardShell({
   readonly banner?: ReactNode;
   readonly support?: ReactNode;
   readonly notice?: ReactNode;
+  readonly news?: ReactNode;
   readonly children: ReactNode;
   readonly allowCreateOrganization?: boolean;
 }) {
@@ -27,6 +28,7 @@ export function DashboardShell({
       banner={banner}
       support={support}
       notice={notice}
+      news={news}
     >
       {children}
     </DashboardFrame>

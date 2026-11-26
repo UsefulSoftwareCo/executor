@@ -1,4 +1,3 @@
-/** Organization authorization surrounds app-scoped workflow lifecycle operations. */
 import { withLegacyKeys } from "@executor-js/utils/legacy-keys";
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
@@ -12,6 +11,7 @@ import {
   StartWorkflowFields,
   ListWorkflowRuns,
   WorkflowErrors,
+  WorkflowDefinitionErrors,
 } from "@executor-js/sdk/core";
 import {
   OrganizationReference,
@@ -21,11 +21,8 @@ import {
 const app = { organization: OrganizationReference, app: AppId };
 const run = { ...app, run: WorkflowRunId };
 const errors = [...WorkflowErrors, OrganizationForbidden] as const;
+const definitionErrors = [...WorkflowDefinitionErrors, OrganizationForbidden] as const;
 const path = "/api/organizations/:organization/apps/:app";
-/**
- * Members who can use the app read definitions and start runs with their accounts. Runs belong to
- * the actor that started them; terminating someone else's run needs app management.
- */
 export const HostedWorkflows = HttpApiGroup.make("workflows")
   .add(
     HttpApiEndpoint.get("definitions", `${path}/workflows`, {
@@ -34,7 +31,7 @@ export const HostedWorkflows = HttpApiGroup.make("workflows")
         withLegacyKeys({ version: "deployment" }),
       ),
       success: Schema.Array(HostedWorkflow),
-      error: errors,
+      error: definitionErrors,
     }),
   )
   .add(

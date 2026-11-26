@@ -1,4 +1,3 @@
-/** Query contracts, condition builders, and adapter helpers. */
 export type * from "./contracts/query.ts";
 export {
   arrayOperators,

@@ -6,29 +6,24 @@ import { AsyncResult, type Atom } from "effect/reactivity";
 import type { DashboardBindings, Query, QueryProps } from "../../contracts/dashboard.ts";
 
 const Context = createContext<DashboardBindings | null>(null);
-/** Bind product navigation and icon metadata, without an HTTP client or an auth context. */
 export function DashboardProvider({
   children,
   ...bindings
 }: DashboardBindings & { readonly children: ReactNode }) {
   return <Context value={bindings}>{children}</Context>;
 }
-/** Shared pages use product navigation without importing its router. */
 export function useDashboard() {
   const value = useContext(Context);
   if (value === null) throw new Error("DashboardProvider must enclose this page");
   return value;
 }
-/** Icons can also render outside an authenticated dashboard, using an explicit provider URL. */
 export const useOptionalDashboard = () => useContext(Context);
-/** Read the current value or a previous success, when the source provides one. */
 export function useQuery<A, E>(atom: Query<A, E>) {
   const result = useAtomValue(atom);
   const refresh = useAtomRefresh(atom);
   return { result, data: AsyncResult.value(result), refresh };
 }
 
-/** Loading/failure rendering follows the same source lifetime in every host. */
 export function QueryView<A, E>({
   query,
   Failure,
@@ -48,11 +43,6 @@ export function QueryView<A, E>({
 
 type Results = Readonly<Record<string, AsyncResult.AsyncResult<unknown, unknown>>>;
 
-/**
- * Several reads one view needs, as one read. It fails with the first failure, so a cause shared by
- * the reads, such as a removed app, is reported once. It keeps every read's last value while it
- * fails, so the view keeps its open dialogs and drafts.
- */
 export const allResults = <const R extends Results>(
   results: R,
 ): AsyncResult.AsyncResult<
@@ -67,7 +57,6 @@ export const allResults = <const R extends Results>(
       onSome: (value) => [[key, value] as const],
     }),
   );
-  // Every read has a value exactly when each entry produced one.
   const value =
     values.length === entries.length
       ? Option.some(
@@ -91,7 +80,6 @@ export const allResults = <const R extends Results>(
   });
 };
 
-/** Render a query snapshot without subscribing again. Error and content retain separate React positions. */
 export function QueryResult<A, E>({
   result,
   Failure,
@@ -115,8 +103,6 @@ export function QueryResult<A, E>({
       }),
     }),
   });
-  // Keep the content in the same slot when an error appears or clears. Returning
-  // a different fragment from each matcher branch can remount unkeyed children.
   return (
     <>
       {view.error}
@@ -125,7 +111,6 @@ export function QueryResult<A, E>({
   );
 }
 
-/** Stable loading rows retain the eventual list footprint. */
 export function LoadingRows({ count = 5 }: { readonly count?: number }) {
   return (
     <div
@@ -144,11 +129,6 @@ export function LoadingRows({ count = 5 }: { readonly count?: number }) {
   );
 }
 
-/**
- * Start reads a component needs before it reads the first of them. On the server a render stops
- * at its first unresolved read, so reads that do not depend on each other would otherwise run one
- * after another. The browser already starts every read in the same render.
- */
 export const usePreload = (...atoms: ReadonlyArray<Atom.Atom<unknown>>) => {
   const registry = useContext(RegistryContext);
   if (typeof window === "undefined") for (const atom of atoms) registry.mount(atom);

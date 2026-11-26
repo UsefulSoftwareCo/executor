@@ -6,7 +6,6 @@ import { DashboardClient, appAtom, overviewAtom } from "./api.ts";
 import { accountAtom } from "./accounts.ts";
 import { linkedAccountIds } from "@executor-js/ui/contracts/app-accounts";
 
-/** App metadata changes use the same live subscriptions as other SDK writes. */
 export const renameAppAtom = Atom.family((app: AppId) =>
   DashboardClient.runtime.fn((name: string, get) =>
     Effect.flatMap(DashboardClient, (client) =>
@@ -15,7 +14,6 @@ export const renameAppAtom = Atom.family((app: AppId) =>
   ),
 );
 
-/** Saved app metadata is shared immediately while stream snapshots reconcile it. */
 export function acknowledgeApp(get: Atom.FnContext, saved: App) {
   const inventory = AsyncResult.value(get(overviewAtom));
   const accounts = Option.isSome(inventory)

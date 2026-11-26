@@ -1,4 +1,3 @@
-/** A private, invocation-owned RPC callback passed to a Dynamic Worker. */
 import {
   ElicitationFailed,
   ElicitationReply,
@@ -8,7 +7,6 @@ import {
 } from "apps/contracts";
 import { Cause, Effect, Option, Schema } from "effect";
 
-/** Closing the invocation aborts outstanding and late requests; raw failures never cross the RPC boundary. */
 export const invocationElicitation =
   (handler: ElicitationHandler, signal: AbortSignal) =>
   (input: unknown): Promise<typeof ElicitationReply.Encoded> =>
@@ -44,7 +42,6 @@ interface Invocation {
   cancel(): Promise<void>;
   [Symbol.dispose](): void;
 }
-/** An invocation owns its RPC session and cancellation; it is never shared between callers. */
 export const AppRpcInvocation = Schema.declare(
   (value): value is Invocation =>
     ((typeof value === "object" && value !== null) || typeof value === "function") &&
@@ -65,7 +62,6 @@ interface AppRpcEntrypoint {
     cache?: ((input: unknown) => Promise<unknown>) | null,
   ): Promise<unknown>;
 }
-/** Generated entrypoint; each start returns a separate invocation capability. */
 export const AppRpcEntrypoint = Schema.declare(
   (value): value is AppRpcEntrypoint =>
     typeof value === "object" &&

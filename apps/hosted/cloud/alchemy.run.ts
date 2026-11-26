@@ -1,4 +1,3 @@
-/** Cloud deployment: native API runtime, dashboard, and static marketing assets. */
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Command from "alchemy/Command";
@@ -29,7 +28,6 @@ import AppDomainControllerLive from "./src/app-domains.ts";
 import { AppDomainController } from "./src/infrastructure/app-domain-controller-worker.ts";
 import InvocationTelemetryLive from "./src/invocation-telemetry.ts";
 import { databaseInfrastructure } from "./src/infrastructure/database.ts";
-import { previewPoolSize } from "./src/infrastructure/preview-database.ts";
 import { developmentWeb } from "./src/infrastructure/development.ts";
 import { authEmailInfrastructure } from "./src/infrastructure/email.ts";
 import { uploadCloudSourceMaps } from "./src/infrastructure/sentry.ts";
@@ -44,8 +42,11 @@ import { cloudOrigin, productionStage, stageName } from "./src/infrastructure/st
 import { AppCatalog } from "./src/infrastructure/app-catalog.ts";
 import { productionOAuthProxyCheck } from "./src/infrastructure/deploy-settings.ts";
 import { testStageEdge, testStageRoleHostRecords } from "./src/infrastructure/role-hosts.ts";
+import {
+  ExecutorShHostnameProvider,
+  executorShHostname,
+} from "./src/infrastructure/executor-sh.ts";
 
-/** Every Worker the stack deploys. `scripts/worker-sizes.ts` builds the same layers. */
 export const cloudWorkers = Layer.mergeAll(
   ApiLive,
   AppCompilerLive,
@@ -68,7 +69,7 @@ export default Alchemy.Stack(
       Cloudflare.providers(),
       Command.providers(),
       AppDomainLifecycleProvider(),
-      // No PlanetScale resources or credentials are needed for local cloud development.
+      ExecutorShHostnameProvider(),
       Docker.providers(),
       Layer.unwrap(
         AlchemyContext.pipe(
@@ -83,22 +84,17 @@ export default Alchemy.Stack(
     state: stackState,
   },
   Effect.gen(function* () {
-    // Stops the deploy before anything changes when a setting would stop the Worker at startup.
     yield* productionOAuthProxyCheck.pipe(Effect.orDie);
-    // Stops the deploy before anything changes when the release before this one is not live.
     yield* mcpSessionRetirementGate.pipe(Effect.orDie);
-    // Provisioning settings resolve outside Worker initialization and are not bound into it.
     yield* databaseInfrastructure;
-    if (!(yield* AlchemyContext).dev) yield* previewPoolSize;
     yield* authEmailInfrastructure.pipe(Effect.orDie);
     const api = yield* Api;
     if (!(yield* AlchemyContext).dev) {
-      yield* Marketing;
+      const marketing = yield* Marketing;
       yield* testStageRoleHostRecords;
-      // Production serves the official app feed every deployed stage reads.
       if (Option.getOrUndefined(yield* stageName) === productionStage) yield* AppCatalog;
-      // A test stage plays v1's edge itself; production's edge is v1's.
-      if (Option.isSome(yield* testStageEdge)) yield* Edge;
+      const edge = Option.isSome(yield* testStageEdge) ? yield* Edge : undefined;
+      yield* executorShHostname({ gateway: marketing.workerName, edge: edge?.workerName });
     }
     const appBase = yield* cloudAppUiBase.pipe(Effect.orDie);
     if (appBase !== undefined) {

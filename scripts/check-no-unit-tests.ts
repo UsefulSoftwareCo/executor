@@ -1,7 +1,3 @@
-/**
- * Fails when a test exists outside `e2e/`. Executor is tested end to end only;
- * see notes/coding-style.md.
- */
 import { execFileSync } from "node:child_process";
 
 const test = /(^|\/)(__tests__\/|test\/|[^/]+\.(test|spec|test-d)\.[cm]?[jt]sx?$)/;

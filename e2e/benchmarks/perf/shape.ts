@@ -1,37 +1,17 @@
-/**
- * Production shape: aggregate quantiles only, never identifiers or customer content.
- *
- * `productionShape` was derived on 2026-09-25 from the Axiom dataset executor-next-v2-traces over
- * the preceding 36 hours (Cloud stage `v2`). `pullShape` repeats those queries so the file can be
- * refreshed; it returns quantiles over organizations or requests and nothing else.
- * Members per organization are not observable in traces; the fixture's three roles are used.
- * `linksPerApp` still holds the distinct profiles per organization observed before profiles were
- * replaced by account links, the nearest earlier measure; the next `--pull` replaces it.
- */
 import { Config, Effect, Redacted, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
 
-/** Quantile table: probabilities in ascending order with their observed values. */
 export const Quantiles = Schema.Array(Schema.Tuple([Schema.Number, Schema.Number]));
 export type Quantiles = typeof Quantiles.Type;
 
 export const Shape = Schema.Struct({
   source: Schema.String,
-  /** Distinct apps touched per organization through dashboard routes (orgs with activity). */
   appsPerOrg: Quantiles,
-  /** Distinct accounts touched per organization. */
   accountsPerOrg: Quantiles,
-  /**
-   * Distinct accounts linked or unlinked per app (organization and app) through
-   * `apps/{app}/accounts/{account}`. Members are not observable, so this bounds links per member.
-   */
   linksPerApp: Quantiles,
-  /** Apps and tools in one MCP catalog (per mcp.catalog span). */
   catalogApps: Quantiles,
   catalogTools: Quantiles,
-  /** Tool calls per MCP execute. */
   callsPerExecute: Quantiles,
-  /** Upstream latency: provider HTTP requests and MCP discovery (ms). */
   upstreamCallMs: Quantiles,
   upstreamListMs: Quantiles,
 });
@@ -115,10 +95,6 @@ const percentiles = [10, 25, 50, 75, 90, 95, 99];
 const toQuantiles = (values: readonly number[], scale = 1): Quantiles =>
   values.map((value, index) => [percentiles[index]! / 100, Math.round(value * scale)] as const);
 
-/**
- * Refresh the shape from Axiom. Needs AXIOM_TOKEN with query access to the dataset (and AXIOM_ORG_ID
- * for personal tokens). Only percentile arrays leave Axiom.
- */
 export const pullShape = (dataset: string, hours: number) =>
   Effect.gen(function* () {
     const token = yield* Config.Redacted("AXIOM_TOKEN");
@@ -167,7 +143,6 @@ export const pullShape = (dataset: string, hours: number) =>
     const result: Record<string, Quantiles> = {};
     for (const [key, apl] of Object.entries(queries)) {
       const values = yield* run(apl);
-      // Span durations are nanoseconds.
       result[key] = toQuantiles(values, key.endsWith("Ms") ? 1 / 1_000_000 : 1);
     }
     return yield* Schema.decodeUnknownEffect(Shape)({
@@ -176,7 +151,6 @@ export const pullShape = (dataset: string, hours: number) =>
     });
   });
 
-/** Seeded PRNG (mulberry32) so a seed reproduces the same synthetic population. */
 export const random = (seed: number) => {
   let state = seed >>> 0;
   const next = () => {
@@ -186,7 +160,6 @@ export const random = (seed: number) => {
     t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
-  /** Inverse-CDF sample with log-linear interpolation between observed quantiles. */
   const quantile = (table: Quantiles) => {
     const u = next();
     const first = table[0]!,
@@ -213,11 +186,6 @@ export const random = (seed: number) => {
 };
 export type Random = ReturnType<typeof random>;
 
-/**
- * Tools per app. The catalog quantiles imply mostly small apps with a few very large ones:
- * a median 9-app catalog holds ~167 tools, while 25-app catalogs reach 1.5k-3k tools.
- * 75% small (3-30), 20% medium (30-150), 5% large (400-2500) reproduces those totals.
- */
 export const toolsPerApp = (rng: Random) => {
   const u = rng.next();
   if (u < 0.75) return rng.int(3, 30);

@@ -1,9 +1,7 @@
-/** Shared build tooling. Each dashboard supplies its own root, routes, and API target. */
 import { fileURLToPath } from "node:url";
 import { dashboardStartPlugins } from "@executor-js/dashboard-start/vite";
 import { defineConfig } from "vite-plus";
 
-/** Configure a host's dashboard without importing another host's frontend. */
 export const dashboardViteConfig = ({
   apiUrl,
   port,

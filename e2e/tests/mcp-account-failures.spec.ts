@@ -1,7 +1,3 @@
-/**
- * One linked account whose MCP server fails discovery does not take the app's other accounts down
- * with it: their tools stay listed and callable, and the failure is reported for the broken one.
- */
 import { expect, layer } from "@effect/vitest";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Effect, Layer, Schema } from "effect";
@@ -24,13 +20,8 @@ const JsonRpcRequest = Schema.Struct({
   params: Schema.optional(Schema.Struct({ protocolVersion: Schema.optional(Schema.String) })),
 });
 
-/** The token of the account whose server does not answer `tools/list`. */
 const brokenToken = "synthetic-broken-token";
 
-/**
- * An MCP server that lists and runs `lookup` for every token but one: for `brokenToken` it answers
- * `tools/list` with JSON-RPC -32601, as a server that does not serve that account's catalog does.
- */
 const accountMcpServer = Effect.gen(function* () {
   const answer = (id: string | number, body: object) =>
     HttpServerResponse.json({ jsonrpc: "2.0", id, ...body });
@@ -92,7 +83,6 @@ const accountMcpServer = Effect.gen(function* () {
   return { url: `http://127.0.0.1:${server.address.port}/mcp` };
 });
 
-/** The generated MCP app for per-member accounts: every linked account's server, combined. */
 const appFiles = (url: string) => [
   {
     path: "package.json",
@@ -167,7 +157,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP account failures", (it) =>
               yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`);
           }).pipe(Effect.orDie),
         );
-        // Connecting from the app links each account to it; `.many()` uses every linked one.
         const connect = (label: string, token: string) =>
           Effect.gen(function* () {
             const connection = yield* body(
@@ -193,8 +182,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP account failures", (it) =>
         const working = yield* connect("Working", randomUUID());
         const broken = yield* connect("Broken", brokenToken);
 
-        // The working account's tools are listed; the broken account's failure is reported on
-        // the router it lists through instead of failing the whole listing.
         const indexed = yield* api.request(actors.owner, "GET", `${path}/tools/index`);
         yield* evidence.json("index.json", indexed);
         expect(indexed.status, JSON.stringify(indexed.body)).toBe(200);
@@ -204,7 +191,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP account failures", (it) =>
         expect(failed).toHaveLength(1);
         expect(JSON.stringify(failed[0]?.error)).toContain("-32601");
 
-        // The working account's tool runs.
         const called = yield* api.request(actors.owner, "POST", `${path}/tools/call`, {
           tool: "lookup",
           kind: "query",
@@ -214,7 +200,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP account failures", (it) =>
         expect(called.status, JSON.stringify(called.body)).toBe(200);
         expect(called.body).toMatchObject({ structuredContent: { found: true } });
 
-        // A call with the broken account reports that account's failure, not invalid input.
         const refused = yield* api.request(actors.owner, "POST", `${path}/tools/call`, {
           tool: "lookup",
           kind: "query",
@@ -224,8 +209,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP account failures", (it) =>
         expect(refused.status).not.toBe(200);
         expect(JSON.stringify(refused.body)).toContain("Method not found");
 
-        // Through MCP execute the agent can still use the working account, and is told why the
-        // other one is unavailable.
         const client = yield* mcp.connect(key.key, "account-failures", {
           organization: actors.organization.id,
         });

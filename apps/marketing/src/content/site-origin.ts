@@ -1,10 +1,9 @@
-const DEFAULT_SITE_ORIGIN = "https://executor.sh";
+export const productionSiteOrigin = "https://executor.sh";
 
-/** Parse a public origin supplied by the hosting composition root. */
 export const parseSiteOrigin = (
   value: string | undefined,
   name = "EXECUTOR_SITE_ORIGIN",
-  fallback = DEFAULT_SITE_ORIGIN,
+  fallback = productionSiteOrigin,
 ): string => {
   const origin = value ?? fallback;
   const url = new URL(origin);
@@ -51,5 +50,4 @@ export const apiOrigin = parseSiteOrigin(
   siteOrigin,
 );
 
-/** An absolute URL for a path on the product's browser origin, such as `/login`. */
 export const appHref = (path: `/${string}`) => new URL(path, appOrigin).href;

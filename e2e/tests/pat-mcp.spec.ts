@@ -87,7 +87,7 @@ export default defineApp({}, async () => ({  tools: router({
   const app = yield* body(App, deployed);
   appId = app.id;
   const code = (tool: string) => `return await tools[${JSON.stringify(app.slug)}].${tool}({})`;
-  const ownerClient = yield* mcp.connect(owner.key, "pat-model", { organization });
+  const ownerClient = yield* mcp.connect(owner.key, "pat-model", { organization, mode: "model" });
   return {
     api,
     actors,
@@ -119,6 +119,7 @@ layer(HostedLive, { excludeTestServices: true })("PAT MCP", (it) => {
           evidence,
           organization,
           anonymous,
+          owner,
           other,
           member,
           headers,
@@ -129,12 +130,9 @@ layer(HostedLive, { excludeTestServices: true })("PAT MCP", (it) => {
         yield* evidence.step(
           "PAT authentication requires a permitted organization and never falls back to cookies",
           Effect.gen(function* () {
-            // MCP clients print a refused request's body after their own prefix, so it names
-            // the refusal's own cause, never a generic membership denial.
             const refusal = (code: string, message: string) => ({
               jsonrpc: "2.0",
               id: null,
-              // JSON-RPC Invalid Request, as for the MCP transport's own rejections.
               error: {
                 code: -32600,
                 message: `${code} (HTTP 403): ${message} Retryable (unchanged call): no.`,
@@ -162,7 +160,6 @@ layer(HostedLive, { excludeTestServices: true })("PAT MCP", (it) => {
                 "This account is not a member of the organization this MCP request uses, or that organization does not exist. Recovery: Check the organization name, and that this account still belongs to it. Copy the fix prompt into your agent to investigate the missing access.",
               ),
             );
-            // A PAT grant has no connection, so a connection's URL refuses it and names the URL it serves.
             const scoped = yield* api.request(
               anonymous,
               "GET",
@@ -174,7 +171,7 @@ layer(HostedLive, { excludeTestServices: true })("PAT MCP", (it) => {
             expect(scoped.body).toMatchObject(
               refusal(
                 "GrantForbidden",
-                "This credential works only at the MCP URL ending in /mcp, not at the URL of this request. Recovery: Connect at the MCP URL ending in /mcp, or connect again at this URL to get a credential for it, then retry.",
+                "This credential has full access and no sign-in record, so it cannot be limited to the connection another-connection that this MCP URL names. Recovery: Use the MCP URL without the connection parameter, or sign the client in through OAuth and choose the connection, then retry.",
               ),
             );
             expect(
@@ -205,6 +202,17 @@ layer(HostedLive, { excludeTestServices: true })("PAT MCP", (it) => {
         );
         expect(
           (yield* Schema.decodeUnknownEffect(Completed)(call.structuredContent)).execution,
+        ).toEqual({ ok: true, value: { receipt } });
+        const plain = yield* mcp.connect(owner.key, "pat-plain", { organization });
+        const automatic = yield* plain.use(
+          "A PAT at the plain URL accepts approvals at once",
+          (client, signal) =>
+            client.callTool({ name: "execute", arguments: { code: code("approved") } }, undefined, {
+              signal,
+            }),
+        );
+        expect(
+          (yield* Schema.decodeUnknownEffect(Completed)(automatic.structuredContent)).execution,
         ).toEqual({ ok: true, value: { receipt } });
         const native = yield* mcp.connect(other.key, "pat-native", {
           organization: actors.organization.slug,
@@ -334,7 +342,7 @@ layer(HostedLive, { excludeTestServices: true })("PAT MCP", (it) => {
           ownerClient,
         } = yield* patFixture;
         const paused = yield* ownerClient.use(
-          "Tool approvals still pause PAT execution",
+          "Tool approvals pause PAT execution in model mode",
           (client, signal) =>
             client.callTool({ name: "execute", arguments: { code: code("approved") } }, undefined, {
               signal,
@@ -347,7 +355,10 @@ layer(HostedLive, { excludeTestServices: true })("PAT MCP", (it) => {
         expect(pending.requestId).toMatch(
           yield* wholeStringInputPattern(listed.tools, "resume", "requestId"),
         );
-        const otherClient = yield* mcp.connect(other.key, "pat-other", { organization });
+        const otherClient = yield* mcp.connect(other.key, "pat-other", {
+          organization,
+          mode: "model",
+        });
         const wrong = yield* otherClient.use(
           "A different PAT cannot resume this continuation",
           (client, signal) =>
@@ -475,18 +486,14 @@ layer(HostedLive, { excludeTestServices: true })("PAT MCP", (it) => {
             }),
         );
         const pending = yield* Schema.decodeUnknownEffect(Pending)(paused.structuredContent);
-        // Some clients open a new MCP session for every tool call, so each resume below uses one.
         const resume = (
           label: string,
           key: typeof owner.key,
           name: string,
-          mode?: "model" | "browser",
+          mode: "model" | "browser" = "model",
         ) =>
           Effect.gen(function* () {
-            const session = yield* mcp.connect(key, name, {
-              organization,
-              ...(mode === undefined ? {} : { mode }),
-            });
+            const session = yield* mcp.connect(key, name, { organization, mode });
             const result = yield* session.use(label, (client, signal) =>
               client.callTool(
                 {
@@ -550,7 +557,6 @@ layer(HostedLive, { excludeTestServices: true })("PAT MCP", (it) => {
         const api = yield* Api,
           actors = yield* Actors,
           mcp = yield* McpClient;
-        // A temporary organization, so renaming it moves no other scenario's slug.
         const slug = `pat-rename-${randomUUID().slice(0, 8)}`,
           renamed = `${slug}-renamed`;
         const created = yield* api.request(actors.owner, "POST", "/api/auth/organization/create", {
@@ -593,9 +599,6 @@ export default defineApp({}, async () => ({  tools: router({
         });
         expect(deployed.status).toBe(200);
         const app = yield* body(App, deployed);
-        // The full-account token names the organization by its slug. The slug changes while the
-        // client holds the approval, and the client answers with the new one. The approved call
-        // then runs later in the original tools/call request, which named the old slug.
         let named = slug;
         const native = yield* mcp.connect(key.key, "pat-renamed-organization", {
           organization: () => named,
@@ -631,7 +634,6 @@ export default defineApp({}, async () => ({  tools: router({
         expect(
           (yield* Schema.decodeUnknownEffect(Completed)(approved.structuredContent)).execution,
         ).toEqual({ ok: true, value: { receipt } });
-        // The rename happened: the new slug names the organization and the old one names none.
         expect(
           (yield* api.request(actors.owner, "GET", `/api/organizations/${renamed}/access`)).status,
         ).toBe(200);
@@ -646,8 +648,6 @@ export default defineApp({}, async () => ({  tools: router({
       context,
       Effect.gen(function* () {
         const { api, actors, mcp, organization, anonymous, create, headers } = yield* patFixture;
-        // The token must remain valid for the two-request network handshake.
-        // Wait for its server-issued expiry, not a fixed delay after connecting.
         const expiring = yield* create(actors.owner, 10);
         const expiringClient = yield* mcp.connect(expiring.key, "pat-expiry", { organization });
         if (expiring.expiresAt === null) return yield* Effect.die("Missing token expiry");

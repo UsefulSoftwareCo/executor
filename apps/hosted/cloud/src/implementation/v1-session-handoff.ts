@@ -1,47 +1,33 @@
-/**
- * Sign-in handoff from v1 for members of moved workspaces (`notes/v1-import.md`, Session handoff).
- *
- * v2 offers no WorkOS sign-in and never starts one. v1's dashboard sends a signed-in member of an
- * organization that has moved to `/api/v1-handoff?token=…` after it has verified its own WorkOS
- * session and the member's membership. The token is v1 vouching for that session, signed with a
- * secret only v1 (`V2_SESSION_HANDOFF_SECRET`) and v2 (`V1_SESSION_HANDOFF_SECRET`) hold:
- *
- *     v1hnd.<base64url JSON claims>.<base64url HMAC-SHA256 of "v1hnd.<claims>">
- *
- * The claims name the WorkOS user, the v1 organization and the v2 organization's slug, with `iat`,
- * an `exp` at most a minute later and a random `jti`. v2 accepts each `jti` once, maps the WorkOS
- * user to a v2 user only through the import map, requires that user's membership of the
- * organization the v1 organization was imported as, and starts an ordinary Better Auth session.
- * Every refusal opens the v2 sign-in page, returning to the organization. Nothing here reads v1.
- */
-import { AuthenticationUnavailable } from "@executor-js/hosted-server";
+import {
+  AuthenticationUnavailable,
+  auditFailureCodes,
+  recordSecurityAudit,
+} from "@executor-js/hosted-server";
+import {
+  LastOrganization,
+  lastOrganizationCookie,
+} from "@executor-js/hosted-server/browser/contracts";
 import { OrganizationSlug } from "@executor-js/hosted-server/organization";
 import type { BetterAuthPlugin } from "better-auth";
 import { APIError, createAuthEndpoint } from "better-auth/api";
 import { setSessionCookie } from "better-auth/cookies";
 import { Clock, Effect, Option, Redacted, Result, Schema } from "effect";
 import { Base64Url } from "effect/encoding";
-import { HttpServerRequest, HttpServerResponse } from "effect/http";
+import { Cookies, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { SqlClient } from "effect/sql";
 
-/** The route v1's dashboard redirects to. */
 export const v1HandoffPath = "/api/v1-handoff";
 
 const prefix = "v1hnd.";
 const audience = "v2-session-handoff";
-/** v1 gives a token a minute; one that claims longer is refused. */
 const maxLifetimeSeconds = 60;
-/** How far ahead of this Worker's clock v1's may run. */
 const clockSkewSeconds = 30;
 
 const Claims = Schema.Struct({
   v: Schema.Literal(1),
   aud: Schema.Literal(audience),
-  /** The WorkOS user whose v1 session v1 verified. */
   user: Schema.NonEmptyString,
-  /** The v1 organization that moved, a WorkOS organization ID. */
   organization: Schema.NonEmptyString,
-  /** The v2 organization to open, as v1's moved flag names it. */
   slug: OrganizationSlug,
   iat: Schema.Int,
   exp: Schema.Int,
@@ -49,10 +35,8 @@ const Claims = Schema.Struct({
 });
 type Claims = typeof Claims.Type;
 
-/** Only what a refusal needs to read from a token it did not accept: where to return to. */
 const Destination = Schema.Struct({ slug: Schema.optionalKey(Schema.Unknown) });
 
-/** Why a handoff opened the sign-in page; logged, never shown, and never with the token. */
 const V1HandoffRefusal = Schema.Literals([
   "disabled",
   "malformed",
@@ -75,8 +59,8 @@ export class V1HandoffRefused extends Schema.TaggedError<V1HandoffRefused>()("V1
 }) {}
 
 const refuse = (reason: V1HandoffRefusal) => new V1HandoffRefused({ reason });
+const refusalCode = auditFailureCodes(V1HandoffRefusal.literals);
 
-/** Better Auth could not start the session. */
 export class V1HandoffSessionFailed extends Schema.TaggedError<V1HandoffSessionFailed>()(
   "V1HandoffSessionFailed",
   {},
@@ -84,7 +68,6 @@ export class V1HandoffSessionFailed extends Schema.TaggedError<V1HandoffSessionF
 
 const encoder = new TextEncoder();
 
-/** The token's parts, when it has the shape v1 signs. */
 const split = (token: string) => {
   if (!token.startsWith(prefix)) return undefined;
   const [payload, signature, ...rest] = token.slice(prefix.length).split(".");
@@ -92,17 +75,12 @@ const split = (token: string) => {
   return { payload, signature };
 };
 
-/** The decoded JSON of a payload, or undefined. */
 const payloadJson = (payload: string) =>
   Result.match(Base64Url.decodeString(payload), {
     onFailure: () => undefined,
     onSuccess: (json) => Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown))(json),
   });
 
-/**
- * The claims of a token v1 signed with `secret` that is current. The MAC is checked with
- * `crypto.subtle.verify`, which compares in constant time, before anything in the payload is read.
- */
 const verify = (secret: Redacted.Redacted<string>, token: string) =>
   Effect.gen(function* () {
     const parts = split(token);
@@ -147,11 +125,6 @@ const verify = (secret: Redacted.Redacted<string>, token: string) =>
     return claims;
   });
 
-/**
- * Accept the token's `jti` once. Rows of expired tokens are deleted first: an expired token is
- * refused before it gets here, so its row no longer guards anything. The margin covers the clock
- * difference between this Worker and the database.
- */
 const consume = (sql: SqlClient.SqlClient, claims: Claims) =>
   Effect.gen(function* () {
     yield* sql`
@@ -171,11 +144,6 @@ const Target = Schema.Struct({
   role: Schema.NullOr(Schema.String),
 });
 
-/**
- * The v2 user and organization the claims stand for, in one statement. The user is the import
- * map's record of the WorkOS user, created or merged by the import; nothing is matched by email.
- * The organization is the slug's, which must be the one the v1 organization was imported as.
- */
 const target = (sql: SqlClient.SqlClient, claims: Claims) =>
   Effect.gen(function* () {
     const rows = yield* sql`
@@ -202,7 +170,26 @@ const target = (sql: SqlClient.SqlClient, claims: Claims) =>
     return { user: row.userId, organization: row.organization };
   });
 
-/** Where every response sends the browser: never back to a URL that carries the token. */
+const rememberedOrganization = (request: HttpServerRequest.HttpServerRequest, user: string) => {
+  const value = Cookies.parseHeader(request.headers.cookie ?? "")[
+    lastOrganizationCookie(request.headers.host ?? "", new URL(request.url).protocol === "https:")
+  ];
+  if (value === undefined) return undefined;
+  const saved = Schema.decodeUnknownOption(Schema.fromJsonString(LastOrganization))(value);
+  return Option.isSome(saved) && saved.value.user === user ? saved.value.organization : undefined;
+};
+
+const Remembered = Schema.Struct({ id: Schema.String, slug: OrganizationSlug });
+
+const rememberedDestination = (sql: SqlClient.SqlClient, user: string, organization: string) =>
+  Effect.gen(function* () {
+    const rows = yield* sql`
+      select o.id, o.slug from organization o
+      join member m on m."organizationId" = o.id and m."userId" = ${user}
+      where o.id = ${organization}`;
+    return rows.length === 0 ? undefined : yield* Schema.decodeUnknownEffect(Remembered)(rows[0]);
+  });
+
 const redirect = (location: string, cookies: ReadonlyArray<string> = []) => {
   const headers = new Headers({
     location,
@@ -213,7 +200,6 @@ const redirect = (location: string, cookies: ReadonlyArray<string> = []) => {
   return HttpServerResponse.fromWeb(new Response(null, { status: 302, headers }));
 };
 
-/** The sign-in page, returning to the organization the token named when it names one. */
 const signIn = (token: string) => {
   const parts = split(token);
   const json = parts === undefined ? undefined : payloadJson(parts.payload);
@@ -228,11 +214,9 @@ const signIn = (token: string) => {
 export interface V1HandoffServices<R> {
   readonly secret: Option.Option<Redacted.Redacted<string>>;
   readonly withSql: <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) => Effect.Effect<A, E>;
-  /** The user of the session the request already carries, if any. */
   readonly currentUser: (
     headers: Headers,
   ) => Effect.Effect<string | undefined, AuthenticationUnavailable>;
-  /** Start a Better Auth session for the user; its `Set-Cookie` values. */
   readonly startSession: (
     headers: Headers,
     user: string,
@@ -240,7 +224,6 @@ export interface V1HandoffServices<R> {
   ) => Effect.Effect<ReadonlyArray<string>, V1HandoffSessionFailed, R>;
 }
 
-/** `GET /api/v1-handoff?token=…`: a session for the member v1 vouches for, or the sign-in page. */
 export const v1SessionHandoff = <R>(services: V1HandoffServices<R>) =>
   Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
@@ -249,27 +232,41 @@ export const v1SessionHandoff = <R>(services: V1HandoffServices<R>) =>
     return yield* Effect.gen(function* () {
       if (Option.isNone(services.secret)) return yield* refuse("disabled");
       const claims = yield* verify(services.secret.value, token);
-      const { user, organization } = yield* services.withSql(
+      const { user, destination } = yield* services.withSql(
         Effect.gen(function* () {
           const sql = yield* SqlClient.SqlClient;
           yield* consume(sql, claims);
-          return yield* target(sql, claims);
+          const found = yield* target(sql, claims);
+          const remembered = rememberedOrganization(request, found.user);
+          const resumed =
+            remembered === undefined || remembered === found.organization
+              ? undefined
+              : yield* rememberedDestination(sql, found.user, remembered);
+          return {
+            ...found,
+            destination: resumed ?? { id: found.organization, slug: claims.slug },
+          };
         }),
       );
       const current = yield* services.currentUser(headers);
-      // A browser already signed in to v2 keeps its session: as this user it needs no other, and
-      // another user's session is never replaced by a handoff.
       if (current !== undefined && current !== user) return yield* refuse("other_session");
       const cookies =
-        current === user ? [] : yield* services.startSession(headers, user, organization);
-      return redirect(`/org/${claims.slug}`, cookies);
+        current === user ? [] : yield* services.startSession(headers, user, destination.id);
+      return redirect(`/org/${destination.slug}`, cookies);
     }).pipe(
       Effect.catchTag("V1HandoffRefused", (error) =>
         Effect.logInfo("v1 session handoff refused", { reason: error.reason }).pipe(
+          Effect.andThen(
+            recordSecurityAudit({
+              action: "sign_in",
+              outcome: "failure",
+              failure: refusalCode(error.reason),
+              detail: { method: "v1_handoff" },
+            }),
+          ),
           Effect.as(signIn(token)),
         ),
       ),
-      // Storage, decoding or Better Auth failed: the member can still sign in.
       Effect.catch(() =>
         Effect.logWarning("v1 session handoff unavailable", { reason: "unavailable" }).pipe(
           Effect.as(signIn(token)),
@@ -279,11 +276,6 @@ export const v1SessionHandoff = <R>(services: V1HandoffServices<R>) =>
     );
   });
 
-/**
- * Better Auth's half: a session for a user the handoff has already authorized, created and set as
- * every sign-in's is, so the session hooks (verified email, sign-in analytics) run too. Server only:
- * it has no URL, and only `v1SessionHandoff` calls it.
- */
 export const v1HandoffSessions = () =>
   ({
     id: "executor-v1-session-handoff",

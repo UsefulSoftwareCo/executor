@@ -1,5 +1,5 @@
 /** Revisioned OpenAPI sources. Calls read a manifest, one operation and only its schema dependencies. */
-import { Clock, Deferred, Effect, Option, Schema, Duration } from "effect";
+import { Clock, Deferred, Effect, Option, Result, Schema, Duration } from "effect";
 import { RouterMeta } from "../contracts/router.ts";
 import { parse as parseYamlStrictly } from "yaml";
 import { CORE_SCHEMA, load as loadYaml } from "js-yaml";
@@ -241,7 +241,6 @@ const sha256Json = (value: JsonValue) =>
   );
 const partConcurrency = 4;
 
-// Immutable, account-free data only. Neither credentials nor executable handlers enter this map.
 const resolved = new Map<
   string,
   {
@@ -275,8 +274,6 @@ const remember = (
   resolvedBytes += bytes;
 };
 
-// Parts this isolate just stored, by content-addressed revision. They equal the stored values,
-// so listing right after a load, or again in the same warm Worker, does not read them back.
 const stored = new Map<string, { parts: ReadonlyMap<string, string>; bytes: number }>();
 let storedBytes = 0;
 const storedPart = (kind: string, name: string | number) => JSON.stringify([kind, name]);
@@ -422,9 +419,7 @@ const parseYaml = (text: string): unknown => {
       if (nodes.total === nodes.distinct) return value;
       if (nodes.total <= nodes.distinct * 10 + 100_000) return JSON.parse(JSON.stringify(value));
     }
-  } catch {
-    // Read by the `yaml` package below.
-  }
+  } catch {}
   return JSON.parse(JSON.stringify(parseYamlStrictly(text)));
 };
 
@@ -434,7 +429,6 @@ const download = (
   context: Pick<CacheLoadContext, "fetch"> & { readonly signal?: AbortSignal },
 ) =>
   Effect.gen(function* () {
-    // The loader's fetch is the invocation's, which opens its own upstream boundary.
     // oxlint-disable-next-line executor/authored-code-through-adapter -- fetch
     const response = yield* Effect.tryPromise({
       try: () =>
@@ -491,8 +485,7 @@ const sourceDocument = (
     return patchOpenapi(
       "url" in options.source
         ? yield* download(options.source.url, context)
-        : // A copy the compilation can own, as a tree.
-          Schema.decodeUnknownSync(JsonObject)(JSON.parse(JSON.stringify(options.source.document))),
+        : Schema.decodeUnknownSync(JsonObject)(JSON.parse(JSON.stringify(options.source.document))),
       options.patches,
     );
   });
@@ -536,16 +529,12 @@ const operationKind = (
 
 /** No I/O during app construction. All accounts share credential-free compilation. */
 export const liveOpenapiRouter = (options: OpenapiSourceOptions): RouterDeclaration => {
-  // Specs change rarely and compiling a large one takes seconds. Idle visits serve the
-  // retained revision and refresh it in the background instead of waiting for a full load.
   const freshFor = options.freshFor ?? "5 minutes";
   const staleFor = options.staleFor ?? "1 day";
   const retention =
     Duration.toMillis(Duration.fromInputUnsafe(freshFor)) +
     Duration.toMillis(Duration.fromInputUnsafe(staleFor)) +
     300_000;
-  // The key includes every static input to compilation. It never includes account credentials.
-  // Large inline documents are hashed once below rather than copied into storage keys.
   const identity = Effect.cached(
     // oxlint-disable-next-line executor/authored-code-through-adapter -- Web Crypto
     Effect.tryPromise({
@@ -569,7 +558,6 @@ export const liveOpenapiRouter = (options: OpenapiSourceOptions): RouterDeclarat
       catch: invalid,
     }),
   );
-  // Each source instance memoizes only the source identity. Persisted data remains revisioned.
   const sourceId = Effect.runSync(identity);
   const pointer = sourceId.pipe(Effect.map((id) => [format, id, "current"]));
   const partKey = (revision: string, kind: string, name: string | number): JsonValue => [
@@ -578,19 +566,13 @@ export const liveOpenapiRouter = (options: OpenapiSourceOptions): RouterDeclarat
     kind,
     name,
   ];
-  // The document belongs to one compilation, which upgrades it in place. It is released when
-  // compilation ends, before the compiled parts are serialized and written.
   const compile = (context: CacheLoadContext) =>
     Effect.gen(function* () {
       let document: JsonObject | undefined = yield* sourceDocument(options, context);
       // oxlint-disable-next-line executor/authored-code-through-adapter -- scheduler yield
       yield* Effect.promise(yieldToRuntime);
-      // Revisions are content-addressed: refreshing an unchanged document rewrites the
-      // same parts and renews their retention instead of storing another copy.
       const revision = yield* sha256Json([format, yield* sourceId, document]);
       const meta = documentMeta(document);
-      // This generator's frame lives until compilation ends, so it hands the document over
-      // rather than holding it while compilation builds the output.
       const handOver = () => {
         const owned = document;
         document = undefined;
@@ -600,8 +582,6 @@ export const liveOpenapiRouter = (options: OpenapiSourceOptions): RouterDeclarat
       const compiled = yield* compileSource(options, handOver());
       return { revision, meta, compiled };
     });
-  // Compiles the document and serializes its parts. Only strings leave it, so the compiled output
-  // is released before the parts are written.
   const serialize = (context: CacheLoadContext) =>
     Effect.gen(function* () {
       const { revision, meta, compiled } = yield* compile(context);
@@ -622,12 +602,9 @@ export const liveOpenapiRouter = (options: OpenapiSourceOptions): RouterDeclarat
         ...definitions.map((value, name) => ({ kind: "definitions", name, value })),
         ...skipped.map((value, name) => ({ kind: "skipped", name, value })),
       ];
-      // Each write carries as many parts as one cache command accepts. Publication is last,
-      // under the cache loader lease.
       const batches: { entries: { key: JsonValue; value: string }[]; bytes: number }[] = [];
       let batch: { key: JsonValue; value: string }[] = [];
       let size = 0;
-      // The retained copy holds each part's exact text; reading it decodes like a cache hit.
       const retained = new Map<string, string>();
       let retainedBytes = 0;
       for (const [index, part] of parts.entries()) {
@@ -635,7 +612,6 @@ export const liveOpenapiRouter = (options: OpenapiSourceOptions): RouterDeclarat
         if (index % 32 === 31) yield* Effect.promise(yieldToRuntime);
         const text = JSON.stringify(part.value);
         const entry = { key: partKey(revision, part.kind, part.name), value: yield* gzip(text) };
-        // As the cache measures a command: the escaped text and its key.
         const bytes = new TextEncoder().encode(JSON.stringify(entry)).byteLength;
         if (batch.length && (batch.length >= writeEntries || size + bytes > writeBytes)) {
           batches.push({ entries: batch, bytes: size });
@@ -665,8 +641,6 @@ export const liveOpenapiRouter = (options: OpenapiSourceOptions): RouterDeclarat
   const refresh = (context: CacheLoadContext) =>
     Effect.gen(function* () {
       const { manifest, batches, retained, retainedBytes } = yield* serialize(context);
-      // Revision keys are immutable and independent. Await every write before
-      // publishing the manifest, without serializing their network round trips.
       yield* Effect.forEach(
         batches,
         ({ entries, bytes }, index) =>
@@ -688,8 +662,6 @@ export const liveOpenapiRouter = (options: OpenapiSourceOptions): RouterDeclarat
       retain(manifest.revision, retained, retainedBytes);
       return manifest;
     });
-  // A router reads its metadata and its tools together; concurrent reads share one manifest
-  // round trip.
   let reading: Deferred.Deferred<typeof Manifest.Type, unknown> | undefined;
   const current = Effect.suspend(() => {
     const shared = reading;
@@ -716,10 +688,6 @@ export const liveOpenapiRouter = (options: OpenapiSourceOptions): RouterDeclarat
       ),
     );
   });
-  // A route the upstream stopped serving may belong to an operation its document dropped after
-  // the retained revision. The first such call reloads the document, bypassing freshness. Calls
-  // while that reload runs join it through the cache's lease, which also coalesces reloads across
-  // isolates; later calls within `recheckEvery` read the revision it published.
   const recheck = Effect.gen(function* () {
     const id = yield* sourceId;
     const now = yield* Clock.currentTimeMillis;
@@ -766,7 +734,6 @@ export const liveOpenapiRouter = (options: OpenapiSourceOptions): RouterDeclarat
         ),
       ),
     );
-  // Parts are read in groups one cache command can return, a few groups at a time.
   const read = <A>(
     revision: string,
     kind: string,
@@ -817,7 +784,6 @@ export const liveOpenapiRouter = (options: OpenapiSourceOptions): RouterDeclarat
       }
       return summaries;
     });
-  // `undefined` when a stored part is missing; `{ value: undefined }` when no operation has the name.
   const operationFor = (manifest: typeof Manifest.Type, name: string) =>
     Effect.gen(function* () {
       const [bucket] = yield* read(
@@ -859,17 +825,20 @@ export const liveOpenapiRouter = (options: OpenapiSourceOptions): RouterDeclarat
         skipped: [operation],
       });
     });
-  // Every operation, in the document's order, which the summaries keep.
   const operationsFor = (manifest: typeof Manifest.Type) =>
     Effect.gen(function* () {
-      const summaries = yield* summariesFor(manifest);
-      if (summaries === undefined) return undefined;
-      const buckets = yield* read(
-        manifest.revision,
-        "operations",
-        range(manifest.operations),
-        Bucket,
+      const [listed, stored] = yield* Effect.all(
+        [
+          Effect.result(summariesFor(manifest)),
+          Effect.result(read(manifest.revision, "operations", range(manifest.operations), Bucket)),
+        ],
+        { concurrency: "unbounded" },
       );
+      if (Result.isFailure(listed)) return yield* Effect.fail(listed.failure);
+      const summaries = listed.success;
+      if (summaries === undefined) return undefined;
+      if (Result.isFailure(stored)) return yield* Effect.fail(stored.failure);
+      const buckets = stored.success;
       const all: OpenapiOperation[] = [];
       for (const { name } of summaries) {
         const bucket = buckets[bucketOf(name, manifest.operations)];
@@ -880,7 +849,6 @@ export const liveOpenapiRouter = (options: OpenapiSourceOptions): RouterDeclarat
       }
       return all;
     });
-  // Follows references from `root`, reading each definition bucket once.
   const definitionsFor = (manifest: typeof Manifest.Type, root: JsonValue) =>
     Effect.gen(function* () {
       const definitions: Record<string, JsonObject> = {};
@@ -910,7 +878,6 @@ export const liveOpenapiRouter = (options: OpenapiSourceOptions): RouterDeclarat
       }
       return definitions;
     });
-  // Relaxed validators depend only on which parameters are account-bound, never on their values.
   const defaultedNames = JSON.stringify(
     Object.entries(options.parameterDefaults ?? {}).map(([group, values]) => [
       group,
@@ -923,7 +890,6 @@ export const liveOpenapiRouter = (options: OpenapiSourceOptions): RouterDeclarat
     name: operation.name,
     description: operation.description,
     readOnly: readOnly(operation),
-    // The app's `kinds`, or the HTTP method Executor sends.
     kindConfirmed: true,
     ...(operation.tags === undefined ? {} : { tags: operation.tags }),
   });
@@ -937,7 +903,6 @@ export const liveOpenapiRouter = (options: OpenapiSourceOptions): RouterDeclarat
       ? {}
       : { outputSchema: bundle(operation.outputSchema) }),
   });
-  // Repair missing parts once, by reloading the revision.
   const withRevision = <A>(
     work: (manifest: typeof Manifest.Type) => Effect.Effect<{ value: A } | undefined, unknown>,
   ) =>
@@ -949,8 +914,6 @@ export const liveOpenapiRouter = (options: OpenapiSourceOptions): RouterDeclarat
       }
       return yield* invalid();
     });
-  // Each tool with a run that rechecks the document when the upstream answers that the route is
-  // missing. A lazily built output schema stays lazy.
   const recheckMissing = (tools: OpenapiTools, name: string) =>
     Object.fromEntries(
       Object.entries(tools).map(([key, tool]) => {
@@ -1075,8 +1038,6 @@ export const openapiToolNames = (options: OpenapiToolNamesOptions): Promise<Open
       });
       const compiled = yield* compileSource(options, document);
       const request = createRequest(options);
-      // An account of each method with every field it binds, so availability depends only on
-      // the operation's security, never on credential values.
       const accounts = [
         ...Object.entries(options.methods).map(([method, bindings]) => ({
           method,

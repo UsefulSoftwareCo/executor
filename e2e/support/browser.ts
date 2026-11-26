@@ -1,10 +1,10 @@
-/** Promise APIs are confined to this driver adapter; Effect owns browser and context scopes. */
 import {
   chromium,
   webkit,
   type Browser as NativeBrowser,
   type BrowserType,
   type Page,
+  type Request,
 } from "playwright";
 import {
   Cause,
@@ -16,11 +16,11 @@ import {
   Exit,
   FileSystem,
   Layer,
-  Redacted,
   Result,
   Schedule,
 } from "effect";
 import { Target, driver, type DriverFailed } from "./platform.ts";
+import { reveal, safeText } from "./failure-text.ts";
 import { targetHosts } from "./role-hosts.ts";
 import { splitRoutedReads } from "./read-batches.ts";
 import { Evidence } from "./evidence.ts";
@@ -37,11 +37,6 @@ const launchBrowser = (
     (browser) => driver("close browser", () => browser.close()).pipe(Effect.orDie),
   );
 
-/**
- * Headless Chromium names itself "HeadlessChrome", which the dashboard server treats as a crawler
- * and answers only once the whole page has rendered. Cases present the desktop Chrome identity so
- * they receive the streamed page a person's browser receives.
- */
 const visitorUserAgent = (browser: NativeBrowser) =>
   browser.browserType().name() === "chromium"
     ? {
@@ -49,8 +44,22 @@ const visitorUserAgent = (browser: NativeBrowser) =>
       }
     : {};
 
+const requireWebKit = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  if (yield* fs.exists(webkit.executablePath()).pipe(Effect.orDie)) return;
+  return yield* Effect.die(
+    new Error(
+      "WebKit is not installed on this machine: run `bunx playwright install --with-deps webkit`. " +
+        "In CI, .github/actions/e2e-tools installs it only with `webkit: true`, which the e2e-cloud " +
+        "job passes when its scenario patterns name Safari. Name Safari in the scenario's title, or " +
+        "pass the input on the job that runs it.",
+    ),
+  );
+});
+
 const captureBrowser = (engine: BrowserType) =>
   Effect.gen(function* () {
+    if (engine === webkit) yield* requireWebKit;
     const target = yield* Target;
     return yield* launchBrowser(
       {
@@ -61,18 +70,31 @@ const captureBrowser = (engine: BrowserType) =>
     );
   });
 
-/** Suite-scoped Playwright process injected into browser and recording services. */
 export class BrowserDriver extends Context.Service<BrowserDriver, NativeBrowser>()(
   "e2e/BrowserDriver",
 ) {
-  /** Rendering is never paced, even when the source recording was captured slowly. */
   static readonly layer = Layer.effect(BrowserDriver, launchBrowser({ headless: true, slowMo: 0 }));
-  /** Instrument individual actions, including several actions inside one use call. */
   static readonly captureLayer = Layer.effect(BrowserDriver, captureBrowser(chromium));
-  /** Safari's engine, for behavior that differs from Chromium. */
   static readonly webkitCaptureLayer = Layer.effect(BrowserDriver, captureBrowser(webkit));
 }
-/** A case-scoped browser with captured steps and a single isolated context. */
+interface PageRequest {
+  readonly method: string;
+  readonly url: string;
+  readonly kind: string;
+  readonly startedAt: string;
+  status?: number;
+  respondedAt?: string;
+  endedAt?: string;
+  error?: string;
+}
+
+const pageRequestLimit = 5000;
+
+const networkError = (request: Request) => {
+  const reason = request.failure()?.errorText;
+  return reason !== undefined && /^net::ERR_[A-Z_]+$/.test(reason) ? reason : "NETWORK_ERROR";
+};
+
 export class Browser extends Context.Service<
   Browser,
   {
@@ -82,7 +104,6 @@ export class Browser extends Context.Service<
     ) => Effect.Effect<A, DriverFailed>;
     readonly login: (session: Session) => Effect.Effect<void, DriverFailed>;
     readonly checkpoint: (name: string) => Effect.Effect<void, DriverFailed>;
-    /** Discard network traces before OAuth; videos and screenshots still capture the UI. */
     readonly omitNetworkTrace: Effect.Effect<void, DriverFailed>;
   }
 >()("e2e/Browser") {
@@ -109,7 +130,6 @@ export class Browser extends Context.Service<
         originMatches?: boolean;
       }[] = [];
       let page: Page | undefined;
-      // Whether the current document has been seen responding to input; see `interactive`.
       let responsive = false;
       let tracing = true;
       const context = yield* driver("create browser context", () =>
@@ -124,8 +144,51 @@ export class Browser extends Context.Service<
       yield* driver("route batched reads through test routes", () =>
         splitRoutedReads(context, targetHosts(target).browser),
       );
-      // `E2E_COVERAGE=1` records the JavaScript coverage of every page Chromium opens, from its first
-      // script, for `e2e/coverage.ts` to map to the dashboards' sources.
+      const pageErrors: { kind: "page" | "console"; page: string; text: string }[] = [];
+      const pageError = (kind: "page" | "console", from: Page | null, text: string) => {
+        if (pageErrors.length < 200)
+          pageErrors.push({ kind, page: safeText(from?.url() ?? "unknown"), text: safeText(text) });
+      };
+      const pageRequests: PageRequest[] = [];
+      const openRequests = new Map<Request, PageRequest>();
+      let requestsClosed = false;
+      const now = () => new Date(clock.currentTimeMillisUnsafe()).toISOString();
+      context.on("request", (request) => {
+        const url = new URL(request.url());
+        if (requestsClosed || pageRequests.length >= pageRequestLimit) return;
+        if (url.protocol !== "http:" && url.protocol !== "https:") return;
+        const row: PageRequest = {
+          method: request.method(),
+          url: `${url.origin}${url.pathname}`,
+          kind: request.resourceType(),
+          startedAt: now(),
+        };
+        pageRequests.push(row);
+        openRequests.set(request, row);
+      });
+      context.on("response", (response) => {
+        const row = openRequests.get(response.request());
+        if (requestsClosed || row === undefined) return;
+        row.status = response.status();
+        row.respondedAt = now();
+      });
+      context.on("requestfinished", (request) => {
+        const row = openRequests.get(request);
+        if (requestsClosed || row === undefined) return;
+        row.endedAt = now();
+        openRequests.delete(request);
+      });
+      context.on("requestfailed", (request) => {
+        const row = openRequests.get(request);
+        if (requestsClosed || row === undefined) return;
+        row.endedAt = now();
+        row.error = networkError(request);
+        openRequests.delete(request);
+      });
+      context.on("weberror", (error) => pageError("page", error.page(), String(error.error())));
+      context.on("console", (message) => {
+        if (message.type() === "error") pageError("console", message.page(), message.text());
+      });
       const fs = yield* FileSystem.FileSystem;
       const coverage =
         (yield* Config.Boolean("E2E_COVERAGE").pipe(Config.withDefault(false))) &&
@@ -167,7 +230,6 @@ export class Browser extends Context.Service<
           );
         }
       });
-      // Register cleanup immediately, before trace/page setup can fail.
       yield* Effect.addFinalizer((exit) =>
         Effect.gen(function* () {
           if (page && Exit.isFailure(exit)) {
@@ -192,15 +254,13 @@ export class Browser extends Context.Service<
             yield* evidence.artifact("Playwright trace", "application/zip", "trace.zip");
           }
           const video = page?.video();
-          // Coverage is evidence about the suite, not the scenario; it never fails one.
           yield* saveCoverage.pipe(Effect.ignore);
+          requestsClosed = true;
           yield* driver("close browser context", () => context.close()).pipe(Effect.orDie);
           yield* driver("collect sanitized resource failures", () =>
             Promise.all(failureReads),
           ).pipe(Effect.orDie);
           if (video) {
-            // A scenario can close its page before context cleanup. saveAs waits
-            // for that page's encoder; path alone can still point at an empty file.
             yield* driver("save completed recording", () =>
               video.saveAs(`${evidence.directory}/raw.webm`),
             ).pipe(Effect.orDie);
@@ -208,6 +268,8 @@ export class Browser extends Context.Service<
           }
           yield* evidence.json("navigation.json", navigations);
           yield* evidence.json("failed-resources.json", failedResources);
+          yield* evidence.json("page-requests.json", pageRequests);
+          if (pageErrors.length > 0) yield* evidence.json("page-errors.json", pageErrors);
           for (const id of traceIds) yield* evidence.browserTrace(id);
         }),
       );
@@ -219,7 +281,6 @@ export class Browser extends Context.Service<
           const started = yield* Clock.currentTimeMillis;
           page = yield* driver("open browser page", () => context.newPage());
           const current = page;
-          // Profile from the page's first script.
           yield* driver(
             "start browser coverage",
             () => profiling.get(current) ?? Promise.resolve(),
@@ -250,7 +311,6 @@ export class Browser extends Context.Service<
             const id = request.headers()["traceparent"]?.split("-")[1];
             if (id && /^[a-f0-9]{32}$/.test(id)) traceIds.add(id);
           });
-          // Retain safe failure evidence even when OAuth requires discarding the network trace.
           current.on("response", (response) => {
             const kind = response.request().resourceType();
             const status = response.status();
@@ -282,29 +342,15 @@ export class Browser extends Context.Service<
           });
           current.on("requestfailed", (request) => {
             const url = new URL(request.url());
-            const reason = request.failure()?.errorText;
             failedResources.push({
               url: `${url.origin}${url.pathname}`,
               kind: request.resourceType(),
-              error:
-                reason !== undefined && /^net::ERR_[A-Z_]+$/.test(reason)
-                  ? reason
-                  : "NETWORK_ERROR",
+              error: networkError(request),
             });
           });
           return { page: current, focus, capture };
         }),
       );
-      // Dashboard documents arrive rendered but respond to input only once hydrated, as for
-      // a person waiting for the page's scripts. Regions stream in after the page itself
-      // hydrates; TanStack removes `$_TSR` once the router has hydrated and the whole document
-      // has arrived. Other pages, such as sign-in providers, do not wait. A scenario that stops
-      // a dashboard from starting continues after the wait expires; its own assertions decide
-      // the outcome.
-      // The check walks only comment nodes natively, so it stays cheap on a page with a very
-      // large DOM. An evaluation that a navigation interrupts is repeated on the new document.
-      // Once a document responds or the wait expires, later steps skip the check until the page
-      // navigates again.
       const interactive = (page: Page) =>
         Effect.suspend(() =>
           responsive
@@ -314,19 +360,11 @@ export class Browser extends Context.Service<
                   const root = document.documentElement;
                   if (!root.hasAttribute("data-dashboard")) return true;
                   if (!root.hasAttribute("data-hydrated") || "$_TSR" in window) return false;
-                  // Regions streamed into the page hydrate after the page itself. React marks
-                  // each element it has hydrated; the first element of every completed region
-                  // must carry that mark.
-                  // A region that has arrived is not shown at once: React batches reveals and
-                  // may hold one for several hundred milliseconds after the router hydrates.
-                  // Until then the region is marked `$?` or `$~`, its fallback is on screen and
-                  // its content waits in a hidden element that does not respond to input.
                   const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_COMMENT);
                   for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
                     if (!(node instanceof Comment)) continue;
                     if (node.data === "$?" || node.data === "$~") return false;
                     if (node.data !== "$") continue;
-                    // The region ends at its closing marker; an empty region has no element.
                     let first = node.nextSibling;
                     while (
                       first !== null &&
@@ -353,8 +391,6 @@ export class Browser extends Context.Service<
                 Effect.retry({ schedule: Schedule.spaced("50 millis") }),
                 Effect.timeout("10 seconds"),
                 Effect.ignore,
-                // Wait once per document. A document that never responds is not waited on again
-                // by later steps until the page navigates.
                 Effect.ensuring(
                   Effect.sync(() => {
                     responsive = true;
@@ -391,9 +427,7 @@ export class Browser extends Context.Service<
               Effect.gen(function* () {
                 yield* driver("clear browser cookies", () => context.clearCookies());
                 const cookies = yield* session.cookies;
-                yield* driver("set actor session", () =>
-                  context.addCookies([...Redacted.value(cookies)]),
-                );
+                yield* driver("set actor session", () => context.addCookies([...reveal(cookies)]));
               }),
             );
           }),
