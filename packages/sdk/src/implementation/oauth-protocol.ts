@@ -721,12 +721,6 @@ const grantMembers = ["access_token", ...optionalTokenMembers];
 const isObject = (value: unknown): value is object =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-/**
- * Select the declared nested grant when needed. An authorization-code exchange can require it,
- * removing top-level grant fields if the path has no access token so a second grant cannot be used.
- * Refreshes leave it optional because providers may return a top-level renewed grant. Slack's
- * `team` and other non-grant members stay beside the selected grant.
- */
 const nestedGrant = (
   body: object,
   nested: OAuthTokenResponse | undefined,
