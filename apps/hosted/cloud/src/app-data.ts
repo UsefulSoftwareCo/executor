@@ -10,6 +10,7 @@ import {
 } from "@executor-js/app-data/cloudflare";
 import { AppData, runnerReadsBuilds } from "./infrastructure/app-data-worker.ts";
 import { AppDataSupervisor, appDataSupervisors } from "./infrastructure/app-data.ts";
+import { AppCluster } from "./infrastructure/app-cluster.ts";
 import { RuntimeContext } from "alchemy";
 import { CacheCommand } from "@executor-js/app-cache/contracts";
 import { BlobStore } from "@executor-js/sdk/core";
@@ -231,6 +232,21 @@ const AppDataSupervisorLive = AppDataSupervisor.make(
   }),
 );
 
+// external: an alarm a Durable Object set fires on whichever release is deployed; this release sets it again so the release that set it finds it still set when it is back.
+const clusterAlarmRearmMillis = 2 * 60_000;
+
+const AppClusterLive = AppCluster.make(
+  Effect.gen(function* () {
+    const state = yield* Cloudflare.DurableObjectState;
+    return Effect.succeed({
+      call: () => Effect.die(new Error("AppCluster serves nothing in this release")),
+      facetAlarm: () => Effect.die(new Error("AppCluster serves nothing in this release")),
+      alarm: () =>
+        Effect.promise(() => state.raw.storage.setAlarm(Date.now() + clusterAlarmRearmMillis)),
+    });
+  }),
+);
+
 export default AppData.make(
   Effect.gen(function* () {
     if (globalThis.__ALCHEMY_RUNTIME__) return { main: import.meta.url };
@@ -251,6 +267,8 @@ export default AppData.make(
   Effect.gen(function* () {
     const credentials = yield* appCredentialOutbound;
     const databases = yield* appDataSupervisors;
+    // external: a binding naming this Worker's own script is checked against the live version, which lacks the class on the deploy that adds it, and Cloudflare refuses that deploy.
+    yield* AppCluster;
     const runnerFor = yield* runnerBindings;
     const runner = Effect.gen(function* () {
       const { waitUntil } = yield* Effect.promise(() => import("cloudflare:workers"));
@@ -311,5 +329,5 @@ export default AppData.make(
       declare: (bundle: string, headers: Readonly<Record<string, string>>) =>
         runner.pipe(Effect.flatMap((served) => served.declare(bundle, headers))),
     };
-  }).pipe(Effect.provide(Layer.mergeAll(AppDataSupervisorLive, cloudTelemetry))),
+  }).pipe(Effect.provide(Layer.mergeAll(AppDataSupervisorLive, AppClusterLive, cloudTelemetry))),
 );
