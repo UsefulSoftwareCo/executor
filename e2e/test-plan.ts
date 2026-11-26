@@ -10982,6 +10982,31 @@ export const scenarios = plan({
       ),
     },
   },
+  appUiLaunch: {
+    fixtures: "actors",
+    managementApps: ["owner"],
+    file: "app-ui-launch.spec.ts",
+    appOrigin: true,
+    title:
+      "a launch link from MCP signs a browser with no session in to one app page once, and a caller who may not open the app gets none",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local serves app UIs from its own origin with no app sign-in."),
+    },
+  },
+  appUiLaunchLifetime: {
+    fixtures: "actors",
+    file: "app-ui-launch.spec.ts",
+    appOrigin: true,
+    title:
+      "a launch link is refused after a minute, and its page's session ends when the API key that made it is revoked",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Moves the product's clock, which a shared Cloud Worker cannot."),
+      local: na("Local serves app UIs from its own origin with no app sign-in."),
+    },
+  },
   mcpOAuthPrivateHttpOrigin: {
     file: "mcp-oauth-private-http-origin.spec.ts",
     title:

@@ -1,7 +1,12 @@
 import { recordUnclassifiedRefusals, requestServices } from "@executor-js/hosted-server";
 import { previewActivity } from "./infrastructure/preview-activity.ts";
 import { previewLifetime } from "./infrastructure/test-stage-expiry.ts";
-import { appSessionCookie, hostedAppUi, appAddresses } from "@executor-js/hosted-server/app-ui";
+import {
+  appLaunchPath,
+  appSessionCookie,
+  hostedAppUi,
+  appAddresses,
+} from "@executor-js/hosted-server/app-ui";
 import { appPrivateHeaders, appSignInCallbackPath } from "apps/ui/auth";
 import { AppUiApi, appIconRoute, appMenuBarRoute } from "apps/ui/contracts";
 import { AlchemyContext } from "alchemy/AlchemyContext";
@@ -84,6 +89,7 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
     const notFound = HttpServerResponse.empty({ status: 404 });
     const protectedRoutes = Layer.mergeAll(
       HttpRouter.add("GET", appSignInCallbackPath, appUi.callback),
+      HttpRouter.add("GET", appLaunchPath, appUi.launch),
       HttpRouter.add("GET", "/_executor/assets/:version/*", appUi.asset),
       HttpRouter.add("GET", "/_executor/version", appUi.versions),
       HttpRouter.add("GET", appMenuBarRoute, appUi.menuBar),

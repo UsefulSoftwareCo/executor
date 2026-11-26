@@ -28,7 +28,7 @@ import { readOrganizationIconUpload } from "./organization-icons.ts";
 import { OrganizationTombstones } from "../contracts/organization-removal.ts";
 import { requireOrganizationAdmin } from "./access.ts";
 import { appLinkedAccounts, callerLinkedAccounts } from "./app-accounts.ts";
-import { CurrentPrincipal, CurrentUserId } from "../contracts/auth.ts";
+import { CurrentCredential, CurrentPrincipal, CurrentUserId } from "../contracts/auth.ts";
 import {
   recordCaller,
   recordNoSession,
@@ -200,6 +200,14 @@ export const withOrganizationRequest = <E, R>(
             ? { source: "api-key", sourceId: grant.key.id }
             : { source: "agent", sourceId: grant.grant?.id },
         ),
+        Effect.provideService(
+          CurrentCredential,
+          grant.key !== undefined
+            ? { kind: "apiKey", id: grant.key.id }
+            : grant.grant !== undefined
+              ? { kind: "grant", id: grant.grant.id }
+              : undefined,
+        ),
       )).pipe(HttpServerResponse.setHeader("cache-control", "no-store"));
     }
     if (
@@ -235,6 +243,7 @@ export const withOrganizationRequest = <E, R>(
       Effect.provideService(CurrentUsage, { source: "dashboard" }),
       Effect.provideService(CurrentToolCallCaller, { source: "dashboard" }),
       Effect.provideService(CurrentPrincipal, principal),
+      Effect.provideService(CurrentCredential, { kind: "session", id: principal.sessionId }),
       Effect.provideService(CurrentPolicy, fullAuthority),
     )).pipe(HttpServerResponse.setHeader("cache-control", "no-store"));
   });

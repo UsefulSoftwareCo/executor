@@ -462,6 +462,9 @@ export const appSessionsPerCall = (
     pending: (request) => Effect.flatMap(sessions, (live) => live.pending(request)),
     grant: (request, target, principal) =>
       Effect.flatMap(sessions, (live) => live.grant(request, target, principal)),
+    launch: (target, user, parent) =>
+      Effect.flatMap(sessions, (live) => live.launch(target, user, parent)),
+    redeem: (target, code) => Effect.flatMap(sessions, (live) => live.redeem(target, code)),
     complete: (target, request, code, proof) =>
       Effect.flatMap(sessions, (live) => live.complete(target, request, code, proof)),
     current: (target, token) => Effect.flatMap(sessions, (live) => live.current(target, token)),
